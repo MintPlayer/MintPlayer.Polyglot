@@ -11,9 +11,9 @@ The Visual Studio solution and sources are committed: `MintPlayer.Polyglot.Core`
 `MintPlayer.Polyglot.Cli` (the `polyglot` exe answering `--version`/`--help`, `build` stubbed), and
 `MintPlayer.Polyglot.Tests` (a tiny zero-dependency assert harness). C++20, x64 Debug/Release.
 *Gate (closed):* the hand-authored `.sln`/`.vcxproj` build with **0 warnings / 0 errors** via the
-VS 18 "Insiders" MSBuild (no VS 2022 on this box; it resolves toolset v143 to MSVC 14.44 — see CLAUDE.md
-for the exact paths). `MintPlayer.Polyglot.Cli.exe --version` prints `0.0.1`; `...Tests.exe` reports
-all-pass.
+VS 18 "Insiders" MSBuild. The projects target toolset **v145** (→ MSVC 14.51), so they require VS 2026 —
+a deliberate VS-2026-only pin (see CLAUDE.md for paths). `MintPlayer.Polyglot.Cli.exe --version` prints
+`0.0.1`; `...Tests.exe` reports all-pass.
 
 ## P1 — Language design v0.1 ✅ locked (2026-06-28)
 Design the source language on paper before any compiler code. Write a grammar (EBNF) + a short language

@@ -34,12 +34,13 @@ msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
 x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.0.1
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
-TOOLCHAIN: the projects target PlatformToolset **v143**. On this machine there is **no VS 2022**; the
-working build is **VS 18 "Insiders"** (it resolves v143 to its own MSVC 14.44):
+TOOLCHAIN: the projects target PlatformToolset **v145** / VCProjectVersion **18.0**, so they **require
+VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. The build is **VS 18
+"Insiders"** (v145 → MSVC 14.51):
 - IDE:     `C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\IDE\devenv.exe`
 - MSBuild: `C:\Program Files\Microsoft Visual Studio\18\Insiders\MSBuild\Current\Bin\MSBuild.exe`
 
-VS 2019 BuildTools (only v142) is **insufficient** — don't build with it.
+VS 2019 BuildTools (v142) and VS 2022 (v143) are both **insufficient** for v145 — don't build with them.
 
 ## Layout
 ```
