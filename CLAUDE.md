@@ -55,7 +55,9 @@ P0 (skeleton) **built green** (0 warnings, CLI `0.0.1`, tests pass). P1 — lang
 **drafted, pending review**: `docs/lang/grammar.ebnf` (EBNF), `docs/lang/SPEC.md` (spec + C#/TS lowering
 tables + §3 mapping), and `docs/lang/samples/*.pg` (9 feature samples + `fruitcake_sketch.pg`, the
 north-star surface test modeled on the real MintPlayer.AI solver). **Next: review/lock P1, then P2 —
-front-end (trivia-bearing lexer + recursive-descent parser → AST).** See PLAN.md.
+the walking-skeleton MVP: a minimal subset taken end-to-end (lexer→parser→typer→IR→both C#/TS backends)
+so `polyglot build` emits running C# + TS and the differential conformance test stands up immediately.**
+See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

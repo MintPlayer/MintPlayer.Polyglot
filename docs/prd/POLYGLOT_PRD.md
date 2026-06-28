@@ -188,10 +188,13 @@ Full detail in [PLAN.md](PLAN.md). Summary:
 - **P0 — Solution skeleton.** ✅ `.sln` + Core lib + CLI (`--version`/`--help`) + test harness.
 - **P1 — Language design v0.1.** 🟡 *Drafted* (`docs/lang/`): grammar + spec doc + sample programs; the
   deliberately-small surface checked against the §3 contract. Pending review to lock.
-- **P2 — Front-end.** Lexer (trivia) + parser → AST.
-- **P3 — Semantics + IR.** Name resolution + minimal static type system; lower AST → typed tree IR.
-- **P4 — C# backend.** IR → hand-written C# pretty-printer; emit arithmetic/control-flow/functions.
-- **P5 — TypeScript backend.** IR → TS pretty-printer; golden + first differential tests.
+- **P2 — Walking skeleton (MVP).** ★ Thinnest end-to-end slice: a minimal subset through lexer→parser→
+  typer→IR→**both** hand-written backends; `polyglot build` emits running C# + TS; the **differential
+  conformance test** stands up here, not at P5. Front-loads the "one IR serves both targets" bet.
+- **P3 — Full front-end.** Widen lexer (trivia) + parser → AST to the whole grammar; all samples round-trip.
+- **P4 — Full semantics + IR.** Name resolution + the minimal static type system; lower full AST → typed IR.
+- **P5 — Backends to full §3.A.** Widen both C#/TS pretty-printers to the entire surface; golden baselines
+  both targets; the differential suite grows.
 - **P6 — Faithfulness pass.** int32 masking, the §3.C relaxations (documented), the §3.B refusals (with
   diagnostics).
 - **P7 — Std core + expect/actual.** Minimal portable std (math, basic collections) + the target-gated

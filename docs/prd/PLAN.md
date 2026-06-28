@@ -30,30 +30,39 @@ diverges between C# and TS (SPEC §4.2).
 *Gate (open — needs human review):* confirm the samples express real logic cleanly and the FruitCake
 sketch validates the surface, then lock v0.1 before P2.
 
-## P2 — Front-end (lexer + parser)
-Trivia-bearing lexer (keeps comments/whitespace for readable output later) → recursive-descent parser →
-AST with source positions on every node. Parser error recovery + good diagnostics.
+## P2 — Walking skeleton (MVP) ★ thinnest end-to-end slice
+Take a *minimal* language subset — `fn`, `i32`/`f64` + arithmetic, `let`/`var`, `if`/`while`, function
+calls, `print` — **all the way through** the pipeline: a minimal trivia-bearing lexer → recursive-descent
+parser → minimal typer → the single high-level typed tree IR (§4.2) → **hand-written C# *and* TS
+pretty-printers** (no Roslyn/ts-morph — §4.3). `polyglot build foo.pg` emits `foo.cs` + `foo.ts`. This
+front-loads the project's biggest architectural bet — that **one high-level IR serves both targets** — and
+stands up the crown-jewel **differential conformance test** on day one instead of at P5. Later milestones
+*widen* each pass from this baseline.
+*Gate:* a tiny `.pg` program emits C# that compiles under `dotnet` and TS that type-checks under `tsc`,
+both run, and a **differential conformance test asserts identical stdout** — green in CI.
+
+## P3 — Full front-end (lexer + parser)
+Widen the MVP's front-end to the entire P1 grammar. Trivia-bearing lexer (keeps comments/whitespace for
+readable output later) → recursive-descent parser → AST with source positions on every node; parser error
+recovery + good diagnostics.
 *Gate:* every P1 sample round-trips source → AST → re-printed source (a parser fidelity test); malformed
 input yields clear, positioned errors.
 
-## P3 — Semantic analysis + typed IR
-Name/scope resolution and a **minimal static type system** (enough for the §3.A surface: nominal types,
-generics, overload resolution, nullability). Lower the AST into the **single high-level typed tree IR**
-(§4.2), folding in desugaring. All diagnostics emitted here, on a near-source form.
+## P4 — Full semantics + typed IR
+Widen the MVP's minimal typer to the full **minimal static type system** (enough for the §3.A surface:
+nominal types, generics, overload resolution, nullability, pattern-match exhaustiveness) + name/scope
+resolution. Lower the full AST into the single high-level typed tree IR (§4.2), folding in desugaring. All
+diagnostics emitted here, on a near-source form.
 *Gate:* type errors are reported with positions; valid samples produce a typed IR dump that round-trips;
 overload/closure/generic resolution covered by unit tests.
 
-## P4 — C# backend
-Hand-written IR → C# pretty-printer (no Roslyn — §4.3). Emit idiomatic C# for functions, arithmetic,
-control flow, records/structs, enums, pattern matching, exceptions, `using`, iterators.
-*Gate:* P1 samples emit C# that compiles under `dotnet build` and produces the expected output; golden-
-output baselines checked in.
-
-## P5 — TypeScript backend
-Hand-written IR → TS pretty-printer. Same surface as P4. Stand up the **first differential test**: a
-sample emitted to both targets, run on both, results compared.
-*Gate:* P1 samples emit TS that type-checks under `tsc` and runs under Node with expected output; the
-first differential conformance test is green.
+## P5 — Backends to the full §3.A surface
+Widen both hand-written pretty-printers from the MVP subset to the **entire supported surface**: records,
+enums, unions + pattern matching, iterators, exceptions, `using`/disposal, extension methods, operators,
+properties/indexers, closures — idiomatic in each target. Golden-output baselines checked in for **both**
+targets; the differential conformance suite (stood up at P2) grows to cover the surface.
+*Gate:* P1 samples emit C# that compiles under `dotnet build` and TS that type-checks under `tsc` + runs
+under Node, both with expected output; golden baselines green; the differential suite passes.
 
 ## P6 — Faithfulness pass
 Implement the §3.C relaxations *as documented behaviour*: int32/uint masking (`|0`/`>>>0`/`Math.imul`),

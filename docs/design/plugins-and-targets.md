@@ -141,8 +141,9 @@ Illustrative only (shape TBD; the `.json` extension keeps editors' schema/valida
 
 ## 7. Sequencing — design for it now, build it incrementally
 
-- **P2–P5:** front-end + IR; then **C# and TS backends hand-written as native code in the core**. No DSL,
-  no plugin loading, no platform APIs yet. (You must see two real backends before designing the DSL.)
+- **P2 (MVP) → P5:** a walking-skeleton slice end-to-end first (P2), then widen front-end (P3), semantics+IR
+  (P4), and both backends (P5) — **C# and TS backends hand-written as native code in the core**. No DSL, no
+  plugin loading, no platform APIs yet. (You must see two real, complete backends before designing the DSL.)
 - **P7:** the portable std + the three §2 mechanisms (binding/replacement/capability) proven as first-party
   code against the two native backends.
 - **P8:** dogfood (FruitCake), still on native backends.
