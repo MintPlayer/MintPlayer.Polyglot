@@ -1,0 +1,38 @@
+// 02 — records, operator overloading, computed properties, structural
+//      equality, `with` copies.
+// Exercises §3.A: operators, properties, records (the immutable value kind).
+
+import std.io.{ print }
+import std.math.{ sqrt }
+
+record Vec2(x: f64, y: f64) {
+  // Operator overloads are fixed-named methods (SPEC §6.1): plus/minus/times.
+  operator fn plus(o: Vec2): Vec2  => Vec2(this.x + o.x, this.y + o.y)
+  operator fn minus(o: Vec2): Vec2 => Vec2(this.x - o.x, this.y - o.y)
+  operator fn times(s: f64): Vec2  => Vec2(this.x * s, this.y * s)
+
+  // Read-only computed properties.
+  let length: f64 => sqrt(this.x * this.x + this.y * this.y)
+
+  fn dot(o: Vec2): f64 => this.x * o.x + this.y * o.y
+}
+
+fn main() {
+  let a = Vec2(3.0, 4.0)
+  let b = Vec2(1.0, 2.0)
+
+  print((a + b).x)            // 4.0       (TS: a.plus(b).x)
+  print((a - b).y)            // 2.0
+  print((a * 2.0).x)          // 6.0
+  print(a.length)             // 5.0       computed property
+  print(a.dot(b))             // 11.0
+
+  // Structural equality — records compare by field (SPEC §4.2).
+  print(a == Vec2(3.0, 4.0))  // true
+  print(a == b)               // false
+
+  // `with` copy: same record, one field changed; original is untouched.
+  let c = a with { x = 0.0 }
+  print(c.x)                  // 0.0
+  print(a.x)                  // 3.0  (a is immutable)
+}

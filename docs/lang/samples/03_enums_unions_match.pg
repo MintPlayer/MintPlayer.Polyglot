@@ -1,0 +1,49 @@
+// 03 — enums (simple constants) and unions (ADTs) with exhaustive `match`.
+// Exercises §3.A: enums, pattern matching / discriminated unions, guards.
+
+import std.io.{ print }
+import std.math.{ PI }
+
+enum Direction { North, East, South, West }
+
+// Data-carrying variants -> a union, not an enum (SPEC §4.5).
+union Shape {
+  Circle(r: f64)
+  Rect(w: f64, h: f64)
+  Triangle(base: f64, height: f64)
+  Empty
+}
+
+// `match` is an expression; the compiler checks all union cases are covered.
+fn area(s: Shape): f64 => match s {
+  Circle(r)        => PI * r * r,
+  Rect(w, h)       => w * h,
+  Triangle(b, h)   => 0.5 * b * h,
+  Empty            => 0.0,
+}
+
+// Guards (`if`) and literal patterns.
+fn classify(n: i32): string => match n {
+  0            => "zero",
+  x if x < 0   => "negative",
+  1            => "one",
+  _            => "many",
+}
+
+fn turnRight(d: Direction): Direction => match d {
+  North => Direction.East,
+  East  => Direction.South,
+  South => Direction.West,
+  West  => Direction.North,
+}
+
+fn main() {
+  let shapes = [ Circle(2.0), Rect(3.0, 4.0), Triangle(6.0, 1.0), Empty ]
+  for s in shapes { print(area(s)) }   // 12.566… , 12.0 , 3.0 , 0.0
+
+  print(classify(-5))                   // negative
+  print(classify(1))                    // one
+  print(classify(99))                   // many
+
+  print(turnRight(Direction.North) == Direction.East)   // true
+}

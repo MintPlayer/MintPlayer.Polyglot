@@ -6,24 +6,29 @@ unhurried, and the §3 support/refuse contract in the PRD is the law every miles
 
 ---
 
-## P0 — Solution skeleton ✅ committed / ⚠ not yet built (2026-06-28)
+## P0 — Solution skeleton ✅ done (built green 2026-06-28)
 The Visual Studio solution and sources are committed: `MintPlayer.Polyglot.Core` (static lib),
 `MintPlayer.Polyglot.Cli` (the `polyglot` exe answering `--version`/`--help`, `build` stubbed), and
 `MintPlayer.Polyglot.Tests` (a tiny zero-dependency assert harness). C++20, x64 Debug/Release.
-**The `.sln`/`.vcxproj` files were hand-authored and have NOT been compiled** — no MSBuild/C++ toolchain
-was available in the authoring environment.
-*Gate (still open):* open in VS 2022 (Desktop development with C++) or run
-`msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64`, confirm it builds, then
-`x64\Debug\MintPlayer.Polyglot.Cli.exe --version` prints `0.0.1` and `...Tests.exe` reports all-pass.
-If VS needs to re-save the project files on first load, that's expected for hand-authored vcxproj.
+*Gate (closed):* the hand-authored `.sln`/`.vcxproj` build with **0 warnings / 0 errors** via the
+VS 18 "Insiders" MSBuild (no VS 2022 on this box; it resolves toolset v143 to MSVC 14.44 — see CLAUDE.md
+for the exact paths). `MintPlayer.Polyglot.Cli.exe --version` prints `0.0.1`; `...Tests.exe` reports
+all-pass.
 
-## P1 — Language design v0.1
+## P1 — Language design v0.1 🟡 drafted, pending review (2026-06-28)
 Design the source language on paper before any compiler code. Write a grammar (EBNF) + a short language
 spec + 5–10 sample `.pg` programs spanning the §3.A supported surface (a function, a struct/record, an
 enum + pattern match, a generic, an iterator, exception handling, a `using`). Deliberately exclude the
 §3.B refused features from the grammar entirely.
-*Gate:* a reviewed `docs/lang/SPEC.md` + sample programs that the team agrees express real logic cleanly;
-the FruitCake physics is sketched in `.pg` (not compiled) to validate the surface is sufficient.
+*Delivered:* `docs/lang/grammar.ebnf` (admits only §3.A; §3.B unspeakable), `docs/lang/SPEC.md` (spec with
+per-feature C#/TS lowering tables + the §3.C relaxation list + §3.B refusals), and `docs/lang/samples/` —
+9 focused samples (`01_functions` … `09_strings`) covering every §3.A feature + `fruitcake_sketch.pg`,
+the surface test modeled 1:1 on `MintPlayer.AI`'s `FruitCakeWorld.cs`. Key design call: only `class`
+(mutable, reference identity) and `record` (immutable, structural equality) — **mutable value types
+(`struct`) are refused for v0.1** because they are the one construct whose value/reference identity
+diverges between C# and TS (SPEC §4.2).
+*Gate (open — needs human review):* confirm the samples express real logic cleanly and the FruitCake
+sketch validates the surface, then lock v0.1 before P2.
 
 ## P2 — Front-end (lexer + parser)
 Trivia-bearing lexer (keeps comments/whitespace for readable output later) → recursive-descent parser →

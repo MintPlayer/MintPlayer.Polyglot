@@ -46,13 +46,16 @@ VS 2019 BuildTools (only v142) is **insufficient** — don't build with it.
 src/MintPlayer.Polyglot.Core/   # compiler library (lexer→parser→typed IR→backends); public headers in include/
 src/MintPlayer.Polyglot.Cli/    # the `polyglot` CLI
 tests/MintPlayer.Polyglot.Tests/# unit + (later) differential-conformance tests
-docs/prd/                       # PRD + plan   docs/lang/  # SPEC.md lands in P1
+docs/prd/                       # PRD + plan
+docs/lang/                      # SPEC.md + grammar.ebnf + samples/*.pg  (P1 design)
 ```
 
 ## Status & next step
-P0 (skeleton) committed and **built green** — solution compiles (0 warnings), CLI prints `0.0.1`, tests
-pass. **Next: P1 — language design v0.1** (grammar + `docs/lang/SPEC.md` +
-sample `.pg` programs, incl. a FruitCake-physics sketch to pressure-test the surface). See PLAN.md.
+P0 (skeleton) **built green** (0 warnings, CLI `0.0.1`, tests pass). P1 — language design v0.1 — is
+**drafted, pending review**: `docs/lang/grammar.ebnf` (EBNF), `docs/lang/SPEC.md` (spec + C#/TS lowering
+tables + §3 mapping), and `docs/lang/samples/*.pg` (9 feature samples + `fruitcake_sketch.pg`, the
+north-star surface test modeled on the real MintPlayer.AI solver). **Next: review/lock P1, then P2 —
+front-end (trivia-bearing lexer + recursive-descent parser → AST).** See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

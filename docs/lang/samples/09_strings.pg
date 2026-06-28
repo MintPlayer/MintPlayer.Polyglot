@@ -1,0 +1,34 @@
+// 09 — strings and chars: interpolation, escapes, UTF-16 / surrogate care,
+//      value equality.
+// Exercises §3.A: strings/char (both targets UTF-16, near 1:1).
+
+import std.io.{ print }
+
+// Count code POINTS, not code units — astral chars (e.g. emoji) are surrogate
+// pairs in UTF-16 on both targets (SPEC §8).
+fn codePointCount(s: string): i32 {
+  var count = 0
+  for cp in s.codePoints() { count += 1 }   // std exposes code-point iteration
+  return count
+}
+
+fn initials(first: string, last: string): string =>
+  "${first.charAt(0)}.${last.charAt(0)}."
+
+fn main() {
+  let name = "Ada"
+  let age = 36
+  // Interpolation -> C# $"…{}" / TS template literals.
+  print("‘${name}’ is ${age}, ${age * 2} doubled.\n")
+
+  let emoji = "🍰"                  // one code point, two UTF-16 units
+  print(emoji.length)               // 2   (code units — same on C# and TS)
+  print(codePointCount(emoji))      // 1   (code points)
+
+  let c: char = 'A'
+  print(c == 'A')                   // true  (char value equality)
+
+  // String value equality on both targets (C# ==, TS ===).
+  print(("ab" + "c") == "abc")      // true
+  print(initials("Grace", "Hopper"))// G.H.
+}

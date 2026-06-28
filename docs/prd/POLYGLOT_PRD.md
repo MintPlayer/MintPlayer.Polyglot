@@ -5,7 +5,8 @@
 > general-purpose "any language → any language" compiler (a multi-decade trap); it is **faithful-by-
 > default with a published relaxation list**, and it **refuses** the features that sink transpilers.
 
-- **Status:** Draft v1.0 · 2026-06-28 · v0 skeleton committed (solution + CLI + test harness).
+- **Status:** Draft v1.0 · 2026-06-28 · P0 skeleton built green; P1 language design v0.1 drafted
+  (`docs/lang/`: grammar.ebnf + SPEC.md + samples), pending review.
 - **Author:** Pieterjan (with Claude Code).
 - **Provenance:** distilled from a four-agent investigation into multi-target transpilers (Haxe, Kotlin
   Multiplatform, Fable, Scala.js, TypeScript, J2CL/GWT, JSIL, Bridge.NET). The investigation's
@@ -167,8 +168,8 @@ The investigation's headline cost. Polyglot bounds it deliberately:
 ## 6. Milestone roadmap
 Full detail in [PLAN.md](PLAN.md). Summary:
 - **P0 — Solution skeleton.** ✅ `.sln` + Core lib + CLI (`--version`/`--help`) + test harness.
-- **P1 — Language design v0.1.** Grammar + spec doc + sample programs; lock the deliberately-small surface
-  against the §3 contract.
+- **P1 — Language design v0.1.** 🟡 *Drafted* (`docs/lang/`): grammar + spec doc + sample programs; the
+  deliberately-small surface checked against the §3 contract. Pending review to lock.
 - **P2 — Front-end.** Lexer (trivia) + parser → AST.
 - **P3 — Semantics + IR.** Name resolution + minimal static type system; lower AST → typed tree IR.
 - **P4 — C# backend.** IR → hand-written C# pretty-printer; emit arithmetic/control-flow/functions.
