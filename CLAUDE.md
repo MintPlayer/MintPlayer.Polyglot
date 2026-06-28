@@ -34,6 +34,9 @@ msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
 x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.0.1
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
+**One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
+— or invoke the **`/build-and-test`** skill (`.claude/skills/build-and-test/`). Needs `dotnet` + `node`
+for the conformance stage.
 TOOLCHAIN: the projects target PlatformToolset **v145** / VCProjectVersion **18.0**, so they **require
 VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. The build is **VS 18
 "Insiders"** (v145 → MSVC 14.51):
