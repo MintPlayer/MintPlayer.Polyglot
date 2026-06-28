@@ -6,12 +6,16 @@ unhurried, and the §3 support/refuse contract in the PRD is the law every miles
 
 ---
 
-## P0 — Solution skeleton ✅ (2026-06-28)
-The Visual Studio solution exists and builds: `MintPlayer.Polyglot.Core` (static lib),
+## P0 — Solution skeleton ✅ committed / ⚠ not yet built (2026-06-28)
+The Visual Studio solution and sources are committed: `MintPlayer.Polyglot.Core` (static lib),
 `MintPlayer.Polyglot.Cli` (the `polyglot` exe answering `--version`/`--help`, `build` stubbed), and
 `MintPlayer.Polyglot.Tests` (a tiny zero-dependency assert harness). C++20, x64 Debug/Release.
-*Gate:* solution builds; `polyglot --version` prints; tests pass. *(Build verification pending first open
-in VS / MSBuild.)*
+**The `.sln`/`.vcxproj` files were hand-authored and have NOT been compiled** — no MSBuild/C++ toolchain
+was available in the authoring environment.
+*Gate (still open):* open in VS 2022 (Desktop development with C++) or run
+`msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64`, confirm it builds, then
+`x64\Debug\MintPlayer.Polyglot.Cli.exe --version` prints `0.0.1` and `...Tests.exe` reports all-pass.
+If VS needs to re-save the project files on first load, that's expected for hand-authored vcxproj.
 
 ## P1 — Language design v0.1
 Design the source language on paper before any compiler code. Write a grammar (EBNF) + a short language

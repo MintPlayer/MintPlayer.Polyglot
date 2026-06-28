@@ -11,8 +11,12 @@
   Multiplatform, Fable, Scala.js, TypeScript, J2CL/GWT, JSIL, Bridge.NET). The investigation's
   "what to support / what to refuse / how others die" findings *are* this document's spec (see §9 Sources).
 - **Motivating dogfood:** the MintPlayer.AI **FruitCake physics solver**, hand-maintained today as a C#
-  twin (`FruitCakeWorld.cs`) and a TS twin (`fruit-cake-physics.ts`). Generating both from one Polyglot
-  source — with a differential conformance test proving they agree — is the v1.0 north star (§6 P8).
+  twin and a TS twin. Generating both from one Polyglot source — with a differential conformance test
+  proving they agree — is the v1.0 north star (§6 P8). The twins live in the **sibling repo**
+  `C:\Repos\MintPlayer.AI`: C# at `src/MintPlayer.AI.ReinforcementLearning.Environments/FruitCake/FruitCakeWorld.cs`,
+  TS at `src/RLDemo.Web/ClientApp/src/app/fruit-cake/fruit-cake-physics.ts` (the two files declare each
+  other canonical mirrors). "M30" referenced below is that repo's milestone for shipping the hand-ported
+  client-side physics + conformance test (see its `docs/prd/FRUITCAKE_CLIENT_AI_PRD.md`).
 
 ---
 
