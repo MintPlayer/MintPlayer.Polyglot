@@ -82,23 +82,31 @@ per §3.D, tolerance/behavioural, not bit-exact).
 conformance suite. At this point Polyglot has *earned* the right to own that physics; the hand-ports can
 retire while the conformance test stays (now guarding the generator).
 
-## P9 — Plugin & target architecture (the endpoint of §4.4)
-Generalize the first-party backends + P7 mechanisms into the real **plugin system**: external plugin
-loading, the **workspace config** (declares target *environments* — desktop/web/mobile/… — and the plugins
-in use), **availability resolution** by target + environment (off-target use is a compile error, never a
-miscompile), **build-dependency threading** (a plugin declares the NuGet `PackageReference`s/SDK or npm deps
-its output needs, and the core emits a buildable project that includes them), and the **full-power plugin
-mechanism** decision for a C++ core (native ABI vs. embedded scripting/IR-DSL — ties into PRD §4.3).
-Backends (C#, TS, …) become plugins over this same API. Design, rationale, and open decisions:
-**[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)**.
-*Gate:* a third-party-style plugin (loaded from the workspace config, not compiled into the core) adds a
-target-scoped binding with a build dependency; a program using it emits a project that builds against that
-dependency, and using its symbols on the wrong target/environment is rejected with a clear diagnostic.
+## P9 — Declarative backend engine + DSL
+The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
+(P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type
+mapping, operator/keyword tables, naming/import rules, and the build-project scaffold. Build the core's
+**declarative emit engine** that interprets a spec, and **re-express C# and TS as declarative specs**.
+Critically, the DSL is extracted from working backends, never guessed (the §4.3 "design it twice"
+discipline applied to the format itself); a **local full-power plugin tier** covers what the DSL can't yet
+express. See **[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)** §4/§7.
+*Gate:* C#/TS emitted via the declarative specs match the native backends' golden output byte-for-byte.
 
-## Stretch (unordered, post-P9)
-- **More targets:** Python and/or C++ backends — each now a plugin (the IR is target-neutral by design).
+## P10 — Plugin distribution + ecosystem (the endpoint of §4.4)
+The downloadable, declarative plugin system: a **workspace config (`.pgconfig`)** declaring target
+*environments* (desktop/web/mobile/…) + plugins+versions; **download → shared cache → verify → lockfile**
+(declarative data only — no executable code fetched; integrity-pinned, zip-slip-safe); **availability
+resolution** by target + environment (off-target use is a compile error, never a miscompile); and
+**build-dependency threading** (a plugin declares the NuGet `PackageReference`s/SDK or npm deps its output
+needs; the core emits a buildable project including them). Trust model + open decisions in the design note.
+*Gate:* adding a **downloaded declarative Python backend** *and* a target-scoped binding plugin (e.g.
+WinForms, with its PackageReferences) requires **no core change** — only `.pgconfig` + downloads; a program
+using them emits a buildable project, and wrong-target/-environment use is rejected with a clear diagnostic.
+
+## Stretch (unordered, post-P10)
+- **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
 - **LSP:** build the frontend as a reusable library; make the CLI and a future language server thin clients.
 - **Binding auto-generation:** shape-only bindings from `.d.ts` / .NET metadata / WebIDL + hand overrides
-  (feeds the plugin ecosystem).
-- **Plugin registry & trust:** distribution/versioning + a sandboxing/trust story for full-power plugins.
+  (feeds the plugin ecosystem; produces declarative data at authoring time).
+- **Plugin registry & signing:** distribution/versioning infrastructure + signature trust for downloads.

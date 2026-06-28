@@ -136,6 +136,11 @@ from-scratch, zero-native-deps spirit of the sibling repos; the same path Haxe/N
 - **Alternative considered — C# + Roslyn host:** would let the C# backend reuse Roslyn's emitter and
   matches the house .NET stack, but adds a .NET runtime dependency to the tool and doesn't help the TS
   side. *Recorded as the main fork in the road; revisit only if hand-written emitters prove painful.*
+- **Reinforced by the plugin model (2026-06-28):** a self-contained native CLI means **plugin *users* need
+  no SDK/runtime** — a Roslyn host would force every consumer to install the .NET SDK merely to transpile.
+  This holds *because* downloaded plugins are **declarative data, not loadable code** (so the host needs no
+  managed plugin runtime); backends themselves are declarative specs the core interprets. See
+  [`../design/plugins-and-targets.md`](../design/plugins-and-targets.md).
 
 ### 4.4 Standard library & platform APIs — the bounded strategy
 The investigation's headline cost. Polyglot bounds it deliberately:
@@ -150,15 +155,18 @@ The investigation's headline cost. Polyglot bounds it deliberately:
   `.d.ts` / .NET metadata / WebIDL) but always need hand-written semantic overrides — so coverage grows
   on demand, never "complete."
 
-> **Refinement (2026-06-28) — the plugin architecture.** The above is now sharpened to its endpoint: the
-> **core is a pure translator** with *zero* target/platform/SDK knowledge, and **all** of it — bindings,
-> replacements, capability `actual`s, and even the **target backends themselves** — lives in **full-power,
-> installable plugins** that expose a public API to `.pg` code and declare the target build dependencies
-> (NuGet `PackageReference`s / SDK, npm deps, …) their output needs. A **workspace config** declares the
-> target *environments* (desktop/web/mobile/…) and the plugins in use; availability is resolved from it, and
-> using an off-target/-environment symbol is a compile error, never a miscompile. Faithfulness (§3.C) and
-> determinism (§3.D) guarantees apply to **core translation + the portable std**; plugin output is the
-> plugin author's contract. Full design, sequencing, and open decisions: **[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)**.
+> **Refinement (2026-06-28) — the plugin architecture.** The above is sharpened to its endpoint: the
+> **core is a pure translator + a declarative emit engine** with *zero* hardcoded target/platform/SDK
+> knowledge. **All** of it — bindings, replacements, capability `actual`s, and even the **target backends
+> themselves** — lives in **declarative plugins** the engine interprets (C#/TS bundled; Python and others
+> downloadable). Two tiers: **downloaded plugins are declarative data only** (safe to fetch, no host
+> runtime, versioned + integrity-verified), while **local plugins may be full-power** for what the
+> declarative DSL can't express. A **workspace config (`.pgconfig`)** declares the target *environments*
+> (desktop/web/mobile/…) and the plugins+versions in use; `pg` downloads them to a shared cache, and
+> off-target/-environment use is a compile error, never a miscompile. Faithfulness (§3.C) and determinism
+> (§3.D) apply to **core translation + portable std + bundled backend specs**; plugin output is the plugin
+> author's contract. Full design, sequencing, trust model, and open decisions:
+> **[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)**.
 
 ---
 
@@ -190,11 +198,14 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   binding mechanism + an FFI hatch.
 - **P8 — Dogfood FruitCake physics.** Express the circle-physics solver in `.pg`; generate `.cs` + `.ts`;
   wire the differential conformance test against the existing MintPlayer.AI twins. *North star.*
-- **P9 — Plugin & target architecture.** Generalize backends + the P7 mechanisms into the real plugin
-  system: external plugins, workspace config (targets + environments), availability resolution, build-
-  dependency threading. The endpoint of §4.4 — see [`../design/plugins-and-targets.md`](../design/plugins-and-targets.md).
-- **Stretch:** more targets (Python? C++?) as plugins, source maps, an LSP built on the frontend-as-library,
-  a plugin registry + trust story.
+- **P9 — Declarative backend engine + DSL.** Extract a declarative backend format from the two native
+  backends; re-express C#/TS as specs the core interprets (gate: byte-for-byte vs. native golden output).
+- **P10 — Plugin distribution + ecosystem.** `.pgconfig` + download/cache/verify/version; availability by
+  target+environment; build-dependency threading; the local full-power tier; proof = a **downloaded
+  declarative Python backend** + a binding plugin, with **no core change**. The endpoint of §4.4 — see
+  [`../design/plugins-and-targets.md`](../design/plugins-and-targets.md).
+- **Stretch:** further targets as downloadable backends, source maps, an LSP built on the frontend-as-
+  library, a plugin registry + signing/trust infrastructure.
 
 ---
 
