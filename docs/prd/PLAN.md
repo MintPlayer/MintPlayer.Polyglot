@@ -93,14 +93,14 @@ express. See **[`../design/plugins-and-targets.md`](../design/plugins-and-target
 *Gate:* C#/TS emitted via the declarative specs match the native backends' golden output byte-for-byte.
 
 ## P10 — Plugin distribution + ecosystem (the endpoint of §4.4)
-The downloadable, declarative plugin system: a **workspace config (`.pgconfig`)** declaring target
+The downloadable, declarative plugin system: a **workspace config (`pgconfig.json`)** declaring target
 *environments* (desktop/web/mobile/…) + plugins+versions; **download → shared cache → verify → lockfile**
 (declarative data only — no executable code fetched; integrity-pinned, zip-slip-safe); **availability
 resolution** by target + environment (off-target use is a compile error, never a miscompile); and
 **build-dependency threading** (a plugin declares the NuGet `PackageReference`s/SDK or npm deps its output
 needs; the core emits a buildable project including them). Trust model + open decisions in the design note.
 *Gate:* adding a **downloaded declarative Python backend** *and* a target-scoped binding plugin (e.g.
-WinForms, with its PackageReferences) requires **no core change** — only `.pgconfig` + downloads; a program
+WinForms, with its PackageReferences) requires **no core change** — only `pgconfig.json` + downloads; a program
 using them emits a buildable project, and wrong-target/-environment use is rejected with a clear diagnostic.
 
 ## Stretch (unordered, post-P10)

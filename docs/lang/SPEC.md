@@ -397,7 +397,7 @@ core grammar on purpose.
 
 Platform/SDK/environment APIs (`window`, `System.Windows.Forms`, …) are **not** in the core language at
 all: the core is a pure translator + a declarative emit engine, and all such APIs — plus the **target
-backends themselves** — arrive via **declarative plugins** named in a workspace config (`.pgconfig`) that
+backends themselves** — arrive via **declarative plugins** named in a workspace config (`pgconfig.json`) that
 also declares the target *environments* (desktop/web/mobile/…). Downloaded plugins are declarative data
 (safe, versioned); local plugins may be full-power. A `.pg` module that imports a plugin's public API is
 constrained to that plugin's targets/environments (off-target use is a compile error). See the design note

@@ -161,7 +161,7 @@ The investigation's headline cost. Polyglot bounds it deliberately:
 > themselves** — lives in **declarative plugins** the engine interprets (C#/TS bundled; Python and others
 > downloadable). Two tiers: **downloaded plugins are declarative data only** (safe to fetch, no host
 > runtime, versioned + integrity-verified), while **local plugins may be full-power** for what the
-> declarative DSL can't express. A **workspace config (`.pgconfig`)** declares the target *environments*
+> declarative DSL can't express. A **workspace config (`pgconfig.json`)** declares the target *environments*
 > (desktop/web/mobile/…) and the plugins+versions in use; `pg` downloads them to a shared cache, and
 > off-target/-environment use is a compile error, never a miscompile. Faithfulness (§3.C) and determinism
 > (§3.D) apply to **core translation + portable std + bundled backend specs**; plugin output is the plugin
@@ -200,7 +200,7 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   wire the differential conformance test against the existing MintPlayer.AI twins. *North star.*
 - **P9 — Declarative backend engine + DSL.** Extract a declarative backend format from the two native
   backends; re-express C#/TS as specs the core interprets (gate: byte-for-byte vs. native golden output).
-- **P10 — Plugin distribution + ecosystem.** `.pgconfig` + download/cache/verify/version; availability by
+- **P10 — Plugin distribution + ecosystem.** `pgconfig.json` + download/cache/verify/version; availability by
   target+environment; build-dependency threading; the local full-power tier; proof = a **downloaded
   declarative Python backend** + a binding plugin, with **no core change**. The endpoint of §4.4 — see
   [`../design/plugins-and-targets.md`](../design/plugins-and-targets.md).

@@ -45,7 +45,7 @@ expose their additions through a **public API** that `.pg` code imports and call
 The earlier "full power from the start" decision is **refined** in light of the safe-download goal:
 
 - **Downloaded plugins are declarative data only.** No arbitrary code runs anywhere in the toolchain when a
-  plugin is fetched or interpreted. This is what makes "read `.pgconfig`, download, transpile" safe (§6)
+  plugin is fetched or interpreted. This is what makes "read `pgconfig.json`, download, transpile" safe (§6)
   and what lets a self-contained C++ core interpret them with **no host runtime dependency** (§ PRD 4.3).
 - **Local plugins may be full-power.** A developer can author a *local, trusted* plugin for advanced cases
   the declarative DSL cannot express. Because it is local and trusted, the download-safety concern does not
@@ -101,7 +101,7 @@ portable std + the bundled C#/TS backend specs**. Beyond that:
 
 ## 6. Workspace config, download & the trust model
 
-`pg` reads a workspace config (`.pgconfig`, format TBD) from the cwd. It declares the **target
+`pg` reads a workspace config (`pgconfig.json`) from the cwd. It declares the **target
 environments** (desktop/web/mobile/…) and the **plugins + versions** in use. From it the CLI resolves and
 **downloads** the named plugins into a **shared cache**, then emits. **Availability** is resolved from the
 config: a plugin symbol is usable only when its plugin is installed **and** the active target matches
@@ -120,24 +120,23 @@ targets/environments, and the compiler can state "this module can only target {c
   **pinned in a lockfile**), strict version pinning, zip-slip-/path-traversal-safe extraction into the
   shared cache, bounded/validated parsing (no billion-laughs/zip-bomb), and no executable bits.
 
-Illustrative only (format TBD):
-```toml
-# .pgconfig — workspace config
-[workspace]
-name = "fruitcake"
-
-[targets.cs]
-backend      = "@polyglot/csharp@1.4.0"   # a declarative backend plugin (C# bundled, but pinned)
-environments = ["desktop"]
-
-[targets.py]
-backend      = "@polyglot/python@0.3.1"   # a DOWNLOADED declarative backend — adds Python, no core change
-environments = ["cli"]
-
-[plugins]
-"@polyglot/winforms" = "1.0.2"            # cs/desktop binding + build deps
-"@polyglot/web-dom"  = "1.1.0"            # ts/web binding
-# resolved + verified against .pgconfig.lock
+Illustrative only (shape TBD; the `.json` extension keeps editors' schema/validation happy):
+```jsonc
+// pgconfig.json — workspace config
+{
+  "workspace": "fruitcake",
+  "targets": {
+    "cs": { "backend": "@polyglot/csharp@1.4.0", "environments": ["desktop"] },
+    "py": { "backend": "@polyglot/python@0.3.1",  "environments": ["cli"] }
+  },
+  "plugins": {
+    "@polyglot/winforms": "1.0.2",   // cs/desktop binding + build deps
+    "@polyglot/web-dom":  "1.1.0"    // ts/web binding
+  }
+}
+// "@polyglot/csharp" is bundled but still pinned; "@polyglot/python" is a DOWNLOADED
+// declarative backend that adds Python with no core change. Resolved + verified
+// against pgconfig.lock.json.
 ```
 
 ## 7. Sequencing — design for it now, build it incrementally
@@ -150,7 +149,7 @@ environments = ["cli"]
 - **P9 — Declarative backend engine + DSL:** *extract* the declarative backend format from the two native
   backends; re-express C# and TS as declarative specs; build the emit engine. *Gate:* C#/TS emitted via
   declarative specs match the native backends' golden output byte-for-byte.
-- **P10 — Plugin distribution + ecosystem:** `.pgconfig` + download/cache/verify/version/lockfile;
+- **P10 — Plugin distribution + ecosystem:** `pgconfig.json` + download/cache/verify/version/lockfile;
   availability resolution by target+environment; build-dependency threading; the local full-power tier; and
   the proof — a **downloaded declarative Python backend** emits Python, and a downloaded binding plugin
   threads its PackageReferences. *Gate:* adding Python + a WinForms binding requires **no core change**,
@@ -167,8 +166,8 @@ environments = ["cli"]
    core*; could instead be a bundled `@polyglot/std`.
 4. ~~Trust/security~~ — **modeled in §6** (declarative-only downloads + integrity/pinning/safe-extraction +
    the honest output-trust caveat). A registry + signing infrastructure is a P10+ detail.
-5. **Config & lockfile format** — `.pgconfig` (TOML? JSON?) + lockfile; registry/version resolution. Defer
-   to P10.
+5. **Config & lockfile shape** — `pgconfig.json` + `pgconfig.lock.json` (filenames fixed; internal schema
+   + registry/version resolution still TBD). Defer to P10.
 
 ---
 
