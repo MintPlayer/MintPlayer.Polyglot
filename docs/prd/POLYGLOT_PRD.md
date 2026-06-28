@@ -150,6 +150,16 @@ The investigation's headline cost. Polyglot bounds it deliberately:
   `.d.ts` / .NET metadata / WebIDL) but always need hand-written semantic overrides — so coverage grows
   on demand, never "complete."
 
+> **Refinement (2026-06-28) — the plugin architecture.** The above is now sharpened to its endpoint: the
+> **core is a pure translator** with *zero* target/platform/SDK knowledge, and **all** of it — bindings,
+> replacements, capability `actual`s, and even the **target backends themselves** — lives in **full-power,
+> installable plugins** that expose a public API to `.pg` code and declare the target build dependencies
+> (NuGet `PackageReference`s / SDK, npm deps, …) their output needs. A **workspace config** declares the
+> target *environments* (desktop/web/mobile/…) and the plugins in use; availability is resolved from it, and
+> using an off-target/-environment symbol is a compile error, never a miscompile. Faithfulness (§3.C) and
+> determinism (§3.D) guarantees apply to **core translation + the portable std**; plugin output is the
+> plugin author's contract. Full design, sequencing, and open decisions: **[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)**.
+
 ---
 
 ## 5. Testing strategy
@@ -180,7 +190,11 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   binding mechanism + an FFI hatch.
 - **P8 — Dogfood FruitCake physics.** Express the circle-physics solver in `.pg`; generate `.cs` + `.ts`;
   wire the differential conformance test against the existing MintPlayer.AI twins. *North star.*
-- **Stretch:** more targets (Python? C++?), source maps, an LSP built on the frontend-as-library.
+- **P9 — Plugin & target architecture.** Generalize backends + the P7 mechanisms into the real plugin
+  system: external plugins, workspace config (targets + environments), availability resolution, build-
+  dependency threading. The endpoint of §4.4 — see [`../design/plugins-and-targets.md`](../design/plugins-and-targets.md).
+- **Stretch:** more targets (Python? C++?) as plugins, source maps, an LSP built on the frontend-as-library,
+  a plugin registry + trust story.
 
 ---
 

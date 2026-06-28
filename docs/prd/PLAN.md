@@ -62,10 +62,13 @@ normalization. Enforce the §3.B **refusals** with clear, actionable compiler er
 *Gate:* a numeric conformance suite passes within tolerance across both targets; every refused feature has
 a refusal test asserting the diagnostic; the relaxation list is written up in the spec.
 
-## P7 — Std core + expect/actual + FFI
+## P7 — Std core + expect/actual + FFI (the three plugin mechanisms, as first-party code)
 A minimal portable standard library in `.pg` (math, basic collections, iterators) compiled to both
 targets. The **target-gated `expect`/`actual`** mechanism (portable core forbidden from touching platform
-APIs; per-target `actual` impls) and an `extern`/inline-target **FFI hatch**.
+APIs; per-target `actual` impls) and an `extern`/inline-target **FFI hatch**. This is where the three
+mechanisms of the plugin architecture — *binding*, *replacement*, *capability* — are proven **as
+first-party code** behind a backend interface designed to become the plugin API (see the plugin design
+note, below).
 *Gate:* a program using a portable std API + one `expect`/`actual` capability (e.g. current time) builds
 and runs identically on both targets; the portable core cannot reference `document`/`System.*` (compiler-
 enforced, with a test proving the rejection).
@@ -79,8 +82,23 @@ per §3.D, tolerance/behavioural, not bit-exact).
 conformance suite. At this point Polyglot has *earned* the right to own that physics; the hand-ports can
 retire while the conformance test stays (now guarding the generator).
 
-## Stretch (unordered, post-P8)
-- **More targets:** Python and/or C++ backends (the IR is target-neutral by design).
+## P9 — Plugin & target architecture (the endpoint of §4.4)
+Generalize the first-party backends + P7 mechanisms into the real **plugin system**: external plugin
+loading, the **workspace config** (declares target *environments* — desktop/web/mobile/… — and the plugins
+in use), **availability resolution** by target + environment (off-target use is a compile error, never a
+miscompile), **build-dependency threading** (a plugin declares the NuGet `PackageReference`s/SDK or npm deps
+its output needs, and the core emits a buildable project that includes them), and the **full-power plugin
+mechanism** decision for a C++ core (native ABI vs. embedded scripting/IR-DSL — ties into PRD §4.3).
+Backends (C#, TS, …) become plugins over this same API. Design, rationale, and open decisions:
+**[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)**.
+*Gate:* a third-party-style plugin (loaded from the workspace config, not compiled into the core) adds a
+target-scoped binding with a build dependency; a program using it emits a project that builds against that
+dependency, and using its symbols on the wrong target/environment is rejected with a clear diagnostic.
+
+## Stretch (unordered, post-P9)
+- **More targets:** Python and/or C++ backends — each now a plugin (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
 - **LSP:** build the frontend as a reusable library; make the CLI and a future language server thin clients.
-- **Binding auto-generation:** shape-only bindings from `.d.ts` / .NET metadata / WebIDL + hand overrides.
+- **Binding auto-generation:** shape-only bindings from `.d.ts` / .NET metadata / WebIDL + hand overrides
+  (feeds the plugin ecosystem).
+- **Plugin registry & trust:** distribution/versioning + a sandboxing/trust story for full-power plugins.
