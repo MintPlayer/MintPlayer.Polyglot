@@ -15,7 +15,7 @@ VS 18 "Insiders" MSBuild (no VS 2022 on this box; it resolves toolset v143 to MS
 for the exact paths). `MintPlayer.Polyglot.Cli.exe --version` prints `0.0.1`; `...Tests.exe` reports
 all-pass.
 
-## P1 — Language design v0.1 🟡 drafted, pending review (2026-06-28)
+## P1 — Language design v0.1 ✅ locked (2026-06-28)
 Design the source language on paper before any compiler code. Write a grammar (EBNF) + a short language
 spec + 5–10 sample `.pg` programs spanning the §3.A supported surface (a function, a struct/record, an
 enum + pattern match, a generic, an iterator, exception handling, a `using`). Deliberately exclude the
@@ -27,19 +27,22 @@ the surface test modeled 1:1 on `MintPlayer.AI`'s `FruitCakeWorld.cs`. Key desig
 (mutable, reference identity) and `record` (immutable, structural equality) — **mutable value types
 (`struct`) are refused for v0.1** because they are the one construct whose value/reference identity
 diverges between C# and TS (SPEC §4.2).
-*Gate (open — needs human review):* confirm the samples express real logic cleanly and the FruitCake
-sketch validates the surface, then lock v0.1 before P2.
+*Gate (closed):* samples reviewed across the design sessions; v0.1 locked and used as the basis for the
+P2 MVP. (Semicolons clarified as an optional separator during P2 — grammar/SPEC updated to match.)
 
-## P2 — Walking skeleton (MVP) ★ thinnest end-to-end slice
-Take a *minimal* language subset — `fn`, `i32`/`f64` + arithmetic, `let`/`var`, `if`/`while`, function
-calls, `print` — **all the way through** the pipeline: a minimal trivia-bearing lexer → recursive-descent
-parser → minimal typer → the single high-level typed tree IR (§4.2) → **hand-written C# *and* TS
-pretty-printers** (no Roslyn/ts-morph — §4.3). `polyglot build foo.pg` emits `foo.cs` + `foo.ts`. This
-front-loads the project's biggest architectural bet — that **one high-level IR serves both targets** — and
-stands up the crown-jewel **differential conformance test** on day one instead of at P5. Later milestones
-*widen* each pass from this baseline.
-*Gate:* a tiny `.pg` program emits C# that compiles under `dotnet` and TS that type-checks under `tsc`,
-both run, and a **differential conformance test asserts identical stdout** — green in CI.
+## P2 — Walking skeleton (MVP) ✅ done (2026-06-28) ★ thinnest end-to-end slice
+Took a *minimal* language subset — `fn`, `i32`/`f64` + arithmetic, `let`/`var`, `if`/`while`, function
+calls, `print` — **all the way through** the pipeline: lexer → recursive-descent parser → typer (name
+resolution + types, annotated tree = the typed IR) → **hand-written C# *and* TS pretty-printers** (no
+Roslyn/ts-morph — §4.3). `polyglot build foo.pg` emits `foo.cs` + `foo.ts`. This front-loaded the
+project's biggest architectural bet — that **one high-level IR serves both targets** — and stood up the
+crown-jewel **differential conformance test** at P2 instead of P5. Later milestones *widen* each pass.
+*Delivered:* `src/MintPlayer.Polyglot.Core` (diagnostics/token/ast/lexer/parser/sema/emit_csharp/
+emit_typescript/compiler); `polyglot build` in the CLI; 20 in-process unit/golden tests; and
+`tests/conformance/` (`run-diff.ps1` + `programs/arithmetic.pg`).
+*Gate (closed):* `arithmetic.pg` → emitted C# compiles+runs under `dotnet` and TS runs under `node`
+(type-stripping), with **identical stdout** (`128 / 28 / 50`); `run-diff.ps1` is green. Semicolons are an
+optional separator (statements are newline-terminated) — grammar/SPEC aligned to the samples.
 
 ## P3 — Full front-end (lexer + parser)
 Widen the MVP's front-end to the entire P1 grammar. Trivia-bearing lexer (keeps comments/whitespace for

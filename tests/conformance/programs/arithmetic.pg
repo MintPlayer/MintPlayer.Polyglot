@@ -1,0 +1,23 @@
+// P2 differential conformance sample. Integer-only output so C# and JS stdout match exactly
+// (bool/float formatting diverges between Console.WriteLine and console.log — that's a P6 item).
+
+fn add(a: i32, b: i32): i32 {
+  return a + b
+}
+
+fn main() {
+  let x = 7
+  var sum = 0
+  var i = 1
+  while i <= x {
+    sum = sum + i
+    i = i + 1
+  }
+  print(add(sum, 100))          // 28 + 100 = 128
+  if sum > 20 {
+    print(sum)                  // 28
+  } else {
+    print(0)
+  }
+  print(add(2, 3) * (sum - 18)) // 5 * 10 = 50
+}

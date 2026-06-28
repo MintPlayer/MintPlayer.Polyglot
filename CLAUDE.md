@@ -51,13 +51,17 @@ docs/lang/                      # SPEC.md + grammar.ebnf + samples/*.pg  (P1 des
 ```
 
 ## Status & next step
-P0 (skeleton) **built green** (0 warnings, CLI `0.0.1`, tests pass). P1 — language design v0.1 — is
-**drafted, pending review**: `docs/lang/grammar.ebnf` (EBNF), `docs/lang/SPEC.md` (spec + C#/TS lowering
-tables + §3 mapping), and `docs/lang/samples/*.pg` (9 feature samples + `fruitcake_sketch.pg`, the
-north-star surface test modeled on the real MintPlayer.AI solver). **Next: review/lock P1, then P2 —
-the walking-skeleton MVP: a minimal subset taken end-to-end (lexer→parser→typer→IR→both C#/TS backends)
-so `polyglot build` emits running C# + TS and the differential conformance test stands up immediately.**
-See PLAN.md.
+P0 ✅ built. P1 ✅ language design v0.1 (`docs/lang/`: grammar.ebnf + SPEC.md + samples). **P2 ✅ done —
+the walking-skeleton MVP:** the full pipeline (lexer→parser→typer→typed tree→**C# + TS** emitters) for a
+minimal subset (`fn`, i32/f64 arithmetic, `let`/`var`, `if`/`while`, calls, `print`). `polyglot build
+foo.pg` emits `foo.cs` + `foo.ts`; both compile/run with **identical stdout** — the differential
+conformance gate (`tests/conformance/run-diff.ps1`) is green. 20 in-process tests pass.
+
+To verify: build (VS 18 Insiders MSBuild), then run `x64\Debug\MintPlayer.Polyglot.Tests.exe` and
+`pwsh tests/conformance/run-diff.ps1` (needs `dotnet` + `node` on PATH).
+
+**Next: P3 — widen the front-end** (full P1 grammar; trivia-bearing lexer; error recovery; all samples
+round-trip source→AST→source). Then P4 (full semantics+IR), P5 (backends→full §3.A). See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

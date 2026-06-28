@@ -1,4 +1,7 @@
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -6,18 +9,108 @@
 
 using namespace mintplayer::polyglot;
 
+namespace fs = std::filesystem;
+
 namespace {
 
 void printUsage() {
     std::cout
-        << "polyglot " << Compiler::version() << " - cross-SDK transpiler (skeleton)\n"
+        << "polyglot " << Compiler::version() << " - cross-SDK transpiler (P2 walking skeleton)\n"
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
-        << "  polyglot build <input.pg> --target <csharp|typescript> [--out <dir>]\n"
+        << "  polyglot build <input.pg> [--target <csharp|typescript>] [--out <dir>]\n"
         << "\n"
-        << "Status: v0 skeleton. The compiler pipeline is not implemented yet;\n"
-        << "see docs/prd/POLYGLOT_PRD.md for the roadmap.\n";
+        << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
+        << "         --out writes outputs to <dir> (default: alongside the input).\n";
+}
+
+// Read an entire file into a string. Returns false if it could not be opened.
+bool readFile(const fs::path& path, std::string& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+bool writeFile(const fs::path& path, const std::string& content) {
+    std::ofstream os(path, std::ios::binary);
+    if (!os) return false;
+    os << content;
+    return true;
+}
+
+void reportDiagnostics(const fs::path& input, const EmitResult& result) {
+    for (const auto& d : result.diagnostics) {
+        std::cerr << input.string() << ":" << d.pos.line << ":" << d.pos.col
+                  << ": error: " << d.message << "\n";
+    }
+}
+
+// Emit one target next to (or under --out of) the input, returning the written path or "" on failure.
+bool emitOne(const std::string& source, const fs::path& input, const fs::path& outDir,
+             Target target, const char* ext) {
+    EmitResult result = compile(source, target);
+    if (!result.ok) {
+        reportDiagnostics(input, result);
+        return false;
+    }
+    fs::path out = outDir / input.stem();
+    out += ext;
+    if (!writeFile(out, result.code)) {
+        std::cerr << "polyglot: cannot write '" << out.string() << "'\n";
+        return false;
+    }
+    std::cout << "  -> " << out.string() << "\n";
+    return true;
+}
+
+int runBuild(const std::vector<std::string>& args) {
+    fs::path input;
+    fs::path outDir;
+    std::string target; // empty => both
+
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (a == "--target" && i + 1 < args.size()) {
+            target = args[++i];
+        } else if (a == "--out" && i + 1 < args.size()) {
+            outDir = args[++i];
+        } else if (!a.empty() && a[0] == '-') {
+            std::cerr << "polyglot: unknown option '" << a << "'\n";
+            return 64;
+        } else if (input.empty()) {
+            input = a;
+        } else {
+            std::cerr << "polyglot: unexpected argument '" << a << "'\n";
+            return 64;
+        }
+    }
+
+    if (input.empty()) {
+        std::cerr << "polyglot: 'build' needs an input file\n";
+        return 64;
+    }
+    if (outDir.empty()) outDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
+
+    std::string source;
+    if (!readFile(input, source)) {
+        std::cerr << "polyglot: cannot open '" << input.string() << "'\n";
+        return 66; // EX_NOINPUT
+    }
+
+    std::cout << "polyglot build " << input.string() << "\n";
+
+    bool ok = true;
+    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs");
+    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, Target::TypeScript, ".ts");
+    if (!target.empty() && target != "csharp" && target != "typescript") {
+        std::cerr << "polyglot: unknown target '" << target << "' (expected csharp|typescript)\n";
+        return 64;
+    }
+    return ok ? 0 : 1;
 }
 
 } // namespace
@@ -34,8 +127,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (args[0] == "build") {
-        std::cerr << "polyglot: 'build' is not implemented yet (v0 skeleton). See docs/prd/PLAN.md (P2+).\n";
-        return 2;
+        return runBuild(args);
     }
 
     std::cerr << "polyglot: unknown command '" << args[0] << "'\n\n";

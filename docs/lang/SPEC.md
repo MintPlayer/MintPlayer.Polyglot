@@ -41,9 +41,10 @@ have gone another way, the rationale is stated so the alternative can be reconsi
 | String | `"…"`, `"hi ${name}!"` | interpolation with `${ expr }`; UTF-16 (§8) |
 | Null | `null` | only assignable to a nullable type `T?` (§4.3) |
 
-Statements are newline-friendly but **terminated by `;` where the grammar says so** (field/const/local
-declarations, `return`, expression statements). Blocks `{ }` need no trailing `;`. The lexer is
-trivia-bearing (it keeps comments and spacing) so backends can reproduce author intent in the output.
+Statements are **newline-terminated**; `;` is an **optional separator**, needed only to place several
+statements on one line (`a = 1; b = 2`). The sample programs omit it. Blocks `{ }` need no trailing `;`.
+The lexer is trivia-bearing (it keeps comments and spacing) so backends can reproduce author intent in
+the output.
 
 ---
 

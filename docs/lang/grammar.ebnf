@@ -193,8 +193,11 @@ type_list     = type , { "," , type } ;
 
 
 (* ---- 5. Statements ------------------------------------------------------- *)
+(* A statement is newline-terminated; ";" is an OPTIONAL separator, needed only to place several
+   statements on one line. Below, `term` = an optional ";" — it is never required. *)
 
 block = "{" , { statement } , "}" ;
+term  = [ ";" ] ;
 
 statement =
       local_decl
@@ -207,28 +210,28 @@ statement =
     | use_statement
     | try_statement
     | return_statement
-    | "break" , ";"
-    | "continue" , ";"
-    | "yield" , expression , ";"
+    | "break" , term
+    | "continue" , term
+    | "yield" , expression , term
     | block ;
 
 local_decl = ( "let" | "var" ) , pattern_binding , [ ":" , type ] ,
-             "=" , expression , ";" ;
+             "=" , expression , term ;
 pattern_binding = IDENT | tuple_binding ;
 tuple_binding   = "(" , pattern_binding , { "," , pattern_binding } , ")" ;
 
-assignment      = lvalue , assign_op , expression , ";" ;
+assignment      = lvalue , assign_op , expression , term ;
 assign_op       = "=" | "+=" | "-=" | "*=" | "/=" | "%="
                 | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>=" | "??=" ;
 lvalue          = postfix_expr ;   (* must resolve to a var / field / index   *)
 
-expr_statement  = expression , ";" ;
+expr_statement  = expression , term ;
 
 if_statement    = "if" , expression , block ,
                   { "else" , "if" , expression , block } ,
                   [ "else" , block ] ;
 while_statement = "while" , expression , block ;
-do_while_statement = "do" , block , "while" , expression , ";" ;
+do_while_statement = "do" , block , "while" , expression , term ;
 for_statement   = "for" , pattern_binding , "in" , expression , block ;
 
 use_statement   = "use" , IDENT , [ ":" , type ] , "=" , expression , block ;
@@ -237,7 +240,7 @@ try_statement   = "try" , block , { catch_clause } , [ "finally" , block ] ;
 catch_clause    = "catch" , "(" , IDENT , ":" , type , ")" ,
                   [ "when" , "(" , expression , ")" ] , block ;
 
-return_statement = "return" , [ expression ] , ";" ;
+return_statement = "return" , [ expression ] , term ;
 
 
 (* ---- 6. Expressions ------------------------------------------------------ *)

@@ -55,9 +55,22 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\mintplayer\polyglot\polyglot.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\diagnostics.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\token.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\ast.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\lexer.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\parser.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\sema.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\emit.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />
+    <ClCompile Include="src\lexer.cpp" />
+    <ClCompile Include="src\parser.cpp" />
+    <ClCompile Include="src\sema.cpp" />
+    <ClCompile Include="src\emit_csharp.cpp" />
+    <ClCompile Include="src\emit_typescript.cpp" />
+    <ClCompile Include="src\compiler.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
