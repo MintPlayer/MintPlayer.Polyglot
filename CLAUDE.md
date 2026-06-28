@@ -27,15 +27,19 @@ SharpKit, Bridge.NET) died of scope creep. Before adding any feature, check it a
 - Targets: **C# and TS first.** More targets are post-P8 stretch.
 
 ## Build / run (Windows)
-Open `MintPlayer.Polyglot.sln` in VS 2022 (*Desktop development with C++* workload), or from a Developer
-Command Prompt:
+Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C++* workload), or build
+from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
 x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.0.1
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
-NOTE: the hand-authored `.sln`/`.vcxproj` have **not been compiled yet** (P0 gate still open). VS may
-offer to re-save the project files on first load — that's expected.
+TOOLCHAIN: the projects target PlatformToolset **v143**. On this machine there is **no VS 2022**; the
+working build is **VS 18 "Insiders"** (it resolves v143 to its own MSVC 14.44):
+- IDE:     `C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\IDE\devenv.exe`
+- MSBuild: `C:\Program Files\Microsoft Visual Studio\18\Insiders\MSBuild\Current\Bin\MSBuild.exe`
+
+VS 2019 BuildTools (only v142) is **insufficient** — don't build with it.
 
 ## Layout
 ```
@@ -46,7 +50,8 @@ docs/prd/                       # PRD + plan   docs/lang/  # SPEC.md lands in P1
 ```
 
 ## Status & next step
-P0 (skeleton) committed but unbuilt. **Next: P1 — language design v0.1** (grammar + `docs/lang/SPEC.md` +
+P0 (skeleton) committed and **built green** — solution compiles (0 warnings), CLI prints `0.0.1`, tests
+pass. **Next: P1 — language design v0.1** (grammar + `docs/lang/SPEC.md` +
 sample `.pg` programs, incl. a FruitCake-physics sketch to pressure-test the surface). See PLAN.md.
 
 ## Sibling repo
