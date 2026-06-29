@@ -51,6 +51,7 @@ public:
 private:
     std::string out_;
     int indent_ = 0;
+    std::string thisAlias_; // non-empty inside a static operator body: `this` is emitted as this name
 
     void line(const std::string& s) {
         out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
@@ -59,9 +60,44 @@ private:
     }
 
     void emitRecord(const ir::Record& r) {
-        std::string s = "record " + r.name + "(";
-        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) s += ", "; s += csType(r.fields[i].type) + " " + r.fields[i].name; }
-        line(s + ");");
+        std::string head = "record " + r.name + "(";
+        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) head += ", "; head += csType(r.fields[i].type) + " " + r.fields[i].name; }
+        head += ")";
+        if (r.methods.empty()) { line(head + ";"); return; }
+        line(head);
+        line("{");
+        ++indent_;
+        for (const auto& m : r.methods) emitMethod(r.name, m);
+        --indent_;
+        line("}");
+    }
+
+    void emitMethod(const std::string& recordName, const ir::Method& m) {
+        if (m.kind == ir::MethodKind::Property) { // expression-bodied property
+            line("public " + csType(m.returnType) + " " + m.name + " => " + emitExpr(*m.exprBody) + ";");
+            return;
+        }
+        if (m.kind == ir::MethodKind::Operator) { // real C# static operator; `this` -> the first operand
+            std::string sig = "public static " + csType(m.returnType) + " operator " + m.opSymbol + "(" + recordName + " lhs";
+            for (const auto& p : m.params) sig += ", " + csType(p.type) + " " + p.name;
+            sig += ")";
+            thisAlias_ = "lhs";
+            if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
+            else { line(sig); emitBlock(m.body); }
+            thisAlias_.clear();
+            return;
+        }
+        std::string sig = "public " + csType(m.returnType) + " " + m.name + "(";
+        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csType(m.params[i].type) + " " + m.params[i].name; }
+        sig += ")";
+        if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
+        else { line(sig); emitBlock(m.body); }
+    }
+
+    // Parenthesize a receiver that would otherwise mis-bind against `.`/call.
+    std::string atom(const ir::Expr& e) {
+        std::string s = emitExpr(e);
+        return (e.kind == ir::ExprKind::Binary || e.kind == ir::ExprKind::Unary) ? "(" + s + ")" : s;
     }
 
     void emitFunction(const ir::Function& fn) {
@@ -154,6 +190,7 @@ private:
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
             case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
+            case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_;
             case ir::ExprKind::Unary: {
                 const auto& u = static_cast<const ir::Unary&>(e);
                 std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
@@ -173,7 +210,13 @@ private:
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
-                return emitExpr(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+                return atom(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+            }
+            case ir::ExprKind::MethodCall: {
+                const auto& mc = static_cast<const ir::MethodCall&>(e);
+                std::string s = atom(*mc.object) + "." + mc.method + "(";
+                for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
+                return s + ")";
             }
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);

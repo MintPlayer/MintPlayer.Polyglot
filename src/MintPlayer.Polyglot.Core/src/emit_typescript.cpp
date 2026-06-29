@@ -21,6 +21,28 @@ std::string tsType(const TypeRef& t) {
     return "unknown";
 }
 
+bool isScalarName(const std::string& n) {
+    return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" || n == "u32" ||
+           n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char" || n == "string" || n == "unit";
+}
+bool isUserType(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && !t.name.empty() && !isScalarName(t.name);
+}
+// Operator symbol -> overload method name (TS has no operator overloading; call the method instead).
+std::string opMethod(const std::string& op) {
+    if (op == "+") return "plus";
+    if (op == "-") return "minus";
+    if (op == "*") return "times";
+    if (op == "/") return "div";
+    if (op == "%") return "rem";
+    if (op == "==") return "eq";
+    if (op == "<") return "lt";
+    if (op == "<=") return "le";
+    if (op == ">") return "gt";
+    if (op == ">=") return "ge";
+    return "";
+}
+
 int prec(const std::string& op) {
     if (op == "||") return 1;
     if (op == "&&") return 2;
@@ -66,8 +88,38 @@ private:
         for (const auto& f : r.fields) line("this." + f.name + " = " + f.name + ";");
         --indent_;
         line("}");
+        for (const auto& m : r.methods) emitMethod(m);
         --indent_;
         line("}");
+    }
+
+    void emitMethod(const ir::Method& m) {
+        if (m.kind == ir::MethodKind::Property) { // read-only computed property -> getter
+            line("get " + m.name + "(): " + tsType(m.returnType) + " {");
+            ++indent_;
+            line("return " + emitExpr(*m.exprBody) + ";");
+            --indent_;
+            line("}");
+            return;
+        }
+        // method and operator both become regular methods (a + b calls a.plus(b) at the use site)
+        std::string sig = m.name + "(";
+        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += m.params[i].name + ": " + tsType(m.params[i].type); }
+        sig += "): " + tsType(m.returnType) + " {";
+        line(sig);
+        ++indent_;
+        if (m.exprBodied) line("return " + emitExpr(*m.exprBody) + ";");
+        else for (const auto& s : m.body) emitStmt(*s);
+        --indent_;
+        line("}");
+    }
+
+    std::string atom(const ir::Expr& e) {
+        std::string s = emitExpr(e);
+        if (e.kind == ir::ExprKind::Unary) return "(" + s + ")";
+        // a scalar binary needs parens as a receiver; a user-type binary emits a (high-binding) method call
+        if (e.kind == ir::ExprKind::Binary && !isUserType(static_cast<const ir::Binary&>(e).lhs->type)) return "(" + s + ")";
+        return s;
     }
 
     void emitFunction(const ir::Function& fn) {
@@ -159,6 +211,7 @@ private:
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
             case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
+            case ir::ExprKind::This:  return "this";
             case ir::ExprKind::Unary: {
                 const auto& u = static_cast<const ir::Unary&>(e);
                 std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
@@ -167,6 +220,10 @@ private:
             }
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
+                if (isUserType(b.lhs->type)) { // operator overload -> method call (TS has no operators)
+                    std::string method = opMethod(b.op);
+                    if (!method.empty()) return atom(*b.lhs) + "." + method + "(" + emitExpr(*b.rhs) + ")";
+                }
                 int p = prec(b.op);
                 return child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
             }
@@ -178,7 +235,13 @@ private:
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
-                return emitExpr(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+                return atom(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+            }
+            case ir::ExprKind::MethodCall: {
+                const auto& mc = static_cast<const ir::MethodCall&>(e);
+                std::string s = atom(*mc.object) + "." + mc.method + "(";
+                for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
+                return s + ")";
             }
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);

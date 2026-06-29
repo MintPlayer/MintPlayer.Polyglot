@@ -1,0 +1,17 @@
+// P5 differential conformance: a record with an operator, a method, and a computed property.
+// `a + b` emits a real `operator +` in C# and `a.plus(b)` in TS — same runtime result.
+
+record Vec2(x: i32, y: i32) {
+  operator fn plus(o: Vec2): Vec2 => Vec2(this.x + o.x, this.y + o.y)
+  fn dot(o: Vec2): i32 => this.x * o.x + this.y * o.y
+  let mag2: i32 => this.x * this.x + this.y * this.y
+}
+
+fn main() {
+  let a = Vec2(1, 2)
+  let b = Vec2(3, 4)
+  print((a + b).x)        // 4
+  print((a + b).y)        // 6
+  print(a.dot(b))         // 1*3 + 2*4 = 11
+  print(a.mag2)           // 1 + 4 = 5
+}

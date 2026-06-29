@@ -20,6 +20,9 @@ public:
             ir::Record rec;
             rec.name = r.name;
             for (const auto& f : r.fields) rec.fields.push_back({f.name, f.type});
+            for (const auto& mem : r.members)
+                if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property)
+                    rec.methods.push_back(method(mem));
             m.records.push_back(std::move(rec));
         }
         for (const auto& fn : unit.functions) {
@@ -37,6 +40,40 @@ public:
 private:
     std::unordered_set<std::string> typeNames_;
 
+    static std::string operatorSymbol(const std::string& method) {
+        if (method == "plus") return "+";
+        if (method == "minus") return "-";
+        if (method == "times") return "*";
+        if (method == "div") return "/";
+        if (method == "rem") return "%";
+        if (method == "eq") return "==";
+        if (method == "lt") return "<";
+        if (method == "le") return "<=";
+        if (method == "gt") return ">";
+        if (method == "ge") return ">=";
+        if (method == "neg") return "-"; // unary
+        return method;
+    }
+
+    ir::Method method(const Member& m) {
+        ir::Method im;
+        im.name = m.name;
+        if (m.kind == MemberKind::Property) {
+            im.kind = ir::MethodKind::Property;
+            im.returnType = m.type;
+            im.exprBodied = true;
+            if (m.init) im.exprBody = expr(*m.init);
+            return im;
+        }
+        im.kind = (m.kind == MemberKind::Operator) ? ir::MethodKind::Operator : ir::MethodKind::Method;
+        if (m.kind == MemberKind::Operator) im.opSymbol = operatorSymbol(m.name);
+        im.returnType = m.returnType;
+        for (const auto& p : m.params) im.params.push_back({p.name, p.type});
+        if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
+        else { im.exprBodied = false; im.body = block(m.body); }
+        return im;
+    }
+
     ir::ExprPtr expr(const Expr& e) {
         switch (e.kind) {
             case ExprKind::IntLit:    return std::make_unique<ir::IntLit>(e.pos, e.type, e.text);
@@ -44,10 +81,16 @@ private:
             case ExprKind::BoolLit:   return std::make_unique<ir::BoolLit>(e.pos, e.type, e.boolVal);
             case ExprKind::StringLit: return std::make_unique<ir::StrLit>(e.pos, e.type, e.text);
             case ExprKind::Name:      return std::make_unique<ir::Var>(e.pos, e.type, e.text);
+            case ExprKind::This:      return std::make_unique<ir::This>(e.pos, e.type);
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member:    return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
             case ExprKind::Call: {
+                if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
+                    auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);
+                    for (const auto& a : e.args) mc->args.push_back(expr(*a));
+                    return mc;
+                }
                 std::string callee = (e.lhs && e.lhs->kind == ExprKind::Name) ? e.lhs->text : "";
                 if (!callee.empty() && typeNames_.count(callee)) { // construction
                     auto n = std::make_unique<ir::New>(e.pos, e.type, callee);

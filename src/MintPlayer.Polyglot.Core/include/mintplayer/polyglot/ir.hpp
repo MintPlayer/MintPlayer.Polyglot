@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Var, Unary, Binary, Call, Member, New };
+enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New };
 
 struct Expr {
     ExprKind kind;
@@ -54,6 +54,9 @@ struct Var : Expr { // reference to a local or parameter
     std::string name;
     Var(SourcePos p, Type t, std::string n) : Expr(ExprKind::Var, p, std::move(t)), name(std::move(n)) {}
 };
+struct This : Expr {
+    explicit This(SourcePos p, Type t) : Expr(ExprKind::This, p, std::move(t)) {}
+};
 struct Unary : Expr {
     std::string op;
     ExprPtr operand;
@@ -71,7 +74,14 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     std::vector<ExprPtr> args;
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
 };
-struct Member : Expr { // field access `object.field`
+struct MethodCall : Expr { // `object.method(args)`
+    ExprPtr object;
+    std::string method;
+    std::vector<ExprPtr> args;
+    MethodCall(SourcePos p, Type t, ExprPtr o, std::string m)
+        : Expr(ExprKind::MethodCall, p, std::move(t)), object(std::move(o)), method(std::move(m)) {}
+};
+struct Member : Expr { // field / property access `object.field`
     ExprPtr object;
     std::string field;
     bool nullSafe = false;
@@ -147,9 +157,21 @@ struct RecordField {
     std::string name;
     Type type;
 };
-struct Record { // an immutable data type (record) — P5 lowers fields; methods/operators widen later
+enum class MethodKind { Method, Operator, Property };
+struct Method {
+    MethodKind kind = MethodKind::Method;
+    std::string name;             // method/property name; operator method name (e.g. "plus")
+    std::string opSymbol;         // Operator: the source symbol ("+", "-", ...); else empty
+    std::vector<Param> params;
+    Type returnType;
+    bool exprBodied = false;      // `=> expr` vs block
+    ExprPtr exprBody;
+    std::vector<StmtPtr> body;
+};
+struct Record { // an immutable data type (record)
     std::string name;
     std::vector<RecordField> fields;
+    std::vector<Method> methods;
 };
 struct Module {
     std::vector<Record> records;

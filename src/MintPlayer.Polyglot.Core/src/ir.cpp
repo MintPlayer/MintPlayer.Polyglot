@@ -116,6 +116,14 @@ private:
             case ExprKind::Bool:  repr = static_cast<const BoolLit&>(e).value ? "true" : "false"; break;
             case ExprKind::Str:   repr = "\"" + static_cast<const StrLit&>(e).value + "\""; break;
             case ExprKind::Var:   repr = static_cast<const Var&>(e).name; break;
+            case ExprKind::This:  repr = "this"; break;
+            case ExprKind::MethodCall: {
+                const auto& mc = static_cast<const MethodCall&>(e);
+                repr = expr(*mc.object) + "." + mc.method + "(";
+                for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) repr += ", "; repr += expr(*mc.args[i]); }
+                repr += ")";
+                break;
+            }
             case ExprKind::Unary: { const auto& u = static_cast<const Unary&>(e); repr = u.op + expr(*u.operand); break; }
             case ExprKind::Binary: {
                 const auto& b = static_cast<const Binary&>(e);
