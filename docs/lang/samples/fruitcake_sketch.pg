@@ -1,30 +1,36 @@
 // ============================================================================
 // fruitcake_sketch.pg — NORTH-STAR SURFACE TEST (PRD §6 P8, PLAN P1 gate)
 // ----------------------------------------------------------------------------
-// A hand-written .pg sketch of the MintPlayer.AI FruitCake physics solver
+// A hand-written .pg port of the MintPlayer.AI FruitCake physics solver
 // (C:\Repos\MintPlayer.AI\...\FruitCake\FruitCakeWorld.cs — the canonical C#
-// twin of fruit-cake-physics.ts). NOT compiled — its job is to prove the v0.1
-// surface can express a real program cleanly. If something here reads worse
-// than the hand-port, the LANGUAGE is wrong and gets fixed before any compiler.
+// twin of fruit-cake-physics.ts). Its job is to prove the v0.1 surface can
+// express a real program cleanly AND to be the P8 differential conformance
+// program: `main` drives a scripted drop and prints integers (body count +
+// score), so the generated C# and TS produce byte-identical stdout.
+//
+// FLOATS ARE f64 BY DESIGN. JS has only a 64-bit number, so the only float
+// width that is bit-exact across .NET and JS is f64 — and only for + − × ÷ √
+// (PRD §3.D). This solver uses exactly those ops (no transcendentals), so the
+// two emitted twins agree to the bit. (The hand-written C# twin uses `float`
+// and the TS twin uses `number`; those two are NOT bit-identical with each
+// other — Polyglot's single-source port is the stronger guarantee.)
 //
 // Surface exercised: mutable `class` (reference identity), immutable `record`
 // (the Contact value-carrier), generics (List<T>, tuples), nullability
 // (FruitBody? walls, ?., ??, !), tuple types + destructuring, lambdas, ranges,
-// computed properties, std math. Uses only + - * / sqrt — so it is determinism-
-// eligible per PRD §3.D (the real conformance test gates on tolerance anyway).
+// computed properties, std math (Math.sqrt/min/max/PI), default parameters,
+// and a class's own static/const members referenced unqualified.
 // ============================================================================
 
-import std.io.{ print }
 import std.collections.{ List }
-import std.math.{ sqrt, min, max, PI }
 
 // ── Fruit catalog (inlined stub; the real one is FruitCatalog.cs) ───────────
-record FruitDef(radiusPx: f32, mergePoints: i32)
+record FruitDef(radiusPx: f64, mergePoints: i32)
 
 // Tier -> definition. Tier N merges into tier N+1; the top tier vanishes.
 let Catalog: List<FruitDef> = [
-  FruitDef(16f, 1),  FruitDef(22f, 3),  FruitDef(30f, 6),
-  FruitDef(40f, 10), FruitDef(54f, 15), FruitDef(72f, 21),
+  FruitDef(16.0, 1),  FruitDef(22.0, 3),  FruitDef(30.0, 6),
+  FruitDef(40.0, 10), FruitDef(54.0, 15), FruitDef(72.0, 21),
 ]
 
 fn byTier(tier: i32): FruitDef => Catalog[tier]
@@ -32,44 +38,44 @@ fn mergeResultTier(tier: i32): i32? => if tier + 1 < Catalog.count { tier + 1 } 
 
 // ── A fruit body: mutable, reference identity -> a `class` (SPEC §4.2) ──────
 class FruitBody {
-  var x: f32;  var y: f32
-  var vx: f32; var vy: f32
-  var angle: f32; var angularVel: f32
-  var r: f32
+  var x: f64;  var y: f64
+  var vx: f64; var vy: f64
+  var angle: f64; var angularVel: f64
+  var r: f64
   var tier: i32
-  var invMass: f32; var invI: f32
+  var invMass: f64; var invI: f64
   var pendingMerge: bool
   var removed: bool
 
-  init(x: f32, y: f32, r: f32, tier: i32, invMass: f32, invI: f32) {
+  init(x: f64, y: f64, r: f64, tier: i32, invMass: f64, invI: f64) {
     this.x = x; this.y = y; this.r = r; this.tier = tier
     this.invMass = invMass; this.invI = invI
-    this.vx = 0f; this.vy = 0f; this.angle = 0f; this.angularVel = 0f
+    this.vx = 0.0; this.vy = 0.0; this.angle = 0.0; this.angularVel = 0.0
     this.pendingMerge = false; this.removed = false
   }
 
-  let speed: f32 => sqrt(this.vx * this.vx + this.vy * this.vy)   // computed property
+  let speed: f64 => Math.sqrt(this.vx * this.vx + this.vy * this.vy)   // computed property
 }
 
 // ── A contact: a transient immutable value -> a `record` (structural) ───────
 // `b == null` means a static wall (the lever arms/impulse fall out to 0).
-record Contact(a: FruitBody, b: FruitBody?, nx: f32, ny: f32, pen: f32)
+record Contact(a: FruitBody, b: FruitBody?, nx: f64, ny: f64, pen: f64)
 
 // ── The world ──────────────────────────────────────────────────────────────
 class FruitCakeWorld {
-  const Width: f32 = 620f
-  const Height: f32 = 850f
+  const Width: f64 = 620.0
+  const Height: f64 = 850.0
 
-  const PixelsPerMeter: f32 = 64f
-  const Gravity: f32 = 9.8f * 64f          // px/s², +Y down
-  const Restitution: f32 = 0.1f
-  const Friction: f32 = 0.3f
-  const RestitutionThresholdPx: f32 = 64f
+  const PixelsPerMeter: f64 = 64.0
+  const Gravity: f64 = 9.8 * 64.0          // px/s², +Y down
+  const Restitution: f64 = 0.1
+  const Friction: f64 = 0.3
+  const RestitutionThresholdPx: f64 = 64.0
   const VelocityIterations: i32 = 12
   const PositionIterations: i32 = 4
-  const Slop: f32 = 0.5f
-  const CorrectionPercent: f32 = 0.8f
-  const AngularDamping: f32 = 0.995f
+  const Slop: f64 = 0.5
+  const CorrectionPercent: f64 = 0.8
+  const AngularDamping: f64 = 0.995
 
   let rotation: bool
   var bodies: List<FruitBody> = List<FruitBody>()
@@ -80,12 +86,12 @@ class FruitCakeWorld {
 
   let count: i32 => this.bodies.count
 
-  fn spawnFruit(tier: i32, xPx: f32, yPx: f32): FruitBody {
+  fn spawnFruit(tier: i32, xPx: f64, yPx: f64): FruitBody {
     let def = byTier(tier)
     let r = def.radiusPx
-    let mass = PI * r * r                   // uniform density => area-proportional mass
-    let inertia = 0.5f * mass * r * r       // solid disc: I = ½·m·r²
-    let body = FruitBody(xPx, yPx, r, tier, 1f / mass, if this.rotation { 1f / inertia } else { 0f })
+    let mass = Math.PI * r * r              // uniform density => area-proportional mass
+    let inertia = 0.5 * mass * r * r        // solid disc: I = ½·m·r²
+    let body = FruitBody(xPx, yPx, r, tier, 1.0 / mass, if this.rotation { 1.0 / inertia } else { 0.0 })
     this.bodies.add(body)
     return body
   }
@@ -93,7 +99,7 @@ class FruitCakeWorld {
   fn clear() { this.bodies.clear(); this.mergeQueue.clear() }
 
   // Advance one fixed sub-step; returns the merge points scored this sub-step.
-  fn step(dt: f32): i32 {
+  fn step(dt: f64): i32 {
     for b in this.bodies { b.vy += Gravity * dt }
 
     this.buildContacts(true)
@@ -118,14 +124,14 @@ class FruitCakeWorld {
     return this.flushMerges()
   }
 
-  fn maxSpeed(): f32 {
-    var m = 0f
-    for b in this.bodies { m = max(m, b.speed) }
+  fn maxSpeed(): f64 {
+    var m = 0.0
+    for b in this.bodies { m = Math.max(m, b.speed) }
     return m
   }
 
   // Settle the pile after a drop (pure compute, no wall-clock). Returns points.
-  fn settleAfterDrop(settleSpeedPx: f32, minSubsteps: i32, maxSubsteps: i32, dt: f32 = 1f / 60f): i32 {
+  fn settleAfterDrop(settleSpeedPx: f64, minSubsteps: i32, maxSubsteps: i32, dt: f64 = 1.0 / 60.0): i32 {
     var points = 0
     for sub in 0..maxSubsteps {
       let gained = this.step(dt)
@@ -143,11 +149,11 @@ class FruitCakeWorld {
     for b in this.bodies {
       // Walls: left (x=0), right (x=W), floor (y=H). No ceiling.
       let left = b.r - b.x
-      if left > 0f { this.contacts.add(Contact(b, null, -1f, 0f, left)) }
+      if left > 0.0 { this.contacts.add(Contact(b, null, -1.0, 0.0, left)) }
       let right = b.x + b.r - Width
-      if right > 0f { this.contacts.add(Contact(b, null, 1f, 0f, right)) }
+      if right > 0.0 { this.contacts.add(Contact(b, null, 1.0, 0.0, right)) }
       let floor = b.y + b.r - Height
-      if floor > 0f { this.contacts.add(Contact(b, null, 0f, 1f, floor)) }
+      if floor > 0.0 { this.contacts.add(Contact(b, null, 0.0, 1.0, floor)) }
     }
 
     for i in 0..this.bodies.count {
@@ -159,8 +165,8 @@ class FruitCakeWorld {
         let rsum = a.r + b.r
         let d2 = dx * dx + dy * dy
         if d2 >= rsum * rsum { continue }
-        var d = sqrt(d2)
-        if d == 0f { d = 0.0001f }
+        var d = Math.sqrt(d2)
+        if d == 0.0 { d = 0.0001 }
 
         if detect && a.tier == b.tier && !a.pendingMerge && !b.pendingMerge {
           a.pendingMerge = true
@@ -178,52 +184,52 @@ class FruitCakeWorld {
     let a = c.a
     let b = c.b                            // FruitBody? — null for a wall
     let nx = c.nx; let ny = c.ny
-    let invMa = a.invMass; let invMb = b?.invMass ?? 0f
-    let invIa = a.invI;    let invIb = b?.invI ?? 0f
-    if invMa + invMb == 0f { return }
+    let invMa = a.invMass; let invMb = b?.invMass ?? 0.0
+    let invIa = a.invI;    let invIb = b?.invI ?? 0.0
+    if invMa + invMb == 0.0 { return }
 
     // Lever arms from each center to the contact point.
     let rax = a.r * nx; let ray = a.r * ny
-    let rbx = if b == null { 0f } else { -b!.r * nx }
-    let rby = if b == null { 0f } else { -b!.r * ny }
+    let rbx = if b == null { 0.0 } else { -b!.r * nx }
+    let rby = if b == null { 0.0 } else { -b!.r * ny }
 
     // Relative velocity at the contact point: v + ω × r.
-    let wa = a.angularVel; let wb = b?.angularVel ?? 0f
-    var rvx = (if b == null { 0f } else { b!.vx - wb * rby }) - (a.vx - wa * ray)
-    var rvy = (if b == null { 0f } else { b!.vy + wb * rbx }) - (a.vy + wa * rax)
+    let wa = a.angularVel; let wb = b?.angularVel ?? 0.0
+    var rvx = (if b == null { 0.0 } else { b!.vx - wb * rby }) - (a.vx - wa * ray)
+    var rvy = (if b == null { 0.0 } else { b!.vy + wb * rbx }) - (a.vy + wa * rax)
 
     let relN = rvx * nx + rvy * ny
-    if relN > 0f { return }                // separating
+    if relN > 0.0 { return }                // separating
 
-    let e = if relN < -RestitutionThresholdPx { Restitution } else { 0f }
+    let e = if relN < -RestitutionThresholdPx { Restitution } else { 0.0 }
     let rnA = rax * ny - ray * nx
     let rnB = rbx * ny - rby * nx
     let kn = invMa + invMb + invIa * rnA * rnA + invIb * rnB * rnB
-    if kn <= 0f { return }
-    let jn = -(1f + e) * relN / kn
+    if kn <= 0.0 { return }
+    let jn = -(1.0 + e) * relN / kn
     applyImpulse(a, b, rax, ray, rbx, rby, jn * nx, jn * ny)
 
     // Recompute, then Coulomb friction along the tangent.
-    let wa2 = a.angularVel; let wb2 = b?.angularVel ?? 0f
-    rvx = (if b == null { 0f } else { b!.vx - wb2 * rby }) - (a.vx - wa2 * ray)
-    rvy = (if b == null { 0f } else { b!.vy + wb2 * rbx }) - (a.vy + wa2 * rax)
+    let wa2 = a.angularVel; let wb2 = b?.angularVel ?? 0.0
+    rvx = (if b == null { 0.0 } else { b!.vx - wb2 * rby }) - (a.vx - wa2 * ray)
+    rvy = (if b == null { 0.0 } else { b!.vy + wb2 * rbx }) - (a.vy + wa2 * rax)
     let rvn = rvx * nx + rvy * ny
     var tx = rvx - rvn * nx
     var ty = rvy - rvn * ny
-    let tlen = sqrt(tx * tx + ty * ty)
-    if tlen < 0.000001f { return }
+    let tlen = Math.sqrt(tx * tx + ty * ty)
+    if tlen < 0.000001 { return }
     tx /= tlen; ty /= tlen
     let rtA = rax * ty - ray * tx
     let rtB = rbx * ty - rby * tx
     let kt = invMa + invMb + invIa * rtA * rtA + invIb * rtB * rtB
-    if kt <= 0f { return }
+    if kt <= 0.0 { return }
     var jt = -(rvx * tx + rvy * ty) / kt
     let maxJt = Friction * jn
-    jt = min(maxJt, max(-maxJt, jt))
+    jt = Math.min(maxJt, Math.max(-maxJt, jt))
     applyImpulse(a, b, rax, ray, rbx, rby, jt * tx, jt * ty)
   }
 
-  static fn applyImpulse(a: FruitBody, b: FruitBody?, rax: f32, ray: f32, rbx: f32, rby: f32, jx: f32, jy: f32) {
+  static fn applyImpulse(a: FruitBody, b: FruitBody?, rax: f64, ray: f64, rbx: f64, rby: f64, jx: f64, jy: f64) {
     a.vx -= a.invMass * jx
     a.vy -= a.invMass * jy
     a.angularVel -= a.invI * (rax * jy - ray * jx)
@@ -237,9 +243,9 @@ class FruitCakeWorld {
   static fn correctPosition(c: Contact) {
     let a = c.a
     let b = c.b
-    let invSum = a.invMass + (b?.invMass ?? 0f)
-    if invSum == 0f { return }
-    let corr = max(c.pen - Slop, 0f) / invSum * CorrectionPercent
+    let invSum = a.invMass + (b?.invMass ?? 0.0)
+    if invSum == 0.0 { return }
+    let corr = Math.max(c.pen - Slop, 0.0) / invSum * CorrectionPercent
     a.x -= a.invMass * corr * c.nx
     a.y -= a.invMass * corr * c.ny
     if b != null {
@@ -256,8 +262,8 @@ class FruitCakeWorld {
       a.removed = true; b.removed = true; removed = true
 
       let tier = a.tier
-      let cx = (a.x + b.x) * 0.5f
-      let cy = (a.y + b.y) * 0.5f
+      let cx = (a.x + b.x) * 0.5
+      let cy = (a.y + b.y) * 0.5
       let rt = mergeResultTier(tier)
       if rt != null { this.spawnFruit(rt!, cx, cy) }   // else: top-tier pair vanishes
       points += byTier(tier).mergePoints
@@ -272,8 +278,8 @@ class FruitCakeWorld {
 fn main() {
   let world = FruitCakeWorld()
   // Drop two tier-0 fruit into the same column so they collide and merge.
-  world.spawnFruit(0, 310f, 100f)
-  world.spawnFruit(0, 312f, 160f)
-  let scored = world.settleAfterDrop(2f, 8, 600)
+  world.spawnFruit(0, 310.0, 100.0)
+  world.spawnFruit(0, 312.0, 160.0)
+  let scored = world.settleAfterDrop(2.0, 8, 600)
   print("bodies=${world.count} scored=${scored}")   // expect a tier-1 fruit + points
 }
