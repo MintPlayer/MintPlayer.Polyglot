@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp };
+enum class ExprKind { Int, Float, Bool, Str, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond };
 
 struct Expr {
     ExprKind kind;
@@ -57,6 +57,11 @@ struct Interp : Expr { // interpolated string: `chunks` (N+1 literal pieces) int
     std::vector<std::string> chunks;
     std::vector<ExprPtr> holes;
     Interp(SourcePos p, Type t) : Expr(ExprKind::Interp, p, std::move(t)) {}
+};
+struct Cond : Expr { // `if c { a } else { b }` as a value -> ternary `c ? a : b`
+    ExprPtr cond, then, els;
+    Cond(SourcePos p, Type t, ExprPtr c, ExprPtr a, ExprPtr b)
+        : Expr(ExprKind::Cond, p, std::move(t)), cond(std::move(c)), then(std::move(a)), els(std::move(b)) {}
 };
 struct Var : Expr { // reference to a local or parameter
     std::string name;

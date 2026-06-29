@@ -274,12 +274,22 @@ class FruitCakeWorld {
   }
 }
 
-// ── A tiny scripted drop, the way the conformance test will drive it ────────
+// ── A scripted cascade, the way the conformance test drives it ──────────────
+// Drop a fruit, settle to rest, repeat — accumulating the score. Same-tier fruit
+// that come to rest touching merge into the next tier (and may cascade). The whole
+// run is pure f64 + - * / sqrt, so the C# and TS twins agree to the bit.
+fn dropAndSettle(world: FruitCakeWorld, tier: i32, x: f64): i32 {
+  world.spawnFruit(tier, x, 90.0)
+  return world.settleAfterDrop(2.0, 8, 800)
+}
+
 fn main() {
   let world = FruitCakeWorld()
-  // Drop two tier-0 fruit into the same column so they collide and merge.
-  world.spawnFruit(0, 310.0, 100.0)
-  world.spawnFruit(0, 312.0, 160.0)
-  let scored = world.settleAfterDrop(2.0, 8, 600)
-  print("bodies=${world.count} scored=${scored}")   // expect a tier-1 fruit + points
+  var scored = 0
+  scored += dropAndSettle(world, 0, 305.0)   // first tier-0
+  scored += dropAndSettle(world, 0, 312.0)   // collides + merges -> tier-1
+  scored += dropAndSettle(world, 0, 308.0)   // another tier-0
+  scored += dropAndSettle(world, 0, 315.0)   // -> a second tier-1 (may cascade to tier-2)
+  scored += dropAndSettle(world, 1, 310.0)   // drop a tier-1 onto the pile
+  print("bodies=${world.count} scored=${scored}")
 }

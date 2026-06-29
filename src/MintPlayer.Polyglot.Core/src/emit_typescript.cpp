@@ -14,6 +14,7 @@ namespace {
 
 std::string tsType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
+        if (t.nullable) { TypeRef base = t; base.nullable = false; return tsType(base) + " | null"; }
         if (t.name == "unit")   return "void";
         if (t.name == "bool")   return "boolean";
         if (t.name == "string") return "string";
@@ -651,6 +652,10 @@ private:
                 std::string s = recv + "." + mc.method + "(";
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                 return s + ")";
+            }
+            case ir::ExprKind::Cond: {
+                const auto& c = static_cast<const ir::Cond&>(e);
+                return "(" + emitExpr(*c.cond) + " ? " + emitExpr(*c.then) + " : " + emitExpr(*c.els) + ")";
             }
             case ir::ExprKind::Index: {
                 const auto& ix = static_cast<const ir::Index&>(e);

@@ -14,6 +14,15 @@ namespace {
 
 std::string csType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
+        // A nullable value type needs C# `T?` (Nullable<T>); a nullable reference type accepts null as-is
+        // (the generated project disables nullable reference annotations), so it renders without the `?`.
+        if (t.nullable) {
+            TypeRef base = t; base.nullable = false;
+            const std::string& n = t.name;
+            bool valueType = n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
+                             n == "u32" || n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char";
+            return valueType ? csType(base) + "?" : csType(base);
+        }
         if (t.name == "unit")   return "void";
         if (t.name == "i8")     return "sbyte";
         if (t.name == "i16")    return "short";
@@ -535,6 +544,10 @@ private:
                 std::string s = recv + "." + mc.method + "(";
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                 return s + ")";
+            }
+            case ir::ExprKind::Cond: {
+                const auto& c = static_cast<const ir::Cond&>(e);
+                return "(" + emitExpr(*c.cond) + " ? " + emitExpr(*c.then) + " : " + emitExpr(*c.els) + ")";
             }
             case ir::ExprKind::Index: {
                 const auto& ix = static_cast<const ir::Index&>(e);

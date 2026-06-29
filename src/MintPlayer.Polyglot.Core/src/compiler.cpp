@@ -1,5 +1,7 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 
+#include <unordered_set>
+
 #include "mintplayer/polyglot/ast.hpp"
 #include "mintplayer/polyglot/emit.hpp"
 #include "mintplayer/polyglot/backend.hpp"
@@ -39,21 +41,52 @@ extern class List<T> {
 }
 )PG";
 
-// Merge the declarations of any imported first-party std module into the unit, so its types and bindings
-// are visible to sema/lowering. No filesystem resolver yet — std modules are embedded source.
-void linkStdModules(CompilationUnit& unit, DiagnosticBag& diags) {
-    bool wantsCollections = false;
-    for (const auto& imp : unit.imports)
-        if (imp.path == "std.collections") wantsCollections = true;
-    if (!wantsCollections) return;
+// The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,
+// not control flow. No filesystem resolver yet (the source is compiled into the binary); user-module
+// resolution across files is future work.
+struct StdModule { const char* path; const char* source; };
+const StdModule STD_MODULES[] = {
+    {"std.collections", STD_COLLECTIONS},
+};
 
-    std::vector<Token> toks = lex(STD_COLLECTIONS, diags);
-    if (diags.hasErrors()) return;
-    CompilationUnit std = parse(toks, diags);
-    if (diags.hasErrors()) return;
-    for (auto& c : std.classes)   unit.classes.push_back(std::move(c));
-    for (auto& r : std.records)   unit.records.push_back(std::move(r));
-    for (auto& f : std.functions) unit.functions.push_back(std::move(f));
+// Resolve each `import`: a known `std.*` module is parsed and merged into the unit (once), with its
+// selectively-imported names validated against what it actually exports. An unknown `std.*` module is a
+// diagnostic. Non-`std.` imports have no resolver yet and are left untouched (future user-module work).
+void linkStdModules(CompilationUnit& unit, DiagnosticBag& diags) {
+    std::unordered_set<std::string> merged;
+    for (const auto& imp : unit.imports) {
+        if (imp.path.rfind("std.", 0) != 0) continue; // not a std module — leave for future resolution
+
+        const char* source = nullptr;
+        for (const auto& m : STD_MODULES) if (imp.path == m.path) source = m.source;
+        if (!source) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
+        if (!merged.insert(imp.path).second) continue; // already linked (imported more than once)
+
+        std::vector<Token> toks = lex(source, diags);
+        if (diags.hasErrors()) return;
+        CompilationUnit mod = parse(toks, diags);
+        if (diags.hasErrors()) return;
+
+        // Validate the selective import list `{ A, B }` against the module's exported declarations.
+        if (!imp.names.empty()) {
+            std::unordered_set<std::string> exports;
+            for (const auto& c : mod.classes)    exports.insert(c.name);
+            for (const auto& r : mod.records)    exports.insert(r.name);
+            for (const auto& e : mod.enums)      exports.insert(e.name);
+            for (const auto& u : mod.unions)     exports.insert(u.name);
+            for (const auto& i : mod.interfaces) exports.insert(i.name);
+            for (const auto& f : mod.functions)  exports.insert(f.name);
+            for (const auto& n : imp.names)
+                if (!exports.count(n)) diags.error(imp.pos, "module '" + imp.path + "' has no export '" + n + "'");
+        }
+
+        for (auto& c : mod.classes)    unit.classes.push_back(std::move(c));
+        for (auto& r : mod.records)    unit.records.push_back(std::move(r));
+        for (auto& e : mod.enums)      unit.enums.push_back(std::move(e));
+        for (auto& u : mod.unions)     unit.unions.push_back(std::move(u));
+        for (auto& i : mod.interfaces) unit.interfaces.push_back(std::move(i));
+        for (auto& f : mod.functions)  unit.functions.push_back(std::move(f));
+    }
 }
 
 } // namespace

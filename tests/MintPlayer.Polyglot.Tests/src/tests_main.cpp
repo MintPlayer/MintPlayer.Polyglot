@@ -296,6 +296,41 @@ int main() {
              "actual(typescript) fn a(): i32 => extern(\"42\")\nfn main() { print(a()) }\n",
              "P7: extern is allowed inside an actual");
 
+    // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
+    {
+        const char* prog =
+            "import std.collections.{ List }\n"
+            "fn first(xs: List<i32>): i32 => xs[0]\n"
+            "fn main() {\n"
+            "  var xs: List<i32> = [1, 2]\n"
+            "  xs.add(3)\n"
+            "  print(xs.count)\n"
+            "  print(first(xs))\n"
+            "  xs.removeAll((v) => v < 2)\n"
+            "  xs.clear()\n"
+            "}\n";
+        EmitResult cs = compile(prog, Target::CSharp);
+        check(cs.ok, "P8: List program -> C# compiles");
+        check(has(cs.code, "global::System.Collections.Generic.List<int>"), "P8 C#: List<i32> -> System.Collections.Generic.List<int>");
+        check(has(cs.code, ".Add(3)"), "P8 C#: list.add -> .Add");
+        check(has(cs.code, ".Count"), "P8 C#: list.count -> .Count");
+        check(has(cs.code, ".RemoveAll("), "P8 C#: list.removeAll -> .RemoveAll");
+        check(has(cs.code, "xs.Clear()"), "P8 C#: list.clear -> .Clear()");
+        check(!has(cs.code, "class List"), "P8 C#: extern class List is not emitted");
+
+        EmitResult ts = compile(prog, Target::TypeScript);
+        check(ts.ok, "P8: List program -> TS compiles");
+        check(has(ts.code, "number[]"), "P8 TS: List<i32> -> number[]");
+        check(has(ts.code, ".push(3)"), "P8 TS: list.add -> .push");
+        check(has(ts.code, ".length"), "P8 TS: list.count -> .length");
+        check(has(ts.code, "xs = xs.filter("), "P8 TS: list.removeAll -> receiver = receiver.filter(...)");
+        check(has(ts.code, "xs = []"), "P8 TS: list.clear -> receiver = [] (receiver reassignment)");
+        check(!has(ts.code, "class List"), "P8 TS: extern class List is not emitted");
+    }
+
+    // P8 — importing an unknown std module is a diagnostic (real module resolution, not a silent no-op).
+    rejects("import std.bogus.{ Thing }\nfn main() {}\n", "P8: unknown std module is rejected");
+
     // A normal unknown type still gets the plain diagnostic (not a refusal).
     {
         EmitResult r = compile("fn f(x: Widget) {}\n", Target::CSharp);
