@@ -85,7 +85,14 @@ first-party code:** **static methods** (`Type.method()`); **`i32.parse`/`f64.par
 the **`Math`** namespace (replacement); **`expect`/`actual`** target-gated capabilities (each backend
 emits only its `actual`); **`extern("…")`** raw-code FFI (binding); and the **portable-core guard**
 (`extern` refused outside an `actual`). Std is compiler-builtin intrinsics for now, not yet `.pg` modules.
-26 differential programs, all green. **Next: P8 — dogfood the FruitCake physics** (★ north star). See PLAN.md.
+26 differential programs, all green. **P11 added to the roadmap** (PLAN/PRD): a NuGet package that
+auto-transpiles `.pg`→`.cs` before `dotnet build` (Grpc.Tools-style, native CLI per-RID, non-transitive);
+depends only on a stable CLI, so it can ship independently of P9/P10.
+**Next: P8 — dogfood the FruitCake physics** (★ north star). *Entry plan:* first **scout the FruitCake
+solver in `C:\Repos\MintPlayer.AI`** (read-only) to scope the `.pg` port + how the existing differential
+test is wired; **collections (`List<T>` with real `add`/indexing) are a likely prerequisite** — they're
+currently only typed/rendered (no operations) — as may be a `.pg` std (today's std is compiler intrinsics:
+`Math`, `i32.parse`). See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.
