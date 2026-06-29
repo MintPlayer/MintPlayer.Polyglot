@@ -289,6 +289,13 @@ int main() {
     rejects("fn f(x: i32): i32 => x\nfn f(y: i32): i32 => y\nfn main() {}\n",
             "P6: rejects a true duplicate (same parameter types)");
 
+    // P7 — portable-core guard: `extern` is only allowed inside a target-gated `actual`.
+    rejects("fn portable(): i32 => extern(\"42\")\nfn main() {}\n",
+            "P7: extern is refused in portable code");
+    resolves("expect fn a(): i32\nactual(csharp) fn a(): i32 => extern(\"42\")\n"
+             "actual(typescript) fn a(): i32 => extern(\"42\")\nfn main() { print(a()) }\n",
+             "P7: extern is allowed inside an actual");
+
     // A normal unknown type still gets the plain diagnostic (not a refusal).
     {
         EmitResult r = compile("fn f(x: Widget) {}\n", Target::CSharp);

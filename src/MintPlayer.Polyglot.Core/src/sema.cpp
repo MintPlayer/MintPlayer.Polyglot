@@ -210,12 +210,14 @@ public:
         for (auto& fn : unit.functions) {
             currentReturn_ = fn.returnType;
             currentThis_ = tUnknown();
+            inActual_ = !fn.actualTarget.empty(); // only an `actual` body is a target-gated region (§4.4)
             pushGenerics(fn.generics);
             pushScope();
             for (const auto& p : fn.params) declare(p.name, p.type, false, p.pos);
             checkBlock(fn.body);
             popScope();
             popGenerics(fn.generics);
+            inActual_ = false;
         }
         for (auto& d : unit.records) checkTypeBody(d.name, d.generics, d.members, &d.fields);
         for (auto& d : unit.classes) checkTypeBody(d.name, d.generics, d.members, nullptr);
@@ -249,6 +251,7 @@ private:
     std::vector<std::unordered_map<std::string, Local>> scopes_;
     TypeRef currentReturn_ = namedType("unit");
     TypeRef currentThis_ = tUnknown();
+    bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
 
     // ---- scopes ----
     void pushScope() { scopes_.emplace_back(); }
@@ -571,7 +574,11 @@ private:
             case ExprKind::Unary:     return checkUnary(e);
             case ExprKind::Binary:    return checkBinary(e);
             case ExprKind::Cast:      return checkCast(e);
-            case ExprKind::Extern:    return tUnknown(); // raw target code — type asserted by context (§4.4 FFI)
+            case ExprKind::Extern: // raw target code — type asserted by context (§4.4 FFI)
+                if (!inActual_)
+                    diags_.error(e.pos, "'extern' target code is only allowed in a target-gated 'actual' — "
+                                        "portable code must stay target-neutral (PRD §4.4)");
+                return tUnknown();
             case ExprKind::Range:     checkExpr(*e.lhs); checkExpr(*e.rhs); return tUnknown();
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);
