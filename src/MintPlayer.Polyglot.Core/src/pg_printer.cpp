@@ -401,7 +401,9 @@ private:
             case ExprKind::ListLit:    return "[" + exprList(e.args) + "]";
             case ExprKind::TupleLit:   return "(" + exprList(e.args) + ")";
             case ExprKind::Lambda: {
-                std::string s = "(" + params(e.params) + ") => ";
+                // Canonical: a single untyped parameter prints bare (`x => …`); anything else keeps parens.
+                bool bare = e.params.size() == 1 && e.params[0].type.absent() && !e.params[0].hasDefault;
+                std::string s = (bare ? e.params[0].name : "(" + params(e.params) + ")") + " => ";
                 return s + (e.flag ? blockInline(e.block) : expr(*e.lhs));
             }
             case ExprKind::With: {

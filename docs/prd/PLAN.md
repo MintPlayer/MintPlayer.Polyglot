@@ -94,10 +94,16 @@ under Node, both with expected output; golden baselines green; the differential 
 registry; `compile()` selects via `findBackend`). The IR/lowering/both backends now cover **records**
 (fields, methods, operators, properties), **enums**, **unions + pattern matching** (exhaustiveness, ctor
 patterns/binders), **operators & properties** (C# `operator +` / expr-bodied property vs TS `.plus()` /
-getter), and **classes** (mutable reference types with `init`). The differential suite grew from 1 → 6
-self-contained programs (arithmetic, records, vec2, enums, unions, counter), all agreeing across C#/TS.
-*Remaining:* `for…in`/ranges → iterators/`yield`; exceptions (`try`/`catch`/`finally`/`throw`);
-`using`/disposal; extension methods; generic emission. Inheritance/super-call emission deferred.
+getter), **classes** (mutable reference types with `init`, **inheritance + `super(...)`**), **`for…in`**
+over ranges and iterables, **iterators (`yield`** → C# `IEnumerable`+`yield return` / TS `function*`),
+**exceptions** (`throw` + `try`/`catch`/`when`/`finally`; TS gets an `instanceof`/guard dispatch chain),
+and **`use`/disposal** (→ `try/finally` + `.dispose()`). `Iterable` and `Error` are registered as core
+builtin types. The differential suite grew from 1 → 11 self-contained programs (arithmetic, records,
+vec2, enums, unions, counter, forrange, iterator, exceptions, inheritance, disposal), all agreeing.
+*Lambda syntax* now also admits the bare single-parameter form `x => …` (grammar/SPEC/PRD updated);
+parsing + canonical formatting done, codegen pending (see closures below).
+*Remaining:* **closures/lambdas** (parsed + type-checked + formatted; IR lowering + arrow-fn emission
+still to do); **extension methods**; **generic emission** (type params + instantiation).
 
 ## P6 — Faithfulness pass
 Implement the §3.C relaxations *as documented behaviour*: int32/uint masking (`|0`/`>>>0`/`Math.imul`),

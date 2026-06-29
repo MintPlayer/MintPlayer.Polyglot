@@ -74,7 +74,8 @@ Operators (overloading → static calls), properties/indexers (→ get/set / `ge
 (→ static calls), exceptions (`try/catch/finally`, typed catch → `instanceof` dispatch + rethrow, `when`
 → guard), `using`/disposal (→ `try/finally`), iterators/`yield` (→ `function*` / `IEnumerable`),
 pattern matching / discriminated unions (→ tagged objects + switch, compile-time exhaustiveness), enums,
-closures (capture-by-ref agrees on both sides), function overloading (→ compile-time name-mangling),
+closures / lambdas (`x => …` or `(a, b) => …`, both → native arrow functions; capture-by-ref agrees on
+both sides), function overloading (→ compile-time name-mangling),
 strings/char (**both targets are UTF-16** — near 1:1, with surrogate-pair care).
 
 ### B. Refused — out loud, with clear compiler diagnostics (the 🔴 list)

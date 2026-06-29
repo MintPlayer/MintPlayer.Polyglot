@@ -249,7 +249,9 @@ return_statement = "return" , [ expression ] , term ;
 
 expression      = lambda_expr | if_expr | match_expr | coalesce_expr ;
 
-lambda_expr     = "(" , [ lambda_params ] , ")" , "=>" , ( expression | block ) ;
+(* A single untyped parameter may omit the parentheses (`x => …`); a typed, zero-, or
+   multi-parameter lambda requires them (`(x: T) => …`, `() => …`, `(a, b) => …`). *)
+lambda_expr     = ( IDENT | "(" , [ lambda_params ] , ")" ) , "=>" , ( expression | block ) ;
 lambda_params   = lambda_param , { "," , lambda_param } ;
 lambda_param    = IDENT , [ ":" , type ] ;
 

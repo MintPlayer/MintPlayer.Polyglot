@@ -311,6 +311,22 @@ extension fn List<T>.second(): T? => if this.count >= 2 { this[1] } else { null 
 // "hi".shout()  ->  C#: static extension call  |  TS: shout("hi")
 ```
 
+### 6.4 Lambdas & closures
+
+```pg
+let double  = x => x * 2              // single untyped parameter: parentheses optional
+let add     = (a, b) => a + b         // zero or 2+ params need parens: () => …, (a, b) => …
+let typed   = (x: i32) => x + 1       // a type annotation needs parens too
+let counter = (n: i32) => { total += n }   // block body; closes over `total`
+```
+
+A lambda lowers to a C# lambda (`x => x * 2`) and a TS arrow function (`x => x * 2`) — the arrow
+spelling is shared, so this is a pass-through with no per-target rewrite. Captures are by reference on
+both targets (PRD §3.A). The **bare single-parameter form is the only place parentheses are optional**;
+the canonical formatter prints `x => …` for one untyped parameter and parenthesizes everything else.
+Note `=>` is reused for expression-bodied members (§6.1/§6.2) and `match` arms (§4.5) — those are not
+lambdas.
+
 ---
 
 ## 7. Iterators (`yield`) and sequences

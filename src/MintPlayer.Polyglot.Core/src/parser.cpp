@@ -825,6 +825,21 @@ private:
         return j + 1 < toks_.size() && toks_[j + 1].kind == TokKind::Arrow;
     }
 
+    // `x => expr` / `x => { … }` — a single untyped parameter without parentheses. A typed or
+    // multi/zero-parameter lambda still requires parens (`(x: T) => …`, `(a, b) => …`, `() => …`).
+    ExprPtr parseBareLambda() {
+        auto p = peek().pos;
+        auto e = mk(ExprKind::Lambda, p);
+        Param param;
+        param.pos = peek().pos;
+        param.name = expect(TokKind::Identifier, "a parameter name").text;
+        e->params.push_back(std::move(param));
+        expect(TokKind::Arrow, "'=>'");
+        if (at(TokKind::LBrace)) { e->flag = true; e->block = parseBlock(); }
+        else { e->flag = false; e->lhs = parseExpr(); }
+        return e;
+    }
+
     ExprPtr parseLambda() {
         auto p = peek().pos;
         auto e = mk(ExprKind::Lambda, p);
@@ -955,7 +970,9 @@ private:
             case TokKind::KwNull:    { advance(); return mk(ExprKind::NullLit, p); }
             case TokKind::KwThis:    { advance(); return mk(ExprKind::This, p); }
             case TokKind::KwSuper:   { advance(); return mk(ExprKind::Super, p); }
-            case TokKind::Identifier:{ auto e = mk(ExprKind::Name, p); e->text = advance().text; return e; }
+            case TokKind::Identifier:
+                if (peek(1).kind == TokKind::Arrow) return parseBareLambda(); // `x => …`
+                { auto e = mk(ExprKind::Name, p); e->text = advance().text; return e; }
             case TokKind::KwIf:      return parseIfExpr();
             case TokKind::KwMatch:   return parseMatch();
             case TokKind::LBracket: {

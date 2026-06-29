@@ -70,10 +70,11 @@ typing + match exhaustiveness in `sema.cpp`; AST→IR `lower.cpp` into `ir.hpp`;
 (pipeline = lexer→parser→sema→lower→IR→backend). Full sema runs on self-contained programs (std-using
 samples checked end-to-end at P7). **P5 🔨 in progress — widening IR/lowering/backends to the full §3.A
 surface.** Done: the **backend-interface seam** (`Backend` abstraction + registry, `findBackend`), plus
-records, enums, unions + pattern matching, operators/properties, and **classes** (mutable reference types
-with `init`). Differential suite grew 1 → 6 programs (arithmetic, records, vec2, enums, unions, counter),
-all green. **Next in P5:** `for…in`/ranges → iterators/`yield`, exceptions, `using`, extensions, generics.
-See PLAN.md.
+records, enums, unions + pattern matching, operators/properties, **classes** (with inheritance + `super`),
+**`for…in`** (ranges + iterables), **iterators (`yield`)**, **exceptions** (`throw`/`try`/`catch`/`when`/
+`finally`), and **`use`/disposal**. `Iterable`/`Error` are core builtin types. Differential suite grew
+1 → 11 programs, all green. Lambdas now also admit the bare `x => …` form (parsed/formatted; codegen
+pending). **Remaining in P5:** closures/lambda codegen, extension methods, generic emission. See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.
