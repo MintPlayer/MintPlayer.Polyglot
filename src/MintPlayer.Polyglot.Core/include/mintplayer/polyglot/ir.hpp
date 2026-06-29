@@ -92,9 +92,10 @@ struct MethodCall : Expr { // `object.method(args)` — or a static call `Type.m
     MethodCall(SourcePos p, Type t, ExprPtr o, std::string m)
         : Expr(ExprKind::MethodCall, p, std::move(t)), object(std::move(o)), method(std::move(m)) {}
 };
-struct Member : Expr { // field / property access `object.field`
-    ExprPtr object;
+struct Member : Expr { // field / property access `object.field` — or a static member `staticType.field`
+    ExprPtr object;            // null for a static member access
     std::string field;
+    std::string staticType;    // non-empty = static access `staticType.field` (object is null)
     bool nullSafe = false;
     Member(SourcePos p, Type t, ExprPtr o, std::string f, bool ns)
         : Expr(ExprKind::Member, p, std::move(t)), object(std::move(o)), field(std::move(f)), nullSafe(ns) {}
@@ -312,6 +313,7 @@ struct Union {
 struct ClassField {
     std::string name;
     bool isMutable = false;
+    bool isStatic = false;  // a `const`/`static` member — accessed `Owner.name`, emitted `static`/`readonly`
     Type type;
     ExprPtr init;   // optional field initializer (may be null)
 };

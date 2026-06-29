@@ -128,6 +128,8 @@ struct Expr {
     std::vector<std::string> chunks; // InterpString: N+1 literal chunks around N holes (in `args`)
     TypeRef castType;              // Cast: the target type in `(T)expr` (operand is `lhs`)
     std::string overloadName;      // Call: the resolved overload's mangled name (set by sema); empty = none
+    std::string staticOwner;       // Name/Call: resolves to a static/const member of this enclosing class
+                                   // (set by sema so lowering can qualify it as `Owner.member`); empty = none
 };
 
 struct CatchClause {

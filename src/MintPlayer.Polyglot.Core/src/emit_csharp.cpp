@@ -206,7 +206,10 @@ private:
         line("{");
         ++indent_;
         for (const auto& f : c.fields) {
-            std::string decl = "public " + std::string(f.isMutable ? "" : "readonly ") + csType(f.type) + " " + f.name;
+            // `static readonly` (not `const`) for immutable statics: it accepts any initializer expression,
+            // not just compile-time constants, and reads identically as `Owner.Name`.
+            std::string mods = f.isStatic ? (f.isMutable ? "static " : "static readonly ") : (f.isMutable ? "" : "readonly ");
+            std::string decl = "public " + mods + csType(f.type) + " " + f.name;
             if (f.init) decl += " = " + emitExpr(*f.init);
             line(decl + ";");
         }
@@ -458,7 +461,8 @@ private:
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
-                return atom(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
+                return base + (m.nullSafe ? "?." : ".") + m.field;
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);

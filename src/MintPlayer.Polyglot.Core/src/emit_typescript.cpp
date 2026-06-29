@@ -254,7 +254,8 @@ private:
         line(head + " {");
         ++indent_;
         for (const auto& f : c.fields) {
-            std::string decl = f.name + ": " + tsType(f.type);
+            std::string mods = f.isStatic ? (f.isMutable ? "static " : "static readonly ") : "";
+            std::string decl = mods + f.name + ": " + tsType(f.type);
             if (f.init) decl += " = " + emitExpr(*f.init);
             line(decl + ";");
         }
@@ -567,7 +568,8 @@ private:
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
-                return atom(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
+                return base + (m.nullSafe ? "?." : ".") + m.field;
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);

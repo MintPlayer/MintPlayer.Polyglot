@@ -194,6 +194,8 @@ private:
                     ir::ClassField f;
                     f.name = mem.name;
                     f.isMutable = mem.isMutable;
+                    f.isStatic = mem.kind == MemberKind::Const;
+                    for (const auto& mod : mem.modifiers) if (mod == "static") f.isStatic = true;
                     f.type = mem.type;
                     if (mem.init) f.init = expr(*mem.init);
                     ic.fields.push_back(std::move(f));
@@ -255,6 +257,11 @@ private:
             case ExprKind::Name:
                 if (auto u = caseUnion_.find(e.text); u != caseUnion_.end()) // bare payload-free union case
                     return std::make_unique<ir::MakeCase>(e.pos, e.type, u->second, e.text);
+                if (!e.staticOwner.empty()) { // bare ref to an enclosing-class static/const -> `Owner.name`
+                    auto m = std::make_unique<ir::Member>(e.pos, e.type, nullptr, e.text, false);
+                    m->staticType = e.staticOwner;
+                    return m;
+                }
                 return std::make_unique<ir::Var>(e.pos, e.type, e.text);
             case ExprKind::This:
                 if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
@@ -304,6 +311,12 @@ private:
                     const auto& fields = caseFields_[callee];
                     for (std::size_t i = 0; i < e.args.size(); ++i)
                         mc->fields.push_back({i < fields.size() ? fields[i] : "_" + std::to_string(i), expr(*e.args[i])});
+                    return mc;
+                }
+                if (!e.staticOwner.empty()) { // bare call to an enclosing-class static method -> `Owner.method(args)`
+                    auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, nullptr, callee);
+                    mc->staticType = e.staticOwner;
+                    for (const auto& a : e.args) mc->args.push_back(expr(*a));
                     return mc;
                 }
                 auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, callee == "print");

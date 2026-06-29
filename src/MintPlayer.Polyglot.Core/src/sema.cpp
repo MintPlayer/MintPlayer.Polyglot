@@ -261,6 +261,8 @@ private:
     std::vector<std::unordered_map<std::string, Local>> scopes_;
     TypeRef currentReturn_ = namedType("unit");
     TypeRef currentThis_ = tUnknown();
+    std::string currentClass_;  // enclosing type name while checking a member body; survives into static
+                                // methods (where currentThis_ is Unknown) so its statics/consts resolve unqualified
     bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
 
     // ---- scopes ----
@@ -406,6 +408,7 @@ private:
                        std::vector<Member>& members, std::vector<Param>* recordFields) {
         pushGenerics(generics);
         currentThis_ = tNamed(typeName);
+        currentClass_ = typeName;
         for (auto& m : members) {
             pushGenerics(m.generics);
             if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Init) {
@@ -430,6 +433,7 @@ private:
             popGenerics(m.generics);
         }
         currentThis_ = tUnknown();
+        currentClass_.clear();
         popGenerics(generics);
     }
 
@@ -604,10 +608,22 @@ private:
         return tUnknown();
     }
 
+    // A member of the enclosing class reachable by its bare name (no `this`/`Type.` qualifier): a `const`
+    // or any `static` field/property. Mirrors C#/the .pg surface where a class names its own statics plainly.
+    const MemberInfo* enclosingStatic(const std::string& name) const {
+        if (currentClass_.empty()) return nullptr;
+        const MemberInfo* m = findMember(currentClass_, name);
+        if (m && (m->kind == MemberKind::Const || m->isStatic) &&
+            (m->kind == MemberKind::Const || m->kind == MemberKind::Field || m->kind == MemberKind::Property))
+            return m;
+        return nullptr;
+    }
+
     TypeRef checkName(Expr& e) {
         if (const Local* l = lookup(e.text)) return l->type;
         auto v = values_.find(e.text); if (v != values_.end()) return v->second;
         auto uc = unionCtors_.find(e.text); if (uc != unionCtors_.end() && uc->second.params.empty()) return uc->second.result;
+        if (const MemberInfo* m = enclosingStatic(e.text)) { e.staticOwner = currentClass_; return m->type; }
         if (fns_.count(e.text) || typeNames_.count(e.text) || unionCtors_.count(e.text)) return tUnknown();
         diags_.error(e.pos, "undeclared name '" + e.text + "'");
         return tUnknown();
@@ -778,6 +794,15 @@ private:
             return chosen->result;
         }
         if (name == "Error") return tNamed("Error"); // core exception root construction (message arg lenient)
+        // A bare call inside a class body may target one of its own static methods.
+        if (!currentClass_.empty()) {
+            if (const MemberInfo* m = findMember(currentClass_, name);
+                m && m->isStatic && (m->kind == MemberKind::Method || m->kind == MemberKind::Operator)) {
+                checkArgs(m->params, argTypes, e.args, "static method '" + currentClass_ + "." + name + "'", e.pos);
+                e.staticOwner = currentClass_;
+                return m->type;
+            }
+        }
         diags_.error(e.pos, "call to undeclared function '" + name + "'");
         return tUnknown();
     }
