@@ -188,6 +188,10 @@ from-scratch, zero-native-deps spirit of the sibling repos; the same path Haxe/N
   This holds *because* downloaded plugins are **declarative data, not loadable code** (so the host needs no
   managed plugin runtime); backends themselves are declarative specs the core interprets. See
   [`../design/plugins-and-targets.md`](../design/plugins-and-targets.md).
+- **The build-integration payoff (P11):** because the CLI is a self-contained native binary, it can be
+  shipped inside a NuGet package's `build/` targets and run during `dotnet build` to transpile `.pg` → `.cs`
+  with **no extra SDK/runtime** for the consumer — the `Grpc.Tools` pattern, where a native compiler runs at
+  build to feed `@(Compile)`. A managed/Roslyn host couldn't be embedded as cleanly. See PLAN P11.
 
 ### 4.4 Standard library & platform APIs — the bounded strategy
 The investigation's headline cost. Polyglot bounds it deliberately:
@@ -268,6 +272,13 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   target+environment; build-dependency threading; the local full-power tier; proof = a **downloaded
   declarative Python backend** + a binding plugin, with **no core change**. The endpoint of §4.4 — see
   [`../design/plugins-and-targets.md`](../design/plugins-and-targets.md).
+- **P11 — Build integration (the `.pg`-aware NuGet / npm on-ramp).** A NuGet package that auto-transpiles
+  `.pg` → `.cs` **before `dotnet build`** with no manual step — modeled on `Grpc.Tools` (native CLI shipped
+  per-RID in the package; `build/` props+targets hooking `BeforeTargets="CoreCompile"`, generating into
+  `obj/` and joining `@(Compile)`; incremental; runs in design-time builds). **Non-transitive**
+  (`DevelopmentDependency`/`PrivateAssets`). The payoff of the §4.3 zero-runtime-dep native CLI: the
+  consuming dev needs no extra SDK/runtime. Depends only on a stable CLI, so it can ship independently of
+  P9/P10. A sibling npm/build-script story does the same for TS.
 - **Stretch:** further targets as downloadable backends, source maps, an LSP built on the frontend-as-
   library, a plugin registry + signing/trust infrastructure.
 

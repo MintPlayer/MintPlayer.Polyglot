@@ -196,6 +196,43 @@ WinForms, with its PackageReferences) requires **no core change** — only `pgco
 using them emits a buildable project, and wrong-target/-environment use **and use of a feature outside the
 target intersection** are each rejected with a clear, distinct diagnostic.
 
+## P11 — Build integration: the `.pg`-aware NuGet (and npm) on-ramp
+Make adoption frictionless: a developer adds a package to an ordinary C# project, drops in `.pg` files,
+runs `dotnet build`, and the `.pg` is transpiled to C# and compiled into the assembly with **no manual
+step and no extra SDK/runtime** — the payoff of the §4.3 self-contained native CLI (the consuming dev
+already has the .NET SDK; the transpiler ships in the package). This milestone depends only on a stable
+CLI (the `.pg → .cs` path works from P5), **not** on the P9/P10 plugin engine — it can ship independently;
+it sits here because it's an ecosystem/distribution concern. A sibling **npm + build-script** story does
+the same for TypeScript projects.
+
+**Design (modeled on `Grpc.Tools` — the closest prior art: a *native, non-.NET* compiler invoked at build
+to turn a custom source into `.cs` that joins `@(Compile)`; a Roslyn source generator can't be used because
+the input is a foreign language and the transpiler is a native binary):**
+- **Package** `MintPlayer.Polyglot.MSBuild` ships the native `polyglot` CLI **per host RID** (win/linux/osx
+  × x64/arm64) plus `build/<id>.props` + `build/<id>.targets` (auto-imported: props near the top, targets
+  near the bottom of the consuming project). `.props` resolves the host RID and tool path from
+  `$(MSBuildThisFileDirectory)` (via `$(NETCoreSdkPortableRuntimeIdentifier)`), with an env-var/property
+  **override hook** for CI; on unix it `chmod +x`'s the binary (NuGet drops the exec bit).
+- **Non-transitive by construction:** assets go in **`build/`** (not `buildTransitive/`), and the package is
+  marked **`DevelopmentDependency=true`** so it never flows to downstream consumers or into published
+  output; consumers may reinforce with `PrivateAssets="all"`. Installing it in project A does **not** impose
+  it on a project that references A.
+- **Hook + incrementality:** a target `BeforeTargets="CoreCompile"` transpiles each `.pg` → `*.g.cs` into
+  `$(IntermediateOutputPath)` (`obj/`, so no source-tree noise and no double-compile against the SDK's
+  default `**/*.cs` glob) and adds them to `@(Compile)` + `@(FileWrites)` (for clean/rebuild). `Inputs`/
+  `Outputs` (including the tool path, so a CLI upgrade forces regen) skip unchanged files; a companion
+  always-run target re-adds the existing generated files when the transpile target is skipped (else the
+  compiler loses them). Uses the `Exec` task (no managed MSBuild task — keeps the zero-dep ethos).
+- **Design-time builds run the transpile** (do not skip on `$(DesignTimeBuild)`) — Grpc.Tools' hard-won
+  lesson: skipping makes generated types vanish from IntelliSense.
+- **Fail loudly** if no native binary matches the host RID (name the RID + the override property) — never
+  silently skip, which would cascade into misleading "type not found" errors. Don't fetch a runtime at
+  build (the Antlr-JRE / TypeScript-needs-node trap) — the self-contained binary is exactly the advantage.
+*Gate:* a fresh C# project + the package + a `.pg` file builds with **`dotnet build` alone** (the `.pg`
+types are usable from C# in the same project, incl. the IDE); a second build with no `.pg` change skips
+transpilation; `dotnet clean` removes the generated files; and a project referencing the first project's
+output does **not** inherit the transpile behavior or the package dependency.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
