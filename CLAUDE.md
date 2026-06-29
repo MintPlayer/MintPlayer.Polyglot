@@ -79,9 +79,13 @@ used feature a target can't emit — C#/TS declare the full set so nothing gates
 proves it bites). **P6 ✅ done — faithfulness pass:** §3.B **refusal diagnostics** ("Polyglot refuses X");
 **all integer widths faithful** (i8…u32 narrowing, i64/u64 → **BigInt**); **structural equality** for
 records; **explicit casts `(T)x`** + **implicit lossless widening** (no conversion methods); **function
-overloading** (C# native name / TS param-mangled). 21 differential programs, all green. *Deferred tail:*
-strict-f32 `Math.fround`, `lock`/`unsafe` statement refusals, null normalization. **Next: P7 — std core +
-`expect`/`actual` + static methods (`i32.parse`).** See PLAN.md.
+overloading** (C# native name / TS param-mangled). *Deferred tail:* strict-f32 `Math.fround`, `lock`/
+`unsafe` statement refusals, null normalization. **P7 ✅ done — std core + the three plugin mechanisms as
+first-party code:** **static methods** (`Type.method()`); **`i32.parse`/`f64.parse`** (string→number);
+the **`Math`** namespace (replacement); **`expect`/`actual`** target-gated capabilities (each backend
+emits only its `actual`); **`extern("…")`** raw-code FFI (binding); and the **portable-core guard**
+(`extern` refused outside an `actual`). Std is compiler-builtin intrinsics for now, not yet `.pg` modules.
+26 differential programs, all green. **Next: P8 — dogfood the FruitCake physics** (★ north star). See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

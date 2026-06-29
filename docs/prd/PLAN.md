@@ -131,7 +131,7 @@ int_widths, equality, casts, widening, overloading) + refusal/overload unit test
 step (low value):* opt-in strict-f32 `Math.fround`, statement-level `lock`/`unsafe` refusals, null/undefined
 normalization (better with std). Numeric conversion design recorded in PRD §3.A / SPEC §3.
 
-## P7 — Std core + expect/actual + FFI (the three plugin mechanisms, as first-party code)
+## P7 — Std core + expect/actual + FFI (the three plugin mechanisms, as first-party code) ✅ done (2026-06-29)
 A minimal portable standard library in `.pg` (math, basic collections, iterators) compiled to both
 targets. The **target-gated `expect`/`actual`** mechanism (portable core forbidden from touching platform
 APIs; per-target `actual` impls) and an `extern`/inline-target **FFI hatch**. This is where the three
@@ -145,6 +145,16 @@ reads text. (This unblocks the `.pg` samples that currently sketch `s.toI32()` �
 *Gate:* a program using a portable std API + one `expect`/`actual` capability (e.g. current time) builds
 and runs identically on both targets; `i32.parse("42")` round-trips on both; the portable core cannot
 reference `document`/`System.*` (compiler-enforced, with a test proving the rejection).
+*Delivered:* **static methods** on types (`Type.method()`, native on both); **`i32.parse`/`i64.parse`/
+`f64.parse`** (string→number, per-target idiom); the **`Math`** namespace (`sqrt`/`ln`/`abs`/`min`/`max`/
+`floor`/`ceil` → `System.Math.*` / `Math.*`) — the **replacement** mechanism; **`expect`/`actual`** target-
+gated capabilities (each backend emits only its matching `actual`) — the **capability** mechanism;
+**`extern("…")`** raw-code FFI — the **binding** mechanism; and the **portable-core guard** (`extern`
+refused outside a target-gated `actual`). 6 new differential programs (static_methods, parse, math,
+expect_actual, extern_ffi) + extern-guard unit tests. *Deviation from the sketch:* the std is currently
+**compiler-builtin intrinsics** (Math/parse), not yet a portable std *written in `.pg`* with an import
+mechanism — that (and `tryParse`, collections) is a further step; the three plugin mechanisms are proven,
+which is the milestone's point. At P9 these intrinsics become declarative plugin data.
 
 ## P8 — Dogfood: the FruitCake physics ★ north star
 Express the MintPlayer.AI FruitCake circle-physics solver in `.pg`. Generate `FruitCakeWorld`-equivalent
