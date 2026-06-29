@@ -72,9 +72,12 @@ samples checked end-to-end at P7). **P5 🔨 in progress — widening IR/lowerin
 surface.** Done: the **backend-interface seam** (`Backend` abstraction + registry, `findBackend`), plus
 records, enums, unions + pattern matching, operators/properties, **classes** (with inheritance + `super`),
 **`for…in`** (ranges + iterables), **iterators (`yield`)**, **exceptions** (`throw`/`try`/`catch`/`when`/
-`finally`), and **`use`/disposal**. `Iterable`/`Error` are core builtin types. Differential suite grew
-1 → 11 programs, all green. Lambdas now also admit the bare `x => …` form (parsed/formatted; codegen
-pending). **Remaining in P5:** closures/lambda codegen, extension methods, generic emission. See PLAN.md.
+`finally`), **`use`/disposal**, **closures/lambdas** (incl. bare `x => …`; native arrow fns), and
+**extension methods** (C# `this`-methods / TS free functions). `Iterable`/`Error` are core builtin types.
+**§3.E per-target capability gating is implemented + active** (`backend.hpp` `Feature` enum +
+`Backend::supports`; `capability.cpp` + `compile()` refuse any used feature a target can't emit — C#/TS
+declare the full set so nothing gates yet; a StubBackend test proves it bites). Differential suite grew
+1 → 13 programs, all green. **Remaining in P5:** generic emission. See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

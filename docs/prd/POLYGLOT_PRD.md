@@ -131,9 +131,11 @@ site*. Several targets also lack operator overloading, properties, etc.
   targets, withheld only when a configured target lacks it). The diagnostics must read differently:
   "Polyglot refuses X" (§3.B) vs "target *T* does not support X; remove it or drop *T*" (§3.E).
 - **For C#/TS today the intersection is the full §3.A surface, so nothing is gated yet.** The mechanism is
-  **designed now and enforced when the third backend lands** (P9/P10) — added *before* shipping a target
-  that can't do a feature already in the wild, never retrofitted after (the lesson from Haxe's late
-  threading-capability retrofit).
+  nonetheless **already implemented and active** (P5): each `compile()` walks the program for used features
+  and refuses any the target can't emit — it simply never fires while both backends declare the full set.
+  This means the gate is in place *before* a target that can't do a feature ever ships (no retrofit — the
+  lesson from Haxe's late threading-capability retrofit); a third backend just declares a smaller set and
+  the existing check starts biting. (A `StubBackend` test exercises the refusal today.)
 
 This is the **survivor pattern**: Kotlin Multiplatform makes the common surface literally the intersection;
 Haxe (`target.threaded`…), Rust (`cfg`/`target_feature`), LLVM target features, and Protobuf editions all

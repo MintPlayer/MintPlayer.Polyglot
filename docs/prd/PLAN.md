@@ -100,10 +100,16 @@ over ranges and iterables, **iterators (`yield`** → C# `IEnumerable`+`yield re
 and **`use`/disposal** (→ `try/finally` + `.dispose()`). `Iterable` and `Error` are registered as core
 builtin types. The differential suite grew from 1 → 11 self-contained programs (arithmetic, records,
 vec2, enums, unions, counter, forrange, iterator, exceptions, inheritance, disposal), all agreeing.
-*Lambda syntax* now also admits the bare single-parameter form `x => …` (grammar/SPEC/PRD updated);
-parsing + canonical formatting done, codegen pending (see closures below).
-*Remaining:* **closures/lambdas** (parsed + type-checked + formatted; IR lowering + arrow-fn emission
-still to do); **extension methods**; **generic emission** (type params + instantiation).
+*Lambda syntax* also admits the bare single-parameter form `x => …`. **Closures/lambdas** emit (native
+arrow functions both sides; function types → `Func`/`Action` / `(a:T)=>R`). **Extension methods** emit:
+C# `static class Extensions` of `this`-methods (call site `x.m()` survives), TS free functions (call site
+becomes `m(x)`) — the §3.E call-site divergence, exercised by `extensions.pg`.
+**§3.E per-target capability gating is implemented early and active**, not just designed: `backend.hpp`
+has a closed `Feature` enum + `Backend::supports(Feature)`; `capability.cpp` walks the AST for used
+features and `compile()` refuses (per target, intersection-wise) any a target can't emit — a clear error,
+never a miscompile. C#/TS declare the full set, so nothing is gated yet; a `StubBackend` unit test proves
+the gate bites and names the feature + target. Differential suite now 13 programs.
+*Remaining:* **generic emission** (type params + instantiation) — the last P5 widening.
 
 ## P6 — Faithfulness pass
 Implement the §3.C relaxations *as documented behaviour*: int32/uint masking (`|0`/`>>>0`/`Math.imul`),
