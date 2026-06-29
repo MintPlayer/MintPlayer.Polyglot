@@ -128,10 +128,14 @@ targets. The **target-gated `expect`/`actual`** mechanism (portable core forbidd
 APIs; per-target `actual` impls) and an `extern`/inline-target **FFI hatch**. This is where the three
 mechanisms of the plugin architecture — *binding*, *replacement*, *capability* — are proven **as
 first-party code** behind a backend interface designed to become the plugin API (see the plugin design
-note, below).
+note, below). This milestone also introduces **static methods on types** and the first use of them:
+**string↔number parsing as static type methods** — `i32.parse(s)`/`i64.parse(s)`/`f64.parse(s)` (throwing)
+and `tryParse(s): T?` (nullable) — realized per target (C# `int.Parse`/`TryParse`, JS `Number`/parse +
+range checks). Parsing is *not* a cast (PRD §3.A/§4.4): a cast `(T)x` converts between numeric types, parse
+reads text. (This unblocks the `.pg` samples that currently sketch `s.toI32()` — now `i32.parse(s)`.)
 *Gate:* a program using a portable std API + one `expect`/`actual` capability (e.g. current time) builds
-and runs identically on both targets; the portable core cannot reference `document`/`System.*` (compiler-
-enforced, with a test proving the rejection).
+and runs identically on both targets; `i32.parse("42")` round-trips on both; the portable core cannot
+reference `document`/`System.*` (compiler-enforced, with a test proving the rejection).
 
 ## P8 — Dogfood: the FruitCake physics ★ north star
 Express the MintPlayer.AI FruitCake circle-physics solver in `.pg`. Generate `FruitCakeWorld`-equivalent

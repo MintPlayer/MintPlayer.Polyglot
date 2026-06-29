@@ -71,7 +71,9 @@ a wider slot (assignment, call argument, return, mixed-width arithmetic) is conv
 narrowing (`(i32)big`), lossy widening (`(f64)someI64` — loses precision past 2⁵³), and sign changes
 (`(u32)signed`). A cast never fails silently and never miscompiles; it truncates toward zero (float→int)
 and wraps (narrowing) exactly as .NET does, mirrored on the JS side (`BigInt`/`Number`/`Math.trunc`/masking).
-Casting `string`↔number is **not** a cast — that is std parsing (a separate API, §7/P7).
+Converting `string`↔number is **not** a cast — text parsing can fail (and C# can't cast `string`→`int`),
+so it is a fallible **static method on the type**: `i32.parse(s)` / `f64.parse(s)` (throwing) and
+`tryParse(s): T?` (nullable). A std API (§7/P7), separate from casts.
 
 ---
 
@@ -229,7 +231,7 @@ class ParseError : Error { init(msg: string) { super(msg) } }
 
 fn parseTier(s: string): i32 {
   if s.isEmpty() { throw ParseError("empty tier") }
-  return parseI32(s)            // std string->int parse (a std API, §7) — not a cast
+  return i32.parse(s)           // std string->int parse (static type method, §7) — not a cast
 }
 
 try {

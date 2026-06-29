@@ -77,8 +77,11 @@ Operators (overloading → static calls), properties/indexers (→ get/set / `ge
 → guard), `using`/disposal (→ `try/finally`), iterators/`yield` (→ `function*` / `IEnumerable`),
 pattern matching / discriminated unions (→ tagged objects + switch, compile-time exhaustiveness), enums,
 closures / lambdas (`x => …` or `(a, b) => …`, both → native arrow functions; capture-by-ref agrees on
-both sides), function overloading (→ compile-time name-mangling),
-strings/char (**both targets are UTF-16** — near 1:1, with surrogate-pair care).
+both sides), function overloading (→ compile-time name-mangling; C# keeps the source name, TS mangles by
+parameter type), **numeric conversions via explicit casts `(T)x`** (not a `toI64()`/`toU32()` method swamp)
+with **implicit lossless widening** (a narrower value flows into a wider slot automatically — assignment,
+argument, return, mixed-width arithmetic; narrowing, lossy `i64→f64`, and sign changes require the cast —
+see SPEC §3), strings/char (**both targets are UTF-16** — near 1:1, with surrogate-pair care).
 
 ### B. Refused — out loud, with clear compiler diagnostics (the 🔴 list)
 Threads / `lock` / `Interlocked` / `Parallel.*` (single-threaded async only); runtime reflection /
@@ -194,6 +197,17 @@ The investigation's headline cost. Polyglot bounds it deliberately:
   capability (time, env, IO) via an `expect` declaration; each target supplies an `actual`. Platform APIs
   (`document`/`window` on JS, `System.*` on .NET) live **only** in target-gated regions — the portable
   core is compiler-forbidden from touching them (kills the #1 portability bug class).
+- **String↔number parsing is a static method on the target type** — `i32.parse(s)`, `i64.parse(s)`,
+  `f64.parse(s)` (throw on invalid input) plus `i32.tryParse(s): i32?` (nullable, non-throwing). It is
+  deliberately **not a cast**, for two reasons: (1) a cast `(T)x` is a *total* numeric→numeric conversion
+  that can never fail, whereas parsing text *can* fail — folding parse into cast syntax would hide that a
+  `(i32)s` might throw; and (2) **C# cannot cast `string`→`int`** at all, so `(i32)stringExpr` couldn't even
+  lower to a C# cast — it would have to secretly mean `int.Parse`, giving one syntax two semantics. It is
+  also **not a free `parseI32` function**: parse is exactly *one* method per numeric type (you must name the
+  target), so it's irreducible, not the per-type free-function swamp that motivated casts-over-`toI64()`.
+  Lives in the portable std, realized per target (C# `int.Parse`/`int.TryParse`, JS `Number`/parse + range
+  checks). This implies the language supports **static methods on types** (built-in on the primitives;
+  `static fn` members on user types follow the same shape).
 - **An FFI escape hatch** (`extern` / inline-target blocks) as the pressure valve past any unbound API.
 - **No promise of broad coverage.** Bind what's used; bindings are auto-generatable in *shape* (from
   `.d.ts` / .NET metadata / WebIDL) but always need hand-written semantic overrides — so coverage grows
