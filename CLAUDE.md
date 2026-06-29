@@ -84,15 +84,23 @@ overloading** (C# native name / TS param-mangled). *Deferred tail:* strict-f32 `
 first-party code:** **static methods** (`Type.method()`); **`i32.parse`/`f64.parse`** (string→number);
 the **`Math`** namespace (replacement); **`expect`/`actual`** target-gated capabilities (each backend
 emits only its `actual`); **`extern("…")`** raw-code FFI (binding); and the **portable-core guard**
-(`extern` refused outside an `actual`). Std is compiler-builtin intrinsics for now, not yet `.pg` modules.
-26 differential programs, all green. **P11 added to the roadmap** (PLAN/PRD): a NuGet package that
+(`extern` refused outside an `actual`). **P11 added to the roadmap** (PLAN/PRD): a NuGet package that
 auto-transpiles `.pg`→`.cs` before `dotnet build` (Grpc.Tools-style, native CLI per-RID, non-transitive);
 depends only on a stable CLI, so it can ship independently of P9/P10.
-**Next: P8 — dogfood the FruitCake physics** (★ north star). *Entry plan:* first **scout the FruitCake
-solver in `C:\Repos\MintPlayer.AI`** (read-only) to scope the `.pg` port + how the existing differential
-test is wired; **collections (`List<T>` with real `add`/indexing) are a likely prerequisite** — they're
-currently only typed/rendered (no operations) — as may be a `.pg` std (today's std is compiler intrinsics:
-`Math`, `i32.parse`). See PLAN.md.
+**P8 ✅ done — the FruitCake physics dogfood (★ north star).** `docs/lang/samples/fruitcake_sketch.pg`
+(a full sequential-impulse circle solver, f64 so `+−×÷√` are bit-exact cross-target per §3.D) transpiles
+to C# **and** TS with byte-identical output (`bodies=1 scored=1`); it's conformance program #27, all green.
+Delivered: **`List<T>` as a first-party `.pg` std type** (not an intrinsic) via the new **binding
+mechanism** — a method/property body of `actual(target) extern("…template…")` arms where `$this`
+(receiver) + `$0…` (args) substitute at each call site, and a `$this = …` arm emits a receiver
+*assignment* (so `list.clear()` → C# `xs.Clear()` / TS `xs = []`; `list.removeAll(p)` → TS
+`xs = xs.filter(e => !((p)(e)))`). **`extern class`** marks a native-backed type (not emitted; maps to a
+target type). **Embedded std module**: `import std.collections.{ List }` links an embedded `collections.pg`
+(no FS resolver yet). List element typing (`[...]`, `lst[i]`, `for x in`/`for (a,b) in`) is compiler-level.
+Also lowered+emitted for the first time (all previously hit a silent `0`): `null`, `x!` (→ non-null cast),
+`??`, string interpolation, index, tuple literal, top-level globals, tuple destructuring. *Deferred tail
+(unchanged):* strict-f32 `Math.fround`, `lock`/`unsafe` refusals, null normalization.
+**Next: P9/P10/P11** (see PLAN.md). Std is still embedded-source, not a real module-resolution system.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

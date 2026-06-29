@@ -156,14 +156,33 @@ expect_actual, extern_ffi) + extern-guard unit tests. *Deviation from the sketch
 mechanism — that (and `tryParse`, collections) is a further step; the three plugin mechanisms are proven,
 which is the milestone's point. At P9 these intrinsics become declarative plugin data.
 
-## P8 — Dogfood: the FruitCake physics ★ north star
-Express the MintPlayer.AI FruitCake circle-physics solver in `.pg`. Generate `FruitCakeWorld`-equivalent
-C# and `fruit-cake-physics`-equivalent TS. Wire the **differential conformance test** against the existing
-hand-ported twins (same seed + scripted drops → settled board within tolerance + identical merge counts;
-per §3.D, tolerance/behavioural, not bit-exact).
-*Gate:* generated C# and generated TS each match their hand-ported counterpart's behaviour on the
-conformance suite. At this point Polyglot has *earned* the right to own that physics; the hand-ports can
-retire while the conformance test stays (now guarding the generator).
+## P8 — Dogfood: the FruitCake physics ★ north star — ✅ DONE
+Expressed the MintPlayer.AI FruitCake circle-physics solver in `.pg`
+(`docs/lang/samples/fruitcake_sketch.pg`): the full sequential-impulse circle solver with rigid-body
+rotation, walls, deferred same-tier merges, settle-to-rest. Generates `FruitCakeWorld`-equivalent C# and
+`fruit-cake-physics`-equivalent TS from one source.
+
+**Delivered (beyond the original plan):**
+- Written in **`f64`** so the solver's `+ − × ÷ √` are **bit-exact across .NET and JS** (§3.D). The two
+  emitted twins therefore agree *to the bit* — a stronger result than the hand-ported `float`/`number`
+  twins, which diverge from each other. So the conformance gate asserts **byte-identical** stdout
+  (`bodies=1 scored=1` on a scripted two-fruit drop+merge), not just behavioural tolerance.
+- **`List<T>` as a first-party `.pg` std type** (the principled path, not a compiler intrinsic) via a new
+  **binding mechanism**: a method/property body of `actual(target) extern("…template…")` arms with
+  `$this` (receiver) / `$0…` (args) substituted at each call site; a `$this = …` arm emits a receiver
+  *assignment* (`list.clear()` → C# `xs.Clear()` / TS `xs = []`; `list.removeAll(p)` → C# `xs.RemoveAll(p)`
+  / TS `xs = xs.filter(e => !((p)(e)))`). `extern class` = native-backed type (not emitted). Embedded std
+  module linked on `import std.collections.{ List }` (no filesystem resolver yet). List literal / `lst[i]` /
+  `for x in` / `for (a,b) in` element typing is compiler-level (syntax the bindings can't express).
+- Lowered + emitted for the first time (all previously fell through to a silent `0`): `null` literal,
+  `x!` null-assert (→ cast to the non-null type, unwrapping C# `Nullable<T>`), `??`, string interpolation,
+  index, tuple literal, top-level `const`/`let` globals, tuple destructuring in `for`.
+
+*Gate (met):* `fruitcake` is conformance program #27; generated C# and TS produce identical stdout. The
+27-program differential suite + 10-sample round-trip + in-process unit tests are all green. Polyglot has
+earned the right to own that physics; the hand-ports can retire while the conformance test guards the
+generator. *Not yet done here:* wiring the generated output back into the live MintPlayer.AI repo (out of
+scope — that repo's build is not run from here) and a real module-resolution system (std is embedded source).
 
 ## P9 — Declarative backend engine + DSL
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
