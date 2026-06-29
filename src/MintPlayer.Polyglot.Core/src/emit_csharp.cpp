@@ -3,7 +3,9 @@
 #include <string>
 
 // Hand-written IR -> C# pretty-printer. Walks the typed IR; wraps the program's free functions in a
-// `static class Program`, maps the `print` intrinsic -> Console.WriteLine and the entry function -> Main.
+// `static class Program`, maps the `print` intrinsic -> global::System.Console.WriteLine and the entry
+// function -> Main. Every BCL reference is `global::`-qualified (no `using`) so generated code can't
+// collide with a user-defined type/namespace named System/Console/Math/etc.
 
 namespace mintplayer::polyglot {
 
@@ -25,8 +27,8 @@ std::string csType(const TypeRef& t) {
         if (t.name == "bool")   return "bool";
         if (t.name == "string") return "string";
         if (t.name.empty())     return "object";
-        if (t.name == "Error")  return "System.Exception";
-        std::string name = (t.name == "Iterable") ? "System.Collections.Generic.IEnumerable" : t.name;
+        if (t.name == "Error")  return "global::System.Exception";
+        std::string name = (t.name == "Iterable") ? "global::System.Collections.Generic.IEnumerable" : t.name;
         if (!t.args.empty()) {
             name += "<";
             for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += csType(t.args[i]); }
@@ -37,12 +39,12 @@ std::string csType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Function) { // C# delegate: Action for unit return, else Func<args, ret>
         bool returnsUnit = t.ret.empty() || (t.ret[0].kind == TypeRef::Kind::Named && t.ret[0].name == "unit");
         if (returnsUnit) {
-            if (t.args.empty()) return "System.Action";
-            std::string s = "System.Action<";
+            if (t.args.empty()) return "global::System.Action";
+            std::string s = "global::System.Action<";
             for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += csType(t.args[i]); }
             return s + ">";
         }
-        std::string s = "System.Func<";
+        std::string s = "global::System.Func<";
         for (const auto& a : t.args) s += csType(a) + ", ";
         return s + csType(t.ret[0]) + ">";
     }
@@ -107,7 +109,9 @@ int prec(const std::string& op) {
 class CSharpEmitter {
 public:
     std::string emit(const ir::Module& m) {
-        out_ = "using System;\n\n";
+        // No `using` directives: every BCL reference is `global::`-qualified, so emitted code can't collide
+        // with a user type/namespace named System/Console/Math/etc.
+        out_.clear();
         indent_ = 0;
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
@@ -448,7 +452,7 @@ private:
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
-                std::string s = (c.isPrint ? "Console.WriteLine" : c.callee) + "(";
+                std::string s = (c.isPrint ? "global::System.Console.WriteLine" : c.callee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";
             }
@@ -458,15 +462,15 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                if (mc.staticType == "Math") { // Math.sqrt(x) -> System.Math.Sqrt(x)
-                    std::string s = "System.Math." + csMathFn(mc.method) + "(";
+                if (mc.staticType == "Math") { // Math.sqrt(x) -> global::System.Math.Sqrt(x)
+                    std::string s = "global::System.Math." + csMathFn(mc.method) + "(";
                     for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                     return s + ")";
                 }
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)
                     bool flt = mc.staticType == "f32" || mc.staticType == "f64";
                     return csType(namedType(mc.staticType)) + ".Parse(" + emitExpr(*mc.args[0]) +
-                           (flt ? ", System.Globalization.CultureInfo.InvariantCulture" : "") + ")";
+                           (flt ? ", global::System.Globalization.CultureInfo.InvariantCulture" : "") + ")";
                 }
                 std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
                 std::string s = recv + "." + mc.method + "(";
@@ -475,7 +479,7 @@ private:
             }
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
-                std::string ctor = (n.typeName == "Error") ? "System.Exception" : n.typeName;
+                std::string ctor = (n.typeName == "Error") ? "global::System.Exception" : n.typeName;
                 if (!n.typeArgs.empty()) {
                     ctor += "<";
                     for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += csType(n.typeArgs[i]); }
@@ -518,7 +522,7 @@ private:
                 }
                 // Sema guarantees exhaustiveness, but C# can't prove it for enums — add an unreachable
                 // default so the switch expression compiles without CS8524.
-                if (!hasCatchAll) s += ", _ => throw new System.InvalidOperationException()";
+                if (!hasCatchAll) s += ", _ => throw new global::System.InvalidOperationException()";
                 return s + " }";
             }
         }
