@@ -119,7 +119,7 @@ struct Expr {
     std::vector<MatchArm> arms; // Match arms
 };
 
-enum class StmtKind { Let, Assign, ExprStmt, If, While, Return };
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue };
 
 struct Stmt {
     StmtKind kind;
@@ -130,9 +130,10 @@ struct Stmt {
     TypeRef declType;               // Let: explicit annotation (when hasDeclType)
     bool hasDeclType = false;
 
-    ExprPtr value;                  // Let init | Assign value | ExprStmt | Return value | If/While cond
+    ExprPtr value;                  // Let init | Assign value | ExprStmt | Return value | If/While/For cond/iterable
 
-    std::vector<StmtPtr> thenBody;  // If-then / While body
+    Pattern forBinding;             // For: the loop binding (Binding or Tuple)
+    std::vector<StmtPtr> thenBody;  // If-then / While / For body
     std::vector<StmtPtr> elseBody;  // If-else
     bool hasElse = false;
 };
@@ -168,7 +169,15 @@ struct UnionDecl {
     std::vector<UnionCase> cases;
 };
 
+struct ImportDecl {
+    std::string path;                // dotted module path, e.g. "std.io"
+    std::vector<std::string> names;  // selective group `{ a, b }` (empty if none)
+    std::string alias;               // `as X` (empty if none)
+    SourcePos pos;
+};
+
 struct CompilationUnit {
+    std::vector<ImportDecl> imports;
     std::vector<EnumDecl> enums;
     std::vector<UnionDecl> unions;
     std::vector<FunctionDecl> functions;

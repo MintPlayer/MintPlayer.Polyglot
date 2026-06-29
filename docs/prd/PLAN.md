@@ -64,6 +64,10 @@ Widen both hand-written pretty-printers from the MVP subset to the **entire supp
 enums, unions + pattern matching, iterators, exceptions, `using`/disposal, extension methods, operators,
 properties/indexers, closures — idiomatic in each target. Golden-output baselines checked in for **both**
 targets; the differential conformance suite (stood up at P2) grows to cover the surface.
+Also introduce the **backend-interface seam**: a small `Backend` abstraction (`name()` + `emit(unit)`)
+selected via a registry, replacing the `if/else` on `Target` in `compile()`. Backends stay compiled-in,
+but this is the shape the P9 declarative-plugin API grows from — the natural moment, with two *complete*
+native backends to generalize across (the design note's "extracted, not guessed").
 *Gate:* P1 samples emit C# that compiles under `dotnet build` and TS that type-checks under `tsc` + runs
 under Node, both with expected output; golden baselines green; the differential suite passes.
 

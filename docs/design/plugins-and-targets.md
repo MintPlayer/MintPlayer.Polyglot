@@ -144,6 +144,9 @@ Illustrative only (shape TBD; the `.json` extension keeps editors' schema/valida
 - **P2 (MVP) → P5:** a walking-skeleton slice end-to-end first (P2), then widen front-end (P3), semantics+IR
   (P4), and both backends (P5) — **C# and TS backends hand-written as native code in the core**. No DSL, no
   plugin loading, no platform APIs yet. (You must see two real, complete backends before designing the DSL.)
+  **At P5, introduce the backend-interface seam** — a `Backend` abstraction selected via a registry instead
+  of an `if/else` on the target. Backends stay compiled-in, but this is the interface the P9 declarative
+  plugin API grows from; until P5 the two free emit functions are deliberately the simplest thing.
 - **P7:** the portable std + the three §2 mechanisms (binding/replacement/capability) proven as first-party
   code against the two native backends.
 - **P8:** dogfood (FruitCake), still on native backends.

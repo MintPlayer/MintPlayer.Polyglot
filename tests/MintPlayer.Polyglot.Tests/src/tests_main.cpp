@@ -106,6 +106,10 @@ int main() {
                    "fn classify(n: i32): string => match n {\n"
                    "  0 => \"zero\",\n  x if x < 0 => \"negative\",\n  _ => \"many\",\n}\n",
                    "round-trip: enum / union / match / patterns / named types");
+        roundtrips("import std.io.{ print }\nimport std.math.{ sqrt, PI }\n"
+                   "fn main() {\n  for x in items {\n    if x > 0 { continue }\n"
+                   "    print(x)\n    break\n  }\n}\n",
+                   "round-trip: imports + for-in + break/continue");
     }
 
     // C# emission (golden substrings).

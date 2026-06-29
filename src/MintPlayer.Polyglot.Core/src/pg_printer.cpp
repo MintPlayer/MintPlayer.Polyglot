@@ -29,12 +29,24 @@ class PgPrinter {
 public:
     std::string print(const CompilationUnit& unit) {
         out_.clear();
-        bool first = true;
+        for (const auto& im : unit.imports) line(importStr(im));
+        bool first = unit.imports.empty(); // a blank line separates imports from the first declaration
         auto sep = [&]() { if (!first) out_ += "\n"; first = false; };
         for (const auto& e : unit.enums)     { sep(); printEnum(e); }
         for (const auto& u : unit.unions)    { sep(); printUnion(u); }
         for (const auto& fn : unit.functions){ sep(); printFunction(fn); }
         return out_;
+    }
+
+    std::string importStr(const ImportDecl& im) {
+        std::string s = "import " + im.path;
+        if (!im.names.empty()) {
+            s += ".{ ";
+            for (std::size_t i = 0; i < im.names.size(); ++i) { if (i) s += ", "; s += im.names[i]; }
+            s += " }";
+        }
+        if (!im.alias.empty()) s += " as " + im.alias;
+        return s;
     }
 
 private:
@@ -139,6 +151,13 @@ private:
                 printBlock(s.thenBody);
                 line("}");
                 break;
+            case StmtKind::For:
+                line("for " + patternStr(s.forBinding) + " in " + expr(*s.value) + " {");
+                printBlock(s.thenBody);
+                line("}");
+                break;
+            case StmtKind::Break:    line("break"); break;
+            case StmtKind::Continue: line("continue"); break;
         }
     }
 
@@ -286,7 +305,11 @@ private:
             case StmtKind::Assign:   return s.name + " = " + expr(*s.value);
             case StmtKind::ExprStmt: return expr(*s.value);
             case StmtKind::Return:   return s.value ? "return " + expr(*s.value) : "return";
-            default:                 return expr(*s.value);
+            case StmtKind::Break:    return "break";
+            case StmtKind::Continue: return "continue";
+            case StmtKind::For:      return "for " + patternStr(s.forBinding) + " in " +
+                                            expr(*s.value) + " " + blockInline(s.thenBody);
+            default:                 return s.value ? expr(*s.value) : "";
         }
     }
 };

@@ -12,7 +12,8 @@ public:
     CompilationUnit parseUnit() {
         CompilationUnit unit;
         while (!at(TokKind::End)) {
-            if (at(TokKind::KwFn)) unit.functions.push_back(parseFunction());
+            if (at(TokKind::KwImport)) unit.imports.push_back(parseImport());
+            else if (at(TokKind::KwFn)) unit.functions.push_back(parseFunction());
             else if (at(TokKind::KwEnum)) unit.enums.push_back(parseEnum());
             else if (at(TokKind::KwUnion)) unit.unions.push_back(parseUnion());
             else {
@@ -21,6 +22,28 @@ public:
             }
         }
         return unit;
+    }
+
+    ImportDecl parseImport() {
+        ImportDecl d;
+        d.pos = peek().pos;
+        expect(TokKind::KwImport, "'import'");
+        d.path = expect(TokKind::Identifier, "a module path").text;
+        while (accept(TokKind::Dot)) {
+            if (at(TokKind::LBrace)) { // selective group `.{ a, b }` ends the path
+                advance();
+                if (!at(TokKind::RBrace)) {
+                    do { d.names.push_back(expect(TokKind::Identifier, "an imported name").text); }
+                    while (accept(TokKind::Comma) && !at(TokKind::RBrace));
+                }
+                expect(TokKind::RBrace, "'}'");
+                break;
+            }
+            d.path += "." + expect(TokKind::Identifier, "a path segment").text;
+        }
+        if (at(TokKind::Identifier) && peek().text == "as") { advance(); d.alias = expect(TokKind::Identifier, "an alias").text; }
+        accept(TokKind::Semicolon);
+        return d;
     }
 
 private:
@@ -48,7 +71,8 @@ private:
     }
 
     bool recoverToTopLevel() {
-        while (!at(TokKind::End) && !at(TokKind::KwFn) && !at(TokKind::KwEnum) && !at(TokKind::KwUnion))
+        while (!at(TokKind::End) && !at(TokKind::KwImport) && !at(TokKind::KwFn) &&
+               !at(TokKind::KwEnum) && !at(TokKind::KwUnion))
             advance();
         panicked_ = false;
         return !at(TokKind::End);
@@ -198,7 +222,16 @@ private:
         if (at(TokKind::KwLet) || at(TokKind::KwVar)) return parseLet();
         if (at(TokKind::KwIf)) return parseIf();
         if (at(TokKind::KwWhile)) return parseWhile();
+        if (at(TokKind::KwFor)) return parseFor();
         if (at(TokKind::KwReturn)) return parseReturn();
+        if (at(TokKind::KwBreak) || at(TokKind::KwContinue)) {
+            auto s = std::make_unique<Stmt>();
+            s->kind = at(TokKind::KwBreak) ? StmtKind::Break : StmtKind::Continue;
+            s->pos = peek().pos;
+            advance();
+            accept(TokKind::Semicolon);
+            return s;
+        }
 
         if (at(TokKind::Identifier) && peek(1).kind == TokKind::Assign) {
             auto s = std::make_unique<Stmt>();
@@ -254,6 +287,18 @@ private:
         s->pos = peek().pos;
         advance();
         s->value = parseExpr();
+        s->thenBody = parseBlock();
+        return s;
+    }
+
+    StmtPtr parseFor() {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::For;
+        s->pos = peek().pos;
+        advance(); // for
+        s->forBinding = parsePattern();   // `i` or `(a, b)`
+        expect(TokKind::KwIn, "'in'");
+        s->value = parseExpr();           // iterable
         s->thenBody = parseBlock();
         return s;
     }
