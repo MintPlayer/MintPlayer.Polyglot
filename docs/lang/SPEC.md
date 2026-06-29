@@ -408,21 +408,30 @@ miscompile.
 
 ---
 
-## 11. Module structure & imports (provisional)
+## 11. Module structure & imports
 
-A `.pg` file is one compilation unit. Top-level declarations are module-public unless marked `private`.
-Imports name other modules:
+A `.pg` file is one compilation unit. Top-level declarations are module-public (a `private` opt-out marker
+is planned, not yet implemented). Imports are **TypeScript-style**: a named group, namespace, or bare form,
+with the module given as a **quoted string specifier**:
 
 ```pg
-import std.math.{ sqrt, PI }
-import std.collections.List
-import app.physics as phys
+import { sqrt, PI } from "std.math"
+import { readText, writeText as wt } from "std.io"   // `as` rebinds an imported name
+import * as coll from "std.collections"              // namespace import
+import "std.io"                                       // bare: link only
 ```
 
-Full package/resolution rules are deferred to P2/P3 (this is the design milestone); v0.1 fixes only the
-*syntax* of imports and visibility. `expect`/`actual` (target-gated capabilities) and `extern` (the FFI
-hatch) are **reserved keywords** with sketched syntax in [the P7 plan](../prd/PLAN.md) — out of the v0.1
-core grammar on purpose.
+`from` and `as` are **contextual identifiers**, not reserved words (so they remain usable as ordinary
+names). The specifier is a quoted string so that a bare name like `"std.io"` reads as a logical module and a
+`"./physics"` reads as importer-relative (Node/TS/Deno convention) — the latter enables cross-`.pg`
+user modules. An interpolated string (`"…${}…"`) is rejected as a specifier.
+
+**Resolution** (PRD §4.5, PLAN P12): `std.*` resolves from the compiler's embedded registry; other
+specifiers resolve through a pluggable module loader (the CLI maps a logical `a.b.c` to `<root>/a/b/c.pg`
+and a `./x` relative to the importing file; cross-file user-module loading is the P12 deliverable). Selective
+imports are intended to restrict visibility and name collisions are compile errors resolvable with `as` —
+see PRD §4.5. `expect`/`actual` (target-gated capabilities) and `extern` (the FFI hatch) are implemented as
+of P7.
 
 Platform/SDK/environment APIs (`window`, `System.Windows.Forms`, …) are **not** in the core language at
 all: the core is a pure translator + a declarative emit engine, and all such APIs — plus the **target

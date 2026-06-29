@@ -1,7 +1,7 @@
 // 04 — generic types & functions, constraints, interfaces, indexers.
 // Exercises §3.A: generics (overloading via constraints), indexers, properties.
 
-import std.io.{ print }
+import { print } from "std.io"
 
 interface Comparable<T> {
   fn compareTo(other: T): i32;

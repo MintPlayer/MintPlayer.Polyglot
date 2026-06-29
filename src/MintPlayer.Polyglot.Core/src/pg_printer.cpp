@@ -44,14 +44,16 @@ public:
     }
 
     std::string importStr(const ImportDecl& im) {
-        std::string s = "import " + im.path;
-        if (!im.names.empty()) {
-            s += ".{ ";
-            for (std::size_t i = 0; i < im.names.size(); ++i) { if (i) s += ", "; s += im.names[i]; }
-            s += " }";
+        std::string spec = quote(im.path, '"');
+        if (im.isNamespace) return "import * as " + im.nsAlias + " from " + spec;
+        if (im.names.empty()) return "import " + spec; // bare
+        std::string s = "import { ";
+        for (std::size_t i = 0; i < im.names.size(); ++i) {
+            if (i) s += ", ";
+            s += im.names[i].name;
+            if (!im.names[i].alias.empty()) s += " as " + im.names[i].alias;
         }
-        if (!im.alias.empty()) s += " as " + im.alias;
-        return s;
+        return s + " } from " + spec;
     }
 
 private:

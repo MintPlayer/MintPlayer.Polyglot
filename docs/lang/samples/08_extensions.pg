@@ -1,7 +1,7 @@
 // 08 — extension functions on existing types (built-in and generic).
 // Exercises §3.A: extension methods (-> static calls on both targets).
 
-import std.io.{ print }
+import { print } from "std.io"
 
 // Extend a primitive type.
 extension fn string.shout(): string => this.toUpper() + "!"

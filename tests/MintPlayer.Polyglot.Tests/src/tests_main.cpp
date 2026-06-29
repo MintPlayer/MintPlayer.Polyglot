@@ -122,7 +122,7 @@ int main() {
                    "fn classify(n: i32): string => match n {\n"
                    "  0 => \"zero\",\n  x if x < 0 => \"negative\",\n  _ => \"many\",\n}\n",
                    "round-trip: enum / union / match / patterns / named types");
-        roundtrips("import std.io.{ print }\nimport std.math.{ sqrt, PI }\n"
+        roundtrips("import { print } from \"std.io\"\nimport { sqrt, PI } from \"std.math\"\n"
                    "fn main() {\n  for x in items {\n    if x > 0 { continue }\n"
                    "    print(x)\n    break\n  }\n}\n",
                    "round-trip: imports + for-in + break/continue");
@@ -299,7 +299,7 @@ int main() {
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
         const char* prog =
-            "import std.collections.{ List }\n"
+            "import { List } from \"std.collections\"\n"
             "fn first(xs: List<i32>): i32 => xs[0]\n"
             "fn main() {\n"
             "  var xs: List<i32> = [1, 2]\n"
@@ -329,13 +329,13 @@ int main() {
     }
 
     // P8 — importing an unknown std module is a diagnostic (real module resolution, not a silent no-op).
-    rejects("import std.bogus.{ Thing }\nfn main() {}\n", "P8: unknown std module is rejected");
-    rejects("import std.collections.{ Nope }\nfn main() {}\n", "P8: unknown imported name is rejected");
+    rejects("import { Thing } from \"std.bogus\"\nfn main() {}\n", "P8: unknown std module is rejected");
+    rejects("import { Nope } from \"std.collections\"\nfn main() {}\n", "P8: unknown imported name is rejected");
 
     // P8 — std.io: filesystem access via the capability mechanism (expect + per-target actual extern).
     {
         const char* prog =
-            "import std.io.{ readText, writeText }\n"
+            "import { readText, writeText } from \"std.io\"\n"
             "fn main() {\n"
             "  writeText(\"a.txt\", \"hi\")\n"
             "  print(readText(\"a.txt\"))\n"

@@ -1,7 +1,7 @@
 // 06 — exceptions: custom error types, throw, typed catch, `when` guard, finally.
 // Exercises §3.A: exceptions (try/catch/finally, typed catch -> dispatch, when -> guard).
 
-import std.io.{ print }
+import { print } from "std.io"
 
 class ParseError : Error {
   let position: i32

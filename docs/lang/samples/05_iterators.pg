@@ -1,7 +1,7 @@
 // 05 — iterators via `yield`, ranges, lazy sequences, for-in consumption.
 // Exercises §3.A: iterators/yield.
 
-import std.io.{ print }
+import { print } from "std.io"
 
 // An iterator function: its return type is Iterable<T> and it `yield`s.
 // -> C#: IEnumerable<int> + yield return ;  TS: function* + yield.

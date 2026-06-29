@@ -33,26 +33,48 @@ public:
         return unit;
     }
 
+    // `import { a, b as c } from "spec"` | `import * as ns from "spec"` | `import "spec"` (bare).
+    // `from`/`as` are contextual identifiers (not reserved); the specifier is a quoted string so a bare
+    // `"std.io"` reads as a logical name and `"./x"` as an importer-relative path.
     ImportDecl parseImport() {
         ImportDecl d;
         d.pos = peek().pos;
         expect(TokKind::KwImport, "'import'");
-        d.path = expect(TokKind::Identifier, "a module path").text;
-        while (accept(TokKind::Dot)) {
-            if (at(TokKind::LBrace)) { // selective group `.{ a, b }` ends the path
-                advance();
-                if (!at(TokKind::RBrace)) {
-                    do { d.names.push_back(expect(TokKind::Identifier, "an imported name").text); }
-                    while (accept(TokKind::Comma) && !at(TokKind::RBrace));
-                }
-                expect(TokKind::RBrace, "'}'");
-                break;
-            }
-            d.path += "." + expect(TokKind::Identifier, "a path segment").text;
+
+        if (at(TokKind::StringLit)) { // bare side-effect import: `import "spec"`
+            d.path = advance().text;
+            accept(TokKind::Semicolon);
+            return d;
         }
-        if (at(TokKind::Identifier) && peek().text == "as") { advance(); d.alias = expect(TokKind::Identifier, "an alias").text; }
+        if (at(TokKind::Star)) {      // namespace import: `import * as ns from "spec"`
+            advance();
+            expectContextual("as");
+            d.isNamespace = true;
+            d.nsAlias = expect(TokKind::Identifier, "a namespace alias").text;
+        } else {                      // named group: `import { a, b as c } from "spec"`
+            expect(TokKind::LBrace, "'{'");
+            if (!at(TokKind::RBrace)) {
+                do {
+                    if (at(TokKind::RBrace)) break;
+                    ImportName n;
+                    n.name = expect(TokKind::Identifier, "an imported name").text;
+                    if (atContextual("as")) { advance(); n.alias = expect(TokKind::Identifier, "an alias").text; }
+                    d.names.push_back(std::move(n));
+                } while (accept(TokKind::Comma));
+            }
+            expect(TokKind::RBrace, "'}'");
+        }
+        expectContextual("from");
+        if (at(TokKind::InterpStart))
+            error("a module specifier must be a plain string, not an interpolated one");
+        d.path = expect(TokKind::StringLit, "a quoted module specifier").text;
         accept(TokKind::Semicolon);
         return d;
+    }
+    bool atContextual(const char* kw) const { return at(TokKind::Identifier) && peek().text == kw; }
+    void expectContextual(const char* kw) {
+        if (atContextual(kw)) advance();
+        else error(std::string("expected '") + kw + "'");
     }
 
 private:

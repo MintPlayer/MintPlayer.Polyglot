@@ -22,9 +22,13 @@
 
 compilation_unit = { import_decl } , { declaration } ;
 
-import_decl = "import" , module_path , [ "." , import_group ] , [ "as" , IDENT ] ;
-module_path = IDENT , { "." , IDENT } ;
-import_group = "{" , IDENT , { "," , IDENT } , [ "," ] , "}" ;
+(* TypeScript-style. `from` and `as` are contextual identifiers, not reserved keywords. The module
+   specifier is a quoted STRING: a bare "std.io" is a logical name, a "./x" is importer-relative. *)
+import_decl   = "import" , [ import_clause , "from" ] , STRING ;
+import_clause = import_group | namespace_import ;
+import_group  = "{" , [ import_spec , { "," , import_spec } , [ "," ] ] , "}" ;
+import_spec   = IDENT , [ "as" , IDENT ] ;
+namespace_import = "*" , "as" , IDENT ;
 
 
 (* ---- 2. Declarations ----------------------------------------------------- *)

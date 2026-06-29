@@ -1,7 +1,7 @@
 // 07 — deterministic disposal with `use` and the Disposable interface.
 // Exercises §3.A: using/disposal (-> C# `using` / TS try-finally + Symbol.dispose).
 
-import std.io.{ print }
+import { print } from "std.io"
 
 interface Disposable {
   fn dispose();

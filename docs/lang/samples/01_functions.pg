@@ -2,7 +2,7 @@
 //      expression bodies, lambdas/closures, higher-order functions.
 // Exercises §3.A: closures, function overloading.
 
-import std.io.{ print }
+import { print } from "std.io"
 
 // Expression-bodied function.
 fn square(x: i32): i32 => x * x

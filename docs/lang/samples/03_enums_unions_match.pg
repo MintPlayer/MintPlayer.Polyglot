@@ -1,8 +1,8 @@
 // 03 — enums (simple constants) and unions (ADTs) with exhaustive `match`.
 // Exercises §3.A: enums, pattern matching / discriminated unions, guards.
 
-import std.io.{ print }
-import std.math.{ PI }
+import { print } from "std.io"
+import { PI } from "std.math"
 
 enum Direction { North, East, South, West }
 

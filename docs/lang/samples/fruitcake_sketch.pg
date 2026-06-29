@@ -22,7 +22,7 @@
 // and a class's own static/const members referenced unqualified.
 // ============================================================================
 
-import std.collections.{ List }
+import { List } from "std.collections"
 
 // ── Fruit catalog (inlined stub; the real one is FruitCatalog.cs) ───────────
 record FruitDef(radiusPx: f64, mergePoints: i32)

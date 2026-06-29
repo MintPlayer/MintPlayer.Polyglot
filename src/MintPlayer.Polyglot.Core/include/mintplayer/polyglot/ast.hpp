@@ -273,10 +273,15 @@ struct UnionDecl {
     std::vector<UnionCase> cases;
 };
 
-struct ImportDecl {
-    std::string path;                // dotted module path, e.g. "std.io"
-    std::vector<std::string> names;  // selective group `{ a, b }` (empty if none)
-    std::string alias;               // `as X` (empty if none)
+struct ImportName {                  // one entry of a `{ a, b as c }` group
+    std::string name;
+    std::string alias;               // `as X` rebinding (empty = imported under its own name)
+};
+struct ImportDecl {                  // `import { a, b as c } from "spec"` | `import * as ns from "spec"` | `import "spec"`
+    std::string path;                // the decoded specifier string: "std.io", "./physics" (no quotes)
+    std::vector<ImportName> names;   // selective group (empty for namespace/bare imports)
+    std::string nsAlias;             // `* as ns` -> "ns" (empty unless isNamespace)
+    bool isNamespace = false;        // `import * as ns from "spec"`
     SourcePos pos;
 };
 

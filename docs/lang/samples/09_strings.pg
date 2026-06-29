@@ -2,7 +2,7 @@
 //      value equality.
 // Exercises §3.A: strings/char (both targets UTF-16, near 1:1).
 
-import std.io.{ print }
+import { print } from "std.io"
 
 // Count code POINTS, not code units — astral chars (e.g. emoji) are surrogate
 // pairs in UTF-16 on both targets (SPEC §8).

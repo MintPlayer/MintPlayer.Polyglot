@@ -105,7 +105,7 @@ void linkStdModules(CompilationUnit& unit, DiagnosticBag& diags) {
             for (const auto& i : mod.interfaces) exports.insert(i.name);
             for (const auto& f : mod.functions)  exports.insert(f.name);
             for (const auto& n : imp.names)
-                if (!exports.count(n)) diags.error(imp.pos, "module '" + imp.path + "' has no export '" + n + "'");
+                if (!exports.count(n.name)) diags.error(imp.pos, "module '" + imp.path + "' has no export '" + n.name + "'");
         }
 
         for (auto& c : mod.classes)    unit.classes.push_back(std::move(c));

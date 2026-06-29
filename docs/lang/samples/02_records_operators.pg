@@ -2,8 +2,8 @@
 //      equality, `with` copies.
 // Exercises §3.A: operators, properties, records (the immutable value kind).
 
-import std.io.{ print }
-import std.math.{ sqrt }
+import { print } from "std.io"
+import { sqrt } from "std.math"
 
 record Vec2(x: f64, y: f64) {
   // Operator overloads are fixed-named methods (SPEC §6.1): plus/minus/times.

@@ -3,7 +3,7 @@
 // and clear — across C# (System.Collections.Generic.List) and TS (native array). Integer
 // output only, so the two targets are directly comparable.
 
-import std.collections.{ List }
+import { List } from "std.collections"
 
 fn sumOf(xs: List<i32>): i32 {
   var total = 0
