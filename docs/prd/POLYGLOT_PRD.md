@@ -70,6 +70,8 @@ Derived directly from the investigation's per-feature analysis. **This is the sc
 single most important thing to hold the line on, because every dead transpiler died by not holding it.
 
 ### A. Supported — lowers cleanly to **both** C# and JS (the 🟢 core)
+*(This is the maximal surface, calibrated to the first two targets. With more targets the usable surface
+is the per-project intersection of backend capabilities — see §3.E.)*
 Operators (overloading → static calls), properties/indexers (→ get/set / `get_Item`), extension methods
 (→ static calls), exceptions (`try/catch/finally`, typed catch → `instanceof` dispatch + rethrow, `when`
 → guard), `using`/disposal (→ `try/finally`), iterators/`yield` (→ `function*` / `IEnumerable`),
@@ -105,6 +107,42 @@ FMA contraction, and JIT reassociation diverge between the .NET JIT and a JS eng
 identical results across targets must use the std's **fixed-point / soft-float** numeric type (a planned
 std module), *not* `float`/`double`. (The FruitCake solver uses only `+ − × ÷ √`, so its differential
 test gates on **tolerance + behavioural equality**, never bit-equality — see the M30 plan in MintPlayer.AI.)
+
+### E. Per-target capability negotiation (the multi-target generalization)
+§3.A is written against C# and TS, which both happen to support the **entire** supported surface. That
+two-target coincidence hides a question every *additional* target raises: not every SDK can express every
+§3.A feature with an idiomatic, call-site-preserving mapping. Concretely (from the cross-SDK survey):
+**extension methods** keep `x.method()` on C#, Kotlin, Swift, Dart, Rust (extension-trait + `use`), Ruby,
+but **cannot** on Java, Go, C++, PHP — there is no language mechanism to attach instance-call syntax to a
+type you don't own; the only faithful emission is a free function `method(x)`, which *changes the call
+site*. Several targets also lack operator overloading, properties, etc.
+
+**Decision — capabilities are declared, intersected, and gated at compile time:**
+- Each **backend declares a finite, named set of capability flags** — one per §3.A feature
+  (`extensionMethods`, `operatorOverloading`, `properties`, `iterators`, `patternMatching`, …). This is the
+  §3.A list turned machine-checkable; the set is **closed** (resist growing it per feature request — that
+  is the scope-creep failure mode).
+- The **usable surface for a project is the *intersection*** of the declared capabilities across **all**
+  targets configured in `pgconfig.json`. Using a feature outside the intersection is a **compile-time
+  refusal that names the capability and the lacking target(s)** — never a silent miscompile and never a
+  silent per-target call-site change.
+- **Two refusal classes, kept distinct.** §3.B is a **global** hard-refusal (no faithful emission *anywhere*
+  — target-independent). §3.E capability-gating is **target-set-dependent** (the feature is fine on some
+  targets, withheld only when a configured target lacks it). The diagnostics must read differently:
+  "Polyglot refuses X" (§3.B) vs "target *T* does not support X; remove it or drop *T*" (§3.E).
+- **For C#/TS today the intersection is the full §3.A surface, so nothing is gated yet.** The mechanism is
+  **designed now and enforced when the third backend lands** (P9/P10) — added *before* shipping a target
+  that can't do a feature already in the wild, never retrofitted after (the lesson from Haxe's late
+  threading-capability retrofit).
+
+This is the **survivor pattern**: Kotlin Multiplatform makes the common surface literally the intersection;
+Haxe (`target.threaded`…), Rust (`cfg`/`target_feature`), LLVM target features, and Protobuf editions all
+use named, declared, compile-time-enforced capability flags. The dead .NET→JS transpilers (JSIL, SharpKit,
+Bridge.NET) had **no published, enforced capability contract** and so miscompiled in the corners — exactly
+what this clause prevents. (One nuance: extension methods *already* differ in call-site between C# and TS —
+method-call vs free function, SPEC §6.3 — so the capability is precisely "call-site-preserving extension
+methods"; a backend may instead opt into a documented free-function lowering rather than gate the feature
+out entirely. Tiers: native / idiomatic-with-import / free-function fallback.)
 
 ---
 

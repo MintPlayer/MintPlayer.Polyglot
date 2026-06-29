@@ -67,6 +67,15 @@ interprets. What a spec must contain:
 - **Operator/keyword tables**, **naming rules** (overload mangling, casing conventions), **import/preamble
   management**, and the **build-project scaffold** + the points where build dependencies (§ below) are
   injected.
+- **A capability set** — the named §3.E feature flags this backend can emit (`extensionMethods`,
+  `operatorOverloading`, `properties`, `iterators`, `patternMatching`, …). The core **intersects** these
+  across all targets configured in `pgconfig.json`: a §3.A feature is usable iff *every* configured backend
+  declares it, else a compile-time refusal names the capability + the lacking target. The bundled C# and TS
+  specs both declare the full §3.A set (so the intersection is everything and nothing is gated until a third
+  backend with a smaller set arrives). **Do not confuse this with the `expect`/`actual` "Capability"
+  mechanism in §2** — that fills a *platform-API* need (time/IO) per target; *this* is about whether a
+  *core language feature* can be expressed idiomatically at all on a target. (Cross-SDK reality: extension
+  methods keep `x.method()` on C#/Kotlin/Swift/Dart/Rust/Ruby but not Java/Go/C++/PHP; see PRD §3.E.)
 
 > **The central challenge (be honest about it):** emitting *idiomatic, readable* code — the PRD §2 bar — is
 > full of context-sensitive decisions (precedence, `for` vs `foreach`, switch-expression vs -statement,
@@ -151,13 +160,17 @@ Illustrative only (shape TBD; the `.json` extension keeps editors' schema/valida
   code against the two native backends.
 - **P8:** dogfood (FruitCake), still on native backends.
 - **P9 — Declarative backend engine + DSL:** *extract* the declarative backend format from the two native
-  backends; re-express C# and TS as declarative specs; build the emit engine. *Gate:* C#/TS emitted via
-  declarative specs match the native backends' golden output byte-for-byte.
+  backends; re-express C# and TS as declarative specs; build the emit engine. Each spec also declares its
+  **§3.E capability set** (both C#/TS = full §3.A). *Gate:* C#/TS emitted via declarative specs match the
+  native backends' golden output byte-for-byte.
 - **P10 — Plugin distribution + ecosystem:** `pgconfig.json` + download/cache/verify/version/lockfile;
-  availability resolution by target+environment; build-dependency threading; the local full-power tier; and
+  availability resolution by target+environment; **§3.E feature-capability gating** (usable §3.A surface =
+  intersection of configured backends' capability sets; out-of-intersection use refused at compile time,
+  distinct from a §3.B global refusal); build-dependency threading; the local full-power tier; and
   the proof — a **downloaded declarative Python backend** emits Python, and a downloaded binding plugin
   threads its PackageReferences. *Gate:* adding Python + a WinForms binding requires **no core change**,
-  only config + downloads; off-target/-environment use is rejected with a clear diagnostic.
+  only config + downloads; off-target/-environment use **and** use of a feature outside the target
+  intersection are each rejected with a clear, distinct diagnostic.
 
 ## 8. Open decisions
 

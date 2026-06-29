@@ -140,7 +140,11 @@ mapping, operator/keyword tables, naming/import rules, and the build-project sca
 Critically, the DSL is extracted from working backends, never guessed (the §4.3 "design it twice"
 discipline applied to the format itself); a **local full-power plugin tier** covers what the DSL can't yet
 express. See **[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)** §4/§7.
-*Gate:* C#/TS emitted via the declarative specs match the native backends' golden output byte-for-byte.
+Each backend spec also declares its **capability set** — the named §3.E flags (`extensionMethods`,
+`operatorOverloading`, `properties`, `iterators`, `patternMatching`, …) it can emit. C# and TS both declare
+the full §3.A set, so the format carries capabilities from the start even though nothing is gated yet.
+*Gate:* C#/TS emitted via the declarative specs match the native backends' golden output byte-for-byte;
+each spec carries a capability set (both = full §3.A).
 
 ## P10 — Plugin distribution + ecosystem (the endpoint of §4.4)
 The downloadable, declarative plugin system: a **workspace config (`pgconfig.json`)** declaring target
@@ -149,9 +153,15 @@ The downloadable, declarative plugin system: a **workspace config (`pgconfig.jso
 resolution** by target + environment (off-target use is a compile error, never a miscompile); and
 **build-dependency threading** (a plugin declares the NuGet `PackageReference`s/SDK or npm deps its output
 needs; the core emits a buildable project including them). Trust model + open decisions in the design note.
+This is also where **§3.E capability-gating** first *bites*: the usable §3.A surface for a project becomes
+the **intersection** of the configured backends' declared capability sets, and using a feature outside it
+is refused at compile time naming the capability + the lacking target (distinct from a §3.B global refusal).
+A natural exercise: the downloaded Python backend declares a capability set that omits, say, call-site-
+preserving `extensionMethods`, and a program using extension methods while targeting Python is refused.
 *Gate:* adding a **downloaded declarative Python backend** *and* a target-scoped binding plugin (e.g.
 WinForms, with its PackageReferences) requires **no core change** — only `pgconfig.json` + downloads; a program
-using them emits a buildable project, and wrong-target/-environment use is rejected with a clear diagnostic.
+using them emits a buildable project, and wrong-target/-environment use **and use of a feature outside the
+target intersection** are each rejected with a clear, distinct diagnostic.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
