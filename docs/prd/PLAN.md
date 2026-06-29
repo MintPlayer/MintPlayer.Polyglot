@@ -337,7 +337,21 @@ per-name `lib` config are explicitly out of scope.
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
-- **LSP:** build the frontend as a reusable library; make the CLI and a future language server thin clients.
+- **Editor tooling (highlighting + LSP), per editor:**
+  - **Syntax highlighting** — a TextMate grammar (`.tmLanguage`/`.json`) for `.pg`. Independent of the
+    compiler (no frontend reuse needed) and **can land early/cheaply**: it gives VS Code (and most editors)
+    coloring immediately, and Visual Studio 2022+ consumes TextMate grammars too. Keep it in sync with
+    `docs/lang/grammar.ebnf`. This is the lowest-effort, highest-visibility tooling win.
+  - **LSP server** — `polyglot lsp`, built on the **frontend-as-a-reusable-library** (lexer/parser/sema),
+    so the CLI and the language server are thin clients over the same core (diagnostics, hover, go-to-def,
+    completion from the symbol tables). Editor-agnostic protocol.
+  - **VS Code extension** — bundles the TextMate grammar (ships first, standalone) and later an LSP client
+    pointing at `polyglot lsp`.
+  - **Visual Studio extension (VSIX)** — an LSP client (VS's LSP support) for the same server; can reuse
+    the TextMate grammar for coloring. (NB: the build toolchain is already VS-2026/v145 — see top of this
+    file; a VSIX targets that generation.)
+  *Gate:* `.pg` files are colorized in both VS Code and Visual Studio from the shared grammar; the LSP
+  surfaces compiler diagnostics live in both, with no logic duplicated outside the frontend library.
 - **Binding auto-generation:** shape-only bindings from `.d.ts` / .NET metadata / WebIDL + hand overrides
   (feeds the plugin ecosystem; produces declarative data at authoring time).
 - **Plugin registry & signing:** distribution/versioning infrastructure + signature trust for downloads.

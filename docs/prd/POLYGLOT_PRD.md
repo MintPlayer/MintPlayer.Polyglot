@@ -380,8 +380,10 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   (`DevelopmentDependency`/`PrivateAssets`). The payoff of the §4.3 zero-runtime-dep native CLI: the
   consuming dev needs no extra SDK/runtime. Depends only on a stable CLI, so it can ship independently of
   P9/P10. A sibling npm/build-script story does the same for TS.
-- **Stretch:** further targets as downloadable backends, source maps, an LSP built on the frontend-as-
-  library, a plugin registry + signing/trust infrastructure.
+- **Stretch:** further targets as downloadable backends, source maps, **editor tooling** (a TextMate
+  highlighting grammar for `.pg` — independent of the compiler, ships early for VS Code *and* Visual Studio
+  2022+; plus an **LSP** server `polyglot lsp` built on the frontend-as-a-library, with thin VS Code and
+  Visual Studio (VSIX) clients), a plugin registry + signing/trust infrastructure. (See PLAN Stretch.)
 
 ---
 
