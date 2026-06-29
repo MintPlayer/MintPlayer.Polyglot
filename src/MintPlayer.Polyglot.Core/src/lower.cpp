@@ -214,6 +214,13 @@ private:
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member:    return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
             case ExprKind::Match:     return matchExpr(e);
+            case ExprKind::Lambda: {
+                auto lam = std::make_unique<ir::Lambda>(e.pos, e.type);
+                for (const auto& p : e.params) lam->params.push_back({p.name, p.type});
+                if (e.flag) { lam->exprBodied = false; lam->block = block(e.block); }
+                else { lam->exprBodied = true; lam->body = expr(*e.lhs); }
+                return lam;
+            }
             case ExprKind::Call: {
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);

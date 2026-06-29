@@ -500,6 +500,9 @@ private:
             else { Ty a = scalarTyOf(argTypes[0]); if (a != Ty::Unknown && !(isNumeric(a) || a == Ty::Bool || a == Ty::String)) diags_.error(e.pos, std::string("print cannot print a value of type ") + tyName(a)); }
             return namedType("unit");
         }
+        if (const Local* l = lookup(name)) { // calling a function-valued local (lambda/delegate); lenient on args
+            return l->type.kind == TypeRef::Kind::Function && !l->type.ret.empty() ? l->type.ret[0] : tUnknown();
+        }
         if (auto t = types_.find(name); t != types_.end()) { // construction
             if (t->second.hasCtor) checkArgs(t->second.ctorParams, argTypes, e.args, "'" + name + "'", e.pos);
             return tNamed(name);

@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New, MakeCase, Match };
+enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New, MakeCase, Match, Lambda };
 
 struct Expr {
     ExprKind kind;
@@ -224,6 +224,17 @@ struct Try : Stmt {
 struct Param {
     std::string name;
     Type type;
+};
+
+// A lambda / closure: `(params) => expr` or `=> { block }`. Both targets emit a native arrow function;
+// a param's type is omitted from the emit when absent (the bare `x => …` form relies on target typing).
+// Defined here (not with the other Expr nodes) because it needs Param + StmtPtr.
+struct Lambda : Expr {
+    std::vector<Param> params;
+    bool exprBodied = true;     // `=> expr` vs `=> { block }`
+    ExprPtr body;               // exprBodied
+    std::vector<StmtPtr> block; // block body
+    Lambda(SourcePos p, Type t) : Expr(ExprKind::Lambda, p, std::move(t)) {}
 };
 struct Function {
     std::string name;

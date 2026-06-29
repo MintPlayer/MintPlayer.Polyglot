@@ -34,6 +34,18 @@ std::string csType(const TypeRef& t) {
         }
         return name;
     }
+    if (t.kind == TypeRef::Kind::Function) { // C# delegate: Action for unit return, else Func<args, ret>
+        bool returnsUnit = t.ret.empty() || (t.ret[0].kind == TypeRef::Kind::Named && t.ret[0].name == "unit");
+        if (returnsUnit) {
+            if (t.args.empty()) return "System.Action";
+            std::string s = "System.Action<";
+            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += csType(t.args[i]); }
+            return s + ">";
+        }
+        std::string s = "System.Func<";
+        for (const auto& a : t.args) s += csType(a) + ", ";
+        return s + csType(t.ret[0]) + ">";
+    }
     return "object";
 }
 
@@ -205,6 +217,21 @@ private:
         line("}");
     }
 
+    // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
+    std::string inlineBlock(const std::vector<ir::StmtPtr>& body) {
+        std::string saved = std::move(out_);
+        int savedIndent = indent_;
+        out_.clear();
+        indent_ = 0;
+        for (const auto& s : body) emitStmt(*s);
+        std::string rendered = std::move(out_);
+        out_ = std::move(saved);
+        indent_ = savedIndent;
+        std::string flat;
+        for (char c : rendered) flat += (c == '\n') ? ' ' : c;
+        return flat;
+    }
+
     void emitStmt(const ir::Stmt& s) {
         switch (s.kind) {
             case ir::StmtKind::Let: {
@@ -365,6 +392,19 @@ private:
                 std::string s = "new " + mc.caseName + "(";
                 for (std::size_t i = 0; i < mc.fields.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.fields[i].value); }
                 return s + ")";
+            }
+            case ir::ExprKind::Lambda: {
+                const auto& l = static_cast<const ir::Lambda&>(e);
+                std::string s = "(";
+                // A typed param emits its type; an untyped (bare) param relies on the target type.
+                for (std::size_t i = 0; i < l.params.size(); ++i) {
+                    if (i) s += ", ";
+                    if (!l.params[i].type.absent()) s += csType(l.params[i].type) + " ";
+                    s += l.params[i].name;
+                }
+                s += ") => ";
+                if (l.exprBodied) return s + emitExpr(*l.body);
+                return s + "{ " + inlineBlock(l.block) + "}"; // statement-bodied lambda
             }
             case ir::ExprKind::Match: {
                 const auto& m = static_cast<const ir::Match&>(e);

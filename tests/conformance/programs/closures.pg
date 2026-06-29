@@ -1,0 +1,20 @@
+// P5 differential conformance: lambdas / closures. Bare `x => …` lambdas in
+// target-typed positions (function return, call argument); a typed-param
+// lambda in a `let` (so C#'s `var` infers Func<int,int>); a function-typed
+// parameter; and a closure capturing an enclosing variable.
+
+fn applyTwice(f: (i32) => i32, x: i32): i32 => f(f(x))
+
+fn makeAdder(n: i32): (i32) => i32 => x => x + n   // bare lambda, closes over n
+
+fn main() {
+  let dbl = (x: i32) => x * 2
+  print(dbl(5))                  // 10
+  print(applyTwice(dbl, 3))      // 12   dbl(dbl(3)) = 12
+
+  let add10 = makeAdder(10)
+  print(add10(7))                // 17
+  print(applyTwice(add10, 1))    // 21   add10(add10(1)) = 21
+
+  print(applyTwice(x => x + 1, 4))   // 6   bare lambda as an argument
+}

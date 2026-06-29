@@ -28,6 +28,11 @@ std::string tsType(const TypeRef& t) {
         }
         return name;
     }
+    if (t.kind == TypeRef::Kind::Function) { // arrow-function type: (arg0: T0, …) => Ret
+        std::string s = "(";
+        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += "arg" + std::to_string(i) + ": " + tsType(t.args[i]); }
+        return s + ") => " + (t.ret.empty() ? "void" : tsType(t.ret[0]));
+    }
     return "unknown";
 }
 
@@ -228,6 +233,21 @@ private:
         --indent_;
     }
 
+    // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
+    std::string inlineBlock(const std::vector<ir::StmtPtr>& body) {
+        std::string saved = std::move(out_);
+        int savedIndent = indent_;
+        out_.clear();
+        indent_ = 0;
+        for (const auto& s : body) emitStmt(*s);
+        std::string rendered = std::move(out_);
+        out_ = std::move(saved);
+        indent_ = savedIndent;
+        std::string flat;
+        for (char c : rendered) flat += (c == '\n') ? ' ' : c;
+        return flat;
+    }
+
     // TS has a single untyped `catch`, so a typed/guarded catch list becomes an instanceof/guard
     // dispatch chain. A `__handled` flag reproduces C#'s semantics: a clause whose type matches but
     // whose `when` guard fails falls through to the next clause; if none handle it, the error rethrows.
@@ -418,6 +438,18 @@ private:
                 std::string s = "{ tag: \"" + mc.caseName + "\"";
                 for (const auto& f : mc.fields) s += ", " + f.name + ": " + emitExpr(*f.value);
                 return s + " }";
+            }
+            case ir::ExprKind::Lambda: {
+                const auto& l = static_cast<const ir::Lambda&>(e);
+                std::string s = "(";
+                for (std::size_t i = 0; i < l.params.size(); ++i) {
+                    if (i) s += ", ";
+                    s += l.params[i].name;
+                    if (!l.params[i].type.absent()) s += ": " + tsType(l.params[i].type);
+                }
+                s += ") => ";
+                if (l.exprBodied) return s + emitExpr(*l.body);
+                return s + "{ " + inlineBlock(l.block) + "}"; // statement-bodied lambda
             }
             case ir::ExprKind::Match: {
                 const auto& m = static_cast<const ir::Match&>(e);

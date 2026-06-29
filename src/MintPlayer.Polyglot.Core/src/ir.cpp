@@ -233,6 +233,18 @@ private:
                 repr += "}";
                 break;
             }
+            case ExprKind::Lambda: {
+                const auto& l = static_cast<const Lambda&>(e);
+                repr = "(";
+                for (std::size_t i = 0; i < l.params.size(); ++i) {
+                    if (i) repr += ", ";
+                    repr += l.params[i].name;
+                    if (!l.params[i].type.absent()) repr += ": " + typeName(l.params[i].type);
+                }
+                repr += ") => ";
+                repr += l.exprBodied ? expr(*l.body) : "{ ... }";
+                break;
+            }
             case ExprKind::Match: {
                 const auto& m = static_cast<const Match&>(e);
                 repr = "match " + expr(*m.scrutinee) + " { ";
