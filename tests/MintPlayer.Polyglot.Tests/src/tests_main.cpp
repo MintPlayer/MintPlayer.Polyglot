@@ -185,6 +185,13 @@ int main() {
     rejects("record B(x: i32) : Missing\n", "P4: rejects unknown base type");
     resolves("record Box<T>(value: T)\nfn id<T>(x: T): T => x\n", "P4: generics + declared types resolve");
     resolves("enum E { A, B }\nfn pick(): E => E.A\n", "P4: declared enum type resolves");
+    // P4-2 — nominal expression typing.
+    rejects("record V(x: f64)\nfn f() { let v = V(1.0)\n print(v.y) }\n", "P4: rejects access to a missing member");
+    rejects("record V(x: f64, y: f64)\nfn f() { let v = V(1.0) }\n", "P4: rejects wrong construction arity");
+    rejects("class C { fn go() {} }\nfn f() { let c = C()\n c.nope() }\n", "P4: rejects call to a missing method");
+    resolves("record V(x: f64, y: f64)\nfn f(): f64 => V(1.0, 2.0).x\n", "P4: member access types to the field type");
+    resolves("record P(x: i32) {\n  fn getX(): i32 => this.x\n}\n", "P4: this.member resolves in a method");
+    resolves("class C { fn go(): i32 => 5 }\nfn f(): i32 => C().go()\n", "P4: method call resolves to its return type");
 
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
