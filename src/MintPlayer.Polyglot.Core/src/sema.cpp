@@ -25,6 +25,7 @@ bool isBuiltinType(const std::string& n) {
         "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
         "f32", "f64", "bool", "char", "string", "unit",
         "Iterable", // the core iterator contract (`fn …(): Iterable<T>` + `yield`); not std
+        "Error",    // the core exception root (`throw`/typed `catch`); System.Exception / JS Error
     };
     return b.count(n) != 0;
 }
@@ -505,6 +506,7 @@ private:
         }
         if (auto uc = unionCtors_.find(name); uc != unionCtors_.end()) { checkArgs(uc->second.params, argTypes, e.args, "'" + name + "'", e.pos); return uc->second.result; }
         if (auto f = fns_.find(name); f != fns_.end()) { checkArgs(f->second.params, argTypes, e.args, "'" + name + "'", e.pos); return f->second.result; }
+        if (name == "Error") return tNamed("Error"); // core exception root construction (message arg lenient)
         diags_.error(e.pos, "call to undeclared function '" + name + "'");
         return tUnknown();
     }

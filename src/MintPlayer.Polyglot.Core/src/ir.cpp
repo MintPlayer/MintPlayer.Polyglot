@@ -142,6 +142,26 @@ private:
                 line(y.value ? "yield " + expr(*y.value) : "yield");
                 break;
             }
+            case StmtKind::Throw: {
+                const auto& t = static_cast<const Throw&>(s);
+                line(t.value ? "throw " + expr(*t.value) : "throw");
+                break;
+            }
+            case StmtKind::Try: {
+                const auto& t = static_cast<const Try&>(s);
+                line("try {");
+                block(t.body);
+                for (const auto& c : t.catches) {
+                    std::string head = "} catch";
+                    if (!c.type.name.empty()) head += " (" + c.binding + ": " + typeName(c.type) + ")";
+                    if (c.guard) head += " when " + expr(*c.guard);
+                    line(head + " {");
+                    block(c.body);
+                }
+                if (t.hasFinally) { line("} finally {"); block(t.finallyBody); }
+                line("}");
+                break;
+            }
         }
     }
 

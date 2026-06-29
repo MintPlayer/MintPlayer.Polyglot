@@ -11,6 +11,7 @@ class Lowerer {
 public:
     explicit Lowerer(const CompilationUnit& unit) {
         // Names that denote a constructible type, so `Name(args)` lowers to a construction, not a call.
+        typeNames_.insert("Error"); // core builtin exception root (System.Exception / JS Error)
         for (const auto& r : unit.records) typeNames_.insert(r.name);
         for (const auto& c : unit.classes) typeNames_.insert(c.name);
         for (const auto& e : unit.enums) for (const auto& c : e.cases) enumCases_[e.name].insert(c.name);
@@ -270,6 +271,22 @@ private:
             case StmtKind::Yield:
                 sawYield_ = true;
                 return std::make_unique<ir::Yield>(s.pos, s.value ? expr(*s.value) : nullptr);
+            case StmtKind::Throw:
+                return std::make_unique<ir::Throw>(s.pos, s.value ? expr(*s.value) : nullptr);
+            case StmtKind::Try: {
+                auto node = std::make_unique<ir::Try>(s.pos);
+                node->body = block(s.thenBody);
+                for (const auto& c : s.catches) {
+                    ir::Catch ic;
+                    ic.type = c.type;
+                    ic.binding = c.name;
+                    if (c.guard) ic.guard = expr(*c.guard);
+                    ic.body = block(c.body);
+                    node->catches.push_back(std::move(ic));
+                }
+                if (s.hasFinally) { node->hasFinally = true; node->finallyBody = block(s.finallyBody); }
+                return node;
+            }
             default:
                 return nullptr; // statements beyond the current surface are lowered in later P5 increments
         }

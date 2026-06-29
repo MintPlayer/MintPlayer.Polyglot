@@ -221,6 +221,46 @@ private:
         --indent_;
     }
 
+    // TS has a single untyped `catch`, so a typed/guarded catch list becomes an instanceof/guard
+    // dispatch chain. A `__handled` flag reproduces C#'s semantics: a clause whose type matches but
+    // whose `when` guard fails falls through to the next clause; if none handle it, the error rethrows.
+    void emitTry(const ir::Try& t) {
+        line("try {");
+        emitBlock(t.body);
+        if (!t.catches.empty()) {
+            line("} catch (__e) {");
+            ++indent_;
+            line("let __handled = false;");
+            bool hasCatchAll = false;
+            for (const auto& c : t.catches) {
+                bool typed = !c.type.name.empty();
+                std::string cond = "!__handled";
+                if (typed) cond += " && __e instanceof " + tsType(c.type);
+                if (!typed && !c.guard) hasCatchAll = true;
+                line("if (" + cond + ") {");
+                ++indent_;
+                if (!c.binding.empty()) line("const " + c.binding + " = __e;");
+                if (c.guard) {
+                    line("if (" + emitExpr(*c.guard) + ") {");
+                    ++indent_;
+                    line("__handled = true;");
+                    for (const auto& st : c.body) emitStmt(*st);
+                    --indent_;
+                    line("}");
+                } else {
+                    line("__handled = true;");
+                    for (const auto& st : c.body) emitStmt(*st);
+                }
+                --indent_;
+                line("}");
+            }
+            if (!hasCatchAll) line("if (!__handled) { throw __e; }");
+            --indent_;
+        }
+        if (t.hasFinally) { line("} finally {"); emitBlock(t.finallyBody); }
+        line("}");
+    }
+
     void emitStmt(const ir::Stmt& s) {
         switch (s.kind) {
             case ir::StmtKind::Let: {
@@ -246,6 +286,14 @@ private:
                 line(y.value ? "yield " + emitExpr(*y.value) + ";" : "return;");
                 break;
             }
+            case ir::StmtKind::Throw: {
+                const auto& t = static_cast<const ir::Throw&>(s);
+                line(t.value ? "throw " + emitExpr(*t.value) + ";" : "throw __e;");
+                break;
+            }
+            case ir::StmtKind::Try:
+                emitTry(static_cast<const ir::Try&>(s));
+                break;
             case ir::StmtKind::If: {
                 const auto& i = static_cast<const ir::If&>(s);
                 line("if (" + emitExpr(*i.cond) + ") {");

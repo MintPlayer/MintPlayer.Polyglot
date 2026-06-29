@@ -132,7 +132,7 @@ struct Match : Expr {
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Yield };
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Yield, Throw, Try };
 
 struct Stmt {
     StmtKind kind;
@@ -189,6 +189,26 @@ struct Return : Stmt {
 struct Yield : Stmt { // `yield <value>` inside an iterator: C# `yield return`, TS generator `yield`
     ExprPtr value;
     Yield(SourcePos p, ExprPtr v) : Stmt(StmtKind::Yield, p), value(std::move(v)) {}
+};
+struct Throw : Stmt {
+    ExprPtr value;
+    Throw(SourcePos p, ExprPtr v) : Stmt(StmtKind::Throw, p), value(std::move(v)) {}
+};
+struct Catch { // one `catch (binding: type) when (guard)` clause; type/guard optional
+    Type type;                    // empty name = untyped catch-all
+    std::string binding;          // bound exception variable (may be empty)
+    ExprPtr guard;                // optional `when` guard
+    std::vector<StmtPtr> body;
+};
+// C# has typed catches + `when` natively; TS has one untyped catch, so its backend lowers the catch
+// list into an `instanceof`/guard dispatch chain. The IR keeps the structured clauses; each backend
+// renders them in its own idiom (different layer, different abstraction).
+struct Try : Stmt {
+    std::vector<StmtPtr> body;
+    std::vector<Catch> catches;
+    std::vector<StmtPtr> finallyBody;
+    bool hasFinally = false;
+    explicit Try(SourcePos p) : Stmt(StmtKind::Try, p) {}
 };
 
 // ---- declarations ----

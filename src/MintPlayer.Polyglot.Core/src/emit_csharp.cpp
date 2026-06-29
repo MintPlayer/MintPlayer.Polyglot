@@ -25,6 +25,7 @@ std::string csType(const TypeRef& t) {
         if (t.name == "bool")   return "bool";
         if (t.name == "string") return "string";
         if (t.name.empty())     return "object";
+        if (t.name == "Error")  return "System.Exception";
         std::string name = (t.name == "Iterable") ? "System.Collections.Generic.IEnumerable" : t.name;
         if (!t.args.empty()) {
             name += "<";
@@ -224,6 +225,29 @@ private:
                 line(y.value ? "yield return " + emitExpr(*y.value) + ";" : "yield break;");
                 break;
             }
+            case ir::StmtKind::Throw: {
+                const auto& t = static_cast<const ir::Throw&>(s);
+                line(t.value ? "throw " + emitExpr(*t.value) + ";" : "throw;");
+                break;
+            }
+            case ir::StmtKind::Try: {
+                const auto& t = static_cast<const ir::Try&>(s);
+                line("try");
+                emitBlock(t.body);
+                for (const auto& c : t.catches) {
+                    std::string head = "catch";
+                    if (!c.type.name.empty()) {
+                        head += " (" + csType(c.type);
+                        if (!c.binding.empty()) head += " " + c.binding;
+                        head += ")";
+                    }
+                    if (c.guard) head += " when (" + emitExpr(*c.guard) + ")";
+                    line(head);
+                    emitBlock(c.body);
+                }
+                if (t.hasFinally) { line("finally"); emitBlock(t.finallyBody); }
+                break;
+            }
             case ir::StmtKind::If: {
                 const auto& i = static_cast<const ir::If&>(s);
                 line("if (" + emitExpr(*i.cond) + ")");
@@ -313,7 +337,8 @@ private:
             }
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
-                std::string s = "new " + n.typeName + "(";
+                std::string ctor = (n.typeName == "Error") ? "System.Exception" : n.typeName;
+                std::string s = "new " + ctor + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
                 return s + ")";
             }
