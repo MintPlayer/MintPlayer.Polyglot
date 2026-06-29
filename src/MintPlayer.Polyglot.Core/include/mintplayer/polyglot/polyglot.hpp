@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,9 +35,29 @@ struct EmitResult {
     std::vector<Diagnostic> diagnostics;
 };
 
-// Compile Polyglot source text to a single target. Runs lex -> parse -> check -> emit, stopping at the
-// first pass that reports errors (no partial/garbage output on failure).
-EmitResult compile(const std::string& source, Target target);
+// A module's source, as answered by a ModuleResolver. `canonicalPath` is the stable identity used for
+// dedup + cycle detection (e.g. an absolute file path, or the logical module name).
+struct ResolvedModule {
+    std::string canonicalPath;
+    std::string source;
+};
+
+// Answers "import specifier (+ importer) -> module source text" so the Core can load cross-file `.pg`
+// modules WITHOUT doing any IO itself: the CLI implements this over the filesystem, tests over an
+// in-memory map. `std.*` modules are served by the Core's embedded registry before a resolver is consulted,
+// so an in-memory resolver still gets the std library for free. Return std::nullopt for "not found" — the
+// Core turns that into an "unknown module" diagnostic (resolvers never throw).
+class ModuleResolver {
+public:
+    virtual ~ModuleResolver() = default;
+    virtual std::optional<ResolvedModule> resolve(const std::string& specifier,
+                                                  const std::string& importerCanonicalPath) = 0;
+};
+
+// Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported modules) -> check
+// -> emit, stopping at the first pass that reports errors (no partial/garbage output on failure).
+// `resolver` loads non-std (`import … from "./x"` / `"a.b"`) modules; nullptr = std modules only.
+EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver = nullptr);
 
 // Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.

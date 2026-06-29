@@ -1,5 +1,7 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 
+#include <algorithm>
+#include <optional>
 #include <unordered_set>
 
 #include "mintplayer/polyglot/ast.hpp"
@@ -77,49 +79,84 @@ const StdModule STD_MODULES[] = {
     {"std.io", STD_IO},
 };
 
-// Resolve each `import`: a known `std.*` module is parsed and merged into the unit (once), with its
-// selectively-imported names validated against what it actually exports. An unknown `std.*` module is a
-// diagnostic. Non-`std.` imports have no resolver yet and are left untouched (future user-module work).
-void linkStdModules(CompilationUnit& unit, DiagnosticBag& diags) {
-    std::unordered_set<std::string> merged;
-    for (const auto& imp : unit.imports) {
-        if (imp.path.rfind("std.", 0) != 0) continue; // not a std module — leave for future resolution
+// Append all top-level declarations of a loaded module into the root unit (the module's own `imports` were
+// already processed by the caller). Output stays single-file per target: everything lands in one unit.
+void mergeDecls(CompilationUnit& mod, CompilationUnit& root) {
+    for (auto& c : mod.classes)    root.classes.push_back(std::move(c));
+    for (auto& r : mod.records)    root.records.push_back(std::move(r));
+    for (auto& e : mod.enums)      root.enums.push_back(std::move(e));
+    for (auto& u : mod.unions)     root.unions.push_back(std::move(u));
+    for (auto& i : mod.interfaces) root.interfaces.push_back(std::move(i));
+    for (auto& v : mod.values)     root.values.push_back(std::move(v));
+    for (auto& f : mod.functions)  root.functions.push_back(std::move(f));
+}
 
-        const char* source = nullptr;
-        for (const auto& m : STD_MODULES) if (imp.path == m.path) source = m.source;
-        if (!source) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
-        if (!merged.insert(imp.path).second) continue; // already linked (imported more than once)
+void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, DiagnosticBag& diags) {
+    if (imp.names.empty()) return; // namespace / bare import: nothing to validate
+    std::unordered_set<std::string> exports;
+    for (const auto& c : mod.classes)    exports.insert(c.name);
+    for (const auto& r : mod.records)    exports.insert(r.name);
+    for (const auto& e : mod.enums)      exports.insert(e.name);
+    for (const auto& u : mod.unions)     exports.insert(u.name);
+    for (const auto& i : mod.interfaces) exports.insert(i.name);
+    for (const auto& v : mod.values)     exports.insert(v.name);
+    for (const auto& f : mod.functions)  exports.insert(f.name);
+    for (const auto& n : imp.names)
+        if (!exports.count(n.name)) diags.error(imp.pos, "module '" + imp.path + "' has no export '" + n.name + "'");
+}
+
+// Recursively resolve+load every module `unit` imports, merging each (and its transitive dependencies,
+// dependencies-first) into `root`. `std.*` is served from the embedded registry; everything else goes
+// through `resolver`. `visited` dedups; `stack` (the in-progress chain) detects import cycles.
+void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::string& selfPath,
+                 ModuleResolver* resolver, DiagnosticBag& diags,
+                 std::unordered_set<std::string>& visited, std::vector<std::string>& stack) {
+    stack.push_back(selfPath);
+    for (const auto& imp : unit.imports) {
+        std::string source, canon;
+        if (imp.path.rfind("std.", 0) == 0) { // first-party std: embedded, no IO
+            const char* src = nullptr;
+            for (const auto& m : STD_MODULES) if (imp.path == m.path) src = m.source;
+            if (!src) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
+            source = src;
+            canon = imp.path;
+        } else { // user module: ask the resolver (none => unresolvable)
+            std::optional<ResolvedModule> r = resolver ? resolver->resolve(imp.path, selfPath) : std::nullopt;
+            if (!r) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
+            source = std::move(r->source);
+            canon = std::move(r->canonicalPath);
+        }
+
+        if (std::find(stack.begin(), stack.end(), canon) != stack.end()) {
+            std::string chain;
+            for (const auto& s : stack) chain += (s.empty() ? "<entry>" : s) + " -> ";
+            diags.error(imp.pos, "import cycle: " + chain + canon);
+            continue;
+        }
+        if (!visited.insert(canon).second) continue; // already loaded (imported more than once)
 
         std::vector<Token> toks = lex(source, diags);
         if (diags.hasErrors()) return;
         CompilationUnit mod = parse(toks, diags);
         if (diags.hasErrors()) return;
 
-        // Validate the selective import list `{ A, B }` against the module's exported declarations.
-        if (!imp.names.empty()) {
-            std::unordered_set<std::string> exports;
-            for (const auto& c : mod.classes)    exports.insert(c.name);
-            for (const auto& r : mod.records)    exports.insert(r.name);
-            for (const auto& e : mod.enums)      exports.insert(e.name);
-            for (const auto& u : mod.unions)     exports.insert(u.name);
-            for (const auto& i : mod.interfaces) exports.insert(i.name);
-            for (const auto& f : mod.functions)  exports.insert(f.name);
-            for (const auto& n : imp.names)
-                if (!exports.count(n.name)) diags.error(imp.pos, "module '" + imp.path + "' has no export '" + n.name + "'");
-        }
-
-        for (auto& c : mod.classes)    unit.classes.push_back(std::move(c));
-        for (auto& r : mod.records)    unit.records.push_back(std::move(r));
-        for (auto& e : mod.enums)      unit.enums.push_back(std::move(e));
-        for (auto& u : mod.unions)     unit.unions.push_back(std::move(u));
-        for (auto& i : mod.interfaces) unit.interfaces.push_back(std::move(i));
-        for (auto& f : mod.functions)  unit.functions.push_back(std::move(f));
+        validateImportNames(imp, mod, diags);
+        loadImports(root, mod, canon, resolver, diags, visited, stack); // dependencies first (post-order)
+        mergeDecls(mod, root);
     }
+    stack.pop_back();
+}
+
+// Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports).
+void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags) {
+    std::unordered_set<std::string> visited;
+    std::vector<std::string> stack;
+    loadImports(unit, unit, "", resolver, diags, visited, stack);
 }
 
 } // namespace
 
-EmitResult compile(const std::string& source, Target target) {
+EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver) {
     EmitResult result;
     DiagnosticBag diags;
 
@@ -129,7 +166,7 @@ EmitResult compile(const std::string& source, Target target) {
     CompilationUnit unit = parse(tokens, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    linkStdModules(unit, diags); // pull in imported first-party std types (e.g. List<T>) before checking
+    linkModules(unit, resolver, diags); // pull in imported std + user modules (transitively) before checking
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     check(unit, diags);

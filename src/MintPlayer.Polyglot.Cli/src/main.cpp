@@ -44,6 +44,34 @@ bool writeFile(const fs::path& path, const std::string& content) {
     return true;
 }
 
+// Resolves a cross-`.pg` import to a file. A bare specifier ("a.b.c") is a logical module name resolved
+// under the workspace root (a.b.c -> <root>/a/b/c.pg); a "./x"/"../x" specifier is resolved relative to
+// the importing file. (std.* never reaches here — the Core serves it from its embedded registry first.)
+class FileModuleResolver : public ModuleResolver {
+public:
+    FileModuleResolver(fs::path root, fs::path entryDir)
+        : root_(std::move(root)), entryDir_(std::move(entryDir)) {}
+
+    std::optional<ResolvedModule> resolve(const std::string& spec, const std::string& importer) override {
+        fs::path file;
+        if (spec.rfind("./", 0) == 0 || spec.rfind("../", 0) == 0) {
+            fs::path base = importer.empty() ? entryDir_ : fs::path(importer).parent_path();
+            file = base / (spec + ".pg");
+        } else {
+            std::string rel = spec;
+            for (char& c : rel) if (c == '.') c = '/';
+            file = root_ / (rel + ".pg");
+        }
+        std::string src;
+        if (!readFile(file, src)) return std::nullopt;
+        return ResolvedModule{fs::weakly_canonical(file).string(), std::move(src)};
+    }
+
+private:
+    fs::path root_;
+    fs::path entryDir_;
+};
+
 void reportDiagnostics(const fs::path& input, const EmitResult& result) {
     for (const auto& d : result.diagnostics) {
         std::cerr << input.string() << ":" << d.pos.line << ":" << d.pos.col
@@ -53,8 +81,8 @@ void reportDiagnostics(const fs::path& input, const EmitResult& result) {
 
 // Emit one target next to (or under --out of) the input, returning the written path or "" on failure.
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& outDir,
-             Target target, const char* ext) {
-    EmitResult result = compile(source, target);
+             Target target, const char* ext, ModuleResolver* resolver) {
+    EmitResult result = compile(source, target, resolver);
     if (!result.ok) {
         reportDiagnostics(input, result);
         return false;
@@ -72,6 +100,7 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& o
 int runBuild(const std::vector<std::string>& args) {
     fs::path input;
     fs::path outDir;
+    fs::path root;      // workspace root for logical-name imports; empty => input's parent dir
     std::string target; // empty => both
 
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -80,6 +109,8 @@ int runBuild(const std::vector<std::string>& args) {
             target = args[++i];
         } else if (a == "--out" && i + 1 < args.size()) {
             outDir = args[++i];
+        } else if (a == "--root" && i + 1 < args.size()) {
+            root = args[++i];
         } else if (!a.empty() && a[0] == '-') {
             std::cerr << "polyglot: unknown option '" << a << "'\n";
             return 64;
@@ -105,9 +136,13 @@ int runBuild(const std::vector<std::string>& args) {
 
     std::cout << "polyglot build " << input.string() << "\n";
 
+    fs::path entryDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
+    if (root.empty()) root = entryDir;
+    FileModuleResolver resolver(root, entryDir);
+
     bool ok = true;
-    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs");
-    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, Target::TypeScript, ".ts");
+    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs", &resolver);
+    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, Target::TypeScript, ".ts", &resolver);
     if (!target.empty() && target != "csharp" && target != "typescript") {
         std::cerr << "polyglot: unknown target '" << target << "' (expected csharp|typescript)\n";
         return 64;

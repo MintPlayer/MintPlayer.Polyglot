@@ -1,4 +1,6 @@
 #include <iostream>
+#include <map>
+#include <optional>
 #include <string>
 
 #include "mintplayer/polyglot/backend.hpp"
@@ -39,6 +41,20 @@ public:
     bool supports(Feature f) const override { return f != missing_; }
 private:
     Feature missing_;
+};
+
+// An in-memory module resolver (the tests' filesystem-free stand-in for the CLI's FileModuleResolver):
+// module specifier -> source text. Proves cross-`.pg` resolution works without touching disk.
+class MapModuleResolver : public ModuleResolver {
+public:
+    explicit MapModuleResolver(std::map<std::string, std::string> modules) : modules_(std::move(modules)) {}
+    std::optional<ResolvedModule> resolve(const std::string& spec, const std::string&) override {
+        auto it = modules_.find(spec);
+        if (it == modules_.end()) return std::nullopt;
+        return ResolvedModule{spec, it->second};
+    }
+private:
+    std::map<std::string, std::string> modules_;
 };
 
 // A small program exercising the whole MVP subset.
@@ -348,6 +364,43 @@ int main() {
         check(ts.ok, "P8: std.io program -> TS compiles");
         check(has(ts.code, "readFileSync(path"), "P8 TS: readText -> fs.readFileSync");
         check(has(ts.code, "writeFileSync(path, content)"), "P8 TS: writeText -> fs.writeFileSync");
+    }
+
+    // P12 — cross-.pg user-module resolution via a ModuleResolver (in-memory here; CLI uses the filesystem).
+    {
+        // Transitive: entry -> util -> base; entry and util both import base (deduped, no double-merge).
+        MapModuleResolver r({
+            {"base", "fn baseVal(): i32 => 40\n"},
+            {"util", "import { baseVal } from \"base\"\nfn bump(x: i32): i32 => baseVal() + x\n"},
+        });
+        const char* prog =
+            "import { bump } from \"util\"\n"
+            "import { baseVal } from \"base\"\n"
+            "fn main() { print(bump(2) + baseVal()) }\n"; // (40+2) + 40 = 82
+        EmitResult cs = compile(prog, Target::CSharp, &r);
+        check(cs.ok, "P12: transitive user-module resolution compiles");
+        check(has(cs.code, "baseVal") && has(cs.code, "bump"), "P12: imported module decls are merged");
+        EmitResult ts = compile(prog, Target::TypeScript, &r);
+        check(ts.ok, "P12: transitive resolution compiles to TS too");
+    }
+    {
+        // Import cycle a -> b -> a is a clear diagnostic, not a hang.
+        MapModuleResolver r({
+            {"a", "import { fromB } from \"b\"\nfn fromA(): i32 => fromB()\n"},
+            {"b", "import { fromA } from \"a\"\nfn fromB(): i32 => fromA()\n"},
+        });
+        EmitResult res = compile("import { fromA } from \"a\"\nfn main() { print(fromA()) }\n", Target::CSharp, &r);
+        bool cyclic = false;
+        for (const auto& d : res.diagnostics) if (has(d.message, "import cycle")) cyclic = true;
+        check(!res.ok && cyclic, "P12: an import cycle is reported (no hang)");
+    }
+    {
+        // An unknown user module (resolver returns nullopt) is an "unknown module" diagnostic.
+        MapModuleResolver r({});
+        EmitResult res = compile("import { x } from \"missing\"\nfn main() {}\n", Target::CSharp, &r);
+        bool unknown = false;
+        for (const auto& d : res.diagnostics) if (has(d.message, "unknown module")) unknown = true;
+        check(!res.ok && unknown, "P12: an unresolvable user module is rejected");
     }
 
     // A normal unknown type still gets the plain diagnostic (not a refusal).
