@@ -272,10 +272,12 @@ struct ClassField {
 };
 struct Class { // a mutable reference type
     std::string name;
-    std::vector<Type> bases;        // parsed; inheritance emission is a later increment
+    std::vector<Type> bases;        // base class and/or interfaces (single base drives `extends`/`: Base`)
     std::vector<ClassField> fields;
     bool hasInit = false;
     std::vector<Param> initParams;
+    bool hasSuper = false;             // init calls `super(...)`: C# `: base(args)`, TS `super(args);`
+    std::vector<ExprPtr> superArgs;    // the base-constructor arguments (hoisted out of initBody)
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;
 };

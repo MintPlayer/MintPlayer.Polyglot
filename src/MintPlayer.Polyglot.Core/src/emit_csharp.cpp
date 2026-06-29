@@ -141,6 +141,11 @@ private:
             std::string sig = "public " + c.name + "(";
             for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += csType(c.initParams[i].type) + " " + c.initParams[i].name; }
             sig += ")";
+            if (c.hasSuper) {
+                sig += " : base(";
+                for (std::size_t i = 0; i < c.superArgs.size(); ++i) { if (i) sig += ", "; sig += emitExpr(*c.superArgs[i]); }
+                sig += ")";
+            }
             line(sig);
             emitBlock(c.initBody);
         }

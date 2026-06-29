@@ -164,7 +164,14 @@ private:
             std::string sig = "constructor(";
             for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += c.initParams[i].name + ": " + tsType(c.initParams[i].type); }
             line(sig + ") {");
-            emitBlock(c.initBody);
+            ++indent_;
+            if (c.hasSuper) {
+                std::string call = "super(";
+                for (std::size_t i = 0; i < c.superArgs.size(); ++i) { if (i) call += ", "; call += emitExpr(*c.superArgs[i]); }
+                line(call + ");");
+            }
+            for (const auto& s : c.initBody) emitStmt(*s);
+            --indent_;
             line("}");
         }
         for (const auto& m : c.methods) emitMethod(m);

@@ -48,7 +48,12 @@ public:
     }
 
     void klass(const Class& c) {
-        line("class " + c.name + " {");
+        std::string head = "class " + c.name;
+        if (!c.bases.empty()) {
+            head += " : ";
+            for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += typeName(c.bases[i]); }
+        }
+        line(head + " {");
         ++indent_;
         for (const auto& f : c.fields)
             line(std::string(f.isMutable ? "var " : "let ") + f.name + ": " + typeName(f.type) + (f.init ? " = " + expr(*f.init) : ""));
@@ -56,7 +61,14 @@ public:
             std::string s = "init(";
             for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) s += ", "; s += c.initParams[i].name + ": " + typeName(c.initParams[i].type); }
             line(s + ") {");
-            block(c.initBody);
+            ++indent_;
+            if (c.hasSuper) {
+                std::string sup = "super(";
+                for (std::size_t i = 0; i < c.superArgs.size(); ++i) { if (i) sup += ", "; sup += expr(*c.superArgs[i]); }
+                line(sup + ")");
+            }
+            for (const auto& st : c.initBody) stmt(*st);
+            --indent_;
             line("}");
         }
         --indent_;

@@ -157,7 +157,18 @@ private:
                 case MemberKind::Init:
                     ic.hasInit = true;
                     for (const auto& p : mem.params) ic.initParams.push_back({p.name, p.type});
-                    ic.initBody = block(mem.body);
+                    // A `super(...)` call carries the base-ctor args; hoist it out of the body so each
+                    // backend can place it idiomatically (C# `: base(...)`, TS leading `super(...);`).
+                    for (const auto& st : mem.body) {
+                        if (st->kind == StmtKind::ExprStmt && st->value &&
+                            st->value->kind == ExprKind::Call && st->value->lhs &&
+                            st->value->lhs->kind == ExprKind::Super) {
+                            ic.hasSuper = true;
+                            for (const auto& a : st->value->args) ic.superArgs.push_back(expr(*a));
+                            continue;
+                        }
+                        if (auto s = stmt(*st)) ic.initBody.push_back(std::move(s));
+                    }
                     break;
                 case MemberKind::Method:
                 case MemberKind::Operator:
