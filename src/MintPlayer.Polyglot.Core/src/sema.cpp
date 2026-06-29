@@ -133,18 +133,30 @@ struct MemberInfo {
     std::vector<TypeRef> params;  // Method/Operator/Init
     TypeRef type;                 // field/property type, or method/operator return type
     bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
+    std::size_t required = 0;     // leading params with no default — the minimum a call must supply
 };
 struct TypeInfo {
     std::vector<GenericParam> generics;
     std::vector<MemberInfo> members;
     std::vector<TypeRef> ctorParams; // record positional fields, or class init params
+    std::size_t ctorRequired = 0;    // leading ctor params with no default
     bool hasCtor = false;
     bool complete = true;            // we fully know this type's members (record/class/interface)
 };
 struct FnSig {
     std::vector<TypeRef> params;
+    std::size_t required = 0;        // leading params with no default
     TypeRef result = namedType("unit");
 };
+
+// How many leading parameters a caller MUST supply: the count before the first defaulted one.
+// (Defaults are trailing by convention; a non-defaulted param after a default is a latent error
+// we don't diagnose here.)
+std::size_t requiredCount(const std::vector<Param>& ps) {
+    std::size_t n = 0;
+    for (const auto& p : ps) { if (p.hasDefault) break; ++n; }
+    return n;
+}
 
 // Two parameter lists denote the same overload signature (a true duplicate): same arity and each position
 // the same named type / same scalar category.
@@ -299,6 +311,7 @@ private:
         mi.name = m.name;
         mi.kind = m.kind;
         for (const auto& p : m.params) mi.params.push_back(p.type);
+        mi.required = requiredCount(m.params);
         mi.type = (m.kind == MemberKind::Field || m.kind == MemberKind::Const ||
                    m.kind == MemberKind::Property) ? m.type : m.returnType;
         for (const auto& mod : m.modifiers) if (mod == "static") mi.isStatic = true;
@@ -307,12 +320,12 @@ private:
     void addMembers(TypeInfo& ti, const std::vector<Member>& members) {
         for (const auto& m : members) {
             ti.members.push_back(memberInfo(m));
-            if (m.kind == MemberKind::Init) { ti.hasCtor = true; for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
+            if (m.kind == MemberKind::Init) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }
     }
     void buildTables(CompilationUnit& u) {
         for (const auto& d : u.records) {
-            TypeInfo ti; ti.generics = d.generics; ti.hasCtor = true;
+            TypeInfo ti; ti.generics = d.generics; ti.hasCtor = true; ti.ctorRequired = requiredCount(d.fields);
             for (const auto& f : d.fields) { ti.ctorParams.push_back(f.type); ti.members.push_back({f.name, MemberKind::Field, {}, f.type}); }
             addMembers(ti, d.members);
             types_[d.name] = std::move(ti);
@@ -332,6 +345,7 @@ private:
         for (const auto& fn : u.functions) { // collect overload sets; an `actual` is an impl, not a signature
             if (!fn.actualTarget.empty()) continue;
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
+            sig.required = requiredCount(fn.params);
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
                 if (sameParamList(existing.params, sig.params))
@@ -698,6 +712,12 @@ private:
     TypeRef checkMember(Expr& e) {
         // Enum case access: `EnumName.Case`.
         if (e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text)) return tNamed(e.lhs->text);
+        // Builtin `Math` constants: `Math.PI`, `Math.E` — f64 (both targets expose the same constant).
+        if (e.lhs->kind == ExprKind::Name && e.lhs->text == "Math") {
+            if (e.text == "PI" || e.text == "E") return tNamed("f64");
+            diags_.error(e.pos, "'Math' has no constant '" + e.text + "'");
+            return tNamed("f64");
+        }
 
         TypeRef recv = checkExpr(*e.lhs);
         TypeRef result = tUnknown();
@@ -709,14 +729,19 @@ private:
         return result;
     }
 
+    // `required` is the minimum arg count (params with no default); SIZE_MAX means "all params required".
     void checkArgs(const std::vector<TypeRef>& params, const std::vector<TypeRef>& argTypes,
-                   std::vector<ExprPtr>& args, const std::string& what, SourcePos pos) {
-        if (params.size() != argTypes.size()) {
-            diags_.error(pos, what + " expects " + std::to_string(params.size()) + " argument(s), got " + std::to_string(argTypes.size()));
+                   std::vector<ExprPtr>& args, const std::string& what, SourcePos pos,
+                   std::size_t required = static_cast<std::size_t>(-1)) {
+        if (required == static_cast<std::size_t>(-1)) required = params.size();
+        if (argTypes.size() < required || argTypes.size() > params.size()) {
+            std::string want = required == params.size() ? std::to_string(params.size())
+                                                         : std::to_string(required) + "-" + std::to_string(params.size());
+            diags_.error(pos, what + " expects " + want + " argument(s), got " + std::to_string(argTypes.size()));
             return;
         }
-        // Each argument flows into its parameter slot: widen losslessly, else require an explicit cast.
-        for (std::size_t i = 0; i < params.size(); ++i)
+        // Each supplied argument flows into its parameter slot: widen losslessly, else require an explicit cast.
+        for (std::size_t i = 0; i < argTypes.size(); ++i)
             checkConvert(args[i], params[i], "argument " + std::to_string(i + 1) + " of " + what);
     }
 
@@ -730,13 +755,30 @@ private:
             // Static call `Type.method(args)`: the receiver is a type name, not an evaluated value.
             if (e.lhs->lhs->kind == ExprKind::Name) {
                 const std::string& typeName = e.lhs->lhs->text;
-                // Builtin `Math` namespace: `Math.sqrt(x)` etc. Args widen to f64; result is f64.
+                // Builtin `Math` namespace. `min`/`max`/`abs` are type-preserving (like C#'s overloads:
+                // Max(int,int)->int, Max(long,long)->long); `sqrt`/`ln`/`floor`/`ceil` are float-domain (f64).
                 if (typeName == "Math") {
                     int arity = mathArity(method);
-                    if (arity < 0) diags_.error(e.pos, "'Math' has no function '" + method + "'");
-                    else if (static_cast<int>(argTypes.size()) != arity)
+                    if (arity < 0) { diags_.error(e.pos, "'Math' has no function '" + method + "'"); return tNamed("f64"); }
+                    if (static_cast<int>(argTypes.size()) != arity) {
                         diags_.error(e.pos, "'Math." + method + "' expects " + std::to_string(arity) + " argument(s)");
-                    else for (auto& a : e.args) checkConvert(a, tNamed("f64"), "argument of 'Math." + method + "'");
+                        return tNamed("f64");
+                    }
+                    if (method == "abs")
+                        return isNumericTypeName(argTypes[0]) ? argTypes[0] : tNamed("f64");
+                    if (method == "min" || method == "max") {
+                        if (isNumericTypeName(argTypes[0]) && isNumericTypeName(argTypes[1])) {
+                            if (sameNamedType(argTypes[0], argTypes[1])) return argTypes[0];
+                            if (isLosslessWiden(argTypes[0], argTypes[1])) { coerce(e.args[0], argTypes[1]); return argTypes[1]; }
+                            if (isLosslessWiden(argTypes[1], argTypes[0])) { coerce(e.args[1], argTypes[0]); return argTypes[0]; }
+                            diags_.error(e.pos, "'Math." + method + "' operands have mismatched types " +
+                                                    argTypes[0].name + " and " + argTypes[1].name + "; add an explicit cast");
+                            return argTypes[0];
+                        }
+                        diags_.error(e.pos, "'Math." + method + "' expects numeric operands");
+                        return tNamed("f64");
+                    }
+                    for (auto& a : e.args) checkConvert(a, tNamed("f64"), "argument of 'Math." + method + "'");
                     return tNamed("f64");
                 }
                 // Primitive static intrinsic: `i32.parse(s)` / `f64.parse(s)` — string -> that numeric type.
@@ -748,7 +790,7 @@ private:
                 }
                 if (types_.count(typeName)) {
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
-                        checkArgs(m->params, argTypes, e.args, "static method '" + typeName + "." + method + "'", e.pos);
+                        checkArgs(m->params, argTypes, e.args, "static method '" + typeName + "." + method + "'", e.pos, m->required);
                         return m->type;
                     }
                     diags_.error(e.pos, "type '" + typeName + "' has no static method '" + method + "'");
@@ -765,7 +807,7 @@ private:
                 }
             }
             if (knownType(recv)) {
-                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos); return m->type; }
+                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); return m->type; }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
             return tUnknown();
@@ -782,14 +824,14 @@ private:
             return l->type.kind == TypeRef::Kind::Function && !l->type.ret.empty() ? l->type.ret[0] : tUnknown();
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
-            if (t->second.hasCtor) checkArgs(t->second.ctorParams, argTypes, e.args, "'" + name + "'", e.pos);
+            if (t->second.hasCtor) checkArgs(t->second.ctorParams, argTypes, e.args, "'" + name + "'", e.pos, t->second.ctorRequired);
             return tNamed(name);
         }
         if (auto uc = unionCtors_.find(name); uc != unionCtors_.end()) { checkArgs(uc->second.params, argTypes, e.args, "'" + name + "'", e.pos); return uc->second.result; }
         if (auto f = fns_.find(name); f != fns_.end()) {
             const FnSig* chosen = resolveOverload(f->second, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
-            checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos);
+            checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
             e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
             return chosen->result;
         }
@@ -798,7 +840,7 @@ private:
         if (!currentClass_.empty()) {
             if (const MemberInfo* m = findMember(currentClass_, name);
                 m && m->isStatic && (m->kind == MemberKind::Method || m->kind == MemberKind::Operator)) {
-                checkArgs(m->params, argTypes, e.args, "static method '" + currentClass_ + "." + name + "'", e.pos);
+                checkArgs(m->params, argTypes, e.args, "static method '" + currentClass_ + "." + name + "'", e.pos, m->required);
                 e.staticOwner = currentClass_;
                 return m->type;
             }

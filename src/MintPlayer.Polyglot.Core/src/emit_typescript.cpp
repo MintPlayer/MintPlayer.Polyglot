@@ -261,7 +261,7 @@ private:
         }
         if (c.hasInit) {
             std::string sig = "constructor(";
-            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += c.initParams[i].name + ": " + tsType(c.initParams[i].type); }
+            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += tsParam(c.initParams[i]); }
             line(sig + ") {");
             ++indent_;
             if (c.hasSuper) {
@@ -278,6 +278,13 @@ private:
         line("}");
     }
 
+    // `name: T` or `name: T = default` — a parameter declaration with its optional default value.
+    std::string tsParam(const ir::Param& p) {
+        std::string s = p.name + ": " + tsType(p.type);
+        if (p.defaultValue) s += " = " + emitExpr(*p.defaultValue);
+        return s;
+    }
+
     void emitMethod(const ir::Method& m) {
         if (m.kind == ir::MethodKind::Property) { // read-only computed property -> getter
             line("get " + m.name + "(): " + tsType(m.returnType) + " {");
@@ -289,7 +296,7 @@ private:
         }
         // method and operator both become regular methods (a + b calls a.plus(b) at the use site)
         std::string sig = std::string(m.isStatic ? "static " : "") + m.name + tsGenerics(m.generics) + "(";
-        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += m.params[i].name + ": " + tsType(m.params[i].type); }
+        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(m.params[i]); }
         sig += "): " + tsType(m.returnType) + " {";
         line(sig);
         ++indent_;
@@ -311,7 +318,7 @@ private:
     // emit `name(obj, …)` (TS has no extension-method call syntax — the `x.m()` reading cannot survive).
     void emitExtension(const ir::Function& f) {
         std::string sig = "function " + f.name + tsGenerics(f.generics) + "(";
-        for (std::size_t i = 0; i < f.params.size(); ++i) { if (i) sig += ", "; sig += f.params[i].name + ": " + tsType(f.params[i].type); }
+        for (std::size_t i = 0; i < f.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(f.params[i]); }
         sig += "): " + tsType(f.returnType) + " {";
         line(sig);
         ++indent_;
@@ -323,10 +330,7 @@ private:
 
     void emitFunction(const ir::Function& fn) {
         std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.mangledName + tsGenerics(fn.generics) + "(";
-        for (std::size_t i = 0; i < fn.params.size(); ++i) {
-            if (i) sig += ", ";
-            sig += fn.params[i].name + ": " + tsType(fn.params[i].type);
-        }
+        for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(fn.params[i]); }
         sig += "): " + tsType(fn.returnType) + " {";
         line(sig);
         ++indent_;
@@ -573,8 +577,19 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                if (mc.staticType == "Math") { // Math.sqrt(x) -> Math.sqrt(x); only `ln` differs (-> log)
-                    std::string fn = mc.method == "ln" ? "log" : mc.method;
+                if (mc.staticType == "Math") {
+                    // JS Math.* operate on `number` only — for BigInt (i64/u64) operands, min/max/abs must
+                    // compare with operators instead. An IIFE keeps each argument evaluated exactly once.
+                    if (isI64(e.type)) {
+                        if (mc.method == "max" || mc.method == "min") {
+                            std::string op = mc.method == "max" ? ">=" : "<=";
+                            return "((a, b) => (a " + op + " b ? a : b))(" +
+                                   emitExpr(*mc.args[0]) + ", " + emitExpr(*mc.args[1]) + ")";
+                        }
+                        if (mc.method == "abs")
+                            return "((a) => (a < 0n ? -a : a))(" + emitExpr(*mc.args[0]) + ")";
+                    }
+                    std::string fn = mc.method == "ln" ? "log" : mc.method; // Math.sqrt -> Math.sqrt; ln -> log
                     std::string s = "Math." + fn + "(";
                     for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                     return s + ")";

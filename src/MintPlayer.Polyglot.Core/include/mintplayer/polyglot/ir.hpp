@@ -237,6 +237,7 @@ struct Try : Stmt {
 struct Param {
     std::string name;
     Type type;
+    ExprPtr defaultValue;   // optional `= expr` default; null = required parameter
 };
 struct GenericParam {
     std::string name;

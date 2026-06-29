@@ -215,7 +215,7 @@ private:
         }
         if (c.hasInit) {
             std::string sig = "public " + c.name + "(";
-            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += csType(c.initParams[i].type) + " " + c.initParams[i].name; }
+            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += csParam(c.initParams[i]); }
             sig += ")";
             if (c.hasSuper) {
                 sig += " : base(";
@@ -228,6 +228,13 @@ private:
         for (const auto& m : c.methods) emitMethod(c.name, m);
         --indent_;
         line("}");
+    }
+
+    // `T name` or `T name = default` — a parameter declaration with its optional default value.
+    std::string csParam(const ir::Param& p) {
+        std::string s = csType(p.type) + " " + p.name;
+        if (p.defaultValue) s += " = " + emitExpr(*p.defaultValue);
+        return s;
     }
 
     void emitMethod(const std::string& recordName, const ir::Method& m) {
@@ -246,7 +253,7 @@ private:
             return;
         }
         std::string sig = std::string("public ") + (m.isStatic ? "static " : "") + csType(m.returnType) + " " + m.name + csGenerics(m.generics) + "(";
-        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csType(m.params[i].type) + " " + m.params[i].name; }
+        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
         sig += ")" + csWhere(m.generics);
         if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
         else { line(sig); emitBlock(m.body); }
@@ -270,10 +277,7 @@ private:
 
     void emitFunction(const ir::Function& fn) {
         std::string sig = "static " + csType(fn.returnType) + " " + fn.name + csGenerics(fn.generics) + "(";
-        for (std::size_t i = 0; i < fn.params.size(); ++i) {
-            if (i) sig += ", ";
-            sig += csType(fn.params[i].type) + " " + fn.params[i].name;
-        }
+        for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += csParam(fn.params[i]); }
         sig += ")" + csWhere(fn.generics);
         line(sig);
         line("{");
@@ -461,7 +465,8 @@ private:
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
-                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
+                std::string base = m.staticType.empty() ? atom(*m.object)
+                                 : m.staticType == "Math" ? "global::System.Math" : m.staticType;
                 return base + (m.nullSafe ? "?." : ".") + m.field;
             }
             case ir::ExprKind::MethodCall: {

@@ -78,7 +78,7 @@ public:
             f.generics = generics(ext.generics);
             f.returnType = ext.returnType;
             f.params.push_back({"self", ext.receiver}); // the receiver becomes the leading `self` parameter
-            for (const auto& p : ext.params) f.params.push_back({p.name, p.type});
+            for (const auto& p : ext.params) f.params.push_back(irParam(p));
             inExtension_ = true; // inside the body, `this` denotes the receiver -> lower to `self`
             if (ext.exprBody) { f.exprBodied = true; f.exprBody = expr(*ext.exprBody); }
             else f.body = block(ext.body);
@@ -94,7 +94,7 @@ public:
             f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
             f.isEntry = (fn.name == "main" && fn.params.empty());
-            for (const auto& p : fn.params) f.params.push_back({p.name, p.type});
+            for (const auto& p : fn.params) f.params.push_back(irParam(p));
             sawYield_ = false;
             f.body = block(fn.body);
             f.isIterator = sawYield_;
@@ -203,7 +203,7 @@ private:
                 }
                 case MemberKind::Init:
                     ic.hasInit = true;
-                    for (const auto& p : mem.params) ic.initParams.push_back({p.name, p.type});
+                    for (const auto& p : mem.params) ic.initParams.push_back(irParam(p));
                     // A `super(...)` call carries the base-ctor args; hoist it out of the body so each
                     // backend can place it idiomatically (C# `: base(...)`, TS leading `super(...);`).
                     for (const auto& st : mem.body) {
@@ -227,6 +227,14 @@ private:
         return ic;
     }
 
+    // Lower a parameter, carrying its optional `= default` (so emitters reproduce it in the signature
+    // and callers may omit trailing defaulted arguments — both C# and TS support default parameters).
+    ir::Param irParam(const Param& p) {
+        ir::Param ip{p.name, p.type, nullptr};
+        if (p.hasDefault && p.defaultValue) ip.defaultValue = expr(*p.defaultValue);
+        return ip;
+    }
+
     ir::Method method(const Member& m) {
         ir::Method im;
         im.name = m.name;
@@ -242,7 +250,7 @@ private:
         im.kind = (m.kind == MemberKind::Operator) ? ir::MethodKind::Operator : ir::MethodKind::Method;
         if (m.kind == MemberKind::Operator) im.opSymbol = operatorSymbol(m.name);
         im.returnType = m.returnType;
-        for (const auto& p : m.params) im.params.push_back({p.name, p.type});
+        for (const auto& p : m.params) im.params.push_back(irParam(p));
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
         else { im.exprBodied = false; im.body = block(m.body); }
         return im;
@@ -270,7 +278,14 @@ private:
             case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
             case ExprKind::Extern:    return std::make_unique<ir::Extern>(e.pos, e.type, e.text);
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
-            case ExprKind::Member:    return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
+            case ExprKind::Member: {
+                if (e.lhs->kind == ExprKind::Name && e.lhs->text == "Math") { // Math.PI / Math.E -> static const
+                    auto m = std::make_unique<ir::Member>(e.pos, e.type, nullptr, e.text, false);
+                    m->staticType = "Math";
+                    return m;
+                }
+                return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
+            }
             case ExprKind::Match:     return matchExpr(e);
             case ExprKind::Lambda: {
                 auto lam = std::make_unique<ir::Lambda>(e.pos, e.type);
