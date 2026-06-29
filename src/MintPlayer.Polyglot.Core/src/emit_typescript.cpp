@@ -44,8 +44,22 @@ bool isScalarName(const std::string& n) {
 bool isUserType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && !t.name.empty() && !isScalarName(t.name);
 }
-bool isI32(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "i32"; }
 bool isI64(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && (t.name == "i64" || t.name == "u64"); }
+// A 32-bit-or-narrower integer type, normalized with JS bitwise ops at each operation boundary.
+bool isSmallInt(const TypeRef& t) {
+    if (t.kind != TypeRef::Kind::Named) return false;
+    const std::string& n = t.name;
+    return n == "i8" || n == "i16" || n == "i32" || n == "u8" || n == "u16" || n == "u32";
+}
+// Coerce a JS number back into the value range of a 32-bit-or-narrower int type (§3.C overflow masking).
+std::string narrowTs(const std::string& n, const std::string& inner) {
+    if (n == "i8")  return "(" + inner + " << 24 >> 24)";
+    if (n == "i16") return "(" + inner + " << 16 >> 16)";
+    if (n == "u8")  return "(" + inner + " & 0xff)";
+    if (n == "u16") return "(" + inner + " & 0xffff)";
+    if (n == "u32") return "(" + inner + " >>> 0)";
+    return "(" + inner + " | 0)"; // i32
+}
 // Operator symbol -> overload method name (TS has no operator overloading; call the method instead).
 std::string opMethod(const std::string& op) {
     if (op == "+") return "plus";
@@ -436,7 +450,7 @@ private:
                 const auto& u = static_cast<const ir::Unary&>(e);
                 std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
                                                                               : emitExpr(*u.operand);
-                if (isI32(e.type) && u.op == "-") return "(-" + operand + " | 0)"; // wrap negate of INT_MIN
+                if (isSmallInt(e.type) && u.op == "-") return narrowTs(e.type.name, "-" + operand); // wrap negate
                 return u.op + operand;
             }
             case ir::ExprKind::Binary: {
@@ -453,13 +467,17 @@ private:
                     const char* w = e.type.name == "u64" ? "BigInt.asUintN(64, " : "BigInt.asIntN(64, ";
                     return std::string(w) + lhs + " " + b.op + " " + rhs + ")";
                 }
-                // §3.C: i32 arithmetic must wrap on overflow and truncate on division like .NET — JS numbers
-                // are f64. `| 0` coerces back to a signed 32-bit int at each operation boundary; `*` needs
-                // Math.imul (a plain product can exceed 2^53 and lose the low 32 bits before `| 0`).
-                if (isI32(e.type)) {
-                    if (b.op == "*") return "Math.imul(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")";
+                // §3.C: 32-bit-or-narrower int arithmetic must wrap on overflow and truncate on division
+                // like .NET — JS numbers are f64. Each operation boundary is re-narrowed to the type's
+                // range; `*` needs Math.imul (a plain product can exceed 2^53 and lose the low bits first).
+                if (isSmallInt(e.type)) {
+                    const std::string& n = e.type.name;
+                    if (b.op == "*") {
+                        std::string prod = "Math.imul(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")";
+                        return n == "i32" ? prod : narrowTs(n, prod); // Math.imul already yields i32
+                    }
                     if (b.op == "+" || b.op == "-" || b.op == "/" || b.op == "%")
-                        return "(" + lhs + " " + b.op + " " + rhs + " | 0)";
+                        return narrowTs(n, lhs + " " + b.op + " " + rhs);
                 }
                 return lhs + " " + b.op + " " + rhs;
             }

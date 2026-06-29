@@ -1,0 +1,20 @@
+// P6 differential conformance: sub-32 and unsigned integer wrapping (§3.C).
+// Each width wraps at its own boundary on both targets — C# casts back (it
+// widens byte/short arithmetic to int), TS uses width-specific bit ops.
+
+fn main() {
+  var a = 200u8
+  print(a + a)        // 144    (400 mod 256)
+
+  var b = 60000u16
+  print(b + b)        // 54464  (120000 mod 65536)
+
+  var c = 4000000000u32
+  print(c + c)        // 3705032704  (8e9 mod 2^32, unsigned)
+
+  var d = 100i8
+  print(d + d)        // -56    (200 wraps into i8)
+
+  var e = 30000i16
+  print(e + e)        // -5536  (60000 wraps into i16)
+}

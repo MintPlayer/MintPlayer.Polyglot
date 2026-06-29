@@ -66,6 +66,17 @@ std::string csWhere(const std::vector<ir::GenericParam>& gs) {
     return s;
 }
 
+// The C# cast that wraps a sub-32 integer result back into its type's range, or nullptr for types that
+// already wrap natively (int/uint/long/ulong). C# widens byte/sbyte/short/ushort arithmetic to int.
+const char* subWordCast(const TypeRef& t) {
+    if (t.kind != TypeRef::Kind::Named) return nullptr;
+    if (t.name == "i8")  return "sbyte";
+    if (t.name == "i16") return "short";
+    if (t.name == "u8")  return "byte";
+    if (t.name == "u16") return "ushort";
+    return nullptr;
+}
+
 int prec(const std::string& op) {
     if (op == "||") return 1;
     if (op == "&&") return 2;
@@ -404,7 +415,11 @@ private:
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
                 int p = prec(b.op);
-                return child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
+                std::string expr = child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
+                // C# promotes sub-32 integer arithmetic to `int`, so it doesn't wrap at 8/16 bits — cast
+                // back to wrap like the source type. (int/uint/long/ulong already wrap unchecked.)
+                if (const char* c = subWordCast(e.type)) return "(" + std::string(c) + ")(" + expr + ")";
+                return expr;
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
