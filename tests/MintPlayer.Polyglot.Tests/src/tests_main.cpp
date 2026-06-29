@@ -330,6 +330,25 @@ int main() {
 
     // P8 — importing an unknown std module is a diagnostic (real module resolution, not a silent no-op).
     rejects("import std.bogus.{ Thing }\nfn main() {}\n", "P8: unknown std module is rejected");
+    rejects("import std.collections.{ Nope }\nfn main() {}\n", "P8: unknown imported name is rejected");
+
+    // P8 — std.io: filesystem access via the capability mechanism (expect + per-target actual extern).
+    {
+        const char* prog =
+            "import std.io.{ readText, writeText }\n"
+            "fn main() {\n"
+            "  writeText(\"a.txt\", \"hi\")\n"
+            "  print(readText(\"a.txt\"))\n"
+            "}\n";
+        EmitResult cs = compile(prog, Target::CSharp);
+        check(cs.ok, "P8: std.io program -> C# compiles");
+        check(has(cs.code, "global::System.IO.File.ReadAllText(path)"), "P8 C#: readText -> File.ReadAllText");
+        check(has(cs.code, "global::System.IO.File.WriteAllText(path, content)"), "P8 C#: writeText -> File.WriteAllText");
+        EmitResult ts = compile(prog, Target::TypeScript);
+        check(ts.ok, "P8: std.io program -> TS compiles");
+        check(has(ts.code, "readFileSync(path"), "P8 TS: readText -> fs.readFileSync");
+        check(has(ts.code, "writeFileSync(path, content)"), "P8 TS: writeText -> fs.writeFileSync");
+    }
 
     // A normal unknown type still gets the plain diagnostic (not a refusal).
     {

@@ -41,12 +41,40 @@ extern class List<T> {
 }
 )PG";
 
+// std.io — filesystem access bound per target via the capability mechanism (expect + per-target actual).
+// A top-level `actual` `extern("…")` is emitted verbatim, so the template references the function's
+// parameters BY NAME (`path`, `content`) — they emit unchanged to both targets. Unit-returning bindings
+// use a block body `{ extern("…") }` (an `=> extern` expression-body would expect a value). File IO is not
+// on the §3.B refuse-list, so it's permitted.
+const char* STD_IO = R"PG(
+expect fn readText(path: string): string
+actual(csharp)     fn readText(path: string): string => extern("global::System.IO.File.ReadAllText(path)")
+actual(typescript) fn readText(path: string): string => extern("require('fs').readFileSync(path, 'utf8')")
+
+expect fn writeText(path: string, content: string)
+actual(csharp)     fn writeText(path: string, content: string) { extern("global::System.IO.File.WriteAllText(path, content)") }
+actual(typescript) fn writeText(path: string, content: string) { extern("require('fs').writeFileSync(path, content)") }
+
+expect fn appendText(path: string, content: string)
+actual(csharp)     fn appendText(path: string, content: string) { extern("global::System.IO.File.AppendAllText(path, content)") }
+actual(typescript) fn appendText(path: string, content: string) { extern("require('fs').appendFileSync(path, content)") }
+
+expect fn fileExists(path: string): bool
+actual(csharp)     fn fileExists(path: string): bool => extern("global::System.IO.File.Exists(path)")
+actual(typescript) fn fileExists(path: string): bool => extern("require('fs').existsSync(path)")
+
+expect fn deleteFile(path: string)
+actual(csharp)     fn deleteFile(path: string) { extern("global::System.IO.File.Delete(path)") }
+actual(typescript) fn deleteFile(path: string) { extern("require('fs').unlinkSync(path)") }
+)PG";
+
 // The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,
 // not control flow. No filesystem resolver yet (the source is compiled into the binary); user-module
 // resolution across files is future work.
 struct StdModule { const char* path; const char* source; };
 const StdModule STD_MODULES[] = {
     {"std.collections", STD_COLLECTIONS},
+    {"std.io", STD_IO},
 };
 
 // Resolve each `import`: a known `std.*` module is parsed and merged into the unit (once), with its
