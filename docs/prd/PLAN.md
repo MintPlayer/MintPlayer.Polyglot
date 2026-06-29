@@ -115,12 +115,21 @@ construction type args (`Box<i32>(7)` → `new Box<int>(7)` / `new Box<number>(7
 round-trip; capability gate proven by unit test. Golden `tsc`/`dotnet build` baselines deferred to P7
 (std-using samples) — the differential run already compiles+runs both targets per program.
 
-## P6 — Faithfulness pass
+## P6 — Faithfulness pass ✅ done (2026-06-29)
 Implement the §3.C relaxations *as documented behaviour*: int32/uint masking (`|0`/`>>>0`/`Math.imul`),
 opt-in `Math.fround` strict floats, `BigInt` for int64, structural equality/hashing, null/undefined
 normalization. Enforce the §3.B **refusals** with clear, actionable compiler errors (not miscompiles).
 *Gate:* a numeric conformance suite passes within tolerance across both targets; every refused feature has
 a refusal test asserting the diagnostic; the relaxation list is written up in the spec.
+*Delivered:* §3.B **refusal diagnostics** (threads/locks, `decimal`, pointers/unsafe, `dynamic`, expression
+trees, reflection → "Polyglot refuses X" with a unit test each); **all integer widths faithful** — i8/i16/
+u8/u16/u32 narrowing (TS bit-ops; C# casts), i32 `|0`/`Math.imul`, **i64/u64 → BigInt** with 64-bit wrap;
+**structural value equality** for records (C# native, TS generated `equals`); **explicit casts `(T)x`** +
+**implicit lossless widening** (replacing conversion methods); and **function overloading** (compile-time
+resolution; C# native name / TS param-mangled). 8 new differential programs (int_overflow, int64,
+int_widths, equality, casts, widening, overloading) + refusal/overload unit tests. *Deferred to its own
+step (low value):* opt-in strict-f32 `Math.fround`, statement-level `lock`/`unsafe` refusals, null/undefined
+normalization (better with std). Numeric conversion design recorded in PRD §3.A / SPEC §3.
 
 ## P7 — Std core + expect/actual + FFI (the three plugin mechanisms, as first-party code)
 A minimal portable standard library in `.pg` (math, basic collections, iterators) compiled to both

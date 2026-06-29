@@ -76,8 +76,12 @@ methods** (C# `this`-methods / TS free functions), and **generics** (`<T>` + bou
 args). `Iterable`/`Error` are core builtin types. **§3.E per-target capability gating is implemented +
 active** (`backend.hpp` `Feature` enum + `Backend::supports`; `capability.cpp` + `compile()` refuse any
 used feature a target can't emit — C#/TS declare the full set so nothing gates yet; a StubBackend test
-proves it bites). 14 differential programs, all green. **Next: P6 — faithfulness pass** (§3.C relaxations
-+ §3.B refusal diagnostics). See PLAN.md.
+proves it bites). **P6 ✅ done — faithfulness pass:** §3.B **refusal diagnostics** ("Polyglot refuses X");
+**all integer widths faithful** (i8…u32 narrowing, i64/u64 → **BigInt**); **structural equality** for
+records; **explicit casts `(T)x`** + **implicit lossless widening** (no conversion methods); **function
+overloading** (C# native name / TS param-mangled). 21 differential programs, all green. *Deferred tail:*
+strict-f32 `Math.fround`, `lock`/`unsafe` statement refusals, null normalization. **Next: P7 — std core +
+`expect`/`actual` + static methods (`i32.parse`).** See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.
