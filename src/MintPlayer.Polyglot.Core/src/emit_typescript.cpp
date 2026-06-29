@@ -2,10 +2,9 @@
 
 #include <string>
 
-// Hand-written IR -> TypeScript pretty-printer for the MVP subset. Emits free `function`s, maps `print`
-// -> console.log, `let`/`var` -> const/let, and appends a top-level `main();` call when present. The
-// output is plain enough to run under Node's type-stripping (no enums/decorators), which the P2
-// differential conformance test relies on.
+// Hand-written IR -> TypeScript pretty-printer. Walks the typed IR; emits free `function`s, maps the
+// `print` intrinsic -> console.log, and appends a top-level call to the entry function. Output stays
+// plain enough to run under Node's type-stripping (the P2 differential conformance test relies on it).
 
 namespace mintplayer::polyglot {
 
@@ -13,10 +12,10 @@ namespace {
 
 std::string tsType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
-        if (t.name == "unit")               return "void";
-        if (t.name == "i32" || t.name == "f64") return "number";
-        if (t.name == "bool")               return "boolean";
-        if (t.name == "string")             return "string";
+        if (t.name == "unit")                    return "void";
+        if (t.name == "i32" || t.name == "f64")  return "number";
+        if (t.name == "bool")                    return "boolean";
+        if (t.name == "string")                  return "string";
         return t.name.empty() ? "unknown" : t.name; // user/generic type names refined in P5
     }
     return "unknown";
@@ -34,12 +33,12 @@ int prec(const std::string& op) {
 
 class TypeScriptEmitter {
 public:
-    std::string emit(const CompilationUnit& unit) {
+    std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
-        for (const auto& fn : unit.functions) emitFunction(fn);
-        for (const auto& fn : unit.functions) {
-            if (fn.name == "main" && fn.params.empty()) { line("main();"); break; }
+        for (const auto& fn : m.functions) emitFunction(fn);
+        for (const auto& fn : m.functions) {
+            if (fn.isEntry) { line("main();"); break; }
         }
         return out_;
     }
@@ -54,15 +53,13 @@ private:
         out_ += '\n';
     }
 
-    void emitFunction(const FunctionDecl& fn) {
+    void emitFunction(const ir::Function& fn) {
         std::string sig = "function " + fn.name + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             if (i) sig += ", ";
             sig += fn.params[i].name + ": " + tsType(fn.params[i].type);
         }
-        sig += "): ";
-        sig += tsType(fn.returnType);
-        sig += " {";
+        sig += "): " + tsType(fn.returnType) + " {";
         line(sig);
         ++indent_;
         for (const auto& s : fn.body) emitStmt(*s);
@@ -70,37 +67,47 @@ private:
         line("}");
     }
 
-    void emitBlock(const std::vector<StmtPtr>& body) {
+    void emitBlock(const std::vector<ir::StmtPtr>& body) {
         ++indent_;
         for (const auto& s : body) emitStmt(*s);
         --indent_;
     }
 
-    void emitStmt(const Stmt& s) {
+    void emitStmt(const ir::Stmt& s) {
         switch (s.kind) {
-            case StmtKind::Let:
-                line(std::string(s.isMutable ? "let " : "const ") + s.name + " = " + emitExpr(*s.value) + ";");
+            case ir::StmtKind::Let: {
+                const auto& l = static_cast<const ir::Let&>(s);
+                line(std::string(l.isMutable ? "let " : "const ") + l.name + " = " + emitExpr(*l.init) + ";");
                 break;
-            case StmtKind::Assign:
-                line(emitExpr(*s.target) + " " + s.op + " " + emitExpr(*s.value) + ";");
+            }
+            case ir::StmtKind::Assign: {
+                const auto& a = static_cast<const ir::Assign&>(s);
+                line(emitExpr(*a.target) + " " + a.op + " " + emitExpr(*a.value) + ";");
                 break;
-            case StmtKind::ExprStmt:
-                line(emitExpr(*s.value) + ";");
+            }
+            case ir::StmtKind::ExprStmt:
+                line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + ";");
                 break;
-            case StmtKind::Return:
-                line(s.value ? "return " + emitExpr(*s.value) + ";" : "return;");
+            case ir::StmtKind::Return: {
+                const auto& r = static_cast<const ir::Return&>(s);
+                line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
                 break;
-            case StmtKind::If:
-                line("if (" + emitExpr(*s.value) + ") {");
-                emitBlock(s.thenBody);
-                if (s.hasElse) { line("} else {"); emitBlock(s.elseBody); line("}"); }
+            }
+            case ir::StmtKind::If: {
+                const auto& i = static_cast<const ir::If&>(s);
+                line("if (" + emitExpr(*i.cond) + ") {");
+                emitBlock(i.thenBody);
+                if (i.hasElse) { line("} else {"); emitBlock(i.elseBody); line("}"); }
                 else line("}");
                 break;
-            case StmtKind::While:
-                line("while (" + emitExpr(*s.value) + ") {");
-                emitBlock(s.thenBody);
+            }
+            case ir::StmtKind::While: {
+                const auto& w = static_cast<const ir::While&>(s);
+                line("while (" + emitExpr(*w.cond) + ") {");
+                emitBlock(w.body);
                 line("}");
                 break;
+            }
         }
     }
 
@@ -116,48 +123,42 @@ private:
                 default:   s += c; break;
             }
         }
-        s += "\"";
-        return s;
+        return s + "\"";
     }
 
-    std::string child(const Expr& c, int parentPrec, bool isRight) {
+    std::string child(const ir::Expr& c, int parentPrec, bool isRight) {
         std::string inner = emitExpr(c);
-        if (c.kind == ExprKind::Binary) {
-            int cp = prec(c.text);
-            bool wrap = isRight ? (cp <= parentPrec) : (cp < parentPrec);
-            if (wrap) return "(" + inner + ")";
+        if (c.kind == ir::ExprKind::Binary) {
+            int cp = prec(static_cast<const ir::Binary&>(c).op);
+            if (isRight ? (cp <= parentPrec) : (cp < parentPrec)) return "(" + inner + ")";
         }
         return inner;
     }
 
-    std::string emitExpr(const Expr& e) {
+    std::string emitExpr(const ir::Expr& e) {
         switch (e.kind) {
-            case ExprKind::IntLit:    return e.text;
-            case ExprKind::FloatLit:  return e.text;
-            case ExprKind::BoolLit:   return e.boolVal ? "true" : "false";
-            case ExprKind::StringLit: return escape(e.text);
-            case ExprKind::Name:      return e.text;
-            case ExprKind::Unary: {
-                std::string operand = e.lhs->kind == ExprKind::Binary ? "(" + emitExpr(*e.lhs) + ")"
-                                                                      : emitExpr(*e.lhs);
-                return e.text + operand;
+            case ir::ExprKind::Int:   return static_cast<const ir::IntLit&>(e).text;
+            case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
+            case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
+            case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
+            case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
+            case ir::ExprKind::Unary: {
+                const auto& u = static_cast<const ir::Unary&>(e);
+                std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
+                                                                              : emitExpr(*u.operand);
+                return u.op + operand;
             }
-            case ExprKind::Binary: {
-                int p = prec(e.text);
-                return child(*e.lhs, p, false) + " " + e.text + " " + child(*e.rhs, p, true);
+            case ir::ExprKind::Binary: {
+                const auto& b = static_cast<const ir::Binary&>(e);
+                int p = prec(b.op);
+                return child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
             }
-            case ExprKind::Call: {
-                const Expr& callee = *e.lhs;
-                std::string head = (callee.kind == ExprKind::Name && callee.text == "print")
-                                       ? "console.log" : emitExpr(callee);
-                std::string s = head + "(";
-                for (std::size_t i = 0; i < e.args.size(); ++i) {
-                    if (i) s += ", ";
-                    s += emitExpr(*e.args[i]);
-                }
+            case ir::ExprKind::Call: {
+                const auto& c = static_cast<const ir::Call&>(e);
+                std::string s = (c.isPrint ? "console.log" : c.callee) + "(";
+                for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";
             }
-            default: return ""; // expression kinds beyond the MVP subset are emitted in P5
         }
         return "";
     }
@@ -165,9 +166,9 @@ private:
 
 } // namespace
 
-std::string emitTypeScript(const CompilationUnit& unit) {
+std::string emitTypeScript(const ir::Module& module) {
     TypeScriptEmitter emitter;
-    return emitter.emit(unit);
+    return emitter.emit(module);
 }
 
 } // namespace mintplayer::polyglot

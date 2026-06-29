@@ -3,6 +3,7 @@
 #include "mintplayer/polyglot/ast.hpp"
 #include "mintplayer/polyglot/emit.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
+#include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
 #include "mintplayer/polyglot/pg_printer.hpp"
 #include "mintplayer/polyglot/sema.hpp"
@@ -22,7 +23,8 @@ EmitResult compile(const std::string& source, Target target) {
     check(unit, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    result.code = (target == Target::CSharp) ? emitCSharp(unit) : emitTypeScript(unit);
+    ir::Module module = lower(unit);
+    result.code = (target == Target::CSharp) ? emitCSharp(module) : emitTypeScript(module);
     result.ok = true;
     return result;
 }
