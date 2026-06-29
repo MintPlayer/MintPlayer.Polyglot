@@ -68,16 +68,16 @@ To verify: build (VS 18 Insiders MSBuild), then run `x64\Debug\MintPlayer.Polygl
 (`tests/fidelity/run-roundtrip.ps1`). **P4 ✅** semantics + a **separate typed IR**: resolution + nominal
 typing + match exhaustiveness in `sema.cpp`; AST→IR `lower.cpp` into `ir.hpp`; backends emit from the IR
 (pipeline = lexer→parser→sema→lower→IR→backend). Full sema runs on self-contained programs (std-using
-samples checked end-to-end at P7). **P5 🔨 in progress — widening IR/lowering/backends to the full §3.A
-surface.** Done: the **backend-interface seam** (`Backend` abstraction + registry, `findBackend`), plus
-records, enums, unions + pattern matching, operators/properties, **classes** (with inheritance + `super`),
-**`for…in`** (ranges + iterables), **iterators (`yield`)**, **exceptions** (`throw`/`try`/`catch`/`when`/
-`finally`), **`use`/disposal**, **closures/lambdas** (incl. bare `x => …`; native arrow fns), and
-**extension methods** (C# `this`-methods / TS free functions). `Iterable`/`Error` are core builtin types.
-**§3.E per-target capability gating is implemented + active** (`backend.hpp` `Feature` enum +
-`Backend::supports`; `capability.cpp` + `compile()` refuse any used feature a target can't emit — C#/TS
-declare the full set so nothing gates yet; a StubBackend test proves it bites). Differential suite grew
-1 → 13 programs, all green. **Remaining in P5:** generic emission. See PLAN.md.
+samples checked end-to-end at P7). **P5 ✅ done — full §3.A surface lowers + emits to both targets:** the
+**backend-interface seam** (`Backend` abstraction + registry), records, enums, unions + pattern matching,
+operators/properties, **classes** (inheritance + `super`), **`for…in`** (ranges + iterables), **iterators
+(`yield`)**, **exceptions**, **`use`/disposal**, **closures/lambdas** (incl. bare `x => …`), **extension
+methods** (C# `this`-methods / TS free functions), and **generics** (`<T>` + bounds + construction type
+args). `Iterable`/`Error` are core builtin types. **§3.E per-target capability gating is implemented +
+active** (`backend.hpp` `Feature` enum + `Backend::supports`; `capability.cpp` + `compile()` refuse any
+used feature a target can't emit — C#/TS declare the full set so nothing gates yet; a StubBackend test
+proves it bites). 14 differential programs, all green. **Next: P6 — faithfulness pass** (§3.C relaxations
++ §3.B refusal diagnostics). See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

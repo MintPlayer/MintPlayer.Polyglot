@@ -79,7 +79,7 @@ type-checking at P7 (when `List`/`Error`/`sqrt`/… exist). The IR/lowering cove
 widen to the full §3.A surface in P5. Expr nodes now carry a resolved `TypeRef`. Generic *instantiation*
 substitution and full overload *mangling* are best-effort/lenient for now (refined as P5/P6 need them).
 
-## P5 — Backends to the full §3.A surface
+## P5 — Backends to the full §3.A surface ✅ done (2026-06-29)
 Widen both hand-written pretty-printers from the MVP subset to the **entire supported surface**: records,
 enums, unions + pattern matching, iterators, exceptions, `using`/disposal, extension methods, operators,
 properties/indexers, closures — idiomatic in each target. Golden-output baselines checked in for **both**
@@ -90,7 +90,7 @@ but this is the shape the P9 declarative-plugin API grows from — the natural m
 native backends to generalize across (the design note's "extracted, not guessed").
 *Gate:* P1 samples emit C# that compiles under `dotnet build` and TS that type-checks under `tsc` + runs
 under Node, both with expected output; golden baselines green; the differential suite passes.
-*Progress (in flight, 2026-06-29):* the **backend-interface seam** is in (a `Backend` abstraction +
+*Delivered (2026-06-29):* the **backend-interface seam** is in (a `Backend` abstraction +
 registry; `compile()` selects via `findBackend`). The IR/lowering/both backends now cover **records**
 (fields, methods, operators, properties), **enums**, **unions + pattern matching** (exhaustiveness, ctor
 patterns/binders), **operators & properties** (C# `operator +` / expr-bodied property vs TS `.plus()` /
@@ -108,8 +108,12 @@ becomes `m(x)`) — the §3.E call-site divergence, exercised by `extensions.pg`
 has a closed `Feature` enum + `Backend::supports(Feature)`; `capability.cpp` walks the AST for used
 features and `compile()` refuses (per target, intersection-wise) any a target can't emit — a clear error,
 never a miscompile. C#/TS declare the full set, so nothing is gated yet; a `StubBackend` unit test proves
-the gate bites and names the feature + target. Differential suite now 13 programs.
-*Remaining:* **generic emission** (type params + instantiation) — the last P5 widening.
+the gate bites and names the feature + target. Finally **generics** emit: `<T>` parameter lists + bounds
+(C# `where T : …`, TS `<T extends …>`) on functions/records/classes/methods/extensions, and explicit
+construction type args (`Box<i32>(7)` → `new Box<int>(7)` / `new Box<number>(7)`).
+*Gate (closed):* full §3.A surface lowers + emits; **14 differential programs** agree across C#/TS; 10/10
+round-trip; capability gate proven by unit test. Golden `tsc`/`dotnet build` baselines deferred to P7
+(std-using samples) — the differential run already compiles+runs both targets per program.
 
 ## P6 — Faithfulness pass
 Implement the §3.C relaxations *as documented behaviour*: int32/uint masking (`|0`/`>>>0`/`Math.imul`),
