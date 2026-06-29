@@ -295,6 +295,36 @@ extension) are each a clear diagnostic; the in-process tests cover all of this w
 (no filesystem); existing single-file programs are unaffected. (Phase-2 visibility/`as` is the remaining
 gate.)
 
+## P13 — Std as real modules + the `lib` prelude
+Close the "builtins that bypass imports" gap (full design in PRD §4.6). Today `print` and the `Math`
+namespace are hardcoded builtins; the samples that `import` them are actually **broken** (the import
+validation rejects them — `std.io` has no `print`, `std.math` doesn't exist) and only survive because the
+fidelity gate `fmt`s rather than compiles. Make the std honestly import-based; keep `i32.parse` global and
+`Error`/`Iterable` core. Three tracks, sequenced (the `lib` track is a prerequisite for low-churn rollout):
+
+- **`lib` prelude (do first):** add a `LibConfig` (list of names) param to `compile()`; synthesize one
+  whole-module `ImportDecl` per entry (`"io"` → `std.io`), tagged lib-origin; reuse `linkModules`. Add a
+  `dropShadowedLibDecls` pre-link pass so a lib decl **loses silently** to any user/explicit decl of the same
+  name (explicit-vs-explicit and lib-vs-lib still hard-error). Provenance via an `isLibAuto` flag on
+  `ImportDecl` + an `originLib` tag threaded through `mergeDecls`. CLI `--lib io,math`; `pgconfig.json`
+  `"lib"` deferred to P10. Core stays IO-free; the defaulted param keeps every existing `compile`/test call
+  working.
+- **`Math` → `std.math`:** an `extern class Math` with bound static members + `PI`/`E` constants (call
+  surface `Math.sqrt(x)` unchanged). Generic `min<T>/max<T>/abs<T>` get type-preservation from normal
+  generic typing; IIFE-form operator-ternary templates are `number`+`bigint`-safe and evaluate-once. Delete
+  `mathArity`, the `Math` sema/lower/emit special-casing, `mathRename`. *Minor* parser work: accept binding
+  arms on a `const` member (or model `PI`/`E` as bound static properties).
+- **`print` → `std.io`:** generic `expect fn print<T>(x: T)` + per-target `actual` `extern`; i64/u64 TS
+  `actual` overloads carry the `String(…)` wrap (pure data); retain a one-line sema guard rejecting
+  non-printable args (no `Printable` bound needed yet). Delete the `isPrint` flag + `printFn`.
+
+*Gate:* `print`/`Math` are unresolved without an import or a matching `lib` entry; `--lib io math` (or
+`import`s) makes them available; a user `print`/`Math` or explicit import **silently shadows** the lib one
+(no error) while two explicit imports of a name still error; the (now-fixed) `docs/lang/samples/*.pg` join a
+**compile** check, not just `fmt`; and the `math` + all `print`-using conformance programs stay byte-identical
+across C#/TS (goldens regenerated where the Math min/max template changes). A full `Printable` bound and
+per-name `lib` config are explicitly out of scope.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

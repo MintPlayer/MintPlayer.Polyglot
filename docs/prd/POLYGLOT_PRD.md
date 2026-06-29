@@ -283,6 +283,46 @@ collisions are accidental" model. The decided design (from a three-track investi
 > (parsed, recorded, but not yet semantically applied). The safety property — never silently shadow/
 > miscompile — holds today; the encapsulation niceties are the follow-up.
 
+### 4.6 Std-as-real-modules + the `lib` prelude (design — 2026-06-29)
+The module system exposed a contradiction: `print` and the `Math` namespace are **hardcoded builtins**, yet
+the samples `import { print } from "std.io"` / `import { sqrt } from "std.math"` — which the P12 import
+validation now actively **rejects** (`std.io` has no `print`; `std.math` doesn't exist). The samples only
+"passed" because the fidelity gate `fmt`s them, never compiles. Decision (the language designer's call):
+**`print` and `Math` become real std-module exports — usable only via import — while `i32.parse` & friends
+stay global primitive static methods.** Ergonomics are restored by a **`lib` prelude**, not by keeping
+builtins. A two-track investigation found the design clean:
+
+- **`std.math` — an `extern class Math`** of bound static members (`sqrt`/`ln`/`floor`/`ceil` → f64; generic
+  `min<T>`/`max<T>`/`abs<T>` → `T`) plus bound `PI`/`E` constants, each an `actual(target) extern("…")` arm.
+  The `Math.sqrt(x)` / `Math.PI` **call surface is unchanged** (still a static member of a type named `Math`).
+  Type-preservation for `min`/`max`/`abs` falls out of ordinary generic-return typing (no special sema rule),
+  and the TS-BigInt problem dissolves: an operator-ternary template (IIFE-form, to keep evaluate-once) works
+  for both `number` and `bigint`. This **deletes all `Math` special-casing** across sema/lower/emit
+  (`mathArity`, the `Math` namespace branch, `Math.PI/E`, the C# `mathRename`, the TS BigInt IIFE).
+
+- **`print` — a generic `std.io` export** `expect fn print<T>(x: T)` + per-target `actual` `extern`
+  (`Console.WriteLine($0)` / `console.log($0)`). Two behaviors carry over without keeping print a builtin:
+  (1) the i64/u64 → `String(…)` wrap (so TS doesn't print a trailing `n`) becomes **i64/u64 TS `actual`
+  overloads** — pure data, picked by the existing overload scoring; (2) the "this type isn't printable"
+  diagnostic is kept as a **one-line sema guard on calls to `std.io.print`** — substituting for a `Printable`
+  bound the language needn't grow yet. This deletes the `isPrint` flag and `printFn` machinery.
+
+- **The `lib` prelude — auto-import without losing the "everything is a real import" model.** A workspace
+  `lib: ["io", "math"]` auto-imports those std modules into every file, so `print(…)`/`Math.sqrt(…)` need no
+  explicit import. Mechanism: a `LibConfig` (just names) is passed to `compile()`; it **synthesizes one
+  whole-module `ImportDecl` per entry** (`"io"` → `std.io`), tagged lib-origin, and the existing
+  `linkModules` merges them. **Precedence (Rust-prelude / Python-builtins / TS-`lib` semantics):** a
+  lib-imported decl is *ambient and lowest-priority* — it **loses silently** to any user declaration or
+  explicit import of the same name (a pre-link `dropShadowedLibDecls` pass drops it before sema's collision
+  tables build); explicit-vs-explicit collisions still hard-error (P12 unchanged), and lib-vs-lib collisions
+  error (a prelude must be internally consistent). Config source: a `--lib` CLI flag now, `pgconfig.json`
+  `"lib"` later (P10) — the Core stays IO-free (receives names, not files). **`lib` is the hard prerequisite**
+  for the print/Math migration: without it, every `.pg` would need explicit `import … from "std.io"/"std.math"`.
+
+Net effect: the std becomes honestly import-based (no magic builtins except the primitive `i32.parse`
+static methods and the core `Error`/`Iterable` types), the broken samples become *compilable* (and join a
+compile check, not just `fmt`), and hello-world stays `print(…)` via `lib: ["io"]`. See **PLAN P13**.
+
 ---
 
 ## 5. Testing strategy

@@ -111,7 +111,12 @@ std.io ships File bindings (readText/writeText/…) via the capability mechanism
 Catalog found backends are ~70% tabular / ~30% imperative → a backend = **Spec (data)** + **Hooks (C++ for
 the imperative 30%)** over one shared emit engine; extraction is incremental, each slice a byte-for-byte
 no-op. Slice 1 ✅: scalar type-leaf table → `BackendSpec` (`backend_spec.hpp`), both emitters consult it.
-**Roadmap: P10** (plugin distribution, needs P9), **P11** (build-integration NuGet, independent).
+**Roadmap: P10** (plugin distribution, needs P9), **P11** (build-integration NuGet, independent), **P13**
+(designed — PRD §4.6: make `print`/`Math` real std modules via the binding mechanism, keep `i32.parse`
+global, + a **`lib` prelude** auto-import à la tsconfig `lib`/Rust prelude so they need no explicit import).
+NOTE: `print`/`Math` are still hardcoded builtins today, and `docs/lang/samples/*.pg` `import` them from
+`std.io`/`std.math` — those imports are **broken** (don't compile; only `fmt`'d by the fidelity gate); P13
+fixes this.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.
