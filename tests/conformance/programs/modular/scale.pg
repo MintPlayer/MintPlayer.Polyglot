@@ -1,0 +1,3 @@
+// A relative module that itself imports the logical one (transitive).
+import { Vec2, addVec } from "geom.vec"
+fn twice(v: Vec2): Vec2 => addVec(v, v)

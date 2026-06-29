@@ -1,0 +1,8 @@
+// Multi-file program: a logical import + a relative import; scale.pg re-imports geom.vec (deduped).
+import { Vec2, manhattan } from "geom.vec"
+import { twice } from "./scale"
+fn main() {
+  let a = Vec2(3, 5)
+  let b = twice(a)
+  print(manhattan(b))       // (3+5)*2 = 16
+}
