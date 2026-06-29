@@ -12,11 +12,26 @@ namespace {
 std::string csType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
         if (t.name == "unit")   return "void";
+        if (t.name == "i8")     return "sbyte";
+        if (t.name == "i16")    return "short";
         if (t.name == "i32")    return "int";
+        if (t.name == "i64")    return "long";
+        if (t.name == "u8")     return "byte";
+        if (t.name == "u16")    return "ushort";
+        if (t.name == "u32")    return "uint";
+        if (t.name == "u64")    return "ulong";
+        if (t.name == "f32")    return "float";
         if (t.name == "f64")    return "double";
         if (t.name == "bool")   return "bool";
         if (t.name == "string") return "string";
-        return t.name.empty() ? "object" : t.name; // user/generic type names refined in P5
+        if (t.name.empty())     return "object";
+        std::string name = (t.name == "Iterable") ? "System.Collections.Generic.IEnumerable" : t.name;
+        if (!t.args.empty()) {
+            name += "<";
+            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += csType(t.args[i]); }
+            name += ">";
+        }
+        return name;
     }
     return "object";
 }
@@ -202,6 +217,11 @@ private:
             case ir::StmtKind::Return: {
                 const auto& r = static_cast<const ir::Return&>(s);
                 line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
+                break;
+            }
+            case ir::StmtKind::Yield: {
+                const auto& y = static_cast<const ir::Yield&>(s);
+                line(y.value ? "yield return " + emitExpr(*y.value) + ";" : "yield break;");
                 break;
             }
             case ir::StmtKind::If: {

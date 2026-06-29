@@ -58,13 +58,16 @@ public:
             f.returnType = fn.returnType;
             f.isEntry = (fn.name == "main" && fn.params.empty());
             for (const auto& p : fn.params) f.params.push_back({p.name, p.type});
+            sawYield_ = false;
             f.body = block(fn.body);
+            f.isIterator = sawYield_;
             m.functions.push_back(std::move(f));
         }
         return m;
     }
 
 private:
+    bool sawYield_ = false; // set while lowering a function body that contains `yield`
     std::unordered_set<std::string> typeNames_;
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
@@ -264,6 +267,9 @@ private:
             }
             case StmtKind::Return:
                 return std::make_unique<ir::Return>(s.pos, s.value ? expr(*s.value) : nullptr);
+            case StmtKind::Yield:
+                sawYield_ = true;
+                return std::make_unique<ir::Yield>(s.pos, s.value ? expr(*s.value) : nullptr);
             default:
                 return nullptr; // statements beyond the current surface are lowered in later P5 increments
         }

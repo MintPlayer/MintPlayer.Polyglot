@@ -12,11 +12,21 @@ namespace {
 
 std::string tsType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
-        if (t.name == "unit")                    return "void";
-        if (t.name == "i32" || t.name == "f64")  return "number";
-        if (t.name == "bool")                    return "boolean";
-        if (t.name == "string")                  return "string";
-        return t.name.empty() ? "unknown" : t.name; // user/generic type names refined in P5
+        if (t.name == "unit")   return "void";
+        if (t.name == "bool")   return "boolean";
+        if (t.name == "string") return "string";
+        if (t.name == "char")   return "string";
+        if (t.name == "i8" || t.name == "i16" || t.name == "i32" || t.name == "i64" ||
+            t.name == "u8" || t.name == "u16" || t.name == "u32" || t.name == "u64" ||
+            t.name == "f32" || t.name == "f64") return "number";
+        if (t.name.empty()) return "unknown";
+        std::string name = t.name; // Iterable<T> stays Iterable<T> (a generator is assignable to it)
+        if (!t.args.empty()) {
+            name += "<";
+            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += tsType(t.args[i]); }
+            name += ">";
+        }
+        return name;
     }
     return "unknown";
 }
@@ -192,7 +202,7 @@ private:
     }
 
     void emitFunction(const ir::Function& fn) {
-        std::string sig = "function " + fn.name + "(";
+        std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.name + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             if (i) sig += ", ";
             sig += fn.params[i].name + ": " + tsType(fn.params[i].type);
@@ -229,6 +239,11 @@ private:
             case ir::StmtKind::Return: {
                 const auto& r = static_cast<const ir::Return&>(s);
                 line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
+                break;
+            }
+            case ir::StmtKind::Yield: {
+                const auto& y = static_cast<const ir::Yield&>(s);
+                line(y.value ? "yield " + emitExpr(*y.value) + ";" : "return;");
                 break;
             }
             case ir::StmtKind::If: {

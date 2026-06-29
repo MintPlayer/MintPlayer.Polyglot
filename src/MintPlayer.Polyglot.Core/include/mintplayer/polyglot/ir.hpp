@@ -132,7 +132,7 @@ struct Match : Expr {
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return };
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Yield };
 
 struct Stmt {
     StmtKind kind;
@@ -186,6 +186,10 @@ struct Return : Stmt {
     ExprPtr value; // may be null
     Return(SourcePos p, ExprPtr v) : Stmt(StmtKind::Return, p), value(std::move(v)) {}
 };
+struct Yield : Stmt { // `yield <value>` inside an iterator: C# `yield return`, TS generator `yield`
+    ExprPtr value;
+    Yield(SourcePos p, ExprPtr v) : Stmt(StmtKind::Yield, p), value(std::move(v)) {}
+};
 
 // ---- declarations ----
 struct Param {
@@ -197,7 +201,8 @@ struct Function {
     std::vector<Param> params;
     Type returnType;
     std::vector<StmtPtr> body;
-    bool isEntry = false; // a `fn main()` with no params — the program entry point
+    bool isEntry = false;    // a `fn main()` with no params — the program entry point
+    bool isIterator = false; // body contains `yield` — C# `IEnumerable<T>`+`yield return`, TS `function*`
 };
 struct RecordField {
     std::string name;

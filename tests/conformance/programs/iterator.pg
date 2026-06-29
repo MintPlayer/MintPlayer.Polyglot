@@ -1,0 +1,23 @@
+// P5 differential conformance: a `yield` iterator (C# IEnumerable + yield return,
+// TS function* + yield) consumed by `for…in` (the iterable form: C# foreach,
+// TS for…of). No std needed — self-contained.
+
+fn countUp(n: i32): Iterable<i32> {
+  var i = 0
+  while i < n {
+    yield i
+    i = i + 1
+  }
+}
+
+fn main() {
+  var total = 0
+  for v in countUp(5) {
+    total = total + v
+  }
+  print(total)        // 10  (0+1+2+3+4)
+
+  for v in countUp(3) {
+    print(v)          // 0, 1, 2
+  }
+}

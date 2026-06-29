@@ -24,6 +24,7 @@ bool isBuiltinType(const std::string& n) {
     static const std::unordered_set<std::string> b = {
         "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
         "f32", "f64", "bool", "char", "string", "unit",
+        "Iterable", // the core iterator contract (`fn …(): Iterable<T>` + `yield`); not std
     };
     return b.count(n) != 0;
 }

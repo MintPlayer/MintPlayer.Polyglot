@@ -78,6 +78,7 @@ private:
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += fn.params[i].name + ": " + typeName(fn.params[i].type); }
         sig += "): " + typeName(fn.returnType);
         if (fn.isEntry) sig += " [entry]";
+        if (fn.isIterator) sig += " [iterator]";
         line(sig + " {");
         ++indent_;
         for (const auto& s : fn.body) stmt(*s);
@@ -134,6 +135,11 @@ private:
             case StmtKind::Return: {
                 const auto& r = static_cast<const Return&>(s);
                 line(r.value ? "return " + expr(*r.value) : "return");
+                break;
+            }
+            case StmtKind::Yield: {
+                const auto& y = static_cast<const Yield&>(s);
+                line(y.value ? "yield " + expr(*y.value) : "yield");
                 break;
             }
         }
