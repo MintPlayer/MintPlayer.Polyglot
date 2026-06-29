@@ -65,6 +65,13 @@ struct Param {
     std::string name;
     TypeRef type;            // absent() = inferred
     SourcePos pos;
+    ExprPtr defaultValue;    // optional `= expr`
+    bool hasDefault = false;
+};
+
+struct GenericParam {
+    std::string name;
+    std::vector<TypeRef> bounds;   // `T: A & B`
 };
 
 struct FieldInit {           // `name = value` inside a `with { ... }` expression
@@ -155,9 +162,72 @@ struct Stmt {
 struct FunctionDecl {
     std::string name;
     SourcePos pos;
+    std::vector<GenericParam> generics;
     std::vector<Param> params;
     TypeRef returnType = namedType("unit");
     std::vector<StmtPtr> body;
+};
+
+// A member of a record/class/interface body.
+enum class MemberKind { Field, Const, Init, Method, Operator, Property };
+struct Member {
+    MemberKind kind;
+    SourcePos pos;
+    std::vector<std::string> modifiers;  // abstract/open/override/static/private/async
+    std::string name;                    // field/const/method/operator/property name (Init: "init")
+    bool isMutable = false;              // Field/Property: var vs let
+    TypeRef type;                        // Field/Const/Property type
+    ExprPtr init;                        // Field/Const initializer | Property read-only getter (`=> expr`)
+    std::vector<GenericParam> generics;  // Method/Operator
+    std::vector<Param> params;           // Method/Operator/Init
+    TypeRef returnType;                  // Method/Operator
+    std::vector<StmtPtr> body;           // block body
+    ExprPtr exprBody;                    // `=> expr` body
+    bool hasBody = false;                // false = stub (interface method `;`)
+    bool exprBodied = false;             // true = `=> expr`, false = block
+};
+
+struct RecordDecl {
+    std::string name;
+    SourcePos pos;
+    std::vector<GenericParam> generics;
+    std::vector<Param> fields;           // positional fields
+    std::vector<TypeRef> bases;          // implemented interfaces
+    std::vector<Member> members;         // optional body
+};
+struct ClassDecl {
+    std::vector<std::string> modifiers;
+    std::string name;
+    SourcePos pos;
+    std::vector<GenericParam> generics;
+    std::vector<TypeRef> bases;          // base class and/or interfaces
+    std::vector<Member> members;
+};
+struct InterfaceDecl {
+    std::string name;
+    SourcePos pos;
+    std::vector<GenericParam> generics;
+    std::vector<TypeRef> bases;
+    std::vector<Member> members;
+};
+struct ExtensionDecl {                   // `extension fn Receiver.name<...>(...): ret body`
+    TypeRef receiver;
+    std::string name;
+    SourcePos pos;
+    std::vector<GenericParam> generics;
+    std::vector<Param> params;
+    TypeRef returnType = namedType("unit");
+    std::vector<StmtPtr> body;
+    ExprPtr exprBody;
+    bool exprBodied = false;
+};
+struct ValueDecl {                       // top-level `const` / `let`
+    bool isConst = false;
+    std::string name;
+    SourcePos pos;
+    TypeRef type;
+    bool hasType = false;
+    ExprPtr init;
 };
 
 struct EnumCase {
@@ -194,6 +264,11 @@ struct CompilationUnit {
     std::vector<ImportDecl> imports;
     std::vector<EnumDecl> enums;
     std::vector<UnionDecl> unions;
+    std::vector<RecordDecl> records;
+    std::vector<ClassDecl> classes;
+    std::vector<InterfaceDecl> interfaces;
+    std::vector<ExtensionDecl> extensions;
+    std::vector<ValueDecl> values;
     std::vector<FunctionDecl> functions;
 };
 

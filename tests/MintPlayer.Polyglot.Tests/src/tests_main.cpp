@@ -117,6 +117,13 @@ int main() {
                    "  } catch (e: Error) {\n    print(e)\n  } finally {\n    cleanup()\n  }\n}\n"
                    "fn gen() {\n  yield 1\n  yield 2\n}\n",
                    "round-trip: try/catch/when/finally/throw/use/yield + compound & lvalue assign");
+        roundtrips("const Pi: f64 = 3.14159\nlet table: List<i32> = [1, 2, 3]\n"
+                   "record Pair<A, B>(first: A, second: B)\n"
+                   "record Money(cents: i64) {\n"
+                   "  operator fn plus(o: Money): Money => Money(this.cents + o.cents)\n"
+                   "  let dollars: f64 => 0.01\n}\n"
+                   "fn clamp<T>(x: T, lo: T = zero, hi: T): T => x\n",
+                   "round-trip: records + members + generics + default params + top-level const/let");
     }
 
     // C# emission (golden substrings).

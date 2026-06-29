@@ -16,6 +16,8 @@ public:
             else if (at(TokKind::KwFn)) unit.functions.push_back(parseFunction());
             else if (at(TokKind::KwEnum)) unit.enums.push_back(parseEnum());
             else if (at(TokKind::KwUnion)) unit.unions.push_back(parseUnion());
+            else if (at(TokKind::KwRecord)) unit.records.push_back(parseRecord());
+            else if (at(TokKind::KwConst) || at(TokKind::KwLet)) unit.values.push_back(parseValueDecl());
             else {
                 error("expected a declaration");
                 if (!recoverToTopLevel()) break;
@@ -72,10 +74,168 @@ private:
 
     bool recoverToTopLevel() {
         while (!at(TokKind::End) && !at(TokKind::KwImport) && !at(TokKind::KwFn) &&
-               !at(TokKind::KwEnum) && !at(TokKind::KwUnion))
+               !at(TokKind::KwEnum) && !at(TokKind::KwUnion) && !at(TokKind::KwRecord) &&
+               !at(TokKind::KwClass) && !at(TokKind::KwInterface) && !at(TokKind::KwExtension) &&
+               !at(TokKind::KwConst) && !at(TokKind::KwLet))
             advance();
         panicked_ = false;
         return !at(TokKind::End);
+    }
+
+    std::vector<GenericParam> parseGenericParams() {
+        std::vector<GenericParam> gs;
+        if (!accept(TokKind::Lt)) return gs;
+        do {
+            GenericParam g;
+            g.name = expect(TokKind::Identifier, "a type parameter").text;
+            if (accept(TokKind::Colon)) {
+                do { g.bounds.push_back(parseType()); } while (accept(TokKind::Amp));
+            }
+            gs.push_back(std::move(g));
+        } while (accept(TokKind::Comma));
+        expect(TokKind::Gt, "'>'");
+        return gs;
+    }
+
+    // Parameter list between '(' and ')'. Caller consumes the parentheses.
+    std::vector<Param> parseParamList() {
+        std::vector<Param> ps;
+        if (at(TokKind::RParen)) return ps;
+        do {
+            Param p;
+            p.pos = peek().pos;
+            p.name = expect(TokKind::Identifier, "a parameter name").text;
+            expect(TokKind::Colon, "':'");
+            p.type = parseType();
+            if (accept(TokKind::Assign)) { p.defaultValue = parseExpr(); p.hasDefault = true; }
+            ps.push_back(std::move(p));
+        } while (accept(TokKind::Comma));
+        return ps;
+    }
+
+    static const char* modifierText(TokKind k) {
+        switch (k) {
+            case TokKind::KwAbstract: return "abstract";
+            case TokKind::KwOpen:     return "open";
+            case TokKind::KwOverride: return "override";
+            case TokKind::KwStatic:   return "static";
+            case TokKind::KwPrivate:  return "private";
+            case TokKind::KwAsync:    return "async";
+            default:                  return "";
+        }
+    }
+    bool atModifier() const {
+        return at(TokKind::KwAbstract) || at(TokKind::KwOpen) || at(TokKind::KwOverride) ||
+               at(TokKind::KwStatic) || at(TokKind::KwPrivate) || at(TokKind::KwAsync);
+    }
+
+    void parseMemberBody(Member& m) {
+        if (accept(TokKind::Arrow)) { m.exprBody = parseExpr(); m.hasBody = true; m.exprBodied = true; }
+        else if (at(TokKind::LBrace)) { m.body = parseBlock(); m.hasBody = true; m.exprBodied = false; }
+        else { accept(TokKind::Semicolon); m.hasBody = false; } // interface stub
+    }
+
+    Member parseMember() {
+        Member m;
+        m.pos = peek().pos;
+        while (atModifier()) m.modifiers.push_back(modifierText(advance().kind));
+
+        if (at(TokKind::KwInit)) {
+            m.kind = MemberKind::Init;
+            m.name = "init";
+            advance();
+            expect(TokKind::LParen, "'('");
+            m.params = parseParamList();
+            expect(TokKind::RParen, "')'");
+            m.body = parseBlock();
+            m.hasBody = true;
+            return m;
+        }
+        if (at(TokKind::KwConst)) {
+            m.kind = MemberKind::Const;
+            advance();
+            m.name = expect(TokKind::Identifier, "a constant name").text;
+            expect(TokKind::Colon, "':'");
+            m.type = parseType();
+            expect(TokKind::Assign, "'='");
+            m.init = parseExpr();
+            accept(TokKind::Semicolon);
+            return m;
+        }
+        if (at(TokKind::KwOperator) || at(TokKind::KwFn)) {
+            m.kind = at(TokKind::KwOperator) ? MemberKind::Operator : MemberKind::Method;
+            advance();
+            if (m.kind == MemberKind::Operator) expect(TokKind::KwFn, "'fn'");
+            m.name = expect(TokKind::Identifier, "a method name").text;
+            m.generics = parseGenericParams();
+            expect(TokKind::LParen, "'('");
+            m.params = parseParamList();
+            expect(TokKind::RParen, "')'");
+            if (accept(TokKind::Colon)) m.returnType = parseType();
+            else m.returnType = namedType("unit");
+            parseMemberBody(m);
+            return m;
+        }
+        if (at(TokKind::KwLet) || at(TokKind::KwVar)) {
+            m.isMutable = at(TokKind::KwVar);
+            advance();
+            m.name = expect(TokKind::Identifier, "a member name").text;
+            expect(TokKind::Colon, "':'");
+            m.type = parseType();
+            if (accept(TokKind::Arrow)) { m.kind = MemberKind::Property; m.init = parseExpr(); }
+            else if (accept(TokKind::Assign)) { m.kind = MemberKind::Field; m.init = parseExpr(); }
+            else { m.kind = MemberKind::Field; }
+            accept(TokKind::Semicolon);
+            return m;
+        }
+        error("expected a member");
+        m.kind = MemberKind::Field;
+        return m;
+    }
+
+    std::vector<Member> parseMemberBlock() {
+        std::vector<Member> members;
+        expect(TokKind::LBrace, "'{'");
+        while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            members.push_back(parseMember());
+            if (panicked_) { // skip to the next member boundary
+                while (!at(TokKind::RBrace) && !at(TokKind::End) && !at(TokKind::Semicolon)) advance();
+                accept(TokKind::Semicolon);
+                panicked_ = false;
+            }
+        }
+        expect(TokKind::RBrace, "'}'");
+        return members;
+    }
+
+    RecordDecl parseRecord() {
+        RecordDecl d;
+        d.pos = peek().pos;
+        expect(TokKind::KwRecord, "'record'");
+        d.name = expect(TokKind::Identifier, "a record name").text;
+        d.generics = parseGenericParams();
+        expect(TokKind::LParen, "'('");
+        d.fields = parseParamList();
+        expect(TokKind::RParen, "')'");
+        if (accept(TokKind::Colon)) {
+            do { d.bases.push_back(parseType()); } while (accept(TokKind::Comma));
+        }
+        if (at(TokKind::LBrace)) d.members = parseMemberBlock();
+        else accept(TokKind::Semicolon);
+        return d;
+    }
+
+    ValueDecl parseValueDecl() {
+        ValueDecl d;
+        d.pos = peek().pos;
+        d.isConst = at(TokKind::KwConst);
+        advance(); // const / let
+        d.name = expect(TokKind::Identifier, "a name").text;
+        if (accept(TokKind::Colon)) { d.type = parseType(); d.hasType = true; }
+        expect(TokKind::Assign, "'='");
+        d.init = parseExpr();
+        accept(TokKind::Semicolon);
+        return d;
     }
 
     EnumDecl parseEnum() {
@@ -177,17 +337,9 @@ private:
         fn.pos = peek().pos;
         expect(TokKind::KwFn, "'fn'");
         fn.name = expect(TokKind::Identifier, "a function name").text;
+        fn.generics = parseGenericParams();
         expect(TokKind::LParen, "'('");
-        if (!at(TokKind::RParen)) {
-            do {
-                Param p;
-                p.pos = peek().pos;
-                p.name = expect(TokKind::Identifier, "a parameter name").text;
-                expect(TokKind::Colon, "':'");
-                p.type = parseType();
-                fn.params.push_back(std::move(p));
-            } while (accept(TokKind::Comma));
-        }
+        fn.params = parseParamList();
         expect(TokKind::RParen, "')'");
         if (accept(TokKind::Colon)) fn.returnType = parseType();
 

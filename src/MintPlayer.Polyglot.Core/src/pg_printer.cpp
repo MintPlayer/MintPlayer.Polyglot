@@ -32,9 +32,14 @@ public:
         for (const auto& im : unit.imports) line(importStr(im));
         bool first = unit.imports.empty(); // a blank line separates imports from the first declaration
         auto sep = [&]() { if (!first) out_ += "\n"; first = false; };
-        for (const auto& e : unit.enums)     { sep(); printEnum(e); }
-        for (const auto& u : unit.unions)    { sep(); printUnion(u); }
-        for (const auto& fn : unit.functions){ sep(); printFunction(fn); }
+        for (const auto& e : unit.enums)       { sep(); printEnum(e); }
+        for (const auto& u : unit.unions)      { sep(); printUnion(u); }
+        for (const auto& r : unit.records)     { sep(); printRecord(r); }
+        for (const auto& c : unit.classes)     { sep(); printClass(c); }
+        for (const auto& i : unit.interfaces)  { sep(); printInterface(i); }
+        for (const auto& x : unit.extensions)  { sep(); printExtension(x); }
+        for (const auto& v : unit.values)      { sep(); printValue(v); }
+        for (const auto& fn : unit.functions)  { sep(); printFunction(fn); }
         return out_;
     }
 
@@ -88,7 +93,26 @@ private:
             if (i) s += ", ";
             s += ps[i].name;
             if (!ps[i].type.absent()) s += ": " + typeStr(ps[i].type);
+            if (ps[i].hasDefault) s += " = " + expr(*ps[i].defaultValue);
         }
+        return s;
+    }
+
+    std::string generics(const std::vector<GenericParam>& gs) {
+        if (gs.empty()) return "";
+        std::string s = "<";
+        for (std::size_t i = 0; i < gs.size(); ++i) {
+            if (i) s += ", ";
+            s += gs[i].name;
+            for (std::size_t b = 0; b < gs[i].bounds.size(); ++b)
+                s += (b == 0 ? ": " : " & ") + typeStr(gs[i].bounds[b]);
+        }
+        return s + ">";
+    }
+
+    std::string modifiers(const std::vector<std::string>& mods) {
+        std::string s;
+        for (const auto& m : mods) s += m + " ";
         return s;
     }
 
@@ -114,13 +138,90 @@ private:
     }
 
     void printFunction(const FunctionDecl& fn) {
-        std::string sig = "fn " + fn.name + "(" + params(fn.params) + ")";
+        std::string sig = "fn " + fn.name + generics(fn.generics) + "(" + params(fn.params) + ")";
         if (!isUnit(fn.returnType)) sig += ": " + typeStr(fn.returnType);
         line(sig + " {");
         ++indent_;
         for (const auto& s : fn.body) printStmt(*s);
         --indent_;
         line("}");
+    }
+
+    void printMember(const Member& m) {
+        std::string mods = modifiers(m.modifiers);
+        switch (m.kind) {
+            case MemberKind::Field:
+                line(mods + (m.isMutable ? "var " : "let ") + m.name + ": " + typeStr(m.type) +
+                     (m.init ? " = " + expr(*m.init) : ""));
+                break;
+            case MemberKind::Const:
+                line(mods + "const " + m.name + ": " + typeStr(m.type) + " = " + expr(*m.init));
+                break;
+            case MemberKind::Property:
+                line(mods + (m.isMutable ? "var " : "let ") + m.name + ": " + typeStr(m.type) +
+                     " => " + expr(*m.init));
+                break;
+            case MemberKind::Init:
+                line(mods + "init(" + params(m.params) + ") {");
+                printBlock(m.body);
+                line("}");
+                break;
+            case MemberKind::Method:
+            case MemberKind::Operator: {
+                std::string head = mods + (m.kind == MemberKind::Operator ? "operator fn " : "fn ") +
+                                   m.name + generics(m.generics) + "(" + params(m.params) + ")";
+                if (!isUnit(m.returnType)) head += ": " + typeStr(m.returnType);
+                if (!m.hasBody) line(head);                          // interface stub
+                else if (m.exprBodied) line(head + " => " + expr(*m.exprBody));
+                else { line(head + " {"); printBlock(m.body); line("}"); }
+                break;
+            }
+        }
+    }
+
+    void printBody(const std::vector<Member>& members) {
+        ++indent_;
+        for (const auto& m : members) printMember(m);
+        --indent_;
+    }
+
+    void printRecord(const RecordDecl& d) {
+        std::string head = "record " + d.name + generics(d.generics) + "(" + params(d.fields) + ")";
+        if (!d.bases.empty()) head += " : " + typeList(d.bases);
+        if (d.members.empty()) { line(head); return; }
+        line(head + " {");
+        printBody(d.members);
+        line("}");
+    }
+
+    void printClass(const ClassDecl& d) {
+        std::string head = modifiers(d.modifiers) + "class " + d.name + generics(d.generics);
+        if (!d.bases.empty()) head += " : " + typeList(d.bases);
+        line(head + " {");
+        printBody(d.members);
+        line("}");
+    }
+
+    void printInterface(const InterfaceDecl& d) {
+        std::string head = "interface " + d.name + generics(d.generics);
+        if (!d.bases.empty()) head += " : " + typeList(d.bases);
+        line(head + " {");
+        printBody(d.members);
+        line("}");
+    }
+
+    void printExtension(const ExtensionDecl& d) {
+        std::string head = "extension fn " + typeStr(d.receiver) + "." + d.name +
+                           generics(d.generics) + "(" + params(d.params) + ")";
+        if (!isUnit(d.returnType)) head += ": " + typeStr(d.returnType);
+        if (d.exprBodied) line(head + " => " + expr(*d.exprBody));
+        else { line(head + " {"); printBlock(d.body); line("}"); }
+    }
+
+    void printValue(const ValueDecl& d) {
+        std::string s = (d.isConst ? "const " : "let ") + d.name;
+        if (d.hasType) s += ": " + typeStr(d.type);
+        line(s + " = " + expr(*d.init));
     }
 
     void printBlock(const std::vector<StmtPtr>& body) {
