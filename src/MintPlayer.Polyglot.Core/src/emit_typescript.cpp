@@ -16,8 +16,9 @@ std::string tsType(const TypeRef& t) {
         if (t.name == "bool")   return "boolean";
         if (t.name == "string") return "string";
         if (t.name == "char")   return "string";
-        if (t.name == "i8" || t.name == "i16" || t.name == "i32" || t.name == "i64" ||
-            t.name == "u8" || t.name == "u16" || t.name == "u32" || t.name == "u64" ||
+        if (t.name == "i64" || t.name == "u64") return "bigint"; // §3.C: 64-bit ints exceed 2^53 -> BigInt
+        if (t.name == "i8" || t.name == "i16" || t.name == "i32" ||
+            t.name == "u8" || t.name == "u16" || t.name == "u32" ||
             t.name == "f32" || t.name == "f64") return "number";
         if (t.name.empty()) return "unknown";
         std::string name = t.name; // Iterable<T> stays Iterable<T> (a generator is assignable to it)
@@ -44,6 +45,7 @@ bool isUserType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && !t.name.empty() && !isScalarName(t.name);
 }
 bool isI32(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "i32"; }
+bool isI64(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && (t.name == "i64" || t.name == "u64"); }
 // Operator symbol -> overload method name (TS has no operator overloading; call the method instead).
 std::string opMethod(const std::string& op) {
     if (op == "+") return "plus";
@@ -421,7 +423,10 @@ private:
 
     std::string emitExpr(const ir::Expr& e) {
         switch (e.kind) {
-            case ir::ExprKind::Int:   return static_cast<const ir::IntLit&>(e).text;
+            case ir::ExprKind::Int: { // 64-bit ints are BigInt literals (`7n`)
+                const std::string& text = static_cast<const ir::IntLit&>(e).text;
+                return isI64(e.type) ? text + "n" : text;
+            }
             case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
@@ -442,6 +447,12 @@ private:
                 }
                 int p = prec(b.op);
                 std::string lhs = child(*b.lhs, p, false), rhs = child(*b.rhs, p, true);
+                // §3.C: 64-bit ints are BigInt; wrap to 64 bits at each boundary so they overflow like .NET
+                // `long`/`ulong` (BigInt is otherwise arbitrary-precision). BigInt `/` already truncates.
+                if (isI64(e.type)) {
+                    const char* w = e.type.name == "u64" ? "BigInt.asUintN(64, " : "BigInt.asIntN(64, ";
+                    return std::string(w) + lhs + " " + b.op + " " + rhs + ")";
+                }
                 // §3.C: i32 arithmetic must wrap on overflow and truncate on division like .NET — JS numbers
                 // are f64. `| 0` coerces back to a signed 32-bit int at each operation boundary; `*` needs
                 // Math.imul (a plain product can exceed 2^53 and lose the low 32 bits before `| 0`).
@@ -454,6 +465,10 @@ private:
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
+                // console.log prints a BigInt with a trailing `n` (util.inspect); String() drops it so the
+                // output matches C#'s Console.WriteLine(long). (Template `${x}` already omits the `n`.)
+                if (c.isPrint && c.args.size() == 1 && isI64(c.args[0]->type))
+                    return "console.log(String(" + emitExpr(*c.args[0]) + "))";
                 std::string s = (c.isPrint ? "console.log" : c.callee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";

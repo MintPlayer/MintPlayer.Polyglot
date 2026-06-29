@@ -383,7 +383,13 @@ private:
 
     std::string emitExpr(const ir::Expr& e) {
         switch (e.kind) {
-            case ir::ExprKind::Int:   return static_cast<const ir::IntLit&>(e).text;
+            case ir::ExprKind::Int: { // C# integer-literal suffix for the wider/unsigned types
+                const std::string& text = static_cast<const ir::IntLit&>(e).text;
+                if (e.type.name == "i64") return text + "L";
+                if (e.type.name == "u64") return text + "UL";
+                if (e.type.name == "u32") return text + "U";
+                return text;
+            }
             case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);

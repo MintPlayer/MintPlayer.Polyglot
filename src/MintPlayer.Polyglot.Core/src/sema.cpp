@@ -20,6 +20,20 @@ TypeRef tNullableUnknown() { TypeRef t; t.nullable = true; return t; }
 
 bool isNumeric(Ty t) { return t == Ty::I32 || t == Ty::F64; }
 
+// The MVP scalar lattice (Ty) only tracks i32/f64; the other numeric widths (i64/u64/i8/i16/u8/u16/u32/
+// f32) are recognized by name so binary arithmetic keeps them typed — the backends need the exact width
+// to lower faithfully (i64 -> BigInt, etc.).
+bool isNumericTypeName(const TypeRef& t) {
+    if (t.kind != TypeRef::Kind::Named || t.nullable || !t.args.empty()) return false;
+    const std::string& n = t.name;
+    return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
+           n == "u32" || n == "u64" || n == "f32" || n == "f64";
+}
+bool sameNamedType(const TypeRef& a, const TypeRef& b) {
+    return a.kind == TypeRef::Kind::Named && b.kind == TypeRef::Kind::Named &&
+           a.name == b.name && !a.nullable && !b.nullable;
+}
+
 bool isBuiltinType(const std::string& n) {
     static const std::unordered_set<std::string> b = {
         "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -28,6 +42,16 @@ bool isBuiltinType(const std::string& n) {
         "Error",    // the core exception root (`throw`/typed `catch`); System.Exception / JS Error
     };
     return b.count(n) != 0;
+}
+
+// An integer literal's type comes from its width suffix (`100u8`, `0i64`); a bare literal is i32.
+std::string intLitType(const std::string& text) {
+    static const char* suffixes[] = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"};
+    for (const char* s : suffixes) {
+        std::size_t n = std::char_traits<char>::length(s);
+        if (text.size() > n && text.compare(text.size() - n, n, s) == 0) return s;
+    }
+    return "i32";
 }
 
 // A §3.B-refused construct named in type position. Returns a targeted "Polyglot refuses X because …"
@@ -407,7 +431,7 @@ private:
     }
     TypeRef computeType(Expr& e) {
         switch (e.kind) {
-            case ExprKind::IntLit:    return tNamed("i32");
+            case ExprKind::IntLit:    return tNamed(intLitType(e.text));
             case ExprKind::FloatLit:  return tNamed("f64");
             case ExprKind::CharLit:   return tNamed("char");
             case ExprKind::StringLit: return tNamed("string");
@@ -487,6 +511,8 @@ private:
             if (l != r || !isNumeric(l)) { diags_.error(e.pos, "'" + op + "' expects matching numeric operands, found " + tyName(l) + " and " + tyName(r)); return tUnknown(); }
             return lt;
         }
+        // numeric widths the scalar lattice doesn't track (i64/u64/i8/…): same named numeric -> that type
+        if (isNumericTypeName(lt) && sameNamedType(lt, rt)) return lt;
         // a user type with an operator method (e.g. Vec2 + Vec2)
         if (knownType(lt)) { if (const MemberInfo* m = findMember(lt.name, operatorMethod(op))) return m->type; }
         return tUnknown();

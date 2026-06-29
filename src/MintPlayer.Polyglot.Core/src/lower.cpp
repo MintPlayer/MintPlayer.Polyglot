@@ -7,6 +7,17 @@ namespace mintplayer::polyglot {
 
 namespace {
 
+// Strip a numeric literal's width suffix (`100u8`, `0i64`, `1.5f32`) — the type rides on the expr; the
+// backends re-add a target-appropriate suffix (C# `L`/`UL`, TS BigInt `n`) from that type.
+std::string stripNumericSuffix(const std::string& text) {
+    static const char* sfx[] = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f", "d"};
+    for (const char* s : sfx) {
+        std::size_t n = std::char_traits<char>::length(s);
+        if (text.size() > n && text.compare(text.size() - n, n, s) == 0) return text.substr(0, text.size() - n);
+    }
+    return text;
+}
+
 class Lowerer {
 public:
     explicit Lowerer(const CompilationUnit& unit) {
@@ -228,8 +239,8 @@ private:
 
     ir::ExprPtr expr(const Expr& e) {
         switch (e.kind) {
-            case ExprKind::IntLit:    return std::make_unique<ir::IntLit>(e.pos, e.type, e.text);
-            case ExprKind::FloatLit:  return std::make_unique<ir::FloatLit>(e.pos, e.type, e.text);
+            case ExprKind::IntLit:    return std::make_unique<ir::IntLit>(e.pos, e.type, stripNumericSuffix(e.text));
+            case ExprKind::FloatLit:  return std::make_unique<ir::FloatLit>(e.pos, e.type, stripNumericSuffix(e.text));
             case ExprKind::BoolLit:   return std::make_unique<ir::BoolLit>(e.pos, e.type, e.boolVal);
             case ExprKind::StringLit: return std::make_unique<ir::StrLit>(e.pos, e.type, e.text);
             case ExprKind::Name:
