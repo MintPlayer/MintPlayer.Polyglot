@@ -68,8 +68,12 @@ To verify: build (VS 18 Insiders MSBuild), then run `x64\Debug\MintPlayer.Polygl
 (`tests/fidelity/run-roundtrip.ps1`). **P4 ✅** semantics + a **separate typed IR**: resolution + nominal
 typing + match exhaustiveness in `sema.cpp`; AST→IR `lower.cpp` into `ir.hpp`; backends emit from the IR
 (pipeline = lexer→parser→sema→lower→IR→backend). Full sema runs on self-contained programs (std-using
-samples checked end-to-end at P7). **Next: P5 — widen IR/lowering/backends to the full §3.A surface** +
-introduce the backend-interface seam (a `Backend` abstraction + registry). See PLAN.md.
+samples checked end-to-end at P7). **P5 🔨 in progress — widening IR/lowering/backends to the full §3.A
+surface.** Done: the **backend-interface seam** (`Backend` abstraction + registry, `findBackend`), plus
+records, enums, unions + pattern matching, operators/properties, and **classes** (mutable reference types
+with `init`). Differential suite grew 1 → 6 programs (arithmetic, records, vec2, enums, unions, counter),
+all green. **Next in P5:** `for…in`/ranges → iterators/`yield`, exceptions, `using`, extensions, generics.
+See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

@@ -90,6 +90,14 @@ but this is the shape the P9 declarative-plugin API grows from — the natural m
 native backends to generalize across (the design note's "extracted, not guessed").
 *Gate:* P1 samples emit C# that compiles under `dotnet build` and TS that type-checks under `tsc` + runs
 under Node, both with expected output; golden baselines green; the differential suite passes.
+*Progress (in flight, 2026-06-29):* the **backend-interface seam** is in (a `Backend` abstraction +
+registry; `compile()` selects via `findBackend`). The IR/lowering/both backends now cover **records**
+(fields, methods, operators, properties), **enums**, **unions + pattern matching** (exhaustiveness, ctor
+patterns/binders), **operators & properties** (C# `operator +` / expr-bodied property vs TS `.plus()` /
+getter), and **classes** (mutable reference types with `init`). The differential suite grew from 1 → 6
+self-contained programs (arithmetic, records, vec2, enums, unions, counter), all agreeing across C#/TS.
+*Remaining:* `for…in`/ranges → iterators/`yield`; exceptions (`try`/`catch`/`finally`/`throw`);
+`using`/disposal; extension methods; generic emission. Inheritance/super-call emission deferred.
 
 ## P6 — Faithfulness pass
 Implement the §3.C relaxations *as documented behaviour*: int32/uint masking (`|0`/`>>>0`/`Math.imul`),
