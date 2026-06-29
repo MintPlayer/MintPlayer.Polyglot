@@ -86,9 +86,11 @@ public:
             m.extensions.push_back(std::move(f));
         }
         for (const auto& fn : unit.functions) {
+            if (fn.isExpect) continue; // capability signature only — the `actual`s carry the implementation
             ir::Function f;
             f.name = fn.name;
             f.mangledName = fn.mangledName.empty() ? fn.name : fn.mangledName;
+            f.actualTarget = fn.actualTarget;
             f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
             f.isEntry = (fn.name == "main" && fn.params.empty());

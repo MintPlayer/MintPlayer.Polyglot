@@ -140,7 +140,10 @@ public:
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
         for (const auto& f : m.extensions) emitExtension(f);
-        for (const auto& fn : m.functions) emitFunction(fn);
+        for (const auto& fn : m.functions) {
+            if (!fn.actualTarget.empty() && fn.actualTarget != "typescript") continue; // other target's `actual`
+            emitFunction(fn);
+        }
         for (const auto& fn : m.functions) {
             if (fn.isEntry) { line(fn.mangledName + "();"); break; }
         }

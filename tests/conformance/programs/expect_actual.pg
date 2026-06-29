@@ -1,0 +1,14 @@
+// P7 differential conformance: target-gated capabilities (`expect`/`actual`).
+// Portable code calls `answer()`; each target supplies its own `actual`. The C#
+// backend emits only the csharp actual, the TS backend only the typescript one
+// (verifiable in the emitted .cs/.ts). Here both reach 42 via different
+// per-target source, so the differential harness can assert the shared result.
+
+expect fn answer(): i32
+
+actual(csharp) fn answer(): i32 => 40 + 2
+actual(typescript) fn answer(): i32 => 84 / 2
+
+fn main() {
+  print(answer())     // 42  (C# emits `40 + 2`, TS emits `84 / 2`)
+}

@@ -258,6 +258,7 @@ struct Function {
     bool isEntry = false;    // a `fn main()` with no params — the program entry point
     bool isIterator = false; // body contains `yield` — C# `IEnumerable<T>`+`yield return`, TS `function*`
     bool isExtension = false; // an `extension fn T.m(...)`: params[0] is the receiver `self` (type T)
+    std::string actualTarget; // `actual(<target>)` impl — emitted only by the matching backend; else empty
     bool exprBodied = false; // `=> expr` vs block (extensions; regular fns always use a block today)
     ExprPtr exprBody;        // exprBodied
 };

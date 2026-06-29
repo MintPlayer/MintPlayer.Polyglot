@@ -124,7 +124,10 @@ public:
         if (!m.enums.empty() || !m.unions.empty() || !m.records.empty() || !m.classes.empty() || !m.extensions.empty()) out_ += "\n";
         out_ += "static class Program\n{\n";
         indent_ = 1;
-        for (const auto& fn : m.functions) emitFunction(fn);
+        for (const auto& fn : m.functions) {
+            if (!fn.actualTarget.empty() && fn.actualTarget != "csharp") continue; // other target's `actual`
+            emitFunction(fn);
+        }
         for (const auto& fn : m.functions) {
             if (fn.isEntry) { line(""); line("static void Main() { main(); }"); break; }
         }

@@ -171,6 +171,8 @@ struct FunctionDecl {
     std::vector<Param> params;
     TypeRef returnType = namedType("unit");
     std::vector<StmtPtr> body;
+    bool isExpect = false;         // `expect fn` — a capability signature with no body (§4.4)
+    std::string actualTarget;      // `actual(<target>) fn` — the per-target implementation; empty otherwise
 };
 
 // A member of a record/class/interface body.

@@ -28,6 +28,7 @@ enum class TokKind {
     KwFn, KwLet, KwVar, KwConst,
     KwClass, KwRecord, KwInterface, KwEnum, KwUnion, KwExtension, KwImport,
     KwInit, KwOperator,
+    KwExpect, KwActual, KwExtern, // target-gated capabilities (expect/actual) + FFI hatch (extern)
     KwAbstract, KwOpen, KwOverride, KwSealed, KwStatic, KwPrivate,
     KwAsync, KwAwait,
     // keywords — statements & expressions

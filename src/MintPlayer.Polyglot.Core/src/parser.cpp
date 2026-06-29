@@ -14,6 +14,8 @@ public:
         while (!at(TokKind::End)) {
             if (at(TokKind::KwImport)) unit.imports.push_back(parseImport());
             else if (at(TokKind::KwFn)) unit.functions.push_back(parseFunction());
+            else if (at(TokKind::KwExpect)) unit.functions.push_back(parseExpect());
+            else if (at(TokKind::KwActual)) unit.functions.push_back(parseActual());
             else if (at(TokKind::KwEnum)) unit.enums.push_back(parseEnum());
             else if (at(TokKind::KwUnion)) unit.unions.push_back(parseUnion());
             else if (at(TokKind::KwRecord)) unit.records.push_back(parseRecord());
@@ -384,7 +386,7 @@ private:
 
     // ---- declarations & statements (statement grammar widens in a later P3 increment) ----
 
-    FunctionDecl parseFunction() {
+    FunctionDecl parseFunction(bool wantBody = true) {
         FunctionDecl fn;
         fn.pos = peek().pos;
         expect(TokKind::KwFn, "'fn'");
@@ -394,6 +396,7 @@ private:
         fn.params = parseParamList();
         expect(TokKind::RParen, "')'");
         if (accept(TokKind::Colon)) fn.returnType = parseType();
+        if (!wantBody) return fn; // `expect fn` — signature only, no body
 
         if (accept(TokKind::Arrow)) {
             auto ret = std::make_unique<Stmt>();
@@ -404,6 +407,24 @@ private:
         } else {
             fn.body = parseBlock();
         }
+        return fn;
+    }
+
+    // `expect fn name(params): ret` — a capability signature with no body (an `actual` supplies it).
+    FunctionDecl parseExpect() {
+        expect(TokKind::KwExpect, "'expect'");
+        FunctionDecl fn = parseFunction(/*wantBody=*/false);
+        fn.isExpect = true;
+        return fn;
+    }
+    // `actual(<target>) fn name(params): ret => body` — a per-target implementation of an `expect`.
+    FunctionDecl parseActual() {
+        expect(TokKind::KwActual, "'actual'");
+        expect(TokKind::LParen, "'('");
+        std::string target = expect(TokKind::Identifier, "a target name").text;
+        expect(TokKind::RParen, "')'");
+        FunctionDecl fn = parseFunction();
+        fn.actualTarget = target;
         return fn;
     }
 

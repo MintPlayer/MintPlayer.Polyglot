@@ -314,7 +314,8 @@ private:
         }
         for (const auto& d : u.enums)
             for (const auto& c : d.cases) enumAllCases_[d.name].push_back(c.name);
-        for (const auto& fn : u.functions) { // collect overload sets; a true duplicate is same name + params
+        for (const auto& fn : u.functions) { // collect overload sets; an `actual` is an impl, not a signature
+            if (!fn.actualTarget.empty()) continue;
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
@@ -323,6 +324,7 @@ private:
             set.push_back(std::move(sig));
         }
         for (auto& fn : u.functions) { // assign per-target names: overloaded functions mangle their params
+            if (!fn.actualTarget.empty()) { fn.mangledName = fn.name; continue; } // actuals reuse the expect name
             std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
             fn.mangledName = mangleFn(fn.name, ps, fns_[fn.name].size() > 1);
         }

@@ -16,6 +16,7 @@ const std::unordered_map<std::string, TokKind>& keywords() {
         {"class", TokKind::KwClass}, {"record", TokKind::KwRecord}, {"interface", TokKind::KwInterface},
         {"enum", TokKind::KwEnum}, {"union", TokKind::KwUnion}, {"extension", TokKind::KwExtension},
         {"import", TokKind::KwImport}, {"init", TokKind::KwInit}, {"operator", TokKind::KwOperator},
+        {"expect", TokKind::KwExpect}, {"actual", TokKind::KwActual}, {"extern", TokKind::KwExtern},
         {"abstract", TokKind::KwAbstract}, {"open", TokKind::KwOpen}, {"override", TokKind::KwOverride},
         {"sealed", TokKind::KwSealed}, {"static", TokKind::KwStatic}, {"private", TokKind::KwPrivate},
         {"async", TokKind::KwAsync}, {"await", TokKind::KwAwait},
