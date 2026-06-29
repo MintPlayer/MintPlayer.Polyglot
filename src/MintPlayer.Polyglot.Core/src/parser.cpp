@@ -17,6 +17,10 @@ public:
             else if (at(TokKind::KwEnum)) unit.enums.push_back(parseEnum());
             else if (at(TokKind::KwUnion)) unit.unions.push_back(parseUnion());
             else if (at(TokKind::KwRecord)) unit.records.push_back(parseRecord());
+            else if (at(TokKind::KwClass) || at(TokKind::KwAbstract) || at(TokKind::KwOpen) ||
+                     at(TokKind::KwSealed)) unit.classes.push_back(parseClass());
+            else if (at(TokKind::KwInterface)) unit.interfaces.push_back(parseInterface());
+            else if (at(TokKind::KwExtension)) unit.extensions.push_back(parseExtension());
             else if (at(TokKind::KwConst) || at(TokKind::KwLet)) unit.values.push_back(parseValueDecl());
             else {
                 error("expected a declaration");
@@ -117,6 +121,7 @@ private:
         switch (k) {
             case TokKind::KwAbstract: return "abstract";
             case TokKind::KwOpen:     return "open";
+            case TokKind::KwSealed:   return "sealed";
             case TokKind::KwOverride: return "override";
             case TokKind::KwStatic:   return "static";
             case TokKind::KwPrivate:  return "private";
@@ -222,6 +227,52 @@ private:
         }
         if (at(TokKind::LBrace)) d.members = parseMemberBlock();
         else accept(TokKind::Semicolon);
+        return d;
+    }
+
+    ClassDecl parseClass() {
+        ClassDecl d;
+        d.pos = peek().pos;
+        while (at(TokKind::KwAbstract) || at(TokKind::KwOpen) || at(TokKind::KwSealed))
+            d.modifiers.push_back(modifierText(advance().kind));
+        expect(TokKind::KwClass, "'class'");
+        d.name = expect(TokKind::Identifier, "a class name").text;
+        d.generics = parseGenericParams();
+        if (accept(TokKind::Colon)) {
+            do { d.bases.push_back(parseType()); } while (accept(TokKind::Comma));
+        }
+        d.members = parseMemberBlock();
+        return d;
+    }
+
+    InterfaceDecl parseInterface() {
+        InterfaceDecl d;
+        d.pos = peek().pos;
+        expect(TokKind::KwInterface, "'interface'");
+        d.name = expect(TokKind::Identifier, "an interface name").text;
+        d.generics = parseGenericParams();
+        if (accept(TokKind::Colon)) {
+            do { d.bases.push_back(parseType()); } while (accept(TokKind::Comma));
+        }
+        d.members = parseMemberBlock();
+        return d;
+    }
+
+    ExtensionDecl parseExtension() {
+        ExtensionDecl d;
+        d.pos = peek().pos;
+        expect(TokKind::KwExtension, "'extension'");
+        expect(TokKind::KwFn, "'fn'");
+        d.receiver = parseType();         // e.g. string, i32, List<T>
+        expect(TokKind::Dot, "'.'");
+        d.name = expect(TokKind::Identifier, "an extension method name").text;
+        d.generics = parseGenericParams();
+        expect(TokKind::LParen, "'('");
+        d.params = parseParamList();
+        expect(TokKind::RParen, "')'");
+        if (accept(TokKind::Colon)) d.returnType = parseType();
+        if (accept(TokKind::Arrow)) { d.exprBody = parseExpr(); d.exprBodied = true; }
+        else { d.body = parseBlock(); d.exprBodied = false; }
         return d;
     }
 

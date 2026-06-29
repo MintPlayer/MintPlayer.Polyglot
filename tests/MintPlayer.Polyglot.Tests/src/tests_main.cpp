@@ -124,6 +124,13 @@ int main() {
                    "  let dollars: f64 => 0.01\n}\n"
                    "fn clamp<T>(x: T, lo: T = zero, hi: T): T => x\n",
                    "round-trip: records + members + generics + default params + top-level const/let");
+        roundtrips("interface Disposable {\n  fn dispose()\n}\n"
+                   "open class Shape {\n  open fn area(): f64 => 0.0\n}\n"
+                   "class Disk : Shape, Disposable {\n  let r: f64\n  init(r: f64) {\n    this.r = r\n  }\n"
+                   "  override fn area(): f64 => 3.14 * this.r * this.r\n"
+                   "  override fn dispose() {\n    cleanup()\n  }\n}\n"
+                   "extension fn string.shout(): string => this + \"!\"\n",
+                   "round-trip: class / interface / extension / inheritance / override");
     }
 
     // C# emission (golden substrings).
