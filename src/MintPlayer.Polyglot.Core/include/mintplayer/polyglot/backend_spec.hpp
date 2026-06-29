@@ -17,6 +17,22 @@ struct BackendSpec {
     // (e.g. "i64" -> "long" / "bigint"; TS maps "char" -> "string", C# does not). Structural types
     // (List / Iterable / Error / tuple / function / nullable / generics) are still built in the emitter.
     std::unordered_map<std::string, std::string> scalarType;
+
+    // An integer-literal type name -> the suffix its literals carry (C# {i64:"L", u64:"UL", u32:"U"};
+    // TS {i64:"n", u64:"n"}). A type not in the map takes no suffix.
+    std::unordered_map<std::string, std::string> intSuffix;
 };
+
+// Binary-operator precedence (higher binds tighter), used by the engine for parenthesization. Identical
+// across C# and TS — a shared engine concern, not per-backend data — so it lives here, not in a BackendSpec.
+inline int operatorPrecedence(const std::string& op) {
+    if (op == "||") return 1;
+    if (op == "&&") return 2;
+    if (op == "==" || op == "!=") return 3;
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") return 4;
+    if (op == "+" || op == "-") return 5;
+    if (op == "*" || op == "/" || op == "%") return 6;
+    return 7;
+}
 
 } // namespace mintplayer::polyglot

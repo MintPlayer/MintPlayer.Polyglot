@@ -22,6 +22,7 @@ const BackendSpec& csharpSpec() {
         {{"unit", "void"}, {"i8", "sbyte"}, {"i16", "short"}, {"i32", "int"}, {"i64", "long"},
          {"u8", "byte"}, {"u16", "ushort"}, {"u32", "uint"}, {"u64", "ulong"},
          {"f32", "float"}, {"f64", "double"}, {"bool", "bool"}, {"string", "string"}},
+        {{"i64", "L"}, {"u64", "UL"}, {"u32", "U"}}, // intSuffix
     };
     return spec;
 }
@@ -115,15 +116,6 @@ bool isPrimNumeric(const std::string& n) {
            n == "u32" || n == "u64" || n == "f32" || n == "f64";
 }
 
-int prec(const std::string& op) {
-    if (op == "||") return 1;
-    if (op == "&&") return 2;
-    if (op == "==" || op == "!=") return 3;
-    if (op == "<" || op == "<=" || op == ">" || op == ">=") return 4;
-    if (op == "+" || op == "-") return 5;
-    if (op == "*" || op == "/" || op == "%") return 6;
-    return 7;
-}
 
 class CSharpEmitter {
 public:
@@ -458,7 +450,7 @@ private:
     std::string child(const ir::Expr& c, int parentPrec, bool isRight) {
         std::string inner = emitExpr(c);
         if (c.kind == ir::ExprKind::Binary) {
-            int cp = prec(static_cast<const ir::Binary&>(c).op);
+            int cp = operatorPrecedence(static_cast<const ir::Binary&>(c).op);
             if (isRight ? (cp <= parentPrec) : (cp < parentPrec)) return "(" + inner + ")";
         }
         return inner;
@@ -468,10 +460,8 @@ private:
         switch (e.kind) {
             case ir::ExprKind::Int: { // C# integer-literal suffix for the wider/unsigned types
                 const std::string& text = static_cast<const ir::IntLit&>(e).text;
-                if (e.type.name == "i64") return text + "L";
-                if (e.type.name == "u64") return text + "UL";
-                if (e.type.name == "u32") return text + "U";
-                return text;
+                auto it = csharpSpec().intSuffix.find(e.type.name);
+                return it == csharpSpec().intSuffix.end() ? text : text + it->second;
             }
             case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
@@ -506,7 +496,7 @@ private:
             case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw C# verbatim
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
-                int p = prec(b.op);
+                int p = operatorPrecedence(b.op);
                 std::string expr = child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
                 // C# promotes sub-32 integer arithmetic to `int`, so it doesn't wrap at 8/16 bits — cast
                 // back to wrap like the source type. (int/uint/long/ulong already wrap unchecked.)

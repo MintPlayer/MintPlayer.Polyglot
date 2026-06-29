@@ -23,6 +23,7 @@ const BackendSpec& typescriptSpec() {
          {"i64", "bigint"}, {"u64", "bigint"},
          {"i8", "number"}, {"i16", "number"}, {"i32", "number"}, {"u8", "number"}, {"u16", "number"},
          {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
+        {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
     };
     return spec;
 }
@@ -109,16 +110,6 @@ std::string tsGenerics(const std::vector<ir::GenericParam>& gs) {
         }
     }
     return s + ">";
-}
-
-int prec(const std::string& op) {
-    if (op == "||") return 1;
-    if (op == "&&") return 2;
-    if (op == "==" || op == "!=") return 3;
-    if (op == "<" || op == "<=" || op == ">" || op == ">=") return 4;
-    if (op == "+" || op == "-") return 5;
-    if (op == "*" || op == "/" || op == "%") return 6;
-    return 7;
 }
 
 // A numeric conversion, lowered per source/target representation. The hard boundary is BigInt (i64/u64):
@@ -530,7 +521,7 @@ private:
     std::string child(const ir::Expr& c, int parentPrec, bool isRight) {
         std::string inner = emitExpr(c);
         if (c.kind == ir::ExprKind::Binary) {
-            int cp = prec(static_cast<const ir::Binary&>(c).op);
+            int cp = operatorPrecedence(static_cast<const ir::Binary&>(c).op);
             if (isRight ? (cp <= parentPrec) : (cp < parentPrec)) return "(" + inner + ")";
         }
         return inner;
@@ -538,9 +529,10 @@ private:
 
     std::string emitExpr(const ir::Expr& e) {
         switch (e.kind) {
-            case ir::ExprKind::Int: { // 64-bit ints are BigInt literals (`7n`)
+            case ir::ExprKind::Int: {
                 const std::string& text = static_cast<const ir::IntLit&>(e).text;
-                return isI64(e.type) ? text + "n" : text;
+                auto it = typescriptSpec().intSuffix.find(e.type.name);
+                return it == typescriptSpec().intSuffix.end() ? text : text + it->second;
             }
             case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
@@ -582,14 +574,14 @@ private:
                         std::string call = atom(*b.lhs) + ".equals(" + emitExpr(*b.rhs) + ")";
                         return b.op == "==" ? call : "!" + call;
                     }
-                    int pe = prec(b.op);
+                    int pe = operatorPrecedence(b.op);
                     return child(*b.lhs, pe, false) + (b.op == "==" ? " === " : " !== ") + child(*b.rhs, pe, true);
                 }
                 if (isUserType(b.lhs->type)) { // operator overload -> method call (TS has no operators)
                     std::string method = opMethod(b.op);
                     if (!method.empty()) return atom(*b.lhs) + "." + method + "(" + emitExpr(*b.rhs) + ")";
                 }
-                int p = prec(b.op);
+                int p = operatorPrecedence(b.op);
                 std::string lhs = child(*b.lhs, p, false), rhs = child(*b.rhs, p, true);
                 // §3.C: 64-bit ints are BigInt; wrap to 64 bits at each boundary so they overflow like .NET
                 // `long`/`ulong` (BigInt is otherwise arbitrary-precision). BigInt `/` already truncates.
