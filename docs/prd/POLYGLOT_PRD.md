@@ -230,6 +230,48 @@ The investigation's headline cost. Polyglot bounds it deliberately:
 > author's contract. Full design, sequencing, trust model, and open decisions:
 > **[`../design/plugins-and-targets.md`](../design/plugins-and-targets.md)**.
 
+### 4.5 Modules, imports & name resolution (design — 2026-06-29)
+P8 shipped the std as real `.pg` modules (`std.collections`, `std.io`) resolved from an embedded registry,
+but with three rough edges: a dotted import syntax, no cross-file user modules, and a "merge everything,
+collisions are accidental" model. The decided design (from a three-track investigation):
+
+- **Import syntax — TypeScript-style, quoted specifier.**
+  `import { readText, writeText as wt } from "std.io"`, plus `import * as io from "std.io"` (namespace) and
+  bare `import "std.io"` (link only). `from` is a **contextual identifier** (not reserved — `from` is too
+  common a name to burn), matching how `as` already works. The module specifier is a **quoted string**
+  (`StringLit`), which is the load-bearing call: a bare specifier (`"std.io"`, `"app.physics"`) is a logical
+  module name, while a `./`-prefixed one (`"./physics"`, `"../shared/vec"`) is importer-relative — the
+  Node/TS/Deno convention, and impossible to express with a bare dotted path. Cost is localized: `ImportDecl`
+  gains per-name aliases + a namespace field, `parseImport`/`importStr` are rewritten, **no lexer/token
+  change**, and ~14 existing `.pg` import lines migrate. (`InterpString` specifiers — a `"…${}…"` — are
+  refused with a clear diagnostic.)
+
+- **User-module resolution — a pluggable `ModuleResolver`, Core stays IO-free.** `compile()` gains one
+  optional `ModuleResolver*` parameter (default `nullptr` = std-only, so every existing caller and the
+  in-process tests are unchanged). Core owns the **transitive load + dedup + cycle-detection + post-order
+  merge** loop (generalizing today's `linkStdModules`); the resolver only answers "specifier (+ importer)
+  → source text." The **CLI** implements it with `std::filesystem` (a bare dotted specifier `a.b.c` →
+  `<root>/a/b/c.pg`; a relative `./x` → relative to the importer; `std.*` → the embedded registry first);
+  the **tests** implement it with an in-memory map (no disk). Import cycles are a clear diagnostic
+  (`a → b → a`), never a hang or miscompile. The source root comes from a `--root` flag now, from
+  `pgconfig.json` later (ties into §4.4/P10).
+
+- **Name collisions — refuse loudly, resolve with `as`.** Aligning with the §3 "never miscompile" law:
+  **selective imports actually restrict visibility** (only the named symbols enter the importing file's
+  scope — today's merge-everything is the bug to fix), and any collision is a **hard error naming both
+  sources**, fixable only by aliasing one with `as`. Cases: two modules exporting one name → error;
+  import vs local decl → error; import vs a **builtin** (`i32`, `Error`, `Iterable`) → error (builtins can't
+  be shadowed); same module imported twice → already deduped. **Functions are special:** a same-name import
+  with a *different signature* merges into the existing overload set (legal, per the native-overloading
+  model); only a *same-signature* clash is a duplicate error. This also closes today's silent last-wins
+  overwrite holes for top-level values, union constructors, and extensions.
+
+- **Exports — all top-level declarations are module-public for now.** A `private` opt-out marker
+  (SPEC §11's stated intent) is **deferred**; the loader already computes the per-module export set the
+  collision/visibility rules need. Output stays single-file per target: multi-file `.pg` input merges into
+  one root unit, so the emitted `.cs`/`.ts` is still one file (no conformance-harness redesign — just a
+  directory-input + `--root` convention).
+
 ---
 
 ## 5. Testing strategy
