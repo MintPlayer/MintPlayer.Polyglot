@@ -88,16 +88,22 @@ private:
                 break;
             }
             case StmtKind::Assign: {
-                const Local* local = lookup(s.name);
                 Ty value = checkExpr(*s.value);
-                if (!local) {
-                    diags_.error(s.pos, "assignment to undeclared '" + s.name + "'");
-                } else {
-                    if (!local->isMutable)
-                        diags_.error(s.pos, "cannot assign to immutable '" + s.name + "' (declared with 'let')");
-                    if (value != Ty::Unknown && local->type != Ty::Unknown && value != local->type)
-                        diags_.error(s.pos, std::string("type mismatch assigning ") + tyName(value) +
-                                                " to '" + s.name + "' of type " + tyName(local->type));
+                // The MVP checker validates assignments to a bare name; member/index lvalues are P4.
+                if (s.target && s.target->kind == ExprKind::Name) {
+                    const std::string& nm = s.target->text;
+                    const Local* local = lookup(nm);
+                    if (!local) {
+                        diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
+                    } else {
+                        if (!local->isMutable)
+                            diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
+                        if (value != Ty::Unknown && local->type != Ty::Unknown && value != local->type)
+                            diags_.error(s.pos, std::string("type mismatch assigning ") + tyName(value) +
+                                                    " to '" + nm + "' of type " + tyName(local->type));
+                    }
+                } else if (s.target) {
+                    checkExpr(*s.target);
                 }
                 break;
             }

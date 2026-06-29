@@ -110,6 +110,13 @@ int main() {
                    "fn main() {\n  for x in items {\n    if x > 0 { continue }\n"
                    "    print(x)\n    break\n  }\n}\n",
                    "round-trip: imports + for-in + break/continue");
+        roundtrips("fn f(input: string) {\n  var n = 0\n  n += 1\n  total -= compute(n)\n"
+                   "  obj.field = 5\n  arr[i] = n\n"
+                   "  use file = openFile(path) {\n    file.write(n)\n  }\n"
+                   "  try {\n    throw Err(\"x\")\n  } catch (e: ParseError) when (n > 0) {\n    print(e)\n"
+                   "  } catch (e: Error) {\n    print(e)\n  } finally {\n    cleanup()\n  }\n}\n"
+                   "fn gen() {\n  yield 1\n  yield 2\n}\n",
+                   "round-trip: try/catch/when/finally/throw/use/yield + compound & lvalue assign");
     }
 
     // C# emission (golden substrings).

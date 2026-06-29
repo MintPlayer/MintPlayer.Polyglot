@@ -137,8 +137,10 @@ private:
                 line(head + " = " + expr(*s.value));
                 break;
             }
-            case StmtKind::Assign:   line(s.name + " = " + expr(*s.value)); break;
+            case StmtKind::Assign:   line(expr(*s.target) + " " + s.op + " " + expr(*s.value)); break;
             case StmtKind::ExprStmt: line(expr(*s.value)); break;
+            case StmtKind::Throw:    line("throw " + expr(*s.value)); break;
+            case StmtKind::Yield:    line("yield " + expr(*s.value)); break;
             case StmtKind::Return:   line(s.value ? "return " + expr(*s.value) : "return"); break;
             case StmtKind::If:
                 line("if " + expr(*s.value) + " {");
@@ -158,6 +160,26 @@ private:
                 break;
             case StmtKind::Break:    line("break"); break;
             case StmtKind::Continue: line("continue"); break;
+            case StmtKind::Use: {
+                std::string head = "use " + s.name;
+                if (s.hasDeclType) head += ": " + typeStr(s.declType);
+                line(head + " = " + expr(*s.value) + " {");
+                printBlock(s.thenBody);
+                line("}");
+                break;
+            }
+            case StmtKind::Try:
+                line("try {");
+                printBlock(s.thenBody);
+                for (const auto& c : s.catches) {
+                    std::string h = "} catch (" + c.name + ": " + typeStr(c.type) + ")";
+                    if (c.guard) h += " when (" + expr(*c.guard) + ")";
+                    line(h + " {");
+                    printBlock(c.body);
+                }
+                if (s.hasFinally) { line("} finally {"); printBlock(s.finallyBody); }
+                line("}");
+                break;
         }
     }
 
@@ -302,9 +324,11 @@ private:
                 if (s.hasDeclType) head += ": " + typeStr(s.declType);
                 return head + " = " + expr(*s.value);
             }
-            case StmtKind::Assign:   return s.name + " = " + expr(*s.value);
+            case StmtKind::Assign:   return expr(*s.target) + " " + s.op + " " + expr(*s.value);
             case StmtKind::ExprStmt: return expr(*s.value);
             case StmtKind::Return:   return s.value ? "return " + expr(*s.value) : "return";
+            case StmtKind::Throw:    return "throw " + expr(*s.value);
+            case StmtKind::Yield:    return "yield " + expr(*s.value);
             case StmtKind::Break:    return "break";
             case StmtKind::Continue: return "continue";
             case StmtKind::For:      return "for " + patternStr(s.forBinding) + " in " +

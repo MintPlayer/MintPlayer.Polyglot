@@ -232,23 +232,98 @@ private:
             accept(TokKind::Semicolon);
             return s;
         }
-
-        if (at(TokKind::Identifier) && peek(1).kind == TokKind::Assign) {
+        if (at(TokKind::KwThrow) || at(TokKind::KwYield)) {
             auto s = std::make_unique<Stmt>();
-            s->kind = StmtKind::Assign;
+            s->kind = at(TokKind::KwThrow) ? StmtKind::Throw : StmtKind::Yield;
             s->pos = peek().pos;
-            s->name = advance().text;
-            advance(); // '='
+            advance();
             s->value = parseExpr();
             accept(TokKind::Semicolon);
             return s;
         }
+        if (at(TokKind::KwUse)) return parseUse();
+        if (at(TokKind::KwTry)) return parseTry();
 
+        // An expression, optionally the target of an assignment (`=`, `+=`, … on any lvalue).
+        SourcePos sp = peek().pos;
+        auto e = parseExpr();
+        const char* op = assignOp(peek().kind);
+        if (op) {
+            auto s = std::make_unique<Stmt>();
+            s->kind = StmtKind::Assign;
+            s->pos = sp;
+            s->target = std::move(e);
+            s->op = op;
+            advance();
+            s->value = parseExpr();
+            accept(TokKind::Semicolon);
+            return s;
+        }
         auto s = std::make_unique<Stmt>();
         s->kind = StmtKind::ExprStmt;
-        s->pos = peek().pos;
-        s->value = parseExpr();
+        s->pos = sp;
+        s->value = std::move(e);
         accept(TokKind::Semicolon);
+        return s;
+    }
+
+    // Returns the operator spelling if `k` is an assignment operator, else nullptr.
+    static const char* assignOp(TokKind k) {
+        switch (k) {
+            case TokKind::Assign:             return "=";
+            case TokKind::PlusEq:             return "+=";
+            case TokKind::MinusEq:            return "-=";
+            case TokKind::StarEq:             return "*=";
+            case TokKind::SlashEq:            return "/=";
+            case TokKind::PercentEq:          return "%=";
+            case TokKind::AmpEq:              return "&=";
+            case TokKind::PipeEq:             return "|=";
+            case TokKind::CaretEq:            return "^=";
+            case TokKind::ShlEq:              return "<<=";
+            case TokKind::ShrEq:              return ">>=";
+            case TokKind::UShrEq:             return ">>>=";
+            case TokKind::QuestionQuestionEq: return "??=";
+            default:                          return nullptr;
+        }
+    }
+
+    StmtPtr parseUse() {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::Use;
+        s->pos = peek().pos;
+        advance(); // use
+        s->name = expect(TokKind::Identifier, "a binding name").text;
+        if (accept(TokKind::Colon)) { s->declType = parseType(); s->hasDeclType = true; }
+        expect(TokKind::Assign, "'='");
+        s->value = parseExpr();
+        s->thenBody = parseBlock();
+        return s;
+    }
+
+    StmtPtr parseTry() {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::Try;
+        s->pos = peek().pos;
+        advance(); // try
+        s->thenBody = parseBlock();
+        while (at(TokKind::KwCatch)) {
+            CatchClause c;
+            c.pos = peek().pos;
+            advance(); // catch
+            expect(TokKind::LParen, "'('");
+            c.name = expect(TokKind::Identifier, "a catch variable").text;
+            expect(TokKind::Colon, "':'");
+            c.type = parseType();
+            expect(TokKind::RParen, "')'");
+            if (accept(TokKind::KwWhen)) {
+                expect(TokKind::LParen, "'('");
+                c.guard = parseExpr();
+                expect(TokKind::RParen, "')'");
+            }
+            c.body = parseBlock();
+            s->catches.push_back(std::move(c));
+        }
+        if (accept(TokKind::KwFinally)) { s->hasFinally = true; s->finallyBody = parseBlock(); }
         return s;
     }
 

@@ -119,23 +119,37 @@ struct Expr {
     std::vector<MatchArm> arms; // Match arms
 };
 
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue };
+struct CatchClause {
+    std::string name;            // bound exception variable
+    TypeRef type;                // caught type
+    ExprPtr guard;               // optional `when (expr)`
+    std::vector<StmtPtr> body;
+    SourcePos pos;
+};
+
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue, Throw, Yield, Use, Try };
 
 struct Stmt {
     StmtKind kind;
     SourcePos pos;
 
-    std::string name;               // Let / Assign target
+    std::string name;               // Let / Use binding name
     bool isMutable = false;         // Let: `var` (true) vs `let` (false)
-    TypeRef declType;               // Let: explicit annotation (when hasDeclType)
+    TypeRef declType;               // Let / Use: explicit annotation (when hasDeclType)
     bool hasDeclType = false;
 
-    ExprPtr value;                  // Let init | Assign value | ExprStmt | Return value | If/While/For cond/iterable
+    ExprPtr target;                 // Assign: lvalue
+    std::string op;                 // Assign: "=", "+=", ...
+    ExprPtr value;                  // Let/Use init | Assign RHS | ExprStmt | Return/Throw/Yield value | If/While/For cond/iterable
 
     Pattern forBinding;             // For: the loop binding (Binding or Tuple)
-    std::vector<StmtPtr> thenBody;  // If-then / While / For body
+    std::vector<StmtPtr> thenBody;  // If-then / While / For / Use / Try body
     std::vector<StmtPtr> elseBody;  // If-else
     bool hasElse = false;
+
+    std::vector<CatchClause> catches;  // Try
+    std::vector<StmtPtr> finallyBody;  // Try
+    bool hasFinally = false;           // Try
 };
 
 struct FunctionDecl {

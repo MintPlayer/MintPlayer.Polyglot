@@ -82,7 +82,7 @@ private:
                 line(std::string(s.isMutable ? "let " : "const ") + s.name + " = " + emitExpr(*s.value) + ";");
                 break;
             case StmtKind::Assign:
-                line(s.name + " = " + emitExpr(*s.value) + ";");
+                line(emitExpr(*s.target) + " " + s.op + " " + emitExpr(*s.value) + ";");
                 break;
             case StmtKind::ExprStmt:
                 line(emitExpr(*s.value) + ";");
