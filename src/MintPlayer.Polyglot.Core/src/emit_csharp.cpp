@@ -39,7 +39,8 @@ public:
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
-        if (!m.enums.empty() || !m.unions.empty() || !m.records.empty()) out_ += "\n";
+        for (const auto& c : m.classes) emitClass(c);
+        if (!m.enums.empty() || !m.unions.empty() || !m.records.empty() || !m.classes.empty()) out_ += "\n";
         out_ += "static class Program\n{\n";
         indent_ = 1;
         for (const auto& fn : m.functions) emitFunction(fn);
@@ -101,6 +102,33 @@ private:
         line("{");
         ++indent_;
         for (const auto& m : r.methods) emitMethod(r.name, m);
+        --indent_;
+        line("}");
+    }
+
+    // A mutable reference type: fields, a constructor (`init`), and methods.
+    void emitClass(const ir::Class& c) {
+        std::string head = "class " + c.name;
+        if (!c.bases.empty()) {
+            head += " : ";
+            for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += csType(c.bases[i]); }
+        }
+        line(head);
+        line("{");
+        ++indent_;
+        for (const auto& f : c.fields) {
+            std::string decl = "public " + std::string(f.isMutable ? "" : "readonly ") + csType(f.type) + " " + f.name;
+            if (f.init) decl += " = " + emitExpr(*f.init);
+            line(decl + ";");
+        }
+        if (c.hasInit) {
+            std::string sig = "public " + c.name + "(";
+            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += csType(c.initParams[i].type) + " " + c.initParams[i].name; }
+            sig += ")";
+            line(sig);
+            emitBlock(c.initBody);
+        }
+        for (const auto& m : c.methods) emitMethod(c.name, m);
         --indent_;
         line("}");
     }

@@ -36,6 +36,7 @@ public:
             line(s + " }");
         }
         for (const auto& r : m.records) record(r);
+        for (const auto& c : m.classes) klass(c);
         for (const auto& fn : m.functions) function(fn);
         return out_;
     }
@@ -44,6 +45,22 @@ public:
         std::string s = "record " + r.name + "(";
         for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) s += ", "; s += r.fields[i].name + ": " + typeName(r.fields[i].type); }
         line(s + ")");
+    }
+
+    void klass(const Class& c) {
+        line("class " + c.name + " {");
+        ++indent_;
+        for (const auto& f : c.fields)
+            line(std::string(f.isMutable ? "var " : "let ") + f.name + ": " + typeName(f.type) + (f.init ? " = " + expr(*f.init) : ""));
+        if (c.hasInit) {
+            std::string s = "init(";
+            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) s += ", "; s += c.initParams[i].name + ": " + typeName(c.initParams[i].type); }
+            line(s + ") {");
+            block(c.initBody);
+            line("}");
+        }
+        --indent_;
+        line("}");
     }
 
 private:

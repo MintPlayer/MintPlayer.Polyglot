@@ -51,6 +51,7 @@ public:
                     rec.methods.push_back(method(mem));
             m.records.push_back(std::move(rec));
         }
+        for (const auto& c : unit.classes) m.classes.push_back(lowerClass(c));
         for (const auto& fn : unit.functions) {
             ir::Function f;
             f.name = fn.name;
@@ -131,6 +132,37 @@ private:
         if (method == "ge") return ">=";
         if (method == "neg") return "-"; // unary
         return method;
+    }
+
+    ir::Class lowerClass(const ClassDecl& c) {
+        ir::Class ic;
+        ic.name = c.name;
+        ic.bases = c.bases;
+        for (const auto& mem : c.members) {
+            switch (mem.kind) {
+                case MemberKind::Field:
+                case MemberKind::Const: {
+                    ir::ClassField f;
+                    f.name = mem.name;
+                    f.isMutable = mem.isMutable;
+                    f.type = mem.type;
+                    if (mem.init) f.init = expr(*mem.init);
+                    ic.fields.push_back(std::move(f));
+                    break;
+                }
+                case MemberKind::Init:
+                    ic.hasInit = true;
+                    for (const auto& p : mem.params) ic.initParams.push_back({p.name, p.type});
+                    ic.initBody = block(mem.body);
+                    break;
+                case MemberKind::Method:
+                case MemberKind::Operator:
+                case MemberKind::Property:
+                    ic.methods.push_back(method(mem));
+                    break;
+            }
+        }
+        return ic;
     }
 
     ir::Method method(const Member& m) {

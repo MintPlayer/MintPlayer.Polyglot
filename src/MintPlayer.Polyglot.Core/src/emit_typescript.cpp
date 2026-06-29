@@ -61,6 +61,7 @@ public:
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
+        for (const auto& c : m.classes) emitClass(c);
         for (const auto& fn : m.functions) emitFunction(fn);
         for (const auto& fn : m.functions) {
             if (fn.isEntry) { line("main();"); break; }
@@ -134,6 +135,29 @@ private:
         --indent_;
         line("}");
         for (const auto& m : r.methods) emitMethod(m);
+        --indent_;
+        line("}");
+    }
+
+    // A mutable reference type: explicit fields, a constructor (`init`), and methods.
+    void emitClass(const ir::Class& c) {
+        std::string head = "class " + c.name;
+        if (!c.bases.empty()) head += " extends " + tsType(c.bases[0]); // inheritance emission widens later
+        line(head + " {");
+        ++indent_;
+        for (const auto& f : c.fields) {
+            std::string decl = f.name + ": " + tsType(f.type);
+            if (f.init) decl += " = " + emitExpr(*f.init);
+            line(decl + ";");
+        }
+        if (c.hasInit) {
+            std::string sig = "constructor(";
+            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += c.initParams[i].name + ": " + tsType(c.initParams[i].type); }
+            line(sig + ") {");
+            emitBlock(c.initBody);
+            line("}");
+        }
+        for (const auto& m : c.methods) emitMethod(m);
         --indent_;
         line("}");
     }

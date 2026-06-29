@@ -230,10 +230,26 @@ struct Union {
     std::string name;
     std::vector<UnionCase> cases;
 };
+struct ClassField {
+    std::string name;
+    bool isMutable = false;
+    Type type;
+    ExprPtr init;   // optional field initializer (may be null)
+};
+struct Class { // a mutable reference type
+    std::string name;
+    std::vector<Type> bases;        // parsed; inheritance emission is a later increment
+    std::vector<ClassField> fields;
+    bool hasInit = false;
+    std::vector<Param> initParams;
+    std::vector<StmtPtr> initBody;
+    std::vector<Method> methods;
+};
 struct Module {
     std::vector<Enum> enums;
     std::vector<Union> unions;
     std::vector<Record> records;
+    std::vector<Class> classes;
     std::vector<Function> functions;
 };
 
