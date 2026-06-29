@@ -154,6 +154,13 @@ private:
                 repr += ")";
                 break;
             }
+            case ExprKind::MakeCase: {
+                const auto& mc = static_cast<const MakeCase&>(e);
+                repr = mc.caseName + "{";
+                for (std::size_t i = 0; i < mc.fields.size(); ++i) { if (i) repr += ", "; repr += mc.fields[i].name + ": " + expr(*mc.fields[i].value); }
+                repr += "}";
+                break;
+            }
             case ExprKind::Match: {
                 const auto& m = static_cast<const Match&>(e);
                 repr = "match " + expr(*m.scrutinee) + " { ";
@@ -163,6 +170,12 @@ private:
                         case PatternKind::Literal:  repr += expr(*a.pattern.literal); break;
                         case PatternKind::Binding:  repr += a.pattern.binding; break;
                         case PatternKind::EnumCase: repr += a.pattern.enumType + "." + a.pattern.enumCase; break;
+                        case PatternKind::Ctor: {
+                            repr += a.pattern.ctorCase + "(";
+                            for (std::size_t i = 0; i < a.pattern.binders.size(); ++i) { if (i) repr += ", "; repr += a.pattern.binders[i].binding; }
+                            repr += ")";
+                            break;
+                        }
                     }
                     if (a.guard) repr += " if " + expr(*a.guard);
                     repr += " => " + expr(*a.body) + ", ";

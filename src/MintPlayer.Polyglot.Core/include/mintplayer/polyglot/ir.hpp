@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New, Match };
+enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New, MakeCase, Match };
 
 struct Expr {
     ExprKind kind;
@@ -94,13 +94,31 @@ struct New : Expr { // construction `Type(args)`
     New(SourcePos p, Type t, std::string n) : Expr(ExprKind::New, p, std::move(t)), typeName(std::move(n)) {}
 };
 
-// match patterns (P5-4a: scalar/enum; constructor/tuple patterns widen in P5-4b)
-enum class PatternKind { Wildcard, Literal, Binding, EnumCase };
+struct MakeCaseField { // a field of a union-case construction
+    std::string name;
+    ExprPtr value;
+};
+struct MakeCase : Expr { // union-case construction: C# `new Case(...)`, TS `{ tag: "Case", ... }`
+    std::string unionName;
+    std::string caseName;
+    std::vector<MakeCaseField> fields;
+    MakeCase(SourcePos p, Type t, std::string u, std::string c)
+        : Expr(ExprKind::MakeCase, p, std::move(t)), unionName(std::move(u)), caseName(std::move(c)) {}
+};
+
+// match patterns
+enum class PatternKind { Wildcard, Literal, Binding, EnumCase, Ctor };
+struct Binder { // a sub-binding of a constructor pattern: bind `binding` from field `field`
+    std::string field;
+    std::string binding;
+};
 struct Pattern {
     PatternKind kind = PatternKind::Wildcard;
     std::string binding;            // Binding: the bound name
     ExprPtr literal;                // Literal: the constant
     std::string enumType, enumCase; // EnumCase: Type.Case
+    std::string ctorCase;           // Ctor: the union case name
+    std::vector<Binder> binders;    // Ctor: field -> binding (in declared order)
 };
 struct MatchArm {
     Pattern pattern;
@@ -200,8 +218,21 @@ struct Enum {
     std::string name;
     std::vector<EnumCase> cases;
 };
+struct UnionCaseField {
+    std::string name;
+    Type type;
+};
+struct UnionCase {
+    std::string name;
+    std::vector<UnionCaseField> fields; // empty = payload-free case
+};
+struct Union {
+    std::string name;
+    std::vector<UnionCase> cases;
+};
 struct Module {
     std::vector<Enum> enums;
+    std::vector<Union> unions;
     std::vector<Record> records;
     std::vector<Function> functions;
 };

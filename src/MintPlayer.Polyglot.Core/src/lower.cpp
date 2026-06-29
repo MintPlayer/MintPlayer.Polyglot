@@ -14,6 +14,12 @@ public:
         for (const auto& r : unit.records) typeNames_.insert(r.name);
         for (const auto& c : unit.classes) typeNames_.insert(c.name);
         for (const auto& e : unit.enums) for (const auto& c : e.cases) enumCases_[e.name].insert(c.name);
+        for (const auto& u : unit.unions)
+            for (const auto& c : u.cases) {
+                caseUnion_[c.name] = u.name;
+                unionCases_[u.name].insert(c.name);
+                for (const auto& f : c.params) caseFields_[c.name].push_back(f.name);
+            }
     }
 
     ir::Module run(const CompilationUnit& unit) {
@@ -24,6 +30,17 @@ public:
             long long next = 0;
             for (const auto& c : e.cases) { long long v = c.hasValue ? c.value : next; ie.cases.push_back({c.name, v}); next = v + 1; }
             m.enums.push_back(std::move(ie));
+        }
+        for (const auto& u : unit.unions) {
+            ir::Union iu;
+            iu.name = u.name;
+            for (const auto& c : u.cases) {
+                ir::UnionCase ic;
+                ic.name = c.name;
+                for (const auto& f : c.params) ic.fields.push_back({f.name, f.type});
+                iu.cases.push_back(std::move(ic));
+            }
+            m.unions.push_back(std::move(iu));
         }
         for (const auto& r : unit.records) {
             ir::Record rec;
@@ -49,29 +66,50 @@ public:
 private:
     std::unordered_set<std::string> typeNames_;
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
+    std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
+    std::unordered_map<std::string, std::vector<std::string>> caseFields_;         // case -> field names
+    std::unordered_map<std::string, std::unordered_set<std::string>> unionCases_;  // union -> case names
 
-    ir::Pattern pattern(const Pattern& p, const std::string& scrutEnum) {
+    ir::Pattern pattern(const Pattern& p, const std::string& scrutEnum, const std::string& scrutUnion) {
         ir::Pattern ip;
         switch (p.kind) {
             case PatKind::Wildcard: ip.kind = ir::PatternKind::Wildcard; break;
             case PatKind::Literal:  ip.kind = ir::PatternKind::Literal; if (p.literal) ip.literal = expr(*p.literal); break;
+            case PatKind::Ctor: {
+                ip.kind = ir::PatternKind::Ctor;
+                ip.ctorCase = p.name;
+                const auto fit = caseFields_.find(p.name);
+                for (std::size_t i = 0; i < p.sub.size(); ++i) {
+                    if (p.sub[i].kind != PatKind::Binding) continue; // nested patterns widen later
+                    std::string field = (fit != caseFields_.end() && i < fit->second.size()) ? fit->second[i] : p.sub[i].name;
+                    ip.binders.push_back({field, p.sub[i].name});
+                }
+                break;
+            }
             case PatKind::Binding:
                 if (!scrutEnum.empty() && enumCases_.at(scrutEnum).count(p.name)) {
                     ip.kind = ir::PatternKind::EnumCase; ip.enumType = scrutEnum; ip.enumCase = p.name;
-                } else { ip.kind = ir::PatternKind::Binding; ip.binding = p.name; }
+                } else if (!scrutUnion.empty() && unionCases_.at(scrutUnion).count(p.name)) {
+                    ip.kind = ir::PatternKind::Ctor; ip.ctorCase = p.name; // payload-free case
+                } else {
+                    ip.kind = ir::PatternKind::Binding; ip.binding = p.name;
+                }
                 break;
-            default: ip.kind = ir::PatternKind::Wildcard; break; // Ctor/Tuple patterns widen in P5-4b
+            default: ip.kind = ir::PatternKind::Wildcard; break;
         }
         return ip;
     }
 
     ir::ExprPtr matchExpr(const Expr& e) {
         auto m = std::make_unique<ir::Match>(e.pos, e.type, expr(*e.lhs));
-        std::string scrutEnum;
-        if (e.lhs->type.kind == TypeRef::Kind::Named && enumCases_.count(e.lhs->type.name)) scrutEnum = e.lhs->type.name;
+        std::string scrutEnum, scrutUnion;
+        if (e.lhs->type.kind == TypeRef::Kind::Named) {
+            if (enumCases_.count(e.lhs->type.name)) scrutEnum = e.lhs->type.name;
+            else if (unionCases_.count(e.lhs->type.name)) scrutUnion = e.lhs->type.name;
+        }
         for (const auto& arm : e.arms) {
             ir::MatchArm ia;
-            ia.pattern = pattern(arm.pattern, scrutEnum);
+            ia.pattern = pattern(arm.pattern, scrutEnum, scrutUnion);
             if (arm.guard) ia.guard = expr(*arm.guard);
             ia.body = (!arm.bodyIsBlock && arm.body) ? expr(*arm.body)
                                                      : std::make_unique<ir::IntLit>(e.pos, e.type, "0"); // block arms: P5-4b
@@ -120,7 +158,10 @@ private:
             case ExprKind::FloatLit:  return std::make_unique<ir::FloatLit>(e.pos, e.type, e.text);
             case ExprKind::BoolLit:   return std::make_unique<ir::BoolLit>(e.pos, e.type, e.boolVal);
             case ExprKind::StringLit: return std::make_unique<ir::StrLit>(e.pos, e.type, e.text);
-            case ExprKind::Name:      return std::make_unique<ir::Var>(e.pos, e.type, e.text);
+            case ExprKind::Name:
+                if (auto u = caseUnion_.find(e.text); u != caseUnion_.end()) // bare payload-free union case
+                    return std::make_unique<ir::MakeCase>(e.pos, e.type, u->second, e.text);
+                return std::make_unique<ir::Var>(e.pos, e.type, e.text);
             case ExprKind::This:      return std::make_unique<ir::This>(e.pos, e.type);
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
@@ -133,10 +174,17 @@ private:
                     return mc;
                 }
                 std::string callee = (e.lhs && e.lhs->kind == ExprKind::Name) ? e.lhs->text : "";
-                if (!callee.empty() && typeNames_.count(callee)) { // construction
+                if (!callee.empty() && typeNames_.count(callee)) { // record/class construction
                     auto n = std::make_unique<ir::New>(e.pos, e.type, callee);
                     for (const auto& a : e.args) n->args.push_back(expr(*a));
                     return n;
+                }
+                if (auto u = caseUnion_.find(callee); u != caseUnion_.end()) { // union case construction
+                    auto mc = std::make_unique<ir::MakeCase>(e.pos, e.type, u->second, callee);
+                    const auto& fields = caseFields_[callee];
+                    for (std::size_t i = 0; i < e.args.size(); ++i)
+                        mc->fields.push_back({i < fields.size() ? fields[i] : "_" + std::to_string(i), expr(*e.args[i])});
+                    return mc;
                 }
                 auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, callee == "print");
                 for (const auto& a : e.args) call->args.push_back(expr(*a));

@@ -59,6 +59,7 @@ public:
         out_.clear();
         indent_ = 0;
         for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& fn : m.functions) emitFunction(fn);
         for (const auto& fn : m.functions) {
@@ -85,10 +86,29 @@ private:
         line(s + " };");
     }
 
+    // Union -> a discriminated-union type alias (stripped at runtime; construction makes {tag,...} objects).
+    void emitUnion(const ir::Union& u) {
+        std::string s = "type " + u.name + " = ";
+        for (std::size_t i = 0; i < u.cases.size(); ++i) {
+            if (i) s += " | ";
+            s += "{ tag: \"" + u.cases[i].name + "\"";
+            for (const auto& f : u.cases[i].fields) s += "; " + f.name + ": " + tsType(f.type);
+            s += " }";
+        }
+        line(s + ";");
+    }
+
     // One arm of a match, lowered into the IIFE if-chain.
     std::string matchArm(const ir::MatchArm& a) {
         const ir::Pattern& p = a.pattern;
         std::string body = emitExpr(*a.body);
+        if (p.kind == ir::PatternKind::Ctor) {
+            std::string s = "if (_m.tag === \"" + p.ctorCase + "\"";
+            if (a.guard) s += " && (" + emitExpr(*a.guard) + ")";
+            s += ") { ";
+            for (const auto& b : p.binders) s += "const " + b.binding + " = _m." + b.field + "; ";
+            return s + "return " + body + "; } ";
+        }
         if (p.kind == ir::PatternKind::Binding) {
             std::string s = "{ const " + p.binding + " = _m; ";
             s += a.guard ? "if (" + emitExpr(*a.guard) + ") return " + body + "; }" : "return " + body + "; }";
@@ -273,6 +293,12 @@ private:
                 std::string s = "new " + n.typeName + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
                 return s + ")";
+            }
+            case ir::ExprKind::MakeCase: {
+                const auto& mc = static_cast<const ir::MakeCase&>(e);
+                std::string s = "{ tag: \"" + mc.caseName + "\"";
+                for (const auto& f : mc.fields) s += ", " + f.name + ": " + emitExpr(*f.value);
+                return s + " }";
             }
             case ir::ExprKind::Match: {
                 const auto& m = static_cast<const ir::Match&>(e);

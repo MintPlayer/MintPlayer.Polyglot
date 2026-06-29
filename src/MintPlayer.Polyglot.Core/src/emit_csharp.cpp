@@ -37,8 +37,9 @@ public:
         out_ = "using System;\n\n";
         indent_ = 0;
         for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
-        if (!m.enums.empty() || !m.records.empty()) out_ += "\n";
+        if (!m.enums.empty() || !m.unions.empty() || !m.records.empty()) out_ += "\n";
         out_ += "static class Program\n{\n";
         indent_ = 1;
         for (const auto& fn : m.functions) emitFunction(fn);
@@ -66,12 +67,27 @@ private:
         line(s + " }");
     }
 
+    void emitUnion(const ir::Union& u) {
+        line("abstract record " + u.name + ";");
+        for (const auto& c : u.cases) {
+            std::string s = "sealed record " + c.name + "(";
+            for (std::size_t i = 0; i < c.fields.size(); ++i) { if (i) s += ", "; s += csType(c.fields[i].type) + " " + c.fields[i].name; }
+            line(s + ") : " + u.name + ";");
+        }
+    }
+
     std::string patternCs(const ir::Pattern& p) {
         switch (p.kind) {
             case ir::PatternKind::Wildcard: return "_";
             case ir::PatternKind::Literal:  return emitExpr(*p.literal);
             case ir::PatternKind::Binding:  return "var " + p.binding;
             case ir::PatternKind::EnumCase: return p.enumType + "." + p.enumCase;
+            case ir::PatternKind::Ctor: {
+                if (p.binders.empty()) return p.ctorCase + " _"; // type pattern (payload-free)
+                std::string s = p.ctorCase + "(";
+                for (std::size_t i = 0; i < p.binders.size(); ++i) { if (i) s += ", "; s += "var " + p.binders[i].binding; }
+                return s + ")";
+            }
         }
         return "_";
     }
@@ -239,6 +255,12 @@ private:
                 const auto& n = static_cast<const ir::New&>(e);
                 std::string s = "new " + n.typeName + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
+                return s + ")";
+            }
+            case ir::ExprKind::MakeCase: {
+                const auto& mc = static_cast<const ir::MakeCase&>(e);
+                std::string s = "new " + mc.caseName + "(";
+                for (std::size_t i = 0; i < mc.fields.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.fields[i].value); }
                 return s + ")";
             }
             case ir::ExprKind::Match: {
