@@ -571,6 +571,7 @@ private:
             case ExprKind::Unary:     return checkUnary(e);
             case ExprKind::Binary:    return checkBinary(e);
             case ExprKind::Cast:      return checkCast(e);
+            case ExprKind::Extern:    return tUnknown(); // raw target code — type asserted by context (§4.4 FFI)
             case ExprKind::Range:     checkExpr(*e.lhs); checkExpr(*e.rhs); return tUnknown();
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);

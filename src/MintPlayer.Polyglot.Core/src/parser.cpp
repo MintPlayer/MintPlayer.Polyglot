@@ -1027,6 +1027,14 @@ private:
             case TokKind::KwNull:    { advance(); return mk(ExprKind::NullLit, p); }
             case TokKind::KwThis:    { advance(); return mk(ExprKind::This, p); }
             case TokKind::KwSuper:   { advance(); return mk(ExprKind::Super, p); }
+            case TokKind::KwExtern:  { // extern("<raw target code>") — the FFI escape hatch
+                advance();
+                expect(TokKind::LParen, "'('");
+                auto e = mk(ExprKind::Extern, p);
+                e->text = expect(TokKind::StringLit, "a raw target-code string").text;
+                expect(TokKind::RParen, "')'");
+                return e;
+            }
             case TokKind::Identifier:
                 if (peek(1).kind == TokKind::Arrow) return parseBareLambda(); // `x => …`
                 { auto e = mk(ExprKind::Name, p); e->text = advance().text; return e; }

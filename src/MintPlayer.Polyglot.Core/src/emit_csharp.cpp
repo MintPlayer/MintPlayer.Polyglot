@@ -436,6 +436,7 @@ private:
                 const auto& c = static_cast<const ir::Cast&>(e);
                 return "(" + csType(e.type) + ")(" + emitExpr(*c.operand) + ")";
             }
+            case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw C# verbatim
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
                 int p = prec(b.op);

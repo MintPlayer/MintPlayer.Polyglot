@@ -102,7 +102,7 @@ struct MatchArm {
 enum class ExprKind {
     IntLit, FloatLit, CharLit, StringLit, InterpString, BoolLit, NullLit,
     Name, This, Super,
-    Unary, Binary, Range, Cast,
+    Unary, Binary, Range, Cast, Extern,
     Call, Member, Index, NullAssert,
     Lambda, ListLit, TupleLit, With, IfExpr, Match,
 };

@@ -517,6 +517,7 @@ private:
                 const auto& c = static_cast<const ir::Cast&>(e);
                 return tsConvert(c.operand->type, e.type, emitExpr(*c.operand));
             }
+            case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw TS verbatim
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
                 if (b.op == "==" || b.op == "!=") {

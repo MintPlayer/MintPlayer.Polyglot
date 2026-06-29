@@ -1,0 +1,13 @@
+// P7 differential conformance: the `extern("…")` FFI hatch — raw target code
+// emitted verbatim. Used inside `actual`s so the raw code matches the target.
+// Here the C# actual reaches a native expression and the TS actual calls a
+// native JS API (Math.abs) directly through extern; both yield 42.
+
+expect fn answer(): i32
+
+actual(csharp) fn answer(): i32 => extern("20 * 2 + 2")
+actual(typescript) fn answer(): i32 => extern("Math.abs(-42)")
+
+fn main() {
+  print(answer())     // 42  (C# raw `20 * 2 + 2`, TS raw `Math.abs(-42)`)
+}
