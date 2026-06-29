@@ -34,6 +34,32 @@ bool sameNamedType(const TypeRef& a, const TypeRef& b) {
            a.name == b.name && !a.nullable && !b.nullable;
 }
 
+int numWidth(const std::string& n) {
+    if (n == "i8" || n == "u8") return 8;
+    if (n == "i16" || n == "u16") return 16;
+    if (n == "i32" || n == "u32") return 32;
+    if (n == "i64" || n == "u64") return 64;
+    return 0;
+}
+bool isSignedInt(const std::string& n)   { return n == "i8" || n == "i16" || n == "i32" || n == "i64"; }
+bool isUnsignedInt(const std::string& n) { return n == "u8" || n == "u16" || n == "u32" || n == "u64"; }
+bool isFloatName(const std::string& n)   { return n == "f32" || n == "f64"; }
+
+// Is `from -> to` an implicit, value-preserving widening (no precision loss, no sign surprise)? Everything
+// else (narrowing, i64->f64, signed->unsigned) requires an explicit cast. (SPEC §3.)
+bool isLosslessWiden(const TypeRef& from, const TypeRef& to) {
+    if (!isNumericTypeName(from) || !isNumericTypeName(to) || from.name == to.name) return false;
+    const std::string& f = from.name;
+    const std::string& t = to.name;
+    if (isFloatName(t)) // ints up to 32 bits (and f32) fit exactly in an f64 mantissa; ->f32 is lossy
+        return t == "f64" && (f == "f32" || ((isSignedInt(f) || isUnsignedInt(f)) && numWidth(f) <= 32));
+    if (isFloatName(f)) return false; // float -> int is never implicit
+    if (isSignedInt(f) && isSignedInt(t))     return numWidth(t) > numWidth(f);
+    if (isUnsignedInt(f) && isUnsignedInt(t)) return numWidth(t) > numWidth(f);
+    if (isUnsignedInt(f) && isSignedInt(t))   return numWidth(t) > numWidth(f); // unsigned fits in wider signed
+    return false; // signed -> unsigned never implicit
+}
+
 bool isBuiltinType(const std::string& n) {
     static const std::unordered_set<std::string> b = {
         "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -327,6 +353,43 @@ private:
         popScope();
     }
 
+    // Wrap an expression in an implicit widening cast (mutates the AST so lowering/emit convert it).
+    void coerce(ExprPtr& slot, const TypeRef& target) {
+        auto cast = std::make_unique<Expr>();
+        cast->kind = ExprKind::Cast;
+        cast->pos = slot->pos;
+        cast->castType = target;
+        cast->type = target;
+        cast->lhs = std::move(slot);
+        slot = std::move(cast);
+    }
+
+    // A value flowing into a typed slot (let/assign/return/argument): widen losslessly if possible, else
+    // a numeric mismatch demands an explicit cast and any other known-scalar mismatch is a type error.
+    void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
+        if (!slot) return;
+        TypeRef from = slot->type;
+        if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
+        if (isNumericTypeName(from) && isNumericTypeName(target) && !sameNamedType(from, target)) {
+            diags_.error(slot->pos, "cannot implicitly convert " + from.name + " to " + target.name +
+                                        " (" + ctx + "); add an explicit cast '(" + target.name + ")'");
+            return;
+        }
+        Ty a = scalarTyOf(target), i = scalarTyOf(from);
+        if (a != Ty::Unknown && i != Ty::Unknown && a != i)
+            diags_.error(slot->pos, std::string("type mismatch (") + ctx + "): expected " + tyName(a) + ", found " + tyName(i));
+    }
+
+    // Reconcile two numeric binary operands, widening the narrower to the wider. Returns the common type
+    // (true), or false if they aren't both numeric or neither widens to the other (caller decides).
+    bool reconcileNumeric(Expr& e, const TypeRef& lt, const TypeRef& rt, TypeRef& common) {
+        if (!isNumericTypeName(lt) || !isNumericTypeName(rt)) return false;
+        if (sameNamedType(lt, rt)) { common = lt; return true; }
+        if (isLosslessWiden(lt, rt)) { coerce(e.lhs, rt); common = rt; return true; }
+        if (isLosslessWiden(rt, lt)) { coerce(e.rhs, lt); common = lt; return true; }
+        return false;
+    }
+
     void declarePattern(const Pattern& p) {
         switch (p.kind) {
             case PatKind::Binding: declare(p.name, p.hasType ? p.type : tUnknown(), false, p.pos); break;
@@ -339,26 +402,19 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 TypeRef init = checkExpr(*s.value);
-                if (s.hasDeclType) {
-                    Ty a = scalarTyOf(s.declType), i = scalarTyOf(init);
-                    if (a != Ty::Unknown && i != Ty::Unknown && a != i)
-                        diags_.error(s.pos, std::string("type mismatch: '") + s.name + "' is declared " +
-                                                tyName(a) + " but initialized with " + tyName(i));
-                }
+                if (s.hasDeclType) checkConvert(s.value, s.declType, "initializer of '" + s.name + "'");
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.pos);
                 break;
             }
             case StmtKind::Assign: {
-                TypeRef value = checkExpr(*s.value);
+                checkExpr(*s.value);
                 if (s.target && s.target->kind == ExprKind::Name) {
                     const std::string& nm = s.target->text;
                     const Local* local = lookup(nm);
                     if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
                         if (!local->isMutable) diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
-                        Ty vt = scalarTyOf(value), lt = scalarTyOf(local->type);
-                        if (vt != Ty::Unknown && lt != Ty::Unknown && vt != lt)
-                            diags_.error(s.pos, std::string("type mismatch assigning ") + tyName(vt) + " to '" + nm + "' of type " + tyName(lt));
+                        checkConvert(s.value, local->type, "assignment to '" + nm + "'");
                     }
                 } else if (s.target) checkExpr(*s.target);
                 break;
@@ -403,11 +459,9 @@ private:
                 break;
             case StmtKind::Return: {
                 if (s.value) {
-                    TypeRef got = checkExpr(*s.value);
-                    Ty g = scalarTyOf(got), r = scalarTyOf(currentReturn_);
+                    checkExpr(*s.value);
                     if (isUnitT(currentReturn_)) diags_.error(s.pos, "this function returns unit; 'return' takes no value");
-                    else if (g != Ty::Unknown && r != Ty::Unknown && g != r)
-                        diags_.error(s.pos, std::string("return type mismatch: expected ") + tyName(r) + ", found " + tyName(g));
+                    else checkConvert(s.value, currentReturn_, "return value");
                 } else if (!isUnitT(currentReturn_)) {
                     diags_.error(s.pos, "this function must return a value");
                 }
@@ -510,22 +564,25 @@ private:
             if ((l != Ty::Unknown && l != Ty::Bool) || (r != Ty::Unknown && r != Ty::Bool)) diags_.error(e.pos, "'" + op + "' expects bool operands");
             return tNamed("bool");
         }
+        TypeRef common;
         if (op == "==" || op == "!=") {
+            if (reconcileNumeric(e, lt, rt, common)) return tNamed("bool"); // widen the narrower, then compare
             if (l != Ty::Unknown && r != Ty::Unknown && l != r) diags_.error(e.pos, "'" + op + "' compares mismatched types " + tyName(l) + " and " + tyName(r));
             return tNamed("bool");
         }
         if (op == "<" || op == "<=" || op == ">" || op == ">=") {
+            if (reconcileNumeric(e, lt, rt, common)) return tNamed("bool");
             if (l != Ty::Unknown && r != Ty::Unknown && (l != r || !isNumeric(l))) diags_.error(e.pos, "'" + op + "' expects matching numeric operands, found " + tyName(l) + " and " + tyName(r));
             return tNamed("bool");
         }
         // arithmetic / bitwise / shift
         if (op == "+" && l == Ty::String && r == Ty::String) return tNamed("string");
-        if (l != Ty::Unknown && r != Ty::Unknown) {
-            if (l != r || !isNumeric(l)) { diags_.error(e.pos, "'" + op + "' expects matching numeric operands, found " + tyName(l) + " and " + tyName(r)); return tUnknown(); }
-            return lt;
+        if (reconcileNumeric(e, lt, rt, common)) return common; // widen the narrower operand to the wider
+        if (isNumericTypeName(lt) && isNumericTypeName(rt)) { // both numeric but neither widens -> needs a cast
+            diags_.error(e.pos, "'" + op + "' has mismatched operand types " + lt.name + " and " + rt.name + "; add an explicit cast");
+            return tUnknown();
         }
-        // numeric widths the scalar lattice doesn't track (i64/u64/i8/…): same named numeric -> that type
-        if (isNumericTypeName(lt) && sameNamedType(lt, rt)) return lt;
+        if (l != Ty::Unknown && r != Ty::Unknown && (l != r || !isNumeric(l))) { diags_.error(e.pos, "'" + op + "' expects matching numeric operands, found " + tyName(l) + " and " + tyName(r)); return tUnknown(); }
         // a user type with an operator method (e.g. Vec2 + Vec2)
         if (knownType(lt)) { if (const MemberInfo* m = findMember(lt.name, operatorMethod(op))) return m->type; }
         return tUnknown();
@@ -546,16 +603,14 @@ private:
     }
 
     void checkArgs(const std::vector<TypeRef>& params, const std::vector<TypeRef>& argTypes,
-                   const std::vector<ExprPtr>& args, const std::string& what, SourcePos pos) {
+                   std::vector<ExprPtr>& args, const std::string& what, SourcePos pos) {
         if (params.size() != argTypes.size()) {
             diags_.error(pos, what + " expects " + std::to_string(params.size()) + " argument(s), got " + std::to_string(argTypes.size()));
             return;
         }
-        for (std::size_t i = 0; i < params.size(); ++i) {
-            Ty want = scalarTyOf(params[i]), got = scalarTyOf(argTypes[i]);
-            if (want != Ty::Unknown && got != Ty::Unknown && want != got)
-                diags_.error(args[i]->pos, "argument " + std::to_string(i + 1) + " of " + what + " expects " + tyName(want) + ", got " + tyName(got));
-        }
+        // Each argument flows into its parameter slot: widen losslessly, else require an explicit cast.
+        for (std::size_t i = 0; i < params.size(); ++i)
+            checkConvert(args[i], params[i], "argument " + std::to_string(i + 1) + " of " + what);
     }
 
     TypeRef checkCall(Expr& e) {

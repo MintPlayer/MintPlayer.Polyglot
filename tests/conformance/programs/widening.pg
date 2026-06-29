@@ -1,0 +1,23 @@
+// P6 differential conformance: implicit lossless widening (§3.C). A narrower
+// value flows into a wider slot automatically — at a call argument, a typed
+// `let`, a return, and mixed-width arithmetic. The compiler inserts the
+// conversion (e.g. i32->i64 becomes BigInt(x) on the JS side).
+
+fn takesI64(a: i64): i64 => a * 2i64
+
+fn widenReturn(x: i32): i64 {
+  return x                 // i32 -> i64 widened on return
+}
+
+fn main() {
+  let n = 21                 // i32
+  print(takesI64(n))         // 42   (n widened i32 -> i64 at the call)
+
+  let big: i64 = n           // 21   (widened in a typed let)
+  print(big + n)             // 42   (mixed i64 + i32 -> i32 widens, i64 result)
+
+  print(widenReturn(50))     // 50
+
+  let f: f64 = n             // i32 -> f64 widening
+  print((i32)(f + 0.5))      // 21   (21.5 -> i32)
+}
