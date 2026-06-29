@@ -11,15 +11,15 @@ namespace mintplayer::polyglot {
 
 namespace {
 
-const char* tsType(Ty t) {
-    switch (t) {
-        case Ty::Unit:   return "void";
-        case Ty::I32:    return "number";
-        case Ty::F64:    return "number";
-        case Ty::Bool:   return "boolean";
-        case Ty::String: return "string";
-        default:         return "unknown";
+std::string tsType(const TypeRef& t) {
+    if (t.kind == TypeRef::Kind::Named) {
+        if (t.name == "unit")               return "void";
+        if (t.name == "i32" || t.name == "f64") return "number";
+        if (t.name == "bool")               return "boolean";
+        if (t.name == "string")             return "string";
+        return t.name.empty() ? "unknown" : t.name; // user/generic type names refined in P5
     }
+    return "unknown";
 }
 
 int prec(const std::string& op) {

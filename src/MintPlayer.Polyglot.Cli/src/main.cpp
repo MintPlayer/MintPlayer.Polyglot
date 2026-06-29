@@ -20,9 +20,11 @@ void printUsage() {
         << "Usage:\n"
         << "  polyglot --version\n"
         << "  polyglot build <input.pg> [--target <csharp|typescript>] [--out <dir>]\n"
+        << "  polyglot fmt <input.pg>\n"
         << "\n"
         << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
-        << "         --out writes outputs to <dir> (default: alongside the input).\n";
+        << "         --out writes outputs to <dir> (default: alongside the input).\n"
+        << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n";
 }
 
 // Read an entire file into a string. Returns false if it could not be opened.
@@ -113,6 +115,26 @@ int runBuild(const std::vector<std::string>& args) {
     return ok ? 0 : 1;
 }
 
+int runFmt(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cerr << "polyglot: 'fmt' needs an input file\n";
+        return 64;
+    }
+    fs::path input = args[1];
+    std::string source;
+    if (!readFile(input, source)) {
+        std::cerr << "polyglot: cannot open '" << input.string() << "'\n";
+        return 66;
+    }
+    EmitResult result = format(source);
+    if (!result.ok) {
+        reportDiagnostics(input, result);
+        return 1;
+    }
+    std::cout << result.code;
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -128,6 +150,9 @@ int main(int argc, char** argv) {
     }
     if (args[0] == "build") {
         return runBuild(args);
+    }
+    if (args[0] == "fmt") {
+        return runFmt(args);
     }
 
     std::cerr << "polyglot: unknown command '" << args[0] << "'\n\n";

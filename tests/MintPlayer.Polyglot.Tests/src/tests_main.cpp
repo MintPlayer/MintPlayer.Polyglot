@@ -98,6 +98,14 @@ int main() {
         roundtrips("fn f(a: i32) {\n  let m = if a > 0 { 1 } else { 0 }\n"
                    "  let bits = a & a | a ^ a << 2 >> 1\n}\n",
                    "round-trip: if-expr + bitwise/shift");
+        roundtrips("enum Direction { North, East, South, West }\n"
+                   "enum HttpCode { Ok = 200, NotFound = 404 }\n"
+                   "union Shape {\n  Circle(r: f64)\n  Rect(w: f64, h: f64)\n  Empty\n}\n"
+                   "fn area(s: Shape): f64 => match s {\n"
+                   "  Circle(r) => 3.14 * r * r,\n  Rect(w, h) => w * h,\n  Empty => 0.0,\n}\n"
+                   "fn classify(n: i32): string => match n {\n"
+                   "  0 => \"zero\",\n  x if x < 0 => \"negative\",\n  _ => \"many\",\n}\n",
+                   "round-trip: enum / union / match / patterns / named types");
     }
 
     // C# emission (golden substrings).

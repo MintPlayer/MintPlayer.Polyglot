@@ -38,4 +38,8 @@ struct EmitResult {
 // first pass that reports errors (no partial/garbage output on failure).
 EmitResult compile(const std::string& source, Target target);
 
+// Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the
+// formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.
+EmitResult format(const std::string& source);
+
 } // namespace mintplayer::polyglot

@@ -6,13 +6,14 @@
 
 #include "mintplayer/polyglot/diagnostics.hpp"
 
-// The AST. After sema (sema.hpp) every Expr carries a resolved `type`; that type-annotated tree is the
-// MVP's typed tree IR (PRD §4.2). Nodes are a single discriminated (kind-tagged) struct per category —
-// consumers switch on `kind`. P3 widens the parser/printer to the full P1 expression grammar; statements,
-// declarations, rich types, and string interpolation widen in later P3 increments.
+// The AST. Type annotations are syntactic `TypeRef`s (name + generic args / tuple / function + nullable);
+// the MVP scalar checker still reasons in the `Ty` enum and converts at the boundary via scalarTyOf().
+// P3 widens the parser/printer to the full P1 grammar; sema/emitters still only walk the compiled MVP
+// subset (the round-trip fidelity gate is parser+printer only — full semantics is P4, emission P5).
 
 namespace mintplayer::polyglot {
 
+// Scalar type lattice used by the MVP type checker (sema). Expr::type stays a Ty.
 enum class Ty { Unknown, Unit, I32, F64, Bool, String };
 
 inline const char* tyName(Ty t) {
@@ -26,6 +27,35 @@ inline const char* tyName(Ty t) {
     }
 }
 
+// A syntactic type reference as written in source.
+struct TypeRef {
+    enum class Kind { Named, Tuple, Function };
+    Kind kind = Kind::Named;
+    std::string name;             // Named: type name; empty Named = absent (inferred, e.g. lambda param)
+    std::vector<TypeRef> args;    // Named: generic args | Tuple: elements | Function: parameter types
+    std::vector<TypeRef> ret;     // Function: the single return type (size 1)
+    bool nullable = false;        // trailing '?'
+
+    bool absent() const { return kind == Kind::Named && name.empty() && args.empty() && !nullable; }
+};
+
+inline TypeRef namedType(std::string n) {
+    TypeRef t;
+    t.name = std::move(n);
+    return t;
+}
+
+// Collapse a TypeRef to the scalar lattice for the MVP checker; non-scalar/named types are Unknown.
+inline Ty scalarTyOf(const TypeRef& t) {
+    if (t.kind != TypeRef::Kind::Named || t.nullable || !t.args.empty()) return Ty::Unknown;
+    if (t.name == "i32") return Ty::I32;
+    if (t.name == "f64") return Ty::F64;
+    if (t.name == "bool") return Ty::Bool;
+    if (t.name == "string") return Ty::String;
+    if (t.name == "unit") return Ty::Unit;
+    return Ty::Unknown;
+}
+
 struct Expr;
 using ExprPtr = std::unique_ptr<Expr>;
 struct Stmt;
@@ -33,7 +63,7 @@ using StmtPtr = std::unique_ptr<Stmt>;
 
 struct Param {
     std::string name;
-    Ty type = Ty::Unknown;   // Unknown = inferred (e.g. an untyped lambda parameter)
+    TypeRef type;            // absent() = inferred
     SourcePos pos;
 };
 
@@ -42,27 +72,34 @@ struct FieldInit {           // `name = value` inside a `with { ... }` expressio
     ExprPtr value;
 };
 
+// ---- patterns (for `match`) ----
+enum class PatKind { Wildcard, Literal, Binding, Ctor, Tuple };
+struct Pattern {
+    PatKind kind = PatKind::Wildcard;
+    SourcePos pos;
+    std::string name;            // Binding / Ctor name
+    ExprPtr literal;             // Literal pattern's value
+    std::vector<Pattern> sub;    // Ctor arguments / Tuple elements
+    TypeRef type;                // typed binding `x: T`
+    bool hasType = false;
+};
+
+struct MatchArm {
+    Pattern pattern;
+    ExprPtr guard;               // optional `if <expr>`
+    ExprPtr body;                // when !bodyIsBlock
+    bool bodyIsBlock = false;
+    std::vector<StmtPtr> block;  // when bodyIsBlock
+};
+
 enum class ExprKind {
     IntLit, FloatLit, CharLit, StringLit, BoolLit, NullLit,
     Name, This, Super,
     Unary, Binary, Range,
     Call, Member, Index, NullAssert,
-    Lambda, ListLit, TupleLit, With, IfExpr,
+    Lambda, ListLit, TupleLit, With, IfExpr, Match,
 };
 
-// One struct, many shapes. Field usage by kind (unused fields stay default):
-//   IntLit/FloatLit/CharLit/StringLit : text = literal value/text
-//   BoolLit                            : boolVal
-//   Name/Member                        : text = name (Member also: lhs = object, flag = null-safe `?.`)
-//   Unary/NullAssert                   : text = op, lhs = operand
-//   Binary                             : text = op, lhs/rhs = operands
-//   Range                              : lhs/rhs = endpoints, flag = inclusive (`..=`)
-//   Call                               : lhs = callee, args = arguments
-//   Index                              : lhs = object, args = indices
-//   ListLit/TupleLit                   : args = elements
-//   Lambda                             : params; flag ? block : lhs (expression body)
-//   With                               : lhs = base, fields = field inits
-//   IfExpr                             : lhs = cond, rhs = then-expr, extra = else-expr
 struct Expr {
     ExprKind kind;
     SourcePos pos;
@@ -72,13 +109,14 @@ struct Expr {
     bool boolVal = false;
     bool flag = false;          // Member null-safe | Range inclusive | Lambda has block body
 
-    ExprPtr lhs;
-    ExprPtr rhs;
-    ExprPtr extra;
-    std::vector<ExprPtr> args;
-    std::vector<Param> params;
-    std::vector<StmtPtr> block;
-    std::vector<FieldInit> fields;
+    ExprPtr lhs;                // operand/object/left/callee/base/cond/scrutinee
+    ExprPtr rhs;                // Binary/Range right | IfExpr then
+    ExprPtr extra;              // IfExpr else
+    std::vector<ExprPtr> args;  // Call/Index args | List/Tuple elements
+    std::vector<Param> params;  // Lambda params
+    std::vector<StmtPtr> block; // Lambda block body
+    std::vector<FieldInit> fields; // With field inits
+    std::vector<MatchArm> arms; // Match arms
 };
 
 enum class StmtKind { Let, Assign, ExprStmt, If, While, Return };
@@ -89,7 +127,8 @@ struct Stmt {
 
     std::string name;               // Let / Assign target
     bool isMutable = false;         // Let: `var` (true) vs `let` (false)
-    Ty declType = Ty::Unknown;      // Let: optional explicit annotation
+    TypeRef declType;               // Let: explicit annotation (when hasDeclType)
+    bool hasDeclType = false;
 
     ExprPtr value;                  // Let init | Assign value | ExprStmt | Return value | If/While cond
 
@@ -102,11 +141,36 @@ struct FunctionDecl {
     std::string name;
     SourcePos pos;
     std::vector<Param> params;
-    Ty returnType = Ty::Unit;
+    TypeRef returnType = namedType("unit");
     std::vector<StmtPtr> body;
 };
 
+struct EnumCase {
+    std::string name;
+    bool hasValue = false;
+    long long value = 0;
+    SourcePos pos;
+};
+struct EnumDecl {
+    std::string name;
+    SourcePos pos;
+    std::vector<EnumCase> cases;
+};
+
+struct UnionCase {
+    std::string name;
+    std::vector<Param> params;   // empty = payload-free case
+    SourcePos pos;
+};
+struct UnionDecl {
+    std::string name;
+    SourcePos pos;
+    std::vector<UnionCase> cases;
+};
+
 struct CompilationUnit {
+    std::vector<EnumDecl> enums;
+    std::vector<UnionDecl> unions;
     std::vector<FunctionDecl> functions;
 };
 

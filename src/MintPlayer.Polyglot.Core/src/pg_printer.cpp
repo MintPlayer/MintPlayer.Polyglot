@@ -6,8 +6,6 @@ namespace mintplayer::polyglot {
 
 namespace {
 
-// Binary precedence, loosest = lowest (mirrors the parser ladder). Non-binary expressions return a high
-// value so they never get parenthesized as operands.
 int prec(const std::string& op) {
     if (op == "??") return 1;
     if (op == "||") return 2;
@@ -23,14 +21,19 @@ int prec(const std::string& op) {
     return 100;
 }
 
+bool isUnit(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && t.name == "unit" && t.args.empty() && !t.nullable;
+}
+
 class PgPrinter {
 public:
     std::string print(const CompilationUnit& unit) {
         out_.clear();
-        for (std::size_t i = 0; i < unit.functions.size(); ++i) {
-            if (i) out_ += "\n";
-            printFunction(unit.functions[i]);
-        }
+        bool first = true;
+        auto sep = [&]() { if (!first) out_ += "\n"; first = false; };
+        for (const auto& e : unit.enums)     { sep(); printEnum(e); }
+        for (const auto& u : unit.unions)    { sep(); printUnion(u); }
+        for (const auto& fn : unit.functions){ sep(); printFunction(fn); }
         return out_;
     }
 
@@ -44,14 +47,27 @@ private:
         out_ += '\n';
     }
 
-    void printFunction(const FunctionDecl& fn) {
-        std::string sig = "fn " + fn.name + "(" + params(fn.params) + ")";
-        if (fn.returnType != Ty::Unit) sig += std::string(": ") + tyName(fn.returnType);
-        line(sig + " {");
-        ++indent_;
-        for (const auto& s : fn.body) printStmt(*s);
-        --indent_;
-        line("}");
+    std::string typeStr(const TypeRef& t) {
+        std::string s;
+        switch (t.kind) {
+            case TypeRef::Kind::Named:
+                s = t.name;
+                if (!t.args.empty()) s += "<" + typeList(t.args) + ">";
+                break;
+            case TypeRef::Kind::Tuple:
+                s = "(" + typeList(t.args) + ")";
+                break;
+            case TypeRef::Kind::Function:
+                s = "(" + typeList(t.args) + ") => " + (t.ret.empty() ? "unit" : typeStr(t.ret[0]));
+                break;
+        }
+        if (t.nullable) s += "?";
+        return s;
+    }
+    std::string typeList(const std::vector<TypeRef>& ts) {
+        std::string s;
+        for (std::size_t i = 0; i < ts.size(); ++i) { if (i) s += ", "; s += typeStr(ts[i]); }
+        return s;
     }
 
     std::string params(const std::vector<Param>& ps) {
@@ -59,9 +75,40 @@ private:
         for (std::size_t i = 0; i < ps.size(); ++i) {
             if (i) s += ", ";
             s += ps[i].name;
-            if (ps[i].type != Ty::Unknown) s += std::string(": ") + tyName(ps[i].type);
+            if (!ps[i].type.absent()) s += ": " + typeStr(ps[i].type);
         }
         return s;
+    }
+
+    void printEnum(const EnumDecl& d) {
+        line("enum " + d.name + " {");
+        ++indent_;
+        for (const auto& c : d.cases)
+            line(c.name + (c.hasValue ? " = " + std::to_string(c.value) : "") + ",");
+        --indent_;
+        line("}");
+    }
+
+    void printUnion(const UnionDecl& d) {
+        line("union " + d.name + " {");
+        ++indent_;
+        for (const auto& c : d.cases) {
+            std::string s = c.name;
+            if (!c.params.empty()) s += "(" + params(c.params) + ")";
+            line(s + ",");
+        }
+        --indent_;
+        line("}");
+    }
+
+    void printFunction(const FunctionDecl& fn) {
+        std::string sig = "fn " + fn.name + "(" + params(fn.params) + ")";
+        if (!isUnit(fn.returnType)) sig += ": " + typeStr(fn.returnType);
+        line(sig + " {");
+        ++indent_;
+        for (const auto& s : fn.body) printStmt(*s);
+        --indent_;
+        line("}");
     }
 
     void printBlock(const std::vector<StmtPtr>& body) {
@@ -74,7 +121,7 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 std::string head = (s.isMutable ? "var " : "let ") + s.name;
-                if (s.declType != Ty::Unknown) head += std::string(": ") + tyName(s.declType);
+                if (s.hasDeclType) head += ": " + typeStr(s.declType);
                 line(head + " = " + expr(*s.value));
                 break;
             }
@@ -112,20 +159,19 @@ private:
         return s;
     }
 
-    // Parenthesize a binary/range child where precedence (or low-precedence kind) requires it.
     std::string operand(const Expr& c, int parentPrec, bool isRight) {
         std::string inner = expr(c);
         bool wrap = false;
         if (c.kind == ExprKind::Binary) {
             int cp = prec(c.text);
             wrap = isRight ? (cp <= parentPrec) : (cp < parentPrec);
-        } else if (c.kind == ExprKind::Range || c.kind == ExprKind::IfExpr || c.kind == ExprKind::Lambda) {
+        } else if (c.kind == ExprKind::Range || c.kind == ExprKind::IfExpr ||
+                   c.kind == ExprKind::Lambda || c.kind == ExprKind::Match) {
             wrap = true;
         }
         return wrap ? "(" + inner + ")" : inner;
     }
 
-    // An expression used as the target of `.`/call/index/`!` — parenthesize anything non-atomic.
     std::string atom(const Expr& e) {
         switch (e.kind) {
             case ExprKind::Name: case ExprKind::This: case ExprKind::Super:
@@ -143,6 +189,31 @@ private:
         std::string s;
         for (std::size_t i = 0; i < xs.size(); ++i) { if (i) s += ", "; s += expr(*xs[i]); }
         return s;
+    }
+
+    std::string blockInline(const std::vector<StmtPtr>& body) {
+        std::string s = "{ ";
+        for (const auto& st : body) s += stmtInline(*st) + "; ";
+        return s + "}";
+    }
+
+    std::string patternStr(const Pattern& p) {
+        switch (p.kind) {
+            case PatKind::Wildcard: return "_";
+            case PatKind::Literal:  return expr(*p.literal);
+            case PatKind::Binding:  return p.name + (p.hasType ? ": " + typeStr(p.type) : "");
+            case PatKind::Ctor: {
+                std::string s = p.name + "(";
+                for (std::size_t i = 0; i < p.sub.size(); ++i) { if (i) s += ", "; s += patternStr(p.sub[i]); }
+                return s + ")";
+            }
+            case PatKind::Tuple: {
+                std::string s = "(";
+                for (std::size_t i = 0; i < p.sub.size(); ++i) { if (i) s += ", "; s += patternStr(p.sub[i]); }
+                return s + ")";
+            }
+        }
+        return "_";
     }
 
     std::string expr(const Expr& e) {
@@ -169,22 +240,15 @@ private:
                 std::string op = e.flag ? "..=" : "..";
                 return operand(*e.lhs, 100, false) + op + operand(*e.rhs, 100, true);
             }
-            case ExprKind::Call:      return atom(*e.lhs) + "(" + exprList(e.args) + ")";
-            case ExprKind::Index:     return atom(*e.lhs) + "[" + exprList(e.args) + "]";
-            case ExprKind::Member:    return atom(*e.lhs) + (e.flag ? "?." : ".") + e.text;
-            case ExprKind::NullAssert:return atom(*e.lhs) + "!";
-            case ExprKind::ListLit:   return "[" + exprList(e.args) + "]";
-            case ExprKind::TupleLit:  return "(" + exprList(e.args) + ")";
+            case ExprKind::Call:       return atom(*e.lhs) + "(" + exprList(e.args) + ")";
+            case ExprKind::Index:      return atom(*e.lhs) + "[" + exprList(e.args) + "]";
+            case ExprKind::Member:     return atom(*e.lhs) + (e.flag ? "?." : ".") + e.text;
+            case ExprKind::NullAssert: return atom(*e.lhs) + "!";
+            case ExprKind::ListLit:    return "[" + exprList(e.args) + "]";
+            case ExprKind::TupleLit:   return "(" + exprList(e.args) + ")";
             case ExprKind::Lambda: {
                 std::string s = "(" + params(e.params) + ") => ";
-                if (e.flag) {
-                    s += "{ ";
-                    for (const auto& st : e.block) s += stmtInline(*st) + "; ";
-                    s += "}";
-                } else {
-                    s += expr(*e.lhs);
-                }
-                return s;
+                return s + (e.flag ? blockInline(e.block) : expr(*e.lhs));
             }
             case ExprKind::With: {
                 std::string s = atom(*e.lhs) + " with { ";
@@ -196,22 +260,33 @@ private:
             }
             case ExprKind::IfExpr:
                 return "if " + expr(*e.lhs) + " { " + expr(*e.rhs) + " } else { " + expr(*e.extra) + " }";
+            case ExprKind::Match: {
+                std::string s = "match " + expr(*e.lhs) + " { ";
+                for (std::size_t i = 0; i < e.arms.size(); ++i) {
+                    if (i) s += ", ";
+                    const MatchArm& a = e.arms[i];
+                    s += patternStr(a.pattern);
+                    if (a.guard) s += " if " + expr(*a.guard);
+                    s += " => ";
+                    s += a.bodyIsBlock ? blockInline(a.block) : expr(*a.body);
+                }
+                return s + " }";
+            }
         }
         return "";
     }
 
-    // Single-line statement form, used only inside lambda block bodies.
     std::string stmtInline(const Stmt& s) {
         switch (s.kind) {
             case StmtKind::Let: {
                 std::string head = (s.isMutable ? "var " : "let ") + s.name;
-                if (s.declType != Ty::Unknown) head += std::string(": ") + tyName(s.declType);
+                if (s.hasDeclType) head += ": " + typeStr(s.declType);
                 return head + " = " + expr(*s.value);
             }
             case StmtKind::Assign:   return s.name + " = " + expr(*s.value);
             case StmtKind::ExprStmt: return expr(*s.value);
             case StmtKind::Return:   return s.value ? "return " + expr(*s.value) : "return";
-            default:                 return expr(*s.value); // if/while not expected inline in v0.1 lambdas
+            default:                 return expr(*s.value);
         }
     }
 };

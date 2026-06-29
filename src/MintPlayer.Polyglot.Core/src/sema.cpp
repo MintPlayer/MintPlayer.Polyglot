@@ -31,8 +31,8 @@ public:
                 diags_.error(fn.pos, "duplicate function '" + fn.name + "'");
             }
             FnSig sig;
-            for (const auto& p : fn.params) sig.params.push_back(p.type);
-            sig.result = fn.returnType;
+            for (const auto& p : fn.params) sig.params.push_back(scalarTyOf(p.type));
+            sig.result = scalarTyOf(fn.returnType);
             fns_[fn.name] = sig;
         }
         for (auto& fn : unit.functions) checkFunction(fn);
@@ -61,9 +61,9 @@ private:
     }
 
     void checkFunction(FunctionDecl& fn) {
-        currentReturn_ = fn.returnType;
+        currentReturn_ = scalarTyOf(fn.returnType);
         pushScope();
-        for (const auto& p : fn.params) declare(p.name, p.type, /*mutable*/ false, p.pos);
+        for (const auto& p : fn.params) declare(p.name, scalarTyOf(p.type), /*mutable*/ false, p.pos);
         checkBlock(fn.body);
         popScope();
     }
@@ -78,11 +78,12 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 Ty init = checkExpr(*s.value);
-                if (s.declType != Ty::Unknown && init != Ty::Unknown && s.declType != init) {
+                Ty annotated = s.hasDeclType ? scalarTyOf(s.declType) : Ty::Unknown;
+                if (s.hasDeclType && annotated != Ty::Unknown && init != Ty::Unknown && annotated != init) {
                     diags_.error(s.pos, std::string("type mismatch: '") + s.name + "' is declared " +
-                                            tyName(s.declType) + " but initialized with " + tyName(init));
+                                            tyName(annotated) + " but initialized with " + tyName(init));
                 }
-                Ty declared = s.declType != Ty::Unknown ? s.declType : init;
+                Ty declared = s.hasDeclType ? annotated : init;
                 declare(s.name, declared, s.isMutable, s.pos);
                 break;
             }

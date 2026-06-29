@@ -9,15 +9,16 @@ namespace mintplayer::polyglot {
 
 namespace {
 
-const char* csType(Ty t) {
-    switch (t) {
-        case Ty::Unit:   return "void";
-        case Ty::I32:    return "int";
-        case Ty::F64:    return "double";
-        case Ty::Bool:   return "bool";
-        case Ty::String: return "string";
-        default:         return "object";
+std::string csType(const TypeRef& t) {
+    if (t.kind == TypeRef::Kind::Named) {
+        if (t.name == "unit")   return "void";
+        if (t.name == "i32")    return "int";
+        if (t.name == "f64")    return "double";
+        if (t.name == "bool")   return "bool";
+        if (t.name == "string") return "string";
+        return t.name.empty() ? "object" : t.name; // user/generic type names refined in P5
     }
+    return "object";
 }
 
 // Binary-operator precedence (higher binds tighter); mirrors the parser. Used to parenthesize minimally.
@@ -63,10 +64,10 @@ private:
     }
 
     void emitFunction(const FunctionDecl& fn) {
-        std::string sig = std::string("static ") + csType(fn.returnType) + " " + fn.name + "(";
+        std::string sig = "static " + csType(fn.returnType) + " " + fn.name + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             if (i) sig += ", ";
-            sig += std::string(csType(fn.params[i].type)) + " " + fn.params[i].name;
+            sig += csType(fn.params[i].type) + " " + fn.params[i].name;
         }
         sig += ")";
         line(sig);

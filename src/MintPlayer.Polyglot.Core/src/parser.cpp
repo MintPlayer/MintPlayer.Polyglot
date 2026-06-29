@@ -12,10 +12,11 @@ public:
     CompilationUnit parseUnit() {
         CompilationUnit unit;
         while (!at(TokKind::End)) {
-            if (at(TokKind::KwFn)) {
-                unit.functions.push_back(parseFunction());
-            } else {
-                error("expected a function declaration");
+            if (at(TokKind::KwFn)) unit.functions.push_back(parseFunction());
+            else if (at(TokKind::KwEnum)) unit.enums.push_back(parseEnum());
+            else if (at(TokKind::KwUnion)) unit.unions.push_back(parseUnion());
+            else {
+                error("expected a declaration");
                 if (!recoverToTopLevel()) break;
             }
         }
@@ -47,9 +48,61 @@ private:
     }
 
     bool recoverToTopLevel() {
-        while (!at(TokKind::End) && !at(TokKind::KwFn)) advance();
+        while (!at(TokKind::End) && !at(TokKind::KwFn) && !at(TokKind::KwEnum) && !at(TokKind::KwUnion))
+            advance();
         panicked_ = false;
         return !at(TokKind::End);
+    }
+
+    EnumDecl parseEnum() {
+        EnumDecl d;
+        d.pos = peek().pos;
+        expect(TokKind::KwEnum, "'enum'");
+        d.name = expect(TokKind::Identifier, "an enum name").text;
+        expect(TokKind::LBrace, "'{'");
+        while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            EnumCase c;
+            c.pos = peek().pos;
+            c.name = expect(TokKind::Identifier, "an enum case name").text;
+            if (accept(TokKind::Assign)) {
+                if (at(TokKind::IntLit)) { c.hasValue = true; c.value = std::stoll(advance().text); }
+                else error("expected an integer enum value");
+            }
+            d.cases.push_back(std::move(c));
+            accept(TokKind::Comma); // optional separator (cases may be newline-separated)
+        }
+        expect(TokKind::RBrace, "'}'");
+        return d;
+    }
+
+    UnionDecl parseUnion() {
+        UnionDecl d;
+        d.pos = peek().pos;
+        expect(TokKind::KwUnion, "'union'");
+        d.name = expect(TokKind::Identifier, "a union name").text;
+        expect(TokKind::LBrace, "'{'");
+        while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            UnionCase c;
+            c.pos = peek().pos;
+            c.name = expect(TokKind::Identifier, "a union case name").text;
+            if (accept(TokKind::LParen)) {
+                if (!at(TokKind::RParen)) {
+                    do {
+                        Param p;
+                        p.pos = peek().pos;
+                        p.name = expect(TokKind::Identifier, "a field name").text;
+                        expect(TokKind::Colon, "':'");
+                        p.type = parseType();
+                        c.params.push_back(std::move(p));
+                    } while (accept(TokKind::Comma));
+                }
+                expect(TokKind::RParen, "')'");
+            }
+            d.cases.push_back(std::move(c));
+            accept(TokKind::Comma);
+        }
+        expect(TokKind::RBrace, "'}'");
+        return d;
     }
 
     static ExprPtr mk(ExprKind kind, SourcePos pos) {
@@ -59,19 +112,38 @@ private:
         return e;
     }
 
-    Ty parseType() {
-        if (at(TokKind::Identifier)) {
-            std::string name = advance().text;
-            if (name == "i32") return Ty::I32;
-            if (name == "f64") return Ty::F64;
-            if (name == "bool") return Ty::Bool;
-            if (name == "string") return Ty::String;
-            if (name == "unit") return Ty::Unit;
-            error("unknown type '" + name + "'");
-            return Ty::Unknown;
+    TypeRef parseType() {
+        TypeRef t = parseTypeCore();
+        if (accept(TokKind::Question)) t.nullable = true;
+        return t;
+    }
+    TypeRef parseTypeCore() {
+        if (at(TokKind::LParen)) {
+            advance();
+            std::vector<TypeRef> elems;
+            if (!at(TokKind::RParen)) {
+                do { elems.push_back(parseType()); } while (accept(TokKind::Comma));
+            }
+            expect(TokKind::RParen, "')'");
+            if (accept(TokKind::Arrow)) { // function type (A, B) => C
+                TypeRef f;
+                f.kind = TypeRef::Kind::Function;
+                f.args = std::move(elems);
+                f.ret.push_back(parseType());
+                return f;
+            }
+            if (elems.size() == 1) return elems[0]; // parenthesized grouping
+            TypeRef tup;
+            tup.kind = TypeRef::Kind::Tuple;
+            tup.args = std::move(elems);
+            return tup;
         }
-        error("expected a type");
-        return Ty::Unknown;
+        TypeRef t = namedType(expect(TokKind::Identifier, "a type name").text);
+        if (accept(TokKind::Lt)) { // generic args (single-level; nested >> is handled in the generics increment)
+            do { t.args.push_back(parseType()); } while (accept(TokKind::Comma));
+            expect(TokKind::Gt, "'>'");
+        }
+        return t;
     }
 
     // ---- declarations & statements (statement grammar widens in a later P3 increment) ----
@@ -93,7 +165,6 @@ private:
             } while (accept(TokKind::Comma));
         }
         expect(TokKind::RParen, "')'");
-        fn.returnType = Ty::Unit;
         if (accept(TokKind::Colon)) fn.returnType = parseType();
 
         if (accept(TokKind::Arrow)) {
@@ -155,7 +226,7 @@ private:
         s->isMutable = at(TokKind::KwVar);
         advance();
         s->name = expect(TokKind::Identifier, "a binding name").text;
-        if (accept(TokKind::Colon)) s->declType = parseType();
+        if (accept(TokKind::Colon)) { s->declType = parseType(); s->hasDeclType = true; }
         expect(TokKind::Assign, "'='");
         s->value = parseExpr();
         accept(TokKind::Semicolon);
@@ -416,6 +487,74 @@ private:
         return e;
     }
 
+    Pattern parsePattern() {
+        Pattern pat;
+        pat.pos = peek().pos;
+        switch (peek().kind) {
+            case TokKind::Identifier: {
+                if (peek().text == "_") { advance(); pat.kind = PatKind::Wildcard; return pat; }
+                std::string name = advance().text;
+                if (at(TokKind::LParen)) {
+                    pat.kind = PatKind::Ctor;
+                    pat.name = name;
+                    advance();
+                    if (!at(TokKind::RParen)) {
+                        do { pat.sub.push_back(parsePattern()); } while (accept(TokKind::Comma));
+                    }
+                    expect(TokKind::RParen, "')'");
+                } else if (accept(TokKind::Colon)) {
+                    pat.kind = PatKind::Binding;
+                    pat.name = name;
+                    pat.hasType = true;
+                    pat.type = parseType();
+                } else {
+                    pat.kind = PatKind::Binding;
+                    pat.name = name;
+                }
+                return pat;
+            }
+            case TokKind::LParen: {
+                advance();
+                pat.kind = PatKind::Tuple;
+                if (!at(TokKind::RParen)) {
+                    do { pat.sub.push_back(parsePattern()); } while (accept(TokKind::Comma));
+                }
+                expect(TokKind::RParen, "')'");
+                return pat;
+            }
+            case TokKind::IntLit:  case TokKind::FloatLit: case TokKind::StringLit:
+            case TokKind::CharLit: case TokKind::KwTrue:   case TokKind::KwFalse:
+            case TokKind::KwNull:
+                pat.kind = PatKind::Literal;
+                pat.literal = parsePrimary();
+                return pat;
+            default:
+                error("expected a pattern");
+                pat.kind = PatKind::Wildcard;
+                return pat;
+        }
+    }
+
+    ExprPtr parseMatch() {
+        auto p = peek().pos;
+        expect(TokKind::KwMatch, "'match'");
+        auto e = mk(ExprKind::Match, p);
+        e->lhs = parseExpr(); // scrutinee
+        expect(TokKind::LBrace, "'{'");
+        while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            MatchArm arm;
+            arm.pattern = parsePattern();
+            if (accept(TokKind::KwIf)) arm.guard = parseExpr();
+            expect(TokKind::Arrow, "'=>'");
+            if (at(TokKind::LBrace)) { arm.bodyIsBlock = true; arm.block = parseBlock(); }
+            else { arm.body = parseExpr(); }
+            e->arms.push_back(std::move(arm));
+            accept(TokKind::Comma); // optional separator
+        }
+        expect(TokKind::RBrace, "'}'");
+        return e;
+    }
+
     ExprPtr parsePrimary() {
         SourcePos p = peek().pos;
         switch (peek().kind) {
@@ -430,6 +569,7 @@ private:
             case TokKind::KwSuper:   { advance(); return mk(ExprKind::Super, p); }
             case TokKind::Identifier:{ auto e = mk(ExprKind::Name, p); e->text = advance().text; return e; }
             case TokKind::KwIf:      return parseIfExpr();
+            case TokKind::KwMatch:   return parseMatch();
             case TokKind::LBracket: {
                 advance();
                 auto e = mk(ExprKind::ListLit, p);
