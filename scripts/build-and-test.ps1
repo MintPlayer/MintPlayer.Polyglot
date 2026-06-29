@@ -42,6 +42,10 @@ Write-Host "`n==> Unit / golden tests"
 & $testsExe
 if ($LASTEXITCODE -ne 0) { Write-Host "`nUNIT TESTS FAILED."; exit 1 }
 
+Write-Host "`n==> Parser-fidelity round-trip (all samples)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\fidelity\run-roundtrip.ps1")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nROUND-TRIP FAILED."; exit 1 }
+
 if (-not $SkipConformance) {
     Write-Host "`n==> Differential conformance (C# vs TS)"
     & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-diff.ps1")

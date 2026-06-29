@@ -124,6 +124,7 @@ struct Expr {
     std::vector<StmtPtr> block; // Lambda block body
     std::vector<FieldInit> fields; // With field inits
     std::vector<MatchArm> arms; // Match arms
+    std::vector<TypeRef> typeArgs; // Call: explicit generic args, e.g. List<i32>()
 };
 
 struct CatchClause {

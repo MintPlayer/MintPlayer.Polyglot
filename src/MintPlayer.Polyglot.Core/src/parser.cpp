@@ -57,6 +57,7 @@ private:
     DiagnosticBag& diags_;
     std::size_t idx_ = 0;
     bool panicked_ = false;
+    int pendingAngles_ = 0; // leftover '>' borrowed from a split '>>' / '>>>' when closing nested generics
 
     const Token& peek(std::size_t ahead = 0) const {
         std::size_t i = idx_ + ahead;
@@ -97,7 +98,7 @@ private:
             }
             gs.push_back(std::move(g));
         } while (accept(TokKind::Comma));
-        expect(TokKind::Gt, "'>'");
+        expectAngleClose();
         return gs;
     }
 
@@ -374,9 +375,9 @@ private:
             return tup;
         }
         TypeRef t = namedType(expect(TokKind::Identifier, "a type name").text);
-        if (accept(TokKind::Lt)) { // generic args (single-level; nested >> is handled in the generics increment)
+        if (accept(TokKind::Lt)) { // generic args (nested `>>` split via acceptAngleClose)
             do { t.args.push_back(parseType()); } while (accept(TokKind::Comma));
-            expect(TokKind::Gt, "'>'");
+            expectAngleClose();
         }
         return t;
     }
@@ -713,6 +714,20 @@ private:
                 m->lhs = std::move(e);
                 m->text = expect(TokKind::Identifier, "a member name").text;
                 e = std::move(m);
+            } else if (at(TokKind::Lt) && (e->kind == ExprKind::Name || e->kind == ExprKind::Member) &&
+                       genericCallAhead()) {
+                // Generic construction / call: Name<TypeArgs>(args), e.g. List<i32>().
+                auto call = mk(ExprKind::Call, e->pos);
+                advance(); // '<'
+                do { call->typeArgs.push_back(parseType()); } while (accept(TokKind::Comma));
+                expectAngleClose();
+                expect(TokKind::LParen, "'('");
+                call->lhs = std::move(e);
+                if (!at(TokKind::RParen)) {
+                    do { call->args.push_back(parseExpr()); } while (accept(TokKind::Comma));
+                }
+                expect(TokKind::RParen, "')'");
+                e = std::move(call);
             } else if (at(TokKind::LParen)) {
                 auto p = advance().pos;
                 auto call = mk(ExprKind::Call, p);
@@ -757,6 +772,45 @@ private:
         }
         return e;
     }
+
+    // Close a generic argument/parameter list, splitting `>>`/`>>>` so nested generics close correctly.
+    bool acceptAngleClose() {
+        if (pendingAngles_ > 0) { --pendingAngles_; return true; }
+        if (at(TokKind::Gt)) { advance(); return true; }
+        if (at(TokKind::Shr)) { advance(); pendingAngles_ = 1; return true; }
+        if (at(TokKind::UShr)) { advance(); pendingAngles_ = 2; return true; }
+        return false;
+    }
+    void expectAngleClose() { if (!acceptAngleClose()) error("expected '>'"); }
+
+    // Lookahead: starting at a `<` after a name, is this `< types... > (` — i.e. a generic construction/
+    // call — rather than a less-than comparison? Scans balanced angle/paren depth without consuming.
+    bool genericCallAhead() const {
+        int angle = 0, paren = 0;
+        for (std::size_t i = idx_; i < toks_.size(); ++i) {
+            switch (toks_[i].kind) {
+                case TokKind::Lt: ++angle; break;
+                case TokKind::Gt:
+                    if (paren == 0 && --angle == 0) return next(i) == TokKind::LParen;
+                    break;
+                case TokKind::Shr:
+                    if (paren == 0) { angle -= 2; if (angle <= 0) return next(i) == TokKind::LParen; }
+                    break;
+                case TokKind::UShr:
+                    if (paren == 0) { angle -= 3; if (angle <= 0) return next(i) == TokKind::LParen; }
+                    break;
+                case TokKind::LParen: ++paren; break;
+                case TokKind::RParen: if (paren == 0) return false; --paren; break;
+                case TokKind::Identifier: case TokKind::Comma: case TokKind::Dot:
+                case TokKind::Question:    case TokKind::Arrow:
+                    break; // tokens that can appear inside a type argument list
+                default:
+                    return false; // anything else => this `<` is a comparison
+            }
+        }
+        return false;
+    }
+    TokKind next(std::size_t i) const { return i + 1 < toks_.size() ? toks_[i + 1].kind : TokKind::End; }
 
     // Is the upcoming `( ... )` a lambda parameter list (followed by `=>`)?
     bool isLambdaAhead() const {

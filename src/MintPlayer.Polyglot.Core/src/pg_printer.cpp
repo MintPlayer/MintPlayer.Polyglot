@@ -382,7 +382,9 @@ private:
                 std::string op = e.flag ? "..=" : "..";
                 return operand(*e.lhs, 100, false) + op + operand(*e.rhs, 100, true);
             }
-            case ExprKind::Call:       return atom(*e.lhs) + "(" + exprList(e.args) + ")";
+            case ExprKind::Call:       return atom(*e.lhs) +
+                                              (e.typeArgs.empty() ? "" : "<" + typeList(e.typeArgs) + ">") +
+                                              "(" + exprList(e.args) + ")";
             case ExprKind::Index:      return atom(*e.lhs) + "[" + exprList(e.args) + "]";
             case ExprKind::Member:     return atom(*e.lhs) + (e.flag ? "?." : ".") + e.text;
             case ExprKind::NullAssert: return atom(*e.lhs) + "!";
