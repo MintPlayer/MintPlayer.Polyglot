@@ -97,6 +97,8 @@ private:
     std::unordered_map<std::string, TypeRef> values_;          // top-level const/let
     std::unordered_map<std::string, FnSig> unionCtors_;        // union case name -> ctor sig
     std::unordered_map<std::string, std::string> unionCaseOwner_; // case name -> union type
+    std::unordered_map<std::string, std::vector<std::string>> unionAllCases_; // union -> all case names
+    std::unordered_map<std::string, std::vector<std::string>> enumAllCases_;  // enum  -> all case names
     std::unordered_set<std::string> genericsInScope_;
     std::vector<std::unordered_map<std::string, Local>> scopes_;
     TypeRef currentReturn_ = namedType("unit");
@@ -160,8 +162,11 @@ private:
                 FnSig sig; for (const auto& p : c.params) sig.params.push_back(p.type); sig.result = tNamed(d.name);
                 unionCtors_[c.name] = sig;
                 unionCaseOwner_[c.name] = d.name;
+                unionAllCases_[d.name].push_back(c.name);
             }
         }
+        for (const auto& d : u.enums)
+            for (const auto& c : d.cases) enumAllCases_[d.name].push_back(c.name);
         for (const auto& fn : u.functions) {
             if (fns_.count(fn.name)) diags_.error(fn.pos, "duplicate function '" + fn.name + "'");
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
@@ -503,18 +508,67 @@ private:
         return tUnknown();
     }
 
+    bool isCaseOf(const std::vector<std::string>& cases, const std::string& name) const {
+        for (const auto& c : cases) if (c == name) return true;
+        return false;
+    }
+
     TypeRef checkMatch(Expr& e) {
-        checkExpr(*e.lhs);
+        TypeRef st = checkExpr(*e.lhs);
+        const std::vector<std::string>* unionCases = nullptr;
+        const std::vector<std::string>* enumCases = nullptr;
+        if (st.kind == TypeRef::Kind::Named && !st.nullable) {
+            if (auto u = unionAllCases_.find(st.name); u != unionAllCases_.end()) unionCases = &u->second;
+            else if (auto en = enumAllCases_.find(st.name); en != enumAllCases_.end()) enumCases = &en->second;
+        }
+
+        bool catchAll = false, coveredTrue = false, coveredFalse = false;
+        std::unordered_set<std::string> covered;
         TypeRef result = tUnknown();
+
         for (auto& arm : e.arms) {
             pushScope();
             declarePattern(arm.pattern);
             if (arm.guard) requireBool(checkExpr(*arm.guard), arm.pattern.pos, "'match' guard");
-            if (arm.bodyIsBlock) for (auto& st : arm.block) checkStmt(*st);
+            if (arm.bodyIsBlock) for (auto& s : arm.block) checkStmt(*s);
             else if (arm.body) result = checkExpr(*arm.body);
             popScope();
+
+            // Only unguarded arms contribute to exhaustiveness (a guard may fail at run time).
+            if (arm.guard) continue;
+            const Pattern& p = arm.pattern;
+            switch (p.kind) {
+                case PatKind::Wildcard: catchAll = true; break;
+                case PatKind::Ctor: covered.insert(p.name); break;
+                case PatKind::Binding:
+                    if ((unionCases && isCaseOf(*unionCases, p.name)) || (enumCases && isCaseOf(*enumCases, p.name)))
+                        covered.insert(p.name);
+                    else catchAll = true; // a plain variable binding matches anything
+                    break;
+                case PatKind::Literal:
+                    if (p.literal && p.literal->kind == ExprKind::BoolLit) (p.literal->boolVal ? coveredTrue : coveredFalse) = true;
+                    break;
+                case PatKind::Tuple: break;
+            }
         }
+
+        if (!catchAll) reportNonExhaustive(e.pos, st, unionCases, enumCases, covered, coveredTrue, coveredFalse);
         return result;
+    }
+
+    void reportNonExhaustive(SourcePos pos, const TypeRef& st,
+                             const std::vector<std::string>* unionCases, const std::vector<std::string>* enumCases,
+                             const std::unordered_set<std::string>& covered, bool coveredTrue, bool coveredFalse) {
+        auto missingOf = [&](const std::vector<std::string>& all) {
+            std::string s;
+            for (const auto& c : all) if (!covered.count(c)) { if (!s.empty()) s += ", "; s += c; }
+            return s;
+        };
+        if (unionCases) { std::string m = missingOf(*unionCases); if (!m.empty()) diags_.error(pos, "non-exhaustive match: missing case(s) " + m); return; }
+        if (enumCases)  { std::string m = missingOf(*enumCases);  if (!m.empty()) diags_.error(pos, "non-exhaustive match: missing case(s) " + m); return; }
+        Ty s = scalarTyOf(st);
+        if (s == Ty::Bool) { if (!(coveredTrue && coveredFalse)) diags_.error(pos, "non-exhaustive match: cover both true and false (or add '_')"); return; }
+        if (s != Ty::Unknown) diags_.error(pos, "non-exhaustive match: add a '_' arm"); // a known, non-enumerable type
     }
 };
 
