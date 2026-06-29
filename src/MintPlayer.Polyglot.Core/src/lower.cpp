@@ -83,6 +83,7 @@ public:
         for (const auto& fn : unit.functions) {
             ir::Function f;
             f.name = fn.name;
+            f.mangledName = fn.mangledName.empty() ? fn.name : fn.mangledName;
             f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
             f.isEntry = (fn.name == "main" && fn.params.empty());
@@ -288,6 +289,7 @@ private:
                     return mc;
                 }
                 auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, callee == "print");
+                call->mangledCallee = e.overloadName.empty() ? callee : e.overloadName; // TS overload target
                 for (const auto& a : e.args) call->args.push_back(expr(*a));
                 return call;
             }

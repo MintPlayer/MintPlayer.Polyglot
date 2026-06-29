@@ -127,6 +127,7 @@ struct Expr {
     std::vector<TypeRef> typeArgs; // Call: explicit generic args, e.g. List<i32>()
     std::vector<std::string> chunks; // InterpString: N+1 literal chunks around N holes (in `args`)
     TypeRef castType;              // Cast: the target type in `(T)expr` (operand is `lhs`)
+    std::string overloadName;      // Call: the resolved overload's mangled name (set by sema); empty = none
 };
 
 struct CatchClause {
@@ -164,6 +165,7 @@ struct Stmt {
 
 struct FunctionDecl {
     std::string name;
+    std::string mangledName;       // per-target name for overloads (set by sema); == name when not overloaded
     SourcePos pos;
     std::vector<GenericParam> generics;
     std::vector<Param> params;

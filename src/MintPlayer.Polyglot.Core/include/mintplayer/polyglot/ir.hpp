@@ -73,7 +73,8 @@ struct Cast : Expr { // numeric conversion: the result type is `type`, the sourc
     Cast(SourcePos p, Type t, ExprPtr o) : Expr(ExprKind::Cast, p, std::move(t)), operand(std::move(o)) {}
 };
 struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrinsic
-    std::string callee;
+    std::string callee;        // source name — C# uses this (native overloading)
+    std::string mangledCallee; // resolved overload's per-target name — TS uses this (== callee if unique)
     bool isPrint = false;
     std::vector<ExprPtr> args;
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
@@ -248,6 +249,7 @@ struct Lambda : Expr {
 };
 struct Function {
     std::string name;
+    std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
     std::vector<GenericParam> generics;
     std::vector<Param> params;
     Type returnType;

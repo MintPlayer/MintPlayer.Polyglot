@@ -134,6 +134,56 @@ struct FnSig {
     std::vector<TypeRef> params;
     TypeRef result = namedType("unit");
 };
+
+// Two parameter lists denote the same overload signature (a true duplicate): same arity and each position
+// the same named type / same scalar category.
+bool sameParamList(const std::vector<TypeRef>& a, const std::vector<TypeRef>& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (sameNamedType(a[i], b[i])) continue;
+        Ty sa = scalarTyOf(a[i]);
+        if (sa != Ty::Unknown && sa == scalarTyOf(b[i])) continue;
+        return false;
+    }
+    return true;
+}
+
+// A function's per-target name. C# keeps the source name (native overloading); TS needs a distinct name
+// per overload, so an overloaded function mangles its parameter types in: `describe$i32`, `add$i32_i32`.
+std::string mangleFn(const std::string& name, const std::vector<TypeRef>& params, bool overloaded) {
+    if (!overloaded) return name;
+    std::string m = name + "$";
+    if (params.empty()) return m + "unit";
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        if (i) m += "_";
+        m += (params[i].kind == TypeRef::Kind::Named && !params[i].name.empty()) ? params[i].name : "x";
+    }
+    return m;
+}
+
+// Pick the best-matching overload for the given argument types: exact/scalar match (2 pts) beats an
+// implicit widen (1 pt); a non-numeric (generic/user) parameter matches leniently. nullptr = no candidate.
+const FnSig* resolveOverload(const std::vector<FnSig>& set, const std::vector<TypeRef>& args) {
+    if (set.size() == 1) return &set[0]; // not overloaded — arity/type errors are reported by checkArgs
+    const FnSig* best = nullptr;
+    int bestScore = -1;
+    for (const auto& sig : set) {
+        if (sig.params.size() != args.size()) continue;
+        int score = 0;
+        bool ok = true;
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            const TypeRef& p = sig.params[i];
+            const TypeRef& a = args[i];
+            Ty sa = scalarTyOf(a);
+            if (sameNamedType(a, p) || (sa != Ty::Unknown && sa == scalarTyOf(p))) score += 2;
+            else if (isLosslessWiden(a, p)) score += 1;
+            else if (!isNumericTypeName(p)) score += 0; // generic/user/unknown parameter: lenient
+            else { ok = false; break; }
+        }
+        if (ok && score > bestScore) { best = &sig; bestScore = score; }
+    }
+    return best;
+}
 struct Local {
     TypeRef type;
     bool isMutable;
@@ -176,7 +226,7 @@ public:
 
 private:
     DiagnosticBag& diags_;
-    std::unordered_map<std::string, FnSig> fns_;
+    std::unordered_map<std::string, std::vector<FnSig>> fns_; // name -> overload set
     std::unordered_map<std::string, TypeInfo> types_;
     std::unordered_set<std::string> typeNames_;
     std::unordered_set<std::string> enumNames_;
@@ -235,7 +285,7 @@ private:
             if (m.kind == MemberKind::Init) { ti.hasCtor = true; for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }
     }
-    void buildTables(const CompilationUnit& u) {
+    void buildTables(CompilationUnit& u) {
         for (const auto& d : u.records) {
             TypeInfo ti; ti.generics = d.generics; ti.hasCtor = true;
             for (const auto& f : d.fields) { ti.ctorParams.push_back(f.type); ti.members.push_back({f.name, MemberKind::Field, {}, f.type}); }
@@ -254,10 +304,17 @@ private:
         }
         for (const auto& d : u.enums)
             for (const auto& c : d.cases) enumAllCases_[d.name].push_back(c.name);
-        for (const auto& fn : u.functions) {
-            if (fns_.count(fn.name)) diags_.error(fn.pos, "duplicate function '" + fn.name + "'");
+        for (const auto& fn : u.functions) { // collect overload sets; a true duplicate is same name + params
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
-            fns_[fn.name] = std::move(sig);
+            auto& set = fns_[fn.name];
+            for (const auto& existing : set)
+                if (sameParamList(existing.params, sig.params))
+                    diags_.error(fn.pos, "duplicate function '" + fn.name + "' with the same parameter types");
+            set.push_back(std::move(sig));
+        }
+        for (auto& fn : u.functions) { // assign per-target names: overloaded functions mangle their params
+            std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
+            fn.mangledName = mangleFn(fn.name, ps, fns_[fn.name].size() > 1);
         }
         for (const auto& v : u.values) values_[v.name] = v.hasType ? v.type : tUnknown();
         for (const auto& e : u.extensions) {
@@ -651,7 +708,13 @@ private:
             return tNamed(name);
         }
         if (auto uc = unionCtors_.find(name); uc != unionCtors_.end()) { checkArgs(uc->second.params, argTypes, e.args, "'" + name + "'", e.pos); return uc->second.result; }
-        if (auto f = fns_.find(name); f != fns_.end()) { checkArgs(f->second.params, argTypes, e.args, "'" + name + "'", e.pos); return f->second.result; }
+        if (auto f = fns_.find(name); f != fns_.end()) {
+            const FnSig* chosen = resolveOverload(f->second, argTypes);
+            if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
+            checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos);
+            e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
+            return chosen->result;
+        }
         if (name == "Error") return tNamed("Error"); // core exception root construction (message arg lenient)
         diags_.error(e.pos, "call to undeclared function '" + name + "'");
         return tUnknown();

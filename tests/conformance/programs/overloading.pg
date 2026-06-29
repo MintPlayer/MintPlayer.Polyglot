@@ -1,0 +1,17 @@
+// P6 differential conformance: function overloading (§3.A). Resolved at compile
+// time. C# emits all overloads with the source name (native overloading); the
+// TS backend mangles them by parameter type (area$i32, area$i32_i32, …) and
+// rewrites each call to the resolved overload.
+
+fn area(w: i32): i32 => w * w            // by arity: square
+fn area(w: i32, h: i32): i32 => w * h    // by arity: rectangle
+
+fn label(n: i32): i32 => n + 1000        // by type: i32
+fn label(f: f64): i32 => (i32)f + 2000   // by type: f64
+
+fn main() {
+  print(area(5))        // 25
+  print(area(3, 4))     // 12
+  print(label(7))       // 1007   (i32 overload)
+  print(label(7.5))     // 2007   (f64 overload: (i32)7.5 + 2000)
+}

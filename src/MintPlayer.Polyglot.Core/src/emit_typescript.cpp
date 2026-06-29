@@ -138,7 +138,7 @@ public:
         for (const auto& f : m.extensions) emitExtension(f);
         for (const auto& fn : m.functions) emitFunction(fn);
         for (const auto& fn : m.functions) {
-            if (fn.isEntry) { line("main();"); break; }
+            if (fn.isEntry) { line(fn.mangledName + "();"); break; }
         }
         return out_;
     }
@@ -314,7 +314,7 @@ private:
     }
 
     void emitFunction(const ir::Function& fn) {
-        std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.name + tsGenerics(fn.generics) + "(";
+        std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.mangledName + tsGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             if (i) sig += ", ";
             sig += fn.params[i].name + ": " + tsType(fn.params[i].type);
@@ -553,7 +553,7 @@ private:
                 // output matches C#'s Console.WriteLine(long). (Template `${x}` already omits the `n`.)
                 if (c.isPrint && c.args.size() == 1 && isI64(c.args[0]->type))
                     return "console.log(String(" + emitExpr(*c.args[0]) + "))";
-                std::string s = (c.isPrint ? "console.log" : c.callee) + "(";
+                std::string s = (c.isPrint ? "console.log" : c.mangledCallee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";
             }
