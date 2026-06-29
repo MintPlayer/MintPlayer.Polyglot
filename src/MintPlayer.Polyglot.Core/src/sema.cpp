@@ -80,6 +80,16 @@ std::string intLitType(const std::string& text) {
     return "i32";
 }
 
+// A float literal's type comes from its suffix: `f`/`f32` => f32, `f64`/`d` => f64; a bare literal
+// (`1.5`, `1e3`) is f64. Mirrors C#'s `f`/`d` shorthands so `310f` is single-precision as written.
+std::string floatLitType(const std::string& text) {
+    if (text.size() >= 3 && text.compare(text.size() - 3, 3, "f32") == 0) return "f32";
+    if (text.size() >= 3 && text.compare(text.size() - 3, 3, "f64") == 0) return "f64";
+    char last = text.back();
+    if (last == 'f') return "f32";
+    return "f64";
+}
+
 // A §3.B-refused construct named in type position. Returns a targeted "Polyglot refuses X because …"
 // message (never a generic "unknown type"), or nullptr. The refused surface has no grammar, but a user
 // reaching for a familiar platform type by name should get told *why* and *what to use instead* — the
@@ -562,7 +572,7 @@ private:
     TypeRef computeType(Expr& e) {
         switch (e.kind) {
             case ExprKind::IntLit:    return tNamed(intLitType(e.text));
-            case ExprKind::FloatLit:  return tNamed("f64");
+            case ExprKind::FloatLit:  return tNamed(floatLitType(e.text));
             case ExprKind::CharLit:   return tNamed("char");
             case ExprKind::StringLit: return tNamed("string");
             case ExprKind::InterpString: for (auto& a : e.args) checkExpr(*a); return tNamed("string");
