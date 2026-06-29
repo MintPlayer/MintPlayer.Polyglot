@@ -134,6 +134,7 @@ struct MemberInfo {
     TypeRef type;                 // field/property type, or method/operator return type
     bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
     std::size_t required = 0;     // leading params with no default — the minimum a call must supply
+    std::vector<std::string> generics; // the method's own type-param names (for TypeArg inference)
 };
 struct TypeInfo {
     std::vector<GenericParam> generics;
@@ -147,6 +148,7 @@ struct FnSig {
     std::vector<TypeRef> params;
     std::size_t required = 0;        // leading params with no default
     TypeRef result = namedType("unit");
+    std::vector<std::string> generics; // the function's type-param names (for TypeArg inference)
 };
 
 // How many leading parameters a caller MUST supply: the count before the first defaulted one.
@@ -316,6 +318,7 @@ private:
         mi.name = m.name;
         mi.kind = m.kind;
         for (const auto& p : m.params) mi.params.push_back(p.type);
+        for (const auto& g : m.generics) mi.generics.push_back(g.name);
         mi.required = requiredCount(m.params);
         mi.type = (m.kind == MemberKind::Field || m.kind == MemberKind::Const ||
                    m.kind == MemberKind::Property) ? m.type : m.returnType;
@@ -356,6 +359,7 @@ private:
             if (!fn.actualTarget.empty()) continue;
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
             sig.required = requiredCount(fn.params);
+            for (const auto& g : fn.generics) sig.generics.push_back(g.name);
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
                 if (sameParamList(existing.params, sig.params))
@@ -765,6 +769,41 @@ private:
         return tUnknown();
     }
 
+    // ---- TypeArg inference: bind a callable's type params from the argument types, then substitute them
+    // into its return type (so `fn pick<T>(a:T,b:T):T` called `pick(10i64,20i64)` returns i64, not bare T).
+    void unifyGeneric(const std::unordered_set<std::string>& gen, const TypeRef& p, const TypeRef& a,
+                      std::unordered_map<std::string, TypeRef>& binds) {
+        if (p.kind == TypeRef::Kind::Named && p.args.empty() && gen.count(p.name)) {
+            // Bind T to the argument type (first binding wins); ignore an unknown arg so we don't bind T=unknown.
+            if (!binds.count(p.name) && !(a.kind == TypeRef::Kind::Named && a.name.empty())) binds[p.name] = a;
+            return;
+        }
+        for (std::size_t i = 0; i < p.args.size() && i < a.args.size(); ++i) unifyGeneric(gen, p.args[i], a.args[i], binds);
+        for (std::size_t i = 0; i < p.ret.size() && i < a.ret.size(); ++i) unifyGeneric(gen, p.ret[i], a.ret[i], binds);
+    }
+    TypeRef substGeneric(const TypeRef& t, const std::unordered_set<std::string>& gen,
+                         const std::unordered_map<std::string, TypeRef>& binds) {
+        if (t.kind == TypeRef::Kind::Named && t.args.empty() && gen.count(t.name)) {
+            auto it = binds.find(t.name);
+            if (it == binds.end()) return t; // unbound -> leave the type-param name (lenient, as before)
+            TypeRef r = it->second;
+            if (t.nullable) r.nullable = true;
+            return r;
+        }
+        TypeRef r = t;
+        for (auto& a : r.args) a = substGeneric(a, gen, binds);
+        for (auto& rt : r.ret) rt = substGeneric(rt, gen, binds);
+        return r;
+    }
+    TypeRef inferResult(const std::vector<std::string>& generics, const std::vector<TypeRef>& params,
+                        const std::vector<TypeRef>& args, const TypeRef& result) {
+        if (generics.empty()) return result;
+        std::unordered_set<std::string> gen(generics.begin(), generics.end());
+        std::unordered_map<std::string, TypeRef> binds;
+        for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) unifyGeneric(gen, params[i], args[i], binds);
+        return substGeneric(result, gen, binds);
+    }
+
     TypeRef checkMember(Expr& e) {
         // Enum case access: `EnumName.Case`.
         if (e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text)) return tNamed(e.lhs->text);
@@ -847,7 +886,7 @@ private:
                 if (types_.count(typeName)) {
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
                         checkArgs(m->params, argTypes, e.args, "static method '" + typeName + "." + method + "'", e.pos, m->required);
-                        return m->type;
+                        return inferResult(m->generics, m->params, argTypes, m->type);
                     }
                     diags_.error(e.pos, "type '" + typeName + "' has no static method '" + method + "'");
                     return tUnknown();
@@ -863,7 +902,7 @@ private:
                 }
             }
             if (knownType(recv)) {
-                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); return m->type; }
+                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); return inferResult(m->generics, m->params, argTypes, m->type); }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
             return tUnknown();
@@ -889,7 +928,7 @@ private:
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
             checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
             e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
-            return chosen->result;
+            return inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
         }
         if (name == "Error") return tNamed("Error"); // core exception root construction (message arg lenient)
         // A bare call inside a class body may target one of its own static methods.
@@ -898,7 +937,7 @@ private:
                 m && m->isStatic && (m->kind == MemberKind::Method || m->kind == MemberKind::Operator)) {
                 checkArgs(m->params, argTypes, e.args, "static method '" + currentClass_ + "." + name + "'", e.pos, m->required);
                 e.staticOwner = currentClass_;
-                return m->type;
+                return inferResult(m->generics, m->params, argTypes, m->type);
             }
         }
         diags_.error(e.pos, "call to undeclared function '" + name + "'");

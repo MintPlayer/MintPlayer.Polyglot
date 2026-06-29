@@ -452,6 +452,19 @@ int main() {
               "P13: user plugin class member binding fires in TS");
     }
 
+    // P13 — TypeArg inference: a generic call's return type is the inferred argument type, not a bare `T`.
+    // Canary: only a correctly-inferred i64 return makes TS wrap the print in String() (BigInt -> no `n`).
+    {
+        EmitResult one = compile("fn pick<T>(a: T, b: T): T => a\nfn main() { print(pick(1i64, 2i64)) }\n", Target::TypeScript);
+        check(one.ok && has(one.code, "String("), "P13: single type-arg return inferred (i64 -> String wrap)");
+        // two type-args, return the SECOND (V=i64): inference must bind V, not just the first param.
+        EmitResult two = compile("fn snd<K, V>(k: K, v: V): V => v\nfn main() { print(snd(1i32, 2i64)) }\n", Target::TypeScript);
+        check(two.ok && has(two.code, "String("), "P13: 2nd-of-two type-args return inferred (i64 -> String wrap)");
+        // return the FIRST i32 while the 2nd arg is i64: result is i32, so NO String wrap.
+        EmitResult fst = compile("fn fst<K, V>(k: K, v: V): K => k\nfn main() { print(fst(1i32, 2i64)) }\n", Target::TypeScript);
+        check(fst.ok && !has(fst.code, "String("), "P13: 1st-of-two type-args return inferred (i32 -> no wrap)");
+    }
+
     // P13 — unknown/unimported types fail compilation, not just in signatures but in LOCAL positions too
     // (previously a local `let x: T`/`var xs: List<…>` slipped, silently miscompiling).
     rejects("fn main() { let w: Widget = 0 }\n", "P13: unknown type on a local `let` is rejected");

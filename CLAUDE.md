@@ -19,6 +19,16 @@ SharpKit, Bridge.NET) died of scope creep. Before adding any feature, check it a
 - **Determinism honesty (§3.D):** only `+ − × ÷ √` are reproducible across .NET and JS; transcendentals
   are not. Don't promise bit-exact float parity; offer a fixed-point std type instead.
 
+## Principled fix over workaround
+This is a long-haul craft project — prefer the **root-cause fix** over an expedient patch, even when the
+patch is smaller. When a problem traces to a missing language/compiler capability, build (or plan) that
+capability rather than papering over the symptom. Example (2026-06-29): a generic call's return type wasn't
+substituted, so `Math.max(i64,i64)` would print `20n` vs `20`; the workaround was to wrap every `print` arg
+in `String()`, but the principled fix was **real TypeArg inference** (bind type params from args, substitute
+the return) — which fixes the whole class of generic-call bugs, not just `print`. Take that path. If a
+workaround is genuinely warranted (time-boxed, the real fix is out of scope), say so explicitly and leave a
+note pointing at the principled follow-up — never let a silent shortcut masquerade as the design.
+
 ## Key decisions (don't relitigate without reason)
 - **C++20**, single self-contained native CLI, zero runtime deps. Consequence: **no Roslyn / no ts-morph**
   — the C# and TS backends **hand-write** their pretty-printers over the IR (the Haxe path). The C#/Roslyn
