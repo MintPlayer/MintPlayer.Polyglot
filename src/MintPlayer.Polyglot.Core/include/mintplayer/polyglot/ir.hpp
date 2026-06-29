@@ -132,7 +132,7 @@ struct Match : Expr {
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Yield, Throw, Try };
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Yield, Throw, Try, Use };
 
 struct Stmt {
     StmtKind kind;
@@ -193,6 +193,15 @@ struct Yield : Stmt { // `yield <value>` inside an iterator: C# `yield return`, 
 struct Throw : Stmt {
     ExprPtr value;
     Throw(SourcePos p, ExprPtr v) : Stmt(StmtKind::Throw, p), value(std::move(v)) {}
+};
+// `use x = init { body }`: deterministic, scoped disposal. Lowers to a try/finally that calls
+// `x.dispose()` at block end (even on throw) — exact on both targets and the SPEC's TS lowering.
+struct Use : Stmt {
+    std::string binding;
+    Type type; // optional annotation (may be empty)
+    ExprPtr init;
+    std::vector<StmtPtr> body;
+    Use(SourcePos p, std::string b, ExprPtr i) : Stmt(StmtKind::Use, p), binding(std::move(b)), init(std::move(i)) {}
 };
 struct Catch { // one `catch (binding: type) when (guard)` clause; type/guard optional
     Type type;                    // empty name = untyped catch-all

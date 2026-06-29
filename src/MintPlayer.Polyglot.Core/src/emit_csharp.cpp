@@ -235,6 +235,19 @@ private:
                 line(t.value ? "throw " + emitExpr(*t.value) + ";" : "throw;");
                 break;
             }
+            case ir::StmtKind::Use: {
+                const auto& u = static_cast<const ir::Use&>(s);
+                line("var " + u.binding + " = " + emitExpr(*u.init) + ";");
+                line("try");
+                emitBlock(u.body);
+                line("finally");
+                line("{");
+                ++indent_;
+                line(u.binding + ".dispose();");
+                --indent_;
+                line("}");
+                break;
+            }
             case ir::StmtKind::Try: {
                 const auto& t = static_cast<const ir::Try&>(s);
                 line("try");

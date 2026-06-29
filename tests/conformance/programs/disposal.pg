@@ -1,0 +1,23 @@
+// P5 differential conformance: `use` deterministic disposal. The resource
+// prints its id on construction and id+100 on dispose; nested `use` blocks
+// prove disposal runs at block end in LIFO order on both targets.
+
+class Scope {
+  let id: i32
+  init(id: i32) {
+    this.id = id
+    print(id)              // open
+  }
+  fn dispose() {
+    print(this.id + 100)   // close
+  }
+}
+
+fn main() {
+  use a = Scope(1) {
+    use b = Scope(2) {
+      print(99)
+    }                      // b disposed here -> 102
+  }                        // a disposed here -> 101
+  // open 1, open 2, body 99, close 2 (102), close 1 (101)
+}

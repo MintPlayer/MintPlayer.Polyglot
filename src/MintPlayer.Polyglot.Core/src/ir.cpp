@@ -159,6 +159,13 @@ private:
                 line(t.value ? "throw " + expr(*t.value) : "throw");
                 break;
             }
+            case StmtKind::Use: {
+                const auto& u = static_cast<const Use&>(s);
+                line("use " + u.binding + " = " + expr(*u.init) + " {");
+                block(u.body);
+                line("}");
+                break;
+            }
             case StmtKind::Try: {
                 const auto& t = static_cast<const Try&>(s);
                 line("try {");

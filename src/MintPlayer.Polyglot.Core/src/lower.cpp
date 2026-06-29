@@ -284,6 +284,12 @@ private:
                 return std::make_unique<ir::Yield>(s.pos, s.value ? expr(*s.value) : nullptr);
             case StmtKind::Throw:
                 return std::make_unique<ir::Throw>(s.pos, s.value ? expr(*s.value) : nullptr);
+            case StmtKind::Use: {
+                auto node = std::make_unique<ir::Use>(s.pos, s.name, expr(*s.value));
+                if (s.hasDeclType) node->type = s.declType;
+                node->body = block(s.thenBody);
+                return node;
+            }
             case StmtKind::Try: {
                 auto node = std::make_unique<ir::Try>(s.pos);
                 node->body = block(s.thenBody);
