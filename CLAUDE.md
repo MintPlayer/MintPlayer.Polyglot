@@ -107,8 +107,11 @@ loading — dedup, cycle detection, deps-first merge; CLI `FileModuleResolver` (
 resolver; **collision detection** closes the silent value/union-case/extension holes. *Phase-2 deferred*
 (needs a per-file import-scope table): selective-import visibility restriction + `as` rebinding.
 std.io ships File bindings (readText/writeText/…) via the capability mechanism; std is still embedded-source.
-**Roadmap: P9** (declarative backend DSL), **P10** (plugin distribution), **P11** (build-integration NuGet,
-independent).
+**P9 🚧 in progress — declarative backend DSL** (design + extraction map: `docs/design/backend-spec.md`).
+Catalog found backends are ~70% tabular / ~30% imperative → a backend = **Spec (data)** + **Hooks (C++ for
+the imperative 30%)** over one shared emit engine; extraction is incremental, each slice a byte-for-byte
+no-op. Slice 1 ✅: scalar type-leaf table → `BackendSpec` (`backend_spec.hpp`), both emitters consult it.
+**Roadmap: P10** (plugin distribution, needs P9), **P11** (build-integration NuGet, independent).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

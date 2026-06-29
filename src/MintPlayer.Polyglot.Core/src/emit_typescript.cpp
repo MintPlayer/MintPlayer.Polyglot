@@ -4,6 +4,8 @@
 #include <string>
 #include <unordered_set>
 
+#include "mintplayer/polyglot/backend_spec.hpp"
+
 // Hand-written IR -> TypeScript pretty-printer. Walks the typed IR; emits free `function`s, maps the
 // `print` intrinsic -> console.log, and appends a top-level call to the entry function. Output stays
 // plain enough to run under Node's type-stripping (the P2 differential conformance test relies on it).
@@ -12,17 +14,23 @@ namespace mintplayer::polyglot {
 
 namespace {
 
+// The TS backend's declarative data (P9 slice 1: the scalar type-leaf table). Unlike C#, TS maps `char` ->
+// `string` and the 64-bit ints -> `bigint`; structural cases (List/tuple/function/nullable) stay in tsType.
+const BackendSpec& typescriptSpec() {
+    static const BackendSpec spec = {
+        "typescript",
+        {{"unit", "void"}, {"bool", "boolean"}, {"string", "string"}, {"char", "string"},
+         {"i64", "bigint"}, {"u64", "bigint"},
+         {"i8", "number"}, {"i16", "number"}, {"i32", "number"}, {"u8", "number"}, {"u16", "number"},
+         {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
+    };
+    return spec;
+}
+
 std::string tsType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
         if (t.nullable) { TypeRef base = t; base.nullable = false; return tsType(base) + " | null"; }
-        if (t.name == "unit")   return "void";
-        if (t.name == "bool")   return "boolean";
-        if (t.name == "string") return "string";
-        if (t.name == "char")   return "string";
-        if (t.name == "i64" || t.name == "u64") return "bigint"; // §3.C: 64-bit ints exceed 2^53 -> BigInt
-        if (t.name == "i8" || t.name == "i16" || t.name == "i32" ||
-            t.name == "u8" || t.name == "u16" || t.name == "u32" ||
-            t.name == "f32" || t.name == "f64") return "number";
+        if (auto it = typescriptSpec().scalarType.find(t.name); it != typescriptSpec().scalarType.end()) return it->second;
         if (t.name.empty()) return "unknown";
         if (t.name == "List" && !t.args.empty()) return tsType(t.args[0]) + "[]"; // List<T> -> T[]
         std::string name = t.name; // Iterable<T> stays Iterable<T> (a generator is assignable to it)

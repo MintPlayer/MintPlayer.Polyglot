@@ -1,0 +1,106 @@
+# Design note — the declarative backend spec (P9)
+
+> Concrete realization of [`plugins-and-targets.md`](plugins-and-targets.md) §4 ("backends are declarative
+> plugins") for the zero-dependency C++ core. This is *extracted* from the two hand-written backends
+> (`emit_csharp.cpp`, `emit_typescript.cpp`), per the §4 discipline — never guessed. Status: **design +
+> incremental extraction in progress.**
+
+## 1. What a backend actually is, after extraction
+
+A structural catalog of the two emitters (every emission decision, June 2026) found the split is roughly
+**70% tabular / 30% imperative**. So a backend is **not** a pure template file; it is:
+
+```
+Backend  =  Spec (declarative data)            // the 70%: tables + per-node templates
+          +  Hooks (C++ implementations)        // the 30%: target-specific imperative codegen
+          +  capability set (§3.E Feature flags)
+```
+
+The **core owns a single emit engine** that walks the IR, manages precedence/parenthesization and
+expr-vs-stmt context, and emits each node by consulting the active backend's Spec — calling a Hook only for
+the node kinds the Spec marks as imperative. C# and TS become *two instances* of (Spec + Hooks); adding a
+target is (eventually) a new Spec + the few Hooks it needs, with **no engine change**.
+
+Why hybrid and not pure-declarative: a flat template-per-node format produces wrong output for the gnarly
+cases (numeric faithfulness, BigInt boundaries, `tsConvert`, TS `try` lowering, pattern matching). §4
+predicted this ("the format inevitably becomes a small DSL … the full-power-local tier covers what the DSL
+can't"). The Hook tier *is* that full-power tier, expressed as C++ here because the core is native and
+zero-dep (no embedded scripting runtime). A downloaded backend (P10) gets the declarative Spec only — never
+Hooks — so the §4 "downloaded = data, never code" safety rule still holds; bundled backends (C#/TS) may use
+Hooks because they ship in the trusted core.
+
+## 2. The declarative / imperative boundary (from the catalog)
+
+**Declarative (lives in the Spec — data only):**
+- **Type leaf table** — scalar `.pg` type → target string (`i8`→`sbyte`/`number`, `i64`→`long`/`bigint`, …),
+  plus the structural rules for `List`/`Iterable`/tuple/function/nullable/generic-bounds (per-target affixes).
+- **Literal rules** — int-width suffix table (`i64`→`L`/`n`, `u64`→`UL`/`n`), the (identical) string-escape
+  table, bool/null spellings.
+- **Operator table** — symbol per op + the precedence table (identical across targets) + parenthesization
+  rules (by node kind).
+- **Per-node templates** — for the ~50% of nodes that are a fixed shape with child slots: `New`, `Index`,
+  `ListLit`, `Tuple`, `Bound`, `MakeCase`, `Cond`, `Member`, plain `Call`, and most statements (`Let`,
+  `Assign`, `Return`, `If`, `While`, the three `For` shapes, `Use`). Templates differ per target by affix
+  (`var`/`let`, `foreach…in`/`for…of`, `(A,B)`/`[A,B]`).
+- **Declaration scaffolds** — enum/union/record/class/function/extension shapes, the program wrapper
+  (`static class Program`+`Main` vs bare top-level + entry call), generic-bounds syntax (`where` vs
+  `extends`), `print`→`Console.WriteLine`/`console.log`, the `Math` qualifier.
+- **Naming rules** — free-fn qualification (`Program.` vs bare), the `Math.<fn>` rename table
+  (`ln`→`Log`/`log`, `ceil`→`Ceiling`).
+
+**Imperative (lives in a Hook — C++):**
+- **`Cast`** — C# is a template `(T)(x)`; TS `tsConvert` is a multi-branch BigInt/narrowing matrix.
+- **Numeric faithfulness** — C# sub-word cast-back (`(byte)(a+b)`); TS small-int `narrowTs` + i64/u64
+  `BigInt.asIntN/asUintN` boundary wrapping on each op.
+- **Binary dispatch** — TS user-type operator→method (`a.plus(b)`), record `==`→`.equals()`.
+- **`MethodCall` specials** — `i32.parse` per-type conversion; `Math.min/max/abs` on BigInt → comparison IIFE.
+- **`Match`** — C# `switch` expression vs TS IIFE/if-chain.
+- **`Try`** — C# native `catch…when` vs TS `__handled`/`instanceof` dispatch chain.
+- **Interpolation** — different literal syntax + escape (`$"…{e}…"` vs `` `…${e}…` ``).
+- **Record `.equals()`** (TS) — recursive per-field comparison.
+- **`Call` BigInt-print** (TS) — wrap an i64 arg in `String()`.
+
+Pre-computed-in-lowering (neither Spec nor Hook — already IR input): overload mangling (`mangledCallee`),
+entry detection (`isEntry`), extension-call flag (`isExtension`), the `Bound` `$this/$0` FFI templates.
+
+## 3. C++ shape (target)
+
+```cpp
+struct BackendSpec {
+    std::string name;                                  // "csharp" / "typescript"
+    std::unordered_map<std::string, std::string> scalarType;   // "i8" -> "sbyte" / "number"
+    std::unordered_map<std::string, std::string> intSuffix;    // "i64" -> "L" / "n"
+    // … operator symbols, precedence (shared const), per-node templates, scaffolds, naming …
+    bool supports(Feature) const;                      // §3.E capability set (both = full §3.A)
+};
+```
+
+The engine is a `SpecEmitter` walking the IR; a node kind is either rendered from `spec`'s template/table or
+dispatched to a `BackendHooks` virtual (`emitCast`, `emitTry`, `narrowBinary`, `emitMatch`, …). The existing
+`emit_csharp.cpp`/`emit_typescript.cpp` become the Hook implementations + the Spec data; their shared walking
+logic (precedence, `atom()`, child emission, block indentation) moves into the engine.
+
+## 4. Incremental migration (keep the gate green at every step)
+
+The P9 gate is **byte-for-byte parity with the current native output** — enforced continuously by the
+existing golden unit tests + the 29-program differential conformance + the 10-sample round-trip. So the
+extraction proceeds in slices, each a no-op on output:
+
+1. **Type-leaf + literal-suffix tables → `BackendSpec`** (this commit). Both emitters consult the spec for
+   scalar leaves and int suffixes instead of hardcoded `if`-ladders. Smallest safe proof that "spec is data
+   the emitter reads." *(structural type cases, operators, and node templates stay in code for now.)*
+2. Operator symbol + precedence + parenthesization tables → spec.
+3. Per-node **templates** for the fixed-shape nodes; introduce the `SpecEmitter` engine that renders them,
+   delegating unsupported kinds back to the native emitter (hybrid bridge).
+4. Declaration scaffolds + program wrapper → spec/engine.
+5. Formalize the **Hook interface**; the residual imperative code becomes hook methods.
+6. Re-express C# and TS as `{Spec, Hooks}` pairs over the one engine; delete the bespoke per-file walking.
+
+At the end, the two `.cpp` files are *data + a handful of hooks*, and P10 can add a downloaded **Spec-only**
+backend (Python) with no engine change — the §4 endpoint.
+
+## 5. Capability sets
+
+Each Spec carries its §3.E `Feature` set. C# and TS both declare the **full §3.A surface**, so the
+intersection is everything and nothing gates until a third backend (Python, P10) declares a smaller set —
+at which point `capability.cpp` already refuses out-of-intersection use (the StubBackend test proves it).

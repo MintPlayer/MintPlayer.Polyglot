@@ -184,7 +184,16 @@ earned the right to own that physics; the hand-ports can retire while the confor
 generator. *Not yet done here:* wiring the generated output back into the live MintPlayer.AI repo (out of
 scope — that repo's build is not run from here) and a real module-resolution system (std is embedded source).
 
-## P9 — Declarative backend engine + DSL
+## P9 — Declarative backend engine + DSL — 🚧 in progress
+**Concrete design + extraction map: [`../design/backend-spec.md`](../design/backend-spec.md).** A structural
+catalog of both emitters found the split is ~70% tabular / ~30% imperative, so a backend = **Spec (declarative
+data)** + **Hooks (C++ for the imperative 30%: `tsConvert`, TS `try` lowering, numeric narrowing, operator-
+method dispatch, record equality, `Match`, interpolation)** + capability set, over **one shared emit engine**.
+Migration is incremental, each slice a byte-for-byte no-op enforced by the golden/differential/round-trip
+gates. **Slice 1 ✅:** the scalar type-leaf table extracted into `BackendSpec` (`backend_spec.hpp`); both
+emitters consult their spec instead of hardcoded type ladders. *Next slices:* operator/precedence + literal-
+suffix tables → spec; per-node templates + the `SpecEmitter` engine; declaration scaffolds; formalize Hooks.
+
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type
 mapping, operator/keyword tables, naming/import rules, and the build-project scaffold. Build the core's

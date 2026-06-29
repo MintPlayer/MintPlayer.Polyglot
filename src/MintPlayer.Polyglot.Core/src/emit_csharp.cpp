@@ -3,6 +3,8 @@
 #include <cctype>
 #include <string>
 
+#include "mintplayer/polyglot/backend_spec.hpp"
+
 // Hand-written IR -> C# pretty-printer. Walks the typed IR; wraps the program's free functions in a
 // `static class Program`, maps the `print` intrinsic -> global::System.Console.WriteLine and the entry
 // function -> Main. Every BCL reference is `global::`-qualified (no `using`) so generated code can't
@@ -11,6 +13,18 @@
 namespace mintplayer::polyglot {
 
 namespace {
+
+// The C# backend's declarative data (P9 slice 1: the scalar type-leaf table). `char` is absent on purpose
+// — C# lets it fall through to the named-type path (-> `char`); the structural cases stay in csType.
+const BackendSpec& csharpSpec() {
+    static const BackendSpec spec = {
+        "csharp",
+        {{"unit", "void"}, {"i8", "sbyte"}, {"i16", "short"}, {"i32", "int"}, {"i64", "long"},
+         {"u8", "byte"}, {"u16", "ushort"}, {"u32", "uint"}, {"u64", "ulong"},
+         {"f32", "float"}, {"f64", "double"}, {"bool", "bool"}, {"string", "string"}},
+    };
+    return spec;
+}
 
 std::string csType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
@@ -23,19 +37,7 @@ std::string csType(const TypeRef& t) {
                              n == "u32" || n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char";
             return valueType ? csType(base) + "?" : csType(base);
         }
-        if (t.name == "unit")   return "void";
-        if (t.name == "i8")     return "sbyte";
-        if (t.name == "i16")    return "short";
-        if (t.name == "i32")    return "int";
-        if (t.name == "i64")    return "long";
-        if (t.name == "u8")     return "byte";
-        if (t.name == "u16")    return "ushort";
-        if (t.name == "u32")    return "uint";
-        if (t.name == "u64")    return "ulong";
-        if (t.name == "f32")    return "float";
-        if (t.name == "f64")    return "double";
-        if (t.name == "bool")   return "bool";
-        if (t.name == "string") return "string";
+        if (auto it = csharpSpec().scalarType.find(t.name); it != csharpSpec().scalarType.end()) return it->second;
         if (t.name.empty())     return "object";
         if (t.name == "Error")  return "global::System.Exception";
         std::string name = t.name == "Iterable" ? "global::System.Collections.Generic.IEnumerable"

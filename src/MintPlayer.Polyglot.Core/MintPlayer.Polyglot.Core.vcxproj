@@ -66,6 +66,7 @@
     <ClInclude Include="include\mintplayer\polyglot\ir.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\lower.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\backend_spec.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\capability.hpp" />
   </ItemGroup>
   <ItemGroup>
