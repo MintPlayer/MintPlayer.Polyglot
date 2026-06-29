@@ -435,6 +435,11 @@ int main() {
         check(dd.ok, "P13: explicit import + lib dedups (no collision)");
     }
 
+    // P13 — unknown/unimported types fail compilation, not just in signatures but in LOCAL positions too
+    // (previously a local `let x: T`/`var xs: List<…>` slipped, silently miscompiling).
+    rejects("fn main() { let w: Widget = 0 }\n", "P13: unknown type on a local `let` is rejected");
+    rejects("fn main() { var xs: List<i32> = [1] }\n", "P13: List used without importing std.collections is rejected");
+
     // A normal unknown type still gets the plain diagnostic (not a refusal).
     {
         EmitResult r = compile("fn f(x: Widget) {}\n", Target::CSharp);

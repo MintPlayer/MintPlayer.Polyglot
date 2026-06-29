@@ -536,7 +536,7 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 TypeRef init = checkExpr(*s.value);
-                if (s.hasDeclType) checkConvert(s.value, s.declType, "initializer of '" + s.name + "'");
+                if (s.hasDeclType) { resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.pos);
                 break;
             }
@@ -578,6 +578,7 @@ private:
             }
             case StmtKind::Use:
                 if (s.value) checkExpr(*s.value);
+                if (s.hasDeclType) resolveTypeRef(s.declType, s.pos);
                 pushScope();
                 declare(s.name, s.hasDeclType ? s.declType : tUnknown(), false, s.pos);
                 for (auto& st : s.thenBody) checkStmt(*st);
@@ -587,6 +588,7 @@ private:
                 checkBlock(s.thenBody);
                 for (auto& c : s.catches) {
                     pushScope();
+                    if (!c.type.absent()) resolveTypeRef(c.type, c.pos);
                     declare(c.name, c.type, false, c.pos);
                     if (c.guard) requireBool(checkExpr(*c.guard), c.pos, "'when' guard");
                     for (auto& st : c.body) checkStmt(*st);
@@ -691,7 +693,10 @@ private:
 
     TypeRef checkLambda(Expr& e) {
         pushScope();
-        for (const auto& p : e.params) declare(p.name, p.type, false, p.pos);
+        for (const auto& p : e.params) {
+            if (!p.type.absent()) resolveTypeRef(p.type, p.pos);
+            declare(p.name, p.type, false, p.pos);
+        }
         if (e.flag) for (auto& st : e.block) checkStmt(*st);
         else if (e.lhs) checkExpr(*e.lhs);
         popScope();
