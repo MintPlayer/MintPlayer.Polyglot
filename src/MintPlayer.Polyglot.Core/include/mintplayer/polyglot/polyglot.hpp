@@ -54,10 +54,20 @@ public:
                                                   const std::string& importerCanonicalPath) = 0;
 };
 
-// Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported modules) -> check
-// -> emit, stopping at the first pass that reports errors (no partial/garbage output on failure).
+// The workspace "prelude": std modules auto-imported into every file (à la tsconfig `lib`). Each name maps
+// to a std module (`"io"` -> `std.io`) and is imported whole-module, but is AMBIENT and lowest-priority — a
+// lib-provided declaration loses silently to any user declaration or explicit import of the same name.
+// Sourced by the CLI (a `--lib` flag now, `pgconfig.json` "lib" later); the Core just receives the names.
+struct LibConfig {
+    std::vector<std::string> libs;
+};
+
+// Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->
+// check -> emit, stopping at the first pass that reports errors (no partial/garbage output on failure).
 // `resolver` loads non-std (`import … from "./x"` / `"a.b"`) modules; nullptr = std modules only.
-EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver = nullptr);
+// `lib` auto-imports the named std modules (the prelude); empty = none.
+EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver = nullptr,
+                   const LibConfig& lib = {});
 
 // Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.

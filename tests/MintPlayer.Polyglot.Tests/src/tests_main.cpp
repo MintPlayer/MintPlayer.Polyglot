@@ -417,6 +417,24 @@ int main() {
         check(!res.ok && dup, "P12: a cross-module type collision is rejected");
     }
 
+    // P13 — the `lib` prelude: auto-import std modules, ambient + silently shadowable.
+    {
+        LibConfig lib{{"collections"}};
+        // (1) List usable with NO explicit import when 'collections' is in lib; it links the real module
+        //     (so `xs.count` lowers to the .Count binding, not the lenient bare `.count`).
+        EmitResult r = compile("fn main() { var xs: List<i32> = [1]\n  print(xs.count) }\n",
+                               Target::CSharp, nullptr, lib);
+        check(r.ok && has(r.code, ".Count"), "P13: lib auto-imports std.collections (List.count -> .Count)");
+        // (2) a user declaration silently shadows the lib's same-named one (NO collision error).
+        EmitResult sh = compile("record List(x: i32)\nfn main() { print(List(5).x) }\n",
+                                Target::CSharp, nullptr, lib);
+        check(sh.ok, "P13: a user decl silently shadows the lib prelude (no collision)");
+        // (3) an explicit import of a lib module dedups against the lib auto-import (no collision).
+        EmitResult dd = compile("import { List } from \"std.collections\"\nfn main() { var xs: List<i32> = [1]\n  print(xs.count) }\n",
+                                Target::CSharp, nullptr, lib);
+        check(dd.ok, "P13: explicit import + lib dedups (no collision)");
+    }
+
     // A normal unknown type still gets the plain diagnostic (not a refusal).
     {
         EmitResult r = compile("fn f(x: Widget) {}\n", Target::CSharp);

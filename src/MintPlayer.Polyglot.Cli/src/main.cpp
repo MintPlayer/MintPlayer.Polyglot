@@ -19,7 +19,7 @@ void printUsage() {
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
-        << "  polyglot build <input.pg> [--target <csharp|typescript>] [--out <dir>]\n"
+        << "  polyglot build <input.pg> [--target <csharp|typescript>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
         << "  polyglot fmt <input.pg>\n"
         << "\n"
         << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
@@ -81,8 +81,8 @@ void reportDiagnostics(const fs::path& input, const EmitResult& result) {
 
 // Emit one target next to (or under --out of) the input, returning the written path or "" on failure.
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& outDir,
-             Target target, const char* ext, ModuleResolver* resolver) {
-    EmitResult result = compile(source, target, resolver);
+             Target target, const char* ext, ModuleResolver* resolver, const LibConfig& lib) {
+    EmitResult result = compile(source, target, resolver, lib);
     if (!result.ok) {
         reportDiagnostics(input, result);
         return false;
@@ -102,6 +102,7 @@ int runBuild(const std::vector<std::string>& args) {
     fs::path outDir;
     fs::path root;      // workspace root for logical-name imports; empty => input's parent dir
     std::string target; // empty => both
+    std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
 
     for (std::size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
@@ -111,6 +112,8 @@ int runBuild(const std::vector<std::string>& args) {
             outDir = args[++i];
         } else if (a == "--root" && i + 1 < args.size()) {
             root = args[++i];
+        } else if (a == "--lib" && i + 1 < args.size()) {
+            libArg = args[++i];
         } else if (!a.empty() && a[0] == '-') {
             std::cerr << "polyglot: unknown option '" << a << "'\n";
             return 64;
@@ -140,9 +143,17 @@ int runBuild(const std::vector<std::string>& args) {
     if (root.empty()) root = entryDir;
     FileModuleResolver resolver(root, entryDir);
 
+    LibConfig lib; // split `--lib io,math` on commas (trimming blanks)
+    for (std::size_t b = 0, e; b <= libArg.size(); b = e + 1) {
+        e = libArg.find(',', b);
+        if (e == std::string::npos) e = libArg.size();
+        std::string name = libArg.substr(b, e - b);
+        if (!name.empty()) lib.libs.push_back(name);
+    }
+
     bool ok = true;
-    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs", &resolver);
-    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, Target::TypeScript, ".ts", &resolver);
+    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs", &resolver, lib);
+    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, Target::TypeScript, ".ts", &resolver, lib);
     if (!target.empty() && target != "csharp" && target != "typescript") {
         std::cerr << "polyglot: unknown target '" << target << "' (expected csharp|typescript)\n";
         return 64;

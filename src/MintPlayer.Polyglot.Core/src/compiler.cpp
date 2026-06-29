@@ -154,9 +154,56 @@ void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag&
     loadImports(unit, unit, "", resolver, diags, visited, stack);
 }
 
+// A stable identity string for a type (so a lib function only shadows a user function of the SAME signature,
+// letting user overloads of a lib function coexist).
+std::string typeKey(const TypeRef& t) {
+    std::string s = t.name;
+    if (t.nullable) s += "?";
+    if (!t.args.empty()) { s += "<"; for (const auto& a : t.args) s += typeKey(a) + ","; s += ">"; }
+    return s;
+}
+std::string fnSigKey(const std::string& name, const std::vector<Param>& ps) {
+    std::string s = name + "(";
+    for (const auto& p : ps) s += typeKey(p.type) + ",";
+    return s + ")";
+}
+
+// Auto-import the `lib` prelude. Each entry ("io" -> std.io) is linked whole-module into a staging unit,
+// then its declarations are merged into `unit` ONLY where they don't shadow an existing identity — a user
+// declaration or an explicitly-imported one (functions compared by name+signature, so user overloads of a
+// lib function survive). Shadowed lib decls are dropped SILENTLY (ambient, lowest priority). A name exported
+// by two different lib entries is left to collide in sema (a prelude must be internally consistent).
+void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver* resolver, DiagnosticBag& diags) {
+    if (lib.libs.empty()) return;
+
+    CompilationUnit staging;
+    for (const auto& name : lib.libs) { ImportDecl d; d.path = "std." + name; staging.imports.push_back(std::move(d)); }
+    linkModules(staging, resolver, diags);
+    if (diags.hasErrors()) return;
+
+    std::unordered_set<std::string> types, values, fns, exts;
+    for (const auto& d : unit.records)    types.insert(d.name);
+    for (const auto& d : unit.classes)    types.insert(d.name);
+    for (const auto& d : unit.interfaces) types.insert(d.name);
+    for (const auto& d : unit.enums)      types.insert(d.name);
+    for (const auto& d : unit.unions)     types.insert(d.name);
+    for (const auto& v : unit.values)     values.insert(v.name);
+    for (const auto& f : unit.functions)  fns.insert(fnSigKey(f.name, f.params));
+    for (const auto& e : unit.extensions) exts.insert(e.receiver.name + "." + e.name);
+
+    for (auto& d : staging.records)    if (!types.count(d.name)) unit.records.push_back(std::move(d));
+    for (auto& d : staging.classes)    if (!types.count(d.name)) unit.classes.push_back(std::move(d));
+    for (auto& d : staging.interfaces) if (!types.count(d.name)) unit.interfaces.push_back(std::move(d));
+    for (auto& d : staging.enums)      if (!types.count(d.name)) unit.enums.push_back(std::move(d));
+    for (auto& d : staging.unions)     if (!types.count(d.name)) unit.unions.push_back(std::move(d));
+    for (auto& v : staging.values)     if (!values.count(v.name)) unit.values.push_back(std::move(v));
+    for (auto& f : staging.functions)  if (!fns.count(fnSigKey(f.name, f.params))) unit.functions.push_back(std::move(f));
+    for (auto& e : staging.extensions) if (!exts.count(e.receiver.name + "." + e.name)) unit.extensions.push_back(std::move(e));
+}
+
 } // namespace
 
-EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver) {
+EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver, const LibConfig& lib) {
     EmitResult result;
     DiagnosticBag diags;
 
@@ -167,6 +214,9 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     linkModules(unit, resolver, diags); // pull in imported std + user modules (transitively) before checking
+    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
+
+    linkLibModules(unit, lib, resolver, diags); // auto-import the prelude (ambient; loses to user/explicit)
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     check(unit, diags);
