@@ -5,9 +5,9 @@
 > general-purpose "any language → any language" compiler (a multi-decade trap); it is **faithful-by-
 > default with a published relaxation list**, and it **refuses** the features that sink transpilers.
 
-- **Status:** Draft v1.0 · 2026-06-28 · P0 built; P1 language v0.1 locked (`docs/lang/`); **P2
-  walking-skeleton MVP done** — `polyglot build` emits running C# + TS with identical stdout (differential
-  conformance gate green). Next: P3 (widen the front-end).
+- **Status:** Draft v1.0 · 2026-06-29 · P0 built; P1 locked; P2 MVP (running C# + TS, conformance green);
+  **P3 done** — full P1 grammar parses + all 10 samples round-trip (`polyglot fmt`). Next: P4 (full
+  semantics + typed IR).
 - **Author:** Pieterjan (with Claude Code).
 - **Provenance:** distilled from a four-agent investigation into multi-target transpilers (Haxe, Kotlin
   Multiplatform, Fable, Scala.js, TypeScript, J2CL/GWT, JSIL, Bridge.NET). The investigation's
@@ -193,7 +193,8 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   typer→IR→**both** hand-written backends; `polyglot build` emits running C# + TS with identical stdout
   (the **differential conformance test** stands up here, not at P5). Proved the "one IR serves both
   targets" bet.
-- **P3 — Full front-end.** Widen lexer (trivia) + parser → AST to the whole grammar; all samples round-trip.
+- **P3 — Full front-end.** ✅ Full P1 grammar parses; `.pg` pretty-printer (`polyglot fmt`) round-trips all
+  10 samples idempotently (fidelity gate in `/build-and-test`). Interpolation parses opaquely (P5 follow-up).
 - **P4 — Full semantics + IR.** Name resolution + the minimal static type system; lower full AST → typed IR.
 - **P5 — Backends to full §3.A.** Widen both C#/TS pretty-printers to the entire surface; golden baselines
   both targets; the differential suite grows.

@@ -44,12 +44,22 @@ emit_typescript/compiler); `polyglot build` in the CLI; 20 in-process unit/golde
 (type-stripping), with **identical stdout** (`128 / 28 / 50`); `run-diff.ps1` is green. Semicolons are an
 optional separator (statements are newline-terminated) — grammar/SPEC aligned to the samples.
 
-## P3 — Full front-end (lexer + parser)
-Widen the MVP's front-end to the entire P1 grammar. Trivia-bearing lexer (keeps comments/whitespace for
-readable output later) → recursive-descent parser → AST with source positions on every node; parser error
-recovery + good diagnostics.
-*Gate:* every P1 sample round-trips source → AST → re-printed source (a parser fidelity test); malformed
-input yields clear, positioned errors.
+## P3 — Full front-end (lexer + parser) ✅ done (2026-06-29)
+Widened the MVP front-end to the entire P1 grammar: full token set + a recursive-descent parser over the
+whole surface — expressions (member/index/call, `?.`/`??`/`!`, ranges, lambdas, list/tuple/`with`, if-expr,
+`match` + patterns), the `TypeRef` type grammar (named/generic/tuple/function/nullable), all statements
+(`for`/`while`/`do`-less, `try`/`catch`/`when`/`finally`, `throw`, `use`, `yield`, break/continue,
+compound/lvalue assignment), declarations (`fn`/`record`/`class`/`interface`/`extension`/`enum`/`union`,
+members, generic params/bounds, default params), and `import`. A canonical `.pg` pretty-printer
+(`pg_printer`, exposed as `polyglot fmt`) is the fidelity surface.
+*Gate (closed):* all 10 `docs/lang/samples/*.pg` (incl. `fruitcake_sketch`) round-trip source → AST →
+source idempotently — `tests/fidelity/run-roundtrip.ps1`, wired into `/build-and-test`. Malformed input
+yields `file:line:col` diagnostics. Built incrementally (P3 1 → 3e-3), green at every step.
+*Deferred (small, needed before P5 emission, not the gate):* string interpolation currently parses
+opaquely (`"${x}"` is one literal string — idempotent but the inner expr isn't parsed); the `{ get/set }`
+property-accessor form and nested-generic edge cases beyond the samples. The trivia-bearing lexer keeps
+comments/whitespace for *later* readable output; the P3 printer is canonical (re-formats), not
+trivia-preserving.
 
 ## P4 — Full semantics + typed IR
 Widen the MVP's minimal typer to the full **minimal static type system** (enough for the §3.A surface:

@@ -64,8 +64,11 @@ conformance gate (`tests/conformance/run-diff.ps1`) is green. 20 in-process test
 To verify: build (VS 18 Insiders MSBuild), then run `x64\Debug\MintPlayer.Polyglot.Tests.exe` and
 `pwsh tests/conformance/run-diff.ps1` (needs `dotnet` + `node` on PATH).
 
-**Next: P3 — widen the front-end** (full P1 grammar; trivia-bearing lexer; error recovery; all samples
-round-trip source→AST→source). Then P4 (full semantics+IR), P5 (backends→full §3.A). See PLAN.md.
+**P3 ✅ done** — full P1 grammar parses; a canonical `.pg` pretty-printer (`polyglot fmt`) round-trips all
+10 `docs/lang/samples/*.pg` idempotently (`tests/fidelity/run-roundtrip.ps1`, in `/build-and-test`). One
+deferral: string interpolation parses opaquely (real segments needed before P5). **Next: P4 — full
+semantics + typed IR** (name resolution + the minimal static type system over the full surface; lower AST
+→ typed IR). Then P5 (backends → full §3.A + the backend-interface seam). See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.
