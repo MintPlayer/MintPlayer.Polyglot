@@ -323,6 +323,14 @@ Net effect: the std becomes honestly import-based (no magic builtins except the 
 static methods and the core `Error`/`Iterable` types), the broken samples become *compilable* (and join a
 compile check, not just `fmt`), and hello-world stays `print(…)` via `lib: ["io"]`. See **PLAN P13**.
 
+> **Known mechanism gap (note 2026-06-29, to close in P10).** The "Binding" plugin mechanism (`extern class`
+> + `actual(target) extern("…")`) currently binds **member/property access** for *any* type, but **cannot
+> yet bind a plugin class's own type-name → target type, nor its construction** — only the std-blessed
+> `List`/`Iterable`/`Error` (and `List<T>()`) are hardcoded. So a user plugin class's type name and `new T(…)`
+> emit literally; it's usable today only for methods on params/FFI results. Letting a binding declare its
+> target type spelling (feeding the P9 backend type table) + a constructor template is **P10** work — the
+> Binding mechanism's complete form. See PLAN P10 and `design/backend-spec.md` §4a.
+
 ---
 
 ## 5. Testing strategy

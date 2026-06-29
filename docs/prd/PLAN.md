@@ -224,6 +224,15 @@ WinForms, with its PackageReferences) requires **no core change** — only `pgco
 using them emits a buildable project, and wrong-target/-environment use **and use of a feature outside the
 target intersection** are each rejected with a clear, distinct diagnostic.
 
+**Prerequisite mechanism gap to close here (noted P13, 2026-06-29):** a plugin/`extern class` can currently
+bind **member/property access** (`$this.method($0)`) but **not its own type-name → target type, nor its
+construction**. Only the std-blessed types are hardcoded (`List`→`System.Collections.Generic.List`/`T[]`,
+`Iterable`, `Error`; `List<T>()`→`new List`/`[]` in `csType`/`tsType`/emit). So a user plugin class's type
+name and `new T(…)` emit literally today. P10 (or a small precursor) must let a binding plugin declare its
+**target type spelling** (feeding the P9 `BackendSpec` type table) and a **constructor template**, so an
+`extern class` is fully usable — instances constructed, not just methods called on params/FFI results. This
+is the "Binding" mechanism (plugins-and-targets.md §2) reaching its complete form. See `design/backend-spec.md` §4a.
+
 ## P11 — Build integration: the `.pg`-aware NuGet (and npm) on-ramp
 Make adoption frictionless: a developer adds a package to an ordinary C# project, drops in `.pg` files,
 runs `dotnet build`, and the `.pg` is transpiled to C# and compiled into the assembly with **no manual
