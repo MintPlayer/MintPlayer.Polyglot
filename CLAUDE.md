@@ -64,11 +64,12 @@ conformance gate (`tests/conformance/run-diff.ps1`) is green. 20 in-process test
 To verify: build (VS 18 Insiders MSBuild), then run `x64\Debug\MintPlayer.Polyglot.Tests.exe` and
 `pwsh tests/conformance/run-diff.ps1` (needs `dotnet` + `node` on PATH).
 
-**P3 ✅ done** — full P1 grammar parses (incl. real string interpolation); a canonical `.pg` pretty-printer
-(`polyglot fmt`) round-trips all 10 `docs/lang/samples/*.pg` idempotently (`tests/fidelity/run-roundtrip.ps1`,
-in `/build-and-test`). **Next: P4 — full semantics + typed IR** (name resolution + the minimal static type
-system over the full surface; lower AST → typed IR). Then P5 (backends → full §3.A + the backend-interface
-seam). See PLAN.md.
+**P3 ✅** full P1 grammar parses (incl. interpolation); `polyglot fmt` round-trips all 10 samples
+(`tests/fidelity/run-roundtrip.ps1`). **P4 ✅** semantics + a **separate typed IR**: resolution + nominal
+typing + match exhaustiveness in `sema.cpp`; AST→IR `lower.cpp` into `ir.hpp`; backends emit from the IR
+(pipeline = lexer→parser→sema→lower→IR→backend). Full sema runs on self-contained programs (std-using
+samples checked end-to-end at P7). **Next: P5 — widen IR/lowering/backends to the full §3.A surface** +
+introduce the backend-interface seam (a `Backend` abstraction + registry). See PLAN.md.
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

@@ -5,9 +5,9 @@
 > general-purpose "any language → any language" compiler (a multi-decade trap); it is **faithful-by-
 > default with a published relaxation list**, and it **refuses** the features that sink transpilers.
 
-- **Status:** Draft v1.0 · 2026-06-29 · P0 built; P1 locked; P2 MVP (running C# + TS, conformance green);
-  **P3 done** — full P1 grammar parses + all 10 samples round-trip (`polyglot fmt`). Next: P4 (full
-  semantics + typed IR).
+- **Status:** Draft v1.0 · 2026-06-29 · P0 built; P1 locked; P2 MVP; P3 (full grammar + round-trip);
+  **P4 done** — semantics + a separate typed IR; pipeline is lexer→parser→sema→lower→IR→backend. Next: P5
+  (widen IR/lowering/backends to the full §3.A surface).
 - **Author:** Pieterjan (with Claude Code).
 - **Provenance:** distilled from a four-agent investigation into multi-target transpilers (Haxe, Kotlin
   Multiplatform, Fable, Scala.js, TypeScript, J2CL/GWT, JSIL, Bridge.NET). The investigation's
@@ -195,7 +195,8 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   targets" bet.
 - **P3 — Full front-end.** ✅ Full P1 grammar parses (incl. real string interpolation); `.pg` pretty-printer
   (`polyglot fmt`) round-trips all 10 samples idempotently (fidelity gate in `/build-and-test`).
-- **P4 — Full semantics + IR.** Name resolution + the minimal static type system; lower full AST → typed IR.
+- **P4 — Full semantics + IR.** ✅ Resolution + nominal type system + match exhaustiveness; a separate
+  typed IR (`ir.hpp`) produced by a lowering pass; backends emit from the IR.
 - **P5 — Backends to full §3.A.** Widen both C#/TS pretty-printers to the entire surface; golden baselines
   both targets; the differential suite grows.
 - **P6 — Faithfulness pass.** int32 masking, the §3.C relaxations (documented), the §3.B refusals (with

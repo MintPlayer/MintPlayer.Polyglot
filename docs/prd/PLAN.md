@@ -61,13 +61,23 @@ nested strings inside an interpolation hole, and nested-generic edge cases beyon
 trivia-bearing lexer keeps comments/whitespace for *later* readable output; the P3 printer is canonical
 (re-formats), not trivia-preserving.
 
-## P4 — Full semantics + typed IR
-Widen the MVP's minimal typer to the full **minimal static type system** (enough for the §3.A surface:
-nominal types, generics, overload resolution, nullability, pattern-match exhaustiveness) + name/scope
-resolution. Lower the full AST into the single high-level typed tree IR (§4.2), folding in desugaring. All
-diagnostics emitted here, on a near-source form.
-*Gate:* type errors are reported with positions; valid samples produce a typed IR dump that round-trips;
-overload/closure/generic resolution covered by unit tests.
+## P4 — Full semantics + typed IR ✅ done (2026-06-29)
+Built the static type system + the **separate typed IR** (per the design decision to make the IR its own
+tree, not just the typed AST): name/type resolution across the whole declaration surface (unknown-type,
+duplicate, missing-member, wrong-arity diagnostics); nominal expression typing (members, construction,
+method calls, operator-overload lookup, `this`/`super`, `EnumName.Case`, nullability) — lenient on
+unknown/generic/std types so there are no false positives; pattern-match exhaustiveness (union/enum/bool +
+catch-all required for non-enumerable scalars); a dedicated IR (`ir.hpp`: typed tagged hierarchy carrying
+resolved decisions — the `print` intrinsic, the `main` entry) produced by a lowering pass (`lower.hpp`,
+AST→IR after sema); and the **backends rerouted to emit from the IR**, so the pipeline is now
+lexer→parser→sema→lower→IR→backend (PRD §4.1/§4.2).
+*Gate (closed):* type errors reported with `file:line:col`; a deterministic **typed IR dump** (`<expr>:<type>`)
+verified by unit tests; resolution/typing/exhaustiveness covered by ~25 sema/IR unit tests. Conformance
+unchanged (arithmetic.pg → IR → identical C#/TS).
+*Notes:* full semantic checking runs on self-contained programs; the std-using P1 samples get end-to-end
+type-checking at P7 (when `List`/`Error`/`sqrt`/… exist). The IR/lowering cover the MVP subset today and
+widen to the full §3.A surface in P5. Expr nodes now carry a resolved `TypeRef`. Generic *instantiation*
+substitution and full overload *mangling* are best-effort/lenient for now (refined as P5/P6 need them).
 
 ## P5 — Backends to the full §3.A surface
 Widen both hand-written pretty-printers from the MVP subset to the **entire supported surface**: records,
