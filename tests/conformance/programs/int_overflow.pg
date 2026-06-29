@@ -1,0 +1,17 @@
+// P6 differential conformance: i32 faithfulness (§3.C). JS numbers are f64, so
+// without masking integer division wouldn't truncate and overflow wouldn't
+// wrap. The TS backend emits `| 0` / Math.imul so JS matches .NET's unchecked
+// int32 semantics; C# `int` already wraps + truncates at runtime.
+
+fn main() {
+  print(7 / 2)            // 3    (truncates toward zero; JS 7/2 = 3.5 without |0)
+  print(-7 / 2)           // -3
+
+  var big = 100000
+  print(big * big)        // 1410065408   (1e10 wrapped into int32)
+
+  var max = 2000000000
+  print(max + max)        // -294967296    (4e9 wrapped into int32)
+
+  print(17 % 5)           // 2
+}

@@ -43,6 +43,7 @@ bool isScalarName(const std::string& n) {
 bool isUserType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && !t.name.empty() && !isScalarName(t.name);
 }
+bool isI32(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "i32"; }
 // Operator symbol -> overload method name (TS has no operator overloading; call the method instead).
 std::string opMethod(const std::string& op) {
     if (op == "+") return "plus";
@@ -430,6 +431,7 @@ private:
                 const auto& u = static_cast<const ir::Unary&>(e);
                 std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
                                                                               : emitExpr(*u.operand);
+                if (isI32(e.type) && u.op == "-") return "(-" + operand + " | 0)"; // wrap negate of INT_MIN
                 return u.op + operand;
             }
             case ir::ExprKind::Binary: {
@@ -439,7 +441,16 @@ private:
                     if (!method.empty()) return atom(*b.lhs) + "." + method + "(" + emitExpr(*b.rhs) + ")";
                 }
                 int p = prec(b.op);
-                return child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
+                std::string lhs = child(*b.lhs, p, false), rhs = child(*b.rhs, p, true);
+                // §3.C: i32 arithmetic must wrap on overflow and truncate on division like .NET — JS numbers
+                // are f64. `| 0` coerces back to a signed 32-bit int at each operation boundary; `*` needs
+                // Math.imul (a plain product can exceed 2^53 and lose the low 32 bits before `| 0`).
+                if (isI32(e.type)) {
+                    if (b.op == "*") return "Math.imul(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")";
+                    if (b.op == "+" || b.op == "-" || b.op == "/" || b.op == "%")
+                        return "(" + lhs + " " + b.op + " " + rhs + " | 0)";
+                }
+                return lhs + " " + b.op + " " + rhs;
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
