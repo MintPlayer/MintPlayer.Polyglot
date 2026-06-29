@@ -88,6 +88,18 @@ public:
         }
         for (auto& d : unit.records) checkTypeBody(d.name, d.generics, d.members, &d.fields);
         for (auto& d : unit.classes) checkTypeBody(d.name, d.generics, d.members, nullptr);
+        for (auto& d : unit.extensions) { // `this` denotes the receiver inside an extension body
+            currentReturn_ = d.returnType;
+            currentThis_ = d.receiver;
+            pushGenerics(d.generics);
+            pushScope();
+            for (const auto& p : d.params) declare(p.name, p.type, false, p.pos);
+            if (d.exprBody) checkExpr(*d.exprBody);
+            else checkBlock(d.body);
+            popScope();
+            popGenerics(d.generics);
+            currentThis_ = tUnknown();
+        }
     }
 
 private:
@@ -101,6 +113,7 @@ private:
     std::unordered_map<std::string, std::string> unionCaseOwner_; // case name -> union type
     std::unordered_map<std::string, std::vector<std::string>> unionAllCases_; // union -> all case names
     std::unordered_map<std::string, std::vector<std::string>> enumAllCases_;  // enum  -> all case names
+    std::unordered_map<std::string, FnSig> extensions_;        // "RecvType.method" -> extension sig
     std::unordered_set<std::string> genericsInScope_;
     std::vector<std::unordered_map<std::string, Local>> scopes_;
     TypeRef currentReturn_ = namedType("unit");
@@ -175,6 +188,10 @@ private:
             fns_[fn.name] = std::move(sig);
         }
         for (const auto& v : u.values) values_[v.name] = v.hasType ? v.type : tUnknown();
+        for (const auto& e : u.extensions) {
+            FnSig sig; for (const auto& p : e.params) sig.params.push_back(p.type); sig.result = e.returnType;
+            extensions_[e.receiver.name + "." + e.name] = std::move(sig); // keyed by receiver type + method
+        }
     }
 
     const MemberInfo* findMember(const std::string& typeName, const std::string& name) const {
@@ -486,6 +503,14 @@ private:
             // Method call `recv.method(args)`.
             const std::string& method = e.lhs->text;
             TypeRef recv = checkExpr(*e.lhs->lhs);
+            // An extension method augments any receiver type (scalar or nominal); check it first so a
+            // `type 'T' has no method` error doesn't fire for a method an extension actually supplies.
+            if (recv.kind == TypeRef::Kind::Named) {
+                if (auto it = extensions_.find(recv.name + "." + method); it != extensions_.end()) {
+                    checkArgs(it->second.params, argTypes, e.args, "extension '" + method + "'", e.pos);
+                    return it->second.result;
+                }
+            }
             if (knownType(recv)) {
                 if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos); return m->type; }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");

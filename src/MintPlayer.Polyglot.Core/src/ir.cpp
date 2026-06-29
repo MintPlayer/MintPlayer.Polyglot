@@ -37,6 +37,7 @@ public:
         }
         for (const auto& r : m.records) record(r);
         for (const auto& c : m.classes) klass(c);
+        for (const auto& fn : m.extensions) function(fn);
         for (const auto& fn : m.functions) function(fn);
         return out_;
     }
@@ -91,6 +92,8 @@ private:
         sig += "): " + typeName(fn.returnType);
         if (fn.isEntry) sig += " [entry]";
         if (fn.isIterator) sig += " [iterator]";
+        if (fn.isExtension) sig += " [extension]";
+        if (fn.exprBodied) { line(sig + " => " + expr(*fn.exprBody)); return; }
         line(sig + " {");
         ++indent_;
         for (const auto& s : fn.body) stmt(*s);

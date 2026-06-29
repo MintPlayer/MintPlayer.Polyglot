@@ -1,0 +1,104 @@
+#include "mintplayer/polyglot/capability.hpp"
+
+#include <array>
+#include <string>
+
+namespace mintplayer::polyglot {
+
+namespace {
+
+// Walks the AST accumulating the set of capability-flagged features the program uses, recording the first
+// source position of each. Declarations expose features structurally (an `extension`, an `operator`/
+// `property` member, a class with a base); statements/expressions expose them by node kind (`yield`,
+// try/throw, `use`, `match`, lambda).
+class Collector {
+public:
+    std::vector<FeatureUse> uses;
+
+    void run(const CompilationUnit& u) {
+        for (const auto& e : u.extensions) {
+            mark(Feature::ExtensionMethods, e.pos);
+            for (const auto& s : e.body) stmt(s.get());
+            expr(e.exprBody.get());
+        }
+        for (const auto& f : u.functions) for (const auto& s : f.body) stmt(s.get());
+        for (const auto& d : u.records)    typeBody(d.members);
+        for (const auto& d : u.interfaces) typeBody(d.members);
+        for (const auto& d : u.classes) {
+            if (!d.bases.empty()) mark(Feature::Inheritance, d.pos);
+            typeBody(d.members);
+        }
+    }
+
+private:
+    std::array<bool, 32> seen_{}; // indexed by (int)Feature — first use of each is the one reported
+
+    void mark(Feature f, SourcePos pos) {
+        auto i = static_cast<std::size_t>(f);
+        if (seen_[i]) return;
+        seen_[i] = true;
+        uses.push_back({f, pos});
+    }
+
+    void typeBody(const std::vector<Member>& members) {
+        for (const auto& m : members) {
+            if (m.kind == MemberKind::Operator) mark(Feature::OperatorOverloading, m.pos);
+            if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
+            for (const auto& s : m.body) stmt(s.get());
+            expr(m.exprBody.get());
+            expr(m.init.get());
+        }
+    }
+
+    void stmt(const Stmt* s) {
+        if (!s) return;
+        switch (s->kind) {
+            case StmtKind::Yield: mark(Feature::Iterators, s->pos); break;
+            case StmtKind::Throw:
+            case StmtKind::Try:   mark(Feature::Exceptions, s->pos); break;
+            case StmtKind::Use:   mark(Feature::Disposal, s->pos); break;
+            default: break;
+        }
+        expr(s->value.get());
+        expr(s->target.get());
+        for (const auto& st : s->thenBody) stmt(st.get());
+        for (const auto& st : s->elseBody) stmt(st.get());
+        for (const auto& c : s->catches) { expr(c.guard.get()); for (const auto& st : c.body) stmt(st.get()); }
+        for (const auto& st : s->finallyBody) stmt(st.get());
+    }
+
+    void expr(const Expr* e) {
+        if (!e) return;
+        if (e->kind == ExprKind::Match)  mark(Feature::PatternMatching, e->pos);
+        if (e->kind == ExprKind::Lambda) mark(Feature::Closures, e->pos);
+        expr(e->lhs.get());
+        expr(e->rhs.get());
+        expr(e->extra.get());
+        for (const auto& a : e->args) expr(a.get());
+        for (const auto& st : e->block) stmt(st.get());
+        for (const auto& f : e->fields) expr(f.value.get());
+        for (const auto& arm : e->arms) {
+            expr(arm.guard.get());
+            expr(arm.body.get());
+            for (const auto& st : arm.block) stmt(st.get());
+        }
+    }
+};
+
+} // namespace
+
+std::vector<FeatureUse> collectFeatureUses(const CompilationUnit& unit) {
+    Collector c;
+    c.run(unit);
+    return std::move(c.uses);
+}
+
+void checkCapabilities(const CompilationUnit& unit, const Backend& backend, DiagnosticBag& diags) {
+    for (const auto& use : collectFeatureUses(unit)) {
+        if (!backend.supports(use.feature))
+            diags.error(use.pos, std::string("target '") + backend.name() + "' does not support " +
+                                      featureName(use.feature) + "; remove it or drop that target");
+    }
+}
+
+} // namespace mintplayer::polyglot

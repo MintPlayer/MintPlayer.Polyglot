@@ -66,6 +66,7 @@
     <ClInclude Include="include\mintplayer\polyglot\ir.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\lower.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\capability.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />
@@ -79,6 +80,7 @@
     <ClCompile Include="src\ir.cpp" />
     <ClCompile Include="src\lower.cpp" />
     <ClCompile Include="src\backend.cpp" />
+    <ClCompile Include="src\capability.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

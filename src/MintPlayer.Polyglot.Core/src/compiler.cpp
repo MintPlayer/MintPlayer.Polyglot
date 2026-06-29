@@ -3,6 +3,7 @@
 #include "mintplayer/polyglot/ast.hpp"
 #include "mintplayer/polyglot/emit.hpp"
 #include "mintplayer/polyglot/backend.hpp"
+#include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
@@ -24,8 +25,12 @@ EmitResult compile(const std::string& source, Target target) {
     check(unit, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    ir::Module module = lower(unit);
     const Backend* backend = findBackend(target == Target::CSharp ? "csharp" : "typescript");
+    // §3.E: refuse any used feature this target can't emit, before lowering/emitting (never miscompile).
+    checkCapabilities(unit, *backend, diags);
+    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
+
+    ir::Module module = lower(unit);
     result.code = backend->emit(module);
     result.ok = true;
     return result;

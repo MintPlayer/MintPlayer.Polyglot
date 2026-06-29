@@ -68,7 +68,15 @@ public:
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
-        if (!m.enums.empty() || !m.unions.empty() || !m.records.empty() || !m.classes.empty()) out_ += "\n";
+        if (!m.extensions.empty()) { // extension methods live in a top-level static class (global namespace)
+            line("static class Extensions");
+            line("{");
+            ++indent_;
+            for (const auto& f : m.extensions) emitExtension(f);
+            --indent_;
+            line("}");
+        }
+        if (!m.enums.empty() || !m.unions.empty() || !m.records.empty() || !m.classes.empty() || !m.extensions.empty()) out_ += "\n";
         out_ += "static class Program\n{\n";
         indent_ = 1;
         for (const auto& fn : m.functions) emitFunction(fn);
@@ -192,6 +200,16 @@ private:
     std::string atom(const ir::Expr& e) {
         std::string s = emitExpr(e);
         return (e.kind == ir::ExprKind::Binary || e.kind == ir::ExprKind::Unary) ? "(" + s + ")" : s;
+    }
+
+    // `public static R name(this T self, …)` — the leading `self` param carries the C# `this` modifier.
+    void emitExtension(const ir::Function& f) {
+        std::string sig = "public static " + csType(f.returnType) + " " + f.name + "(this " +
+                          csType(f.params[0].type) + " " + f.params[0].name;
+        for (std::size_t i = 1; i < f.params.size(); ++i) sig += ", " + csType(f.params[i].type) + " " + f.params[i].name;
+        sig += ")";
+        if (f.exprBodied) line(sig + " => " + emitExpr(*f.exprBody) + ";");
+        else { line(sig); emitBlock(f.body); }
     }
 
     void emitFunction(const ir::Function& fn) {

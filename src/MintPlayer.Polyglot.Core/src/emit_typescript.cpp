@@ -77,6 +77,7 @@ public:
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
+        for (const auto& f : m.extensions) emitExtension(f);
         for (const auto& fn : m.functions) emitFunction(fn);
         for (const auto& fn : m.functions) {
             if (fn.isEntry) { line("main();"); break; }
@@ -211,6 +212,20 @@ private:
         // a scalar binary needs parens as a receiver; a user-type binary emits a (high-binding) method call
         if (e.kind == ir::ExprKind::Binary && !isUserType(static_cast<const ir::Binary&>(e).lhs->type)) return "(" + s + ")";
         return s;
+    }
+
+    // An extension lowers to a plain free function whose first param is the receiver `self`; call sites
+    // emit `name(obj, …)` (TS has no extension-method call syntax — the `x.m()` reading cannot survive).
+    void emitExtension(const ir::Function& f) {
+        std::string sig = "function " + f.name + "(";
+        for (std::size_t i = 0; i < f.params.size(); ++i) { if (i) sig += ", "; sig += f.params[i].name + ": " + tsType(f.params[i].type); }
+        sig += "): " + tsType(f.returnType) + " {";
+        line(sig);
+        ++indent_;
+        if (f.exprBodied) line("return " + emitExpr(*f.exprBody) + ";");
+        else for (const auto& s : f.body) emitStmt(*s);
+        --indent_;
+        line("}");
     }
 
     void emitFunction(const ir::Function& fn) {
@@ -423,6 +438,11 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
+                if (mc.isExtension) { // free-function form: name(obj, args)
+                    std::string s = mc.method + "(" + emitExpr(*mc.object);
+                    for (const auto& a : mc.args) s += ", " + emitExpr(*a);
+                    return s + ")";
+                }
                 std::string s = atom(*mc.object) + "." + mc.method + "(";
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                 return s + ")";

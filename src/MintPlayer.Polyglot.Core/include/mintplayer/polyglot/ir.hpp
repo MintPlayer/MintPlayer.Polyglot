@@ -78,6 +78,7 @@ struct MethodCall : Expr { // `object.method(args)`
     ExprPtr object;
     std::string method;
     std::vector<ExprPtr> args;
+    bool isExtension = false; // resolved to an extension fn: C# keeps `obj.m(args)`, TS emits `m(obj, args)`
     MethodCall(SourcePos p, Type t, ExprPtr o, std::string m)
         : Expr(ExprKind::MethodCall, p, std::move(t)), object(std::move(o)), method(std::move(m)) {}
 };
@@ -243,6 +244,9 @@ struct Function {
     std::vector<StmtPtr> body;
     bool isEntry = false;    // a `fn main()` with no params — the program entry point
     bool isIterator = false; // body contains `yield` — C# `IEnumerable<T>`+`yield return`, TS `function*`
+    bool isExtension = false; // an `extension fn T.m(...)`: params[0] is the receiver `self` (type T)
+    bool exprBodied = false; // `=> expr` vs block (extensions; regular fns always use a block today)
+    ExprPtr exprBody;        // exprBodied
 };
 struct RecordField {
     std::string name;
@@ -306,6 +310,7 @@ struct Module {
     std::vector<Union> unions;
     std::vector<Record> records;
     std::vector<Class> classes;
+    std::vector<Function> extensions; // `extension fn T.m(...)` — each isExtension, params[0] is `self`
     std::vector<Function> functions;
 };
 

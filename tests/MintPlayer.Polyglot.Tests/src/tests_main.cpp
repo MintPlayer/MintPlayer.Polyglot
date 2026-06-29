@@ -2,6 +2,7 @@
 #include <string>
 
 #include "mintplayer/polyglot/backend.hpp"
+#include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
 #include "mintplayer/polyglot/lower.hpp"
@@ -28,6 +29,17 @@ void check(bool condition, const std::string& name) {
 bool has(const std::string& haystack, const std::string& needle) {
     return haystack.find(needle) != std::string::npos;
 }
+
+// A backend that supports the whole §3.A surface except one feature — used to prove §3.E gating bites.
+class StubBackend : public Backend {
+public:
+    explicit StubBackend(Feature missing) : missing_(missing) {}
+    std::string name() const override { return "stub"; }
+    std::string emit(const ir::Module&) const override { return ""; }
+    bool supports(Feature f) const override { return f != missing_; }
+private:
+    Feature missing_;
+};
 
 // A small program exercising the whole MVP subset.
 const char* kProgram =
@@ -225,6 +237,39 @@ int main() {
     check(findBackend("csharp") != nullptr && findBackend("csharp")->name() == "csharp", "P5: csharp backend registered");
     check(findBackend("typescript") != nullptr && findBackend("typescript")->name() == "typescript", "P5: typescript backend registered");
     check(findBackend("python") == nullptr, "P5: unknown backend is not found");
+
+    // P5 §3.E — per-target capability gating.
+    {
+        const char* extProg =
+            "extension fn i32.doubled(): i32 => this * 2\n"
+            "fn main() { let n = 5\n print(n.doubled()) }\n";
+        DiagnosticBag d;
+        auto unit = parse(lex(extProg, d), d);
+
+        std::vector<FeatureUse> uses = collectFeatureUses(unit);
+        bool sawExt = false;
+        for (const auto& u : uses) if (u.feature == Feature::ExtensionMethods) sawExt = true;
+        check(sawExt, "P5.E: collectFeatureUses detects extensionMethods");
+
+        DiagnosticBag dcs;
+        checkCapabilities(unit, *findBackend("csharp"), dcs);
+        check(!dcs.hasErrors(), "P5.E: csharp (full capability set) accepts extension methods");
+
+        StubBackend stub(Feature::ExtensionMethods);
+        DiagnosticBag ds;
+        checkCapabilities(unit, stub, ds);
+        check(ds.hasErrors(), "P5.E: a backend lacking extensionMethods refuses the program");
+        bool named = false;
+        for (const auto& it : ds.items())
+            if (has(it.message, "extensionMethods") && has(it.message, "stub")) named = true;
+        check(named, "P5.E: the capability diagnostic names the feature and the target");
+
+        // A feature the program does NOT use must not be gated.
+        StubBackend noIter(Feature::Iterators);
+        DiagnosticBag dn;
+        checkCapabilities(unit, noIter, dn);
+        check(!dn.hasErrors(), "P5.E: a missing capability the program doesn't use is not refused");
+    }
 
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";

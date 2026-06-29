@@ -1,0 +1,21 @@
+// P5 differential conformance: extension methods. `extension fn T.m()` is
+// called as `x.m()` in source; C# emits a real `this`-extension (call site
+// `x.m()` survives), TS emits a free function (`m(x)` — the call site cannot
+// keep method syntax). Both produce identical output. Extensions here cover a
+// scalar receiver and a user record receiver, and chain.
+
+record Vec(x: i32, y: i32)
+
+extension fn i32.doubled(): i32 => this * 2
+extension fn i32.plus(n: i32): i32 => this + n
+extension fn Vec.sum(): i32 => this.x + this.y
+
+fn main() {
+  let n = 5
+  print(n.doubled())          // 10
+  print(n.plus(3))            // 8
+  print(n.doubled().plus(1))  // 11  (chained: 10 + 1)
+
+  let v = Vec(4, 6)
+  print(v.sum())              // 10
+}

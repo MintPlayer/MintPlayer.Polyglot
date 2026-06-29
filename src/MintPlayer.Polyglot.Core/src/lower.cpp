@@ -21,6 +21,7 @@ public:
                 unionCases_[u.name].insert(c.name);
                 for (const auto& f : c.params) caseFields_[c.name].push_back(f.name);
             }
+        for (const auto& e : unit.extensions) extensions_[e.receiver.name].insert(e.name);
     }
 
     ir::Module run(const CompilationUnit& unit) {
@@ -53,6 +54,19 @@ public:
             m.records.push_back(std::move(rec));
         }
         for (const auto& c : unit.classes) m.classes.push_back(lowerClass(c));
+        for (const auto& ext : unit.extensions) {
+            ir::Function f;
+            f.name = ext.name;
+            f.isExtension = true;
+            f.returnType = ext.returnType;
+            f.params.push_back({"self", ext.receiver}); // the receiver becomes the leading `self` parameter
+            for (const auto& p : ext.params) f.params.push_back({p.name, p.type});
+            inExtension_ = true; // inside the body, `this` denotes the receiver -> lower to `self`
+            if (ext.exprBody) { f.exprBodied = true; f.exprBody = expr(*ext.exprBody); }
+            else f.body = block(ext.body);
+            inExtension_ = false;
+            m.extensions.push_back(std::move(f));
+        }
         for (const auto& fn : unit.functions) {
             ir::Function f;
             f.name = fn.name;
@@ -68,7 +82,9 @@ public:
     }
 
 private:
-    bool sawYield_ = false; // set while lowering a function body that contains `yield`
+    bool sawYield_ = false;     // set while lowering a function body that contains `yield`
+    bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
+    std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
     std::unordered_set<std::string> typeNames_;
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
@@ -209,7 +225,9 @@ private:
                 if (auto u = caseUnion_.find(e.text); u != caseUnion_.end()) // bare payload-free union case
                     return std::make_unique<ir::MakeCase>(e.pos, e.type, u->second, e.text);
                 return std::make_unique<ir::Var>(e.pos, e.type, e.text);
-            case ExprKind::This:      return std::make_unique<ir::This>(e.pos, e.type);
+            case ExprKind::This:
+                if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
+                return std::make_unique<ir::This>(e.pos, e.type);
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member:    return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
@@ -223,7 +241,12 @@ private:
             }
             case ExprKind::Call: {
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
+                    const TypeRef& rt = e.lhs->lhs->type; // receiver type, resolved by sema
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);
+                    if (rt.kind == TypeRef::Kind::Named) {
+                        auto it = extensions_.find(rt.name);
+                        if (it != extensions_.end() && it->second.count(e.lhs->text)) mc->isExtension = true;
+                    }
                     for (const auto& a : e.args) mc->args.push_back(expr(*a));
                     return mc;
                 }
