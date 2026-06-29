@@ -38,6 +38,28 @@ public:
                 for (const auto& f : c.params) caseFields_[c.name].push_back(f.name);
             }
         for (const auto& e : unit.extensions) extensions_[e.receiver.name].insert(e.name);
+        for (const auto& fn : unit.functions) freeFns_.insert(fn.name); // top-level fns -> C# qualifies as Program.fn
+        // Per-target FFI bindings on std types (e.g. List.add): keyed "Type.member" so a call/access on a
+        // receiver of that type lowers to a substituted template instead of a member call.
+        for (const auto& c : unit.classes)
+            for (const auto& mem : c.members)
+                if (!mem.bindings.empty()) bindings_[c.name + "." + mem.name] = &mem.bindings;
+        for (const auto& r : unit.records)
+            for (const auto& mem : r.members)
+                if (!mem.bindings.empty()) bindings_[r.name + "." + mem.name] = &mem.bindings;
+    }
+
+    // Build an ir::Bound from a receiver, args and a "Type.member" binding (picks the per-target arms).
+    ir::ExprPtr makeBound(const TypeRef& type, SourcePos pos, const Expr& recv,
+                          const std::vector<TargetBinding>& arms, const std::vector<ExprPtr>* args) {
+        auto b = std::make_unique<ir::Bound>(pos, type);
+        b->receiver = expr(recv);
+        if (args) for (const auto& a : *args) b->args.push_back(expr(*a));
+        for (const auto& arm : arms) {
+            if (arm.target == "csharp") b->csTemplate = arm.code;
+            else if (arm.target == "typescript") b->tsTemplate = arm.code;
+        }
+        return b;
     }
 
     ir::Module run(const CompilationUnit& unit) {
@@ -70,7 +92,15 @@ public:
                     rec.methods.push_back(method(mem));
             m.records.push_back(std::move(rec));
         }
-        for (const auto& c : unit.classes) m.classes.push_back(lowerClass(c));
+        for (const auto& c : unit.classes) if (!c.isExtern) m.classes.push_back(lowerClass(c)); // extern = native-backed, not emitted
+        for (const auto& v : unit.values) { // top-level const/let
+            ir::Global g;
+            g.name = v.name;
+            g.isConst = v.isConst;
+            g.type = v.hasType ? v.type : (v.init ? v.init->type : TypeRef{});
+            if (v.init) g.init = expr(*v.init);
+            m.globals.push_back(std::move(g));
+        }
         for (const auto& ext : unit.extensions) {
             ir::Function f;
             f.name = ext.name;
@@ -107,6 +137,8 @@ private:
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
+    std::unordered_map<std::string, const std::vector<TargetBinding>*> bindings_; // "Type.member" -> FFI arms
+    std::unordered_set<std::string> freeFns_;                                     // top-level function names
     std::unordered_set<std::string> typeNames_;
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
@@ -261,7 +293,14 @@ private:
             case ExprKind::IntLit:    return std::make_unique<ir::IntLit>(e.pos, e.type, stripNumericSuffix(e.text));
             case ExprKind::FloatLit:  return std::make_unique<ir::FloatLit>(e.pos, e.type, stripNumericSuffix(e.text));
             case ExprKind::BoolLit:   return std::make_unique<ir::BoolLit>(e.pos, e.type, e.boolVal);
+            case ExprKind::NullLit:   return std::make_unique<ir::NullLit>(e.pos, e.type);
             case ExprKind::StringLit: return std::make_unique<ir::StrLit>(e.pos, e.type, e.text);
+            case ExprKind::InterpString: {
+                auto in = std::make_unique<ir::Interp>(e.pos, e.type);
+                in->chunks = e.chunks;
+                for (const auto& a : e.args) in->holes.push_back(expr(*a));
+                return in;
+            }
             case ExprKind::Name:
                 if (auto u = caseUnion_.find(e.text); u != caseUnion_.end()) // bare payload-free union case
                     return std::make_unique<ir::MakeCase>(e.pos, e.type, u->second, e.text);
@@ -276,6 +315,9 @@ private:
                 return std::make_unique<ir::This>(e.pos, e.type);
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
             case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
+            // `x!` asserts the non-null type sema put on the node: a cast to it (C# unwraps a Nullable<T>
+            // value type via `(int)x`; for reference types it's an identity cast — TS strips both).
+            case ExprKind::NullAssert: return std::make_unique<ir::Cast>(e.pos, e.type, expr(*e.lhs));
             case ExprKind::Extern:    return std::make_unique<ir::Extern>(e.pos, e.type, e.text);
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member: {
@@ -283,6 +325,10 @@ private:
                     auto m = std::make_unique<ir::Member>(e.pos, e.type, nullptr, e.text, false);
                     m->staticType = "Math";
                     return m;
+                }
+                if (e.lhs->type.kind == TypeRef::Kind::Named) { // bound std property (e.g. List.count)
+                    if (auto it = bindings_.find(e.lhs->type.name + "." + e.text); it != bindings_.end())
+                        return makeBound(e.type, e.pos, *e.lhs, *it->second, nullptr);
                 }
                 return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
             }
@@ -306,6 +352,10 @@ private:
                         return mc;
                     }
                     const TypeRef& rt = e.lhs->lhs->type; // receiver type, resolved by sema
+                    if (rt.kind == TypeRef::Kind::Named) { // bound std method (e.g. List.add / List.removeAll)
+                        if (auto b = bindings_.find(rt.name + "." + e.lhs->text); b != bindings_.end())
+                            return makeBound(e.type, e.pos, *e.lhs->lhs, *b->second, &e.args);
+                    }
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);
                     if (rt.kind == TypeRef::Kind::Named) {
                         auto it = extensions_.find(rt.name);
@@ -335,9 +385,28 @@ private:
                     return mc;
                 }
                 auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, callee == "print");
+                call->isFree = freeFns_.count(callee) > 0; // a top-level fn (vs a function-valued local)
                 call->mangledCallee = e.overloadName.empty() ? callee : e.overloadName; // TS overload target
                 for (const auto& a : e.args) call->args.push_back(expr(*a));
                 return call;
+            }
+            case ExprKind::Index: {
+                // List element access `recv[i]` — both targets use `recv[i]`. The result type is the
+                // element type sema resolved onto the node.
+                if (!e.args.empty())
+                    return std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), expr(*e.args[0]));
+                return std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), std::make_unique<ir::IntLit>(e.pos, namedType("i32"), "0"));
+            }
+            case ExprKind::ListLit: {
+                TypeRef elem = e.type.kind == TypeRef::Kind::Named && !e.type.args.empty() ? e.type.args[0] : TypeRef{};
+                auto lst = std::make_unique<ir::ListLit>(e.pos, e.type, elem);
+                for (const auto& a : e.args) lst->elements.push_back(expr(*a));
+                return lst;
+            }
+            case ExprKind::TupleLit: {
+                auto tup = std::make_unique<ir::Tuple>(e.pos, e.type);
+                for (const auto& a : e.args) tup->elements.push_back(expr(*a));
+                return tup;
             }
             default: return std::make_unique<ir::IntLit>(e.pos, e.type, "0"); // surface not yet lowered (P5+)
         }
@@ -365,9 +434,11 @@ private:
                 return node;
             }
             case StmtKind::For: {
-                // Tuple-destructuring bindings widen with collections later; a single binding for now.
                 std::string binding = s.forBinding.kind == PatKind::Binding ? s.forBinding.name : "_";
                 auto node = std::make_unique<ir::For>(s.pos, binding);
+                if (s.forBinding.kind == PatKind::Tuple) // `for (a, b) in …`: destructure each element
+                    for (const auto& sub : s.forBinding.sub)
+                        node->tupleBindings.push_back(sub.kind == PatKind::Binding ? sub.name : "_");
                 if (s.value && s.value->kind == ExprKind::Range) {
                     node->isRange = true;
                     node->rangeStart = expr(*s.value->lhs);

@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/emit.hpp"
 
+#include <cctype>
 #include <string>
 #include <unordered_set>
 
@@ -22,6 +23,7 @@ std::string tsType(const TypeRef& t) {
             t.name == "u8" || t.name == "u16" || t.name == "u32" ||
             t.name == "f32" || t.name == "f64") return "number";
         if (t.name.empty()) return "unknown";
+        if (t.name == "List" && !t.args.empty()) return tsType(t.args[0]) + "[]"; // List<T> -> T[]
         std::string name = t.name; // Iterable<T> stays Iterable<T> (a generator is assignable to it)
         if (!t.args.empty()) {
             name += "<";
@@ -34,6 +36,11 @@ std::string tsType(const TypeRef& t) {
         std::string s = "(";
         for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += "arg" + std::to_string(i) + ": " + tsType(t.args[i]); }
         return s + ") => " + (t.ret.empty() ? "void" : tsType(t.ret[0]));
+    }
+    if (t.kind == TypeRef::Kind::Tuple) { // tuple type `[A, B]`
+        std::string s = "[";
+        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += tsType(t.args[i]); }
+        return s + "]";
     }
     return "unknown";
 }
@@ -139,6 +146,8 @@ public:
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
+        for (const auto& g : m.globals) // top-level const/let
+            line(std::string(g.isConst ? "const " : "let ") + g.name + ": " + tsType(g.type) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
         for (const auto& f : m.extensions) emitExtension(f);
         for (const auto& fn : m.functions) {
             if (!fn.actualTarget.empty() && fn.actualTarget != "typescript") continue; // other target's `actual`
@@ -314,6 +323,20 @@ private:
         return s;
     }
 
+    // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as TS.
+    std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
+        std::string out;
+        for (std::size_t i = 0; i < tmpl.size();) {
+            if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { out += emitExpr(*b.receiver); i += 5; }
+            else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
+                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+                if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
+                i += 2;
+            } else out += tmpl[i++];
+        }
+        return out;
+    }
+
     // An extension lowers to a plain free function whose first param is the receiver `self`; call sites
     // emit `name(obj, …)` (TS has no extension-method call syntax — the `x.m()` reading cannot survive).
     void emitExtension(const ir::Function& f) {
@@ -466,6 +489,10 @@ private:
                     std::string cmp = f.inclusive ? " <= " : " < ";
                     line("for (let " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
                          f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++) {");
+                } else if (!f.tupleBindings.empty()) { // `for (const [a, b] of seq)`
+                    std::string names;
+                    for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += f.tupleBindings[i]; }
+                    line("for (const [" + names + "] of " + emitExpr(*f.iterable) + ") {");
                 } else {
                     line("for (const " + f.binding + " of " + emitExpr(*f.iterable) + ") {");
                 }
@@ -508,6 +535,21 @@ private:
             }
             case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
+            case ir::ExprKind::Null:  return "null";
+            case ir::ExprKind::Interp: { // TS template literal `` `…${expr}…` ``
+                const auto& in = static_cast<const ir::Interp&>(e);
+                std::string s = "`";
+                for (std::size_t i = 0; i < in.chunks.size(); ++i) {
+                    for (std::size_t j = 0; j < in.chunks[i].size(); ++j) {
+                        char c = in.chunks[i][j];
+                        if (c == '`' || c == '\\') { s += '\\'; s += c; }
+                        else if (c == '$' && j + 1 < in.chunks[i].size() && in.chunks[i][j + 1] == '{') s += "\\$";
+                        else s += c;
+                    }
+                    if (i < in.holes.size()) s += "${" + emitExpr(*in.holes[i]) + "}";
+                }
+                return s + "`";
+            }
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
             case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
             case ir::ExprKind::This:  return "this";
@@ -610,8 +652,27 @@ private:
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                 return s + ")";
             }
+            case ir::ExprKind::Index: {
+                const auto& ix = static_cast<const ir::Index&>(e);
+                return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
+            }
+            case ir::ExprKind::ListLit: {
+                const auto& l = static_cast<const ir::ListLit&>(e);
+                std::string s = "[";
+                for (std::size_t i = 0; i < l.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*l.elements[i]); }
+                return s + "]";
+            }
+            case ir::ExprKind::Tuple: {
+                const auto& t = static_cast<const ir::Tuple&>(e);
+                std::string s = "[";
+                for (std::size_t i = 0; i < t.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*t.elements[i]); }
+                return s + "]";
+            }
+            case ir::ExprKind::Bound:
+                return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
+                if (n.typeName == "List") return "[]"; // List<T>() -> JS array literal
                 std::string ctor = n.typeName;
                 if (!n.typeArgs.empty()) {
                     ctor += "<";

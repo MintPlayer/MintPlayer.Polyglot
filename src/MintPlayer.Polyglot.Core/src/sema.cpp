@@ -255,6 +255,11 @@ public:
             popGenerics(d.generics);
             currentThis_ = tUnknown();
         }
+        for (auto& v : unit.values) { // type-check top-level const/let initializers (so their types propagate)
+            if (!v.init) continue;
+            checkExpr(*v.init);
+            if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
+        }
     }
 
 private:
@@ -502,6 +507,21 @@ private:
         }
     }
 
+    // Declare a for-loop binding with the iterated element type: a single binding takes `elem`; a tuple
+    // pattern `(a, b)` distributes a tuple element type across its sub-bindings (else they stay unknown).
+    void declareForBinding(const Pattern& p, const TypeRef& elem) {
+        if (p.kind == PatKind::Binding) {
+            declare(p.name, p.hasType ? p.type : elem, false, p.pos);
+        } else if (p.kind == PatKind::Tuple) {
+            for (std::size_t i = 0; i < p.sub.size(); ++i) {
+                TypeRef sub = (elem.kind == TypeRef::Kind::Tuple && i < elem.args.size()) ? elem.args[i] : tUnknown();
+                declareForBinding(p.sub[i], sub);
+            }
+        } else {
+            declarePattern(p);
+        }
+    }
+
     void checkStmt(Stmt& s) {
         switch (s.kind) {
             case StmtKind::Let: {
@@ -536,13 +556,16 @@ private:
                 requireBool(checkExpr(*s.value), s.pos, "'while' condition");
                 checkBlock(s.thenBody);
                 break;
-            case StmtKind::For:
-                if (s.value) checkExpr(*s.value);  // iterable (std Iterable/Range — lenient)
+            case StmtKind::For: {
+                TypeRef iter = s.value ? checkExpr(*s.value) : tUnknown();
+                // A range yields its (integer) bound type; a collection yields its element type.
+                TypeRef elem = (s.value && s.value->kind == ExprKind::Range) ? iter : elementType(iter);
                 pushScope();
-                declarePattern(s.forBinding);
+                declareForBinding(s.forBinding, elem);
                 for (auto& st : s.thenBody) checkStmt(*st);
                 popScope();
                 break;
+            }
             case StmtKind::Use:
                 if (s.value) checkExpr(*s.value);
                 pushScope();
@@ -580,6 +603,14 @@ private:
         if (s != Ty::Unknown && s != Ty::Bool) diags_.error(pos, std::string(what) + " must be bool, found " + tyName(s));
     }
 
+    // The element type of an iterable/collection: List<T> and Iterable<T> -> T; anything else -> unknown.
+    // Used to type `lst[i]` and the `for x in lst` binding.
+    TypeRef elementType(const TypeRef& t) {
+        if (t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Iterable") && !t.args.empty())
+            return t.args[0];
+        return tUnknown();
+    }
+
     // ---- expression typing ----
     // checkExpr annotates each node with its resolved type (read later by IR lowering), then returns it.
     TypeRef checkExpr(Expr& e) {
@@ -607,13 +638,18 @@ private:
                     diags_.error(e.pos, "'extern' target code is only allowed in a target-gated 'actual' — "
                                         "portable code must stay target-neutral (PRD §4.4)");
                 return tUnknown();
-            case ExprKind::Range:     checkExpr(*e.lhs); checkExpr(*e.rhs); return tUnknown();
+            case ExprKind::Range:     { TypeRef lo = checkExpr(*e.lhs); checkExpr(*e.rhs); return isNumericTypeName(lo) ? lo : tNamed("i32"); }
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);
-            case ExprKind::Index:     { checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); return tUnknown(); }
+            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); return elementType(recv); }
             case ExprKind::NullAssert:{ TypeRef t = checkExpr(*e.lhs); t.nullable = false; return t; }
             case ExprKind::Lambda:    return checkLambda(e);
-            case ExprKind::ListLit:   for (auto& a : e.args) checkExpr(*a); return tUnknown();
+            case ExprKind::ListLit:   { // `[a, b, …]` -> List<T>, T inferred from the first element
+                TypeRef elem = tUnknown();
+                for (auto& a : e.args) { TypeRef t = checkExpr(*a); if (elem.name.empty() && t.kind == TypeRef::Kind::Named) elem = t; }
+                TypeRef list; list.kind = TypeRef::Kind::Named; list.name = "List"; list.args.push_back(elem);
+                return list;
+            }
             case ExprKind::TupleLit:  { TypeRef t; t.kind = TypeRef::Kind::Tuple; for (auto& a : e.args) t.args.push_back(checkExpr(*a)); return t; }
             case ExprKind::With:      { TypeRef base = checkExpr(*e.lhs); for (auto& f : e.fields) checkExpr(*f.value); return base; }
             case ExprKind::IfExpr:    { requireBool(checkExpr(*e.lhs), e.pos, "'if' condition"); TypeRef t = checkExpr(*e.rhs); checkExpr(*e.extra); return t; }
@@ -684,6 +720,11 @@ private:
         if (op == "&&" || op == "||") {
             if ((l != Ty::Unknown && l != Ty::Bool) || (r != Ty::Unknown && r != Ty::Bool)) diags_.error(e.pos, "'" + op + "' expects bool operands");
             return tNamed("bool");
+        }
+        if (op == "??") { // null-coalescing: the left's type, made non-nullable (falls back to the right)
+            TypeRef res = lt; res.nullable = false;
+            if (res.name.empty() && res.kind == TypeRef::Kind::Named) res = rt;
+            return res;
         }
         TypeRef common;
         if (op == "==" || op == "!=") {

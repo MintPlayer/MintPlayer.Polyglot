@@ -177,6 +177,15 @@ struct FunctionDecl {
     std::string actualTarget;      // `actual(<target>) fn` — the per-target implementation; empty otherwise
 };
 
+// A per-target call-site binding for a method/property: raw target code with `$this` (the receiver)
+// and `$0`,`$1`,… (the arguments) substituted at each use. `$this = …` forms emit a receiver
+// assignment. This is how a portable .pg std type (e.g. List<T>) binds to native C#/JS operations.
+struct TargetBinding {
+    std::string target;   // "csharp" / "typescript"
+    std::string code;     // template, e.g. "$this.Add($0)" or "$this = $this.filter(e => !($0(e)))"
+    SourcePos pos;
+};
+
 // A member of a record/class/interface body.
 enum class MemberKind { Field, Const, Init, Method, Operator, Property };
 struct Member {
@@ -194,6 +203,7 @@ struct Member {
     ExprPtr exprBody;                    // `=> expr` body
     bool hasBody = false;                // false = stub (interface method `;`)
     bool exprBodied = false;             // true = `=> expr`, false = block
+    std::vector<TargetBinding> bindings; // Method/Property: per-target FFI binding arms; empty = ordinary
 };
 
 struct RecordDecl {
@@ -211,6 +221,7 @@ struct ClassDecl {
     std::vector<GenericParam> generics;
     std::vector<TypeRef> bases;          // base class and/or interfaces
     std::vector<Member> members;
+    bool isExtern = false;               // `extern class`: native-backed std type; not emitted (only its bindings)
 };
 struct InterfaceDecl {
     std::string name;

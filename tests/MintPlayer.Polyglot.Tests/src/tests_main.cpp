@@ -158,8 +158,8 @@ int main() {
         EmitResult cs = compile(kProgram, Target::CSharp);
         check(cs.ok, "compile: program -> C# succeeds");
         check(!has(cs.code, "using System;"), "C#: no `using` (BCL refs are global::-qualified)");
-        check(has(cs.code, "static int add(int a, int b)"), "C#: function signature mapped");
-        check(has(cs.code, "global::System.Console.WriteLine(add(sum, 100))"), "C#: print -> global::System.Console.WriteLine");
+        check(has(cs.code, "public static int add(int a, int b)"), "C#: function signature mapped");
+        check(has(cs.code, "global::System.Console.WriteLine(Program.add(sum, 100))"), "C#: print -> global::System.Console.WriteLine");
         check(has(cs.code, "static void Main() { main(); }"), "C#: main entry point emitted");
     }
 

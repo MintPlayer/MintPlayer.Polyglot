@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/emit.hpp"
 
+#include <cctype>
 #include <string>
 
 // Hand-written IR -> C# pretty-printer. Walks the typed IR; wraps the program's free functions in a
@@ -28,7 +29,9 @@ std::string csType(const TypeRef& t) {
         if (t.name == "string") return "string";
         if (t.name.empty())     return "object";
         if (t.name == "Error")  return "global::System.Exception";
-        std::string name = (t.name == "Iterable") ? "global::System.Collections.Generic.IEnumerable" : t.name;
+        std::string name = t.name == "Iterable" ? "global::System.Collections.Generic.IEnumerable"
+                         : t.name == "List"     ? "global::System.Collections.Generic.List"
+                         : t.name;
         if (!t.args.empty()) {
             name += "<";
             for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += csType(t.args[i]); }
@@ -47,6 +50,11 @@ std::string csType(const TypeRef& t) {
         std::string s = "global::System.Func<";
         for (const auto& a : t.args) s += csType(a) + ", ";
         return s + csType(t.ret[0]) + ">";
+    }
+    if (t.kind == TypeRef::Kind::Tuple) { // C# value tuple `(A, B)`
+        std::string s = "(";
+        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += csType(t.args[i]); }
+        return s + ")";
     }
     return "object";
 }
@@ -128,6 +136,8 @@ public:
         if (!m.enums.empty() || !m.unions.empty() || !m.records.empty() || !m.classes.empty() || !m.extensions.empty()) out_ += "\n";
         out_ += "static class Program\n{\n";
         indent_ = 1;
+        for (const auto& g : m.globals) // top-level const/let -> static readonly field
+            line("static readonly " + csType(g.type) + " " + g.name + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
         for (const auto& fn : m.functions) {
             if (!fn.actualTarget.empty() && fn.actualTarget != "csharp") continue; // other target's `actual`
             emitFunction(fn);
@@ -262,7 +272,22 @@ private:
     // Parenthesize a receiver that would otherwise mis-bind against `.`/call.
     std::string atom(const ir::Expr& e) {
         std::string s = emitExpr(e);
-        return (e.kind == ir::ExprKind::Binary || e.kind == ir::ExprKind::Unary) ? "(" + s + ")" : s;
+        return (e.kind == ir::ExprKind::Binary || e.kind == ir::ExprKind::Unary ||
+                e.kind == ir::ExprKind::Cast) ? "(" + s + ")" : s;
+    }
+
+    // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as C#.
+    std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
+        std::string out;
+        for (std::size_t i = 0; i < tmpl.size();) {
+            if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { out += emitExpr(*b.receiver); i += 5; }
+            else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
+                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+                if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
+                i += 2;
+            } else out += tmpl[i++];
+        }
+        return out;
     }
 
     // `public static R name(this T self, …)` — the leading `self` param carries the C# `this` modifier.
@@ -276,7 +301,8 @@ private:
     }
 
     void emitFunction(const ir::Function& fn) {
-        std::string sig = "static " + csType(fn.returnType) + " " + fn.name + csGenerics(fn.generics) + "(";
+        // `public` so calls qualified as `Program.fn(...)` from emitted classes resolve (free fns live here).
+        std::string sig = "public static " + csType(fn.returnType) + " " + fn.name + csGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += csParam(fn.params[i]); }
         sig += ")" + csWhere(fn.generics);
         line(sig);
@@ -390,6 +416,10 @@ private:
                     std::string cmp = f.inclusive ? " <= " : " < ";
                     line("for (var " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
                          f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++)");
+                } else if (!f.tupleBindings.empty()) { // `foreach (var (a, b) in seq)`
+                    std::string names;
+                    for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += f.tupleBindings[i]; }
+                    line("foreach (var (" + names + ") in " + emitExpr(*f.iterable) + ")");
                 } else {
                     line("foreach (var " + f.binding + " in " + emitExpr(*f.iterable) + ")");
                 }
@@ -434,6 +464,21 @@ private:
             }
             case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
             case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
+            case ir::ExprKind::Null:  return "null";
+            case ir::ExprKind::Interp: { // C# interpolated string `$"…{expr}…"`
+                const auto& in = static_cast<const ir::Interp&>(e);
+                std::string s = "$\"";
+                for (std::size_t i = 0; i < in.chunks.size(); ++i) {
+                    for (char c : in.chunks[i]) { // escape for an interpolated-string literal
+                        if (c == '"' || c == '\\') { s += '\\'; s += c; }
+                        else if (c == '{') s += "{{";
+                        else if (c == '}') s += "}}";
+                        else s += c;
+                    }
+                    if (i < in.holes.size()) s += "{" + emitExpr(*in.holes[i]) + "}";
+                }
+                return s + "\"";
+            }
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
             case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
             case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_;
@@ -459,7 +504,12 @@ private:
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
-                std::string s = (c.isPrint ? "global::System.Console.WriteLine" : c.callee) + "(";
+                // Free functions live in `static class Program`; qualify them so calls from emitted classes
+                // resolve. A function-valued local (closure param) is called bare.
+                std::string callee = c.isPrint ? "global::System.Console.WriteLine"
+                                   : c.isFree  ? "Program." + c.callee
+                                   : c.callee;
+                std::string s = callee + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";
             }
@@ -486,9 +536,29 @@ private:
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                 return s + ")";
             }
+            case ir::ExprKind::Index: {
+                const auto& ix = static_cast<const ir::Index&>(e);
+                return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
+            }
+            case ir::ExprKind::ListLit: {
+                const auto& l = static_cast<const ir::ListLit&>(e);
+                std::string s = "new global::System.Collections.Generic.List<" + csType(l.elem) + "> { ";
+                for (std::size_t i = 0; i < l.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*l.elements[i]); }
+                return s + " }";
+            }
+            case ir::ExprKind::Tuple: {
+                const auto& t = static_cast<const ir::Tuple&>(e);
+                std::string s = "(";
+                for (std::size_t i = 0; i < t.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*t.elements[i]); }
+                return s + ")";
+            }
+            case ir::ExprKind::Bound:
+                return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
-                std::string ctor = (n.typeName == "Error") ? "global::System.Exception" : n.typeName;
+                std::string ctor = n.typeName == "Error" ? "global::System.Exception"
+                                 : n.typeName == "List"  ? "global::System.Collections.Generic.List"
+                                 : n.typeName;
                 if (!n.typeArgs.empty()) {
                     ctor += "<";
                     for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += csType(n.typeArgs[i]); }

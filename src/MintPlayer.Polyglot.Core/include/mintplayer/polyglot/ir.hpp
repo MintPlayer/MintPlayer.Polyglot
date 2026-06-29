@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern };
+enum class ExprKind { Int, Float, Bool, Str, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp };
 
 struct Expr {
     ExprKind kind;
@@ -49,6 +49,14 @@ struct BoolLit : Expr {
 struct StrLit : Expr {
     std::string value;
     StrLit(SourcePos p, Type t, std::string v) : Expr(ExprKind::Str, p, std::move(t)), value(std::move(v)) {}
+};
+struct NullLit : Expr { // the `null` literal (C# `null` / TS `null`)
+    explicit NullLit(SourcePos p, Type t) : Expr(ExprKind::Null, p, std::move(t)) {}
+};
+struct Interp : Expr { // interpolated string: `chunks` (N+1 literal pieces) interleaved with `holes` (N exprs)
+    std::vector<std::string> chunks;
+    std::vector<ExprPtr> holes;
+    Interp(SourcePos p, Type t) : Expr(ExprKind::Interp, p, std::move(t)) {}
 };
 struct Var : Expr { // reference to a local or parameter
     std::string name;
@@ -80,6 +88,7 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     std::string callee;        // source name — C# uses this (native overloading)
     std::string mangledCallee; // resolved overload's per-target name — TS uses this (== callee if unique)
     bool isPrint = false;
+    bool isFree = false;       // a top-level free function (C# qualifies as `Program.callee`); not a local value
     std::vector<ExprPtr> args;
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
 };
@@ -105,6 +114,32 @@ struct New : Expr { // construction `Type(args)` or `Type<TypeArgs>(args)`
     std::vector<Type> typeArgs; // explicit construction type args, e.g. `Box<i32>(7)` (empty = none)
     std::vector<ExprPtr> args;
     New(SourcePos p, Type t, std::string n) : Expr(ExprKind::New, p, std::move(t)), typeName(std::move(n)) {}
+};
+
+struct Index : Expr { // element access `receiver[index]`
+    ExprPtr receiver;
+    ExprPtr index;
+    Index(SourcePos p, Type t, ExprPtr r, ExprPtr i)
+        : Expr(ExprKind::Index, p, std::move(t)), receiver(std::move(r)), index(std::move(i)) {}
+};
+struct ListLit : Expr { // list literal `[a, b, c]`; `elem` is the element type T (type is List<T>)
+    Type elem;
+    std::vector<ExprPtr> elements;
+    ListLit(SourcePos p, Type t, Type e) : Expr(ExprKind::ListLit, p, std::move(t)), elem(std::move(e)) {}
+};
+struct Tuple : Expr { // tuple literal `(a, b)`: C# ValueTuple, TS array `[a, b]`
+    std::vector<ExprPtr> elements;
+    Tuple(SourcePos p, Type t) : Expr(ExprKind::Tuple, p, std::move(t)) {}
+};
+// A bound call/access: a portable std method/property resolved to a per-target FFI template. Each backend
+// substitutes `$this`->receiver and `$0`,`$1`,…->args into its own template. A `$this = …` template emits
+// a receiver assignment (e.g. List.clear -> TS `xxx = []`). See ast::TargetBinding.
+struct Bound : Expr {
+    ExprPtr receiver;
+    std::vector<ExprPtr> args;
+    std::string csTemplate;
+    std::string tsTemplate;
+    Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 
 struct MakeCaseField { // a field of a union-case construction
@@ -188,6 +223,7 @@ struct While : Stmt {
 };
 struct For : Stmt { // `for binding in <seq>`: either an integer range or an arbitrary iterable
     std::string binding;
+    std::vector<std::string> tupleBindings; // non-empty: `for (a, b) in …` destructuring (binding unused)
     bool isRange = false;
     ExprPtr rangeStart, rangeEnd; // range form: bounds
     bool inclusive = false;       // range form: `..=` (true) vs `..` (false)
@@ -330,11 +366,18 @@ struct Class { // a mutable reference type
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;
 };
+struct Global { // a top-level `const`/`let` value
+    std::string name;
+    bool isConst = false;
+    Type type;
+    ExprPtr init;
+};
 struct Module {
     std::vector<Enum> enums;
     std::vector<Union> unions;
     std::vector<Record> records;
     std::vector<Class> classes;
+    std::vector<Global> globals;
     std::vector<Function> extensions; // `extension fn T.m(...)` — each isExtension, params[0] is `self`
     std::vector<Function> functions;
 };

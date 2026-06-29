@@ -21,6 +21,7 @@ public:
             else if (at(TokKind::KwRecord)) unit.records.push_back(parseRecord());
             else if (at(TokKind::KwClass) || at(TokKind::KwAbstract) || at(TokKind::KwOpen) ||
                      at(TokKind::KwSealed)) unit.classes.push_back(parseClass());
+            else if (at(TokKind::KwExtern) && peek(1).kind == TokKind::KwClass) unit.classes.push_back(parseClass());
             else if (at(TokKind::KwInterface)) unit.interfaces.push_back(parseInterface());
             else if (at(TokKind::KwExtension)) unit.extensions.push_back(parseExtension());
             else if (at(TokKind::KwConst) || at(TokKind::KwLet)) unit.values.push_back(parseValueDecl());
@@ -137,7 +138,33 @@ private:
                at(TokKind::KwStatic) || at(TokKind::KwPrivate) || at(TokKind::KwAsync);
     }
 
+    // A binding body `{ actual(target) extern("…template…") … }` — per-target FFI templates instead of
+    // a portable body. The receiver (`$this`) and args (`$0`,…) are substituted at each call site.
+    // Returns true and fills m.bindings if a binding body is present.
+    bool tryParseBindings(Member& m) {
+        if (!(at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual)) return false;
+        advance(); // '{'
+        while (at(TokKind::KwActual)) {
+            TargetBinding b;
+            b.pos = peek().pos;
+            advance(); // 'actual'
+            expect(TokKind::LParen, "'('");
+            b.target = expect(TokKind::Identifier, "a target name").text;
+            expect(TokKind::RParen, "')'");
+            expect(TokKind::KwExtern, "'extern'");
+            expect(TokKind::LParen, "'('");
+            b.code = expect(TokKind::StringLit, "a raw target-code template string").text;
+            expect(TokKind::RParen, "')'");
+            accept(TokKind::Semicolon);
+            m.bindings.push_back(std::move(b));
+        }
+        expect(TokKind::RBrace, "'}'");
+        m.hasBody = true;
+        return true;
+    }
+
     void parseMemberBody(Member& m) {
+        if (tryParseBindings(m)) return;
         if (accept(TokKind::Arrow)) { m.exprBody = parseExpr(); m.hasBody = true; m.exprBodied = true; }
         else if (at(TokKind::LBrace)) { m.body = parseBlock(); m.hasBody = true; m.exprBodied = false; }
         else { accept(TokKind::Semicolon); m.hasBody = false; } // interface stub
@@ -190,7 +217,8 @@ private:
             m.name = expect(TokKind::Identifier, "a member name").text;
             expect(TokKind::Colon, "':'");
             m.type = parseType();
-            if (accept(TokKind::Arrow)) { m.kind = MemberKind::Property; m.init = parseExpr(); }
+            if (at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual) { m.kind = MemberKind::Property; tryParseBindings(m); }
+            else if (accept(TokKind::Arrow)) { m.kind = MemberKind::Property; m.init = parseExpr(); }
             else if (accept(TokKind::Assign)) { m.kind = MemberKind::Field; m.init = parseExpr(); }
             else { m.kind = MemberKind::Field; }
             accept(TokKind::Semicolon);
@@ -236,6 +264,9 @@ private:
     ClassDecl parseClass() {
         ClassDecl d;
         d.pos = peek().pos;
+        // `extern class`: a native-backed std type (e.g. List<T>). The front-end knows its shape and
+        // per-target bindings, but the backends do not emit its declaration — it maps to a target type.
+        if (accept(TokKind::KwExtern)) d.isExtern = true;
         while (at(TokKind::KwAbstract) || at(TokKind::KwOpen) || at(TokKind::KwSealed))
             d.modifiers.push_back(modifierText(advance().kind));
         expect(TokKind::KwClass, "'class'");
