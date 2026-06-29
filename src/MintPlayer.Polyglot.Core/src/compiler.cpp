@@ -2,6 +2,7 @@
 
 #include "mintplayer/polyglot/ast.hpp"
 #include "mintplayer/polyglot/emit.hpp"
+#include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
@@ -24,7 +25,8 @@ EmitResult compile(const std::string& source, Target target) {
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     ir::Module module = lower(unit);
-    result.code = (target == Target::CSharp) ? emitCSharp(module) : emitTypeScript(module);
+    const Backend* backend = findBackend(target == Target::CSharp ? "csharp" : "typescript");
+    result.code = backend->emit(module);
     result.ok = true;
     return result;
 }

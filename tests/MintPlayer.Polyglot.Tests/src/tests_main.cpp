@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 
+#include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
 #include "mintplayer/polyglot/lower.hpp"
@@ -219,6 +220,11 @@ int main() {
     rejects("fn h(n: i32): i32 => match n { 0 => 0 }\n", "P4: rejects scalar match without a catch-all");
     resolves("fn ok2(n: i32): i32 => match n { 0 => 0, _ => 1 }\n", "P4: scalar match with catch-all resolves");
     resolves("enum Dir { N, S }\nfn turn(d: Dir): i32 => match d { N => 1, S => 2 }\n", "P4: exhaustive enum match resolves");
+
+    // P5 — backend registry seam.
+    check(findBackend("csharp") != nullptr && findBackend("csharp")->name() == "csharp", "P5: csharp backend registered");
+    check(findBackend("typescript") != nullptr && findBackend("typescript")->name() == "typescript", "P5: typescript backend registered");
+    check(findBackend("python") == nullptr, "P5: unknown backend is not found");
 
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
