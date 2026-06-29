@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New, MakeCase, Match, Lambda };
+enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda };
 
 struct Expr {
     ExprKind kind;
@@ -67,6 +67,10 @@ struct Binary : Expr {
     ExprPtr lhs, rhs;
     Binary(SourcePos p, Type t, std::string o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::Binary, p, std::move(t)), op(std::move(o)), lhs(std::move(l)), rhs(std::move(r)) {}
+};
+struct Cast : Expr { // numeric conversion: the result type is `type`, the source is `operand->type`
+    ExprPtr operand;
+    Cast(SourcePos p, Type t, ExprPtr o) : Expr(ExprKind::Cast, p, std::move(t)), operand(std::move(o)) {}
 };
 struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrinsic
     std::string callee;

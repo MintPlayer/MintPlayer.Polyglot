@@ -101,6 +101,29 @@ int prec(const std::string& op) {
     return 7;
 }
 
+// A numeric conversion, lowered per source/target representation. The hard boundary is BigInt (i64/u64):
+// crossing into it needs BigInt(); crossing out needs a width-exact BigInt.asIntN/asUintN before Number()
+// (a plain Number() of a >2^53 BigInt would lose the low bits a C# `(int)long` keeps).
+std::string tsConvert(const TypeRef& from, const TypeRef& to, const std::string& x) {
+    bool toBig = isI64(to), fromBig = isI64(from);
+    bool toFloat = to.kind == TypeRef::Kind::Named && (to.name == "f32" || to.name == "f64");
+    bool fromFloat = from.kind == TypeRef::Kind::Named && (from.name == "f32" || from.name == "f64");
+    if (from.kind == TypeRef::Kind::Named && to.kind == TypeRef::Kind::Named && from.name == to.name) return x;
+    if (toBig) {
+        if (fromBig)   return std::string(to.name == "u64" ? "BigInt.asUintN(64, " : "BigInt.asIntN(64, ") + x + ")";
+        if (fromFloat) return "BigInt(Math.trunc(" + x + "))";
+        return "BigInt(" + x + ")";
+    }
+    if (toFloat) return fromBig ? "Number(" + x + ")" : x; // number<->number is a no-op (f32 rides f64)
+    if (fromBig) { // BigInt -> 32-bit-or-narrower int: narrow the BigInt exactly, then to a number
+        int w = (to.name == "i8" || to.name == "u8") ? 8 : (to.name == "i16" || to.name == "u16") ? 16 : 32;
+        const char* fn = to.name[0] == 'u' ? "asUintN" : "asIntN";
+        return "Number(BigInt." + std::string(fn) + "(" + std::to_string(w) + ", " + x + "))";
+    }
+    if (fromFloat) return narrowTs(to.name, "Math.trunc(" + x + ")");
+    return narrowTs(to.name, x);
+}
+
 class TypeScriptEmitter {
 public:
     std::string emit(const ir::Module& m) {
@@ -482,6 +505,10 @@ private:
                                                                               : emitExpr(*u.operand);
                 if (isSmallInt(e.type) && u.op == "-") return narrowTs(e.type.name, "-" + operand); // wrap negate
                 return u.op + operand;
+            }
+            case ir::ExprKind::Cast: {
+                const auto& c = static_cast<const ir::Cast&>(e);
+                return tsConvert(c.operand->type, e.type, emitExpr(*c.operand));
             }
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);

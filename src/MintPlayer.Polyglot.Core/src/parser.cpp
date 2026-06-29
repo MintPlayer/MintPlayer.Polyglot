@@ -680,6 +680,7 @@ private:
         return l;
     }
     ExprPtr parseUnary() {
+        if (isCastAhead()) return parseCast(); // `(i64)expr` binds at unary precedence
         if (at(TokKind::Not) || at(TokKind::Minus) || at(TokKind::Tilde)) {
             const char* op = at(TokKind::Not) ? "!" : at(TokKind::Minus) ? "-" : "~";
             auto p = advance().pos;
@@ -811,6 +812,41 @@ private:
         return false;
     }
     TokKind next(std::size_t i) const { return i + 1 < toks_.size() ? toks_[i + 1].kind : TokKind::End; }
+
+    static bool isPrimitiveTypeName(const Token& t) {
+        if (t.kind != TokKind::Identifier) return false;
+        const std::string& n = t.text;
+        return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
+               n == "u32" || n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char" ||
+               n == "string";
+    }
+    static bool beginsExpr(TokKind k) {
+        switch (k) {
+            case TokKind::Identifier: case TokKind::IntLit: case TokKind::FloatLit: case TokKind::CharLit:
+            case TokKind::StringLit: case TokKind::InterpStart: case TokKind::KwTrue: case TokKind::KwFalse:
+            case TokKind::KwNull: case TokKind::KwThis: case TokKind::KwSuper: case TokKind::LParen:
+            case TokKind::LBracket: case TokKind::Minus: case TokKind::Not: case TokKind::Tilde:
+            case TokKind::KwIf: case TokKind::KwMatch:
+                return true;
+            default: return false;
+        }
+    }
+    // A primitive-type cast `(i64)expr`: primitive type names are reserved (never variables), so this is
+    // unambiguous. (User-type/downcast forms — with the classic C `(a)-b` ambiguity — are a later step.)
+    bool isCastAhead() const {
+        return at(TokKind::LParen) && isPrimitiveTypeName(peek(1)) &&
+               peek(2).kind == TokKind::RParen && beginsExpr(peek(3).kind);
+    }
+    ExprPtr parseCast() {
+        auto p = peek().pos;
+        expect(TokKind::LParen, "'('");
+        TypeRef ty = parseType();
+        expect(TokKind::RParen, "')'");
+        auto e = mk(ExprKind::Cast, p);
+        e->castType = ty;
+        e->lhs = parseUnary();
+        return e;
+    }
 
     // Is the upcoming `( ... )` a lambda parameter list (followed by `=>`)?
     bool isLambdaAhead() const {

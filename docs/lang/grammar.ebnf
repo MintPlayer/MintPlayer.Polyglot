@@ -190,6 +190,8 @@ type_args     = "<" , type , { "," , type } , ">" ;
 tuple_type    = "(" , type , { "," , type } , ")" ;          (* (i32, string) *)
 function_type = "(" , [ type , { "," , type } ] , ")" , "=>" , type ;
 type_list     = type , { "," , type } ;
+primitive_type = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+               | "f32" | "f64" | "bool" | "char" | "string" ;   (* used by cast_expr *)
 
 
 (* ---- 5. Statements ------------------------------------------------------- *)
@@ -272,7 +274,10 @@ shift_expr      = additive_expr , { ( "<<" | ">>" | ">>>" ) , additive_expr } ;
 additive_expr   = multiplicative_expr , { ( "+" | "-" ) , multiplicative_expr } ;
 multiplicative_expr = unary_expr , { ( "*" | "/" | "%" ) , unary_expr } ;
 
-unary_expr      = ( "!" | "-" | "~" ) , unary_expr | range_expr ;
+(* `(T)expr` is a numeric cast. v0.1 restricts T to a primitive type name, which is reserved (never a
+   variable), so it is unambiguous against a parenthesized expression. *)
+cast_expr       = "(" , primitive_type , ")" , unary_expr ;
+unary_expr      = cast_expr | ( "!" | "-" | "~" ) , unary_expr | range_expr ;
 range_expr      = postfix_expr , [ ( ".." | "..=" ) , postfix_expr ] ;
 
 postfix_expr    = primary_expr , { postfix_op } ;

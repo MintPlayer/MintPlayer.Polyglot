@@ -102,7 +102,7 @@ struct MatchArm {
 enum class ExprKind {
     IntLit, FloatLit, CharLit, StringLit, InterpString, BoolLit, NullLit,
     Name, This, Super,
-    Unary, Binary, Range,
+    Unary, Binary, Range, Cast,
     Call, Member, Index, NullAssert,
     Lambda, ListLit, TupleLit, With, IfExpr, Match,
 };
@@ -126,6 +126,7 @@ struct Expr {
     std::vector<MatchArm> arms; // Match arms
     std::vector<TypeRef> typeArgs; // Call: explicit generic args, e.g. List<i32>()
     std::vector<std::string> chunks; // InterpString: N+1 literal chunks around N holes (in `args`)
+    TypeRef castType;              // Cast: the target type in `(T)expr` (operand is `lhs`)
 };
 
 struct CatchClause {

@@ -400,6 +400,8 @@ private:
             case ExprKind::NullAssert: return atom(*e.lhs) + "!";
             case ExprKind::ListLit:    return "[" + exprList(e.args) + "]";
             case ExprKind::TupleLit:   return "(" + exprList(e.args) + ")";
+            case ExprKind::Cast:
+                return "(" + typeStr(e.castType) + ")" + atom(*e.lhs);
             case ExprKind::Lambda: {
                 // Canonical: a single untyped parameter prints bare (`x => …`); anything else keeps parens.
                 bool bare = e.params.size() == 1 && e.params[0].type.absent() && !e.params[0].hasDefault;

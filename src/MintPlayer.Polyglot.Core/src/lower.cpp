@@ -251,6 +251,7 @@ private:
                 if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
                 return std::make_unique<ir::This>(e.pos, e.type);
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
+            case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member:    return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
             case ExprKind::Match:     return matchExpr(e);

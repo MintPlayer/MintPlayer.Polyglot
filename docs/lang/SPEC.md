@@ -62,9 +62,16 @@ the output.
 | `unit` | `void` | `void` | the "no meaningful value" type; a function with no `: T` returns `unit` |
 
 There is **no `decimal`** and **no machine-pointer type** — both are on the refused list (§10). Integer
-default is `i32`; float-literal default is `f64`. Mixed-width arithmetic requires an explicit conversion
-(no implicit narrowing); widening conversions are explicit too in v0.1 for clarity (`x.toI64()`), revisited
-if it proves noisy.
+default is `i32`; float-literal default is `f64`.
+
+**Numeric conversions use a cast `(T)value`** — there are no `toI64()`/`toU32()`/… conversion methods
+(they would be a combinatorial swamp). **Lossless widenings are implicit**: a narrower value flowing into
+a wider slot (assignment, call argument, return, mixed-width arithmetic) is converted automatically —
+`i8→i16→i32→i64`, `u8→u16→u32→u64`, `i32→f64`, `f32→f64`. **Everything else needs an explicit cast**:
+narrowing (`(i32)big`), lossy widening (`(f64)someI64` — loses precision past 2⁵³), and sign changes
+(`(u32)signed`). A cast never fails silently and never miscompiles; it truncates toward zero (float→int)
+and wraps (narrowing) exactly as .NET does, mirrored on the JS side (`BigInt`/`Number`/`Math.trunc`/masking).
+Casting `string`↔number is **not** a cast — that is std parsing (a separate API, §7/P7).
 
 ---
 
@@ -222,7 +229,7 @@ class ParseError : Error { init(msg: string) { super(msg) } }
 
 fn parseTier(s: string): i32 {
   if s.isEmpty() { throw ParseError("empty tier") }
-  return s.toI32()
+  return parseI32(s)            // std string->int parse (a std API, §7) — not a cast
 }
 
 try {

@@ -443,6 +443,7 @@ private:
             case ExprKind::Name:      return checkName(e);
             case ExprKind::Unary:     return checkUnary(e);
             case ExprKind::Binary:    return checkBinary(e);
+            case ExprKind::Cast:      return checkCast(e);
             case ExprKind::Range:     checkExpr(*e.lhs); checkExpr(*e.rhs); return tUnknown();
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);
@@ -474,6 +475,18 @@ private:
         else if (e.lhs) checkExpr(*e.lhs);
         popScope();
         return tUnknown();
+    }
+
+    // An explicit numeric conversion `(T)expr`. v0.1 casts are numeric<->numeric (incl. char as a code
+    // unit); the result is the target type. Narrowing/lossy conversions are allowed *because* they're
+    // explicit. String/bool are not numerically castable (string->number is std parsing, a separate thing).
+    TypeRef checkCast(Expr& e) {
+        TypeRef from = checkExpr(*e.lhs);
+        resolveTypeRef(e.castType, e.pos);
+        Ty fs = scalarTyOf(from);
+        if (isNumericTypeName(e.castType) && (fs == Ty::Bool || fs == Ty::String))
+            diags_.error(e.pos, std::string("cannot cast ") + tyName(fs) + " to numeric type '" + e.castType.name + "'");
+        return e.castType;
     }
 
     TypeRef checkUnary(Expr& e) {

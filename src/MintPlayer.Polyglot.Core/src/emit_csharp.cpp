@@ -412,6 +412,10 @@ private:
                                                                               : emitExpr(*u.operand);
                 return u.op + operand;
             }
+            case ir::ExprKind::Cast: { // C# handles every numeric conversion natively
+                const auto& c = static_cast<const ir::Cast&>(e);
+                return "(" + csType(e.type) + ")(" + emitExpr(*c.operand) + ")";
+            }
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
                 int p = prec(b.op);
