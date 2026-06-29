@@ -193,8 +193,8 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   typer→IR→**both** hand-written backends; `polyglot build` emits running C# + TS with identical stdout
   (the **differential conformance test** stands up here, not at P5). Proved the "one IR serves both
   targets" bet.
-- **P3 — Full front-end.** ✅ Full P1 grammar parses; `.pg` pretty-printer (`polyglot fmt`) round-trips all
-  10 samples idempotently (fidelity gate in `/build-and-test`). Interpolation parses opaquely (P5 follow-up).
+- **P3 — Full front-end.** ✅ Full P1 grammar parses (incl. real string interpolation); `.pg` pretty-printer
+  (`polyglot fmt`) round-trips all 10 samples idempotently (fidelity gate in `/build-and-test`).
 - **P4 — Full semantics + IR.** Name resolution + the minimal static type system; lower full AST → typed IR.
 - **P5 — Backends to full §3.A.** Widen both C#/TS pretty-printers to the entire surface; golden baselines
   both targets; the differential suite grows.

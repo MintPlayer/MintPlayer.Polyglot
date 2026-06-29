@@ -55,11 +55,11 @@ members, generic params/bounds, default params), and `import`. A canonical `.pg`
 *Gate (closed):* all 10 `docs/lang/samples/*.pg` (incl. `fruitcake_sketch`) round-trip source → AST →
 source idempotently — `tests/fidelity/run-roundtrip.ps1`, wired into `/build-and-test`. Malformed input
 yields `file:line:col` diagnostics. Built incrementally (P3 1 → 3e-3), green at every step.
-*Deferred (small, needed before P5 emission, not the gate):* string interpolation currently parses
-opaquely (`"${x}"` is one literal string — idempotent but the inner expr isn't parsed); the `{ get/set }`
-property-accessor form and nested-generic edge cases beyond the samples. The trivia-bearing lexer keeps
-comments/whitespace for *later* readable output; the P3 printer is canonical (re-formats), not
-trivia-preserving.
+String interpolation is fully parsed (chunks + hole expressions, re-entrant lexer). *Deferred (small, not
+the gate):* the `{ get/set }` property-accessor form (samples use read-only `=> expr` properties only),
+nested strings inside an interpolation hole, and nested-generic edge cases beyond the samples. The
+trivia-bearing lexer keeps comments/whitespace for *later* readable output; the P3 printer is canonical
+(re-formats), not trivia-preserving.
 
 ## P4 — Full semantics + typed IR
 Widen the MVP's minimal typer to the full **minimal static type system** (enough for the §3.A surface:
