@@ -271,6 +271,26 @@ int main() {
         check(!dn.hasErrors(), "P5.E: a missing capability the program doesn't use is not refused");
     }
 
+    // P6 — §3.B refusals surface as targeted "Polyglot refuses X" diagnostics, not generic "unknown type".
+    auto refuses = [&](const char* src, const std::string& needle, const std::string& name) {
+        EmitResult r = compile(src, Target::CSharp);
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "refuses") && has(d.message, needle)) named = true;
+        check(!r.ok && named, name);
+    };
+    refuses("fn f(x: decimal) {}\n", "decimal", "P6: refuses 'decimal' with a targeted message");
+    refuses("fn f(t: Thread) {}\n", "threads", "P6: refuses Thread (threads/locks)");
+    refuses("fn f(p: IntPtr) {}\n", "pointers", "P6: refuses IntPtr (pointers/unsafe)");
+    refuses("fn f(e: Expression<i32>) {}\n", "expression trees", "P6: refuses LINQ expression trees");
+    refuses("fn f(d: dynamic) {}\n", "dynamic", "P6: refuses 'dynamic' / runtime code-gen");
+    // A normal unknown type still gets the plain diagnostic (not a refusal).
+    {
+        EmitResult r = compile("fn f(x: Widget) {}\n", Target::CSharp);
+        bool plain = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "unknown type")) plain = true;
+        check(!r.ok && plain, "P6: a non-refused unknown type still says 'unknown type'");
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;

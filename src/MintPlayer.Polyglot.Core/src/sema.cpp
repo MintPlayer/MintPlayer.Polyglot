@@ -30,6 +30,28 @@ bool isBuiltinType(const std::string& n) {
     return b.count(n) != 0;
 }
 
+// A §3.B-refused construct named in type position. Returns a targeted "Polyglot refuses X because …"
+// message (never a generic "unknown type"), or nullptr. The refused surface has no grammar, but a user
+// reaching for a familiar platform type by name should get told *why* and *what to use instead* — the
+// PRD §3.B "refuse out loud, never miscompile" rule.
+const char* refusedReason(const std::string& n) {
+    if (n == "Thread" || n == "Mutex" || n == "Monitor" || n == "Semaphore" || n == "Lock" ||
+        n == "Interlocked" || n == "ReaderWriterLock" || n == "ThreadPool")
+        return "Polyglot refuses threads and locks — it targets single-threaded async only (PRD §3.B)";
+    if (n == "decimal" || n == "Decimal")
+        return "Polyglot refuses 'decimal' — no portable cross-target decimal exists; use a fixed-point std type (PRD §3.B/§3.D)";
+    if (n == "IntPtr" || n == "UIntPtr" || n == "nint" || n == "nuint" || n == "Span" ||
+        n == "ReadOnlySpan" || n == "Pointer")
+        return "Polyglot refuses pointers and unsafe memory (no 'unsafe', '*T', 'stackalloc', raw Span) (PRD §3.B)";
+    if (n == "dynamic")
+        return "Polyglot refuses 'dynamic' and runtime code generation (PRD §3.B)";
+    if (n == "Expression")
+        return "Polyglot refuses LINQ expression trees — a lambda is always an executable closure, never code-as-data (PRD §3.B)";
+    if (n == "Activator")
+        return "Polyglot refuses runtime reflection ('Activator', open-world 'Type.GetType') — compile-time metadata only (PRD §3.B)";
+    return nullptr;
+}
+
 // Map an operator symbol to its overload method name (PRD §6.1 / SPEC §6.1).
 std::string operatorMethod(const std::string& op) {
     if (op == "+") return "plus";
@@ -210,9 +232,11 @@ private:
     void resolveTypeRef(const TypeRef& t, SourcePos pos) {
         switch (t.kind) {
             case TypeRef::Kind::Named:
-                if (!t.name.empty() && !isBuiltinType(t.name) &&
-                    !genericsInScope_.count(t.name) && !typeNames_.count(t.name))
-                    diags_.error(pos, "unknown type '" + t.name + "'");
+                if (!t.name.empty()) {
+                    if (const char* why = refusedReason(t.name)) diags_.error(pos, why);
+                    else if (!isBuiltinType(t.name) && !genericsInScope_.count(t.name) && !typeNames_.count(t.name))
+                        diags_.error(pos, "unknown type '" + t.name + "'");
+                }
                 for (const auto& a : t.args) resolveTypeRef(a, pos);
                 break;
             case TypeRef::Kind::Tuple:
