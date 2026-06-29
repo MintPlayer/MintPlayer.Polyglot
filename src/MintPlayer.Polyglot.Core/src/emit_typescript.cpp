@@ -1,6 +1,7 @@
 #include "mintplayer/polyglot/emit.hpp"
 
 #include <string>
+#include <unordered_set>
 
 // Hand-written IR -> TypeScript pretty-printer. Walks the typed IR; emits free `function`s, maps the
 // `print` intrinsic -> console.log, and appends a top-level call to the entry function. Output stays
@@ -105,6 +106,8 @@ public:
     std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
+        recordNames_.clear();
+        for (const auto& r : m.records) recordNames_.insert(r.name); // records compare structurally (§3.C)
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
@@ -120,6 +123,11 @@ public:
 private:
     std::string out_;
     int indent_ = 0;
+    std::unordered_set<std::string> recordNames_;
+
+    bool isRecordType(const TypeRef& t) const {
+        return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
+    }
 
     void line(const std::string& s) {
         out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
@@ -182,7 +190,29 @@ private:
         for (const auto& f : r.fields) line("this." + f.name + " = " + f.name + ";");
         --indent_;
         line("}");
+        emitRecordEquals(r);
         for (const auto& m : r.methods) emitMethod(m);
+        --indent_;
+        line("}");
+    }
+
+    // Structural value equality (§3.C): records are equal when every field is — record fields compare
+    // recursively via their own .equals(); scalar fields via ===. (C# records synthesize this natively.)
+    void emitRecordEquals(const ir::Record& r) {
+        line("equals(other: " + r.name + "): boolean {");
+        ++indent_;
+        if (r.fields.empty()) {
+            line("return true;");
+        } else {
+            std::string cond;
+            for (std::size_t i = 0; i < r.fields.size(); ++i) {
+                if (i) cond += " && ";
+                const std::string& f = r.fields[i].name;
+                cond += isRecordType(r.fields[i].type) ? "this." + f + ".equals(other." + f + ")"
+                                                       : "this." + f + " === other." + f;
+            }
+            line("return " + cond + ";");
+        }
         --indent_;
         line("}");
     }
@@ -455,6 +485,15 @@ private:
             }
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
+                if (b.op == "==" || b.op == "!=") {
+                    // §3.C: record equality is structural (.equals); otherwise strict ===/!== (never JS loose ==).
+                    if (isRecordType(b.lhs->type)) {
+                        std::string call = atom(*b.lhs) + ".equals(" + emitExpr(*b.rhs) + ")";
+                        return b.op == "==" ? call : "!" + call;
+                    }
+                    int pe = prec(b.op);
+                    return child(*b.lhs, pe, false) + (b.op == "==" ? " === " : " !== ") + child(*b.rhs, pe, true);
+                }
                 if (isUserType(b.lhs->type)) { // operator overload -> method call (TS has no operators)
                     std::string method = opMethod(b.op);
                     if (!method.empty()) return atom(*b.lhs) + "." + method + "(" + emitExpr(*b.rhs) + ")";
