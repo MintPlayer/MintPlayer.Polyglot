@@ -939,6 +939,17 @@ private:
             case TokKind::FloatLit:  { auto e = mk(ExprKind::FloatLit, p);  e->text = advance().text; return e; }
             case TokKind::CharLit:   { auto e = mk(ExprKind::CharLit, p);   e->text = advance().text; return e; }
             case TokKind::StringLit: { auto e = mk(ExprKind::StringLit, p); e->text = advance().text; return e; }
+            case TokKind::InterpStart: {
+                auto e = mk(ExprKind::InterpString, p);
+                e->chunks.push_back(advance().text); // leading chunk
+                for (;;) {
+                    e->args.push_back(parseExpr());   // a `${ ... }` hole
+                    if (at(TokKind::InterpMid)) { e->chunks.push_back(advance().text); continue; }
+                    e->chunks.push_back(expect(TokKind::InterpEnd, "end of interpolated string").text);
+                    break;
+                }
+                return e;
+            }
             case TokKind::KwTrue:    { advance(); auto e = mk(ExprKind::BoolLit, p); e->boolVal = true;  return e; }
             case TokKind::KwFalse:   { advance(); auto e = mk(ExprKind::BoolLit, p); e->boolVal = false; return e; }
             case TokKind::KwNull:    { advance(); return mk(ExprKind::NullLit, p); }

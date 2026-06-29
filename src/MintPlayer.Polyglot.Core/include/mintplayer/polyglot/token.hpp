@@ -18,6 +18,11 @@ enum class TokKind {
     FloatLit,
     StringLit,
     CharLit,
+    // Interpolated string pieces: InterpStart "<chunk>${" , holes are normal tokens, InterpMid "}<chunk>${",
+    // InterpEnd "}<chunk>". The `text` is the (decoded) literal chunk; the parser assembles them.
+    InterpStart,
+    InterpMid,
+    InterpEnd,
 
     // keywords — declarations & modifiers
     KwFn, KwLet, KwVar, KwConst,

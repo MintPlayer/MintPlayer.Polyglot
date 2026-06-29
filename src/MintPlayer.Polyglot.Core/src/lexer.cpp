@@ -56,7 +56,36 @@ private:
     int col_ = 1;
 };
 
-// Decode the body of a string or char literal (after the opening quote). Stops at `quote`.
+// One chunk of a (possibly interpolated) string, scanned after the opening quote or a `${...}` hole.
+// Stops at the closing `"` (more=false) or at a `${` interpolation hole (more=true), consuming the
+// terminator. Decodes escapes.
+struct ChunkResult { std::string text; bool more; };
+ChunkResult scanChunk(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
+    std::string value;
+    while (!cur.eof()) {
+        if (cur.peek() == '"') { cur.advance(); return {value, false}; }
+        if (cur.peek() == '$' && cur.peek(1) == '{') { cur.advance(); cur.advance(); return {value, true}; }
+        char ch = cur.advance();
+        if (ch == '\\' && !cur.eof()) {
+            char esc = cur.advance();
+            switch (esc) {
+                case 'n': value += '\n'; break;
+                case 't': value += '\t'; break;
+                case 'r': value += '\r'; break;
+                case '0': value += '\0'; break;
+                case '"': value += '"'; break;
+                case '\\': value += '\\'; break;
+                default: value += esc; break;
+            }
+        } else {
+            value += ch;
+        }
+    }
+    diags.error(start, "unterminated string literal");
+    return {value, false};
+}
+
+// Decode the body of a char literal (after the opening quote). Stops at `quote`.
 std::string scanQuoted(Cursor& cur, char quote, bool& terminated) {
     std::string value;
     terminated = false;
@@ -87,6 +116,7 @@ std::string scanQuoted(Cursor& cur, char quote, bool& terminated) {
 std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
     std::vector<Token> out;
     Cursor cur(source);
+    std::vector<int> interpDepth; // brace depth per open interpolation hole; non-empty = inside `${ ... }`
 
     auto push = [&](TokKind kind, std::string text, SourcePos pos) {
         out.push_back({kind, std::move(text), pos});
@@ -110,6 +140,16 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
         }
 
         SourcePos start = cur.pos();
+
+        // End of an interpolation hole: `}` at hole-brace-depth 0 resumes scanning the string chunk.
+        if (!interpDepth.empty() && c == '}' && interpDepth.back() == 0) {
+            cur.advance();
+            interpDepth.pop_back();
+            ChunkResult r = scanChunk(cur, diags, start);
+            if (r.more) { push(TokKind::InterpMid, std::move(r.text), start); interpDepth.push_back(0); }
+            else push(TokKind::InterpEnd, std::move(r.text), start);
+            continue;
+        }
 
         // Identifiers and keywords.
         if (isIdentStart(c)) {
@@ -156,10 +196,9 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
         // String / char literals; the decoded value is stored and re-escaped on emit.
         if (c == '"') {
             cur.advance();
-            bool terminated = false;
-            std::string value = scanQuoted(cur, '"', terminated);
-            if (!terminated) diags.error(start, "unterminated string literal");
-            push(TokKind::StringLit, std::move(value), start);
+            ChunkResult r = scanChunk(cur, diags, start);
+            if (r.more) { push(TokKind::InterpStart, std::move(r.text), start); interpDepth.push_back(0); }
+            else push(TokKind::StringLit, std::move(r.text), start);
             continue;
         }
         if (c == '\'') {
@@ -178,8 +217,8 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
         switch (c) {
             case '(': emit(TokKind::LParen, 1); break;
             case ')': emit(TokKind::RParen, 1); break;
-            case '{': emit(TokKind::LBrace, 1); break;
-            case '}': emit(TokKind::RBrace, 1); break;
+            case '{': if (!interpDepth.empty()) ++interpDepth.back(); emit(TokKind::LBrace, 1); break;
+            case '}': if (!interpDepth.empty()) --interpDepth.back(); emit(TokKind::RBrace, 1); break;
             case '[': emit(TokKind::LBracket, 1); break;
             case ']': emit(TokKind::RBracket, 1); break;
             case ',': emit(TokKind::Comma, 1); break;

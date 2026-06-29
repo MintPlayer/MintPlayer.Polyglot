@@ -284,8 +284,8 @@ private:
         }
     }
 
-    std::string quote(const std::string& v, char q) {
-        std::string s(1, q);
+    std::string escapeBody(const std::string& v, char q) {
+        std::string s;
         for (char c : v) {
             switch (c) {
                 case '\\': s += "\\\\"; break;
@@ -297,8 +297,10 @@ private:
                     break;
             }
         }
-        s += q;
         return s;
+    }
+    std::string quote(const std::string& v, char q) {
+        return std::string(1, q) + escapeBody(v, q) + std::string(1, q);
     }
 
     std::string operand(const Expr& c, int parentPrec, bool isRight) {
@@ -364,6 +366,14 @@ private:
             case ExprKind::FloatLit:  return e.text;
             case ExprKind::CharLit:   return quote(e.text, '\'');
             case ExprKind::StringLit: return quote(e.text, '"');
+            case ExprKind::InterpString: {
+                std::string s = "\"";
+                for (std::size_t i = 0; i < e.chunks.size(); ++i) {
+                    s += escapeBody(e.chunks[i], '"');
+                    if (i < e.args.size()) s += "${" + expr(*e.args[i]) + "}";
+                }
+                return s + "\"";
+            }
             case ExprKind::BoolLit:   return e.boolVal ? "true" : "false";
             case ExprKind::NullLit:   return "null";
             case ExprKind::Name:      return e.text;

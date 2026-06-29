@@ -131,6 +131,10 @@ int main() {
                    "  override fn dispose() {\n    cleanup()\n  }\n}\n"
                    "extension fn string.shout(): string => this + \"!\"\n",
                    "round-trip: class / interface / extension / inheritance / override");
+        roundtrips("fn f(name: string, age: i32) {\n"
+                   "  print(\"hi ${name}, you are ${age * 2} in dog years!\")\n"
+                   "  print(\"${a.b(1)}-${c}-plain\")\n  print(\"no holes here\")\n}\n",
+                   "round-trip: string interpolation");
     }
 
     // C# emission (golden substrings).
