@@ -339,6 +339,11 @@ private:
         for (const auto& d : u.interfaces) { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); types_[d.name] = std::move(ti); }
         for (const auto& d : u.unions) {
             for (const auto& c : d.cases) {
+                // A union case name must be unique across the program (it's a global constructor). Two
+                // cases sharing a name — within a union, across unions, or merged from two modules — is a
+                // hard error, not a silent last-wins overwrite.
+                if (unionCtors_.count(c.name))
+                    diags_.error(c.pos, "duplicate union case '" + c.name + "'");
                 FnSig sig; for (const auto& p : c.params) sig.params.push_back(p.type); sig.result = tNamed(d.name);
                 unionCtors_[c.name] = sig;
                 unionCaseOwner_[c.name] = d.name;
@@ -362,10 +367,15 @@ private:
             std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
             fn.mangledName = mangleFn(fn.name, ps, fns_[fn.name].size() > 1);
         }
-        for (const auto& v : u.values) values_[v.name] = v.hasType ? v.type : tUnknown();
+        for (const auto& v : u.values) {
+            if (values_.count(v.name)) diags_.error(v.pos, "duplicate top-level '" + v.name + "'");
+            values_[v.name] = v.hasType ? v.type : tUnknown();
+        }
         for (const auto& e : u.extensions) {
+            std::string key = e.receiver.name + "." + e.name;
+            if (extensions_.count(key)) diags_.error(e.pos, "duplicate extension '" + key + "'");
             FnSig sig; for (const auto& p : e.params) sig.params.push_back(p.type); sig.result = e.returnType;
-            extensions_[e.receiver.name + "." + e.name] = std::move(sig); // keyed by receiver type + method
+            extensions_[key] = std::move(sig); // keyed by receiver type + method
         }
     }
 

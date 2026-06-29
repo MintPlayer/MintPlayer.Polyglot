@@ -403,6 +403,20 @@ int main() {
         check(!res.ok && unknown, "P12: an unresolvable user module is rejected");
     }
 
+    // P12 — collisions are refused, never a silent last-wins overwrite (the §3 "never miscompile" law).
+    rejects("let x: i32 = 1\nlet x: i32 = 2\nfn main() {}\n", "P12: duplicate top-level value is rejected");
+    rejects("union U { A, A }\nfn main() {}\n", "P12: duplicate union case is rejected");
+    rejects("extension fn i32.dup(): i32 => 1\nextension fn i32.dup(): i32 => 2\nfn main() {}\n",
+            "P12: duplicate extension is rejected");
+    {
+        // A type defined in both the entry and an imported module collides (no silent merge).
+        MapModuleResolver r({{"m", "record R(x: i32)\n"}});
+        EmitResult res = compile("import { R } from \"m\"\nrecord R(y: i32)\nfn main() {}\n", Target::CSharp, &r);
+        bool dup = false;
+        for (const auto& d : res.diagnostics) if (has(d.message, "duplicate type")) dup = true;
+        check(!res.ok && dup, "P12: a cross-module type collision is rejected");
+    }
+
     // A normal unknown type still gets the plain diagnostic (not a refusal).
     {
         EmitResult r = compile("fn f(x: Widget) {}\n", Target::CSharp);

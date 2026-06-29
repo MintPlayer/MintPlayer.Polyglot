@@ -100,11 +100,15 @@ target type). **Embedded std module**: `import std.collections.{ List }` links a
 Also lowered+emitted for the first time (all previously hit a silent `0`): `null`, `x!` (→ non-null cast),
 `??`, string interpolation, index, tuple literal, top-level globals, tuple destructuring. *Deferred tail
 (unchanged):* strict-f32 `Math.fround`, `lock`/`unsafe` refusals, null normalization.
+**P12 ✅ phase-1 done — modules/imports** (PRD §4.5): TS-style `import { a, b as c } from "spec"` (+ `* as ns`,
+bare; `from`/`as` contextual, quoted specifier so `"std.io"`=logical, `"./x"`=relative); a **`ModuleResolver`**
+seam (`compile(src, target, ModuleResolver*=nullptr)`, Core stays IO-free) with transitive cross-`.pg`
+loading — dedup, cycle detection, deps-first merge; CLI `FileModuleResolver` (`--root`), in-memory test
+resolver; **collision detection** closes the silent value/union-case/extension holes. *Phase-2 deferred*
+(needs a per-file import-scope table): selective-import visibility restriction + `as` rebinding.
+std.io ships File bindings (readText/writeText/…) via the capability mechanism; std is still embedded-source.
 **Roadmap: P9** (declarative backend DSL), **P10** (plugin distribution), **P11** (build-integration NuGet,
-independent), **P12** (modules/imports — designed in PRD §4.5: TS-style `import { x } from "spec"`,
-`ModuleResolver` seam for cross-`.pg` files, refuse-loudly collision policy). P12 is frontend-only and
-independently sequenceable. Today std is still embedded-source (a registry, no filesystem); std.io ships
-File bindings (readText/writeText/…) via the capability mechanism.
+independent).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

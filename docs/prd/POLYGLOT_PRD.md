@@ -272,6 +272,17 @@ collisions are accidental" model. The decided design (from a three-track investi
   one root unit, so the emitted `.cs`/`.ts` is still one file (no conformance-harness redesign — just a
   directory-input + `--root` convention).
 
+> **Status (P12 implemented, 2026-06-29).** Shipped: the import **syntax** (`import { a, b as c } from
+> "spec"`, `* as ns`, bare); the **`ModuleResolver`** seam + transitive cross-`.pg` loading (dedup, cycle
+> detection, dependencies-first merge; CLI filesystem resolver with `--root`, in-memory test resolver); and
+> **collision detection** — every top-level name category now refuses a duplicate (types via `declareType`,
+> functions by signature with overloads allowed, and the previously-silent value / union-case / extension
+> holes now closed). **Deferred to a P12 phase-2** (needs a per-file import-scope table, which the current
+> merge-into-one-unit model doesn't have): *selective-import visibility restriction* (today a selective
+> import validates its names but still merges the whole module's public decls) and **`as` rebinding**
+> (parsed, recorded, but not yet semantically applied). The safety property — never silently shadow/
+> miscompile — holds today; the encapsulation niceties are the follow-up.
+
 ---
 
 ## 5. Testing strategy

@@ -252,10 +252,14 @@ types are usable from C# in the same project, incl. the IDE); a second build wit
 transpilation; `dotnet clean` removes the generated files; and a project referencing the first project's
 output does **not** inherit the transpile behavior or the package dependency.
 
-## P12 — Modules, imports & name resolution
+## P12 — Modules, imports & name resolution — ✅ DONE (phase-1)
 Turn the P8 embedded-std foothold into a real module system (full design in PRD §4.5). Independently
 sequenceable — frontend-only, depends just on the current pipeline — and a natural companion to P10's
-`pgconfig.json` workspace. Three tracks, landed together:
+`pgconfig.json` workspace. **Delivered:** the import syntax, the `ModuleResolver` seam + transitive
+cross-`.pg` loading, and collision *detection*. **Phase-2 (deferred):** selective-import visibility
+restriction and `as` rebinding — both need a per-file import-scope table (the current merge-into-one-unit
+model has no place to hang per-file visibility); the *safety* property (never silently shadow) is already
+met. Three tracks:
 
 - **New import syntax:** `import { a, b as c } from "spec"`, `import * as ns from "spec"`, bare
   `import "spec"`. `from` is a contextual identifier (no new keyword); the specifier is a quoted `StringLit`
@@ -268,16 +272,19 @@ sequenceable — frontend-only, depends just on the current pipeline — and a n
   merge; the resolver only maps specifier→source. CLI ships a `FileModuleResolver` (std registry first, then
   `<root>/a/b/c.pg` for logical names, importer-relative for `./`), with `--root` (later `pgconfig.json`);
   tests ship an in-memory `MapModuleResolver` (no disk). Core stays IO-free.
-- **Collision policy — refuse loudly:** selective imports *restrict* visibility (stop merging everything);
-  any name collision is a hard error naming both origins, resolvable only with `as`; builtins can't be
-  shadowed; functions merge as overloads unless the signature is identical. Close the silent last-wins holes
-  for top-level values / union ctors / extensions. Exports = all top-level public for now (`private` marker
-  deferred).
+- **Collision policy — refuse loudly:** ✅ any name collision is a hard error; builtins can't be shadowed;
+  functions merge as overloads unless the signature is identical; the silent last-wins holes for top-level
+  values / union ctors / extensions are closed. Exports = all top-level public for now (`private` marker
+  deferred). ⏳ *phase-2:* selective imports *restricting* visibility (today they validate names but still
+  merge the module's whole public surface) and `as` *rebinding* (parsed + recorded, not yet applied) —
+  both await the per-file import-scope table.
 
-*Gate:* a two-file program (`entry.pg` importing `"./util"`) builds via `--root` to identical C#/TS stdout;
-a transitive chain `a → b → c` resolves; an import cycle, an unknown module, an unknown imported name, and a
-cross-module name collision are each a clear, distinct diagnostic; the in-process tests cover all of this
-with the in-memory resolver (no filesystem); existing single-file programs are unaffected.
+*Gate (met):* a two-file program (`entry.pg` importing `"./util"` + a logical module) builds via `--root` to
+identical C#/TS stdout; a transitive chain `a → b → c` resolves (with shared-dependency dedup); an import
+cycle, an unknown module, an unknown imported name, and a cross-module collision (type / value / union case /
+extension) are each a clear diagnostic; the in-process tests cover all of this with the in-memory resolver
+(no filesystem); existing single-file programs are unaffected. (Phase-2 visibility/`as` is the remaining
+gate.)
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
