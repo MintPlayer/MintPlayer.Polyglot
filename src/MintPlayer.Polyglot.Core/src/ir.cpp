@@ -121,6 +121,16 @@ private:
                 line("}");
                 break;
             }
+            case StmtKind::For: {
+                const auto& f = static_cast<const For&>(s);
+                std::string seq = f.isRange
+                    ? expr(*f.rangeStart) + (f.inclusive ? "..=" : "..") + expr(*f.rangeEnd)
+                    : expr(*f.iterable);
+                line("for " + f.binding + " in " + seq + " {");
+                block(f.body);
+                line("}");
+                break;
+            }
             case StmtKind::Return: {
                 const auto& r = static_cast<const Return&>(s);
                 line(r.value ? "return " + expr(*r.value) : "return");

@@ -247,6 +247,21 @@ private:
                 node->body = block(s.thenBody);
                 return node;
             }
+            case StmtKind::For: {
+                // Tuple-destructuring bindings widen with collections later; a single binding for now.
+                std::string binding = s.forBinding.kind == PatKind::Binding ? s.forBinding.name : "_";
+                auto node = std::make_unique<ir::For>(s.pos, binding);
+                if (s.value && s.value->kind == ExprKind::Range) {
+                    node->isRange = true;
+                    node->rangeStart = expr(*s.value->lhs);
+                    node->rangeEnd = expr(*s.value->rhs);
+                    node->inclusive = s.value->flag;
+                } else if (s.value) {
+                    node->iterable = expr(*s.value);
+                }
+                node->body = block(s.thenBody);
+                return node;
+            }
             case StmtKind::Return:
                 return std::make_unique<ir::Return>(s.pos, s.value ? expr(*s.value) : nullptr);
             default:

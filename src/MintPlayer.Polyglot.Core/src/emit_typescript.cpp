@@ -246,6 +246,19 @@ private:
                 line("}");
                 break;
             }
+            case ir::StmtKind::For: {
+                const auto& f = static_cast<const ir::For&>(s);
+                if (f.isRange) {
+                    std::string cmp = f.inclusive ? " <= " : " < ";
+                    line("for (let " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
+                         f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++) {");
+                } else {
+                    line("for (const " + f.binding + " of " + emitExpr(*f.iterable) + ") {");
+                }
+                emitBlock(f.body);
+                line("}");
+                break;
+            }
         }
     }
 

@@ -132,7 +132,7 @@ struct Match : Expr {
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, Return };
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return };
 
 struct Stmt {
     StmtKind kind;
@@ -172,6 +172,15 @@ struct While : Stmt {
     ExprPtr cond;
     std::vector<StmtPtr> body;
     While(SourcePos p, ExprPtr c) : Stmt(StmtKind::While, p), cond(std::move(c)) {}
+};
+struct For : Stmt { // `for binding in <seq>`: either an integer range or an arbitrary iterable
+    std::string binding;
+    bool isRange = false;
+    ExprPtr rangeStart, rangeEnd; // range form: bounds
+    bool inclusive = false;       // range form: `..=` (true) vs `..` (false)
+    ExprPtr iterable;             // iterable form: the sequence expression
+    std::vector<StmtPtr> body;
+    For(SourcePos p, std::string b) : Stmt(StmtKind::For, p), binding(std::move(b)) {}
 };
 struct Return : Stmt {
     ExprPtr value; // may be null

@@ -1,0 +1,24 @@
+// P5 differential conformance: `for…in` over integer ranges — exclusive `..`
+// and inclusive `..=`, emitted as C-style `for` loops on both targets.
+
+fn main() {
+  var sum = 0
+  for i in 0..=5 {
+    sum = sum + i
+  }
+  print(sum)         // 15  (0+1+2+3+4+5)
+
+  var product = 1
+  for i in 1..5 {
+    product = product * i
+  }
+  print(product)     // 24  (1*2*3*4)
+
+  var rows = 0
+  for i in 0..3 {
+    for j in 0..3 {
+      rows = rows + 1
+    }
+  }
+  print(rows)        // 9  (nested 3x3)
+}

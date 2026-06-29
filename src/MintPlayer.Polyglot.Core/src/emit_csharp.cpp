@@ -217,6 +217,18 @@ private:
                 emitBlock(w.body);
                 break;
             }
+            case ir::StmtKind::For: {
+                const auto& f = static_cast<const ir::For&>(s);
+                if (f.isRange) {
+                    std::string cmp = f.inclusive ? " <= " : " < ";
+                    line("for (var " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
+                         f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++)");
+                } else {
+                    line("foreach (var " + f.binding + " in " + emitExpr(*f.iterable) + ")");
+                }
+                emitBlock(f.body);
+                break;
+            }
         }
     }
 
