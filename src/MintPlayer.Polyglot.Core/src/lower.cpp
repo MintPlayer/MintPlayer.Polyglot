@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/lower.hpp"
 
+#include <unordered_map>
 #include <unordered_set>
 
 namespace mintplayer::polyglot {
@@ -12,10 +13,18 @@ public:
         // Names that denote a constructible type, so `Name(args)` lowers to a construction, not a call.
         for (const auto& r : unit.records) typeNames_.insert(r.name);
         for (const auto& c : unit.classes) typeNames_.insert(c.name);
+        for (const auto& e : unit.enums) for (const auto& c : e.cases) enumCases_[e.name].insert(c.name);
     }
 
     ir::Module run(const CompilationUnit& unit) {
         ir::Module m;
+        for (const auto& e : unit.enums) {
+            ir::Enum ie;
+            ie.name = e.name;
+            long long next = 0;
+            for (const auto& c : e.cases) { long long v = c.hasValue ? c.value : next; ie.cases.push_back({c.name, v}); next = v + 1; }
+            m.enums.push_back(std::move(ie));
+        }
         for (const auto& r : unit.records) {
             ir::Record rec;
             rec.name = r.name;
@@ -39,6 +48,37 @@ public:
 
 private:
     std::unordered_set<std::string> typeNames_;
+    std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
+
+    ir::Pattern pattern(const Pattern& p, const std::string& scrutEnum) {
+        ir::Pattern ip;
+        switch (p.kind) {
+            case PatKind::Wildcard: ip.kind = ir::PatternKind::Wildcard; break;
+            case PatKind::Literal:  ip.kind = ir::PatternKind::Literal; if (p.literal) ip.literal = expr(*p.literal); break;
+            case PatKind::Binding:
+                if (!scrutEnum.empty() && enumCases_.at(scrutEnum).count(p.name)) {
+                    ip.kind = ir::PatternKind::EnumCase; ip.enumType = scrutEnum; ip.enumCase = p.name;
+                } else { ip.kind = ir::PatternKind::Binding; ip.binding = p.name; }
+                break;
+            default: ip.kind = ir::PatternKind::Wildcard; break; // Ctor/Tuple patterns widen in P5-4b
+        }
+        return ip;
+    }
+
+    ir::ExprPtr matchExpr(const Expr& e) {
+        auto m = std::make_unique<ir::Match>(e.pos, e.type, expr(*e.lhs));
+        std::string scrutEnum;
+        if (e.lhs->type.kind == TypeRef::Kind::Named && enumCases_.count(e.lhs->type.name)) scrutEnum = e.lhs->type.name;
+        for (const auto& arm : e.arms) {
+            ir::MatchArm ia;
+            ia.pattern = pattern(arm.pattern, scrutEnum);
+            if (arm.guard) ia.guard = expr(*arm.guard);
+            ia.body = (!arm.bodyIsBlock && arm.body) ? expr(*arm.body)
+                                                     : std::make_unique<ir::IntLit>(e.pos, e.type, "0"); // block arms: P5-4b
+            m->arms.push_back(std::move(ia));
+        }
+        return m;
+    }
 
     static std::string operatorSymbol(const std::string& method) {
         if (method == "plus") return "+";
@@ -85,6 +125,7 @@ private:
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member:    return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
+            case ExprKind::Match:     return matchExpr(e);
             case ExprKind::Call: {
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);

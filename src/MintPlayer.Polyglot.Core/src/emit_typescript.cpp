@@ -58,6 +58,7 @@ public:
     std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
+        for (const auto& e : m.enums) emitEnum(e);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& fn : m.functions) emitFunction(fn);
         for (const auto& fn : m.functions) {
@@ -74,6 +75,30 @@ private:
         out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
         out_ += s;
         out_ += '\n';
+    }
+
+    // Enum -> a type alias (stripped) + a const value object, both type-strippable (TS `enum` is not).
+    void emitEnum(const ir::Enum& e) {
+        line("type " + e.name + " = number;");
+        std::string s = "const " + e.name + " = { ";
+        for (std::size_t i = 0; i < e.cases.size(); ++i) { if (i) s += ", "; s += e.cases[i].name + ": " + std::to_string(e.cases[i].value); }
+        line(s + " };");
+    }
+
+    // One arm of a match, lowered into the IIFE if-chain.
+    std::string matchArm(const ir::MatchArm& a) {
+        const ir::Pattern& p = a.pattern;
+        std::string body = emitExpr(*a.body);
+        if (p.kind == ir::PatternKind::Binding) {
+            std::string s = "{ const " + p.binding + " = _m; ";
+            s += a.guard ? "if (" + emitExpr(*a.guard) + ") return " + body + "; }" : "return " + body + "; }";
+            return s + " ";
+        }
+        if (p.kind == ir::PatternKind::Wildcard)
+            return (a.guard ? "if (" + emitExpr(*a.guard) + ") return " + body + "; " : "return " + body + "; ");
+        std::string cond = "_m === " + (p.kind == ir::PatternKind::Literal ? emitExpr(*p.literal) : p.enumType + "." + p.enumCase);
+        if (a.guard) cond += " && (" + emitExpr(*a.guard) + ")";
+        return "if (" + cond + ") return " + body + "; ";
     }
 
     // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).
@@ -248,6 +273,12 @@ private:
                 std::string s = "new " + n.typeName + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
                 return s + ")";
+            }
+            case ir::ExprKind::Match: {
+                const auto& m = static_cast<const ir::Match&>(e);
+                std::string s = "(() => { const _m = " + emitExpr(*m.scrutinee) + "; ";
+                for (const auto& arm : m.arms) s += matchArm(arm);
+                return s + "})()";
             }
         }
         return "";

@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New };
+enum class ExprKind { Int, Float, Bool, Str, Var, This, Unary, Binary, Call, MethodCall, Member, New, Match };
 
 struct Expr {
     ExprKind kind;
@@ -92,6 +92,25 @@ struct New : Expr { // construction `Type(args)`
     std::string typeName;
     std::vector<ExprPtr> args;
     New(SourcePos p, Type t, std::string n) : Expr(ExprKind::New, p, std::move(t)), typeName(std::move(n)) {}
+};
+
+// match patterns (P5-4a: scalar/enum; constructor/tuple patterns widen in P5-4b)
+enum class PatternKind { Wildcard, Literal, Binding, EnumCase };
+struct Pattern {
+    PatternKind kind = PatternKind::Wildcard;
+    std::string binding;            // Binding: the bound name
+    ExprPtr literal;                // Literal: the constant
+    std::string enumType, enumCase; // EnumCase: Type.Case
+};
+struct MatchArm {
+    Pattern pattern;
+    ExprPtr guard; // optional
+    ExprPtr body;
+};
+struct Match : Expr {
+    ExprPtr scrutinee;
+    std::vector<MatchArm> arms;
+    Match(SourcePos p, Type t, ExprPtr s) : Expr(ExprKind::Match, p, std::move(t)), scrutinee(std::move(s)) {}
 };
 
 // ---- statements ----
@@ -173,7 +192,16 @@ struct Record { // an immutable data type (record)
     std::vector<RecordField> fields;
     std::vector<Method> methods;
 };
+struct EnumCase {
+    std::string name;
+    long long value;
+};
+struct Enum {
+    std::string name;
+    std::vector<EnumCase> cases;
+};
 struct Module {
+    std::vector<Enum> enums;
     std::vector<Record> records;
     std::vector<Function> functions;
 };

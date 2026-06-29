@@ -36,8 +36,9 @@ public:
     std::string emit(const ir::Module& m) {
         out_ = "using System;\n\n";
         indent_ = 0;
+        for (const auto& e : m.enums) emitEnum(e);
         for (const auto& r : m.records) emitRecord(r);
-        if (!m.records.empty()) out_ += "\n";
+        if (!m.enums.empty() || !m.records.empty()) out_ += "\n";
         out_ += "static class Program\n{\n";
         indent_ = 1;
         for (const auto& fn : m.functions) emitFunction(fn);
@@ -57,6 +58,22 @@ private:
         out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
         out_ += s;
         out_ += '\n';
+    }
+
+    void emitEnum(const ir::Enum& e) {
+        std::string s = "enum " + e.name + " { ";
+        for (std::size_t i = 0; i < e.cases.size(); ++i) { if (i) s += ", "; s += e.cases[i].name + " = " + std::to_string(e.cases[i].value); }
+        line(s + " }");
+    }
+
+    std::string patternCs(const ir::Pattern& p) {
+        switch (p.kind) {
+            case ir::PatternKind::Wildcard: return "_";
+            case ir::PatternKind::Literal:  return emitExpr(*p.literal);
+            case ir::PatternKind::Binding:  return "var " + p.binding;
+            case ir::PatternKind::EnumCase: return p.enumType + "." + p.enumCase;
+        }
+        return "_";
     }
 
     void emitRecord(const ir::Record& r) {
@@ -223,6 +240,23 @@ private:
                 std::string s = "new " + n.typeName + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
                 return s + ")";
+            }
+            case ir::ExprKind::Match: {
+                const auto& m = static_cast<const ir::Match&>(e);
+                std::string s = atom(*m.scrutinee) + " switch { ";
+                bool hasCatchAll = false;
+                for (std::size_t i = 0; i < m.arms.size(); ++i) {
+                    if (i) s += ", ";
+                    const ir::Pattern& p = m.arms[i].pattern;
+                    if (!m.arms[i].guard && (p.kind == ir::PatternKind::Wildcard || p.kind == ir::PatternKind::Binding)) hasCatchAll = true;
+                    s += patternCs(p);
+                    if (m.arms[i].guard) s += " when " + emitExpr(*m.arms[i].guard);
+                    s += " => " + emitExpr(*m.arms[i].body);
+                }
+                // Sema guarantees exhaustiveness, but C# can't prove it for enums — add an unreachable
+                // default so the switch expression compiles without CS8524.
+                if (!hasCatchAll) s += ", _ => throw new System.InvalidOperationException()";
+                return s + " }";
             }
         }
         return "";

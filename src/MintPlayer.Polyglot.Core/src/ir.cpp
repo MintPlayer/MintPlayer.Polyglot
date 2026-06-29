@@ -30,6 +30,11 @@ std::string typeName(const TypeRef& t) {
 class Dumper {
 public:
     std::string run(const Module& m) {
+        for (const auto& e : m.enums) {
+            std::string s = "enum " + e.name + " { ";
+            for (std::size_t i = 0; i < e.cases.size(); ++i) { if (i) s += ", "; s += e.cases[i].name + " = " + std::to_string(e.cases[i].value); }
+            line(s + " }");
+        }
         for (const auto& r : m.records) record(r);
         for (const auto& fn : m.functions) function(fn);
         return out_;
@@ -147,6 +152,22 @@ private:
                 repr = "new " + n.typeName + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) repr += ", "; repr += expr(*n.args[i]); }
                 repr += ")";
+                break;
+            }
+            case ExprKind::Match: {
+                const auto& m = static_cast<const Match&>(e);
+                repr = "match " + expr(*m.scrutinee) + " { ";
+                for (const auto& a : m.arms) {
+                    switch (a.pattern.kind) {
+                        case PatternKind::Wildcard: repr += "_"; break;
+                        case PatternKind::Literal:  repr += expr(*a.pattern.literal); break;
+                        case PatternKind::Binding:  repr += a.pattern.binding; break;
+                        case PatternKind::EnumCase: repr += a.pattern.enumType + "." + a.pattern.enumCase; break;
+                    }
+                    if (a.guard) repr += " if " + expr(*a.guard);
+                    repr += " => " + expr(*a.body) + ", ";
+                }
+                repr += "}";
                 break;
             }
         }

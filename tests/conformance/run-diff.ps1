@@ -46,7 +46,10 @@ foreach ($pg in Get-ChildItem $progDir -Filter *.pg | Sort-Object Name) {
     if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name (transpile failed)"; $fail++; continue }
 
     $csproj | Set-Content (Join-Path $dir "$name.csproj")
-    $cs = (& dotnet run --project $dir -c Release 2>$null | Out-String).TrimEnd("`r","`n")
+    # Build quietly and run the assembly directly, so build diagnostics never mix into program stdout.
+    & dotnet build (Join-Path $dir "$name.csproj") -c Release -v quiet --nologo *> $null
+    $dll = Join-Path $dir "bin\Release\net10.0\$name.dll"
+    $cs = (& dotnet $dll 2>$null | Out-String).TrimEnd("`r","`n")
     $ts = (& node (Join-Path $dir "$name.ts") 2>$null | Out-String).TrimEnd("`r","`n")
 
     if ($cs -eq $ts) {
