@@ -218,7 +218,7 @@ private:
             thisAlias_.clear();
             return;
         }
-        std::string sig = "public " + csType(m.returnType) + " " + m.name + csGenerics(m.generics) + "(";
+        std::string sig = std::string("public ") + (m.isStatic ? "static " : "") + csType(m.returnType) + " " + m.name + csGenerics(m.generics) + "(";
         for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csType(m.params[i].type) + " " + m.params[i].name; }
         sig += ")" + csWhere(m.generics);
         if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
@@ -437,7 +437,8 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                std::string s = atom(*mc.object) + "." + mc.method + "(";
+                std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
+                std::string s = recv + "." + mc.method + "(";
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                 return s + ")";
             }

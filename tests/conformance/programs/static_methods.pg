@@ -1,0 +1,18 @@
+// P7 differential conformance: static methods on types (`static fn`), called as
+// `Type.method(...)`. Both targets have native static class methods — C#
+// `public static`, TS `static` — so this is a near-1:1 mapping. (This is the
+// mechanism `i32.parse` builds on next.)
+
+record Counter(value: i32) {
+  static fn zero(): Counter => Counter(0)
+  static fn of(n: i32): Counter => Counter(n)
+  fn read(): i32 => this.value
+}
+
+fn main() {
+  let a = Counter.zero()
+  print(a.read())          // 0
+  let b = Counter.of(42)
+  print(b.read())          // 42
+  print(Counter.of(10).read())   // 10  (static call then instance call)
+}

@@ -280,7 +280,7 @@ private:
             return;
         }
         // method and operator both become regular methods (a + b calls a.plus(b) at the use site)
-        std::string sig = m.name + tsGenerics(m.generics) + "(";
+        std::string sig = std::string(m.isStatic ? "static " : "") + m.name + tsGenerics(m.generics) + "(";
         for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += m.params[i].name + ": " + tsType(m.params[i].type); }
         sig += "): " + tsType(m.returnType) + " {";
         line(sig);
@@ -568,7 +568,8 @@ private:
                     for (const auto& a : mc.args) s += ", " + emitExpr(*a);
                     return s + ")";
                 }
-                std::string s = atom(*mc.object) + "." + mc.method + "(";
+                std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
+                std::string s = recv + "." + mc.method + "(";
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                 return s + ")";
             }

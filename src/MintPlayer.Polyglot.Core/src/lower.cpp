@@ -221,6 +221,7 @@ private:
     ir::Method method(const Member& m) {
         ir::Method im;
         im.name = m.name;
+        for (const auto& mod : m.modifiers) if (mod == "static") im.isStatic = true;
         im.generics = generics(m.generics);
         if (m.kind == MemberKind::Property) {
             im.kind = ir::MethodKind::Property;
@@ -265,6 +266,13 @@ private:
             }
             case ExprKind::Call: {
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
+                    // Static call `Type.method(args)`: the receiver is a type name, not a value.
+                    if (e.lhs->lhs->kind == ExprKind::Name && typeNames_.count(e.lhs->lhs->text)) {
+                        auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, nullptr, e.lhs->text);
+                        mc->staticType = e.lhs->lhs->text;
+                        for (const auto& a : e.args) mc->args.push_back(expr(*a));
+                        return mc;
+                    }
                     const TypeRef& rt = e.lhs->lhs->type; // receiver type, resolved by sema
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);
                     if (rt.kind == TypeRef::Kind::Named) {

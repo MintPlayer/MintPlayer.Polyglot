@@ -122,6 +122,7 @@ struct MemberInfo {
     MemberKind kind;
     std::vector<TypeRef> params;  // Method/Operator/Init
     TypeRef type;                 // field/property type, or method/operator return type
+    bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
 };
 struct TypeInfo {
     std::vector<GenericParam> generics;
@@ -277,6 +278,7 @@ private:
         for (const auto& p : m.params) mi.params.push_back(p.type);
         mi.type = (m.kind == MemberKind::Field || m.kind == MemberKind::Const ||
                    m.kind == MemberKind::Property) ? m.type : m.returnType;
+        for (const auto& mod : m.modifiers) if (mod == "static") mi.isStatic = true;
         return mi;
     }
     void addMembers(TypeInfo& ti, const std::vector<Member>& members) {
@@ -384,6 +386,9 @@ private:
         for (auto& m : members) {
             pushGenerics(m.generics);
             if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Init) {
+                bool isStatic = false;
+                for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
+                currentThis_ = isStatic ? tUnknown() : tNamed(typeName); // no `this` inside a static method
                 currentReturn_ = (m.kind == MemberKind::Init) ? namedType("unit") : m.returnType;
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
@@ -391,6 +396,7 @@ private:
                 if (m.hasBody && m.exprBodied && m.exprBody) checkExpr(*m.exprBody);
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
+                currentThis_ = tNamed(typeName);
             } else if (m.kind == MemberKind::Property && m.init) {
                 currentReturn_ = m.type;
                 pushScope();
@@ -677,6 +683,16 @@ private:
         if (e.lhs->kind == ExprKind::Member) {
             // Method call `recv.method(args)`.
             const std::string& method = e.lhs->text;
+            // Static call `Type.method(args)`: the receiver is a type name, not an evaluated value.
+            if (e.lhs->lhs->kind == ExprKind::Name && types_.count(e.lhs->lhs->text)) {
+                const std::string& typeName = e.lhs->lhs->text;
+                if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
+                    checkArgs(m->params, argTypes, e.args, "static method '" + typeName + "." + method + "'", e.pos);
+                    return m->type;
+                }
+                diags_.error(e.pos, "type '" + typeName + "' has no static method '" + method + "'");
+                return tUnknown();
+            }
             TypeRef recv = checkExpr(*e.lhs->lhs);
             // An extension method augments any receiver type (scalar or nominal); check it first so a
             // `type 'T' has no method` error doesn't fire for a method an extension actually supplies.

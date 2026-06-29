@@ -206,7 +206,7 @@ private:
             case ExprKind::This:  repr = "this"; break;
             case ExprKind::MethodCall: {
                 const auto& mc = static_cast<const MethodCall&>(e);
-                repr = expr(*mc.object) + "." + mc.method + "(";
+                repr = (mc.object ? expr(*mc.object) : mc.staticType) + "." + mc.method + "(";
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) repr += ", "; repr += expr(*mc.args[i]); }
                 repr += ")";
                 break;

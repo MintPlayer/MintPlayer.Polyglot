@@ -79,9 +79,10 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     std::vector<ExprPtr> args;
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
 };
-struct MethodCall : Expr { // `object.method(args)`
-    ExprPtr object;
+struct MethodCall : Expr { // `object.method(args)` — or a static call `Type.method(args)` when staticType set
+    ExprPtr object;            // null for a static call
     std::string method;
+    std::string staticType;    // non-empty = static call `staticType.method(args)` (object is null)
     std::vector<ExprPtr> args;
     bool isExtension = false; // resolved to an extension fn: C# keeps `obj.m(args)`, TS emits `m(obj, args)`
     MethodCall(SourcePos p, Type t, ExprPtr o, std::string m)
@@ -273,6 +274,7 @@ struct Method {
     std::vector<Param> params;
     Type returnType;
     bool exprBodied = false;      // `=> expr` vs block
+    bool isStatic = false;        // a `static fn` member — called as `Type.method(...)`, no `this`
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
 };
