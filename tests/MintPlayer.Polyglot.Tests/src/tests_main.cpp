@@ -86,6 +86,18 @@ int main() {
         roundtrips("fn f(): i32 => (1 + 2) * 3 - -4\n", "round-trip: precedence/unary stable");
         roundtrips("fn g(a: i32) {\n  if a > 0 { print(a) } else { print(0) }\n}\n",
                    "round-trip: if/else stable");
+        roundtrips("fn f(a: i32) {\n  let p = a?.b ?? c.d.e\n  let q = arr[a + 1]\n"
+                   "  let r = obj.method(1, 2) + x!\n}\n",
+                   "round-trip: member/call/index/?./??/!");
+        roundtrips("fn f() {\n  let s = 0..10\n  let t = 0..=10\n"
+                   "  let g = (x: i32) => x * 2\n  let h = (x) => { return x }\n}\n",
+                   "round-trip: ranges + lambdas");
+        roundtrips("fn f() {\n  let l = [1, 2, 3]\n  let tup = (1, 2, 3)\n"
+                   "  let w = v with { x = 0, y = 1 }\n}\n",
+                   "round-trip: list / tuple / with");
+        roundtrips("fn f(a: i32) {\n  let m = if a > 0 { 1 } else { 0 }\n"
+                   "  let bits = a & a | a ^ a << 2 >> 1\n}\n",
+                   "round-trip: if-expr + bitwise/shift");
     }
 
     // C# emission (golden substrings).

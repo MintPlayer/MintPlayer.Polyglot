@@ -4,7 +4,6 @@ namespace mintplayer::polyglot {
 
 namespace {
 
-// Recursive-descent parser over the MVP token stream. Expression parsing is precedence-climbing.
 class Parser {
 public:
     Parser(const std::vector<Token>& tokens, DiagnosticBag& diags)
@@ -31,15 +30,12 @@ private:
 
     const Token& peek(std::size_t ahead = 0) const {
         std::size_t i = idx_ + ahead;
-        return i < toks_.size() ? toks_[i] : toks_.back(); // back() is always End
+        return i < toks_.size() ? toks_[i] : toks_.back();
     }
     bool at(TokKind k) const { return peek().kind == k; }
     const Token& advance() { return toks_[idx_ < toks_.size() - 1 ? idx_++ : idx_]; }
 
-    bool accept(TokKind k) {
-        if (at(k)) { advance(); return true; }
-        return false;
-    }
+    bool accept(TokKind k) { if (at(k)) { advance(); return true; } return false; }
     Token expect(TokKind k, const char* what) {
         if (at(k)) return advance();
         error(std::string("expected ") + what);
@@ -50,11 +46,17 @@ private:
         panicked_ = true;
     }
 
-    // Skip to the start of the next top-level function after an error.
     bool recoverToTopLevel() {
         while (!at(TokKind::End) && !at(TokKind::KwFn)) advance();
         panicked_ = false;
         return !at(TokKind::End);
+    }
+
+    static ExprPtr mk(ExprKind kind, SourcePos pos) {
+        auto e = std::make_unique<Expr>();
+        e->kind = kind;
+        e->pos = pos;
+        return e;
     }
 
     Ty parseType() {
@@ -71,6 +73,8 @@ private:
         error("expected a type");
         return Ty::Unknown;
     }
+
+    // ---- declarations & statements (statement grammar widens in a later P3 increment) ----
 
     FunctionDecl parseFunction() {
         FunctionDecl fn;
@@ -89,12 +93,10 @@ private:
             } while (accept(TokKind::Comma));
         }
         expect(TokKind::RParen, "')'");
-
         fn.returnType = Ty::Unit;
         if (accept(TokKind::Colon)) fn.returnType = parseType();
 
         if (accept(TokKind::Arrow)) {
-            // Expression body: `=> expr` desugars to a single `return expr;`.
             auto ret = std::make_unique<Stmt>();
             ret->kind = StmtKind::Return;
             ret->pos = peek().pos;
@@ -112,7 +114,6 @@ private:
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
             stmts.push_back(parseStmt());
             if (panicked_) {
-                // Recover to the next statement/closing brace.
                 while (!at(TokKind::Semicolon) && !at(TokKind::RBrace) && !at(TokKind::End)) advance();
                 accept(TokKind::Semicolon);
                 panicked_ = false;
@@ -128,15 +129,14 @@ private:
         if (at(TokKind::KwWhile)) return parseWhile();
         if (at(TokKind::KwReturn)) return parseReturn();
 
-        // Assignment `name = expr;` (MVP target is a bare name), else an expression statement.
         if (at(TokKind::Identifier) && peek(1).kind == TokKind::Assign) {
             auto s = std::make_unique<Stmt>();
             s->kind = StmtKind::Assign;
             s->pos = peek().pos;
-            s->name = advance().text; // name
-            advance();                // '='
+            s->name = advance().text;
+            advance(); // '='
             s->value = parseExpr();
-            accept(TokKind::Semicolon); // ';' is an optional separator (statements end at newlines)
+            accept(TokKind::Semicolon);
             return s;
         }
 
@@ -153,12 +153,12 @@ private:
         s->kind = StmtKind::Let;
         s->pos = peek().pos;
         s->isMutable = at(TokKind::KwVar);
-        advance(); // let/var
+        advance();
         s->name = expect(TokKind::Identifier, "a binding name").text;
         if (accept(TokKind::Colon)) s->declType = parseType();
         expect(TokKind::Assign, "'='");
         s->value = parseExpr();
-        accept(TokKind::Semicolon); // optional separator
+        accept(TokKind::Semicolon);
         return s;
     }
 
@@ -166,17 +166,13 @@ private:
         auto s = std::make_unique<Stmt>();
         s->kind = StmtKind::If;
         s->pos = peek().pos;
-        advance(); // if
-        s->value = parseExpr(); // condition
+        advance();
+        s->value = parseExpr();
         s->thenBody = parseBlock();
         if (accept(TokKind::KwElse)) {
             s->hasElse = true;
-            if (at(TokKind::KwIf)) {
-                // `else if` — nest the inner if as the sole statement of the else block.
-                s->elseBody.push_back(parseIf());
-            } else {
-                s->elseBody = parseBlock();
-            }
+            if (at(TokKind::KwIf)) s->elseBody.push_back(parseIf());
+            else s->elseBody = parseBlock();
         }
         return s;
     }
@@ -185,7 +181,7 @@ private:
         auto s = std::make_unique<Stmt>();
         s->kind = StmtKind::While;
         s->pos = peek().pos;
-        advance(); // while
+        advance();
         s->value = parseExpr();
         s->thenBody = parseBlock();
         return s;
@@ -195,124 +191,271 @@ private:
         auto s = std::make_unique<Stmt>();
         s->kind = StmtKind::Return;
         s->pos = peek().pos;
-        advance(); // return
-        // A bare `return` is followed by `}` or the next statement; otherwise it returns an expression.
+        advance();
         if (!at(TokKind::Semicolon) && !at(TokKind::RBrace)) s->value = parseExpr();
-        accept(TokKind::Semicolon); // optional separator
+        accept(TokKind::Semicolon);
         return s;
     }
 
-    // ---- expressions (precedence climbing) ----
+    // ---- expressions (precedence climbing, loosest first) ----
 
-    ExprPtr parseExpr() { return parseOr(); }
+    ExprPtr parseExpr() { return parseCoalesce(); }
 
-    ExprPtr binary(ExprPtr lhs, const char* op, ExprPtr rhs, SourcePos pos) {
-        auto e = std::make_unique<Expr>();
-        e->kind = ExprKind::Binary;
-        e->pos = pos;
+    ExprPtr makeBinary(ExprPtr l, const char* op, ExprPtr r, SourcePos p) {
+        auto e = mk(ExprKind::Binary, p);
         e->text = op;
-        e->lhs = std::move(lhs);
-        e->rhs = std::move(rhs);
+        e->lhs = std::move(l);
+        e->rhs = std::move(r);
         return e;
     }
 
+    ExprPtr parseCoalesce() {
+        auto l = parseOr();
+        while (at(TokKind::QuestionQuestion)) { auto p = advance().pos; l = makeBinary(std::move(l), "??", parseOr(), p); }
+        return l;
+    }
     ExprPtr parseOr() {
-        auto lhs = parseAnd();
-        while (at(TokKind::PipePipe)) { auto p = advance().pos; lhs = binary(std::move(lhs), "||", parseAnd(), p); }
-        return lhs;
+        auto l = parseAnd();
+        while (at(TokKind::PipePipe)) { auto p = advance().pos; l = makeBinary(std::move(l), "||", parseAnd(), p); }
+        return l;
     }
     ExprPtr parseAnd() {
-        auto lhs = parseEquality();
-        while (at(TokKind::AmpAmp)) { auto p = advance().pos; lhs = binary(std::move(lhs), "&&", parseEquality(), p); }
-        return lhs;
+        auto l = parseEquality();
+        while (at(TokKind::AmpAmp)) { auto p = advance().pos; l = makeBinary(std::move(l), "&&", parseEquality(), p); }
+        return l;
     }
     ExprPtr parseEquality() {
-        auto lhs = parseComparison();
+        auto l = parseComparison();
         while (at(TokKind::EqEq) || at(TokKind::NotEq)) {
             const char* op = at(TokKind::EqEq) ? "==" : "!=";
             auto p = advance().pos;
-            lhs = binary(std::move(lhs), op, parseComparison(), p);
+            l = makeBinary(std::move(l), op, parseComparison(), p);
         }
-        return lhs;
+        return l;
     }
     ExprPtr parseComparison() {
-        auto lhs = parseAdditive();
+        auto l = parseBitOr();
         while (at(TokKind::Lt) || at(TokKind::LtEq) || at(TokKind::Gt) || at(TokKind::GtEq)) {
             const char* op = at(TokKind::Lt) ? "<" : at(TokKind::LtEq) ? "<=" : at(TokKind::Gt) ? ">" : ">=";
             auto p = advance().pos;
-            lhs = binary(std::move(lhs), op, parseAdditive(), p);
+            l = makeBinary(std::move(l), op, parseBitOr(), p);
         }
-        return lhs;
+        return l;
+    }
+    ExprPtr parseBitOr() {
+        auto l = parseBitXor();
+        while (at(TokKind::Pipe)) { auto p = advance().pos; l = makeBinary(std::move(l), "|", parseBitXor(), p); }
+        return l;
+    }
+    ExprPtr parseBitXor() {
+        auto l = parseBitAnd();
+        while (at(TokKind::Caret)) { auto p = advance().pos; l = makeBinary(std::move(l), "^", parseBitAnd(), p); }
+        return l;
+    }
+    ExprPtr parseBitAnd() {
+        auto l = parseShift();
+        while (at(TokKind::Amp)) { auto p = advance().pos; l = makeBinary(std::move(l), "&", parseShift(), p); }
+        return l;
+    }
+    ExprPtr parseShift() {
+        auto l = parseAdditive();
+        while (at(TokKind::Shl) || at(TokKind::Shr) || at(TokKind::UShr)) {
+            const char* op = at(TokKind::Shl) ? "<<" : at(TokKind::Shr) ? ">>" : ">>>";
+            auto p = advance().pos;
+            l = makeBinary(std::move(l), op, parseAdditive(), p);
+        }
+        return l;
     }
     ExprPtr parseAdditive() {
-        auto lhs = parseMultiplicative();
+        auto l = parseMultiplicative();
         while (at(TokKind::Plus) || at(TokKind::Minus)) {
             const char* op = at(TokKind::Plus) ? "+" : "-";
             auto p = advance().pos;
-            lhs = binary(std::move(lhs), op, parseMultiplicative(), p);
+            l = makeBinary(std::move(l), op, parseMultiplicative(), p);
         }
-        return lhs;
+        return l;
     }
     ExprPtr parseMultiplicative() {
-        auto lhs = parseUnary();
+        auto l = parseUnary();
         while (at(TokKind::Star) || at(TokKind::Slash) || at(TokKind::Percent)) {
             const char* op = at(TokKind::Star) ? "*" : at(TokKind::Slash) ? "/" : "%";
             auto p = advance().pos;
-            lhs = binary(std::move(lhs), op, parseUnary(), p);
+            l = makeBinary(std::move(l), op, parseUnary(), p);
         }
-        return lhs;
+        return l;
     }
     ExprPtr parseUnary() {
-        if (at(TokKind::Not) || at(TokKind::Minus)) {
-            const char* op = at(TokKind::Not) ? "!" : "-";
+        if (at(TokKind::Not) || at(TokKind::Minus) || at(TokKind::Tilde)) {
+            const char* op = at(TokKind::Not) ? "!" : at(TokKind::Minus) ? "-" : "~";
             auto p = advance().pos;
-            auto e = std::make_unique<Expr>();
-            e->kind = ExprKind::Unary;
-            e->pos = p;
+            auto e = mk(ExprKind::Unary, p);
             e->text = op;
             e->lhs = parseUnary();
             return e;
         }
-        return parsePostfix();
+        return parseRange();
+    }
+    ExprPtr parseRange() {
+        auto l = parsePostfix();
+        if (at(TokKind::DotDot) || at(TokKind::DotDotEq)) {
+            bool inclusive = at(TokKind::DotDotEq);
+            auto p = advance().pos;
+            auto e = mk(ExprKind::Range, p);
+            e->flag = inclusive;
+            e->lhs = std::move(l);
+            e->rhs = parsePostfix();
+            return e;
+        }
+        return l;
     }
     ExprPtr parsePostfix() {
         auto e = parsePrimary();
-        // A name immediately followed by '(' is a call (MVP: callee is always a bare name).
-        if (e && e->kind == ExprKind::Name && at(TokKind::LParen)) {
-            auto call = std::make_unique<Expr>();
-            call->kind = ExprKind::Call;
-            call->pos = e->pos;
-            call->text = e->text; // callee name
-            advance(); // '('
-            if (!at(TokKind::RParen)) {
-                do { call->args.push_back(parseExpr()); } while (accept(TokKind::Comma));
+        for (;;) {
+            if (at(TokKind::Dot) || at(TokKind::QuestionDot)) {
+                bool nullSafe = at(TokKind::QuestionDot);
+                auto p = advance().pos;
+                auto m = mk(ExprKind::Member, p);
+                m->flag = nullSafe;
+                m->lhs = std::move(e);
+                m->text = expect(TokKind::Identifier, "a member name").text;
+                e = std::move(m);
+            } else if (at(TokKind::LParen)) {
+                auto p = advance().pos;
+                auto call = mk(ExprKind::Call, p);
+                call->lhs = std::move(e);
+                if (!at(TokKind::RParen)) {
+                    do { call->args.push_back(parseExpr()); } while (accept(TokKind::Comma));
+                }
+                expect(TokKind::RParen, "')'");
+                e = std::move(call);
+            } else if (at(TokKind::LBracket)) {
+                auto p = advance().pos;
+                auto ix = mk(ExprKind::Index, p);
+                ix->lhs = std::move(e);
+                do { ix->args.push_back(parseExpr()); } while (accept(TokKind::Comma));
+                expect(TokKind::RBracket, "']'");
+                e = std::move(ix);
+            } else if (at(TokKind::Not)) {
+                auto p = advance().pos;
+                auto na = mk(ExprKind::NullAssert, p);
+                na->lhs = std::move(e);
+                e = std::move(na);
+            } else {
+                break;
             }
-            expect(TokKind::RParen, "')'");
-            return call;
+        }
+        if (at(TokKind::KwWith)) {
+            auto p = advance().pos;
+            auto w = mk(ExprKind::With, p);
+            w->lhs = std::move(e);
+            expect(TokKind::LBrace, "'{'");
+            if (!at(TokKind::RBrace)) {
+                do {
+                    FieldInit fi;
+                    fi.name = expect(TokKind::Identifier, "a field name").text;
+                    expect(TokKind::Assign, "'='");
+                    fi.value = parseExpr();
+                    w->fields.push_back(std::move(fi));
+                } while (accept(TokKind::Comma) && !at(TokKind::RBrace));
+            }
+            expect(TokKind::RBrace, "'}'");
+            e = std::move(w);
         }
         return e;
     }
+
+    // Is the upcoming `( ... )` a lambda parameter list (followed by `=>`)?
+    bool isLambdaAhead() const {
+        int depth = 0;
+        std::size_t j = idx_;
+        for (; j < toks_.size(); ++j) {
+            TokKind k = toks_[j].kind;
+            if (k == TokKind::LParen) ++depth;
+            else if (k == TokKind::RParen) { if (--depth == 0) break; }
+            else if (k == TokKind::End) return false;
+        }
+        return j + 1 < toks_.size() && toks_[j + 1].kind == TokKind::Arrow;
+    }
+
+    ExprPtr parseLambda() {
+        auto p = peek().pos;
+        auto e = mk(ExprKind::Lambda, p);
+        expect(TokKind::LParen, "'('");
+        if (!at(TokKind::RParen)) {
+            do {
+                Param param;
+                param.pos = peek().pos;
+                param.name = expect(TokKind::Identifier, "a parameter name").text;
+                if (accept(TokKind::Colon)) param.type = parseType();
+                e->params.push_back(std::move(param));
+            } while (accept(TokKind::Comma));
+        }
+        expect(TokKind::RParen, "')'");
+        expect(TokKind::Arrow, "'=>'");
+        if (at(TokKind::LBrace)) { e->flag = true; e->block = parseBlock(); }
+        else { e->flag = false; e->lhs = parseExpr(); }
+        return e;
+    }
+
+    ExprPtr parseIfExpr() {
+        auto p = peek().pos;
+        expect(TokKind::KwIf, "'if'");
+        auto e = mk(ExprKind::IfExpr, p);
+        e->lhs = parseExpr();
+        expect(TokKind::LBrace, "'{'");
+        e->rhs = parseExpr();
+        expect(TokKind::RBrace, "'}'");
+        expect(TokKind::KwElse, "'else'");
+        if (at(TokKind::KwIf)) {
+            e->extra = parseIfExpr();
+        } else {
+            expect(TokKind::LBrace, "'{'");
+            e->extra = parseExpr();
+            expect(TokKind::RBrace, "'}'");
+        }
+        return e;
+    }
+
     ExprPtr parsePrimary() {
-        auto e = std::make_unique<Expr>();
-        e->pos = peek().pos;
+        SourcePos p = peek().pos;
         switch (peek().kind) {
-            case TokKind::IntLit:   e->kind = ExprKind::IntLit;   e->text = advance().text; return e;
-            case TokKind::FloatLit: e->kind = ExprKind::FloatLit; e->text = advance().text; return e;
-            case TokKind::StringLit:e->kind = ExprKind::StringLit;e->text = advance().text; return e;
-            case TokKind::KwTrue:   e->kind = ExprKind::BoolLit;  e->boolVal = true;  advance(); return e;
-            case TokKind::KwFalse:  e->kind = ExprKind::BoolLit;  e->boolVal = false; advance(); return e;
-            case TokKind::Identifier: e->kind = ExprKind::Name;   e->text = advance().text; return e;
-            case TokKind::LParen: {
+            case TokKind::IntLit:    { auto e = mk(ExprKind::IntLit, p);    e->text = advance().text; return e; }
+            case TokKind::FloatLit:  { auto e = mk(ExprKind::FloatLit, p);  e->text = advance().text; return e; }
+            case TokKind::CharLit:   { auto e = mk(ExprKind::CharLit, p);   e->text = advance().text; return e; }
+            case TokKind::StringLit: { auto e = mk(ExprKind::StringLit, p); e->text = advance().text; return e; }
+            case TokKind::KwTrue:    { advance(); auto e = mk(ExprKind::BoolLit, p); e->boolVal = true;  return e; }
+            case TokKind::KwFalse:   { advance(); auto e = mk(ExprKind::BoolLit, p); e->boolVal = false; return e; }
+            case TokKind::KwNull:    { advance(); return mk(ExprKind::NullLit, p); }
+            case TokKind::KwThis:    { advance(); return mk(ExprKind::This, p); }
+            case TokKind::KwSuper:   { advance(); return mk(ExprKind::Super, p); }
+            case TokKind::Identifier:{ auto e = mk(ExprKind::Name, p); e->text = advance().text; return e; }
+            case TokKind::KwIf:      return parseIfExpr();
+            case TokKind::LBracket: {
                 advance();
-                auto inner = parseExpr();
+                auto e = mk(ExprKind::ListLit, p);
+                if (!at(TokKind::RBracket)) {
+                    do { e->args.push_back(parseExpr()); } while (accept(TokKind::Comma) && !at(TokKind::RBracket));
+                }
+                expect(TokKind::RBracket, "']'");
+                return e;
+            }
+            case TokKind::LParen: {
+                if (isLambdaAhead()) return parseLambda();
+                advance();
+                auto first = parseExpr();
+                if (at(TokKind::Comma)) {
+                    auto e = mk(ExprKind::TupleLit, p);
+                    e->args.push_back(std::move(first));
+                    while (accept(TokKind::Comma) && !at(TokKind::RParen)) e->args.push_back(parseExpr());
+                    expect(TokKind::RParen, "')'");
+                    return e;
+                }
                 expect(TokKind::RParen, "')'");
-                return inner;
+                return first;
             }
             default:
                 error("expected an expression");
-                e->kind = ExprKind::IntLit;
-                e->text = "0";
-                return e;
+                { auto e = mk(ExprKind::IntLit, p); e->text = "0"; return e; }
         }
     }
 };

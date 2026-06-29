@@ -154,15 +154,17 @@ private:
                 return child(*e.lhs, p, false) + " " + e.text + " " + child(*e.rhs, p, true);
             }
             case ExprKind::Call: {
-                std::string callee = e.text == "print" ? "Console.WriteLine" : e.text;
-                std::string s = callee + "(";
+                const Expr& callee = *e.lhs;
+                std::string head = (callee.kind == ExprKind::Name && callee.text == "print")
+                                       ? "Console.WriteLine" : emitExpr(callee);
+                std::string s = head + "(";
                 for (std::size_t i = 0; i < e.args.size(); ++i) {
                     if (i) s += ", ";
                     s += emitExpr(*e.args[i]);
                 }
-                s += ")";
-                return s;
+                return s + ")";
             }
+            default: return ""; // expression kinds beyond the MVP subset are emitted in P5
         }
         return "";
     }

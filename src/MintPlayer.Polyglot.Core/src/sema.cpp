@@ -205,7 +205,12 @@ private:
     Ty checkCall(Expr& e) {
         for (auto& a : e.args) checkExpr(*a);
 
-        if (e.text == "print") {
+        // The MVP type checker resolves only direct calls `name(...)`. Method/other callees (Member etc.)
+        // get full support in P4; here they type as Unknown rather than error.
+        const std::string name = (e.lhs && e.lhs->kind == ExprKind::Name) ? e.lhs->text : "";
+        if (name.empty()) return Ty::Unknown;
+
+        if (name == "print") {
             if (e.args.size() != 1) {
                 diags_.error(e.pos, "print expects exactly one argument");
             } else {
@@ -216,21 +221,21 @@ private:
             return Ty::Unit;
         }
 
-        auto it = fns_.find(e.text);
+        auto it = fns_.find(name);
         if (it == fns_.end()) {
-            diags_.error(e.pos, "call to undeclared function '" + e.text + "'");
+            diags_.error(e.pos, "call to undeclared function '" + name + "'");
             return Ty::Unknown;
         }
         const FnSig& sig = it->second;
         if (sig.params.size() != e.args.size()) {
-            diags_.error(e.pos, "'" + e.text + "' expects " + std::to_string(sig.params.size()) +
+            diags_.error(e.pos, "'" + name + "' expects " + std::to_string(sig.params.size()) +
                                     " argument(s), got " + std::to_string(e.args.size()));
         } else {
             for (std::size_t i = 0; i < sig.params.size(); ++i) {
                 Ty got = e.args[i]->type;
                 if (got != Ty::Unknown && sig.params[i] != Ty::Unknown && got != sig.params[i])
                     diags_.error(e.args[i]->pos, std::string("argument ") + std::to_string(i + 1) + " of '" +
-                                                     e.text + "' expects " + tyName(sig.params[i]) +
+                                                     name + "' expects " + tyName(sig.params[i]) +
                                                      ", got " + tyName(got));
             }
         }
