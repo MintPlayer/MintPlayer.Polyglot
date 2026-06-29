@@ -12,14 +12,26 @@ bool isIdentPart(char c) { return std::isalnum(static_cast<unsigned char>(c)) ||
 
 const std::unordered_map<std::string, TokKind>& keywords() {
     static const std::unordered_map<std::string, TokKind> kw = {
-        {"fn", TokKind::KwFn},       {"let", TokKind::KwLet},     {"var", TokKind::KwVar},
-        {"if", TokKind::KwIf},       {"else", TokKind::KwElse},   {"while", TokKind::KwWhile},
-        {"return", TokKind::KwReturn}, {"true", TokKind::KwTrue}, {"false", TokKind::KwFalse},
+        {"fn", TokKind::KwFn}, {"let", TokKind::KwLet}, {"var", TokKind::KwVar}, {"const", TokKind::KwConst},
+        {"class", TokKind::KwClass}, {"record", TokKind::KwRecord}, {"interface", TokKind::KwInterface},
+        {"enum", TokKind::KwEnum}, {"union", TokKind::KwUnion}, {"extension", TokKind::KwExtension},
+        {"import", TokKind::KwImport}, {"init", TokKind::KwInit}, {"operator", TokKind::KwOperator},
+        {"abstract", TokKind::KwAbstract}, {"open", TokKind::KwOpen}, {"override", TokKind::KwOverride},
+        {"sealed", TokKind::KwSealed}, {"static", TokKind::KwStatic}, {"private", TokKind::KwPrivate},
+        {"async", TokKind::KwAsync}, {"await", TokKind::KwAwait},
+        {"if", TokKind::KwIf}, {"else", TokKind::KwElse}, {"while", TokKind::KwWhile}, {"do", TokKind::KwDo},
+        {"for", TokKind::KwFor}, {"in", TokKind::KwIn},
+        {"return", TokKind::KwReturn}, {"break", TokKind::KwBreak}, {"continue", TokKind::KwContinue},
+        {"yield", TokKind::KwYield},
+        {"match", TokKind::KwMatch}, {"use", TokKind::KwUse}, {"try", TokKind::KwTry},
+        {"catch", TokKind::KwCatch}, {"finally", TokKind::KwFinally}, {"throw", TokKind::KwThrow},
+        {"when", TokKind::KwWhen}, {"with", TokKind::KwWith},
+        {"this", TokKind::KwThis}, {"super", TokKind::KwSuper},
+        {"true", TokKind::KwTrue}, {"false", TokKind::KwFalse}, {"null", TokKind::KwNull},
     };
     return kw;
 }
 
-// A small cursor over the source that tracks 1-based line/column.
 class Cursor {
 public:
     Cursor(const std::string& src) : src_(src) {}
@@ -44,6 +56,32 @@ private:
     int col_ = 1;
 };
 
+// Decode the body of a string or char literal (after the opening quote). Stops at `quote`.
+std::string scanQuoted(Cursor& cur, char quote, bool& terminated) {
+    std::string value;
+    terminated = false;
+    while (!cur.eof()) {
+        char ch = cur.advance();
+        if (ch == quote) { terminated = true; break; }
+        if (ch == '\\' && !cur.eof()) {
+            char esc = cur.advance();
+            switch (esc) {
+                case 'n': value += '\n'; break;
+                case 't': value += '\t'; break;
+                case 'r': value += '\r'; break;
+                case '0': value += '\0'; break;
+                case '"': value += '"'; break;
+                case '\'': value += '\''; break;
+                case '\\': value += '\\'; break;
+                default: value += esc; break;
+            }
+        } else {
+            value += ch;
+        }
+    }
+    return value;
+}
+
 } // namespace
 
 std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
@@ -57,7 +95,6 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
     while (!cur.eof()) {
         char c = cur.peek();
 
-        // Whitespace.
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') { cur.advance(); continue; }
 
         // Comments (trivia).
@@ -79,21 +116,11 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
             std::string text;
             while (!cur.eof() && isIdentPart(cur.peek())) text += cur.advance();
             auto it = keywords().find(text);
-            if (it != keywords().end()) {
-                TokKind k = it->second;
-                if (k == TokKind::KwTrue || k == TokKind::KwFalse) {
-                    push(k, std::move(text), start);
-                } else {
-                    push(k, std::move(text), start);
-                }
-            } else {
-                push(TokKind::Identifier, std::move(text), start);
-            }
+            push(it != keywords().end() ? it->second : TokKind::Identifier, std::move(text), start);
             continue;
         }
 
-        // Numbers: integer unless a '.' fraction or an exponent makes it a float. '_' separators are
-        // dropped so the raw text re-emits cleanly to either target.
+        // Numbers: integer unless a '.' fraction or exponent makes it a float. '_' separators dropped.
         if (std::isdigit(static_cast<unsigned char>(c))) {
             std::string text;
             bool isFloat = false;
@@ -106,7 +133,7 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
             readDigits();
             if (cur.peek() == '.' && std::isdigit(static_cast<unsigned char>(cur.peek(1)))) {
                 isFloat = true;
-                text += cur.advance(); // '.'
+                text += cur.advance();
                 readDigits();
             }
             if (cur.peek() == 'e' || cur.peek() == 'E') {
@@ -115,74 +142,106 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
                 if (cur.peek() == '+' || cur.peek() == '-') text += cur.advance();
                 readDigits();
             }
+            // Optional width suffix (i32/u8/f32/...), kept on the token text for later passes.
+            if (isIdentStart(cur.peek())) {
+                std::string suffix;
+                while (!cur.eof() && isIdentPart(cur.peek())) suffix += cur.advance();
+                if (!suffix.empty() && (suffix[0] == 'f' || suffix == "d")) isFloat = true;
+                text += suffix;
+            }
             push(isFloat ? TokKind::FloatLit : TokKind::IntLit, std::move(text), start);
             continue;
         }
 
-        // String literals with a minimal escape set; the decoded value is stored and re-escaped on emit.
+        // String / char literals; the decoded value is stored and re-escaped on emit.
         if (c == '"') {
-            cur.advance(); // opening quote
-            std::string value;
+            cur.advance();
             bool terminated = false;
-            while (!cur.eof()) {
-                char ch = cur.advance();
-                if (ch == '"') { terminated = true; break; }
-                if (ch == '\\' && !cur.eof()) {
-                    char esc = cur.advance();
-                    switch (esc) {
-                        case 'n': value += '\n'; break;
-                        case 't': value += '\t'; break;
-                        case 'r': value += '\r'; break;
-                        case '"': value += '"'; break;
-                        case '\\': value += '\\'; break;
-                        default: value += esc; break;
-                    }
-                } else {
-                    value += ch;
-                }
-            }
+            std::string value = scanQuoted(cur, '"', terminated);
             if (!terminated) diags.error(start, "unterminated string literal");
             push(TokKind::StringLit, std::move(value), start);
             continue;
         }
+        if (c == '\'') {
+            cur.advance();
+            bool terminated = false;
+            std::string value = scanQuoted(cur, '\'', terminated);
+            if (!terminated) diags.error(start, "unterminated char literal");
+            push(TokKind::CharLit, std::move(value), start);
+            continue;
+        }
 
-        // Operators and punctuation (multi-char first).
-        cur.advance();
-        auto two = [&](char next, TokKind ifTwo, TokKind ifOne) {
-            if (cur.peek() == next) { cur.advance(); push(ifTwo, "", start); }
-            else push(ifOne, "", start);
-        };
+        // Operators & punctuation (peek-based, longest-match-first).
+        char c1 = cur.peek(1), c2 = cur.peek(2), c3 = cur.peek(3);
+        auto emit = [&](TokKind k, int len) { for (int i = 0; i < len; ++i) cur.advance(); push(k, "", start); };
+
         switch (c) {
-            case '(': push(TokKind::LParen, "", start); break;
-            case ')': push(TokKind::RParen, "", start); break;
-            case '{': push(TokKind::LBrace, "", start); break;
-            case '}': push(TokKind::RBrace, "", start); break;
-            case ',': push(TokKind::Comma, "", start); break;
-            case ':': push(TokKind::Colon, "", start); break;
-            case ';': push(TokKind::Semicolon, "", start); break;
-            case '+': push(TokKind::Plus, "", start); break;
-            case '-': push(TokKind::Minus, "", start); break;
-            case '*': push(TokKind::Star, "", start); break;
-            case '/': push(TokKind::Slash, "", start); break;
-            case '%': push(TokKind::Percent, "", start); break;
+            case '(': emit(TokKind::LParen, 1); break;
+            case ')': emit(TokKind::RParen, 1); break;
+            case '{': emit(TokKind::LBrace, 1); break;
+            case '}': emit(TokKind::RBrace, 1); break;
+            case '[': emit(TokKind::LBracket, 1); break;
+            case ']': emit(TokKind::RBracket, 1); break;
+            case ',': emit(TokKind::Comma, 1); break;
+            case ':': emit(TokKind::Colon, 1); break;
+            case ';': emit(TokKind::Semicolon, 1); break;
+            case '~': emit(TokKind::Tilde, 1); break;
+
+            case '+': emit(c1 == '=' ? TokKind::PlusEq : TokKind::Plus, c1 == '=' ? 2 : 1); break;
+            case '-': emit(c1 == '=' ? TokKind::MinusEq : TokKind::Minus, c1 == '=' ? 2 : 1); break;
+            case '*': emit(c1 == '=' ? TokKind::StarEq : TokKind::Star, c1 == '=' ? 2 : 1); break;
+            case '/': emit(c1 == '=' ? TokKind::SlashEq : TokKind::Slash, c1 == '=' ? 2 : 1); break;
+            case '%': emit(c1 == '=' ? TokKind::PercentEq : TokKind::Percent, c1 == '=' ? 2 : 1); break;
+            case '^': emit(c1 == '=' ? TokKind::CaretEq : TokKind::Caret, c1 == '=' ? 2 : 1); break;
+
             case '=':
-                if (cur.peek() == '=') { cur.advance(); push(TokKind::EqEq, "", start); }
-                else if (cur.peek() == '>') { cur.advance(); push(TokKind::Arrow, "", start); }
-                else push(TokKind::Assign, "", start);
+                if (c1 == '=') emit(TokKind::EqEq, 2);
+                else if (c1 == '>') emit(TokKind::Arrow, 2);
+                else emit(TokKind::Assign, 1);
                 break;
-            case '!': two('=', TokKind::NotEq, TokKind::Not); break;
-            case '<': two('=', TokKind::LtEq, TokKind::Lt); break;
-            case '>': two('=', TokKind::GtEq, TokKind::Gt); break;
+            case '!': emit(c1 == '=' ? TokKind::NotEq : TokKind::Not, c1 == '=' ? 2 : 1); break;
+
             case '&':
-                if (cur.peek() == '&') { cur.advance(); push(TokKind::AmpAmp, "", start); }
-                else { diags.error(start, "unexpected '&' (did you mean '&&'?)"); push(TokKind::Unknown, "&", start); }
+                if (c1 == '&') emit(TokKind::AmpAmp, 2);
+                else if (c1 == '=') emit(TokKind::AmpEq, 2);
+                else emit(TokKind::Amp, 1);
                 break;
             case '|':
-                if (cur.peek() == '|') { cur.advance(); push(TokKind::PipePipe, "", start); }
-                else { diags.error(start, "unexpected '|' (did you mean '||'?)"); push(TokKind::Unknown, "|", start); }
+                if (c1 == '|') emit(TokKind::PipePipe, 2);
+                else if (c1 == '=') emit(TokKind::PipeEq, 2);
+                else emit(TokKind::Pipe, 1);
                 break;
+
+            case '<':
+                if (c1 == '<' && c2 == '=') emit(TokKind::ShlEq, 3);
+                else if (c1 == '<') emit(TokKind::Shl, 2);
+                else if (c1 == '=') emit(TokKind::LtEq, 2);
+                else emit(TokKind::Lt, 1);
+                break;
+            case '>':
+                if (c1 == '>' && c2 == '>' && c3 == '=') emit(TokKind::UShrEq, 4);
+                else if (c1 == '>' && c2 == '>') emit(TokKind::UShr, 3);
+                else if (c1 == '>' && c2 == '=') emit(TokKind::ShrEq, 3);
+                else if (c1 == '>') emit(TokKind::Shr, 2);
+                else if (c1 == '=') emit(TokKind::GtEq, 2);
+                else emit(TokKind::Gt, 1);
+                break;
+
+            case '?':
+                if (c1 == '?' && c2 == '=') emit(TokKind::QuestionQuestionEq, 3);
+                else if (c1 == '?') emit(TokKind::QuestionQuestion, 2);
+                else if (c1 == '.') emit(TokKind::QuestionDot, 2);
+                else emit(TokKind::Question, 1);
+                break;
+            case '.':
+                if (c1 == '.' && c2 == '=') emit(TokKind::DotDotEq, 3);
+                else if (c1 == '.') emit(TokKind::DotDot, 2);
+                else emit(TokKind::Dot, 1);
+                break;
+
             default:
                 diags.error(start, std::string("unexpected character '") + c + "'");
+                cur.advance();
                 push(TokKind::Unknown, std::string(1, c), start);
                 break;
         }

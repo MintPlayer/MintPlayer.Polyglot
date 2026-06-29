@@ -2,6 +2,8 @@
 #include <string>
 
 #include "mintplayer/polyglot/lexer.hpp"
+#include "mintplayer/polyglot/parser.hpp"
+#include "mintplayer/polyglot/pg_printer.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
 // A deliberately tiny, zero-dependency assert harness. The cross-process differential conformance suite
@@ -53,6 +55,37 @@ int main() {
         check(!d.hasErrors(), "lex: clean source has no diagnostics");
         check(!toks.empty() && toks.front().kind == TokKind::KwFn, "lex: first token is 'fn'");
         check(toks.back().kind == TokKind::End, "lex: stream ends with End");
+    }
+
+    // Lexer — full (P3) token set: new operators, compound assigns, char literals, keywords.
+    {
+        DiagnosticBag d;
+        auto t = lex("a?.b ?? c[0] ..= >>> += 'x' match with", d);
+        check(!d.hasErrors(), "lex: full token set has no diagnostics");
+        auto kindAt = [&](std::size_t i) { return i < t.size() ? t[i].kind : TokKind::End; };
+        check(kindAt(1) == TokKind::QuestionDot, "lex: '?.' is QuestionDot");
+        check(kindAt(3) == TokKind::QuestionQuestion, "lex: '??' is QuestionQuestion");
+        check(kindAt(5) == TokKind::LBracket && kindAt(7) == TokKind::RBracket, "lex: '[' ']' brackets");
+        check(kindAt(8) == TokKind::DotDotEq, "lex: '..=' is DotDotEq");
+        check(kindAt(9) == TokKind::UShr, "lex: '>>>' is UShr");
+        check(kindAt(10) == TokKind::PlusEq, "lex: '+=' is PlusEq");
+        check(kindAt(11) == TokKind::CharLit && t[11].text == "x", "lex: char literal decoded");
+        check(kindAt(12) == TokKind::KwMatch && kindAt(13) == TokKind::KwWith, "lex: 'match'/'with' keywords");
+    }
+
+    // Parser fidelity (P3 gate, MVP subset so far): printSource is idempotent on its own output.
+    {
+        auto roundtrips = [&](const char* src, const std::string& name) {
+            DiagnosticBag d1; auto u1 = parse(lex(src, d1), d1);
+            std::string s1 = printSource(u1);
+            DiagnosticBag d2; auto u2 = parse(lex(s1, d2), d2);
+            std::string s2 = printSource(u2);
+            check(!d1.hasErrors() && !d2.hasErrors() && s1 == s2, name);
+        };
+        roundtrips(kProgram, "round-trip: arithmetic program is stable");
+        roundtrips("fn f(): i32 => (1 + 2) * 3 - -4\n", "round-trip: precedence/unary stable");
+        roundtrips("fn g(a: i32) {\n  if a > 0 { print(a) } else { print(0) }\n}\n",
+                   "round-trip: if/else stable");
     }
 
     // C# emission (golden substrings).

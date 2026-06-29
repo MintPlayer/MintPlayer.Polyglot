@@ -62,6 +62,7 @@
     <ClInclude Include="include\mintplayer\polyglot\parser.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\sema.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\emit.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\pg_printer.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />
@@ -71,6 +72,7 @@
     <ClCompile Include="src\emit_csharp.cpp" />
     <ClCompile Include="src\emit_typescript.cpp" />
     <ClCompile Include="src\compiler.cpp" />
+    <ClCompile Include="src\pg_printer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
