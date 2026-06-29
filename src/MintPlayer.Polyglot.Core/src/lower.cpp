@@ -9,6 +9,11 @@ namespace {
 
 // Strip a numeric literal's width suffix (`100u8`, `0i64`, `1.5f32`) — the type rides on the expr; the
 // backends re-add a target-appropriate suffix (C# `L`/`UL`, TS BigInt `n`) from that type.
+bool isPrimitiveTypeName(const std::string& n) {
+    return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" || n == "u32" ||
+           n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char" || n == "string";
+}
+
 std::string stripNumericSuffix(const std::string& text) {
     static const char* sfx[] = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f", "d"};
     for (const char* s : sfx) {
@@ -267,7 +272,8 @@ private:
             case ExprKind::Call: {
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
                     // Static call `Type.method(args)`: the receiver is a type name, not a value.
-                    if (e.lhs->lhs->kind == ExprKind::Name && typeNames_.count(e.lhs->lhs->text)) {
+                    if (e.lhs->lhs->kind == ExprKind::Name &&
+                        (typeNames_.count(e.lhs->lhs->text) || isPrimitiveTypeName(e.lhs->lhs->text))) {
                         auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, nullptr, e.lhs->text);
                         mc->staticType = e.lhs->lhs->text;
                         for (const auto& a : e.args) mc->args.push_back(expr(*a));

@@ -684,14 +684,23 @@ private:
             // Method call `recv.method(args)`.
             const std::string& method = e.lhs->text;
             // Static call `Type.method(args)`: the receiver is a type name, not an evaluated value.
-            if (e.lhs->lhs->kind == ExprKind::Name && types_.count(e.lhs->lhs->text)) {
+            if (e.lhs->lhs->kind == ExprKind::Name) {
                 const std::string& typeName = e.lhs->lhs->text;
-                if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
-                    checkArgs(m->params, argTypes, e.args, "static method '" + typeName + "." + method + "'", e.pos);
-                    return m->type;
+                // Primitive static intrinsic: `i32.parse(s)` / `f64.parse(s)` — string -> that numeric type.
+                if (isNumericTypeName(tNamed(typeName)) && method == "parse") {
+                    Ty a = argTypes.size() == 1 ? scalarTyOf(argTypes[0]) : Ty::Unknown;
+                    if (argTypes.size() != 1 || (a != Ty::Unknown && a != Ty::String))
+                        diags_.error(e.pos, "'" + typeName + ".parse' expects a single string argument");
+                    return tNamed(typeName);
                 }
-                diags_.error(e.pos, "type '" + typeName + "' has no static method '" + method + "'");
-                return tUnknown();
+                if (types_.count(typeName)) {
+                    if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
+                        checkArgs(m->params, argTypes, e.args, "static method '" + typeName + "." + method + "'", e.pos);
+                        return m->type;
+                    }
+                    diags_.error(e.pos, "type '" + typeName + "' has no static method '" + method + "'");
+                    return tUnknown();
+                }
             }
             TypeRef recv = checkExpr(*e.lhs->lhs);
             // An extension method augments any receiver type (scalar or nominal); check it first so a

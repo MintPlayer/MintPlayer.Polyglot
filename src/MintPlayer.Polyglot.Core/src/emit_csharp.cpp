@@ -77,6 +77,11 @@ const char* subWordCast(const TypeRef& t) {
     return nullptr;
 }
 
+bool isPrimNumeric(const std::string& n) {
+    return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
+           n == "u32" || n == "u64" || n == "f32" || n == "f64";
+}
+
 int prec(const std::string& op) {
     if (op == "||") return 1;
     if (op == "&&") return 2;
@@ -437,6 +442,11 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
+                if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)
+                    bool flt = mc.staticType == "f32" || mc.staticType == "f64";
+                    return csType(namedType(mc.staticType)) + ".Parse(" + emitExpr(*mc.args[0]) +
+                           (flt ? ", System.Globalization.CultureInfo.InvariantCulture" : "") + ")";
+                }
                 std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
                 std::string s = recv + "." + mc.method + "(";
                 for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }

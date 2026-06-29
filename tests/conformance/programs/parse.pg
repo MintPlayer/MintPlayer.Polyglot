@@ -1,0 +1,11 @@
+// P7 differential conformance: string->number parsing via static type methods
+// (§3.A/§4.4) — `i32.parse(s)`, `i64.parse(s)`, `f64.parse(s)`. Not a cast.
+// C#: int.Parse/long.Parse/double.Parse (invariant culture); TS: parseInt /
+// BigInt / Number. (Inputs are valid; exception behaviour on bad input is not
+// promised identical across targets — §3.D-style honesty.)
+
+fn main() {
+  print(i32.parse("42"))                  // 42
+  print(i64.parse("9007199254740993"))    // 9007199254740993 (exact past 2^53 via BigInt)
+  print((i32)(f64.parse("3.75") * 4.0))   // 15  (3.75 * 4 = 15.0 -> i32)
+}
