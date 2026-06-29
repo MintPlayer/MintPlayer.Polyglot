@@ -24,6 +24,9 @@ const BackendSpec& typescriptSpec() {
          {"i8", "number"}, {"i16", "number"}, {"i32", "number"}, {"u8", "number"}, {"u16", "number"},
          {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
         {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
+        "console.log", // printFn
+        "Math",        // mathNamespace
+        {{"ln", "log"}}, // mathRename (only ln differs; sqrt/min/max/abs/floor keep their names)
     };
     return spec;
 }
@@ -608,8 +611,8 @@ private:
                 // console.log prints a BigInt with a trailing `n` (util.inspect); String() drops it so the
                 // output matches C#'s Console.WriteLine(long). (Template `${x}` already omits the `n`.)
                 if (c.isPrint && c.args.size() == 1 && isI64(c.args[0]->type))
-                    return "console.log(String(" + emitExpr(*c.args[0]) + "))";
-                std::string s = (c.isPrint ? "console.log" : c.mangledCallee) + "(";
+                    return typescriptSpec().printFn + "(String(" + emitExpr(*c.args[0]) + "))";
+                std::string s = (c.isPrint ? typescriptSpec().printFn : c.mangledCallee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";
             }
@@ -632,8 +635,7 @@ private:
                         if (mc.method == "abs")
                             return "((a) => (a < 0n ? -a : a))(" + emitExpr(*mc.args[0]) + ")";
                     }
-                    std::string fn = mc.method == "ln" ? "log" : mc.method; // Math.sqrt -> Math.sqrt; ln -> log
-                    std::string s = "Math." + fn + "(";
+                    std::string s = typescriptSpec().mathNamespace + "." + mathMember(typescriptSpec(), mc.method) + "(";
                     for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                     return s + ")";
                 }

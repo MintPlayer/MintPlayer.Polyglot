@@ -23,6 +23,10 @@ const BackendSpec& csharpSpec() {
          {"u8", "byte"}, {"u16", "ushort"}, {"u32", "uint"}, {"u64", "ulong"},
          {"f32", "float"}, {"f64", "double"}, {"bool", "bool"}, {"string", "string"}},
         {{"i64", "L"}, {"u64", "UL"}, {"u32", "U"}}, // intSuffix
+        "global::System.Console.WriteLine",          // printFn
+        "global::System.Math",                       // mathNamespace
+        {{"ln", "Log"}, {"ceil", "Ceiling"}, {"sqrt", "Sqrt"}, {"abs", "Abs"},
+         {"min", "Min"}, {"max", "Max"}, {"floor", "Floor"}}, // mathRename
     };
     return spec;
 }
@@ -97,18 +101,6 @@ const char* subWordCast(const TypeRef& t) {
     if (t.name == "u8")  return "byte";
     if (t.name == "u16") return "ushort";
     return nullptr;
-}
-
-// Polyglot `Math.<fn>` -> the .NET System.Math member (note `ln`->Log, `ceil`->Ceiling).
-std::string csMathFn(const std::string& m) {
-    if (m == "ln")   return "Log";
-    if (m == "ceil") return "Ceiling";
-    if (m == "sqrt") return "Sqrt";
-    if (m == "abs")  return "Abs";
-    if (m == "min")  return "Min";
-    if (m == "max")  return "Max";
-    if (m == "floor") return "Floor";
-    return m;
 }
 
 bool isPrimNumeric(const std::string& n) {
@@ -507,7 +499,7 @@ private:
                 const auto& c = static_cast<const ir::Call&>(e);
                 // Free functions live in `static class Program`; qualify them so calls from emitted classes
                 // resolve. A function-valued local (closure param) is called bare.
-                std::string callee = c.isPrint ? "global::System.Console.WriteLine"
+                std::string callee = c.isPrint ? csharpSpec().printFn
                                    : c.isFree  ? "Program." + c.callee
                                    : c.callee;
                 std::string s = callee + "(";
@@ -517,13 +509,13 @@ private:
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
                 std::string base = m.staticType.empty() ? atom(*m.object)
-                                 : m.staticType == "Math" ? "global::System.Math" : m.staticType;
+                                 : m.staticType == "Math" ? csharpSpec().mathNamespace : m.staticType;
                 return base + (m.nullSafe ? "?." : ".") + m.field;
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 if (mc.staticType == "Math") { // Math.sqrt(x) -> global::System.Math.Sqrt(x)
-                    std::string s = "global::System.Math." + csMathFn(mc.method) + "(";
+                    std::string s = csharpSpec().mathNamespace + "." + mathMember(csharpSpec(), mc.method) + "(";
                     for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
                     return s + ")";
                 }
