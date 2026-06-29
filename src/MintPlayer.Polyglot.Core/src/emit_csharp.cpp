@@ -77,6 +77,18 @@ const char* subWordCast(const TypeRef& t) {
     return nullptr;
 }
 
+// Polyglot `Math.<fn>` -> the .NET System.Math member (note `ln`->Log, `ceil`->Ceiling).
+std::string csMathFn(const std::string& m) {
+    if (m == "ln")   return "Log";
+    if (m == "ceil") return "Ceiling";
+    if (m == "sqrt") return "Sqrt";
+    if (m == "abs")  return "Abs";
+    if (m == "min")  return "Min";
+    if (m == "max")  return "Max";
+    if (m == "floor") return "Floor";
+    return m;
+}
+
 bool isPrimNumeric(const std::string& n) {
     return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
            n == "u32" || n == "u64" || n == "f32" || n == "f64";
@@ -442,6 +454,11 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
+                if (mc.staticType == "Math") { // Math.sqrt(x) -> System.Math.Sqrt(x)
+                    std::string s = "System.Math." + csMathFn(mc.method) + "(";
+                    for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
+                    return s + ")";
+                }
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)
                     bool flt = mc.staticType == "f32" || mc.staticType == "f64";
                     return csType(namedType(mc.staticType)) + ".Parse(" + emitExpr(*mc.args[0]) +

@@ -149,6 +149,14 @@ bool sameParamList(const std::vector<TypeRef>& a, const std::vector<TypeRef>& b)
     return true;
 }
 
+// The builtin `Math` namespace: arity of each function, or -1 if unknown. All take/return f64. (`sqrt` is
+// reproducible per §3.D; `ln` is a transcendental and not bit-exact across targets — documented.)
+int mathArity(const std::string& m) {
+    if (m == "sqrt" || m == "ln" || m == "abs" || m == "floor" || m == "ceil") return 1;
+    if (m == "min" || m == "max") return 2;
+    return -1;
+}
+
 // A function's per-target name. C# keeps the source name (native overloading); TS needs a distinct name
 // per overload, so an overloaded function mangles its parameter types in: `describe$i32`, `add$i32_i32`.
 std::string mangleFn(const std::string& name, const std::vector<TypeRef>& params, bool overloaded) {
@@ -686,6 +694,15 @@ private:
             // Static call `Type.method(args)`: the receiver is a type name, not an evaluated value.
             if (e.lhs->lhs->kind == ExprKind::Name) {
                 const std::string& typeName = e.lhs->lhs->text;
+                // Builtin `Math` namespace: `Math.sqrt(x)` etc. Args widen to f64; result is f64.
+                if (typeName == "Math") {
+                    int arity = mathArity(method);
+                    if (arity < 0) diags_.error(e.pos, "'Math' has no function '" + method + "'");
+                    else if (static_cast<int>(argTypes.size()) != arity)
+                        diags_.error(e.pos, "'Math." + method + "' expects " + std::to_string(arity) + " argument(s)");
+                    else for (auto& a : e.args) checkConvert(a, tNamed("f64"), "argument of 'Math." + method + "'");
+                    return tNamed("f64");
+                }
                 // Primitive static intrinsic: `i32.parse(s)` / `f64.parse(s)` — string -> that numeric type.
                 if (isNumericTypeName(tNamed(typeName)) && method == "parse") {
                     Ty a = argTypes.size() == 1 ? scalarTyOf(argTypes[0]) : Ty::Unknown;

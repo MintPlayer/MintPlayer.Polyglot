@@ -567,6 +567,12 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
+                if (mc.staticType == "Math") { // Math.sqrt(x) -> Math.sqrt(x); only `ln` differs (-> log)
+                    std::string fn = mc.method == "ln" ? "log" : mc.method;
+                    std::string s = "Math." + fn + "(";
+                    for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
+                    return s + ")";
+                }
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) per-target idiom
                     std::string arg = emitExpr(*mc.args[0]);
                     if (mc.staticType == "i64" || mc.staticType == "u64") return "BigInt(" + arg + ")";

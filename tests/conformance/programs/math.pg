@@ -1,0 +1,15 @@
+// P7 differential conformance: the builtin `Math` namespace -> C# System.Math.*
+// / JS Math.* (note ln->Log/log, ceil->Ceiling/ceil). Per §3.D only reproducible
+// results are asserted: sqrt of a perfect square, abs/min/max/floor/ceil (exact),
+// and ln(1)=0 (exact). General transcendentals (ln of other values) are NOT
+// promised bit-exact across targets.
+
+fn main() {
+  print((i32)Math.sqrt(144.0))       // 12
+  print((i32)Math.abs(-7.0))         // 7
+  print((i32)Math.min(3.0, 8.0))     // 3
+  print((i32)Math.max(3.0, 8.0))     // 8
+  print((i32)Math.floor(9.8))        // 9
+  print((i32)Math.ceil(9.1))         // 10
+  print((i32)Math.ln(1.0))           // 0   (ln(1) = 0 exactly on both)
+}

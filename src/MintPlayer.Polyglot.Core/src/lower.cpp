@@ -273,7 +273,8 @@ private:
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
                     // Static call `Type.method(args)`: the receiver is a type name, not a value.
                     if (e.lhs->lhs->kind == ExprKind::Name &&
-                        (typeNames_.count(e.lhs->lhs->text) || isPrimitiveTypeName(e.lhs->lhs->text))) {
+                        (typeNames_.count(e.lhs->lhs->text) || isPrimitiveTypeName(e.lhs->lhs->text) ||
+                         e.lhs->lhs->text == "Math")) {
                         auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, nullptr, e.lhs->text);
                         mc->staticType = e.lhs->lhs->text;
                         for (const auto& a : e.args) mc->args.push_back(expr(*a));
