@@ -99,6 +99,23 @@ extraction proceeds in slices, each a no-op on output:
 At the end, the two `.cpp` files are *data + a handful of hooks*, and P10 can add a downloaded **Spec-only**
 backend (Python) with no engine change — the §4 endpoint.
 
+## 4a. Plugin classes (`extern class`) — what works, and the gap
+
+The `extern class` + per-target `actual(target) extern("…")` binding arms (the "binding" plugin mechanism)
+work for **any** type, std or user-authored, for **member and property access**: `w.poke(3)` →
+`w.Poke(3)` / `w.poke(3)`, via the general `$this`/`$0` substitution, and the `extern class` itself is not
+emitted. What is **not** yet bindable for an arbitrary user plugin class:
+- **Type-name mapping** — the class's name emits literally (`Widget w`); only the std-blessed types
+  (`List`→`System.Collections.Generic.List`/`T[]`, `Iterable`, `Error`) have a target type spelling, hardcoded
+  in `csType`/`tsType`.
+- **Construction** — `Widget()` emits `new Widget()` literally; only `List<T>()` is special-cased
+  (`new List`/`[]`).
+
+So a user plugin class is usable today when its instances arrive via parameters / an `extern`-returning FFI
+function and the target type is named the same; constructing one or mapping its type name to a different
+target type is **P10** work (a plugin declares its target type-mapping + constructor template). The member-
+binding half — the most common plugin surface (wrapping methods on existing objects: `fs`, DOM, BCL) — is done.
+
 ## 5. Capability sets
 
 Each Spec carries its §3.E `Feature` set. C# and TS both declare the **full §3.A surface**, so the

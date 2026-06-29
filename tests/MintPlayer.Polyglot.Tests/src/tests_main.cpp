@@ -435,6 +435,23 @@ int main() {
         check(dd.ok, "P13: explicit import + lib dedups (no collision)");
     }
 
+    // P13 — a user-authored "plugin class" (extern class + per-target binding arms) works in a .pg file:
+    // member/property bindings fire (the $this/$0 mechanism is general), and the extern class isn't emitted.
+    {
+        const char* prog =
+            "extern class Widget {\n"
+            "  fn poke(n: i32) { actual(csharp) extern(\"$this.Poke($0)\")  actual(typescript) extern(\"$this.poke($0)\") }\n"
+            "}\n"
+            "fn drive(w: Widget): i32 { w.poke(3)\n  return 0 }\n"
+            "fn main() {}\n";
+        EmitResult cs = compile(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "w.Poke(3)") && !has(cs.code, "class Widget"),
+              "P13: user plugin class member binding fires in C# (extern class not emitted)");
+        EmitResult ts = compile(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "w.poke(3)") && !has(ts.code, "class Widget"),
+              "P13: user plugin class member binding fires in TS");
+    }
+
     // P13 — unknown/unimported types fail compilation, not just in signatures but in LOCAL positions too
     // (previously a local `let x: T`/`var xs: List<…>` slipped, silently miscompiling).
     rejects("fn main() { let w: Widget = 0 }\n", "P13: unknown type on a local `let` is rejected");
