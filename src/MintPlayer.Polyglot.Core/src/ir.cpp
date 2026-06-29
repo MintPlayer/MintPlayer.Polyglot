@@ -30,8 +30,15 @@ std::string typeName(const TypeRef& t) {
 class Dumper {
 public:
     std::string run(const Module& m) {
+        for (const auto& r : m.records) record(r);
         for (const auto& fn : m.functions) function(fn);
         return out_;
+    }
+
+    void record(const Record& r) {
+        std::string s = "record " + r.name + "(";
+        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) s += ", "; s += r.fields[i].name + ": " + typeName(r.fields[i].type); }
+        line(s + ")");
     }
 
 private:
@@ -119,6 +126,18 @@ private:
                 const auto& c = static_cast<const Call&>(e);
                 repr = (c.isPrint ? "print" : c.callee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) repr += ", "; repr += expr(*c.args[i]); }
+                repr += ")";
+                break;
+            }
+            case ExprKind::Member: {
+                const auto& m = static_cast<const Member&>(e);
+                repr = expr(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+                break;
+            }
+            case ExprKind::New: {
+                const auto& n = static_cast<const New&>(e);
+                repr = "new " + n.typeName + "(";
+                for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) repr += ", "; repr += expr(*n.args[i]); }
                 repr += ")";
                 break;
             }

@@ -36,6 +36,7 @@ public:
     std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
+        for (const auto& r : m.records) emitRecord(r);
         for (const auto& fn : m.functions) emitFunction(fn);
         for (const auto& fn : m.functions) {
             if (fn.isEntry) { line("main();"); break; }
@@ -51,6 +52,22 @@ private:
         out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
         out_ += s;
         out_ += '\n';
+    }
+
+    // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).
+    void emitRecord(const ir::Record& r) {
+        line("class " + r.name + " {");
+        ++indent_;
+        for (const auto& f : r.fields) line(f.name + ": " + tsType(f.type) + ";");
+        std::string ctor = "constructor(";
+        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) ctor += ", "; ctor += r.fields[i].name + ": " + tsType(r.fields[i].type); }
+        line(ctor + ") {");
+        ++indent_;
+        for (const auto& f : r.fields) line("this." + f.name + " = " + f.name + ";");
+        --indent_;
+        line("}");
+        --indent_;
+        line("}");
     }
 
     void emitFunction(const ir::Function& fn) {
@@ -157,6 +174,16 @@ private:
                 const auto& c = static_cast<const ir::Call&>(e);
                 std::string s = (c.isPrint ? "console.log" : c.callee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
+                return s + ")";
+            }
+            case ir::ExprKind::Member: {
+                const auto& m = static_cast<const ir::Member&>(e);
+                return emitExpr(*m.object) + (m.nullSafe ? "?." : ".") + m.field;
+            }
+            case ir::ExprKind::New: {
+                const auto& n = static_cast<const ir::New&>(e);
+                std::string s = "new " + n.typeName + "(";
+                for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
                 return s + ")";
             }
         }

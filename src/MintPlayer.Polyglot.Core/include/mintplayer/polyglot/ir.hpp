@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Var, Unary, Binary, Call };
+enum class ExprKind { Int, Float, Bool, Str, Var, Unary, Binary, Call, Member, New };
 
 struct Expr {
     ExprKind kind;
@@ -70,6 +70,18 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     bool isPrint = false;
     std::vector<ExprPtr> args;
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
+};
+struct Member : Expr { // field access `object.field`
+    ExprPtr object;
+    std::string field;
+    bool nullSafe = false;
+    Member(SourcePos p, Type t, ExprPtr o, std::string f, bool ns)
+        : Expr(ExprKind::Member, p, std::move(t)), object(std::move(o)), field(std::move(f)), nullSafe(ns) {}
+};
+struct New : Expr { // construction `Type(args)`
+    std::string typeName;
+    std::vector<ExprPtr> args;
+    New(SourcePos p, Type t, std::string n) : Expr(ExprKind::New, p, std::move(t)), typeName(std::move(n)) {}
 };
 
 // ---- statements ----
@@ -131,7 +143,16 @@ struct Function {
     std::vector<StmtPtr> body;
     bool isEntry = false; // a `fn main()` with no params — the program entry point
 };
+struct RecordField {
+    std::string name;
+    Type type;
+};
+struct Record { // an immutable data type (record) — P5 lowers fields; methods/operators widen later
+    std::string name;
+    std::vector<RecordField> fields;
+};
 struct Module {
+    std::vector<Record> records;
     std::vector<Function> functions;
 };
 
