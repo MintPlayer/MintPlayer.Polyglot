@@ -49,6 +49,23 @@ std::string csType(const TypeRef& t) {
     return "object";
 }
 
+std::string csGenerics(const std::vector<ir::GenericParam>& gs) {
+    if (gs.empty()) return "";
+    std::string s = "<";
+    for (std::size_t i = 0; i < gs.size(); ++i) { if (i) s += ", "; s += gs[i].name; }
+    return s + ">";
+}
+// C# puts bounds in trailing `where T : A, B` clauses (one per bounded parameter).
+std::string csWhere(const std::vector<ir::GenericParam>& gs) {
+    std::string s;
+    for (const auto& g : gs) {
+        if (g.bounds.empty()) continue;
+        s += " where " + g.name + " : ";
+        for (std::size_t i = 0; i < g.bounds.size(); ++i) { if (i) s += ", "; s += csType(g.bounds[i]); }
+    }
+    return s;
+}
+
 int prec(const std::string& op) {
     if (op == "||") return 1;
     if (op == "&&") return 2;
@@ -130,9 +147,9 @@ private:
     }
 
     void emitRecord(const ir::Record& r) {
-        std::string head = "record " + r.name + "(";
+        std::string head = "record " + r.name + csGenerics(r.generics) + "(";
         for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) head += ", "; head += csType(r.fields[i].type) + " " + r.fields[i].name; }
-        head += ")";
+        head += ")" + csWhere(r.generics);
         if (r.methods.empty()) { line(head + ";"); return; }
         line(head);
         line("{");
@@ -144,11 +161,12 @@ private:
 
     // A mutable reference type: fields, a constructor (`init`), and methods.
     void emitClass(const ir::Class& c) {
-        std::string head = "class " + c.name;
+        std::string head = "class " + c.name + csGenerics(c.generics);
         if (!c.bases.empty()) {
             head += " : ";
             for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += csType(c.bases[i]); }
         }
+        head += csWhere(c.generics);
         line(head);
         line("{");
         ++indent_;
@@ -189,9 +207,9 @@ private:
             thisAlias_.clear();
             return;
         }
-        std::string sig = "public " + csType(m.returnType) + " " + m.name + "(";
+        std::string sig = "public " + csType(m.returnType) + " " + m.name + csGenerics(m.generics) + "(";
         for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csType(m.params[i].type) + " " + m.params[i].name; }
-        sig += ")";
+        sig += ")" + csWhere(m.generics);
         if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
         else { line(sig); emitBlock(m.body); }
     }
@@ -204,21 +222,21 @@ private:
 
     // `public static R name(this T self, …)` — the leading `self` param carries the C# `this` modifier.
     void emitExtension(const ir::Function& f) {
-        std::string sig = "public static " + csType(f.returnType) + " " + f.name + "(this " +
+        std::string sig = "public static " + csType(f.returnType) + " " + f.name + csGenerics(f.generics) + "(this " +
                           csType(f.params[0].type) + " " + f.params[0].name;
         for (std::size_t i = 1; i < f.params.size(); ++i) sig += ", " + csType(f.params[i].type) + " " + f.params[i].name;
-        sig += ")";
+        sig += ")" + csWhere(f.generics);
         if (f.exprBodied) line(sig + " => " + emitExpr(*f.exprBody) + ";");
         else { line(sig); emitBlock(f.body); }
     }
 
     void emitFunction(const ir::Function& fn) {
-        std::string sig = "static " + csType(fn.returnType) + " " + fn.name + "(";
+        std::string sig = "static " + csType(fn.returnType) + " " + fn.name + csGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             if (i) sig += ", ";
             sig += csType(fn.params[i].type) + " " + fn.params[i].name;
         }
-        sig += ")";
+        sig += ")" + csWhere(fn.generics);
         line(sig);
         line("{");
         ++indent_;
@@ -401,6 +419,11 @@ private:
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
                 std::string ctor = (n.typeName == "Error") ? "System.Exception" : n.typeName;
+                if (!n.typeArgs.empty()) {
+                    ctor += "<";
+                    for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += csType(n.typeArgs[i]); }
+                    ctor += ">";
+                }
                 std::string s = "new " + ctor + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
                 return s + ")";

@@ -89,8 +89,9 @@ struct Member : Expr { // field / property access `object.field`
     Member(SourcePos p, Type t, ExprPtr o, std::string f, bool ns)
         : Expr(ExprKind::Member, p, std::move(t)), object(std::move(o)), field(std::move(f)), nullSafe(ns) {}
 };
-struct New : Expr { // construction `Type(args)`
+struct New : Expr { // construction `Type(args)` or `Type<TypeArgs>(args)`
     std::string typeName;
+    std::vector<Type> typeArgs; // explicit construction type args, e.g. `Box<i32>(7)` (empty = none)
     std::vector<ExprPtr> args;
     New(SourcePos p, Type t, std::string n) : Expr(ExprKind::New, p, std::move(t)), typeName(std::move(n)) {}
 };
@@ -226,6 +227,10 @@ struct Param {
     std::string name;
     Type type;
 };
+struct GenericParam {
+    std::string name;
+    std::vector<Type> bounds; // `T: A & B` — C# `where T : A, B`, TS `<T extends A & B>`
+};
 
 // A lambda / closure: `(params) => expr` or `=> { block }`. Both targets emit a native arrow function;
 // a param's type is omitted from the emit when absent (the bare `x => …` form relies on target typing).
@@ -239,6 +244,7 @@ struct Lambda : Expr {
 };
 struct Function {
     std::string name;
+    std::vector<GenericParam> generics;
     std::vector<Param> params;
     Type returnType;
     std::vector<StmtPtr> body;
@@ -257,6 +263,7 @@ struct Method {
     MethodKind kind = MethodKind::Method;
     std::string name;             // method/property name; operator method name (e.g. "plus")
     std::string opSymbol;         // Operator: the source symbol ("+", "-", ...); else empty
+    std::vector<GenericParam> generics;
     std::vector<Param> params;
     Type returnType;
     bool exprBodied = false;      // `=> expr` vs block
@@ -265,6 +272,7 @@ struct Method {
 };
 struct Record { // an immutable data type (record)
     std::string name;
+    std::vector<GenericParam> generics;
     std::vector<RecordField> fields;
     std::vector<Method> methods;
 };
@@ -296,6 +304,7 @@ struct ClassField {
 };
 struct Class { // a mutable reference type
     std::string name;
+    std::vector<GenericParam> generics;
     std::vector<Type> bases;        // base class and/or interfaces (single base drives `extends`/`: Base`)
     std::vector<ClassField> fields;
     bool hasInit = false;

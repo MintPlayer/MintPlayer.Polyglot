@@ -1,0 +1,18 @@
+// P5 differential conformance: generics. A generic function (type argument
+// inferred at the call site), a generic record with an explicit construction
+// type argument, and a two-parameter generic function. Both targets emit the
+// `<T>` parameter list; C# infers method type args, construction is explicit.
+
+fn identity<T>(x: T): T => x
+
+fn firstOf<T>(a: T, b: T): T => a
+
+record Box<T>(value: T)
+
+fn main() {
+  print(identity(42))       // 42   (T inferred = i32)
+  print(firstOf(3, 9))      // 3
+
+  let b = Box<i32>(7)
+  print(b.value)            // 7
+}

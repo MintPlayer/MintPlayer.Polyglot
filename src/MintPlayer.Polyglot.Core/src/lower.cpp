@@ -47,6 +47,7 @@ public:
         for (const auto& r : unit.records) {
             ir::Record rec;
             rec.name = r.name;
+            rec.generics = generics(r.generics);
             for (const auto& f : r.fields) rec.fields.push_back({f.name, f.type});
             for (const auto& mem : r.members)
                 if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property)
@@ -58,6 +59,7 @@ public:
             ir::Function f;
             f.name = ext.name;
             f.isExtension = true;
+            f.generics = generics(ext.generics);
             f.returnType = ext.returnType;
             f.params.push_back({"self", ext.receiver}); // the receiver becomes the leading `self` parameter
             for (const auto& p : ext.params) f.params.push_back({p.name, p.type});
@@ -70,6 +72,7 @@ public:
         for (const auto& fn : unit.functions) {
             ir::Function f;
             f.name = fn.name;
+            f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
             f.isEntry = (fn.name == "main" && fn.params.empty());
             for (const auto& p : fn.params) f.params.push_back({p.name, p.type});
@@ -139,6 +142,12 @@ private:
         return m;
     }
 
+    static std::vector<ir::GenericParam> generics(const std::vector<GenericParam>& gs) {
+        std::vector<ir::GenericParam> out;
+        for (const auto& g : gs) out.push_back({g.name, g.bounds});
+        return out;
+    }
+
     static std::string operatorSymbol(const std::string& method) {
         if (method == "plus") return "+";
         if (method == "minus") return "-";
@@ -157,6 +166,7 @@ private:
     ir::Class lowerClass(const ClassDecl& c) {
         ir::Class ic;
         ic.name = c.name;
+        ic.generics = generics(c.generics);
         ic.bases = c.bases;
         for (const auto& mem : c.members) {
             switch (mem.kind) {
@@ -199,6 +209,7 @@ private:
     ir::Method method(const Member& m) {
         ir::Method im;
         im.name = m.name;
+        im.generics = generics(m.generics);
         if (m.kind == MemberKind::Property) {
             im.kind = ir::MethodKind::Property;
             im.returnType = m.type;
@@ -253,6 +264,7 @@ private:
                 std::string callee = (e.lhs && e.lhs->kind == ExprKind::Name) ? e.lhs->text : "";
                 if (!callee.empty() && typeNames_.count(callee)) { // record/class construction
                     auto n = std::make_unique<ir::New>(e.pos, e.type, callee);
+                    n->typeArgs = e.typeArgs; // explicit `Box<i32>(7)` type args (empty if inferred)
                     for (const auto& a : e.args) n->args.push_back(expr(*a));
                     return n;
                 }

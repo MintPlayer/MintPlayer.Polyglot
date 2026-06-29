@@ -58,6 +58,21 @@ std::string opMethod(const std::string& op) {
     return "";
 }
 
+// TS carries bounds inline on each parameter: `<T extends A & B, U>`.
+std::string tsGenerics(const std::vector<ir::GenericParam>& gs) {
+    if (gs.empty()) return "";
+    std::string s = "<";
+    for (std::size_t i = 0; i < gs.size(); ++i) {
+        if (i) s += ", ";
+        s += gs[i].name;
+        if (!gs[i].bounds.empty()) {
+            s += " extends ";
+            for (std::size_t j = 0; j < gs[i].bounds.size(); ++j) { if (j) s += " & "; s += tsType(gs[i].bounds[j]); }
+        }
+    }
+    return s + ">";
+}
+
 int prec(const std::string& op) {
     if (op == "||") return 1;
     if (op == "&&") return 2;
@@ -140,7 +155,7 @@ private:
 
     // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).
     void emitRecord(const ir::Record& r) {
-        line("class " + r.name + " {");
+        line("class " + r.name + tsGenerics(r.generics) + " {");
         ++indent_;
         for (const auto& f : r.fields) line(f.name + ": " + tsType(f.type) + ";");
         std::string ctor = "constructor(";
@@ -157,7 +172,7 @@ private:
 
     // A mutable reference type: explicit fields, a constructor (`init`), and methods.
     void emitClass(const ir::Class& c) {
-        std::string head = "class " + c.name;
+        std::string head = "class " + c.name + tsGenerics(c.generics);
         if (!c.bases.empty()) head += " extends " + tsType(c.bases[0]); // inheritance emission widens later
         line(head + " {");
         ++indent_;
@@ -195,7 +210,7 @@ private:
             return;
         }
         // method and operator both become regular methods (a + b calls a.plus(b) at the use site)
-        std::string sig = m.name + "(";
+        std::string sig = m.name + tsGenerics(m.generics) + "(";
         for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += m.params[i].name + ": " + tsType(m.params[i].type); }
         sig += "): " + tsType(m.returnType) + " {";
         line(sig);
@@ -217,7 +232,7 @@ private:
     // An extension lowers to a plain free function whose first param is the receiver `self`; call sites
     // emit `name(obj, …)` (TS has no extension-method call syntax — the `x.m()` reading cannot survive).
     void emitExtension(const ir::Function& f) {
-        std::string sig = "function " + f.name + "(";
+        std::string sig = "function " + f.name + tsGenerics(f.generics) + "(";
         for (std::size_t i = 0; i < f.params.size(); ++i) { if (i) sig += ", "; sig += f.params[i].name + ": " + tsType(f.params[i].type); }
         sig += "): " + tsType(f.returnType) + " {";
         line(sig);
@@ -229,7 +244,7 @@ private:
     }
 
     void emitFunction(const ir::Function& fn) {
-        std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.name + "(";
+        std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.name + tsGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             if (i) sig += ", ";
             sig += fn.params[i].name + ": " + tsType(fn.params[i].type);
@@ -449,7 +464,13 @@ private:
             }
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
-                std::string s = "new " + n.typeName + "(";
+                std::string ctor = n.typeName;
+                if (!n.typeArgs.empty()) {
+                    ctor += "<";
+                    for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += tsType(n.typeArgs[i]); }
+                    ctor += ">";
+                }
+                std::string s = "new " + ctor + "(";
                 for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
                 return s + ")";
             }

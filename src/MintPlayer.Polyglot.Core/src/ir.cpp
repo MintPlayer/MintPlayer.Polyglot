@@ -27,6 +27,13 @@ std::string typeName(const TypeRef& t) {
     return s + (t.nullable ? "?" : "");
 }
 
+std::string gen(const std::vector<GenericParam>& gs) {
+    if (gs.empty()) return "";
+    std::string s = "<";
+    for (std::size_t i = 0; i < gs.size(); ++i) { if (i) s += ", "; s += gs[i].name; }
+    return s + ">";
+}
+
 class Dumper {
 public:
     std::string run(const Module& m) {
@@ -43,13 +50,13 @@ public:
     }
 
     void record(const Record& r) {
-        std::string s = "record " + r.name + "(";
+        std::string s = "record " + r.name + gen(r.generics) + "(";
         for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) s += ", "; s += r.fields[i].name + ": " + typeName(r.fields[i].type); }
         line(s + ")");
     }
 
     void klass(const Class& c) {
-        std::string head = "class " + c.name;
+        std::string head = "class " + c.name + gen(c.generics);
         if (!c.bases.empty()) {
             head += " : ";
             for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += typeName(c.bases[i]); }
@@ -87,7 +94,7 @@ private:
     }
 
     void function(const Function& fn) {
-        std::string sig = "fn " + fn.name + "(";
+        std::string sig = "fn " + fn.name + gen(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += fn.params[i].name + ": " + typeName(fn.params[i].type); }
         sig += "): " + typeName(fn.returnType);
         if (fn.isEntry) sig += " [entry]";
