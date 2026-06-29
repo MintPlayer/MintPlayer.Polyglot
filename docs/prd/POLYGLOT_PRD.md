@@ -83,7 +83,9 @@ Threads / `lock` / `Interlocked` / `Parallel.*` (single-threaded async only); ru
 `Activator` / open-world `Type.GetType(string)` (compile-time metadata only — reflection defeats tree-
 shaking and is the #1 bloat source); finalizers / non-deterministic GC hooks (keep `using`, drop `~T()`);
 `decimal` (unless a big-decimal lib is later opted in); `unsafe` / pointers / `stackalloc` / raw `Span`;
-`dynamic` / `Reflection.Emit` / `Expression.Compile`; **bit-exact cross-target floating point** (see §3.D).
+`dynamic` / `Reflection.Emit` / `Expression.Compile`; **LINQ expression trees** (`Expression<Func<…>>` —
+code-as-inspectable-data has no portable JS counterpart; a lambda is *always* an executable closure, never
+a queryable tree); **bit-exact cross-target floating point** (see §3.D).
 
 ### C. Faithful-by-default, with a *published relaxation list* (the 🟡 corners)
 - **int32 / uint / sub-32 overflow:** mask at operation boundaries (`|0`, `>>>0`, `Math.imul`) so JS

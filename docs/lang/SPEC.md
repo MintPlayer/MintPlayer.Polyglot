@@ -392,6 +392,9 @@ miscompile.
 - **`decimal`** — no `decimal` type or literal (a big-decimal std type may be opted in later).
 - **`unsafe` / pointers** — no `unsafe`, `*T`, `&`-address-of, `stackalloc`, raw `Span`.
 - **`dynamic` / runtime code-gen** — no `dynamic`, `Reflection.Emit`, `Expression.Compile`.
+- **LINQ expression trees** — no `Expression<Func<…>>`. A lambda (§6.4) is *always* an executable closure
+  (→ C# delegate, TS arrow function), never code-as-inspectable-data: JS has no portable way to recover a
+  typed AST from a function at run time, so there is nothing to lower a queryable tree to.
 - **Bit-exact cross-target floats** — not promised; see §9 / PRD §3.D.
 
 ---
