@@ -174,6 +174,18 @@ int main() {
     rejects("fn main() { let x = 1; x = 2; }\n", "sema: rejects assignment to immutable let");
     rejects("fn main() { if 1 { print(0); } }\n", "sema: rejects non-bool if condition");
 
+    // P4 — name / type resolution across the declaration surface.
+    auto resolves = [&](const char* src, const std::string& name) {
+        EmitResult r = compile(src, Target::CSharp);
+        check(r.ok, name);
+    };
+    rejects("fn f(x: Widget) {}\n", "P4: rejects unknown type in a parameter");
+    rejects("record A(x: i32)\nrecord A(y: i32)\n", "P4: rejects duplicate type declaration");
+    rejects("fn f<T>(x: T): Nope => x\n", "P4: rejects unknown type in a generic return");
+    rejects("record B(x: i32) : Missing\n", "P4: rejects unknown base type");
+    resolves("record Box<T>(value: T)\nfn id<T>(x: T): T => x\n", "P4: generics + declared types resolve");
+    resolves("enum E { A, B }\nfn pick(): E => E.A\n", "P4: declared enum type resolves");
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;

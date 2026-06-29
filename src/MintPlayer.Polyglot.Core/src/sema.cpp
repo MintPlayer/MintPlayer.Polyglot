@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mintplayer::polyglot {
@@ -20,11 +21,21 @@ struct Local {
 
 bool isNumeric(Ty t) { return t == Ty::I32 || t == Ty::F64; }
 
+bool isBuiltinType(const std::string& n) {
+    static const std::unordered_set<std::string> b = {
+        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+        "f32", "f64", "bool", "char", "string", "unit",
+    };
+    return b.count(n) != 0;
+}
+
 class Checker {
 public:
     Checker(DiagnosticBag& diags) : diags_(diags) {}
 
     void run(CompilationUnit& unit) {
+        collectTypeNames(unit);
+
         // Collect function signatures first so calls can resolve regardless of order.
         for (const auto& fn : unit.functions) {
             if (fns_.count(fn.name)) {
@@ -35,14 +46,110 @@ public:
             sig.result = scalarTyOf(fn.returnType);
             fns_[fn.name] = sig;
         }
+
+        resolveAllTypes(unit);
         for (auto& fn : unit.functions) checkFunction(fn);
     }
 
 private:
     DiagnosticBag& diags_;
     std::unordered_map<std::string, FnSig> fns_;
+    std::unordered_set<std::string> typeNames_;       // all declared type names
+    std::unordered_set<std::string> genericsInScope_; // type parameters of the enclosing declaration
     std::vector<std::unordered_map<std::string, Local>> scopes_;
     Ty currentReturn_ = Ty::Unit;
+
+    // ---- name & type resolution (P4) ----
+
+    void declareType(const std::string& name, SourcePos pos) {
+        if (isBuiltinType(name)) diags_.error(pos, "'" + name + "' shadows a builtin type");
+        else if (!typeNames_.insert(name).second) diags_.error(pos, "duplicate type '" + name + "'");
+    }
+    void collectTypeNames(const CompilationUnit& u) {
+        for (const auto& d : u.records)    declareType(d.name, d.pos);
+        for (const auto& d : u.classes)    declareType(d.name, d.pos);
+        for (const auto& d : u.interfaces) declareType(d.name, d.pos);
+        for (const auto& d : u.enums)      declareType(d.name, d.pos);
+        for (const auto& d : u.unions)     declareType(d.name, d.pos);
+    }
+
+    void pushGenerics(const std::vector<GenericParam>& gs) { for (const auto& g : gs) genericsInScope_.insert(g.name); }
+    void popGenerics(const std::vector<GenericParam>& gs) { for (const auto& g : gs) genericsInScope_.erase(g.name); }
+
+    void resolveTypeRef(const TypeRef& t, SourcePos pos) {
+        switch (t.kind) {
+            case TypeRef::Kind::Named:
+                if (!t.name.empty() && !isBuiltinType(t.name) &&
+                    !genericsInScope_.count(t.name) && !typeNames_.count(t.name))
+                    diags_.error(pos, "unknown type '" + t.name + "'");
+                for (const auto& a : t.args) resolveTypeRef(a, pos);
+                break;
+            case TypeRef::Kind::Tuple:
+                for (const auto& a : t.args) resolveTypeRef(a, pos);
+                break;
+            case TypeRef::Kind::Function:
+                for (const auto& a : t.args) resolveTypeRef(a, pos);
+                for (const auto& r : t.ret) resolveTypeRef(r, pos);
+                break;
+        }
+    }
+    void resolveParams(const std::vector<Param>& ps, SourcePos fallback) {
+        for (const auto& p : ps) if (!p.type.absent()) resolveTypeRef(p.type, p.pos.line ? p.pos : fallback);
+    }
+    void resolveBounds(const std::vector<GenericParam>& gs, SourcePos pos) {
+        for (const auto& g : gs) for (const auto& b : g.bounds) resolveTypeRef(b, pos);
+    }
+    void resolveMembers(const std::vector<Member>& ms) {
+        for (const auto& m : ms) {
+            pushGenerics(m.generics);
+            resolveBounds(m.generics, m.pos);
+            if (m.kind == MemberKind::Field || m.kind == MemberKind::Const || m.kind == MemberKind::Property) {
+                if (!m.type.absent()) resolveTypeRef(m.type, m.pos);
+            } else {
+                resolveParams(m.params, m.pos);
+                resolveTypeRef(m.returnType, m.pos);
+            }
+            popGenerics(m.generics);
+        }
+    }
+    void resolveAllTypes(const CompilationUnit& u) {
+        for (const auto& fn : u.functions) {
+            pushGenerics(fn.generics);
+            resolveBounds(fn.generics, fn.pos);
+            resolveParams(fn.params, fn.pos);
+            resolveTypeRef(fn.returnType, fn.pos);
+            popGenerics(fn.generics);
+        }
+        for (const auto& d : u.records) {
+            pushGenerics(d.generics); resolveBounds(d.generics, d.pos);
+            resolveParams(d.fields, d.pos);
+            for (const auto& b : d.bases) resolveTypeRef(b, d.pos);
+            resolveMembers(d.members);
+            popGenerics(d.generics);
+        }
+        for (const auto& d : u.classes) {
+            pushGenerics(d.generics); resolveBounds(d.generics, d.pos);
+            for (const auto& b : d.bases) resolveTypeRef(b, d.pos);
+            resolveMembers(d.members);
+            popGenerics(d.generics);
+        }
+        for (const auto& d : u.interfaces) {
+            pushGenerics(d.generics); resolveBounds(d.generics, d.pos);
+            for (const auto& b : d.bases) resolveTypeRef(b, d.pos);
+            resolveMembers(d.members);
+            popGenerics(d.generics);
+        }
+        for (const auto& d : u.unions)
+            for (const auto& c : d.cases) resolveParams(c.params, c.pos);
+        for (const auto& d : u.extensions) {
+            pushGenerics(d.generics); resolveBounds(d.generics, d.pos);
+            resolveTypeRef(d.receiver, d.pos);
+            resolveParams(d.params, d.pos);
+            resolveTypeRef(d.returnType, d.pos);
+            popGenerics(d.generics);
+        }
+        for (const auto& v : u.values) if (v.hasType) resolveTypeRef(v.type, v.pos);
+    }
 
     void pushScope() { scopes_.emplace_back(); }
     void popScope() { scopes_.pop_back(); }
