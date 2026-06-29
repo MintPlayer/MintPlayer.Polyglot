@@ -110,7 +110,7 @@ enum class ExprKind {
 struct Expr {
     ExprKind kind;
     SourcePos pos;
-    Ty type = Ty::Unknown;
+    TypeRef type;                   // resolved semantic type, filled by sema (P4); empty = unknown
 
     std::string text;
     bool boolVal = false;

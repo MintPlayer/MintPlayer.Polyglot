@@ -351,7 +351,13 @@ private:
     }
 
     // ---- expression typing ----
+    // checkExpr annotates each node with its resolved type (read later by IR lowering), then returns it.
     TypeRef checkExpr(Expr& e) {
+        TypeRef t = computeType(e);
+        e.type = t;
+        return t;
+    }
+    TypeRef computeType(Expr& e) {
         switch (e.kind) {
             case ExprKind::IntLit:    return tNamed("i32");
             case ExprKind::FloatLit:  return tNamed("f64");

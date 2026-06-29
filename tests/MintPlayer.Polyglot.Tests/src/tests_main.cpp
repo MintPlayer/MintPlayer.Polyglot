@@ -1,10 +1,13 @@
 #include <iostream>
 #include <string>
 
+#include "mintplayer/polyglot/ir.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
+#include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
 #include "mintplayer/polyglot/pg_printer.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
+#include "mintplayer/polyglot/sema.hpp"
 
 // A deliberately tiny, zero-dependency assert harness. The cross-process differential conformance suite
 // (compile+run the emitted C# and TS, compare stdout) lives in tests/conformance/ (PLAN P2 gate); these
@@ -192,6 +195,21 @@ int main() {
     resolves("record V(x: f64, y: f64)\nfn f(): f64 => V(1.0, 2.0).x\n", "P4: member access types to the field type");
     resolves("record P(x: i32) {\n  fn getX(): i32 => this.x\n}\n", "P4: this.member resolves in a method");
     resolves("class C { fn go(): i32 => 5 }\nfn f(): i32 => C().go()\n", "P4: method call resolves to its return type");
+
+    // P4 — AST -> typed IR lowering.
+    {
+        const char* src = "fn add(a: i32, b: i32): i32 {\n  return a + b\n}\n"
+                          "fn main() {\n  print(add(1, 2))\n}\n";
+        DiagnosticBag d;
+        auto unit = parse(lex(src, d), d);
+        mintplayer::polyglot::check(unit, d); // annotate resolved types
+        check(!d.hasErrors(), "IR: program type-checks");
+        std::string ir = ir::dump(lower(unit));
+        check(has(ir, "fn add(a: i32, b: i32): i32 {"), "IR: function signature carries types");
+        check(has(ir, "return (a:i32 + b:i32):i32"), "IR: binary expression is typed");
+        check(has(ir, "fn main(): unit [entry] {"), "IR: main resolved as the entry point");
+        check(has(ir, "print(add(1:i32, 2:i32):i32):unit"), "IR: print intrinsic + typed call resolved");
+    }
 
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
