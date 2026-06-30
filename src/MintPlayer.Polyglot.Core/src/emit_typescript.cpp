@@ -166,6 +166,8 @@ public:
         recordNames_.clear();
         recordFields_.clear();
         indexerTypes_.clear();
+        interfaceNames_.clear();
+        for (const auto& i : m.interfaces) interfaceNames_.insert(i.name); // a class `implements` these, `extends` a class
         externMap_.clear();
         // Types with an `operator fn get` indexer: TS has no `[]` overload, so `recv[i]` becomes `recv.get(i)`.
         auto noteIndexer = [&](const std::string& name, const std::vector<ir::Method>& ms) {
@@ -203,6 +205,7 @@ private:
     std::unordered_set<std::string> recordNames_;
     std::unordered_map<std::string, std::vector<std::string>> recordFields_; // record name -> ctor field order
     std::unordered_set<std::string> indexerTypes_; // types with an `operator get` -> `recv[i]` is `recv.get(i)`
+    std::unordered_set<std::string> interfaceNames_; // names declared as interfaces (class implements vs extends)
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
     int tmp_ = 0; // fresh-name counter (e.g. the `with`-copy IIFE binder)
 
@@ -323,7 +326,14 @@ private:
     // A mutable reference type: explicit fields, a constructor (`init`), and methods.
     void emitClass(const ir::Class& c) {
         std::string head = "class " + c.name + tsGenerics(c.generics);
-        if (!c.bases.empty()) head += " extends " + tsType(c.bases[0]); // inheritance emission widens later
+        // A class `extends` its (single) base class and `implements` its interface bases — distinct in TS.
+        std::string ext, impl;
+        for (const auto& b : c.bases) {
+            if (interfaceNames_.count(b.name)) { if (!impl.empty()) impl += ", "; impl += tsType(b); }
+            else ext = tsType(b);
+        }
+        if (!ext.empty()) head += " extends " + ext;
+        if (!impl.empty()) head += " implements " + impl;
         line(head + " {");
         ++indent_;
         for (const auto& f : c.fields) {
