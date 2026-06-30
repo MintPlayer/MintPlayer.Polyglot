@@ -216,6 +216,15 @@ primitives (byte-for-byte no-op, all gates green). *Next:* lift the IR walk into
 kinds (`Cast`, `Match`, `Try`, interpolation, numeric narrowing, operator-method dispatch). This is the big
 structural slice; approach is to keep growing the shared free-function surface until the residual per-emitter
 code is small enough that the "lift into one engine class" becomes mechanical, rather than a risky big-bang.
+**Slice 4a ✅ (the engine class is born):** a new `EmitterBase` (`include/.../emitter_base.hpp`) owns the
+byte-identical walk machinery — the `out_`/`indent_` buffer, `line()`, `inlineBlock()` — and the statement
+dispatch; the leaf statements whose spelling is identical across targets (`Assign`/`ExprStmt`/`Return`) are
+rendered there, with `emitStmt`'s `default` routing every other kind to a pure-virtual `emitStmtTarget` the
+concrete backends override (alongside the pure-virtual `emitExpr`). `CSharpEmitter`/`TypeScriptEmitter` now
+`: public EmitterBase`, with their duplicated state/helpers/leaf-cases deleted. The leaf-statement code was
+copied verbatim (same `+`-chains), so no evaluation-order change. Byte-for-byte no-op: all four gates green.
+*Next:* a brace-style abstraction so the block control-flow (`If`/`While`/`For`/`Use`) can move up too
+(C# Allman vs TS K&R is the only real divergence), then `Let`/`Yield`/`Throw` via small per-target affixes.
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type

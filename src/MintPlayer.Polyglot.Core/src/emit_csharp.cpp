@@ -5,6 +5,7 @@
 #include <unordered_set>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
+#include "mintplayer/polyglot/emitter_base.hpp"
 
 // Hand-written IR -> C# pretty-printer. Walks the typed IR; wraps the program's free functions in a
 // `static class Program`, maps the `print` intrinsic -> global::System.Console.WriteLine and the entry
@@ -147,7 +148,7 @@ bool isPrimNumeric(const std::string& n) {
 }
 
 
-class CSharpEmitter {
+class CSharpEmitter : public EmitterBase {
 public:
     std::string emit(const ir::Module& m) {
         // No `using` directives: every BCL reference is `global::`-qualified, so emitted code can't collide
@@ -193,16 +194,8 @@ public:
     }
 
 private:
-    std::string out_;
-    int indent_ = 0;
     std::string thisAlias_; // non-empty inside a static operator body: `this` is emitted as this name
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
-
-    void line(const std::string& s) {
-        out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
-        out_ += s;
-        out_ += '\n';
-    }
 
     void emitEnum(const ir::Enum& e) {
         std::string s = "enum " + e.name + " { ";
@@ -400,39 +393,11 @@ private:
         line("}");
     }
 
-    // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
-    std::string inlineBlock(const std::vector<ir::StmtPtr>& body) {
-        std::string saved = std::move(out_);
-        int savedIndent = indent_;
-        out_.clear();
-        indent_ = 0;
-        for (const auto& s : body) emitStmt(*s);
-        std::string rendered = std::move(out_);
-        out_ = std::move(saved);
-        indent_ = savedIndent;
-        std::string flat;
-        for (char c : rendered) flat += (c == '\n') ? ' ' : c;
-        return flat;
-    }
-
-    void emitStmt(const ir::Stmt& s) {
+    void emitStmtTarget(const ir::Stmt& s) override {
         switch (s.kind) {
             case ir::StmtKind::Let: {
                 const auto& l = static_cast<const ir::Let&>(s);
                 line("var " + csIdent(l.name) + " = " + emitExpr(*l.init) + ";");
-                break;
-            }
-            case ir::StmtKind::Assign: {
-                const auto& a = static_cast<const ir::Assign&>(s);
-                line(emitExpr(*a.target) + " " + a.op + " " + emitExpr(*a.value) + ";");
-                break;
-            }
-            case ir::StmtKind::ExprStmt:
-                line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + ";");
-                break;
-            case ir::StmtKind::Return: {
-                const auto& r = static_cast<const ir::Return&>(s);
-                line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
                 break;
             }
             case ir::StmtKind::Yield: {
@@ -532,7 +497,7 @@ private:
         return inner;
     }
 
-    std::string emitExpr(const ir::Expr& e) {
+    std::string emitExpr(const ir::Expr& e) override {
         switch (e.kind) {
             case ir::ExprKind::Int: { // C# integer-literal suffix for the wider/unsigned types
                 const std::string& text = static_cast<const ir::IntLit&>(e).text;

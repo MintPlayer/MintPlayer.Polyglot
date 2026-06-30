@@ -5,6 +5,7 @@
 #include <unordered_set>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
+#include "mintplayer/polyglot/emitter_base.hpp"
 
 // Hand-written IR -> TypeScript pretty-printer. Walks the typed IR; emits free `function`s, maps the
 // `print` intrinsic -> console.log, and appends a top-level call to the entry function. Output stays
@@ -160,7 +161,7 @@ std::string tsConvert(const TypeRef& from, const TypeRef& to, const std::string&
     return narrowTs(to.name, x);
 }
 
-class TypeScriptEmitter {
+class TypeScriptEmitter : public EmitterBase {
 public:
     std::string emit(const ir::Module& m) {
         out_.clear();
@@ -202,8 +203,6 @@ public:
     }
 
 private:
-    std::string out_;
-    int indent_ = 0;
     std::unordered_set<std::string> recordNames_;
     std::unordered_map<std::string, std::vector<std::string>> recordFields_; // record name -> ctor field order
     std::unordered_set<std::string> indexerTypes_; // types with an `operator get` -> `recv[i]` is `recv.get(i)`
@@ -213,12 +212,6 @@ private:
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
-    }
-
-    void line(const std::string& s) {
-        out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
-        out_ += s;
-        out_ += '\n';
     }
 
     // Enum -> a type alias (stripped) + a const value object, both type-strippable (TS `enum` is not).
@@ -445,21 +438,6 @@ private:
         --indent_;
     }
 
-    // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
-    std::string inlineBlock(const std::vector<ir::StmtPtr>& body) {
-        std::string saved = std::move(out_);
-        int savedIndent = indent_;
-        out_.clear();
-        indent_ = 0;
-        for (const auto& s : body) emitStmt(*s);
-        std::string rendered = std::move(out_);
-        out_ = std::move(saved);
-        indent_ = savedIndent;
-        std::string flat;
-        for (char c : rendered) flat += (c == '\n') ? ' ' : c;
-        return flat;
-    }
-
     // TS has a single untyped `catch`, so a typed/guarded catch list becomes an instanceof/guard
     // dispatch chain. A `__handled` flag reproduces C#'s semantics: a clause whose type matches but
     // whose `when` guard fails falls through to the next clause; if none handle it, the error rethrows.
@@ -500,24 +478,11 @@ private:
         line("}");
     }
 
-    void emitStmt(const ir::Stmt& s) {
+    void emitStmtTarget(const ir::Stmt& s) override {
         switch (s.kind) {
             case ir::StmtKind::Let: {
                 const auto& l = static_cast<const ir::Let&>(s);
                 line(std::string(l.isMutable ? "let " : "const ") + l.name + " = " + emitExpr(*l.init) + ";");
-                break;
-            }
-            case ir::StmtKind::Assign: {
-                const auto& a = static_cast<const ir::Assign&>(s);
-                line(emitExpr(*a.target) + " " + a.op + " " + emitExpr(*a.value) + ";");
-                break;
-            }
-            case ir::StmtKind::ExprStmt:
-                line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + ";");
-                break;
-            case ir::StmtKind::Return: {
-                const auto& r = static_cast<const ir::Return&>(s);
-                line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
                 break;
             }
             case ir::StmtKind::Yield: {
@@ -604,7 +569,7 @@ private:
         return inner;
     }
 
-    std::string emitExpr(const ir::Expr& e) {
+    std::string emitExpr(const ir::Expr& e) override {
         switch (e.kind) {
             case ir::ExprKind::Int: {
                 const std::string& text = static_cast<const ir::IntLit&>(e).text;
