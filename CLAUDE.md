@@ -125,6 +125,12 @@ render primitives; the backend↔engine **hook surface** is the pure virtuals `e
 `bracesOnHeadLine`/`localDecl`/`yieldStmt`/`rethrowStmt`. Extraction proved the **expression walk + declaration
 shapes are irreducibly per-target**, so they stay as each backend's imperative tier; the data-only declarative
 DSL is **deferred to P10** (extract from a third backend, never guess — §4.3).
+**P9-V 🚧 — third backend (Python) validation spike** (`emit_python.cpp`, gate `tests/conformance/run-python.ps1`,
+opt-in `--target python`). A non-sibling colon+indent target brought up to validate the engine generalizes:
+it **did** force a real generalization (3-way `BlockStyle` + `stmtEnd`, a C#/TS no-op), after which the shared
+statement layer served Python unchanged; declarations stay per-target (often cleaner — structural `==` via
+`__eq__`, no `new`, exact bignum `int`). Covers 9/36 conformance programs; `PythonBackend` capability set grows
+per slice (Closures on; rest refused, never miscompiled). Slice log in PLAN §P9-V.
 **P13 ✅ done — std as real modules + the `lib` prelude** (PRD §4.6): `print` is now `std.io`'s generic
 `expect/actual print<T>` (TS body wraps `console.log(String(x))` universally so bigint/number print like C#
 `WriteLine`); `Math` is an `extern class Math` in `std.math` (bound static members + `PI`/`E`; `min/max/abs`

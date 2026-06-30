@@ -158,5 +158,28 @@ branch anywhere in `emit_csharp.cpp`/`emit_typescript.cpp`.
 ## 5. Capability sets
 
 Each Spec carries its §3.E `Feature` set. C# and TS both declare the **full §3.A surface**, so the
-intersection is everything and nothing gates until a third backend (Python, P10) declares a smaller set —
-at which point `capability.cpp` already refuses out-of-intersection use (the StubBackend test proves it).
+intersection is everything and nothing gates between them. The **Python backend (§6)** is the first to declare
+a *smaller, growing* set, so `capability.cpp` now refuses out-of-intersection use for real (not just the
+StubBackend test): a feature Python hasn't implemented yet is refused, never miscompiled, and the flag flips
+to true as `emit_python.cpp` gains it.
+
+## 6. Third-backend validation (Python) — what the spike proved
+
+P9 deferred the data-only declarative DSL until a third backend exists to extract it from (never guess). A
+native **Python** backend (`emit_python.cpp`, a `PythonEmitter : EmitterBase`) is being brought up to *validate*
+this architecture against a non-sibling target — colon+indent, no statement terminators, no `var`, builtin
+`print`. The findings sharpen the design:
+- **The engine was brace-family-specific, not fully target-neutral.** Python forced `EmitterBase` to
+  generalize from a 2-way brace bool to a 3-way `BlockStyle` {BracesAllman, BracesKnR, ColonIndent} + a
+  `stmtEnd()` terminator hook (a verified C#/TS no-op). *After* that, the shared statement walk (`if`/`while`/
+  `for` + leaf statements, behind the spelling hooks) served Python unchanged — so the §1 split is sound, but
+  the engine's "shared" surface is precisely the statement walk, not anything brace/semicolon-specific.
+- **Declarations stayed per-target**, confirming §3/§4's call: `emit_python.cpp` hand-writes `class`/`__init__`/
+  `__eq__`/`def` just as C#/TS hand-write theirs. Python's versions are often *cleaner* (structural equality via
+  Python's `__eq__` dispatch needs no recursive `.equals()`; no `new`; arbitrary-precision `int`).
+- **It surfaced a latent capability bug:** the always-linked `extern class Error`'s `message` property tripped
+  `Properties` for every program once a backend declared a non-full set. Fixed: `extern class`es are
+  native-backed (members are bindings), so the capability Collector skips them — correct regardless of Python.
+
+When Python is broad enough, the declarative DSL (the P9 endpoint) gets extracted from **three** working
+backends instead of two-plus-a-guess. Coverage + slice log: `../prd/PLAN.md` §P9-V.

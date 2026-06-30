@@ -386,6 +386,13 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   imperative tier (the design's "full-power local tier"); the data-only declarative-DSL endpoint is **deferred to
   P10**, when a third backend exists to extract it from rather than guess it (the §4.3 discipline). See
   `design/backend-spec.md` §3.
+- **P9-V — Third backend (Python): engine-validation spike — 🚧 in progress (9/36 conformance programs).**
+  A native Python backend (a non-sibling, colon+indent target) is being brought up *now* to validate that the
+  P9 engine generalizes — and to be the artifact the declarative DSL is later extracted from. Finding: the
+  engine was brace-family-specific, so Python forced a real generalization (3-way `BlockStyle` + statement
+  terminator, a verified C#/TS no-op); after that the shared statement layer served Python unchanged, and
+  declarations stayed per-target as predicted. Capability-gating now bites (Python declares a growing set).
+  Details + slice log in `PLAN.md` §P9-V.
 - **P10 — Plugin distribution + ecosystem.** `pgconfig.json` + download/cache/verify/version; availability by
   target+environment; build-dependency threading; the local full-power tier; proof = a **downloaded
   declarative Python backend** + a binding plugin, with **no core change**. The endpoint of §4.4 — see
