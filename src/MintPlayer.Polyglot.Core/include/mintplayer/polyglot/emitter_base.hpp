@@ -15,6 +15,15 @@
 
 namespace mintplayer::polyglot {
 
+// How a target delimits a block. The brace family differs only in where `{` sits; an indentation target
+// (Python) has no braces at all — `head:` then an indented body, no closer. headBlock() and the If/While
+// statements consult this so the shared statement walk serves all three.
+enum class BlockStyle {
+    BracesAllman, // `head` ⏎ `{` … `}`   (C#)
+    BracesKnR,    // `head {` … `}`        (TypeScript)
+    ColonIndent,  // `head:` … (indent only, no closer)  (Python)
+};
+
 class EmitterBase {
 protected:
     std::string out_;
@@ -25,8 +34,11 @@ protected:
     // Emit a block body: the statements, indented one level, with no braces of their own.
     void blockBody(const std::vector<ir::StmtPtr>& body);
 
-    // Emit `head` followed by a brace-delimited block, per the target's brace style — the one real
-    // divergence in block control flow: K&R puts `{` on the head line (TS), Allman on its own line (C#).
+    // Open a block after `head` / close it, per the target's BlockStyle (braces vs colon+indent). headBlock
+    // is the common open+body+close; If/While/Use call openBlock/closeBlock directly where the else/finally
+    // arms need finer control.
+    void openBlock(const std::string& head);
+    void closeBlock();
     void headBlock(const std::string& head, const std::vector<ir::StmtPtr>& body);
 
     // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
@@ -51,8 +63,9 @@ protected:
     //
     //   (b) Fine-grained spelling hooks. The engine owns the *structure* of these statements; only a short
     //       spelling differs per target, so the backend supplies just that string.
-    virtual bool bracesOnHeadLine() const = 0;                                  // K&R (TS) vs Allman (C#) — see headBlock()
-    virtual std::string localDecl(const std::string& name, bool isMutable) = 0; // `var x`/`let|const x` (Let, Use)
+    virtual BlockStyle blockStyle() const = 0;                                  // braces (C#/TS) vs colon+indent (Py)
+    virtual const char* stmtEnd() const { return ";"; }                         // statement terminator; Python: ""
+    virtual std::string localDecl(const std::string& name, bool isMutable) = 0; // `var x`/`let|const x`/`x` (Let, Use)
     virtual std::string yieldStmt(const std::string& value, bool hasValue) = 0; // `yield return v;`/`yield v;` …
     virtual std::string rethrowStmt() = 0;                                      // value-less `throw;`/`throw __e;`
 

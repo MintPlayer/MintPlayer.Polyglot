@@ -16,11 +16,22 @@ void EmitterBase::blockBody(const std::vector<ir::StmtPtr>& body) {
     --indent_;
 }
 
+void EmitterBase::openBlock(const std::string& head) {
+    switch (blockStyle()) {
+        case BlockStyle::BracesAllman: line(head); line("{"); break;
+        case BlockStyle::BracesKnR:    line(head + " {");      break;
+        case BlockStyle::ColonIndent:  line(head + ":");       break;
+    }
+}
+
+void EmitterBase::closeBlock() {
+    if (blockStyle() != BlockStyle::ColonIndent) line("}"); // indentation targets have no closer
+}
+
 void EmitterBase::headBlock(const std::string& head, const std::vector<ir::StmtPtr>& body) {
-    if (bracesOnHeadLine()) line(head + " {");
-    else { line(head); line("{"); }
+    openBlock(head);
     blockBody(body);
-    line("}");
+    closeBlock();
 }
 
 std::string EmitterBase::inlineBlock(const std::vector<ir::StmtPtr>& body) {
@@ -41,59 +52,60 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
     switch (s.kind) {
         case ir::StmtKind::Assign: {
             const auto& a = static_cast<const ir::Assign&>(s);
-            line(emitExpr(*a.target) + " " + a.op + " " + emitExpr(*a.value) + ";");
+            line(emitExpr(*a.target) + " " + a.op + " " + emitExpr(*a.value) + stmtEnd());
             return;
         }
         case ir::StmtKind::ExprStmt:
-            line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + ";");
+            line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + stmtEnd());
             return;
         case ir::StmtKind::Let: {
             const auto& l = static_cast<const ir::Let&>(s);
-            line(localDecl(l.name, l.isMutable) + " = " + emitExpr(*l.init) + ";");
+            line(localDecl(l.name, l.isMutable) + " = " + emitExpr(*l.init) + stmtEnd());
             return;
         }
         case ir::StmtKind::Yield: {
             const auto& y = static_cast<const ir::Yield&>(s);
             std::string v = y.value ? emitExpr(*y.value) : std::string{};
-            line(yieldStmt(v, static_cast<bool>(y.value)));
+            line(yieldStmt(v, static_cast<bool>(y.value))); // hook owns its own terminator
             return;
         }
-        case ir::StmtKind::Throw: { // `throw v;` is identical across targets; only the rethrow form diverges
+        case ir::StmtKind::Throw: { // `throw v` value form is C#/TS-identical (Python gates Exceptions off)
             const auto& t = static_cast<const ir::Throw&>(s);
-            if (t.value) line("throw " + emitExpr(*t.value) + ";");
+            if (t.value) line("throw " + emitExpr(*t.value) + stmtEnd());
             else line(rethrowStmt());
             return;
         }
         case ir::StmtKind::Use: { // `<decl> = init; try { body } finally { binding.dispose(); }`
-            const auto& u = static_cast<const ir::Use&>(s);
-            line(localDecl(u.binding, false) + " = " + emitExpr(*u.init) + ";");
-            if (bracesOnHeadLine()) { line("try {"); blockBody(u.body); line("} finally {"); }
+            const auto& u = static_cast<const ir::Use&>(s); // Python gates Disposal off, so braces here are safe
+            line(localDecl(u.binding, false) + " = " + emitExpr(*u.init) + stmtEnd());
+            if (blockStyle() == BlockStyle::BracesKnR) { line("try {"); blockBody(u.body); line("} finally {"); }
             else { line("try"); line("{"); blockBody(u.body); line("}"); line("finally"); line("{"); }
             ++indent_;
-            line(u.binding + ".dispose();");
+            line(u.binding + ".dispose()" + stmtEnd());
             --indent_;
             line("}");
             return;
         }
         case ir::StmtKind::Return: {
             const auto& r = static_cast<const ir::Return&>(s);
-            line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
+            line(r.value ? "return " + emitExpr(*r.value) + stmtEnd() : std::string("return") + stmtEnd());
             return;
         }
-        case ir::StmtKind::While: { // `while (cond)` head is identical across targets; braces via headBlock
+        case ir::StmtKind::While: { // `while (cond)` head is identical across targets; block form via headBlock
             const auto& w = static_cast<const ir::While&>(s);
             headBlock("while (" + emitExpr(*w.cond) + ")", w.body);
             return;
         }
-        case ir::StmtKind::If: { // `if (cond)` head is identical; the else arm merges the brace in K&R
+        case ir::StmtKind::If: { // `if (cond)` head is identical; the else arm differs per block style
             const auto& i = static_cast<const ir::If&>(s);
-            std::string head = "if (" + emitExpr(*i.cond) + ")";
-            if (bracesOnHeadLine()) line(head + " {");
-            else { line(head); line("{"); }
+            openBlock("if (" + emitExpr(*i.cond) + ")");
             blockBody(i.thenBody);
-            if (!i.hasElse) { line("}"); return; }
-            if (bracesOnHeadLine()) { line("} else {"); blockBody(i.elseBody); line("}"); }
-            else { line("}"); line("else"); line("{"); blockBody(i.elseBody); line("}"); }
+            if (!i.hasElse) { closeBlock(); return; }
+            switch (blockStyle()) {
+                case BlockStyle::BracesKnR:    line("} else {"); blockBody(i.elseBody); line("}"); break;
+                case BlockStyle::BracesAllman: closeBlock(); openBlock("else"); blockBody(i.elseBody); closeBlock(); break;
+                case BlockStyle::ColonIndent:  line("else:"); blockBody(i.elseBody); break;
+            }
             return;
         }
         default:

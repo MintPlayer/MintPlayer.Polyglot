@@ -468,7 +468,7 @@ private:
         line("}");
     }
 
-    bool bracesOnHeadLine() const override { return true; } // TS is K&R-braced
+    BlockStyle blockStyle() const override { return BlockStyle::BracesKnR; } // TS is K&R-braced
 
     std::string localDecl(const std::string& name, bool isMutable) override { return std::string(isMutable ? "let " : "const ") + name; }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield " + v + ";" : "return;"; }

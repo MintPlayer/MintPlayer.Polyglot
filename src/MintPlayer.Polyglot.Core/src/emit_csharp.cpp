@@ -379,7 +379,7 @@ private:
         headBlock(sig, fn.body);
     }
 
-    bool bracesOnHeadLine() const override { return false; } // C# is Allman-braced
+    BlockStyle blockStyle() const override { return BlockStyle::BracesAllman; } // C# is Allman-braced
 
     std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + csIdent(name); }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }
