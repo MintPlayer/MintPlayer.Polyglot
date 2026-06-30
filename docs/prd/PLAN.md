@@ -359,6 +359,11 @@ String-wrap canary died once `print`'s TS body wrapped *universally*).
   Removed: `Error`/`Iterable` from `isBuiltinType`, the `findMember` Error.message + Error-construction
   special-cases, lower's synthetic `Error.message` binding + `typeNames_.insert("Error")`, and the `csType`/
   `tsType`/`ir::New` Error/Iterable branches. The emitters now carry **no** hardcoded type mapping.
+- **`extern record` / `@plain` for TS-plugin interop** (idea, 2026-06-30): a record emits as a TS *class*
+  (prototype + methods + `equals`), so a JS library that hands back a plain `{x,y}` object (e.g. `JSON.parse`)
+  isn't a record instance — the binding template must reconstruct via `new R(...)`. An opt-in form that emits
+  a record as a plain `interface`+object-literal in TS (no class) would make JS-library interop friction-free,
+  trading away methods/value-`equals`. Records→JS is already easy; only JS→record needs the rebuild today.
 - **Idiomatic per-target member casing** (C# `public double X` / `obj.X`, TS `x` / `obj.x`): an *emitter*-only
   style feature (NOT sema/IR — that layer is target-neutral). Would make output more idiomatic and make
   `message`→`Message` fall out for the common case, but touches every field/property/method/access in both

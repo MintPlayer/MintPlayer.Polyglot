@@ -396,9 +396,11 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   construction binding (P10 precursor) — `extern class`es declare their per-target type + ctor, and
   `List`/`Error`/`Iterable` are fully dogfooded onto it (zero hardcoded type mappings in the emitters). See
   §4.6 and PLAN P13.
-- **P14 — Emitted-output correctness + `Option<T>`.** 🚧 A compile-run gate (build the C#, run the TS — not
-  just transpile) that caught a cluster of output-only miscompiles the transpile gate missed; fix those; and
-  add a faithful **`Option<T>`** std type for nullable generics (§3.C). See PLAN P14.
+- **P14 — Emitted-output correctness + `Option<T>`.** ✅ A compile-run gate (`run-emit.ps1` builds the C#,
+  runs the TS) caught a cluster of output-only miscompiles the transpile gate missed — all fixed; **all 10
+  samples now compile+run**. Added a faithful **`Option<T>`** generic union for nullable generics (§3.C),
+  generic unions, interfaces/indexers/record-implements emission, `std.strings` (bound extension methods),
+  char literals, and faithful bool/float printing. See PLAN P14.
 - **Stretch:** further targets as downloadable backends, source maps, **editor tooling** (a TextMate
   highlighting grammar for `.pg` — independent of the compiler, ships early for VS Code *and* Visual Studio
   2022+; plus an **LSP** server `polyglot lsp` built on the frontend-as-a-library, with thin VS Code and
