@@ -57,7 +57,7 @@ std::string tsType(const TypeRef& t) {
             if (auto it = g_externTypes->find(t.name); it != g_externTypes->end() && !it->second->tsType.empty())
                 return substTypeTmpl(it->second->tsType, t.args);
         }
-        std::string name = t.name; // Iterable<T> stays Iterable<T> (a generator is assignable to it)
+        std::string name = t.name; // user nominal types; Error/Iterable spell via the core-prelude mapping above
         if (!t.args.empty()) {
             name += "<";
             for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += tsType(t.args[i]); }

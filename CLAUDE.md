@@ -135,9 +135,16 @@ green. Two follow-up gaps the gate surfaced are now also fixed: **base-class mem
 (`findMember` walks `TypeInfo.bases`; lower's binding lookup walks `bases_`) with **`Error.message`** as a
 per-target bound property (C# `$this.Message` / JS `$this.message`); and **extensions on a generic receiver**
 (`liftExtensionGenerics` lifts free receiver type-vars like `List<T>`'s `T` into the extension's generics).
-Backlog (see PLAN P13): `Error` as a real `extern class` (post-P10) and idiomatic per-target member casing.
-**Roadmap: P10** (plugin distribution + the **type-name-mapping/construction-as-binding** gap — in progress;
-needs P9), **P11** (build-integration NuGet, independent).
+**P10 type-mapping/construction gap ✅ closed (2026-06-30) + full std/core dogfood.** An `extern class`
+declares its per-target **type spelling** (`type { actual(target) extern("…$0…") }`; `$0,$1`=rendered type
+args) and **construction** (binding arms on `init`; `$T`=mapped type, `$0,…`=ctor args; `Type(args)`→`ir::Bound`).
+Carried as an `ir::ExternType` registry on the IR module that `csType`/`tsType` consult per-emit. **Dogfooded:**
+`List` (in std.collections) + an always-linked **core prelude** (`compiler.cpp` `STD_CORE` via `linkCoreModule`)
+declaring `extern class Error` (→`System.Exception`/`Error`, ctor, `message` property) and `Iterable`
+(→`IEnumerable<$0>`/`Iterable<$0>`). The emitters now have **zero** hardcoded type mappings. Backlog: idiomatic
+per-target member casing (PLAN P13).
+**Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
+(build-integration NuGet, independent).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

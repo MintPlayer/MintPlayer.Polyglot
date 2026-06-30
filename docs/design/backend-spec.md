@@ -112,11 +112,13 @@ a plugin class now also declares:
   is the mapped type spelling and `$0,…` are the ctor args. `Type(args)` lowers to an `ir::Bound` (not
   `ir::New`) when the type has a ctor binding.
 
-The std types are dogfooded onto this: **`List`** declares its own type + ctor in `std.collections` (the
-old `csType`/`tsType`/`New` hardcoding is gone). **`Error`** is the last hardcoded core type (`csType`
-Error→`System.Exception`, `ir::New` Error branch, `Error.message` binding in `lower`); modelling it as an
-`extern class` in an always-linked core module is the remaining dogfood step (backlog; see PLAN P13).
-`Iterable` is a type-only mapping (no construction) still hardcoded pending the same core-module work.
+**All std/core types are dogfooded onto this — the emitters carry zero hardcoded type mappings:** **`List`**
+declares its type + ctor in `std.collections`; **`Error`** (type → `System.Exception`, ctor, and the
+`message` property) and **`Iterable`** (type-only → `IEnumerable<$0>`) are `extern class`es in the
+always-linked **core prelude** (`compiler.cpp` `STD_CORE`, merged into every compilation since `throw`/
+`catch`/`yield` are core surface needing no import). `csType`/`tsType` resolve every nominal type through the
+`ir::ExternType` registry or the user's own declaration — there is no longer a `List`/`Error`/`Iterable`
+branch anywhere in `emit_csharp.cpp`/`emit_typescript.cpp`.
 
 ## 5. Capability sets
 

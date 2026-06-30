@@ -64,8 +64,8 @@ bool isBuiltinType(const std::string& n) {
     static const std::unordered_set<std::string> b = {
         "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
         "f32", "f64", "bool", "char", "string", "unit",
-        "Iterable", // the core iterator contract (`fn …(): Iterable<T>` + `yield`); not std
-        "Error",    // the core exception root (`throw`/typed `catch`); System.Exception / JS Error
+        // (`Error` and `Iterable` are NOT builtins — they are `extern class`es in the always-linked core
+        //  prelude (compiler.cpp STD_CORE), so they resolve like any declared type.)
     };
     return b.count(n) != 0;
 }
@@ -407,14 +407,8 @@ private:
     }
 
     const MemberInfo* findMember(const std::string& typeName, const std::string& name) const {
-        // The core `Error` builtin (System.Exception / JS Error) exposes `message`; lower binds it per
-        // target (C# `.Message` / JS `.message`). It's reached either directly or via a `: Error` base.
-        if (typeName == "Error" && name == "message") {
-            static const MemberInfo msg = [] {
-                MemberInfo m; m.name = "message"; m.kind = MemberKind::Property; m.type = namedType("string"); return m;
-            }();
-            return &msg;
-        }
+        // `Error.message` resolves here like any other member: `Error` is a core-prelude `extern class` whose
+        // `message` property is in `types_`, reached directly or via a `: Error` base (the loop below).
         auto it = types_.find(typeName);
         if (it == types_.end()) return nullptr;
         for (const auto& m : it->second.members) if (m.name == name) return &m;
@@ -944,7 +938,7 @@ private:
             e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
             return inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
         }
-        if (name == "Error") return tNamed("Error"); // core exception root construction (message arg lenient)
+        // (`Error(msg)` construction is handled by the types_ branch above — Error is a core-prelude type.)
         // A bare call inside a class body may target one of its own static methods.
         if (!currentClass_.empty()) {
             if (const MemberInfo* m = findMember(currentClass_, name);

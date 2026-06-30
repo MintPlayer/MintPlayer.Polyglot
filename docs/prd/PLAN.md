@@ -351,12 +351,14 @@ String-wrap canary died once `print`'s TS body wrapped *universally*).
   resolution/body-check; lower + both emitters already thread `generics`, so the signature/return `T?` and
   the emitted `<T>` all follow.
 
-**Backlog (recorded 2026-06-30, deliberately not done here):**
-- **`Error`/`Iterable` as real `extern class`es** (remove the hardcoded `Error`→`System.Exception` mapping,
-  the `ir::New` Error branch, the synthetic `Error.message` binding in `lower`, and the `Iterable` type
-  spelling): the type-mapping/construction mechanism now exists (List is dogfooded onto it), so what remains
-  is an **always-linked core module** (`Error`/`Iterable` are used without an import, unlike `std.*`) that
-  declares them with `type`/`init` binding arms. A new linking concept distinct from the opt-in `lib` prelude.
+**Backlog (recorded 2026-06-30):**
+- ~~**`Error`/`Iterable` as real `extern class`es**~~ ✅ **done 2026-06-30.** An always-linked **core prelude**
+  (`compiler.cpp` `STD_CORE`, merged into every compilation via `linkCoreModule` — distinct from the opt-in
+  `lib` prelude since these need no import) declares `extern class Error` (type → `System.Exception`/`Error`,
+  ctor, `message` property binding) and `extern class Iterable<T>` (type-only → `IEnumerable<$0>`/`Iterable<$0>`).
+  Removed: `Error`/`Iterable` from `isBuiltinType`, the `findMember` Error.message + Error-construction
+  special-cases, lower's synthetic `Error.message` binding + `typeNames_.insert("Error")`, and the `csType`/
+  `tsType`/`ir::New` Error/Iterable branches. The emitters now carry **no** hardcoded type mapping.
 - **Idiomatic per-target member casing** (C# `public double X` / `obj.X`, TS `x` / `obj.x`): an *emitter*-only
   style feature (NOT sema/IR — that layer is target-neutral). Would make output more idiomatic and make
   `message`→`Message` fall out for the common case, but touches every field/property/method/access in both

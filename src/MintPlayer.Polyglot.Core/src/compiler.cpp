@@ -133,6 +133,33 @@ extern class Math {
 }
 )PG";
 
+// The core prelude — `extern class`es always linked into every compilation (no import: `throw`/typed
+// `catch`/`Error`/`yield`/`Iterable` are core language surface, not std). They declare their per-target
+// type spelling (and, for Error, construction + the `message` property) via the binding mechanism, so the
+// emitters carry no hardcoded Error/Iterable mapping — they're data here, dogfooding the P10 plugin path.
+const char* STD_CORE = R"PG(
+extern class Error {
+  type {
+    actual(csharp)     extern("global::System.Exception")
+    actual(typescript) extern("Error")
+  }
+  init(message: string) {
+    actual(csharp)     extern("new $T($0)")
+    actual(typescript) extern("new $T($0)")
+  }
+  let message: string {
+    actual(csharp)     extern("$this.Message")
+    actual(typescript) extern("$this.message")
+  }
+}
+extern class Iterable<T> {
+  type {
+    actual(csharp)     extern("global::System.Collections.Generic.IEnumerable<$0>")
+    actual(typescript) extern("Iterable<$0>")
+  }
+}
+)PG";
+
 // The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,
 // not control flow. No filesystem resolver yet (the source is compiled into the binary); user-module
 // resolution across files is future work.
@@ -211,6 +238,19 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
     stack.pop_back();
 }
 
+// Merge the always-on core prelude (Error/Iterable) into `unit`. Idempotent and user-shadow-safe: a core
+// type already declared in `unit` (e.g. a user `class Error`) is left to collide in sema, not silently
+// double-merged. Runs before any import linking so the core types are authoritative.
+void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags) {
+    std::vector<Token> toks = lex(STD_CORE, diags);
+    if (diags.hasErrors()) return;
+    CompilationUnit core = parse(toks, diags);
+    if (diags.hasErrors()) return;
+    std::unordered_set<std::string> have;
+    for (const auto& c : unit.classes) have.insert(c.name);
+    for (auto& c : core.classes) if (!have.count(c.name)) unit.classes.push_back(std::move(c));
+}
+
 // Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports).
 void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags) {
     std::unordered_set<std::string> visited;
@@ -283,6 +323,9 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     CompilationUnit unit = parse(tokens, diags);
+    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
+
+    linkCoreModule(unit, diags); // always-on core prelude: Error/Iterable (no import needed)
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     linkModules(unit, resolver, diags); // pull in imported std + user modules (transitively) before checking

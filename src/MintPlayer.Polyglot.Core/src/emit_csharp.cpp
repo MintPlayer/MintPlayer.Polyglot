@@ -66,9 +66,7 @@ std::string csType(const TypeRef& t) {
             if (auto it = g_externTypes->find(t.name); it != g_externTypes->end() && !it->second->csType.empty())
                 return substTypeTmpl(it->second->csType, t.args);
         }
-        if (t.name == "Error")  return "global::System.Exception"; // core builtin (still hardcoded; see PLAN P13)
-        std::string name = t.name == "Iterable" ? "global::System.Collections.Generic.IEnumerable"
-                         : t.name;
+        std::string name = t.name; // Error/Iterable now spell via the core-prelude extern-class mapping above
         if (!t.args.empty()) {
             name += "<";
             for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += csType(t.args[i]); }
@@ -572,9 +570,9 @@ private:
                 return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
-                // List (and any extern class with a bound ctor) routes through ir::Bound in lower; a plain
-                // ir::New is a user record/class — or `Error`, the last hardcoded core type (see PLAN P13).
-                std::string ctor = n.typeName == "Error" ? "global::System.Exception" : n.typeName;
+                // Any extern class with a bound ctor (List, Error, …) routes through ir::Bound in lower; a
+                // plain ir::New is always a user record/class, emitted as `new Name(args)`.
+                std::string ctor = n.typeName;
                 if (!n.typeArgs.empty()) {
                     ctor += "<";
                     for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += csType(n.typeArgs[i]); }

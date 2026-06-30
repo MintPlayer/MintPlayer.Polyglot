@@ -583,6 +583,22 @@ int main() {
         check(ts.ok && has(ts.code, "number[]"), "P10: List<i32> -> number[] from the mapping (TS)");
     }
 
+    // P10 — the core prelude (Error/Iterable) is ALWAYS linked (no import, no lib): with a bare `compile`,
+    // Error constructs + maps per target and `.message` binds — proving they're core-prelude extern classes,
+    // not emitter hardcodes.
+    {
+        const char* prog =
+            "fn boom(): Error => Error(\"x\")\n"
+            "fn msg(e: Error): string => e.message\n"
+            "fn main() {}\n";
+        EmitResult cs = compile(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "new global::System.Exception(\"x\")") && has(cs.code, "e.Message"),
+              "core prelude: Error constructs + .message maps to C# (no import/lib)");
+        EmitResult ts = compile(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "new Error(\"x\")") && has(ts.code, "e.message"),
+              "core prelude: Error maps to JS (no import/lib)");
+    }
+
     // P13 — unknown/unimported types fail compilation, not just in signatures but in LOCAL positions too
     // (previously a local `let x: T`/`var xs: List<…>` slipped, silently miscompiling).
     rejects("fn main() { let w: Widget = 0 }\n", "P13: unknown type on a local `let` is rejected");

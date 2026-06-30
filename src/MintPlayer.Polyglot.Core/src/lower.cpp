@@ -27,7 +27,7 @@ class Lowerer {
 public:
     explicit Lowerer(const CompilationUnit& unit) {
         // Names that denote a constructible type, so `Name(args)` lowers to a construction, not a call.
-        typeNames_.insert("Error"); // core builtin exception root (System.Exception / JS Error)
+        // (Error/Iterable arrive as core-prelude `extern class`es in unit.classes — no special-case here.)
         for (const auto& r : unit.records) typeNames_.insert(r.name);
         for (const auto& c : unit.classes) typeNames_.insert(c.name);
         for (const auto& e : unit.enums) for (const auto& c : e.cases) enumCases_[e.name].insert(c.name);
@@ -52,13 +52,10 @@ public:
         for (const auto& c : unit.classes)
             for (const auto& mem : c.members)
                 if (mem.kind == MemberKind::Init && !mem.bindings.empty()) ctorBindings_[c.name] = &mem.bindings;
-        // Named base types, so a binding/member inherited from a base resolves on a subclass receiver.
+        // Named base types, so a binding/member inherited from a base resolves on a subclass receiver
+        // (e.g. `Error.message`, declared on the core-prelude `extern class Error`, on a `: Error` subclass).
         for (const auto& c : unit.classes) for (const auto& b : c.bases) if (!b.name.empty()) bases_[c.name].push_back(b.name);
         for (const auto& r : unit.records) for (const auto& b : r.bases) if (!b.name.empty()) bases_[r.name].push_back(b.name);
-        // The core `Error.message` is bound per target (it isn't a source `extern class`): C# `.Message`
-        // (System.Exception) vs JS `.message`. A `class … : Error` reaches it via the base walk above.
-        errorMessageBinding_ = { {"csharp", "$this.Message", {}}, {"typescript", "$this.message", {}} };
-        bindings_["Error.message"] = &errorMessageBinding_;
     }
 
     // Build an ir::Bound from a receiver, args and a "Type.member" binding (picks the per-target arms).
@@ -175,7 +172,6 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> caseFields_;         // case -> field names
     std::unordered_map<std::string, std::unordered_set<std::string>> unionCases_;  // union -> case names
     std::unordered_map<std::string, std::vector<std::string>> bases_;              // type -> named base(s)
-    std::vector<TargetBinding> errorMessageBinding_;                               // synthetic Error.message arms
 
     // Resolve a "Type.member" FFI binding, walking base types so an inherited binding (e.g. `message`
     // declared on the `Error` base) fires on a subclass receiver too.
