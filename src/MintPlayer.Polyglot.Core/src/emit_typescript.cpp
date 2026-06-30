@@ -28,12 +28,35 @@ const BackendSpec& typescriptSpec() {
     return spec;
 }
 
+// The current module's `extern class` type map; see the identical note in emit_csharp.cpp. Set per emit().
+const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nullptr;
+
+std::string tsType(const TypeRef& t);
+
+// Substitute a type-spelling template's `$0,$1,…` with the rendered type args (List's "$0[]" with [i32]
+// -> "number[]").
+std::string substTypeTmpl(const std::string& tmpl, const std::vector<TypeRef>& args) {
+    std::string out;
+    for (std::size_t i = 0; i < tmpl.size();) {
+        if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
+            std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+            if (idx < args.size()) out += tsType(args[idx]);
+            i += 2;
+        } else out += tmpl[i++];
+    }
+    return out;
+}
+
 std::string tsType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
         if (t.nullable) { TypeRef base = t; base.nullable = false; return tsType(base) + " | null"; }
         if (auto it = typescriptSpec().scalarType.find(t.name); it != typescriptSpec().scalarType.end()) return it->second;
         if (t.name.empty()) return "unknown";
-        if (t.name == "List" && !t.args.empty()) return tsType(t.args[0]) + "[]"; // List<T> -> T[]
+        // A native-backed `extern class` (e.g. List -> `$0[]`) declares its spelling via a `type { … }` block.
+        if (g_externTypes) {
+            if (auto it = g_externTypes->find(t.name); it != g_externTypes->end() && !it->second->tsType.empty())
+                return substTypeTmpl(it->second->tsType, t.args);
+        }
         std::string name = t.name; // Iterable<T> stays Iterable<T> (a generator is assignable to it)
         if (!t.args.empty()) {
             name += "<";
@@ -141,6 +164,9 @@ public:
         out_.clear();
         indent_ = 0;
         recordNames_.clear();
+        externMap_.clear();
+        for (const auto& et : m.externTypes) externMap_[et.name] = &et;
+        g_externTypes = &externMap_;
         for (const auto& r : m.records) recordNames_.insert(r.name); // records compare structurally (§3.C)
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
@@ -163,6 +189,7 @@ private:
     std::string out_;
     int indent_ = 0;
     std::unordered_set<std::string> recordNames_;
+    std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
@@ -328,6 +355,7 @@ private:
         std::string out;
         for (std::size_t i = 0; i < tmpl.size();) {
             if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
+            else if (tmpl[i] == '$' && tmpl.compare(i, 2, "$T") == 0) { out += tsType(b.type); i += 2; } // ctor: the mapped type
             else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
                 std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
                 if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
@@ -656,7 +684,8 @@ private:
                 return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
-                if (n.typeName == "List") return "[]"; // List<T>() -> JS array literal
+                // List (and any extern class with a bound ctor) routes through ir::Bound in lower; a plain
+                // ir::New here is a user record/class (or Error, the last hardcoded core type).
                 std::string ctor = n.typeName;
                 if (!n.typeArgs.empty()) {
                     ctor += "<";

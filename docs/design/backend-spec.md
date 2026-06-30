@@ -99,22 +99,24 @@ extraction proceeds in slices, each a no-op on output:
 At the end, the two `.cpp` files are *data + a handful of hooks*, and P10 can add a downloaded **Spec-only**
 backend (Python) with no engine change — the §4 endpoint.
 
-## 4a. Plugin classes (`extern class`) — what works, and the gap
+## 4a. Plugin classes (`extern class`) — type-mapping + construction (P10, ✅ 2026-06-30)
 
 The `extern class` + per-target `actual(target) extern("…")` binding arms (the "binding" plugin mechanism)
-work for **any** type, std or user-authored, for **member and property access**: `w.poke(3)` →
-`w.Poke(3)` / `w.poke(3)`, via the general `$this`/`$0` substitution, and the `extern class` itself is not
-emitted. What is **not** yet bindable for an arbitrary user plugin class:
-- **Type-name mapping** — the class's name emits literally (`Widget w`); only the std-blessed types
-  (`List`→`System.Collections.Generic.List`/`T[]`, `Iterable`, `Error`) have a target type spelling, hardcoded
-  in `csType`/`tsType`.
-- **Construction** — `Widget()` emits `new Widget()` literally; only `List<T>()` is special-cased
-  (`new List`/`[]`).
+work for **any** type, std or user-authored. Beyond **member/property access** (`w.poke(3)` → `w.Poke(3)`),
+a plugin class now also declares:
+- **Type-name mapping** — a `type { actual(csharp) extern("global::Acme.Widget") actual(typescript) extern("Widget") }`
+  block. `$0,$1,…` in the template are the rendered type args, so a generic structural type maps too
+  (`List<T>` → C# `…List<$0>`, TS `$0[]`). `csType`/`tsType` consult this (an `ir::ExternType` registry on the
+  `ir::Module`, set per-emit) instead of a hardcoded name.
+- **Construction** — binding arms on `init`: `init(n) { actual(csharp) extern("new $T($0)") … }`, where `$T`
+  is the mapped type spelling and `$0,…` are the ctor args. `Type(args)` lowers to an `ir::Bound` (not
+  `ir::New`) when the type has a ctor binding.
 
-So a user plugin class is usable today when its instances arrive via parameters / an `extern`-returning FFI
-function and the target type is named the same; constructing one or mapping its type name to a different
-target type is **P10** work (a plugin declares its target type-mapping + constructor template). The member-
-binding half — the most common plugin surface (wrapping methods on existing objects: `fs`, DOM, BCL) — is done.
+The std types are dogfooded onto this: **`List`** declares its own type + ctor in `std.collections` (the
+old `csType`/`tsType`/`New` hardcoding is gone). **`Error`** is the last hardcoded core type (`csType`
+Error→`System.Exception`, `ir::New` Error branch, `Error.message` binding in `lower`); modelling it as an
+`extern class` in an always-linked core module is the remaining dogfood step (backlog; see PLAN P13).
+`Iterable` is a type-only mapping (no construction) still hardcoded pending the same core-module work.
 
 ## 5. Capability sets
 

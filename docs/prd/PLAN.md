@@ -224,14 +224,16 @@ WinForms, with its PackageReferences) requires **no core change** — only `pgco
 using them emits a buildable project, and wrong-target/-environment use **and use of a feature outside the
 target intersection** are each rejected with a clear, distinct diagnostic.
 
-**Prerequisite mechanism gap to close here (noted P13, 2026-06-29):** a plugin/`extern class` can currently
-bind **member/property access** (`$this.method($0)`) but **not its own type-name → target type, nor its
-construction**. Only the std-blessed types are hardcoded (`List`→`System.Collections.Generic.List`/`T[]`,
-`Iterable`, `Error`; `List<T>()`→`new List`/`[]` in `csType`/`tsType`/emit). So a user plugin class's type
-name and `new T(…)` emit literally today. P10 (or a small precursor) must let a binding plugin declare its
-**target type spelling** (feeding the P9 `BackendSpec` type table) and a **constructor template**, so an
-`extern class` is fully usable — instances constructed, not just methods called on params/FFI results. This
-is the "Binding" mechanism (plugins-and-targets.md §2) reaching its complete form. See `design/backend-spec.md` §4a.
+**Prerequisite mechanism gap — ✅ closed 2026-06-30 (the type-mapping/construction slice; full P10 plugin
+distribution still pending).** An `extern class` now binds **its own type-name → target type** (a
+`type { actual(target) extern("…$0…") }` block; `$0,$1` = rendered type args, so `List<T>`→C# `…List<$0>` /
+TS `$0[]`) **and its construction** (binding arms on `init`; `$T` = the mapped type, `$0,…` = ctor args;
+`Type(args)` lowers to `ir::Bound`). Carried on the IR as an `ir::ExternType` registry that `csType`/`tsType`
+consult per-emit. **`List` is dogfooded** onto this (its old `csType`/`tsType`/`New` hardcoding is gone).
+Remaining hardcoded core type: **`Error`** (`csType`→`System.Exception`, the `ir::New` Error branch, and the
+`Error.message` binding in `lower`) and **`Iterable`** (type-only) — modelling them as `extern class`es in an
+always-linked **core module** is the last dogfood step (backlog below). This is the "Binding" mechanism
+(plugins-and-targets.md §2) at its complete form. See `design/backend-spec.md` §4a.
 
 ## P11 — Build integration: the `.pg`-aware NuGet (and npm) on-ramp
 Make adoption frictionless: a developer adds a package to an ordinary C# project, drops in `.pg` files,
@@ -350,10 +352,11 @@ String-wrap canary died once `print`'s TS body wrapped *universally*).
   the emitted `<T>` all follow.
 
 **Backlog (recorded 2026-06-30, deliberately not done here):**
-- **`Error` as a real `extern class`** (remove the hardcoded `Error.message` binding + the `Error`→
-  `System.Exception` type mapping + `Error(msg)` construction special-cases in sema/lower/emit): blocked on
-  the P10 type-name-mapping/construction-as-binding work below; once that lands, `Error` becomes pure data
-  like `List`.
+- **`Error`/`Iterable` as real `extern class`es** (remove the hardcoded `Error`→`System.Exception` mapping,
+  the `ir::New` Error branch, the synthetic `Error.message` binding in `lower`, and the `Iterable` type
+  spelling): the type-mapping/construction mechanism now exists (List is dogfooded onto it), so what remains
+  is an **always-linked core module** (`Error`/`Iterable` are used without an import, unlike `std.*`) that
+  declares them with `type`/`init` binding arms. A new linking concept distinct from the opt-in `lib` prelude.
 - **Idiomatic per-target member casing** (C# `public double X` / `obj.X`, TS `x` / `obj.x`): an *emitter*-only
   style feature (NOT sema/IR — that layer is target-neutral). Would make output more idiomatic and make
   `message`→`Message` fall out for the common case, but touches every field/property/method/access in both

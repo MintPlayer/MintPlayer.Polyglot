@@ -222,6 +222,7 @@ struct ClassDecl {
     std::vector<TypeRef> bases;          // base class and/or interfaces
     std::vector<Member> members;
     bool isExtern = false;               // `extern class`: native-backed std type; not emitted (only its bindings)
+    std::vector<TargetBinding> typeBindings; // `extern class`: the `type { actual… }` per-target spelling arms
 };
 struct InterfaceDecl {
     std::string name;

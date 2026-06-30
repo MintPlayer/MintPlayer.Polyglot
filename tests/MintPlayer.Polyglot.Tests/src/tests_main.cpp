@@ -550,6 +550,39 @@ int main() {
         check(ts.ok && has(ts.code, "firstOrNull<T>("), "P13: extension on a generic receiver scopes T (TS generic signature)");
     }
 
+    // P10 — a user `extern class` declares its per-target type spelling (`type { … }`) and construction
+    // (`init` binding arms); `$T` in a ctor template is the mapped type. The class itself isn't emitted.
+    {
+        const char* prog =
+            "extern class Widget {\n"
+            "  type {\n    actual(csharp)     extern(\"global::Acme.Widget\")\n    actual(typescript) extern(\"Widget\")\n  }\n"
+            "  init(n: i32) {\n    actual(csharp)     extern(\"new $T($0)\")\n    actual(typescript) extern(\"new $T($0)\")\n  }\n"
+            "}\n"
+            "fn make(): Widget => Widget(7)\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "global::Acme.Widget make()") && has(cs.code, "new global::Acme.Widget(7)")
+                    && !has(cs.code, "class Widget"),
+              "P10: user extern class maps its type + constructs ($T) in C#");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "make(): Widget") && has(ts.code, "new Widget(7)") && !has(ts.code, "class Widget"),
+              "P10: user extern class maps its type + constructs ($T) in TS");
+    }
+
+    // P10 — the std `List` type spelling + construction are now declared on its `extern class` (dogfood), not
+    // hardcoded: List<T> -> C# System...List<int> / TS number[]; `[..]` literal + `List<T>()` ctor follow.
+    {
+        const char* prog =
+            "import { List } from \"std.collections\"\n"
+            "fn mk(): List<i32> { var xs: List<i32> = [1]\n  return xs }\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "global::System.Collections.Generic.List<int>"),
+              "P10: List type spelling comes from its extern-class mapping (C#)");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "number[]"), "P10: List<i32> -> number[] from the mapping (TS)");
+    }
+
     // P13 — unknown/unimported types fail compilation, not just in signatures but in LOCAL positions too
     // (previously a local `let x: T`/`var xs: List<…>` slipped, silently miscompiling).
     rejects("fn main() { let w: Widget = 0 }\n", "P13: unknown type on a local `let` is rejected");

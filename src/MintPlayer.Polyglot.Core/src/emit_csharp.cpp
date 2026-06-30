@@ -27,6 +27,27 @@ const BackendSpec& csharpSpec() {
     return spec;
 }
 
+// The current module's `extern class` type map (name -> spelling/ctor templates), set at the top of each
+// emit() so the free `csType` can consult declared spellings without threading the map through every call
+// site. Single-threaded compile; this emitter is the only writer; rebuilt and re-pointed each emit().
+const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nullptr;
+
+std::string csType(const TypeRef& t);
+
+// Substitute a type-spelling template's `$0,$1,…` with the rendered type args (e.g. List's
+// "…List<$0>" with [i32] -> "…List<int>").
+std::string substTypeTmpl(const std::string& tmpl, const std::vector<TypeRef>& args) {
+    std::string out;
+    for (std::size_t i = 0; i < tmpl.size();) {
+        if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
+            std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+            if (idx < args.size()) out += csType(args[idx]);
+            i += 2;
+        } else out += tmpl[i++];
+    }
+    return out;
+}
+
 std::string csType(const TypeRef& t) {
     if (t.kind == TypeRef::Kind::Named) {
         // A nullable value type needs C# `T?` (Nullable<T>); a nullable reference type accepts null as-is
@@ -40,9 +61,13 @@ std::string csType(const TypeRef& t) {
         }
         if (auto it = csharpSpec().scalarType.find(t.name); it != csharpSpec().scalarType.end()) return it->second;
         if (t.name.empty())     return "object";
-        if (t.name == "Error")  return "global::System.Exception";
+        // A native-backed `extern class` (e.g. List) declares its spelling via a `type { … }` block.
+        if (g_externTypes) {
+            if (auto it = g_externTypes->find(t.name); it != g_externTypes->end() && !it->second->csType.empty())
+                return substTypeTmpl(it->second->csType, t.args);
+        }
+        if (t.name == "Error")  return "global::System.Exception"; // core builtin (still hardcoded; see PLAN P13)
         std::string name = t.name == "Iterable" ? "global::System.Collections.Generic.IEnumerable"
-                         : t.name == "List"     ? "global::System.Collections.Generic.List"
                          : t.name;
         if (!t.args.empty()) {
             name += "<";
@@ -112,6 +137,9 @@ public:
         // with a user type/namespace named System/Console/Math/etc.
         out_.clear();
         indent_ = 0;
+        externMap_.clear();
+        for (const auto& et : m.externTypes) externMap_[et.name] = &et;
+        g_externTypes = &externMap_;
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
@@ -144,6 +172,7 @@ private:
     std::string out_;
     int indent_ = 0;
     std::string thisAlias_; // non-empty inside a static operator body: `this` is emitted as this name
+    std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
 
     void line(const std::string& s) {
         out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
@@ -272,6 +301,7 @@ private:
         std::string out;
         for (std::size_t i = 0; i < tmpl.size();) {
             if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
+            else if (tmpl[i] == '$' && tmpl.compare(i, 2, "$T") == 0) { out += csType(b.type); i += 2; } // ctor: the mapped type
             else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
                 std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
                 if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
@@ -527,7 +557,8 @@ private:
             }
             case ir::ExprKind::ListLit: {
                 const auto& l = static_cast<const ir::ListLit&>(e);
-                std::string s = "new global::System.Collections.Generic.List<" + csType(l.elem) + "> { ";
+                TypeRef listType; listType.name = "List"; listType.args = {l.elem}; // spelled via the List extern-class mapping
+                std::string s = "new " + csType(listType) + " { ";
                 for (std::size_t i = 0; i < l.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*l.elements[i]); }
                 return s + " }";
             }
@@ -541,9 +572,9 @@ private:
                 return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::New: {
                 const auto& n = static_cast<const ir::New&>(e);
-                std::string ctor = n.typeName == "Error" ? "global::System.Exception"
-                                 : n.typeName == "List"  ? "global::System.Collections.Generic.List"
-                                 : n.typeName;
+                // List (and any extern class with a bound ctor) routes through ir::Bound in lower; a plain
+                // ir::New is a user record/class — or `Error`, the last hardcoded core type (see PLAN P13).
+                std::string ctor = n.typeName == "Error" ? "global::System.Exception" : n.typeName;
                 if (!n.typeArgs.empty()) {
                     ctor += "<";
                     for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += csType(n.typeArgs[i]); }

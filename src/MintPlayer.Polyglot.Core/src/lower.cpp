@@ -47,6 +47,11 @@ public:
         for (const auto& r : unit.records)
             for (const auto& mem : r.members)
                 if (!mem.bindings.empty()) bindings_[r.name + "." + mem.name] = &mem.bindings;
+        // Bound constructors on an `extern class` (its `init` has binding arms): `Type(args)` lowers to a
+        // substituted ctor template instead of a plain `new Type(...)`.
+        for (const auto& c : unit.classes)
+            for (const auto& mem : c.members)
+                if (mem.kind == MemberKind::Init && !mem.bindings.empty()) ctorBindings_[c.name] = &mem.bindings;
         // Named base types, so a binding/member inherited from a base resolves on a subclass receiver.
         for (const auto& c : unit.classes) for (const auto& b : c.bases) if (!b.name.empty()) bases_[c.name].push_back(b.name);
         for (const auto& r : unit.records) for (const auto& b : r.bases) if (!b.name.empty()) bases_[r.name].push_back(b.name);
@@ -100,6 +105,23 @@ public:
             m.records.push_back(std::move(rec));
         }
         for (const auto& c : unit.classes) if (!c.isExtern) m.classes.push_back(lowerClass(c)); // extern = native-backed, not emitted
+        // `extern class` type/ctor spellings -> the IR registry the emitters consult (replaces the hardcoded
+        // List/Iterable/Error mappings). Type arms come from the `type { … }` block, ctor arms from `init`.
+        for (const auto& c : unit.classes) {
+            if (!c.isExtern) continue;
+            ir::ExternType et; et.name = c.name;
+            for (const auto& b : c.typeBindings) {
+                if (b.target == "csharp") et.csType = b.code;
+                else if (b.target == "typescript") et.tsType = b.code;
+            }
+            for (const auto& mem : c.members)
+                if (mem.kind == MemberKind::Init)
+                    for (const auto& b : mem.bindings) {
+                        if (b.target == "csharp") et.csCtor = b.code;
+                        else if (b.target == "typescript") et.tsCtor = b.code;
+                    }
+            m.externTypes.push_back(std::move(et));
+        }
         for (const auto& v : unit.values) { // top-level const/let
             ir::Global g;
             g.name = v.name;
@@ -145,6 +167,7 @@ private:
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
     std::unordered_map<std::string, const std::vector<TargetBinding>*> bindings_; // "Type.member" -> FFI arms
+    std::unordered_map<std::string, const std::vector<TargetBinding>*> ctorBindings_; // "Type" -> ctor FFI arms
     std::unordered_set<std::string> freeFns_;                                     // top-level function names
     std::unordered_set<std::string> typeNames_;
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
@@ -390,6 +413,10 @@ private:
                 }
                 std::string callee = (e.lhs && e.lhs->kind == ExprKind::Name) ? e.lhs->text : "";
                 if (!callee.empty() && typeNames_.count(callee)) { // record/class construction
+                    if (auto it = ctorBindings_.find(callee); it != ctorBindings_.end()) { // bound ctor (extern class)
+                        TypeRef ct; ct.name = callee; ct.args = e.typeArgs; // full type so `$T` renders `Name<args>`
+                        return makeBound(ct, e.pos, /*recv=*/nullptr, *it->second, &e.args);
+                    }
                     auto n = std::make_unique<ir::New>(e.pos, e.type, callee);
                     n->typeArgs = e.typeArgs; // explicit `Box<i32>(7)` type args (empty if inferred)
                     for (const auto& a : e.args) n->args.push_back(expr(*a));

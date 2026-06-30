@@ -377,6 +377,16 @@ struct Global { // a top-level `const`/`let` value
     Type type;
     ExprPtr init;
 };
+// A native-backed `extern class`: how its name spells per target (`$0,$1,…` = the rendered type args) and
+// (optionally) how `Type(args)` constructs (`$T` = the spelled type, `$0,…` = ctor args). This is the data
+// that replaced the emitters' hardcoded List/Iterable/Error mappings — a backend consults it from `csType`/
+// `tsType` (spelling) and at construction (ctor), so a user plugin class maps + constructs the same way.
+struct ExternType {
+    std::string name;
+    std::string csType, tsType;   // type-spelling templates; empty -> emitter falls back to the bare name
+    std::string csCtor, tsCtor;   // ctor templates; empty -> no bound constructor (use a plain `new Name(…)`)
+};
+
 struct Module {
     std::vector<Enum> enums;
     std::vector<Union> unions;
@@ -385,6 +395,7 @@ struct Module {
     std::vector<Global> globals;
     std::vector<Function> extensions; // `extension fn T.m(...)` — each isExtension, params[0] is `self`
     std::vector<Function> functions;
+    std::vector<ExternType> externTypes; // native-backed `extern class` type/ctor spellings (see ExternType)
 };
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).

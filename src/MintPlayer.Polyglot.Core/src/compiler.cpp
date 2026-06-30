@@ -24,6 +24,14 @@ namespace {
 // operations by these bindings. `$this` is the receiver; `$0` the first argument.
 const char* STD_COLLECTIONS = R"PG(
 extern class List<T> {
+  type {
+    actual(csharp)     extern("global::System.Collections.Generic.List<$0>")
+    actual(typescript) extern("$0[]")
+  }
+  init() {
+    actual(csharp)     extern("new $T()")
+    actual(typescript) extern("[]")
+  }
   let count: i32 {
     actual(csharp)     extern("$this.Count")
     actual(typescript) extern("$this.length")

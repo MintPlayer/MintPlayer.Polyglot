@@ -160,11 +160,10 @@ private:
                at(TokKind::KwStatic) || at(TokKind::KwPrivate) || at(TokKind::KwAsync);
     }
 
-    // A binding body `{ actual(target) extern("…template…") … }` — per-target FFI templates instead of
-    // a portable body. The receiver (`$this`) and args (`$0`,…) are substituted at each call site.
-    // Returns true and fills m.bindings if a binding body is present.
-    bool tryParseBindings(Member& m) {
-        if (!(at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual)) return false;
+    // Parse a binding body `{ actual(target) extern("…template…") … }` into `out`. The receiver (`$this`),
+    // args (`$0`,…) and (for ctor/type bindings) the mapped type (`$T`) are substituted at each use site.
+    // Assumes the current token is the opening '{'.
+    void parseBindingArms(std::vector<TargetBinding>& out) {
         advance(); // '{'
         while (at(TokKind::KwActual)) {
             TargetBinding b;
@@ -178,9 +177,14 @@ private:
             b.code = expect(TokKind::StringLit, "a raw target-code template string").text;
             expect(TokKind::RParen, "')'");
             accept(TokKind::Semicolon);
-            m.bindings.push_back(std::move(b));
+            out.push_back(std::move(b));
         }
         expect(TokKind::RBrace, "'}'");
+    }
+    // A per-target FFI binding body instead of a portable one. Returns true and fills m.bindings if present.
+    bool tryParseBindings(Member& m) {
+        if (!(at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual)) return false;
+        parseBindingArms(m.bindings);
         m.hasBody = true;
         return true;
     }
@@ -204,8 +208,7 @@ private:
             expect(TokKind::LParen, "'('");
             m.params = parseParamList();
             expect(TokKind::RParen, "')'");
-            m.body = parseBlock();
-            m.hasBody = true;
+            parseMemberBody(m); // a normal block ctor, or (on an `extern class`) per-target binding arms
             return m;
         }
         if (at(TokKind::KwConst)) {
@@ -301,7 +304,23 @@ private:
         if (accept(TokKind::Colon)) {
             do { d.bases.push_back(parseType()); } while (accept(TokKind::Comma));
         }
-        d.members = parseMemberBlock();
+        // Class body: members, plus (on an `extern class`) an optional `type { actual… }` block declaring the
+        // per-target type spelling. `type` isn't a member start, so `type {` is unambiguous.
+        expect(TokKind::LBrace, "'{'");
+        while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            if (at(TokKind::Identifier) && peek().text == "type" && peek(1).kind == TokKind::LBrace) {
+                advance(); // 'type'
+                parseBindingArms(d.typeBindings);
+                continue;
+            }
+            d.members.push_back(parseMember());
+            if (panicked_) {
+                while (!at(TokKind::RBrace) && !at(TokKind::End) && !at(TokKind::Semicolon)) advance();
+                accept(TokKind::Semicolon);
+                panicked_ = false;
+            }
+        }
+        expect(TokKind::RBrace, "'}'");
         return d;
     }
 
