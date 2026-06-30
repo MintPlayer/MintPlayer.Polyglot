@@ -157,29 +157,35 @@ branch anywhere in `emit_csharp.cpp`/`emit_typescript.cpp`.
 
 ## 5. Capability sets
 
-Each Spec carries its §3.E `Feature` set. C# and TS both declare the **full §3.A surface**, so the
-intersection is everything and nothing gates between them. The **Python backend (§6)** is the first to declare
-a *smaller, growing* set, so `capability.cpp` now refuses out-of-intersection use for real (not just the
-StubBackend test): a feature Python hasn't implemented yet is refused, never miscompiled, and the flag flips
-to true as `emit_python.cpp` gains it.
+Each Spec carries its §3.E `Feature` set. C# and TS both declare the **full §3.A surface**. Python's set
+*grew* feature-by-feature during the §6 spike — proving `capability.cpp` refuses out-of-intersection use for
+real (not just the StubBackend test) — and, now that the spike is complete, declares the full surface too
+(`supports` → `true`). The StubBackend test still proves gating bites.
 
-## 6. Third-backend validation (Python) — what the spike proved
+## 6. Third-backend validation (Python) — what the spike proved (✅ 36/36)
 
 P9 deferred the data-only declarative DSL until a third backend exists to extract it from (never guess). A
-native **Python** backend (`emit_python.cpp`, a `PythonEmitter : EmitterBase`) is being brought up to *validate*
+native **Python** backend (`emit_python.cpp`, a `PythonEmitter : EmitterBase`) was brought up to *validate*
 this architecture against a non-sibling target — colon+indent, no statement terminators, no `var`, builtin
-`print`. The findings sharpen the design:
+`print`. It now covers the **full §3.A surface: all 36 conformance programs (incl. the FruitCake north star)
+transpile to Python byte-identical to the C# oracle** (`run-python.ps1`). The findings sharpen the design:
 - **The engine was brace-family-specific, not fully target-neutral.** Python forced `EmitterBase` to
   generalize from a 2-way brace bool to a 3-way `BlockStyle` {BracesAllman, BracesKnR, ColonIndent} + a
-  `stmtEnd()` terminator hook (a verified C#/TS no-op). *After* that, the shared statement walk (`if`/`while`/
-  `for` + leaf statements, behind the spelling hooks) served Python unchanged — so the §1 split is sound, but
-  the engine's "shared" surface is precisely the statement walk, not anything brace/semicolon-specific.
+  `stmtEnd()` terminator hook, later a `throwKeyword()` hook + a block-style-agnostic `Use` (all verified
+  C#/TS no-ops). *After* that, the shared statement walk served Python unchanged — so the §1 split is sound,
+  and the engine's "shared" surface is precisely the statement walk, not anything brace/semicolon-specific.
 - **Declarations stayed per-target**, confirming §3/§4's call: `emit_python.cpp` hand-writes `class`/`__init__`/
-  `__eq__`/`def` just as C#/TS hand-write theirs. Python's versions are often *cleaner* (structural equality via
-  Python's `__eq__` dispatch needs no recursive `.equals()`; no `new`; arbitrary-precision `int`).
-- **It surfaced a latent capability bug:** the always-linked `extern class Error`'s `message` property tripped
-  `Properties` for every program once a backend declared a non-full set. Fixed: `extern class`es are
-  native-backed (members are bindings), so the capability Collector skips them — correct regardless of Python.
+  `__eq__`/`def`, dunders, generators, `except T as e`, match-as-ternary, etc. Python's versions are often
+  *cleaner* (structural `==` via `__eq__` dispatch; no `new`; arbitrary-precision `int`).
+- **The per-target FFI binding mechanism generalized to a third arm:** `ir::Bound` gained a `pyTemplate`
+  (+ `ExternType` `pyType`/`pyCtor`); std `actual(python)` arms brought Math/List/strings to Python with the
+  emitter carrying zero hardcoded mappings — the same data path P10 dogfooded for C#/TS.
+- **It surfaced three latent bugs, all fixed at the root** (a non-sibling backend earns its keep): (1) the
+  always-linked `extern class Error`'s `message` tripped `Properties` for every program once a backend
+  declared a non-full set — the Collector now skips extern-class members (bindings); (2) Python's builtin
+  `print` collides (→ `__builtins__.print`); (3) **`break`/`continue` were silently dropped in lowering for
+  *every* target** (`default: return nullptr`) — a §3.B miscompile the C#/TS diff gate structurally could not
+  catch (both dropped them identically, so they agreed). Now `ir::Break`/`Continue` emit in the shared engine.
 
-When Python is broad enough, the declarative DSL (the P9 endpoint) gets extracted from **three** working
-backends instead of two-plus-a-guess. Coverage + slice log: `../prd/PLAN.md` §P9-V.
+The declarative DSL (the P9 endpoint) can now be extracted from **three** working backends instead of
+two-plus-a-guess. Full slice log: `../prd/PLAN.md` §P9-V.

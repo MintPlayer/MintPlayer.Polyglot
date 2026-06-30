@@ -277,40 +277,44 @@ the full §3.A set, so the format carries capabilities from the start even thoug
 *Gate:* C#/TS emitted via the declarative specs match the native backends' golden output byte-for-byte;
 each spec carries a capability set (both = full §3.A).
 
-### P9-V — Third backend (Python): engine-validation spike — 🚧 in progress (9/36 conformance programs)
+### P9-V — Third backend (Python): engine-validation spike — ✅ done (36/36 conformance programs)
 P9 deferred the data-only declarative DSL until a **third backend** exists to extract it from (never guess —
-§4.3). Rather than wait for full P10 distribution, a **native Python backend** is being brought up now purely
-to *validate* that the P9 engine generalizes beyond the two brace-family backends it was extracted from — and
-to be the artifact the DSL is eventually extracted from. Python is a non-sibling target (colon+indent, no
-statement terminators, no `var`, builtin `print`), so it stresses the engine hard. Each slice = implement in
-`emit_python.cpp` (a `PythonEmitter : EmitterBase`) + flip the backend's capability flag(s) + grow the
-allowlist in the **`tests/conformance/run-python.ps1`** gate (Python vs the C# oracle; the subset is reported,
-not hidden — `--target python` is opt-in, kept out of the default cs+ts build).
+§4.3). Rather than wait for full P10 distribution, a **native Python backend** was brought up purely to
+*validate* that the P9 engine generalizes beyond the two brace-family backends it was extracted from — and to
+be the artifact the DSL is eventually extracted from. Python is a non-sibling target (colon+indent, no
+statement terminators, no `var`, builtin `print`), so it stresses the engine hard. It now covers the **full
+§3.A surface — all 36 conformance programs agree with the C# oracle** (`tests/conformance/run-python.ps1`,
+which globs every program like run-diff). `--target python` is opt-in (kept out of the default cs+ts build).
 
 **Findings (the payoff of a non-sibling backend):**
 - The engine was **not** fully target-neutral — it was brace-family-specific. Python forced a real
   generalization (**P-1a**: `bracesOnHeadLine()` bool → a 3-way `BlockStyle` {BracesAllman, BracesKnR,
-  ColonIndent} + a `stmtEnd()` terminator hook), a verified C#/TS no-op. *After* that, the shared statement
-  layer (`if`/`while`/`for`/leaf statements + the spelling hooks) served Python unchanged — the abstraction
-  holds, once honestly generalized. Declarations stayed per-target (hand-written in `emit_python.cpp`), as P9
-  predicted; Python's emission is often *cleaner* than C#/TS (structural `==` via `__eq__` dispatch; no `new`;
-  arbitrary-precision `int` keeps i64 exact past 2⁵³).
-- Two integration findings a sibling backend would never surface: Python's builtin `print` collides (a
-  `def print` whose body calls `print` recurses → emit `__builtins__.print`, + lowercase bools, + integer
-  `/`→`//`); and a **latent capability-gating bug** — the always-linked `extern class Error`'s `message`
-  property tripped `Properties` for *every* program. Fixed in `capability.cpp` (extern classes are
-  native-backed; their members are bindings, so the Collector skips them) — correct independent of Python.
+  ColonIndent} + a `stmtEnd()` terminator hook; later a `throwKeyword()` hook + a block-style-agnostic `Use`),
+  each a verified C#/TS no-op. *After* that, the shared statement layer served Python unchanged — the
+  abstraction holds, once honestly generalized. Declarations stayed per-target (hand-written in
+  `emit_python.cpp`), as P9 predicted; Python's emission is often *cleaner* (structural `==` via `__eq__`; no
+  `new`; arbitrary-precision `int` keeps i64 exact past 2⁵³; native dunders/generators; `except Type as e`).
+- **Three latent bugs a sibling backend would never surface, all fixed at the root:** (1) Python's builtin
+  `print` collides (`__builtins__.print` + lowercase bools); (2) the always-linked `extern class Error`'s
+  `message` tripped `Properties` for *every* program (`capability.cpp`: the Collector skips extern-class
+  members — they're bindings); (3) **`break`/`continue` were SILENTLY DROPPED** in lowering (`default:
+  return nullptr`) for *all* targets — a §3.B miscompile the C#/TS diff gate couldn't catch (both dropped them
+  identically, so they still agreed). Fixed by adding `ir::Break`/`Continue` + emitting them in the shared
+  engine (identical spelling on all three targets; diff gate stays green).
 
-**Slices done:** **P-1a** engine generalization (no-op); **P-1b** minimal backend + wiring (Target::Python,
-registry, `--target python`/`.py`, std.io python `print` actual) — walking skeleton; **P-2** records (`__eq__`),
-classes (`__init__`/`self`/`super`), member/method/construction, casts; **P-3** closures (lambdas) + `i32/f64.parse`.
-Capability set grows per slice (Closures on; the rest refused → never miscompiled). **Covered (9):** arithmetic,
-bool_print, forrange, casts, records, equality, counter, closures, parse.
-**Deferred clusters:** exceptions + inheritance + `Error`→`Exception` mapping (`inheritance`/`exceptions`/`disposal`);
-std-module Python arms (`math`, `collections`/List, `strings`); enums/unions/`match`; integer-faithfulness
-masking (`int_overflow`/`int_widths`/`int64`); operators→dunders (`vec2`/`operators`); iterators→generators;
-`fruitcake`. Also: int↔int cast masking, statement-bodied lambdas. Once Python is broad enough, the declarative
-DSL (P9 endpoint) can be extracted from **three** backends instead of guessed.
+**Slices (all ✅):** engine generalization (no-op) → walking skeleton → records/classes/casts → closures +
+parse → iterators + operators(dunders) + properties → enums/unions/match → 5 already-supported programs →
+static methods → std bindings infra (ir::Bound pyTemplate) + Math → List/collections → extensions + strings →
+exceptions + inheritance (Error→Exception) → expect/actual + extern arms → overloading (name mangling) →
+integer faithfulness (width-mask overflow + truncating div/rem) → disposal → **fruitcake** (the north star:
+keyword escaping, class consts/statics, field initializers, default params, string interpolation, tuples,
+`?.`/`??`/`!`, + the break/continue fix). `PythonBackend::supports` now returns `true` for everything (the
+StubBackend test still proves gating bites).
+
+**The declarative DSL (P9 endpoint) can now be extracted from three backends instead of guessed.** Smaller
+follow-up noted in passing: a portable `expect fn` with **no `actual` for the active target** still emits a
+broken program rather than refusing — a general §3.B gap (not Python-specific; exposed because Python was the
+first target reached without full std arms). Worth a dedicated refusal in the expect/actual resolver.
 
 ## P10 — Plugin distribution + ecosystem (the endpoint of §4.4)
 The downloadable, declarative plugin system: a **workspace config (`pgconfig.json`)** declaring target
