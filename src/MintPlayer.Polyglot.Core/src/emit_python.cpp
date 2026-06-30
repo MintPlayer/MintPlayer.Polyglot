@@ -67,7 +67,18 @@ public:
         for (const auto& fn : m.extensions) emitFunction(fn); // extensions -> free fns; `x.m()` calls `m(x)`
         for (const auto& fn : m.functions)
             if (fn.isEntry) { line(pyName(fn.mangledName) + "()"); break; } // top-level entry call
+        if (needsIdiv_) out_ = idivPrelude() + out_; // C#-faithful truncating int `/` and `%`
         return out_;
+    }
+
+    // Truncate-toward-zero integer division + remainder (Python `//`/`%` floor; .NET truncates). `_pg_irem`
+    // is `a - (a/b)*b` so it matches C#'s sign-of-dividend remainder. Prepended only when used.
+    static std::string idivPrelude() {
+        return "def _pg_idiv(a, b):\n"
+               "    q = a // b\n"
+               "    return q + 1 if (q < 0 and q * b != a) else q\n"
+               "def _pg_irem(a, b):\n"
+               "    return a - _pg_idiv(a, b) * b\n";
     }
 
 private:
@@ -292,12 +303,30 @@ private:
         return inner;
     }
 
-    // Python operator spelling: `and`/`or` for `&&`/`||`; integer `/` is `//` (Python `/` is always float).
-    std::string pyOp(const std::string& op, const TypeRef& resultType) {
+    // Python operator spelling: `and`/`or` for `&&`/`||`. (Fixed-width int arithmetic — wrap, trunc-div,
+    // trunc-rem — is handled in the Binary case below, not here; non-int `/` stays float division.)
+    std::string pyOp(const std::string& op) {
         if (op == "&&") return "and";
         if (op == "||") return "or";
-        if (op == "/" && isIntType(resultType)) return "//";
         return op;
+    }
+
+    bool needsIdiv_ = false; // set when a fixed-width int `/`/`%` is emitted -> prepend the trunc helpers
+
+    // §3.C integer faithfulness: wrap an int result to its width so it overflows like .NET (Python ints are
+    // arbitrary-precision). Unsigned masks; signed masks then sign-extends via the (m ^ SIGN) - SIGN trick —
+    // `x` appears once, so it's safe to inline without a temporary.
+    std::string wrapInt(const TypeRef& t, const std::string& x) {
+        const std::string& n = t.name;
+        if (n == "u8")  return "((" + x + ") & 0xff)";
+        if (n == "u16") return "((" + x + ") & 0xffff)";
+        if (n == "u32") return "((" + x + ") & 0xffffffff)";
+        if (n == "u64") return "((" + x + ") & 0xffffffffffffffff)";
+        if (n == "i8")  return "((((" + x + ") & 0xff) ^ 0x80) - 0x80)";
+        if (n == "i16") return "((((" + x + ") & 0xffff) ^ 0x8000) - 0x8000)";
+        if (n == "i32") return "((((" + x + ") & 0xffffffff) ^ 0x80000000) - 0x80000000)";
+        if (n == "i64") return "((((" + x + ") & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)";
+        return x;
     }
 
     // ---- match -> a lambda-bound ternary chain --------------------------------------------------------
@@ -383,12 +412,23 @@ private:
                 const auto& u = static_cast<const ir::Unary&>(e);
                 std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
                                                                               : emitExpr(*u.operand);
+                if (u.op == "-" && isIntType(e.type)) return wrapInt(e.type, "-" + operand); // negate can overflow (i8 min)
                 return (u.op == "!" ? "not " : u.op) + operand;
             }
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
                 int p = operatorPrecedence(b.op);
-                return child(*b.lhs, p, false) + " " + pyOp(b.op, e.type) + " " + child(*b.rhs, p, true);
+                // §3.C: fixed-width int arithmetic wraps at each boundary; `/`/`%` truncate toward zero like
+                // .NET (Python `//`/`%` floor), via the prelude helpers. Comparisons/logic (bool result) and
+                // non-int `/` (float) fall through to the plain spelling.
+                if (isIntType(e.type) && (b.op == "+" || b.op == "-" || b.op == "*" || b.op == "/" || b.op == "%")) {
+                    std::string inner;
+                    if (b.op == "/") { needsIdiv_ = true; inner = "_pg_idiv(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")"; }
+                    else if (b.op == "%") { needsIdiv_ = true; inner = "_pg_irem(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")"; }
+                    else inner = child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
+                    return wrapInt(e.type, inner);
+                }
+                return child(*b.lhs, p, false) + " " + pyOp(b.op) + " " + child(*b.rhs, p, true);
             }
             case ir::ExprKind::Cond: { // Python ternary: `then if cond else els`
                 const auto& c = static_cast<const ir::Cond&>(e);
