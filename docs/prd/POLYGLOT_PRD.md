@@ -378,8 +378,14 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   binding mechanism + an FFI hatch.
 - **P8 — Dogfood FruitCake physics.** Express the circle-physics solver in `.pg`; generate `.cs` + `.ts`;
   wire the differential conformance test against the existing MintPlayer.AI twins. *North star.*
-- **P9 — Declarative backend engine + DSL.** Extract a declarative backend format from the two native
-  backends; re-express C#/TS as specs the core interprets (gate: byte-for-byte vs. native golden output).
+- **P9 — Declarative backend engine + DSL — ✅ done (to the principled two-backend extent).** Extracted the
+  shared engine (`EmitterBase` owns the statement walk + buffer/indent + render primitives) and the `BackendSpec`
+  data tables (scalar/suffix/operator/bracket) from the two native backends, with a documented hook surface as
+  the backend↔engine contract — all as byte-for-byte no-op slices (gate held continuously). Extraction proved
+  declaration *shapes* and the expression walk are irreducibly per-target, so they stay as the concrete backends'
+  imperative tier (the design's "full-power local tier"); the data-only declarative-DSL endpoint is **deferred to
+  P10**, when a third backend exists to extract it from rather than guess it (the §4.3 discipline). See
+  `design/backend-spec.md` §3.
 - **P10 — Plugin distribution + ecosystem.** `pgconfig.json` + download/cache/verify/version; availability by
   target+environment; build-dependency threading; the local full-power tier; proof = a **downloaded
   declarative Python backend** + a binding plugin, with **no core change**. The endpoint of §4.4 — see

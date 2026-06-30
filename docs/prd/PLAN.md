@@ -184,7 +184,15 @@ earned the right to own that physics; the hand-ports can retire while the confor
 generator. *Not yet done here:* wiring the generated output back into the live MintPlayer.AI repo (out of
 scope — that repo's build is not run from here) and a real module-resolution system (std is embedded source).
 
-## P9 — Declarative backend engine + DSL — 🚧 in progress
+## P9 — Declarative backend engine + DSL — ✅ done (to the principled two-backend extent)
+**Status:** the shared engine + spec extraction is complete for two backends. `EmitterBase` owns the statement
+walk, the output buffer/indentation, and the brace abstraction; `BackendSpec` carries the scalar/suffix/
+operator/bracket tables; the shared render primitives (`renderDelimited`/`renderArgs`/`renderCond`) capture the
+target-identical expression structure; and the backend↔engine **hook surface** is documented (the pure virtuals
+`emitExpr`/`emitStmtTarget`/`bracesOnHeadLine`/`localDecl`/`yieldStmt`/`rethrowStmt`). Extraction proved the
+expression walk and declaration shapes are irreducibly per-target, so they remain the concrete backends'
+imperative tier; the **data-only declarative-DSL endpoint is deferred to P10** (extract from a third backend,
+never guess — §4.3). The slice log (1 → 4e) and the realized C++ shape are in `design/backend-spec.md` §3–4.
 **Concrete design + extraction map: [`../design/backend-spec.md`](../design/backend-spec.md).** A structural
 catalog of both emitters found the split is ~70% tabular / ~30% imperative, so a backend = **Spec (declarative
 data)** + **Hooks (C++ for the imperative 30%: `tsConvert`, TS `try` lowering, numeric narrowing, operator-

@@ -63,22 +63,41 @@ Hooks because they ship in the trusted core.
 Pre-computed-in-lowering (neither Spec nor Hook — already IR input): overload mangling (`mangledCallee`),
 entry detection (`isEntry`), extension-call flag (`isExtension`), the `Bound` `$this/$0` FFI templates.
 
-## 3. C++ shape (target)
+## 3. C++ shape (as realized — corrected from the original sketch)
+
+The original sketch guessed a `SpecEmitter` that rendered *every* node from `spec` and dispatched fine-grained
+per-node `BackendHooks` (`emitCast`, `emitTry`, `narrowBinary`, `emitMatch`, …). Extraction proved that wrong:
+the cleanly-shared layer is the **statement walk**, not the expression walk, so the realized split is:
 
 ```cpp
+// 1. Spec — the tabular data both emitters consult (backend_spec.hpp). What actually landed:
 struct BackendSpec {
-    std::string name;                                  // "csharp" / "typescript"
-    std::unordered_map<std::string, std::string> scalarType;   // "i8" -> "sbyte" / "number"
-    std::unordered_map<std::string, std::string> intSuffix;    // "i64" -> "L" / "n"
-    // … operator symbols, precedence (shared const), per-node templates, scaffolds, naming …
-    bool supports(Feature) const;                      // §3.E capability set (both = full §3.A)
+    std::string name;                                                  // "csharp" / "typescript"
+    std::unordered_map<std::string, std::string> scalarType;           // "i8" -> "sbyte" / "number"
+    std::unordered_map<std::string, std::string> intSuffix;            // "i64" -> "L" / "n"
+    std::unordered_map<std::string, std::string> binaryOp;             // "==" -> "===" (TS); C# verbatim
+    std::unordered_map<std::string, DelimitedTemplate> delimited;      // "tuple"/"list" bracket affixes
+    std::string binOp(const std::string&) const;
 };
+// plus shared, target-identical render primitives (renderDelimited/renderArgs/renderCond) and the
+// operatorPrecedence() table — engine concerns, not per-backend data.
+
+// 2. Engine — EmitterBase (emitter_base.hpp/.cpp) owns the IR *statement* walk + output buffer/indentation:
+//    line/blockBody/headBlock/inlineBlock, every leaf statement, the if/while/for trio, Let/Yield/Throw/Use.
+
+// 3. Hooks — the pure virtuals EmitterBase calls (the backend↔engine contract). Two granularities:
+//    (a) wholesale per-target walks: emitExpr (the entire expression walk) and emitStmtTarget (For + Try);
+//    (b) fine-grained spellings: bracesOnHeadLine, localDecl, yieldStmt, rethrowStmt.
 ```
 
-The engine is a `SpecEmitter` walking the IR; a node kind is either rendered from `spec`'s template/table or
-dispatched to a `BackendHooks` virtual (`emitCast`, `emitTry`, `narrowBinary`, `emitMatch`, …). The existing
-`emit_csharp.cpp`/`emit_typescript.cpp` become the Hook implementations + the Spec data; their shared walking
-logic (precedence, `atom()`, child emission, block indentation) moves into the engine.
+Why expressions stayed wholesale-per-target: almost every expression node spells differently per target
+(numeric narrowing/BigInt boundaries, `Cast`/`tsConvert`, `Match`, interpolation, operator-method dispatch),
+so a base expr-walk would handle a handful of nodes and delegate ~20 — inverting the statement situation.
+The cleanly-shared expr structure (`Cond`/`Tuple`/`ListLit`/arg-lists) is captured by the shared *render
+primitives* instead, called from within each backend's `emitExpr`. Likewise the declaration emitters
+(enum/union/record/class/function/extension) are per-target *by shape* and stay in the concrete backends.
+This is the design's "full-power local tier"; the data-only declarative-DSL endpoint is deferred to the
+third backend (P10) that would justify extracting it — never guessed (the §4.3 discipline).
 
 ## 4. Incremental migration (keep the gate green at every step)
 
