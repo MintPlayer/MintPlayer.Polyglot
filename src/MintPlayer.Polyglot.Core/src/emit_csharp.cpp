@@ -295,8 +295,7 @@ private:
                 for (std::size_t i = 0; i < c.superArgs.size(); ++i) { if (i) sig += ", "; sig += emitExpr(*c.superArgs[i]); }
                 sig += ")";
             }
-            line(sig);
-            emitBlock(c.initBody);
+            headBlock(sig, c.initBody);
         }
         for (const auto& m : c.methods) emitMethod(c.name, m);
         --indent_;
@@ -320,7 +319,7 @@ private:
             for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
             sig += "]";
             if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
-            else { line(sig + " { get"); emitBlock(m.body); line("}"); }
+            else { line(sig + " { get"); line("{"); blockBody(m.body); line("}"); line("}"); }
             return;
         }
         if (m.kind == ir::MethodKind::Operator) { // real C# static operator; `this` -> the first operand
@@ -329,7 +328,7 @@ private:
             sig += ")";
             thisAlias_ = "lhs";
             if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
-            else { line(sig); emitBlock(m.body); }
+            else headBlock(sig, m.body);
             thisAlias_.clear();
             return;
         }
@@ -337,7 +336,7 @@ private:
         for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
         sig += ")" + csWhere(m.generics);
         if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
-        else { line(sig); emitBlock(m.body); }
+        else headBlock(sig, m.body);
     }
 
     // Parenthesize a receiver that would otherwise mis-bind against `.`/call.
@@ -369,7 +368,7 @@ private:
         for (std::size_t i = 1; i < f.params.size(); ++i) sig += ", " + csType(f.params[i].type) + " " + f.params[i].name;
         sig += ")" + csWhere(f.generics);
         if (f.exprBodied) line(sig + " => " + emitExpr(*f.exprBody) + ";");
-        else { line(sig); emitBlock(f.body); }
+        else headBlock(sig, f.body);
     }
 
     void emitFunction(const ir::Function& fn) {
@@ -377,20 +376,7 @@ private:
         std::string sig = "public static " + csType(fn.returnType) + " " + fn.name + csGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += csParam(fn.params[i]); }
         sig += ")" + csWhere(fn.generics);
-        line(sig);
-        line("{");
-        ++indent_;
-        for (const auto& s : fn.body) emitStmt(*s);
-        --indent_;
-        line("}");
-    }
-
-    void emitBlock(const std::vector<ir::StmtPtr>& body) {
-        line("{");
-        ++indent_;
-        for (const auto& s : body) emitStmt(*s);
-        --indent_;
-        line("}");
+        headBlock(sig, fn.body);
     }
 
     bool bracesOnHeadLine() const override { return false; } // C# is Allman-braced
@@ -403,8 +389,7 @@ private:
         switch (s.kind) {
             case ir::StmtKind::Try: {
                 const auto& t = static_cast<const ir::Try&>(s);
-                line("try");
-                emitBlock(t.body);
+                headBlock("try", t.body);
                 for (const auto& c : t.catches) {
                     std::string head = "catch";
                     if (!c.type.name.empty()) {
@@ -413,10 +398,9 @@ private:
                         head += ")";
                     }
                     if (c.guard) head += " when (" + emitExpr(*c.guard) + ")";
-                    line(head);
-                    emitBlock(c.body);
+                    headBlock(head, c.body);
                 }
-                if (t.hasFinally) { line("finally"); emitBlock(t.finallyBody); }
+                if (t.hasFinally) headBlock("finally", t.finallyBody);
                 break;
             }
             case ir::StmtKind::For: {

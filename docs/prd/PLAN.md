@@ -240,8 +240,20 @@ hasValue)` (`yield return v;`/`yield break;` vs `yield v;`/`return;`), and `reth
 the brace hook for its try/finally+dispose shape. After this, **each concrete emitter's `emitStmtTarget`
 switch is down to just `For` + `Try`** — `For` (target-specific head) and `Try` (C# native `catch…when` vs
 TS instanceof-dispatch) are the only statements still per-target. Byte-for-byte no-op: all four gates green.
-*Next:* the declaration scaffolds (enum/union/record/class/function/extension + program wrapper) — the last
-big tabular chunk — then formalize the imperative Hook tier (`Cast`/`Match`/`Try`/interpolation/narrowing).
+**Slice 4e ✅ (block emission unified; declaration shapes assessed as per-target):** a structural survey of
+both declaration emitters found the *shapes* are fundamentally per-target — C# `record`/`abstract record`
+unions/real operators/indexers/properties/`this`-extensions vs TS classes/tagged-union type-aliases/getters/
+free-functions/structural-`equals`. Forcing these into shared templates would mean many shallow hooks hiding
+little (the leaky abstraction the §4.3 principles warn against), so the declaration bodies legitimately *are*
+the per-target "imperative 30%" and stay in the concrete emitters. The one genuine consolidation taken: the
+two `emitBlock` methods (a same-name/different-contract footgun — C# Allman-braced vs TS brace-less) are
+**deleted**; every block now routes through the base's single `headBlock`/`blockBody` pair (function, method,
+operator, extension, class-init bodies, and `Try`'s try/catch/finally). Byte-for-byte no-op across every
+function/method body: all four gates green. *Next:* formalize the imperative **Hook tier** — give the
+residual per-target methods (`Cast`/`tsConvert`, `Match`, `Try`, interpolation, numeric narrowing, operator-
+method dispatch, the declaration emitters) a documented place as the backend's hook surface, completing the
+`{spec data + hooks}` shape. The full declarative-scaffold DSL for declarations is deferred until a third
+backend exists to extract it from (the "never guess the format" discipline).
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type

@@ -92,8 +92,17 @@ extraction proceeds in slices, each a no-op on output:
 2. Operator symbol + precedence + parenthesization tables → spec.
 3. Per-node **templates** for the fixed-shape nodes; introduce the `SpecEmitter` engine that renders them,
    delegating unsupported kinds back to the native emitter (hybrid bridge).
-4. Declaration scaffolds + program wrapper → spec/engine.
-5. Formalize the **Hook interface**; the residual imperative code becomes hook methods.
+4. Declaration scaffolds + program wrapper. **Revised after extraction (done):** the statement layer lifted
+   cleanly into `EmitterBase` (leaf statements + the `if`/`while`/`for` trio + `Let`/`Yield`/`Throw`/`Use`,
+   with brace style and a few spellings behind hooks), and all block emission unified on `headBlock`/
+   `blockBody` (the per-target `emitBlock`s deleted). But the *declaration* shapes proved fundamentally
+   per-target (C# `record`/`abstract record` unions/operators/indexers/properties/`this`-extensions vs TS
+   classes/tagged-union aliases/getters/free-functions/structural `equals`) — sharing them would be shallow
+   hooks hiding nothing, so they stay as concrete-emitter code (this *is* the imperative 30%). The full
+   declarative-scaffold DSL for declarations is deferred until a third backend exists to extract it from
+   (the "never guess the format" discipline), not invented speculatively now.
+5. Formalize the **Hook interface**; the residual imperative code (incl. the per-target declaration emitters)
+   becomes the documented hook surface.
 6. Re-express C# and TS as `{Spec, Hooks}` pairs over the one engine; delete the bespoke per-file walking.
 
 At the end, the two `.cpp` files are *data + a handful of hooks*, and P10 can add a downloaded **Spec-only**

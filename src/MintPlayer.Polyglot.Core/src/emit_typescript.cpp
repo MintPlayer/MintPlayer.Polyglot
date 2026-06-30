@@ -424,18 +424,8 @@ private:
     void emitFunction(const ir::Function& fn) {
         std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.mangledName + tsGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(fn.params[i]); }
-        sig += "): " + tsType(fn.returnType) + " {";
-        line(sig);
-        ++indent_;
-        for (const auto& s : fn.body) emitStmt(*s);
-        --indent_;
-        line("}");
-    }
-
-    void emitBlock(const std::vector<ir::StmtPtr>& body) {
-        ++indent_;
-        for (const auto& s : body) emitStmt(*s);
-        --indent_;
+        sig += "): " + tsType(fn.returnType);
+        headBlock(sig, fn.body);
     }
 
     // TS has a single untyped `catch`, so a typed/guarded catch list becomes an instanceof/guard
@@ -443,7 +433,7 @@ private:
     // whose `when` guard fails falls through to the next clause; if none handle it, the error rethrows.
     void emitTry(const ir::Try& t) {
         line("try {");
-        emitBlock(t.body);
+        blockBody(t.body);
         if (!t.catches.empty()) {
             line("} catch (__e) {");
             ++indent_;
@@ -474,7 +464,7 @@ private:
             if (!hasCatchAll) line("if (!__handled) { throw __e; }");
             --indent_;
         }
-        if (t.hasFinally) { line("} finally {"); emitBlock(t.finallyBody); }
+        if (t.hasFinally) { line("} finally {"); blockBody(t.finallyBody); }
         line("}");
     }
 
