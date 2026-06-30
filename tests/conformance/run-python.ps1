@@ -1,10 +1,10 @@
 #!/usr/bin/env pwsh
-# Python-backend differential conformance (P9 third-backend bring-up).
+# Python-backend differential conformance (P9 third-backend validation).
 #
-# The Python backend currently emits only the walking-skeleton subset, so — unlike run-diff.ps1, which runs
-# all programs across C#/TS — this runs an ALLOWLIST of skeleton programs, emits Python (+ C# as the oracle),
-# runs both, and asserts identical stdout. The allowlist grows as the Python emitter gains coverage; that it
-# is a subset is the point (and is reported), not hidden.
+# The Python backend now covers the FULL conformance suite (the P9-V spike grew it feature-by-feature from
+# the walking skeleton). This emits every program to Python (+ C# as the oracle), runs both, and asserts
+# identical stdout. C# is the oracle (not TS) because both are checked the same way and C# is the reference
+# semantics; the C#/TS pair is covered by run-diff.ps1.
 #
 # Usage:  pwsh tests/conformance/run-python.ps1   (build the solution first; needs `python3` + `dotnet`)
 
@@ -19,12 +19,11 @@ if (-not (Test-Path $Cli)) {
     exit 2
 }
 
-# Skeleton-subset programs the Python backend covers today. Grows as emit_python.cpp gains features.
-$allowlist = @("arithmetic", "bool_print", "forrange", "casts", "records", "equality", "counter", "closures", "parse", "iterator", "vec2", "enums", "unions", "generic_union", "option", "optional_sugar",
-    "float_print", "generics", "int64", "typeargs", "widening", "static_methods", "math", "collections", "empty_list", "extensions", "strings", "exceptions", "inheritance", "expect_actual", "extern_ffi", "overloading", "int_overflow", "int_widths", "disposal", "fruitcake")
-
 $progDir = Join-Path $PSScriptRoot "programs"
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "polyglot-conformance-python"
+
+# Every top-level conformance program (the Python backend now covers the full §3.A surface).
+$programs = (Get-ChildItem $progDir -Filter *.pg | Sort-Object Name | ForEach-Object { $_.BaseName })
 
 $csproj = @'
 <Project Sdk="Microsoft.NET.Sdk">
@@ -42,7 +41,7 @@ if (-not $py) { Write-Host "python3 not found on PATH."; exit 2 }
 
 $fail = 0
 $count = 0
-foreach ($name in $allowlist) {
+foreach ($name in $programs) {
     $count++
     $src = Join-Path $progDir "$name.pg"
     $dir = Join-Path $work $name
@@ -71,9 +70,8 @@ foreach ($name in $allowlist) {
 }
 
 Write-Host ""
-$total = (Get-ChildItem $progDir -Filter *.pg).Count
 if ($fail -eq 0) {
-    Write-Host "All $count Python skeleton program(s) agree with C# ($count of $total conformance programs; the Python backend is a growing subset)."
+    Write-Host "All $count conformance program(s) agree across Python and C#."
     exit 0
 }
 Write-Host "$fail of $count Python program(s) diverged."

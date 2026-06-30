@@ -41,29 +41,16 @@ public:
     bool supports(Feature) const override { return true; }
 };
 
-// The third backend (P9 validation / bring-up). Python is colon+indent — a non-brace target that stresses
-// the shared engine. It currently emits the walking-skeleton subset (fn/arithmetic/let/if/while/print), so
-// it declares NO §3.A advanced feature yet: capability-gating thus refuses any of them targeting Python
-// (never a miscompile), and each flag flips to true as the emitter gains that feature.
+// The third backend (P9 validation). Python is colon+indent — a non-brace target that stresses the shared
+// engine. The P9-V spike grew it from the walking skeleton to the FULL §3.A surface feature-by-feature
+// (closures, iterators, operators->dunders, properties, enum/union/match, extensions, exceptions,
+// inheritance, disposal), each validated against the C# oracle (run-python.ps1, 36/36). It now declares the
+// whole feature set, so nothing gates — same as C#/TS. (The StubBackend test still proves gating bites.)
 class PythonBackend : public Backend {
 public:
     std::string name() const override { return "python"; }
     std::string emit(const ir::Module& m) const override { return emitPython(m); }
-    // Flips to true per feature as emit_python.cpp gains it; the rest stay refused (never miscompiled).
-    bool supports(Feature f) const override {
-        switch (f) {
-            case Feature::Closures:           return true; // expression-bodied lambdas -> Python `lambda`
-            case Feature::Iterators:          return true; // a `def` containing `yield` is already a generator
-            case Feature::OperatorOverloading: return true; // `operator fn plus` -> a `__add__` dunder
-            case Feature::Properties:         return true; // computed property -> `@property`
-            case Feature::PatternMatching:    return true; // enum/union + match -> lambda-bound ternary chain
-            case Feature::ExtensionMethods:   return true; // free function `m(self, …)`; `x.m()` calls `m(x)`
-            case Feature::Exceptions:         return true; // throw->raise; try/except/finally; Error->Exception
-            case Feature::Inheritance:        return true; // `class D : B` -> `class D(B)`, super().__init__
-            case Feature::Disposal:           return true; // `use` -> try/finally with binding.dispose()
-            default: return false;
-        }
-    }
+    bool supports(Feature) const override { return true; }
 };
 
 const CSharpBackend kCSharp;

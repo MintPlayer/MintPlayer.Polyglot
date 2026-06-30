@@ -12,12 +12,15 @@
 // Hand-written IR -> Python pretty-printer — the THIRD backend, added to validate the P9 shared engine
 // against a non-brace target (PRD §4.3; the engine was extracted from two brace-family backends, C#/TS).
 // Python is colon+indent with no statement terminators, so it drives EmitterBase's BlockStyle::ColonIndent +
-// stmtEnd "" (see emitter_base.hpp). Scope today: free functions, arithmetic, let/var, if/while/for, return,
-// calls, `print`; records/classes; closures; iterators (a `def` with `yield` is a generator); operators (real
-// dunders) + computed properties (`@property`); enums (int class-attrs), discriminated unions (tagged dicts),
-// and match (a lambda-bound ternary chain). Still off (refused by the PythonBackend capability set in
-// backend.cpp, never miscompiled): exceptions/disposal, inheritance's full surface, extensions, the std-module
-// Python arms, and the integer-faithfulness machinery (overflow masking, etc.). Each flips on per slice.
+// stmtEnd "" (see emitter_base.hpp). The P9-V spike grew this from the walking skeleton to the FULL §3.A
+// surface (run-python.ps1: 36/36 vs the C# oracle): functions/extensions/overloads, records/classes with
+// const+static members and field initializers, closures, iterators (a `def` with `yield` is a generator),
+// operators (real dunders) + computed properties (`@property`), enums (int class-attrs) + discriminated
+// unions (tagged dicts) + match (a lambda-bound ternary chain), exceptions (raise / try-except-finally,
+// Error->Exception), inheritance, disposal (use -> try/finally), nullability (`?.`/`??`/`!`), string
+// interpolation, tuples, the std-module python arms (Math/List/strings via ir::Bound), and §3.C integer
+// faithfulness (width-masked overflow + truncating div/rem). Declarations stay per-target by shape; the
+// shared statement engine (emitter_base) serves all three targets.
 
 namespace mintplayer::polyglot {
 namespace {
