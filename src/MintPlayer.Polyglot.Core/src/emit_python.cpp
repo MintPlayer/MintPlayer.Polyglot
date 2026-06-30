@@ -9,11 +9,12 @@
 // Hand-written IR -> Python pretty-printer — the THIRD backend, added to validate the P9 shared engine
 // against a non-brace target (PRD §4.3; the engine was extracted from two brace-family backends, C#/TS).
 // Python is colon+indent with no statement terminators, so it drives EmitterBase's BlockStyle::ColonIndent +
-// stmtEnd "" (see emitter_base.hpp). Scope today: the walking-skeleton subset — free functions, arithmetic,
-// let/var, if/while/for, return, calls, and `print` (std.io's python `actual`). Declarations beyond that
-// (records/unions/classes/enums/extensions) and the faithfulness machinery (int overflow masking, etc.) are
-// not emitted yet; the PythonBackend capability set (backend.cpp) gates the advanced §3.A surface off so any
-// use targeting Python is refused, never miscompiled.
+// stmtEnd "" (see emitter_base.hpp). Scope today: free functions, arithmetic, let/var, if/while/for, return,
+// calls, `print`; records/classes; closures; iterators (a `def` with `yield` is a generator); operators (real
+// dunders) + computed properties (`@property`); enums (int class-attrs), discriminated unions (tagged dicts),
+// and match (a lambda-bound ternary chain). Still off (refused by the PythonBackend capability set in
+// backend.cpp, never miscompiled): exceptions/disposal, inheritance's full surface, extensions, the std-module
+// Python arms, and the integer-faithfulness machinery (overflow masking, etc.). Each flips on per slice.
 
 namespace mintplayer::polyglot {
 namespace {
@@ -50,6 +51,8 @@ public:
     std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
+        for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
         for (const auto& g : m.globals)
@@ -83,6 +86,23 @@ private:
         } else {
             headBlock(sig, fn.body);
         }
+    }
+
+    // An enum -> a class of int class-attributes, so `Color.Green` reads as the int (matching C#/TS, where
+    // enums are ints). `match c { Green => … }` then compares `_m == Color.Green`.
+    void emitEnum(const ir::Enum& e) {
+        openBlock("class " + e.name);
+        ++indent_;
+        if (e.cases.empty()) line("pass");
+        for (const auto& c : e.cases) line(c.name + " = " + std::to_string(c.value));
+        --indent_;
+    }
+
+    // A discriminated union needs NO runtime declaration: each case is built as a tagged dict at the use site
+    // (`{"tag": "Circle", "r": …}`) and matched on `_m["tag"]` — mirroring TS's erased type alias. The comment
+    // documents the representation for a reader of the .py.
+    void emitUnion(const ir::Union& u) {
+        line("# union " + u.name + " -> tagged dicts: {\"tag\": <case>, <field>: <value>, ...}");
     }
 
     // A record -> a Python class with an __init__ (positional fields) and a structural __eq__. Python `==`
@@ -215,6 +235,59 @@ private:
         return op;
     }
 
+    // ---- match -> a lambda-bound ternary chain --------------------------------------------------------
+    // Python has no match expression (3.10's is a statement), so a match lowers to
+    //   (lambda _m: <v0> if <c0> else (<v1> if <c1> else <v_last>))(scrutinee)
+    // The scrutinee is bound once as `_m`; the LAST arm is unconditional (sema guarantees exhaustiveness),
+    // supplying the ternary's required else. Pattern bindings come into scope via an inner lambda per arm
+    // (`(lambda r: <body>)(_m["r"])`) — no statement-level binding needed.
+
+    // (name, access-on-`_m`) pairs a pattern binds: Ctor fields, or the whole scrutinee for a bare binding.
+    std::vector<std::pair<std::string, std::string>> armBinders(const ir::Pattern& p) {
+        std::vector<std::pair<std::string, std::string>> bs;
+        if (p.kind == ir::PatternKind::Ctor)
+            for (const auto& b : p.binders) bs.push_back({b.binding, "_m[\"" + b.field + "\"]"});
+        else if (p.kind == ir::PatternKind::Binding)
+            bs.push_back({p.binding, "_m"});
+        return bs;
+    }
+
+    // Wrap `inner` so the binders are in scope: `(lambda a, b: inner)(_m["x"], _m["y"])`; identity if none.
+    std::string wrapBinders(const std::vector<std::pair<std::string, std::string>>& bs, const std::string& inner) {
+        if (bs.empty()) return inner;
+        std::string params, args;
+        for (std::size_t i = 0; i < bs.size(); ++i) {
+            if (i) { params += ", "; args += ", "; }
+            params += bs[i].first;
+            args += bs[i].second;
+        }
+        return "(lambda " + params + ": " + inner + ")(" + args + ")";
+    }
+
+    // The boolean test that selects this arm (binders already bound for a guard that references them).
+    std::string armCond(const ir::MatchArm& a, const std::vector<std::pair<std::string, std::string>>& bs) {
+        const ir::Pattern& p = a.pattern;
+        std::string base;
+        switch (p.kind) {
+            case ir::PatternKind::Wildcard:
+            case ir::PatternKind::Binding: base = "True"; break;
+            case ir::PatternKind::Literal:  base = "_m == " + emitExpr(*p.literal); break;
+            case ir::PatternKind::EnumCase: base = "_m == " + p.enumType + "." + p.enumCase; break;
+            case ir::PatternKind::Ctor:     base = "_m[\"tag\"] == \"" + p.ctorCase + "\""; break;
+        }
+        if (!a.guard) return base;
+        std::string g = wrapBinders(bs, emitExpr(*a.guard));
+        return base == "True" ? g : base + " and " + g;
+    }
+
+    std::string matchChain(const std::vector<ir::MatchArm>& arms, std::size_t i) {
+        const ir::MatchArm& a = arms[i];
+        auto bs = armBinders(a.pattern);
+        std::string value = wrapBinders(bs, emitExpr(*a.body));
+        if (i + 1 == arms.size()) return value; // exhaustive: final arm is the unconditional else
+        return value + " if " + armCond(a, bs) + " else " + matchChain(arms, i + 1);
+    }
+
     std::string emitExpr(const ir::Expr& e) override {
         switch (e.kind) {
             case ir::ExprKind::Int:    return static_cast<const ir::IntLit&>(e).text;
@@ -273,6 +346,16 @@ private:
                 // Python lambdas are single-expression; a statement-bodied lambda needs a nested def (later).
                 if (l.exprBodied) return "lambda " + params + ": " + emitExpr(*l.body);
                 return "__py_unsupported_block_lambda__";
+            }
+            case ir::ExprKind::MakeCase: { // union-case construction -> a tagged dict
+                const auto& mc = static_cast<const ir::MakeCase&>(e);
+                std::string s = "{\"tag\": \"" + mc.caseName + "\"";
+                for (const auto& f : mc.fields) s += ", \"" + f.name + "\": " + emitExpr(*f.value);
+                return s + "}";
+            }
+            case ir::ExprKind::Match: {
+                const auto& m = static_cast<const ir::Match&>(e);
+                return "(lambda _m: " + matchChain(m.arms, 0) + ")(" + emitExpr(*m.scrutinee) + ")";
             }
             case ir::ExprKind::New: { // user record/class construction — Python has no `new`, no type args
                 const auto& n = static_cast<const ir::New&>(e);

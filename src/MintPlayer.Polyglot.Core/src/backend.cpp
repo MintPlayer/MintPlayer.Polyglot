@@ -56,6 +56,7 @@ public:
             case Feature::Iterators:          return true; // a `def` containing `yield` is already a generator
             case Feature::OperatorOverloading: return true; // `operator fn plus` -> a `__add__` dunder
             case Feature::Properties:         return true; // computed property -> `@property`
+            case Feature::PatternMatching:    return true; // enum/union + match -> lambda-bound ternary chain
             default: return false;
         }
     }
