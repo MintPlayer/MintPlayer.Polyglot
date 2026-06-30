@@ -101,7 +101,7 @@ a queryable tree); **bit-exact cross-target floating point** (see §3.D).
 - **float (32-bit) vs double:** default lets `float` ride a JS `double`; `Math.fround`-per-op strictness is
   **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity.
 - **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics use a real
-  `Option<T>` (decided 2026-06-30, in progress — see PLAN P14c):** `T?` over an *unconstrained* type
+  `Option<T>` (✅ done 2026-06-30 — see PLAN P14c):** `T?` over an *unconstrained* type
   parameter has no faithful native emission — C# `null` is CS0403, `T?`+`default(T)` returns `0` for value
   types (silent divergence from TS `null`), and `Nullable<T>` is value-types-only (CS0453). So `T?` whose
   base is a bare generic parameter **desugars to a real `Option<T>` generic union** (`Some(x)`/`None`),

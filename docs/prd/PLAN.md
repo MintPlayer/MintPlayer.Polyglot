@@ -406,12 +406,19 @@ asymmetric "TS `T | null` + C# wrapper" alternative cannot — a latent §3 dive
 existing union+`match` primitives means **no per-target optional special-casing in the emitters**. The
 prerequisite — generic unions — is independently valuable (`Result<T,E>`, …).
 
-*Slices (each gate-green + compile-run verified):* **(1)** generic unions through parser/AST/IR/lower/both
-emitters; **(2)** `Option<T>` in the core prelude + explicit `Some`/`None`/`match`; **(3)** desugar
-`T?`-over-a-generic → `Option<T>` (sema type-normalization + `T`→`Some`/`null`→`None` coercion via
-`checkConvert` + `??`→`match`/`x!`→payload lowering), so sample 08 stays verbatim and its **C# compiles+runs**;
-**(4)** the permanent compile-run gate (P14a). Edge cases to handle/refuse explicitly: nested/already-nullable
-`T` (`Option<Option<T>>`), `?.` on a generic-nullable.
+*Slices:* **(1) ✅** generic unions through parser/AST/IR/lower/both emitters (conformance `generic_union`).
+**(2) ✅** `Option<T>` in the core prelude + `Some`/`None`/`match`, with bare-case contextual typing
+(`instantiateBareCases`) so `None` takes its `<T>` from context (conformance `option`). **(3) ✅** desugar
+`T?`-over-a-generic → `Option<T>` (sema `normalizeOptionalGenerics` + `T`→`Some`/`null`→`None` via
+`coerceToOptional` + `??`→`match` lowering + extension-receiver inference), conformance `optional_sugar`;
+sample 08's `secondOrNull(): T? … ?? -1` compiles+runs byte-identical. **`x!` on an optional generic is
+refused** with a diagnostic (faithful force-unwrap = follow-up). *Deferred:* local `let x: T?` declared-type
+normalization inside bodies; nested/already-nullable `T` (`Option<Option<T>>`); `?.` on a generic-nullable.
+
+**Still open in P14:** **P14a** — the permanent compile-run gate (build the C#, run the TS) so the P14b bugs
+can't regress. **P14b** — the remaining output miscompiles + the empty-list-literal `[]`→C# `List<object>`
+bug (a bidirectional-typing gap like `None`'s) + the aspirational `string` std methods (`isEmpty`/`toI32`/
+`toUpper`/`codePoints`) that block samples 06/08/09.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
