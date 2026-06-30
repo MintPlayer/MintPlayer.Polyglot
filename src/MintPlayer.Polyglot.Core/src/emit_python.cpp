@@ -25,11 +25,17 @@ bool isIntType(const TypeRef& t) {
            n == "u8" || n == "u16" || n == "u32" || n == "u64";
 }
 
+bool isFloatType(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && (t.name == "f32" || t.name == "f64");
+}
+
 class PythonEmitter : public EmitterBase {
 public:
     std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
+        for (const auto& r : m.records) emitRecord(r);
+        for (const auto& c : m.classes) emitClass(c);
         for (const auto& g : m.globals)
             line(g.name + " = " + (g.init ? emitExpr(*g.init) : "None"));
         for (const auto& fn : m.functions) {
@@ -61,6 +67,91 @@ private:
         } else {
             headBlock(sig, fn.body);
         }
+    }
+
+    // A record -> a Python class with an __init__ (positional fields) and a structural __eq__. Python `==`
+    // dispatches to __eq__, so equality is just field-wise `==` joined by `and` (nested records recurse via
+    // their own __eq__ — no explicit recursion as the TS backend needs). Methods, if any, emit as defs.
+    void emitRecord(const ir::Record& r) {
+        openBlock("class " + r.name);
+        ++indent_;
+        std::string ctor = "def __init__(self";
+        for (const auto& f : r.fields) ctor += ", " + f.name;
+        openBlock(ctor + ")");
+        ++indent_;
+        if (r.fields.empty()) line("pass");
+        for (const auto& f : r.fields) line("self." + f.name + " = " + f.name);
+        --indent_;
+        openBlock("def __eq__(self, other)");
+        ++indent_;
+        if (r.fields.empty()) line("return True");
+        else {
+            std::string cond;
+            for (std::size_t i = 0; i < r.fields.size(); ++i) {
+                if (i) cond += " and ";
+                cond += "self." + r.fields[i].name + " == other." + r.fields[i].name;
+            }
+            line("return " + cond);
+        }
+        --indent_;
+        for (const auto& m : r.methods) emitMethod(m);
+        --indent_;
+    }
+
+    // A class -> a Python class: `__init__` (with super()), methods. Instance fields are set in __init__ (no
+    // separate declaration); static fields and field initializers outside init are a later slice.
+    void emitClass(const ir::Class& c) {
+        std::string head = "class " + c.name;
+        if (!c.bases.empty()) {
+            head += "(";
+            for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += c.bases[i].name; }
+            head += ")";
+        }
+        openBlock(head);
+        ++indent_;
+        bool any = false;
+        if (c.hasInit) {
+            std::string sig = "def __init__(self";
+            for (const auto& p : c.initParams) sig += ", " + p.name;
+            openBlock(sig + ")");
+            ++indent_;
+            if (c.hasSuper) {
+                std::vector<std::string> sa;
+                for (const auto& a : c.superArgs) sa.push_back(emitExpr(*a));
+                line("super().__init__" + renderArgs(sa));
+            }
+            for (const auto& s : c.initBody) emitStmt(*s);
+            if (!c.hasSuper && c.initBody.empty()) line("pass");
+            --indent_;
+            any = true;
+        }
+        for (const auto& m : c.methods) { emitMethod(m); any = true; }
+        if (!any) line("pass");
+        --indent_;
+    }
+
+    // A record/class method -> a `def` with a leading `self`. Only plain methods reach here: a Property or
+    // Operator member would trip Python's capability gating (both off) and be refused before emit.
+    void emitMethod(const ir::Method& m) {
+        std::string sig = "def " + m.name + "(self";
+        for (const auto& p : m.params) sig += ", " + p.name;
+        sig += ")";
+        if (m.exprBodied) {
+            openBlock(sig);
+            ++indent_;
+            bool unit = m.returnType.kind == TypeRef::Kind::Named && (m.returnType.name == "unit" || m.returnType.name.empty());
+            line(unit ? emitExpr(*m.exprBody) : "return " + emitExpr(*m.exprBody));
+            --indent_;
+        } else {
+            headBlock(sig, m.body);
+        }
+    }
+
+    // Parenthesize a receiver that would otherwise mis-bind against `.`/call.
+    std::string atom(const ir::Expr& e) {
+        std::string s = emitExpr(e);
+        return (e.kind == ir::ExprKind::Binary || e.kind == ir::ExprKind::Unary ||
+                e.kind == ir::ExprKind::Cond || e.kind == ir::ExprKind::Cast) ? "(" + s + ")" : s;
     }
 
     void emitStmtTarget(const ir::Stmt& s) override {
@@ -131,6 +222,33 @@ private:
                 std::vector<std::string> args;
                 for (const auto& a : c.args) args.push_back(emitExpr(*a));
                 return c.mangledCallee + renderArgs(args);
+            }
+            case ir::ExprKind::Member: {
+                const auto& m = static_cast<const ir::Member&>(e);
+                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
+                return base + "." + m.field; // `this.f` -> `self.f` (This emits "self")
+            }
+            case ir::ExprKind::MethodCall: {
+                const auto& mc = static_cast<const ir::MethodCall&>(e);
+                std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
+                std::vector<std::string> args;
+                for (const auto& a : mc.args) args.push_back(emitExpr(*a));
+                return recv + "." + mc.method + renderArgs(args);
+            }
+            case ir::ExprKind::New: { // user record/class construction — Python has no `new`, no type args
+                const auto& n = static_cast<const ir::New&>(e);
+                std::vector<std::string> args;
+                for (const auto& a : n.args) args.push_back(emitExpr(*a));
+                return n.typeName + renderArgs(args);
+            }
+            case ir::ExprKind::Cast: {
+                const auto& c = static_cast<const ir::Cast&>(e);
+                std::string x = emitExpr(*c.operand);
+                const TypeRef& to = e.type;
+                bool fromFloat = isFloatType(c.operand->type);
+                if (isFloatType(to)) return isIntType(c.operand->type) ? "float(" + x + ")" : x; // int->float
+                if (isIntType(to) && fromFloat) return "int(" + x + ")"; // float->int truncates toward zero (matches C#)
+                return x; // int<->int: Python ints are arbitrary-precision (overflow masking is a later slice)
             }
             default:
                 return "__py_unsupported_expr__"; // fails loudly at runtime if a non-skeleton node reaches here
