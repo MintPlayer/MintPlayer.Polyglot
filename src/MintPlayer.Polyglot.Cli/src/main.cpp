@@ -19,7 +19,7 @@ void printUsage() {
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
-        << "  polyglot build <input.pg> [--target <csharp|typescript>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
+        << "  polyglot build <input.pg> [--target <csharp|typescript|python>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
         << "  polyglot fmt <input.pg>\n"
         << "\n"
         << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
@@ -154,8 +154,11 @@ int runBuild(const std::vector<std::string>& args) {
     bool ok = true;
     if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs", &resolver, lib);
     if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, Target::TypeScript, ".ts", &resolver, lib);
-    if (!target.empty() && target != "csharp" && target != "typescript") {
-        std::cerr << "polyglot: unknown target '" << target << "' (expected csharp|typescript)\n";
+    // Python is opt-in (explicit --target python): it currently emits only the walking-skeleton subset, so it
+    // must not join the default cs+ts emission, which would fail on any program beyond that subset.
+    if (target == "python") ok &= emitOne(source, input, outDir, Target::Python, ".py", &resolver, lib);
+    if (!target.empty() && target != "csharp" && target != "typescript" && target != "python") {
+        std::cerr << "polyglot: unknown target '" << target << "' (expected csharp|typescript|python)\n";
         return 64;
     }
     return ok ? 0 : 1;

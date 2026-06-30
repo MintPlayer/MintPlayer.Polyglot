@@ -77,6 +77,7 @@
     <ClCompile Include="src\sema.cpp" />
     <ClCompile Include="src\emit_csharp.cpp" />
     <ClCompile Include="src\emit_typescript.cpp" />
+    <ClCompile Include="src\emit_python.cpp" />
     <ClCompile Include="src\emitter_base.cpp" />
     <ClCompile Include="src\compiler.cpp" />
     <ClCompile Include="src\pg_printer.cpp" />

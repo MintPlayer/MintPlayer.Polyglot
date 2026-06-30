@@ -64,6 +64,7 @@ const char* STD_IO = R"PG(
 expect fn print<T>(x: T)
 actual(csharp)     fn print<T>(x: T) { extern("global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object)x)") }
 actual(typescript) fn print<T>(x: T) { extern("console.log(String(x))") }
+actual(python)     fn print<T>(x: T) { extern("__builtins__.print(str(x).lower() if isinstance(x, bool) else x)") }
 
 expect fn readText(path: string): string
 actual(csharp)     fn readText(path: string): string => extern("global::System.IO.File.ReadAllText(path)")
@@ -379,7 +380,10 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
     check(unit, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    const Backend* backend = findBackend(target == Target::CSharp ? "csharp" : "typescript");
+    const char* targetName = target == Target::CSharp ? "csharp"
+                           : target == Target::TypeScript ? "typescript"
+                           : "python";
+    const Backend* backend = findBackend(targetName);
     // §3.E: refuse any used feature this target can't emit, before lowering/emitting (never miscompile).
     checkCapabilities(unit, *backend, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }

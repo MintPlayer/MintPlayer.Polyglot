@@ -13,5 +13,6 @@ namespace mintplayer::polyglot {
 
 std::string emitCSharp(const ir::Module& module);
 std::string emitTypeScript(const ir::Module& module);
+std::string emitPython(const ir::Module& module);
 
 } // namespace mintplayer::polyglot

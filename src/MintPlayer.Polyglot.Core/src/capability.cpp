@@ -25,6 +25,10 @@ public:
         for (const auto& d : u.records)    typeBody(d.members);
         for (const auto& d : u.interfaces) typeBody(d.members);
         for (const auto& d : u.classes) {
+            // An `extern class` (e.g. the core prelude's Error/Iterable) is native-backed and not emitted —
+            // its members are bound templates, not native properties/operators — so it requires no backend
+            // feature support. Skipping it keeps an always-linked prelude from tripping a target's gating.
+            if (d.isExtern) continue;
             if (!d.bases.empty()) mark(Feature::Inheritance, d.pos);
             typeBody(d.members);
         }

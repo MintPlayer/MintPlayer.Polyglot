@@ -273,7 +273,8 @@ int main() {
     // P5 — backend registry seam.
     check(findBackend("csharp") != nullptr && findBackend("csharp")->name() == "csharp", "P5: csharp backend registered");
     check(findBackend("typescript") != nullptr && findBackend("typescript")->name() == "typescript", "P5: typescript backend registered");
-    check(findBackend("python") == nullptr, "P5: unknown backend is not found");
+    check(findBackend("python") != nullptr && findBackend("python")->name() == "python", "P9: python backend registered");
+    check(findBackend("ruby") == nullptr, "P5: unknown backend is not found");
 
     // P5 §3.E — per-target capability gating.
     {

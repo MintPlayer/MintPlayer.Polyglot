@@ -41,9 +41,21 @@ public:
     bool supports(Feature) const override { return true; }
 };
 
+// The third backend (P9 validation / bring-up). Python is colon+indent — a non-brace target that stresses
+// the shared engine. It currently emits the walking-skeleton subset (fn/arithmetic/let/if/while/print), so
+// it declares NO §3.A advanced feature yet: capability-gating thus refuses any of them targeting Python
+// (never a miscompile), and each flag flips to true as the emitter gains that feature.
+class PythonBackend : public Backend {
+public:
+    std::string name() const override { return "python"; }
+    std::string emit(const ir::Module& m) const override { return emitPython(m); }
+    bool supports(Feature) const override { return false; }
+};
+
 const CSharpBackend kCSharp;
 const TypeScriptBackend kTypeScript;
-const Backend* const kRegistry[] = {&kCSharp, &kTypeScript};
+const PythonBackend kPython;
+const Backend* const kRegistry[] = {&kCSharp, &kTypeScript, &kPython};
 
 } // namespace
 

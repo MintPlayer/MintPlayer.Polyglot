@@ -25,7 +25,7 @@ public:
 
 // A transpilation target. More targets become downloadable declarative backend plugins post-P8
 // (see docs/design/plugins-and-targets.md); C# and TS are first-party native backends through P5.
-enum class Target { CSharp, TypeScript };
+enum class Target { CSharp, TypeScript, Python };
 
 // Result of compiling one source to one target. On success `ok` is true and `code` holds the emitted
 // source; on failure `ok` is false and `diagnostics` explains why (positions are 1-based).
