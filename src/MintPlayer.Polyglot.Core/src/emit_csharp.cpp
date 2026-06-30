@@ -156,6 +156,7 @@ public:
         for (const auto& et : m.externTypes) externMap_[et.name] = &et;
         g_externTypes = &externMap_;
         for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& i : m.interfaces) emitInterface(i);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
@@ -207,6 +208,24 @@ private:
         line(s + " }");
     }
 
+    void emitInterface(const ir::Interface& it) {
+        std::string head = "interface " + it.name + csGenerics(it.generics);
+        if (!it.bases.empty()) {
+            head += " : ";
+            for (std::size_t i = 0; i < it.bases.size(); ++i) { if (i) head += ", "; head += csType(it.bases[i]); }
+        }
+        line(head + csWhere(it.generics));
+        line("{");
+        ++indent_;
+        for (const auto& m : it.methods) { // implicitly public abstract; signature only
+            std::string sig = csType(m.returnType) + " " + csIdent(m.name) + csGenerics(m.generics) + "(";
+            for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
+            line(sig + ");");
+        }
+        --indent_;
+        line("}");
+    }
+
     void emitUnion(const ir::Union& u) {
         std::string g = csGenerics(u.generics); // "" or "<T>"; the base reference reuses the same param names
         line("abstract record " + u.name + g + ";");
@@ -238,7 +257,12 @@ private:
     void emitRecord(const ir::Record& r) {
         std::string head = "record " + r.name + csGenerics(r.generics) + "(";
         for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) head += ", "; head += csType(r.fields[i].type) + " " + csIdent(r.fields[i].name); }
-        head += ")" + csWhere(r.generics);
+        head += ")";
+        if (!r.bases.empty()) { // implemented interfaces
+            head += " : ";
+            for (std::size_t i = 0; i < r.bases.size(); ++i) { if (i) head += ", "; head += csType(r.bases[i]); }
+        }
+        head += csWhere(r.generics);
         if (r.methods.empty()) { line(head + ";"); return; }
         line(head);
         line("{");
@@ -294,6 +318,14 @@ private:
     void emitMethod(const std::string& recordName, const ir::Method& m) {
         if (m.kind == ir::MethodKind::Property) { // expression-bodied property
             line("public " + csType(m.returnType) + " " + m.name + " => " + emitExpr(*m.exprBody) + ";");
+            return;
+        }
+        if (m.kind == ir::MethodKind::Operator && m.opSymbol == "get") { // `operator fn get` -> a C# indexer
+            std::string sig = "public " + csType(m.returnType) + " this[";
+            for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
+            sig += "]";
+            if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
+            else { line(sig + " { get"); emitBlock(m.body); line("}"); }
             return;
         }
         if (m.kind == ir::MethodKind::Operator) { // real C# static operator; `this` -> the first operand

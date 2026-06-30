@@ -335,6 +335,7 @@ struct Method {
 struct Record { // an immutable data type (record)
     std::string name;
     std::vector<GenericParam> generics;
+    std::vector<Type> bases;        // implemented interfaces
     std::vector<RecordField> fields;
     std::vector<Method> methods;
 };
@@ -378,6 +379,12 @@ struct Class { // a mutable reference type
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;
 };
+struct Interface { // a contract: method signatures only (no bodies). C# `interface`, TS `interface`.
+    std::string name;
+    std::vector<GenericParam> generics;
+    std::vector<Type> bases;     // extended interfaces
+    std::vector<Method> methods; // signatures (body empty)
+};
 struct Global { // a top-level `const`/`let` value
     std::string name;
     bool isConst = false;
@@ -399,6 +406,7 @@ struct Module {
     std::vector<Union> unions;
     std::vector<Record> records;
     std::vector<Class> classes;
+    std::vector<Interface> interfaces;
     std::vector<Global> globals;
     std::vector<Function> extensions; // `extension fn T.m(...)` — each isExtension, params[0] is `self`
     std::vector<Function> functions;

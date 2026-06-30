@@ -37,7 +37,8 @@ class RingBuffer<T> {
 }
 
 fn main() {
-  print(maxOf(3, 7))                                  // 7
+  // maxOf needs T : Comparable<T>; primitives aren't Comparable in Polyglot, so use Version (which is).
+  print(maxOf(Version(3, 0), Version(1, 9)).major)    // 3
   print(maxOf(Version(1, 4), Version(1, 9)).minor)    // 9
 
   let ring = RingBuffer<string>(2)

@@ -96,6 +96,7 @@ public:
             ir::Record rec;
             rec.name = r.name;
             rec.generics = generics(r.generics);
+            for (const auto& b : r.bases) rec.bases.push_back(b);
             for (const auto& f : r.fields) rec.fields.push_back({f.name, f.type});
             for (const auto& mem : r.members)
                 if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property)
@@ -103,6 +104,15 @@ public:
             m.records.push_back(std::move(rec));
         }
         for (const auto& c : unit.classes) if (!c.isExtern) m.classes.push_back(lowerClass(c)); // extern = native-backed, not emitted
+        for (const auto& d : unit.interfaces) { // contracts: signatures only, emitted as `interface`
+            ir::Interface ii;
+            ii.name = d.name;
+            ii.generics = generics(d.generics);
+            for (const auto& b : d.bases) ii.bases.push_back(b);
+            for (const auto& mem : d.members)
+                if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator) ii.methods.push_back(method(mem));
+            m.interfaces.push_back(std::move(ii));
+        }
         // `extern class` type/ctor spellings -> the IR registry the emitters consult (replaces the hardcoded
         // List/Iterable/Error mappings). Type arms come from the `type { … }` block, ctor arms from `init`.
         for (const auto& c : unit.classes) {

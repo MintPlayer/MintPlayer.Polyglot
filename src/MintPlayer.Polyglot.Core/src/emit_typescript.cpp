@@ -165,7 +165,14 @@ public:
         indent_ = 0;
         recordNames_.clear();
         recordFields_.clear();
+        indexerTypes_.clear();
         externMap_.clear();
+        // Types with an `operator fn get` indexer: TS has no `[]` overload, so `recv[i]` becomes `recv.get(i)`.
+        auto noteIndexer = [&](const std::string& name, const std::vector<ir::Method>& ms) {
+            for (const auto& m : ms) if (m.kind == ir::MethodKind::Operator && m.name == "get") indexerTypes_.insert(name);
+        };
+        for (const auto& c : m.classes) noteIndexer(c.name, c.methods);
+        for (const auto& r : m.records) noteIndexer(r.name, r.methods);
         for (const auto& et : m.externTypes) externMap_[et.name] = &et;
         g_externTypes = &externMap_;
         for (const auto& r : m.records) { // records compare structurally (§3.C); a TS record is a class
@@ -173,6 +180,7 @@ public:
             for (const auto& f : r.fields) recordFields_[r.name].push_back(f.name); // ctor arg order, for `with`
         }
         for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& i : m.interfaces) emitInterface(i);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
@@ -194,6 +202,7 @@ private:
     int indent_ = 0;
     std::unordered_set<std::string> recordNames_;
     std::unordered_map<std::string, std::vector<std::string>> recordFields_; // record name -> ctor field order
+    std::unordered_set<std::string> indexerTypes_; // types with an `operator get` -> `recv[i]` is `recv.get(i)`
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
     int tmp_ = 0; // fresh-name counter (e.g. the `with`-copy IIFE binder)
 
@@ -213,6 +222,23 @@ private:
         std::string s = "const " + e.name + " = { ";
         for (std::size_t i = 0; i < e.cases.size(); ++i) { if (i) s += ", "; s += e.cases[i].name + ": " + std::to_string(e.cases[i].value); }
         line(s + " };");
+    }
+
+    void emitInterface(const ir::Interface& it) {
+        std::string head = "interface " + it.name + tsGenerics(it.generics);
+        if (!it.bases.empty()) {
+            head += " extends ";
+            for (std::size_t i = 0; i < it.bases.size(); ++i) { if (i) head += ", "; head += tsType(it.bases[i]); }
+        }
+        line(head + " {");
+        ++indent_;
+        for (const auto& m : it.methods) { // signature only
+            std::string sig = m.name + tsGenerics(m.generics) + "(";
+            for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(m.params[i]); }
+            line(sig + "): " + tsType(m.returnType) + ";");
+        }
+        --indent_;
+        line("}");
     }
 
     // Union -> a discriminated-union type alias (stripped at runtime; construction makes {tag,...} objects).
@@ -252,7 +278,12 @@ private:
 
     // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).
     void emitRecord(const ir::Record& r) {
-        line("class " + r.name + tsGenerics(r.generics) + " {");
+        std::string head = "class " + r.name + tsGenerics(r.generics);
+        if (!r.bases.empty()) { // a record implements interfaces
+            head += " implements ";
+            for (std::size_t i = 0; i < r.bases.size(); ++i) { if (i) head += ", "; head += tsType(r.bases[i]); }
+        }
+        line(head + " {");
         ++indent_;
         for (const auto& f : r.fields) line(f.name + ": " + tsType(f.type) + ";");
         std::string ctor = "constructor(";
@@ -672,6 +703,9 @@ private:
             }
             case ir::ExprKind::Index: {
                 const auto& ix = static_cast<const ir::Index&>(e);
+                // A user type's `operator get` is a `get(i)` method in TS (no `[]` overload); arrays index directly.
+                if (ix.receiver->type.kind == TypeRef::Kind::Named && indexerTypes_.count(ix.receiver->type.name))
+                    return atom(*ix.receiver) + ".get(" + emitExpr(*ix.index) + ")";
                 return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
             }
             case ir::ExprKind::ListLit: {

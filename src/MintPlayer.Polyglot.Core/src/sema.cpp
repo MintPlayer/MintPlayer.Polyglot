@@ -764,6 +764,19 @@ private:
     TypeRef elementType(const TypeRef& t) {
         if (t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Iterable") && !t.args.empty())
             return t.args[0];
+        // A user type with an `operator fn get(index): R` indexer: `recv[i]` is R, with the type's generics
+        // substituted from `t`'s args (e.g. RingBuffer<string>[i] -> string).
+        if (t.kind == TypeRef::Kind::Named) {
+            if (auto it = types_.find(t.name); it != types_.end())
+                for (const auto& m : it->second.members)
+                    if (m.kind == MemberKind::Operator && m.name == "get") {
+                        std::vector<std::string> gnames; for (const auto& g : it->second.generics) gnames.push_back(g.name);
+                        std::unordered_set<std::string> gen(gnames.begin(), gnames.end());
+                        std::unordered_map<std::string, TypeRef> binds;
+                        for (std::size_t i = 0; i < gnames.size() && i < t.args.size(); ++i) binds[gnames[i]] = t.args[i];
+                        return substGeneric(m.type, gen, binds);
+                    }
+        }
         return tUnknown();
     }
 

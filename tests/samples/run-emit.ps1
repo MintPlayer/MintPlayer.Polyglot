@@ -39,7 +39,6 @@ $csproj = @'
 
 # Sample -> the P14b gap that keeps its emitted code from compiling/running. Remove an entry when fixed.
 $xfail = @{
-    "04_generics.pg"           = "interface-method dispatch over a generic (compareTo) + indexer"
     "06_exceptions.pg"         = "aspirational string std methods (isEmpty / toI32)"
     "07_using_disposal.pg"     = "use/disposal + Disposable interface emission (IDisposable)"
     "08_extensions.pg"         = "aspirational string std methods (toUpper / clamp)"

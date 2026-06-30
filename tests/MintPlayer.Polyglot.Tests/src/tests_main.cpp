@@ -657,6 +657,25 @@ int main() {
               "P14b: empty list literal takes its element type from the target (List<int>, not List<object>)");
     }
 
+    // P14b — interfaces are emitted (were dropped at lowering), a record's `: Interface` base/implements
+    // clause is carried, and `operator fn get` is a real indexer (C# `this[]`, TS `get(i)` method + `.get()`).
+    {
+        const char* prog =
+            "interface Shrinkable { fn shrink(): i32 }\n"
+            "record Box(n: i32) : Shrinkable {\n  override fn shrink(): i32 => this.n - 1\n}\n"
+            "class Bag {\n  operator fn get(i: i32): i32 => i\n}\n"
+            "fn at(b: Bag): i32 => b[3]\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "interface Shrinkable") && has(cs.code, "record Box(int n) : Shrinkable")
+                    && has(cs.code, "public int this[int i] =>"),
+              "P14b: C# emits interface + record base + this[] indexer");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "interface Shrinkable") && has(ts.code, "class Box implements Shrinkable")
+                    && has(ts.code, "b.get(3)"),
+              "P14b: TS emits interface + implements + get() indexer access");
+    }
+
     // P10 — the core prelude (Error/Iterable) is ALWAYS linked (no import, no lib): with a bare `compile`,
     // Error constructs + maps per target and `.message` binds — proving they're core-prelude extern classes,
     // not emitter hardcodes.
