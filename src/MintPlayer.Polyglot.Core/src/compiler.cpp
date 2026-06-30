@@ -157,30 +157,37 @@ const char* STD_STRINGS = R"PG(
 extension fn string.isEmpty(): bool {
   actual(csharp)     extern("($this.Length == 0)")
   actual(typescript) extern("($this.length === 0)")
+  actual(python)     extern("(len($this) == 0)")
 }
 extension fn string.len(): i32 {
   actual(csharp)     extern("$this.Length")
   actual(typescript) extern("$this.length")
+  actual(python)     extern("len($this)")
 }
 extension fn string.toUpper(): string {
   actual(csharp)     extern("$this.ToUpper()")
   actual(typescript) extern("$this.toUpperCase()")
+  actual(python)     extern("$this.upper()")
 }
 extension fn string.toLower(): string {
   actual(csharp)     extern("$this.ToLower()")
   actual(typescript) extern("$this.toLowerCase()")
+  actual(python)     extern("$this.lower()")
 }
 extension fn string.charAt(index: i32): string {
   actual(csharp)     extern("$this[$0].ToString()")
   actual(typescript) extern("$this.charAt($0)")
+  actual(python)     extern("$this[$0]")
 }
 extension fn string.codePoints(): Iterable<string> {
   actual(csharp)     extern("$this.EnumerateRunes()")
   actual(typescript) extern("Array.from($this)")
+  actual(python)     extern("list($this)")
 }
 extension fn string.toI32(): i32 {
   actual(csharp)     extern("global::System.Int32.Parse($this)")
   actual(typescript) extern("parseInt($this, 10)")
+  actual(python)     extern("int($this)")
 }
 )PG";
 

@@ -62,6 +62,7 @@ public:
             if (!fn.actualTarget.empty() && fn.actualTarget != "python") continue; // other target's `actual`
             emitFunction(fn);
         }
+        for (const auto& fn : m.extensions) emitFunction(fn); // extensions -> free fns; `x.m()` calls `m(x)`
         for (const auto& fn : m.functions)
             if (fn.isEntry) { line(fn.mangledName + "()"); break; } // top-level entry call
         return out_;
@@ -75,7 +76,8 @@ private:
     std::string rethrowStmt() override { return "raise"; } // unexercised: Exceptions gated off for Python
 
     void emitFunction(const ir::Function& fn) {
-        std::string sig = "def " + fn.mangledName + "(";
+        // Extensions lower to plain free functions (`self` is the receiver param) with no mangledName.
+        std::string sig = "def " + (fn.mangledName.empty() ? fn.name : fn.mangledName) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += fn.params[i].name; }
         sig += ")";
         if (fn.exprBodied) {
@@ -354,6 +356,12 @@ private:
                 if (prim && mc.method == "parse") { // i32.parse(s)/f64.parse(s) -> int(s)/float(s)
                     std::string arg = emitExpr(*mc.args[0]);
                     return (st == "f32" || st == "f64" ? "float(" : "int(") + arg + ")";
+                }
+                if (mc.isExtension) { // free-function form `name(obj, args)` — `x.m()` cannot stay method syntax
+                    std::vector<std::string> args;
+                    args.push_back(emitExpr(*mc.object));
+                    for (const auto& a : mc.args) args.push_back(emitExpr(*a));
+                    return mc.method + renderArgs(args);
                 }
                 std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
                 std::vector<std::string> args;

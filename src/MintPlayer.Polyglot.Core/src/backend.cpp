@@ -57,6 +57,7 @@ public:
             case Feature::OperatorOverloading: return true; // `operator fn plus` -> a `__add__` dunder
             case Feature::Properties:         return true; // computed property -> `@property`
             case Feature::PatternMatching:    return true; // enum/union + match -> lambda-bound ternary chain
+            case Feature::ExtensionMethods:   return true; // free function `m(self, …)`; `x.m()` calls `m(x)`
             default: return false;
         }
     }
