@@ -197,6 +197,14 @@ spelling table (TS `==`→`===`/`!=`→`!==`; C# identity) consulted via `Backen
 emission; precedence stays a shared free function (`operatorPrecedence`, identical across targets, so not
 per-backend data). Numeric-overflow wrapping and operator-overload dispatch stay imperative Hooks. *Next
 slices:* per-node templates + the `SpecEmitter` engine; declaration scaffolds; formalize Hooks.
+**Slice 3a ✅ (engine seam seeded):** the first per-node templates + the shared render primitives that are
+the seed of the `SpecEmitter` — `renderDelimited(DelimitedTemplate, children)` (open/sep/close affix table
+on the spec; e.g. tuple `(a, b)` vs `[a, b]`) and `renderCond(c,t,e)` (identical across targets, so a shared
+rule not per-backend data), both in `backend_spec.hpp`. `Cond` and `Tuple` in both emitters now route through
+them; children are emitted into explicit left-to-right locals first (C++ leaves `operator+`/argument order
+unspecified, and a child may bump a per-emitter counter). Byte-for-byte no-op: unit + 37/37 conformance +
+10/10 emit + 10/10 round-trip. *Next:* widen `renderDelimited` to the call-arg family (`New`/`Call`/
+`MethodCall` arg lists) and add the dynamic-affix list nodes, then lift the IR walk into the engine proper.
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type

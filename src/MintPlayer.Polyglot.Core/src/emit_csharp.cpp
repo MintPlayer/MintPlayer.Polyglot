@@ -24,6 +24,8 @@ const BackendSpec& csharpSpec() {
          {"u8", "byte"}, {"u16", "ushort"}, {"u32", "uint"}, {"u64", "ulong"},
          {"f32", "float"}, {"f64", "double"}, {"bool", "bool"}, {"string", "string"}},
         {{"i64", "L"}, {"u64", "UL"}, {"u32", "U"}}, // intSuffix
+        {}, // binaryOp: C# emits every operator verbatim
+        {{"tuple", {"(", ", ", ")"}}}, // delimited: C# tuple `(a, b)`
     };
     return spec;
 }
@@ -619,7 +621,8 @@ private:
             }
             case ir::ExprKind::Cond: {
                 const auto& c = static_cast<const ir::Cond&>(e);
-                return "(" + emitExpr(*c.cond) + " ? " + emitExpr(*c.then) + " : " + emitExpr(*c.els) + ")";
+                std::string cc = emitExpr(*c.cond), ct = emitExpr(*c.then), ce = emitExpr(*c.els);
+                return renderCond(cc, ct, ce);
             }
             case ir::ExprKind::Index: {
                 const auto& ix = static_cast<const ir::Index&>(e);
@@ -636,9 +639,9 @@ private:
             }
             case ir::ExprKind::Tuple: {
                 const auto& t = static_cast<const ir::Tuple&>(e);
-                std::string s = "(";
-                for (std::size_t i = 0; i < t.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*t.elements[i]); }
-                return s + ")";
+                std::vector<std::string> parts;
+                for (const auto& el : t.elements) parts.push_back(emitExpr(*el));
+                return renderDelimited(csharpSpec().delimited.at("tuple"), parts);
             }
             case ir::ExprKind::With: { // C# records support `with` natively
                 const auto& w = static_cast<const ir::With&>(e);

@@ -25,6 +25,7 @@ const BackendSpec& typescriptSpec() {
          {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
         {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
         {{"==", "==="}, {"!=", "!=="}}, // binaryOp: always strict equality, never JS loose ==/!=
+        {{"tuple", {"[", ", ", "]"}}}, // delimited: TS tuple `[a, b]`
     };
     return spec;
 }
@@ -711,7 +712,8 @@ private:
             }
             case ir::ExprKind::Cond: {
                 const auto& c = static_cast<const ir::Cond&>(e);
-                return "(" + emitExpr(*c.cond) + " ? " + emitExpr(*c.then) + " : " + emitExpr(*c.els) + ")";
+                std::string cc = emitExpr(*c.cond), ct = emitExpr(*c.then), ce = emitExpr(*c.els);
+                return renderCond(cc, ct, ce);
             }
             case ir::ExprKind::Index: {
                 const auto& ix = static_cast<const ir::Index&>(e);
@@ -728,9 +730,9 @@ private:
             }
             case ir::ExprKind::Tuple: {
                 const auto& t = static_cast<const ir::Tuple&>(e);
-                std::string s = "[";
-                for (std::size_t i = 0; i < t.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*t.elements[i]); }
-                return s + "]";
+                std::vector<std::string> parts;
+                for (const auto& el : t.elements) parts.push_back(emitExpr(*el));
+                return renderDelimited(typescriptSpec().delimited.at("tuple"), parts);
             }
             case ir::ExprKind::With: {
                 // A TS record is a class, so rebuild via its ctor (preserving the prototype/methods): each

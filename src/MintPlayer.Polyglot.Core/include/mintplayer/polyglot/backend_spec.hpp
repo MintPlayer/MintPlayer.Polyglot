@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 // Declarative, per-target emission data — the "70% tabular" half of a backend, extracted from the
 // hand-written emitters (see docs/design/backend-spec.md, P9). This grows slice by slice; the shared emit
@@ -34,10 +35,36 @@ struct BackendSpec {
         return it == binaryOp.end() ? op : it->second;
     }
 
+    // Per-node bracketing for the fixed-shape "delimited list of rendered children" node family — the affix
+    // that differs per target (a tuple is `(a, b)` in C#, `[a, b]` in TS). The engine renders the children
+    // and wraps them via renderDelimited(); the IR node kind keys the map (e.g. "tuple"). The argument-list
+    // affix ("(", ", ", ")") is identical across targets, so it stays a literal in the engine, not here.
+    struct DelimitedTemplate { std::string open, sep, close; };
+    std::unordered_map<std::string, DelimitedTemplate> delimited;
+
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
-    // data lives in the backend spec anymore. It carries only type/literal tables now.)
+    // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
 };
+
+// --- Shared emit-engine primitives (the seed of the P9 SpecEmitter) -------------------------------------
+// These render a node from already-emitted child strings. Identical-across-targets shapes live here as
+// shared rules; per-target shapes take their affix from a BackendSpec table. The caller must emit the
+// children in a defined left-to-right order before calling (C++ leaves operator+/argument evaluation order
+// unspecified, and a child may bump a per-emitter counter).
+
+// A delimited list of children: open + children joined by sep + close (tuple, arg list, …).
+inline std::string renderDelimited(const BackendSpec::DelimitedTemplate& t,
+                                   const std::vector<std::string>& children) {
+    std::string s = t.open;
+    for (std::size_t i = 0; i < children.size(); ++i) { if (i) s += t.sep; s += children[i]; }
+    return s + t.close;
+}
+
+// A conditional expression `(c ? t : e)` — identical spelling in C# and TS, so a shared rule.
+inline std::string renderCond(const std::string& c, const std::string& t, const std::string& e) {
+    return "(" + c + " ? " + t + " : " + e + ")";
+}
 
 // Binary-operator precedence (higher binds tighter), used by the engine for parenthesization. Identical
 // across C# and TS — a shared engine concern, not per-backend data — so it lives here, not in a BackendSpec.
