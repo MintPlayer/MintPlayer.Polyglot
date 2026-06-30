@@ -47,6 +47,13 @@ public:
         for (const auto& r : unit.records)
             for (const auto& mem : r.members)
                 if (!mem.bindings.empty()) bindings_[r.name + "." + mem.name] = &mem.bindings;
+        // Named base types, so a binding/member inherited from a base resolves on a subclass receiver.
+        for (const auto& c : unit.classes) for (const auto& b : c.bases) if (!b.name.empty()) bases_[c.name].push_back(b.name);
+        for (const auto& r : unit.records) for (const auto& b : r.bases) if (!b.name.empty()) bases_[r.name].push_back(b.name);
+        // The core `Error.message` is bound per target (it isn't a source `extern class`): C# `.Message`
+        // (System.Exception) vs JS `.message`. A `class … : Error` reaches it via the base walk above.
+        errorMessageBinding_ = { {"csharp", "$this.Message", {}}, {"typescript", "$this.message", {}} };
+        bindings_["Error.message"] = &errorMessageBinding_;
     }
 
     // Build an ir::Bound from a receiver, args and a "Type.member" binding (picks the per-target arms).
@@ -144,6 +151,18 @@ private:
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
     std::unordered_map<std::string, std::vector<std::string>> caseFields_;         // case -> field names
     std::unordered_map<std::string, std::unordered_set<std::string>> unionCases_;  // union -> case names
+    std::unordered_map<std::string, std::vector<std::string>> bases_;              // type -> named base(s)
+    std::vector<TargetBinding> errorMessageBinding_;                               // synthetic Error.message arms
+
+    // Resolve a "Type.member" FFI binding, walking base types so an inherited binding (e.g. `message`
+    // declared on the `Error` base) fires on a subclass receiver too.
+    const std::vector<TargetBinding>* findBinding(const std::string& typeName, const std::string& member) const {
+        if (auto it = bindings_.find(typeName + "." + member); it != bindings_.end()) return it->second;
+        if (auto b = bases_.find(typeName); b != bases_.end())
+            for (const auto& base : b->second)
+                if (auto r = findBinding(base, member)) return r;
+        return nullptr;
+    }
 
     ir::Pattern pattern(const Pattern& p, const std::string& scrutEnum, const std::string& scrutUnion) {
         ir::Pattern ip;
@@ -327,9 +346,9 @@ private:
                     if (auto it = bindings_.find(e.lhs->text + "." + e.text); it != bindings_.end())
                         return makeBound(e.type, e.pos, nullptr, *it->second, nullptr);
                 }
-                if (e.lhs->type.kind == TypeRef::Kind::Named) { // bound std property (e.g. List.count)
-                    if (auto it = bindings_.find(e.lhs->type.name + "." + e.text); it != bindings_.end())
-                        return makeBound(e.type, e.pos, e.lhs.get(), *it->second, nullptr);
+                if (e.lhs->type.kind == TypeRef::Kind::Named) { // bound std/core property (List.count, Error.message)
+                    if (auto arms = findBinding(e.lhs->type.name, e.text))
+                        return makeBound(e.type, e.pos, e.lhs.get(), *arms, nullptr);
                 }
                 return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
             }
@@ -357,9 +376,9 @@ private:
                         return mc;
                     }
                     const TypeRef& rt = e.lhs->lhs->type; // receiver type, resolved by sema
-                    if (rt.kind == TypeRef::Kind::Named) { // bound std method (e.g. List.add / List.removeAll)
-                        if (auto b = bindings_.find(rt.name + "." + e.lhs->text); b != bindings_.end())
-                            return makeBound(e.type, e.pos, e.lhs->lhs.get(), *b->second, &e.args);
+                    if (rt.kind == TypeRef::Kind::Named) { // bound std/core method (List.add / List.removeAll / inherited)
+                        if (auto arms = findBinding(rt.name, e.lhs->text))
+                            return makeBound(e.type, e.pos, e.lhs->lhs.get(), *arms, &e.args);
                     }
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);
                     if (rt.kind == TypeRef::Kind::Named) {

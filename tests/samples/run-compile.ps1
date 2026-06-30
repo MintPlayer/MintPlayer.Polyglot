@@ -7,10 +7,10 @@
 # so the samples now compile. This gate locks that in: it builds each sample (no `--lib`, so the samples
 # must carry their own imports — they are meant to be self-contained) and asserts success.
 #
-# Two samples are known-blocked on capabilities that are NOT part of the std-module migration; they are
-# listed as expected-failures (xfail) with the gap they need. The gate is green only when the xfail set
-# fails for exactly that reason and everything else compiles — so an "unexpected pass" flags that an xfail
-# can be retired, and an "unexpected fail" flags a regression.
+# Samples that are known-blocked on a capability outside this gate's scope go in the expected-failure
+# (xfail) map below with the gap they need. The gate is green only when the xfail set fails for exactly
+# that reason and everything else compiles — so an "unexpected pass" flags that an xfail can be retired,
+# and an "unexpected fail" flags a regression. (The set is currently empty: all samples compile.)
 #
 # Usage:  pwsh tests/samples/run-compile.ps1   (build the solution first; see CLAUDE.md)
 
@@ -33,8 +33,6 @@ New-Item -ItemType Directory -Force $work | Out-Null
 # Known-blocked samples -> the missing capability (a follow-up, not the std-module migration). Keep the
 # reason precise so it's obvious when the gap is closed and the entry should be removed.
 $xfail = @{
-    "06_exceptions.pg" = "Error.message: base-class member resolution + a per-target Error.message binding (C# .Message / JS .message)"
-    "08_extensions.pg" = "extension on a generic receiver: 'extension fn List<T>.m()' does not scope the receiver type variable T"
 }
 
 $bad = 0

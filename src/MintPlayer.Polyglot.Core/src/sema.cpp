@@ -139,6 +139,7 @@ struct MemberInfo {
 struct TypeInfo {
     std::vector<GenericParam> generics;
     std::vector<MemberInfo> members;
+    std::vector<std::string> bases;  // named base class/interfaces — members are inherited from these
     std::vector<TypeRef> ctorParams; // record positional fields, or class init params
     std::size_t ctorRequired = 0;    // leading ctor params with no default
     bool hasCtor = false;
@@ -221,6 +222,7 @@ public:
 
     void run(CompilationUnit& unit) {
         collectTypeNames(unit);
+        liftExtensionGenerics(unit);
         buildTables(unit);
         resolveAllTypes(unit);
 
@@ -306,6 +308,31 @@ private:
         for (const auto& d : u.unions)     declareType(d.name, d.pos);
     }
 
+    // An extension's type variables are written on the receiver — SPEC §6.3 `extension fn List<T>.m(): T?`.
+    // The receiver is a *pattern*, so a type-arg leaf that names nothing known (not a builtin, not a declared
+    // type, not already a generic) is a binding occurrence of a type parameter. Lift those into the
+    // extension's generic list so every downstream pass (tables, resolution, body check, lower, both
+    // emitters — all of which already read `generics`) treats them uniformly. Runs after collectTypeNames
+    // so `typeNames_` is populated.
+    void collectReceiverVars(const TypeRef& t, std::unordered_set<std::string>& have, std::vector<std::string>& out) const {
+        for (const auto& a : t.args) {
+            if (a.kind == TypeRef::Kind::Named && !a.name.empty() && a.args.empty() &&
+                !isBuiltinType(a.name) && !typeNames_.count(a.name) && have.insert(a.name).second)
+                out.push_back(a.name);
+            collectReceiverVars(a, have, out);
+        }
+        for (const auto& r : t.ret) collectReceiverVars(r, have, out);
+    }
+    void liftExtensionGenerics(CompilationUnit& u) {
+        for (auto& e : u.extensions) {
+            std::unordered_set<std::string> have;
+            for (const auto& g : e.generics) have.insert(g.name);
+            std::vector<std::string> found;
+            collectReceiverVars(e.receiver, have, found);
+            for (const auto& n : found) { GenericParam g; g.name = n; e.generics.push_back(std::move(g)); }
+        }
+    }
+
     static MemberInfo memberInfo(const Member& m) {
         MemberInfo mi;
         mi.name = m.name;
@@ -324,15 +351,18 @@ private:
             if (m.kind == MemberKind::Init) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }
     }
+    static void collectBaseNames(const std::vector<TypeRef>& bases, std::vector<std::string>& out) {
+        for (const auto& b : bases) if (b.kind == TypeRef::Kind::Named && !b.name.empty()) out.push_back(b.name);
+    }
     void buildTables(CompilationUnit& u) {
         for (const auto& d : u.records) {
             TypeInfo ti; ti.generics = d.generics; ti.hasCtor = true; ti.ctorRequired = requiredCount(d.fields);
             for (const auto& f : d.fields) { ti.ctorParams.push_back(f.type); ti.members.push_back({f.name, MemberKind::Field, {}, f.type}); }
-            addMembers(ti, d.members);
+            addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases);
             types_[d.name] = std::move(ti);
         }
-        for (const auto& d : u.classes)    { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); types_[d.name] = std::move(ti); }
-        for (const auto& d : u.interfaces) { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); types_[d.name] = std::move(ti); }
+        for (const auto& d : u.classes)    { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases); types_[d.name] = std::move(ti); }
+        for (const auto& d : u.interfaces) { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases); types_[d.name] = std::move(ti); }
         for (const auto& d : u.unions) {
             for (const auto& c : d.cases) {
                 // A union case name must be unique across the program (it's a global constructor). Two
@@ -377,9 +407,18 @@ private:
     }
 
     const MemberInfo* findMember(const std::string& typeName, const std::string& name) const {
+        // The core `Error` builtin (System.Exception / JS Error) exposes `message`; lower binds it per
+        // target (C# `.Message` / JS `.message`). It's reached either directly or via a `: Error` base.
+        if (typeName == "Error" && name == "message") {
+            static const MemberInfo msg = [] {
+                MemberInfo m; m.name = "message"; m.kind = MemberKind::Property; m.type = namedType("string"); return m;
+            }();
+            return &msg;
+        }
         auto it = types_.find(typeName);
         if (it == types_.end()) return nullptr;
         for (const auto& m : it->second.members) if (m.name == name) return &m;
+        for (const auto& base : it->second.bases) if (const MemberInfo* m = findMember(base, name)) return m; // inherited
         return nullptr;
     }
     bool knownType(const TypeRef& t) const {

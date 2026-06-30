@@ -518,6 +518,38 @@ int main() {
         check(has(fst, "fst(1:i32, 2:i64):i32"), "P13: 1st-of-two type-args return inferred (i32)");
     }
 
+    // P13 follow-up — inherited member resolution: a subclass reaches a base's member (findMember walks bases).
+    resolves("open class Base {\n  let id: i32\n  init() { this.id = 0 }\n}\n"
+             "class Sub : Base {\n  init() { super() }\n}\n"
+             "fn f(s: Sub): i32 => s.id\n", "P13: a subclass reaches an inherited base member");
+
+    // P13 follow-up — `Error.message`: resolves on an `: Error` subclass (base walk) and binds per target
+    // (C# `.Message` on System.Exception vs JS `.message`), since `Error` isn't a source `extern class`.
+    {
+        const char* prog =
+            "class MyErr : Error {\n  init(message: string) { super(message) }\n}\n"
+            "fn describe(e: MyErr): string => e.message\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "e.Message"), "P13: Error.message resolves on a subclass and binds to C# .Message");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "e.message"), "P13: Error.message binds to JS .message");
+    }
+
+    // P13 follow-up — an extension on a generic receiver binds the receiver's type variable: `List<T>` lifts
+    // `T` into the extension's generics, so the signature/return `T?` resolve and both emitters carry `<T>`.
+    {
+        const char* prog =
+            "import { List } from \"std.collections\"\n"
+            "extension fn List<T>.firstOrNull(): T? => if this.count >= 1 { this[0] } else { null }\n"
+            "fn head(xs: List<i32>): i32 => xs.firstOrNull() ?? -1\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "firstOrNull<T>("), "P13: extension on a generic receiver scopes T (C# generic signature)");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "firstOrNull<T>("), "P13: extension on a generic receiver scopes T (TS generic signature)");
+    }
+
     // P13 — unknown/unimported types fail compilation, not just in signatures but in LOCAL positions too
     // (previously a local `let x: T`/`var xs: List<…>` slipped, silently miscompiling).
     rejects("fn main() { let w: Widget = 0 }\n", "P13: unknown type on a local `let` is rejected");

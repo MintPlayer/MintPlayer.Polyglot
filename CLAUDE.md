@@ -130,10 +130,14 @@ auto-imports std modules ambiently and **silently loses to** any user/explicit d
 entry (`"io"`) means `std.io`, a qualified one (`"acme.physics"`) is a full specifier so third-party plugins
 auto-import by their own namespace. Also delivered: **TypeArg inference** (bind generic params from arg types,
 substitute the return) as the principled fix for generic-call return types; `List.removeAt`. The
-`docs/lang/samples/*.pg` now **compile** (gate: `tests/samples/run-compile.ps1`), not just `fmt` — 8/10
-green; `06_exceptions` (Error.message base-member resolution) + `08_extensions` (extension on a generic
-receiver `List<T>` — receiver type-var not scoped) are xfail'd as follow-ups (see PLAN P13).
-**Roadmap: P10** (plugin distribution, needs P9), **P11** (build-integration NuGet, independent).
+`docs/lang/samples/*.pg` now **compile** (gate: `tests/samples/run-compile.ps1`), not just `fmt` — all 10
+green. Two follow-up gaps the gate surfaced are now also fixed: **base-class member resolution**
+(`findMember` walks `TypeInfo.bases`; lower's binding lookup walks `bases_`) with **`Error.message`** as a
+per-target bound property (C# `$this.Message` / JS `$this.message`); and **extensions on a generic receiver**
+(`liftExtensionGenerics` lifts free receiver type-vars like `List<T>`'s `T` into the extension's generics).
+Backlog (see PLAN P13): `Error` as a real `extern class` (post-P10) and idiomatic per-target member casing.
+**Roadmap: P10** (plugin distribution + the **type-name-mapping/construction-as-binding** gap — in progress;
+needs P9), **P11** (build-integration NuGet, independent).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

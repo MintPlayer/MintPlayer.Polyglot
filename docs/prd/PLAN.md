@@ -340,16 +340,26 @@ principled fix for generic-call return types; `List.removeAt` added to the `std.
 in-process suite gained a `compileStd` prelude helper and an IR-level TypeArg-inference canary (the old
 String-wrap canary died once `print`'s TS body wrapped *universally*).
 
-**Follow-up gaps surfaced by the sample compile gate (xfail'd in `run-compile.ps1`, not P13 scope):**
-- **`06_exceptions.pg` — `Error.message`:** member access on a value of a user class that `: Error` can't
-  reach the base's `message`. Needs (a) base-class member resolution in `findMember`, and (b) `Error` modelled
-  so `message` is a *bound* property (C# `.Message` vs JS `.message` differ in case, so it can't be a plain
-  field — it needs the per-target binding mechanism). Likely an `extern class Error`.
-- **`08_extensions.pg` — extension on a generic receiver:** `extension fn List<T>.secondOrNull(): T?` doesn't
-  put the receiver's type variable `T` in scope; the parser captures `List<T>` as the receiver type but
-  doesn't register `T` as the extension's generic param (so the signature/return `T?` see an unknown `T`).
-  Needs the parser to lift single-identifier receiver type-args into the extension's `generics`, threaded
-  through sema + both emitters' signature output.
+**Follow-up gaps surfaced by the sample compile gate — both ✅ fixed (2026-06-30), xfail list now empty:**
+- **`06_exceptions.pg` — `Error.message`:** ✅ `findMember` now walks base classes (`TypeInfo.bases`), and
+  `Error.message` is a per-target bound property (lower's synthetic `Error.message` arm → C# `$this.Message`
+  / JS `$this.message`), reached on a `: Error` subclass via the base walk in *both* sema and lower.
+- **`08_extensions.pg` — extension on a generic receiver:** ✅ sema's `liftExtensionGenerics` lifts free
+  type-variable leaves of the receiver (`List<T>` → `T`) into the extension's `generics` before tables/
+  resolution/body-check; lower + both emitters already thread `generics`, so the signature/return `T?` and
+  the emitted `<T>` all follow.
+
+**Backlog (recorded 2026-06-30, deliberately not done here):**
+- **`Error` as a real `extern class`** (remove the hardcoded `Error.message` binding + the `Error`→
+  `System.Exception` type mapping + `Error(msg)` construction special-cases in sema/lower/emit): blocked on
+  the P10 type-name-mapping/construction-as-binding work below; once that lands, `Error` becomes pure data
+  like `List`.
+- **Idiomatic per-target member casing** (C# `public double X` / `obj.X`, TS `x` / `obj.x`): an *emitter*-only
+  style feature (NOT sema/IR — that layer is target-neutral). Would make output more idiomatic and make
+  `message`→`Message` fall out for the common case, but touches every field/property/method/access in both
+  backends + all goldens and needs real casing rules (acronyms, already-cased names) + a faithfulness call on
+  silently renaming user identifiers. A blanket "uppercase-first" is **not** a substitute for native-member
+  bindings (a native name isn't always a capitalization away — it would silently miscompile, violating §3).
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
