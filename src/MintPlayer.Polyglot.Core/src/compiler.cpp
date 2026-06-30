@@ -200,20 +200,24 @@ extern class Error {
   type {
     actual(csharp)     extern("global::System.Exception")
     actual(typescript) extern("Error")
+    actual(python)     extern("Exception")
   }
   init(message: string) {
     actual(csharp)     extern("new $T($0)")
     actual(typescript) extern("new $T($0)")
+    actual(python)     extern("$T($0)")
   }
   let message: string {
     actual(csharp)     extern("$this.Message")
     actual(typescript) extern("$this.message")
+    actual(python)     extern("str($this)")
   }
 }
 extern class Iterable<T> {
   type {
     actual(csharp)     extern("global::System.Collections.Generic.IEnumerable<$0>")
     actual(typescript) extern("Iterable<$0>")
+    actual(python)     extern("list")
   }
 }
 union Option<T> {

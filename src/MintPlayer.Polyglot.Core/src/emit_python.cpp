@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
@@ -52,6 +53,7 @@ public:
     std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
+        for (const auto& et : m.externTypes) externTypes_[et.name] = &et; // for Error->Exception etc. spellings
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
@@ -73,7 +75,35 @@ private:
     const char* stmtEnd() const override { return ""; }                                 // Python: no terminator
     std::string localDecl(const std::string& name, bool) override { return name; }       // bare `name = ...`
     std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
-    std::string rethrowStmt() override { return "raise"; } // unexercised: Exceptions gated off for Python
+    std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
+    const char* throwKeyword() const override { return "raise"; }     // `throw v` -> `raise v`
+
+    std::unordered_map<std::string, const ir::ExternType*> externTypes_;
+
+    // The Python spelling of a named type: an `extern class`'s pyType template (Error -> "Exception") if one
+    // is registered, else the bare name (user types, which Python needs no annotation for). Used for class
+    // bases, catch types, and ctor `$T` — the spots where a native-backed type must read as its target name.
+    std::string pyTypeName(const TypeRef& t) {
+        if (t.kind == TypeRef::Kind::Named) {
+            if (auto it = externTypes_.find(t.name); it != externTypes_.end() && !it->second->pyType.empty())
+                return substTypeTmpl(it->second->pyType, t.args);
+        }
+        return t.name;
+    }
+
+    // Substitute `$0,$1,…` in a type-spelling template with the rendered type args (none needed for Python's
+    // erased generics today, but kept symmetric with the C#/TS type templates).
+    std::string substTypeTmpl(const std::string& tmpl, const std::vector<TypeRef>& args) {
+        std::string out;
+        for (std::size_t i = 0; i < tmpl.size();) {
+            if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
+                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+                if (idx < args.size()) out += pyTypeName(args[idx]);
+                i += 2;
+            } else out += tmpl[i++];
+        }
+        return out;
+    }
 
     void emitFunction(const ir::Function& fn) {
         // Extensions lower to plain free functions (`self` is the receiver param) with no mangledName.
@@ -143,7 +173,7 @@ private:
         std::string head = "class " + c.name;
         if (!c.bases.empty()) {
             head += "(";
-            for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += c.bases[i].name; }
+            for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += pyTypeName(c.bases[i]); }
             head += ")";
         }
         openBlock(head);
@@ -206,7 +236,7 @@ private:
     }
 
     void emitStmtTarget(const ir::Stmt& s) override {
-        // For is the only non-shared statement the skeleton needs (Try is gated off via Exceptions).
+        // For and Try are the non-shared statements: their shape (not just spelling) diverges per target.
         if (s.kind == ir::StmtKind::For) {
             const auto& f = static_cast<const ir::For&>(s);
             if (f.isRange) {
@@ -221,7 +251,27 @@ private:
             }
             return;
         }
+        if (s.kind == ir::StmtKind::Try) { emitTry(static_cast<const ir::Try&>(s)); return; }
         line("# polyglot: statement kind not yet supported for the python target");
+    }
+
+    // try/except/finally. Python has native typed `except Type as e:`, so a typed catch list maps directly
+    // (C# needs the same; only TS lowers to a dispatch chain). An untyped catch-all -> `except Exception`;
+    // a `when` guard re-raises when it fails (`if not (guard): raise`) so a later clause can handle it.
+    void emitTry(const ir::Try& t) {
+        openBlock("try");
+        blockBody(t.body);
+        for (const auto& c : t.catches) {
+            std::string head = "except ";
+            head += c.type.name.empty() ? "Exception" : pyTypeName(c.type);
+            if (!c.binding.empty()) head += " as " + c.binding;
+            openBlock(head);
+            ++indent_;
+            if (c.guard) line("if not (" + emitExpr(*c.guard) + "): raise");
+            --indent_;
+            blockBody(c.body);
+        }
+        if (t.hasFinally) { openBlock("finally"); blockBody(t.finallyBody); }
     }
 
     // Parenthesize a binary child that binds looser than its parent (Python precedence matches C/JS here).
@@ -301,7 +351,7 @@ private:
         std::string out;
         for (std::size_t i = 0; i < tmpl.size();) {
             if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
-            else if (tmpl.compare(i, 2, "$T") == 0) { out += b.type.name; i += 2; }
+            else if (tmpl.compare(i, 2, "$T") == 0) { out += pyTypeName(b.type); i += 2; }
             else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
                 std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
                 if (idx < b.args.size()) out += emitExpr(*b.args[idx]);

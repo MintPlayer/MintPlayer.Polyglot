@@ -58,6 +58,8 @@ public:
             case Feature::Properties:         return true; // computed property -> `@property`
             case Feature::PatternMatching:    return true; // enum/union + match -> lambda-bound ternary chain
             case Feature::ExtensionMethods:   return true; // free function `m(self, …)`; `x.m()` calls `m(x)`
+            case Feature::Exceptions:         return true; // throw->raise; try/except/finally; Error->Exception
+            case Feature::Inheritance:        return true; // `class D : B` -> `class D(B)`, super().__init__
             default: return false;
         }
     }

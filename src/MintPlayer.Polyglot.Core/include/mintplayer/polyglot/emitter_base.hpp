@@ -65,6 +65,7 @@ protected:
     //       spelling differs per target, so the backend supplies just that string.
     virtual BlockStyle blockStyle() const = 0;                                  // braces (C#/TS) vs colon+indent (Py)
     virtual const char* stmtEnd() const { return ";"; }                         // statement terminator; Python: ""
+    virtual const char* throwKeyword() const { return "throw"; }                // `throw v`; Python: `raise v`
     virtual std::string localDecl(const std::string& name, bool isMutable) = 0; // `var x`/`let|const x`/`x` (Let, Use)
     virtual std::string yieldStmt(const std::string& value, bool hasValue) = 0; // `yield return v;`/`yield v;` …
     virtual std::string rethrowStmt() = 0;                                      // value-less `throw;`/`throw __e;`

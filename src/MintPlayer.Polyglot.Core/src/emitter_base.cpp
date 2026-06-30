@@ -69,9 +69,9 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             line(yieldStmt(v, static_cast<bool>(y.value))); // hook owns its own terminator
             return;
         }
-        case ir::StmtKind::Throw: { // `throw v` value form is C#/TS-identical (Python gates Exceptions off)
+        case ir::StmtKind::Throw: { // `throw v`/`raise v` — only the keyword differs (throwKeyword hook)
             const auto& t = static_cast<const ir::Throw&>(s);
-            if (t.value) line("throw " + emitExpr(*t.value) + stmtEnd());
+            if (t.value) line(std::string(throwKeyword()) + " " + emitExpr(*t.value) + stmtEnd());
             else line(rethrowStmt());
             return;
         }
