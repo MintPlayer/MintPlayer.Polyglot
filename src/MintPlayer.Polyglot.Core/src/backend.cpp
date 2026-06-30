@@ -49,7 +49,13 @@ class PythonBackend : public Backend {
 public:
     std::string name() const override { return "python"; }
     std::string emit(const ir::Module& m) const override { return emitPython(m); }
-    bool supports(Feature) const override { return false; }
+    // Flips to true per feature as emit_python.cpp gains it; the rest stay refused (never miscompiled).
+    bool supports(Feature f) const override {
+        switch (f) {
+            case Feature::Closures: return true; // expression-bodied lambdas -> Python `lambda`
+            default: return false;
+        }
+    }
 };
 
 const CSharpBackend kCSharp;

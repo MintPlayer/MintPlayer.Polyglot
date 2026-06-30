@@ -230,10 +230,25 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
+                const std::string& st = mc.staticType;
+                bool prim = st == "i8" || st == "i16" || st == "i32" || st == "i64" || st == "u8" ||
+                            st == "u16" || st == "u32" || st == "u64" || st == "f32" || st == "f64";
+                if (prim && mc.method == "parse") { // i32.parse(s)/f64.parse(s) -> int(s)/float(s)
+                    std::string arg = emitExpr(*mc.args[0]);
+                    return (st == "f32" || st == "f64" ? "float(" : "int(") + arg + ")";
+                }
                 std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
                 std::vector<std::string> args;
                 for (const auto& a : mc.args) args.push_back(emitExpr(*a));
                 return recv + "." + mc.method + renderArgs(args);
+            }
+            case ir::ExprKind::Lambda: {
+                const auto& l = static_cast<const ir::Lambda&>(e);
+                std::string params;
+                for (std::size_t i = 0; i < l.params.size(); ++i) { if (i) params += ", "; params += l.params[i].name; }
+                // Python lambdas are single-expression; a statement-bodied lambda needs a nested def (later).
+                if (l.exprBodied) return "lambda " + params + ": " + emitExpr(*l.body);
+                return "__py_unsupported_block_lambda__";
             }
             case ir::ExprKind::New: { // user record/class construction — Python has no `new`, no type args
                 const auto& n = static_cast<const ir::New&>(e);
