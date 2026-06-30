@@ -7,6 +7,7 @@ expect fn answer(): i32
 
 actual(csharp) fn answer(): i32 => extern("20 * 2 + 2")
 actual(typescript) fn answer(): i32 => extern("Math.abs(-42)")
+actual(python) fn answer(): i32 => extern("abs(-42)")
 
 fn main() {
   print(answer())     // 42  (C# raw `20 * 2 + 2`, TS raw `Math.abs(-42)`)

@@ -8,6 +8,7 @@ expect fn answer(): i32
 
 actual(csharp) fn answer(): i32 => 40 + 2
 actual(typescript) fn answer(): i32 => 84 / 2
+actual(python) fn answer(): i32 => 21 * 2
 
 fn main() {
   print(answer())     // 42  (C# emits `40 + 2`, TS emits `84 / 2`)
