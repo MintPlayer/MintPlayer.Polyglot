@@ -395,36 +395,12 @@ private:
 
     bool bracesOnHeadLine() const override { return false; } // C# is Allman-braced
 
+    std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + csIdent(name); }
+    std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }
+    std::string rethrowStmt() override { return "throw;"; }
+
     void emitStmtTarget(const ir::Stmt& s) override {
         switch (s.kind) {
-            case ir::StmtKind::Let: {
-                const auto& l = static_cast<const ir::Let&>(s);
-                line("var " + csIdent(l.name) + " = " + emitExpr(*l.init) + ";");
-                break;
-            }
-            case ir::StmtKind::Yield: {
-                const auto& y = static_cast<const ir::Yield&>(s);
-                line(y.value ? "yield return " + emitExpr(*y.value) + ";" : "yield break;");
-                break;
-            }
-            case ir::StmtKind::Throw: {
-                const auto& t = static_cast<const ir::Throw&>(s);
-                line(t.value ? "throw " + emitExpr(*t.value) + ";" : "throw;");
-                break;
-            }
-            case ir::StmtKind::Use: {
-                const auto& u = static_cast<const ir::Use&>(s);
-                line("var " + csIdent(u.binding) + " = " + emitExpr(*u.init) + ";");
-                line("try");
-                emitBlock(u.body);
-                line("finally");
-                line("{");
-                ++indent_;
-                line(u.binding + ".dispose();");
-                --indent_;
-                line("}");
-                break;
-            }
             case ir::StmtKind::Try: {
                 const auto& t = static_cast<const ir::Try&>(s);
                 line("try");

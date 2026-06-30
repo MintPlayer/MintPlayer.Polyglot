@@ -41,6 +41,10 @@ protected:
     virtual std::string emitExpr(const ir::Expr& e) = 0;
     virtual void emitStmtTarget(const ir::Stmt& s) = 0;
     virtual bool bracesOnHeadLine() const = 0; // K&R (TS) vs Allman (C#) — see headBlock()
+    // Spelling hooks for the statement tail (the structure lives in emitStmt; only these spellings diverge):
+    virtual std::string localDecl(const std::string& name, bool isMutable) = 0; // `var x`/`let|const x` (Let, Use)
+    virtual std::string yieldStmt(const std::string& value, bool hasValue) = 0; // `yield return v;`/`yield v;` …
+    virtual std::string rethrowStmt() = 0;                                      // value-less `throw;`/`throw __e;`
 
 public:
     virtual ~EmitterBase() = default;

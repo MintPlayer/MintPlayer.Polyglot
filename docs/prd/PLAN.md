@@ -232,9 +232,16 @@ Byte-for-byte no-op: all four gates green. **Slice 4c ✅:** `If` joins `While` 
 head is identical across targets, and the `else` arm's only divergence (K&R merges the close+else+open onto
 one `} else {` line; Allman puts `}`/`else`/`{` on separate lines) is captured by the same
 `bracesOnHeadLine()` hook. Removed from both concrete emitters; all four gates green. The whole `if/while/for`
-trio now lives in `EmitterBase`. *Next:* `Use` (try/finally + dispose) behind the brace hook, then the
-leaf-ish `Yield`/`Throw`/`Let` via small per-target affixes — after which the residual per-emitter statement
-code is just declarations + the genuine imperative hooks (`Try`/`Match`).
+trio now lives in `EmitterBase`. **Slice 4d ✅ (statement tail):** `Let`, `Yield`, `Throw`, and `Use` all
+move into the base; only their *spellings* diverge, captured by three tiny hooks — `localDecl(name,
+isMutable)` (`var <csIdent>` / `let|const <name>`; shared by `Let` **and** `Use`), `yieldStmt(value,
+hasValue)` (`yield return v;`/`yield break;` vs `yield v;`/`return;`), and `rethrowStmt()` (`throw;` vs
+`throw __e;`; the value-bearing `throw v;` is identical and stays in the base). `Use` reuses `localDecl` +
+the brace hook for its try/finally+dispose shape. After this, **each concrete emitter's `emitStmtTarget`
+switch is down to just `For` + `Try`** — `For` (target-specific head) and `Try` (C# native `catch…when` vs
+TS instanceof-dispatch) are the only statements still per-target. Byte-for-byte no-op: all four gates green.
+*Next:* the declaration scaffolds (enum/union/record/class/function/extension + program wrapper) — the last
+big tabular chunk — then formalize the imperative Hook tier (`Cast`/`Match`/`Try`/interpolation/narrowing).
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type

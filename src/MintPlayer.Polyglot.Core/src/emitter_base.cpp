@@ -47,6 +47,34 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
         case ir::StmtKind::ExprStmt:
             line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + ";");
             return;
+        case ir::StmtKind::Let: {
+            const auto& l = static_cast<const ir::Let&>(s);
+            line(localDecl(l.name, l.isMutable) + " = " + emitExpr(*l.init) + ";");
+            return;
+        }
+        case ir::StmtKind::Yield: {
+            const auto& y = static_cast<const ir::Yield&>(s);
+            std::string v = y.value ? emitExpr(*y.value) : std::string{};
+            line(yieldStmt(v, static_cast<bool>(y.value)));
+            return;
+        }
+        case ir::StmtKind::Throw: { // `throw v;` is identical across targets; only the rethrow form diverges
+            const auto& t = static_cast<const ir::Throw&>(s);
+            if (t.value) line("throw " + emitExpr(*t.value) + ";");
+            else line(rethrowStmt());
+            return;
+        }
+        case ir::StmtKind::Use: { // `<decl> = init; try { body } finally { binding.dispose(); }`
+            const auto& u = static_cast<const ir::Use&>(s);
+            line(localDecl(u.binding, false) + " = " + emitExpr(*u.init) + ";");
+            if (bracesOnHeadLine()) { line("try {"); blockBody(u.body); line("} finally {"); }
+            else { line("try"); line("{"); blockBody(u.body); line("}"); line("finally"); line("{"); }
+            ++indent_;
+            line(u.binding + ".dispose();");
+            --indent_;
+            line("}");
+            return;
+        }
         case ir::StmtKind::Return: {
             const auto& r = static_cast<const ir::Return&>(s);
             line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
