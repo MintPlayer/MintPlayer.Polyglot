@@ -617,6 +617,32 @@ int main() {
               "P14: core Option — Some/None construct in TS");
     }
 
+    // P14 slice 3 — the `T?` sugar: `T?` over a generic desugars to Option<T>; a bare value coerces to Some,
+    // `null` to None; `?? d` lowers to a match. Plus extension-receiver inference (List<i32> -> T=i32).
+    {
+        const char* prog =
+            "fn pickIf<T>(c: bool, v: T): T? => if c { v } else { null }\n"
+            "fn main() { print(pickIf(true, 7) ?? -1) }\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "Option<T> pickIf<T>") && has(cs.code, "new Some<T>(v)") && has(cs.code, "new None<T>()")
+                    && has(cs.code, "Some<int>(var __opt0) => __opt0") && has(cs.code, "None<int> _ => -1"),
+              "P14: T? sugar — desugars to Option, ?? lowers to match (C#)");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "_m.tag === \"Some\"") && has(ts.code, "_m.tag === \"None\""),
+              "P14: T? sugar — ?? lowers to a tagged match (TS)");
+    }
+    {
+        // Extension on a generic receiver returning T? -> the call infers T from the receiver (Option<int>).
+        const char* prog =
+            "import { List } from \"std.collections\"\n"
+            "extension fn List<T>.secondOrNull(): T? => if this.count >= 2 { this[1] } else { null }\n"
+            "fn head2(xs: List<i32>): i32 => xs.secondOrNull() ?? -1\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "Some<int>(var __opt0)"),
+              "P14: extension returning T? — receiver inference gives Option<int> (C#)");
+    }
+
     // P10 — the core prelude (Error/Iterable) is ALWAYS linked (no import, no lib): with a bare `compile`,
     // Error constructs + maps per target and `.message` binds — proving they're core-prelude extern classes,
     // not emitter hardcodes.

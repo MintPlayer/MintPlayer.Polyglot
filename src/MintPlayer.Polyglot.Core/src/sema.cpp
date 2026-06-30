@@ -150,6 +150,7 @@ struct FnSig {
     std::size_t required = 0;        // leading params with no default
     TypeRef result = namedType("unit");
     std::vector<std::string> generics; // the function's type-param names (for TypeArg inference)
+    TypeRef receiver;                  // extensions only: the declared receiver type (for inference from it)
 };
 
 // How many leading parameters a caller MUST supply: the count before the first defaulted one.
@@ -439,6 +440,8 @@ private:
             std::string key = e.receiver.name + "." + e.name;
             if (extensions_.count(key)) diags_.error(e.pos, "duplicate extension '" + key + "'");
             FnSig sig; for (const auto& p : e.params) sig.params.push_back(p.type); sig.result = e.returnType;
+            sig.receiver = e.receiver;
+            for (const auto& g : e.generics) sig.generics.push_back(g.name); // for inference from receiver/args
             extensions_[key] = std::move(sig); // keyed by receiver type + method
         }
     }
@@ -769,7 +772,14 @@ private:
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);
             case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); return elementType(recv); }
-            case ExprKind::NullAssert:{ TypeRef t = checkExpr(*e.lhs); t.nullable = false; return t; }
+            case ExprKind::NullAssert:{
+                TypeRef t = checkExpr(*e.lhs);
+                if (t.kind == TypeRef::Kind::Named && t.name == "Option") { // `x!` on an optional generic: not yet lowered
+                    diags_.error(e.pos, "Polyglot doesn't support '!' on an optional generic yet — use '??' or 'match'");
+                    return t.args.empty() ? tUnknown() : t.args[0];
+                }
+                t.nullable = false; return t;
+            }
             case ExprKind::Lambda:    return checkLambda(e);
             case ExprKind::ListLit:   { // `[a, b, …]` -> List<T>, T inferred from the first element
                 TypeRef elem = tUnknown();
@@ -851,8 +861,14 @@ private:
             if ((l != Ty::Unknown && l != Ty::Bool) || (r != Ty::Unknown && r != Ty::Bool)) diags_.error(e.pos, "'" + op + "' expects bool operands");
             return tNamed("bool");
         }
-        if (op == "??") { // null-coalescing: the left's type, made non-nullable (falls back to the right)
-            TypeRef res = lt; res.nullable = false;
+        if (op == "??") { // null-coalescing
+            if (lt.kind == TypeRef::Kind::Named && lt.name == "Option" && !lt.args.empty()) {
+                // optional-generic: `opt ?? d` yields the element type; the fallback must produce it too.
+                TypeRef elem = lt.args[0];
+                checkConvert(e.rhs, elem, "'??' fallback");
+                return elem;
+            }
+            TypeRef res = lt; res.nullable = false; // native nullable: the left's type, made non-nullable
             if (res.name.empty() && res.kind == TypeRef::Kind::Named) res = rt;
             return res;
         }
@@ -911,6 +927,17 @@ private:
         if (generics.empty()) return result;
         std::unordered_set<std::string> gen(generics.begin(), generics.end());
         std::unordered_map<std::string, TypeRef> binds;
+        for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) unifyGeneric(gen, params[i], args[i], binds);
+        return substGeneric(result, gen, binds);
+    }
+    // Like inferResult, but also binds type params from the extension receiver (`List<T>` vs the actual
+    // `List<i32>`), so an extension method's return type substitutes correctly.
+    TypeRef inferExtResult(const std::vector<std::string>& generics, const TypeRef& recvDecl, const TypeRef& recvActual,
+                           const std::vector<TypeRef>& params, const std::vector<TypeRef>& args, const TypeRef& result) {
+        if (generics.empty()) return result;
+        std::unordered_set<std::string> gen(generics.begin(), generics.end());
+        std::unordered_map<std::string, TypeRef> binds;
+        unifyGeneric(gen, recvDecl, recvActual, binds);
         for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) unifyGeneric(gen, params[i], args[i], binds);
         return substGeneric(result, gen, binds);
     }
@@ -987,7 +1014,9 @@ private:
             if (recv.kind == TypeRef::Kind::Named) {
                 if (auto it = extensions_.find(recv.name + "." + method); it != extensions_.end()) {
                     checkArgs(it->second.params, argTypes, e.args, "extension '" + method + "'", e.pos);
-                    return it->second.result;
+                    // Infer the extension's type params from the receiver (List<i32> vs List<T> -> T=i32) and
+                    // args, then substitute the result — so `xs.secondOrNull()` is Option<i32>, not Option<T>.
+                    return inferExtResult(it->second.generics, it->second.receiver, recv, it->second.params, argTypes, it->second.result);
                 }
             }
             if (knownType(recv)) {

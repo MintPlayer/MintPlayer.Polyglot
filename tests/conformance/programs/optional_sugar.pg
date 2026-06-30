@@ -1,0 +1,8 @@
+// P14 slice 3 — the `T?` sugar over a generic: `T?` desugars to Option<T>, a bare value coerces to Some,
+// `null` to None, and `?? d` lowers to `match { Some(v) => v, None => d }`. Byte-identical across targets.
+fn pickIf<T>(cond: bool, v: T): T? => if cond { v } else { null }
+
+fn main() {
+  print(pickIf(true, 7) ?? -1)     // 7    (Some path)
+  print(pickIf(false, 0) ?? -1)    // -1   (None path, via the ?? fallback)
+}

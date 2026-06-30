@@ -161,6 +161,7 @@ public:
     }
 
 private:
+    int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
@@ -229,6 +230,25 @@ private:
                                                      : std::make_unique<ir::IntLit>(e.pos, e.type, "0"); // block arms: P5-4b
             m->arms.push_back(std::move(ia));
         }
+        return m;
+    }
+
+    // `opt ?? rhs` (opt: Option<X>) -> `match opt { Some(v) => v, None => rhs }`. The element type is e.type
+    // (sema gave the `??` node the element type X), so the bound `v` and the match are typed X.
+    ir::ExprPtr coalesceOption(const Expr& e) {
+        std::string v = "__opt" + std::to_string(tmpCounter_++);
+        auto m = std::make_unique<ir::Match>(e.pos, e.type, expr(*e.lhs)); // scrutinee keeps its Option<X> type
+        ir::MatchArm some;
+        some.pattern.kind = ir::PatternKind::Ctor;
+        some.pattern.ctorCase = "Some";
+        some.pattern.binders.push_back({"value", v}); // bind the Some payload field
+        some.body = std::make_unique<ir::Var>(e.pos, e.type, v);
+        m->arms.push_back(std::move(some));
+        ir::MatchArm none;
+        none.pattern.kind = ir::PatternKind::Ctor;
+        none.pattern.ctorCase = "None";
+        none.body = expr(*e.rhs);
+        m->arms.push_back(std::move(none));
         return m;
     }
 
@@ -358,7 +378,12 @@ private:
             // value type via `(int)x`; for reference types it's an identity cast — TS strips both).
             case ExprKind::NullAssert: return std::make_unique<ir::Cast>(e.pos, e.type, expr(*e.lhs));
             case ExprKind::Extern:    return std::make_unique<ir::Extern>(e.pos, e.type, e.text);
-            case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
+            case ExprKind::Binary:
+                // `opt ?? rhs` on an optional generic desugars to `match opt { Some(v) => v, None => rhs }`,
+                // reusing the existing match machinery (no special-case in either emitter).
+                if (e.text == "??" && e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name == "Option")
+                    return coalesceOption(e);
+                return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member: {
                 // Static const binding `Type.FIELD` (e.g. Math.PI as a bound `extern class` const):
                 // the LHS is a type name, the binding template uses no receiver.
