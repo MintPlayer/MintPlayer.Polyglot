@@ -76,14 +76,19 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             return;
         }
         case ir::StmtKind::Use: { // `<decl> = init; try { body } finally { binding.dispose(); }`
-            const auto& u = static_cast<const ir::Use&>(s); // Python gates Disposal off, so braces here are safe
+            const auto& u = static_cast<const ir::Use&>(s);
             line(localDecl(u.binding, false) + " = " + emitExpr(*u.init) + stmtEnd());
-            if (blockStyle() == BlockStyle::BracesKnR) { line("try {"); blockBody(u.body); line("} finally {"); }
-            else { line("try"); line("{"); blockBody(u.body); line("}"); line("finally"); line("{"); }
+            openBlock("try");
+            blockBody(u.body);
+            switch (blockStyle()) { // close the try and open the finally — only the join differs per style
+                case BlockStyle::BracesKnR:    line("} finally {");          break;
+                case BlockStyle::BracesAllman: closeBlock(); openBlock("finally"); break;
+                case BlockStyle::ColonIndent:  openBlock("finally");          break;
+            }
             ++indent_;
             line(u.binding + ".dispose()" + stmtEnd());
             --indent_;
-            line("}");
+            closeBlock();
             return;
         }
         case ir::StmtKind::Return: {

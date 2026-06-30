@@ -21,7 +21,7 @@ if (-not (Test-Path $Cli)) {
 
 # Skeleton-subset programs the Python backend covers today. Grows as emit_python.cpp gains features.
 $allowlist = @("arithmetic", "bool_print", "forrange", "casts", "records", "equality", "counter", "closures", "parse", "iterator", "vec2", "enums", "unions", "generic_union", "option", "optional_sugar",
-    "float_print", "generics", "int64", "typeargs", "widening", "static_methods", "math", "collections", "empty_list", "extensions", "strings", "exceptions", "inheritance", "expect_actual", "extern_ffi", "overloading", "int_overflow", "int_widths")
+    "float_print", "generics", "int64", "typeargs", "widening", "static_methods", "math", "collections", "empty_list", "extensions", "strings", "exceptions", "inheritance", "expect_actual", "extern_ffi", "overloading", "int_overflow", "int_widths", "disposal")
 
 $progDir = Join-Path $PSScriptRoot "programs"
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "polyglot-conformance-python"
