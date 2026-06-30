@@ -321,12 +321,7 @@ private:
             case ExprKind::Extern:    return std::make_unique<ir::Extern>(e.pos, e.type, e.text);
             case ExprKind::Binary:    return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
             case ExprKind::Member: {
-                if (e.lhs->kind == ExprKind::Name && e.lhs->text == "Math") { // Math.PI / Math.E -> static const
-                    auto m = std::make_unique<ir::Member>(e.pos, e.type, nullptr, e.text, false);
-                    m->staticType = "Math";
-                    return m;
-                }
-                // Static const binding `Type.FIELD` (e.g. a future Math.PI as a bound `extern class` const):
+                // Static const binding `Type.FIELD` (e.g. Math.PI as a bound `extern class` const):
                 // the LHS is a type name, the binding template uses no receiver.
                 if (e.lhs->kind == ExprKind::Name && typeNames_.count(e.lhs->text)) {
                     if (auto it = bindings_.find(e.lhs->text + "." + e.text); it != bindings_.end())
@@ -351,8 +346,7 @@ private:
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
                     // Static call `Type.method(args)`: the receiver is a type name, not a value.
                     if (e.lhs->lhs->kind == ExprKind::Name &&
-                        (typeNames_.count(e.lhs->lhs->text) || isPrimitiveTypeName(e.lhs->lhs->text) ||
-                         e.lhs->lhs->text == "Math")) {
+                        (typeNames_.count(e.lhs->lhs->text) || isPrimitiveTypeName(e.lhs->lhs->text))) {
                         // A bound static method `Type.method(args)` (e.g. a future Math.sqrt as an
                         // `extern class` static): substitute the args into the template, no receiver.
                         if (auto b = bindings_.find(e.lhs->lhs->text + "." + e.lhs->text); b != bindings_.end())

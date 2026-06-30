@@ -25,8 +25,6 @@ const BackendSpec& typescriptSpec() {
          {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
         {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
         "console.log", // printFn
-        "Math",        // mathNamespace
-        {{"ln", "log"}}, // mathRename (only ln differs; sqrt/min/max/abs/floor keep their names)
     };
     return spec;
 }
@@ -623,22 +621,6 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                if (mc.staticType == "Math") {
-                    // JS Math.* operate on `number` only — for BigInt (i64/u64) operands, min/max/abs must
-                    // compare with operators instead. An IIFE keeps each argument evaluated exactly once.
-                    if (isI64(e.type)) {
-                        if (mc.method == "max" || mc.method == "min") {
-                            std::string op = mc.method == "max" ? ">=" : "<=";
-                            return "((a, b) => (a " + op + " b ? a : b))(" +
-                                   emitExpr(*mc.args[0]) + ", " + emitExpr(*mc.args[1]) + ")";
-                        }
-                        if (mc.method == "abs")
-                            return "((a) => (a < 0n ? -a : a))(" + emitExpr(*mc.args[0]) + ")";
-                    }
-                    std::string s = typescriptSpec().mathNamespace + "." + mathMember(typescriptSpec(), mc.method) + "(";
-                    for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
-                    return s + ")";
-                }
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) per-target idiom
                     std::string arg = emitExpr(*mc.args[0]);
                     if (mc.staticType == "i64" || mc.staticType == "u64") return "BigInt(" + arg + ")";

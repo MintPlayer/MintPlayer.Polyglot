@@ -24,9 +24,6 @@ const BackendSpec& csharpSpec() {
          {"f32", "float"}, {"f64", "double"}, {"bool", "bool"}, {"string", "string"}},
         {{"i64", "L"}, {"u64", "UL"}, {"u32", "U"}}, // intSuffix
         "global::System.Console.WriteLine",          // printFn
-        "global::System.Math",                       // mathNamespace
-        {{"ln", "Log"}, {"ceil", "Ceiling"}, {"sqrt", "Sqrt"}, {"abs", "Abs"},
-         {"min", "Min"}, {"max", "Max"}, {"floor", "Floor"}}, // mathRename
     };
     return spec;
 }
@@ -508,17 +505,11 @@ private:
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
-                std::string base = m.staticType.empty() ? atom(*m.object)
-                                 : m.staticType == "Math" ? csharpSpec().mathNamespace : m.staticType;
+                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
                 return base + (m.nullSafe ? "?." : ".") + m.field;
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                if (mc.staticType == "Math") { // Math.sqrt(x) -> global::System.Math.Sqrt(x)
-                    std::string s = csharpSpec().mathNamespace + "." + mathMember(csharpSpec(), mc.method) + "(";
-                    for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
-                    return s + ")";
-                }
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)
                     bool flt = mc.staticType == "f32" || mc.staticType == "f64";
                     return csType(namedType(mc.staticType)) + ".Parse(" + emitExpr(*mc.args[0]) +

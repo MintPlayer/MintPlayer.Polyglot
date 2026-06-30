@@ -70,6 +70,53 @@ actual(csharp)     fn deleteFile(path: string) { extern("global::System.IO.File.
 actual(typescript) fn deleteFile(path: string) { extern("require('fs').unlinkSync(path)") }
 )PG";
 
+// std.math — the Math namespace as a native-backed `extern class` (preserving the `Math.sqrt(x)` / `Math.PI`
+// surface). sqrt/ln/floor/ceil are f64; min/max/abs are generic and CALL-SITE-INLINED (a generic C#
+// Math.Min over unconstrained T wouldn't compile, so the binding substitutes the concrete-typed args at
+// each call). The TS min/max/abs use single-eval IIFE templates that work for both `number` and `bigint`
+// (the `a - a` zero is type-agnostic). PI/E are bound consts. Determinism (§3.D): only sqrt is reproducible
+// across targets; ln/transcendentals are not promised bit-exact.
+const char* STD_MATH = R"PG(
+extern class Math {
+  const PI: f64 {
+    actual(csharp)     extern("global::System.Math.PI")
+    actual(typescript) extern("Math.PI")
+  }
+  const E: f64 {
+    actual(csharp)     extern("global::System.Math.E")
+    actual(typescript) extern("Math.E")
+  }
+  static fn sqrt(x: f64): f64 {
+    actual(csharp)     extern("global::System.Math.Sqrt($0)")
+    actual(typescript) extern("Math.sqrt($0)")
+  }
+  static fn ln(x: f64): f64 {
+    actual(csharp)     extern("global::System.Math.Log($0)")
+    actual(typescript) extern("Math.log($0)")
+  }
+  static fn floor(x: f64): f64 {
+    actual(csharp)     extern("global::System.Math.Floor($0)")
+    actual(typescript) extern("Math.floor($0)")
+  }
+  static fn ceil(x: f64): f64 {
+    actual(csharp)     extern("global::System.Math.Ceiling($0)")
+    actual(typescript) extern("Math.ceil($0)")
+  }
+  static fn min<T>(a: T, b: T): T {
+    actual(csharp)     extern("global::System.Math.Min($0, $1)")
+    actual(typescript) extern("((a, b) => (a <= b ? a : b))($0, $1)")
+  }
+  static fn max<T>(a: T, b: T): T {
+    actual(csharp)     extern("global::System.Math.Max($0, $1)")
+    actual(typescript) extern("((a, b) => (a >= b ? a : b))($0, $1)")
+  }
+  static fn abs<T>(x: T): T {
+    actual(csharp)     extern("global::System.Math.Abs($0)")
+    actual(typescript) extern("((a) => (a < (a - a) ? -a : a))($0)")
+  }
+}
+)PG";
+
 // The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,
 // not control flow. No filesystem resolver yet (the source is compiled into the binary); user-module
 // resolution across files is future work.
@@ -77,6 +124,7 @@ struct StdModule { const char* path; const char* source; };
 const StdModule STD_MODULES[] = {
     {"std.collections", STD_COLLECTIONS},
     {"std.io", STD_IO},
+    {"std.math", STD_MATH},
 };
 
 // Append all top-level declarations of a loaded module into the root unit (the module's own `imports` were

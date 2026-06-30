@@ -24,17 +24,9 @@ struct BackendSpec {
 
     // ---- naming rules (the catalog's "naming/identity" bucket) ----
     std::string printFn;        // the `print` intrinsic target ("global::System.Console.WriteLine" / "console.log")
-    std::string mathNamespace;  // the `Math` namespace qualifier ("global::System.Math" / "Math")
-    // Polyglot `Math.<fn>` -> the target member name, when it differs (C# {ln:Log, sqrt:Sqrt, …};
-    // TS {ln:log}). A function not in the map keeps its Polyglot name.
-    std::unordered_map<std::string, std::string> mathRename;
+    // (Math used to live here as a namespace+rename table; it's now the std.math `extern class`, bound per
+    // target via templates — see compiler.cpp STD_MATH — so no Math data lives in the backend spec.)
 };
-
-// Apply a backend's Math rename table: the target member name for a Polyglot `Math.<fn>` (identity if absent).
-inline std::string mathMember(const BackendSpec& spec, const std::string& fn) {
-    auto it = spec.mathRename.find(fn);
-    return it == spec.mathRename.end() ? fn : it->second;
-}
 
 // Binary-operator precedence (higher binds tighter), used by the engine for parenthesization. Identical
 // across C# and TS — a shared engine concern, not per-backend data — so it lives here, not in a BackendSpec.

@@ -1,8 +1,10 @@
-// P7 differential conformance: the builtin `Math` namespace -> C# System.Math.*
+// P13 differential conformance: the `Math` std module (std.math `extern class`) -> C# System.Math.*
 // / JS Math.* (note ln->Log/log, ceil->Ceiling/ceil). Per §3.D only reproducible
 // results are asserted: sqrt of a perfect square, abs/min/max/floor/ceil (exact),
 // and ln(1)=0 (exact). General transcendentals (ln of other values) are NOT
 // promised bit-exact across targets.
+
+import { Math } from "std.math"
 
 fn main() {
   print((i32)Math.sqrt(144.0))       // 12

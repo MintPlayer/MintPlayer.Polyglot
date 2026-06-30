@@ -23,6 +23,7 @@
 // ============================================================================
 
 import { List } from "std.collections"
+import { Math } from "std.math"
 
 // ── Fruit catalog (inlined stub; the real one is FruitCatalog.cs) ───────────
 record FruitDef(radiusPx: f64, mergePoints: i32)

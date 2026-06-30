@@ -173,13 +173,6 @@ bool sameParamList(const std::vector<TypeRef>& a, const std::vector<TypeRef>& b)
     return true;
 }
 
-// The builtin `Math` namespace: arity of each function, or -1 if unknown. All take/return f64. (`sqrt` is
-// reproducible per §3.D; `ln` is a transcendental and not bit-exact across targets — documented.)
-int mathArity(const std::string& m) {
-    if (m == "sqrt" || m == "ln" || m == "abs" || m == "floor" || m == "ceil") return 1;
-    if (m == "min" || m == "max") return 2;
-    return -1;
-}
 
 // A function's per-target name. C# keeps the source name (native overloading); TS needs a distinct name
 // per overload, so an overloaded function mangles its parameter types in: `describe$i32`, `add$i32_i32`.
@@ -807,11 +800,12 @@ private:
     TypeRef checkMember(Expr& e) {
         // Enum case access: `EnumName.Case`.
         if (e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text)) return tNamed(e.lhs->text);
-        // Builtin `Math` constants: `Math.PI`, `Math.E` — f64 (both targets expose the same constant).
-        if (e.lhs->kind == ExprKind::Name && e.lhs->text == "Math") {
-            if (e.text == "PI" || e.text == "E") return tNamed("f64");
-            diags_.error(e.pos, "'Math' has no constant '" + e.text + "'");
-            return tNamed("f64");
+        // Static member access `Type.MEMBER` (e.g. `Math.PI` on the std.math extern class): the LHS is a
+        // type name, so resolve the member on the type rather than evaluating the LHS as a value.
+        if (e.lhs->kind == ExprKind::Name && types_.count(e.lhs->text)) {
+            if (const MemberInfo* m = findMember(e.lhs->text, e.text)) { TypeRef t = m->type; if (e.flag) t.nullable = true; return t; }
+            diags_.error(e.pos, "type '" + e.lhs->text + "' has no member '" + e.text + "'");
+            return tUnknown();
         }
 
         TypeRef recv = checkExpr(*e.lhs);
@@ -851,31 +845,8 @@ private:
             if (e.lhs->lhs->kind == ExprKind::Name) {
                 const std::string& typeName = e.lhs->lhs->text;
                 // Builtin `Math` namespace. `min`/`max`/`abs` are type-preserving (like C#'s overloads:
-                // Max(int,int)->int, Max(long,long)->long); `sqrt`/`ln`/`floor`/`ceil` are float-domain (f64).
-                if (typeName == "Math") {
-                    int arity = mathArity(method);
-                    if (arity < 0) { diags_.error(e.pos, "'Math' has no function '" + method + "'"); return tNamed("f64"); }
-                    if (static_cast<int>(argTypes.size()) != arity) {
-                        diags_.error(e.pos, "'Math." + method + "' expects " + std::to_string(arity) + " argument(s)");
-                        return tNamed("f64");
-                    }
-                    if (method == "abs")
-                        return isNumericTypeName(argTypes[0]) ? argTypes[0] : tNamed("f64");
-                    if (method == "min" || method == "max") {
-                        if (isNumericTypeName(argTypes[0]) && isNumericTypeName(argTypes[1])) {
-                            if (sameNamedType(argTypes[0], argTypes[1])) return argTypes[0];
-                            if (isLosslessWiden(argTypes[0], argTypes[1])) { coerce(e.args[0], argTypes[1]); return argTypes[1]; }
-                            if (isLosslessWiden(argTypes[1], argTypes[0])) { coerce(e.args[1], argTypes[0]); return argTypes[0]; }
-                            diags_.error(e.pos, "'Math." + method + "' operands have mismatched types " +
-                                                    argTypes[0].name + " and " + argTypes[1].name + "; add an explicit cast");
-                            return argTypes[0];
-                        }
-                        diags_.error(e.pos, "'Math." + method + "' expects numeric operands");
-                        return tNamed("f64");
-                    }
-                    for (auto& a : e.args) checkConvert(a, tNamed("f64"), "argument of 'Math." + method + "'");
-                    return tNamed("f64");
-                }
+                // (`Math` is no longer a builtin namespace — it's the std.math `extern class`, resolved by
+                // the general static-method path below; min/max/abs are generic and TypeArg-inferred.)
                 // Primitive static intrinsic: `i32.parse(s)` / `f64.parse(s)` — string -> that numeric type.
                 if (isNumericTypeName(tNamed(typeName)) && method == "parse") {
                     Ty a = argTypes.size() == 1 ? scalarTyOf(argTypes[0]) : Ty::Unknown;
