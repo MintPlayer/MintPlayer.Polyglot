@@ -66,7 +66,7 @@ public:
         }
         for (const auto& fn : m.extensions) emitFunction(fn); // extensions -> free fns; `x.m()` calls `m(x)`
         for (const auto& fn : m.functions)
-            if (fn.isEntry) { line(fn.mangledName + "()"); break; } // top-level entry call
+            if (fn.isEntry) { line(pyName(fn.mangledName) + "()"); break; } // top-level entry call
         return out_;
     }
 
@@ -105,9 +105,17 @@ private:
         return out;
     }
 
+    // An overloaded function's mangled name (`area$i32`) carries a `$` that's invalid in a Python identifier;
+    // map it to `_` consistently at every def and call site so the overloads stay distinct and callable.
+    static std::string pyName(const std::string& s) {
+        std::string out = s;
+        for (char& c : out) if (c == '$') c = '_';
+        return out;
+    }
+
     void emitFunction(const ir::Function& fn) {
         // Extensions lower to plain free functions (`self` is the receiver param) with no mangledName.
-        std::string sig = "def " + (fn.mangledName.empty() ? fn.name : fn.mangledName) + "(";
+        std::string sig = "def " + pyName(fn.mangledName.empty() ? fn.name : fn.mangledName) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += fn.params[i].name; }
         sig += ")";
         if (fn.exprBodied) {
@@ -391,7 +399,7 @@ private:
                 const auto& c = static_cast<const ir::Call&>(e);
                 std::vector<std::string> args;
                 for (const auto& a : c.args) args.push_back(emitExpr(*a));
-                return c.mangledCallee + renderArgs(args);
+                return pyName(c.mangledCallee) + renderArgs(args);
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
