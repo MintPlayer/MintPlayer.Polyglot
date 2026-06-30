@@ -452,6 +452,23 @@ int main() {
               "P13: user plugin class member binding fires in TS");
     }
 
+    // P13 — STATIC bindings on an extern class: a static method call and a static const both fire their
+    // per-target template (no receiver — only $0,$1,…), enabling Math.sqrt(x)/Math.PI as a std module.
+    {
+        const char* prog =
+            "extern class MyMath {\n"
+            "  static fn twice(n: i32): i32 { actual(csharp) extern(\"($0 * 2)\")  actual(typescript) extern(\"($0 * 2)\") }\n"
+            "  const K: i32 { actual(csharp) extern(\"42\")  actual(typescript) extern(\"42\") }\n"
+            "}\n"
+            "fn main() { print(MyMath.twice(5))\n  print(MyMath.K) }\n";
+        EmitResult cs = compile(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "(5 * 2)") && has(cs.code, "WriteLine(42)") && !has(cs.code, "class MyMath"),
+              "P13: static method + static const bindings fire on an extern class (C#)");
+        EmitResult ts = compile(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "(5 * 2)") && !has(ts.code, "class MyMath"),
+              "P13: static bindings fire on an extern class (TS)");
+    }
+
     // P13 — TypeArg inference: a generic call's return type is the inferred argument type, not a bare `T`.
     // Canary: only a correctly-inferred i64 return makes TS wrap the print in String() (BigInt -> no `n`).
     {

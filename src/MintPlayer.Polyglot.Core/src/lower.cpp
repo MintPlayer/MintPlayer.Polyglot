@@ -50,10 +50,10 @@ public:
     }
 
     // Build an ir::Bound from a receiver, args and a "Type.member" binding (picks the per-target arms).
-    ir::ExprPtr makeBound(const TypeRef& type, SourcePos pos, const Expr& recv,
+    ir::ExprPtr makeBound(const TypeRef& type, SourcePos pos, const Expr* recv,
                           const std::vector<TargetBinding>& arms, const std::vector<ExprPtr>* args) {
         auto b = std::make_unique<ir::Bound>(pos, type);
-        b->receiver = expr(recv);
+        if (recv) b->receiver = expr(*recv); // null for a static member binding (template uses only $0,$1,…)
         if (args) for (const auto& a : *args) b->args.push_back(expr(*a));
         for (const auto& arm : arms) {
             if (arm.target == "csharp") b->csTemplate = arm.code;
@@ -326,9 +326,15 @@ private:
                     m->staticType = "Math";
                     return m;
                 }
+                // Static const binding `Type.FIELD` (e.g. a future Math.PI as a bound `extern class` const):
+                // the LHS is a type name, the binding template uses no receiver.
+                if (e.lhs->kind == ExprKind::Name && typeNames_.count(e.lhs->text)) {
+                    if (auto it = bindings_.find(e.lhs->text + "." + e.text); it != bindings_.end())
+                        return makeBound(e.type, e.pos, nullptr, *it->second, nullptr);
+                }
                 if (e.lhs->type.kind == TypeRef::Kind::Named) { // bound std property (e.g. List.count)
                     if (auto it = bindings_.find(e.lhs->type.name + "." + e.text); it != bindings_.end())
-                        return makeBound(e.type, e.pos, *e.lhs, *it->second, nullptr);
+                        return makeBound(e.type, e.pos, e.lhs.get(), *it->second, nullptr);
                 }
                 return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
             }
@@ -347,6 +353,10 @@ private:
                     if (e.lhs->lhs->kind == ExprKind::Name &&
                         (typeNames_.count(e.lhs->lhs->text) || isPrimitiveTypeName(e.lhs->lhs->text) ||
                          e.lhs->lhs->text == "Math")) {
+                        // A bound static method `Type.method(args)` (e.g. a future Math.sqrt as an
+                        // `extern class` static): substitute the args into the template, no receiver.
+                        if (auto b = bindings_.find(e.lhs->lhs->text + "." + e.lhs->text); b != bindings_.end())
+                            return makeBound(e.type, e.pos, nullptr, *b->second, &e.args);
                         auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, nullptr, e.lhs->text);
                         mc->staticType = e.lhs->lhs->text;
                         for (const auto& a : e.args) mc->args.push_back(expr(*a));
@@ -355,7 +365,7 @@ private:
                     const TypeRef& rt = e.lhs->lhs->type; // receiver type, resolved by sema
                     if (rt.kind == TypeRef::Kind::Named) { // bound std method (e.g. List.add / List.removeAll)
                         if (auto b = bindings_.find(rt.name + "." + e.lhs->text); b != bindings_.end())
-                            return makeBound(e.type, e.pos, *e.lhs->lhs, *b->second, &e.args);
+                            return makeBound(e.type, e.pos, e.lhs->lhs.get(), *b->second, &e.args);
                     }
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);
                     if (rt.kind == TypeRef::Kind::Named) {

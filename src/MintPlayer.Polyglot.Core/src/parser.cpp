@@ -214,8 +214,12 @@ private:
             m.name = expect(TokKind::Identifier, "a constant name").text;
             expect(TokKind::Colon, "':'");
             m.type = parseType();
-            expect(TokKind::Assign, "'='");
-            m.init = parseExpr();
+            if (at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual) { // a bound const (e.g. Math.PI)
+                tryParseBindings(m);
+            } else {
+                expect(TokKind::Assign, "'='");
+                m.init = parseExpr();
+            }
             accept(TokKind::Semicolon);
             return m;
         }

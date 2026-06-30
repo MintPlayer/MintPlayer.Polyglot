@@ -330,7 +330,7 @@ private:
     std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
         std::string out;
         for (std::size_t i = 0; i < tmpl.size();) {
-            if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { out += emitExpr(*b.receiver); i += 5; }
+            if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
             else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
                 std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
                 if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
