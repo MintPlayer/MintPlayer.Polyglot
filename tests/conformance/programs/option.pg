@@ -1,0 +1,13 @@
+// P14 slice 2 — Option<T> as a core-prelude generic union (no import needed). Exercises Some + None
+// construction (None's type instantiated from context) and match, byte-identical across targets.
+fn opt(has: bool, v: i32): Option<i32> => if has { Some(v) } else { None }
+
+fn orElse(o: Option<i32>, dflt: i32): i32 => match o {
+  Some(x) => x,
+  None => dflt,
+}
+
+fn main() {
+  print(orElse(opt(true, 10), -1))    // 10   (Some)
+  print(orElse(opt(false, 99), -1))   // -1   (None — its <i32> comes from the Option<i32> context)
+}

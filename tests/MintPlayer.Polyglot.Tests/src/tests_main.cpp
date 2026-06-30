@@ -600,6 +600,23 @@ int main() {
               "P14: generic union — TS tagged union + construction");
     }
 
+    // P14 slice 2 — Option<T> is a core-prelude generic union (no import): Some/None construct and match,
+    // and a bare `None` takes its <T> from context (the Option<i32> return) -> C# `new None<int>()`.
+    {
+        const char* prog =
+            "fn opt(b: bool, v: i32): Option<i32> => if b { Some(v) } else { None }\n"
+            "fn orElse(o: Option<i32>, d: i32): i32 => match o { Some(x) => x, None => d }\n"
+            "fn main() { print(orElse(opt(false, 9), -1)) }\n";
+        // compileStd libs io (for print)/math/collections but NOT any "option" module — so Option resolving
+        // proves it's in the always-linked core prelude.
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "new Some<int>(v)") && has(cs.code, "new None<int>()"),
+              "P14: core Option — Some/None construct in C# (None typed from context)");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "{ tag: \"Some\", value: v }") && has(ts.code, "{ tag: \"None\" }"),
+              "P14: core Option — Some/None construct in TS");
+    }
+
     // P10 — the core prelude (Error/Iterable) is ALWAYS linked (no import, no lib): with a bare `compile`,
     // Error constructs + maps per target and `.message` binds — proving they're core-prelude extern classes,
     // not emitter hardcodes.

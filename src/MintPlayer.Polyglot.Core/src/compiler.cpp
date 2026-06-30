@@ -158,6 +158,10 @@ extern class Iterable<T> {
     actual(typescript) extern("Iterable<$0>")
   }
 }
+union Option<T> {
+  Some(value: T)
+  None
+}
 )PG";
 
 // The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,
@@ -248,7 +252,9 @@ void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags) {
     if (diags.hasErrors()) return;
     std::unordered_set<std::string> have;
     for (const auto& c : unit.classes) have.insert(c.name);
+    for (const auto& u : unit.unions)  have.insert(u.name);
     for (auto& c : core.classes) if (!have.count(c.name)) unit.classes.push_back(std::move(c));
+    for (auto& u : core.unions)  if (!have.count(u.name)) unit.unions.push_back(std::move(u));
 }
 
 // Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports).

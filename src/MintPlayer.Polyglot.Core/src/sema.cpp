@@ -246,7 +246,7 @@ public:
             pushGenerics(d.generics);
             pushScope();
             for (const auto& p : d.params) declare(p.name, p.type, false, p.pos);
-            if (d.exprBody) checkExpr(*d.exprBody);
+            if (d.exprBody) { checkExpr(*d.exprBody); checkConvert(d.exprBody, d.returnType, "extension body"); }
             else checkBlock(d.body);
             popScope();
             popGenerics(d.generics);
@@ -484,7 +484,7 @@ private:
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 for (const auto& p : m.params) declare(p.name, p.type, false, p.pos);
-                if (m.hasBody && m.exprBodied && m.exprBody) checkExpr(*m.exprBody);
+                if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Init) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
                 currentThis_ = tNamed(typeName);
@@ -493,6 +493,7 @@ private:
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 checkExpr(*m.init);
+                checkConvert(m.init, m.type, "property getter");
                 popScope();
             }
             popGenerics(m.generics);
@@ -519,10 +520,34 @@ private:
         slot = std::move(cast);
     }
 
+    // A payload-free union case (e.g. `None`) is typed `U<unbound>` bottom-up, since a bare case carries no
+    // value to infer the union's type args from. When it flows into a known `U<concrete>` slot, stamp the
+    // concrete type so construction emits the right args (C# `new None<int>()`). Recurse through if/match so a
+    // bare case in a branch instantiates too (`if b { Some(x) } else { None }` returned as Option<i32>).
+    void instantiateBareCases(ExprPtr& slot, const TypeRef& expected) {
+        if (!slot || expected.kind != TypeRef::Kind::Named || expected.args.empty()) return;
+        switch (slot->kind) {
+            case ExprKind::Name: {
+                auto owner = unionCaseOwner_.find(slot->text);
+                if (owner != unionCaseOwner_.end() && owner->second == expected.name) slot->type = expected;
+                break;
+            }
+            case ExprKind::IfExpr:
+                instantiateBareCases(slot->rhs, expected);   // then-branch
+                instantiateBareCases(slot->extra, expected); // else-branch
+                break;
+            case ExprKind::Match:
+                for (auto& arm : slot->arms) if (!arm.bodyIsBlock && arm.body) instantiateBareCases(arm.body, expected);
+                break;
+            default: break;
+        }
+    }
+
     // A value flowing into a typed slot (let/assign/return/argument): widen losslessly if possible, else
     // a numeric mismatch demands an explicit cast and any other known-scalar mismatch is a type error.
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
         if (!slot) return;
+        instantiateBareCases(slot, target); // a contextually-typed bare union case (`None`) takes `target`
         TypeRef from = slot->type;
         if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
         if (isNumericTypeName(from) && isNumericTypeName(target) && !sameNamedType(from, target)) {
