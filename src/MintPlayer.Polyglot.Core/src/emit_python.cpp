@@ -166,8 +166,9 @@ private:
         --indent_;
     }
 
-    // A record/class member -> a `def` with a leading `self`. Three member kinds map idiomatically:
-    //   Method    -> `def name(self, ...)`
+    // A record/class member -> a `def`. Most members take a leading `self`; four shapes map idiomatically:
+    //   Method     -> `def name(self, ...)`
+    //   static fn  -> `@staticmethod` + `def name(...)` (no self; called `Type.name(...)`)
     //   Operator   -> `def __add__(self, ...)` (Python dispatches `a + b` to the dunder natively)
     //   Property   -> `@property` + `def name(self)` (accessed as `a.prop`, no call)
     void emitMethod(const ir::Method& m) {
@@ -177,8 +178,11 @@ private:
         } else if (m.kind == ir::MethodKind::Property) {
             line("@property");
         }
-        std::string sig = "def " + name + "(self";
-        for (const auto& p : m.params) sig += ", " + p.name;
+        if (m.isStatic) line("@staticmethod");
+        std::string sig = "def " + name + "(";
+        bool first = true;
+        if (!m.isStatic) { sig += "self"; first = false; } // static members take no receiver
+        for (const auto& p : m.params) { if (!first) sig += ", "; first = false; sig += p.name; }
         sig += ")";
         if (m.exprBodied) {
             openBlock(sig);
