@@ -372,21 +372,24 @@ the emitted code **compiles and runs**. Manually compiling every sample's C# (`d
 (`node`) surfaced a cluster of output-only miscompiles the transpile-only gate was green over — the §3
 "never miscompile" law was being broken silently. This milestone hardens that.
 
-**P14a — the gate.** A permanent compile-run gate: for each sample, build the emitted C# and run the
+**P14a — the gate. ✅ done.** `tests/samples/run-emit.ps1`: for each sample, build the emitted C# and run the
 emitted TS, asserting **each compiles + runs without error** (NOT a stdout cross-compare — samples emit
-floats, non-deterministic across targets per §3.D; reuse the conformance csproj/dotnet/node harness). An
-honest xfail map for cases blocked on a *documented* missing feature (with the reason), same pattern as the
-transpile gate.
+floats, non-deterministic across targets per §3.D; reuses the conformance csproj/dotnet/node harness). xfail
+map for cases blocked on a documented gap. Currently **4 compile+run, 6 xfail.**
 
-**P14b — the bugs it surfaced (2026-06-30), to fix:**
-- **`02_records_operators` — `__polyglot_unlowered_expr__`** in BOTH targets: an expression never lowered
-  (suspect `with`-copy or operator-result `.member`, e.g. `(a + b).x`). *Scariest — a real lowering hole.*
-- **`03_enums_unions_match` — C# CS1001 "identifier expected"**: bad C# emission (TS ok).
-- **`04_generics` — C# CS1020 / TS `compareTo is not a function`**: interface-method dispatch over a generic
+**P14b — the bugs it surfaced (2026-06-30):**
+- ✅ **`02_records_operators` — `__polyglot_unlowered_expr__`**: the `with`-copy expression was never lowered.
+  Fixed (`ir::With`; C# native `with`; TS rebuilds via the ctor). *Was the scariest.*
+- ✅ **empty list `[]` → C# `List<object>`** (bidirectional gap, same family as `None`): `[]` now takes its
+  element type from the target slot. Plus precise match-binding types + local `T?` normalization.
+- ✅ **`print` of a bool diverged** (C# `True` vs JS `true`): std.io C# `print` lowercases bools (conformance
+  `bool_print`). *Surfaced while fixing 02.*
+- ⏳ **`03_enums_unions_match` — C# CS1001 "identifier expected"**: bad C# emission (TS ok).
+- ⏳ **`04_generics` — C# CS1020 / TS `compareTo is not a function`**: interface-method dispatch over a generic
   (`maxOf<T: Comparable<T>>`, `a.compareTo(b)`) + the indexer (`operator fn get`).
-- **`09_strings` — C# CS1039 "unterminated string"**: a string-literal **escaping** bug in C# emission.
-- **`07_using_disposal` — `Disposable` not found** (both): `use`/disposal + interface emission/`IDisposable`.
-- **Aspirational std methods** (`string.isEmpty`/`toI32`/`toUpper`/`codePoints`, in 06/08/09): not a compiler
+- ⏳ **`09_strings` — C# CS1039 "unterminated string"**: a string-literal **escaping** bug in C# emission.
+- ⏳ **`07_using_disposal` — `Disposable` not found** (both): `use`/disposal + interface emission/`IDisposable`.
+- ⏳ **Aspirational std methods** (`string.isEmpty`/`toI32`/`toUpper`/`codePoints`, in 06/08/09): not a compiler
   bug — these std methods don't exist yet. Either add a small `string` std surface or trim the samples.
 
 **P14c — `Option<T>` (the faithful nullable-generic fix).** `T?` over an **unconstrained** type parameter
