@@ -627,6 +627,7 @@ private:
                 return s + "`";
             }
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
+            case ir::ExprKind::Char:  return escape(static_cast<const ir::CharLit&>(e).value); // TS has no char -> string
             case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
             case ir::ExprKind::This:  return "this";
             case ir::ExprKind::Unary: {

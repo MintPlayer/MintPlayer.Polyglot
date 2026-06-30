@@ -47,6 +47,10 @@ public:
         for (const auto& r : unit.records)
             for (const auto& mem : r.members)
                 if (!mem.bindings.empty()) bindings_[r.name + "." + mem.name] = &mem.bindings;
+        // A bound extension method (`extension fn string.toUpper() { actual… }`): a method on an existing
+        // type — keyed like any member binding, so a call `s.toUpper()` lowers to the substituted template.
+        for (const auto& e : unit.extensions)
+            if (!e.bindings.empty()) bindings_[e.receiver.name + "." + e.name] = &e.bindings;
         // Bound constructors on an `extern class` (its `init` has binding arms): `Type(args)` lowers to a
         // substituted ctor template instead of a plain `new Type(...)`.
         for (const auto& c : unit.classes)
@@ -139,6 +143,7 @@ public:
             m.globals.push_back(std::move(g));
         }
         for (const auto& ext : unit.extensions) {
+            if (!ext.bindings.empty()) continue; // a bound extension isn't emitted — it's a call-site template
             ir::Function f;
             f.name = ext.name;
             f.isExtension = true;
@@ -364,6 +369,7 @@ private:
             case ExprKind::BoolLit:   return std::make_unique<ir::BoolLit>(e.pos, e.type, e.boolVal);
             case ExprKind::NullLit:   return std::make_unique<ir::NullLit>(e.pos, e.type);
             case ExprKind::StringLit: return std::make_unique<ir::StrLit>(e.pos, e.type, e.text);
+            case ExprKind::CharLit:   return std::make_unique<ir::CharLit>(e.pos, e.type, e.text);
             case ExprKind::InterpString: {
                 auto in = std::make_unique<ir::Interp>(e.pos, e.type);
                 in->chunks = e.chunks;

@@ -133,6 +133,40 @@ extern class Math {
 }
 )PG";
 
+// std.strings — string methods as bound extension methods (a method on the builtin `string`). Each arm maps
+// `s.method(args)` to the target's idiom (C# `.ToUpper()` / JS `.toUpperCase()`). Both targets are UTF-16
+// (SPEC §8) so `len`/`charAt` are code-unit operations; `codePoints` iterates code points (surrogate-aware).
+const char* STD_STRINGS = R"PG(
+extension fn string.isEmpty(): bool {
+  actual(csharp)     extern("($this.Length == 0)")
+  actual(typescript) extern("($this.length === 0)")
+}
+extension fn string.len(): i32 {
+  actual(csharp)     extern("$this.Length")
+  actual(typescript) extern("$this.length")
+}
+extension fn string.toUpper(): string {
+  actual(csharp)     extern("$this.ToUpper()")
+  actual(typescript) extern("$this.toUpperCase()")
+}
+extension fn string.toLower(): string {
+  actual(csharp)     extern("$this.ToLower()")
+  actual(typescript) extern("$this.toLowerCase()")
+}
+extension fn string.charAt(index: i32): string {
+  actual(csharp)     extern("$this[$0].ToString()")
+  actual(typescript) extern("$this.charAt($0)")
+}
+extension fn string.codePoints(): Iterable<string> {
+  actual(csharp)     extern("$this.EnumerateRunes()")
+  actual(typescript) extern("Array.from($this)")
+}
+extension fn string.toI32(): i32 {
+  actual(csharp)     extern("global::System.Int32.Parse($this)")
+  actual(typescript) extern("parseInt($this, 10)")
+}
+)PG";
+
 // The core prelude — `extern class`es always linked into every compilation (no import: `throw`/typed
 // `catch`/`Error`/`yield`/`Iterable` are core language surface, not std). They declare their per-target
 // type spelling (and, for Error, construction + the `message` property) via the binding mechanism, so the
@@ -172,6 +206,7 @@ const StdModule STD_MODULES[] = {
     {"std.collections", STD_COLLECTIONS},
     {"std.io", STD_IO},
     {"std.math", STD_MATH},
+    {"std.strings", STD_STRINGS},
 };
 
 // Append all top-level declarations of a loaded module into the root unit (the module's own `imports` were
@@ -184,6 +219,7 @@ void mergeDecls(CompilationUnit& mod, CompilationUnit& root) {
     for (auto& i : mod.interfaces) root.interfaces.push_back(std::move(i));
     for (auto& v : mod.values)     root.values.push_back(std::move(v));
     for (auto& f : mod.functions)  root.functions.push_back(std::move(f));
+    for (auto& e : mod.extensions) root.extensions.push_back(std::move(e)); // e.g. std.strings' bound methods
 }
 
 void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, DiagnosticBag& diags) {

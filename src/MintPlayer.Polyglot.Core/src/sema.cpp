@@ -1081,7 +1081,8 @@ private:
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
             if (t->second.hasCtor) checkArgs(t->second.ctorParams, argTypes, e.args, "'" + name + "'", e.pos, t->second.ctorRequired);
-            return tNamed(name);
+            TypeRef r = tNamed(name); r.args = e.typeArgs; // carry `Box<i32>()`'s args so the result is Box<i32>
+            return r;
         }
         if (auto uc = unionCtors_.find(name); uc != unionCtors_.end()) {
             checkArgs(uc->second.params, argTypes, e.args, "'" + name + "'", e.pos);

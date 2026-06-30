@@ -350,7 +350,8 @@ private:
         d.params = parseParamList();
         expect(TokKind::RParen, "')'");
         if (accept(TokKind::Colon)) d.returnType = parseType();
-        if (accept(TokKind::Arrow)) { d.exprBody = parseExpr(); d.exprBodied = true; }
+        if (at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual) parseBindingArms(d.bindings); // bound method
+        else if (accept(TokKind::Arrow)) { d.exprBody = parseExpr(); d.exprBodied = true; }
         else { d.body = parseBlock(); d.exprBodied = false; }
         return d;
     }

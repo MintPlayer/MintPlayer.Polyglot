@@ -1,0 +1,12 @@
+// P14b — std.strings: string methods as bound extension methods, byte-identical across C# and TS.
+import "std.strings"
+
+fn main() {
+  print("ab".toUpper())         // AB
+  print("HeLLo".toLower())      // hello
+  print("".isEmpty())           // true
+  print("abc".isEmpty())        // false
+  print("hello".len())          // 5
+  print("Grace".charAt(0))      // G
+  print("42".toI32() + 1)       // 43
+}

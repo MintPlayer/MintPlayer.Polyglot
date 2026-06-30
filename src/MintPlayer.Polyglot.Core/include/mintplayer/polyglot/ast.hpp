@@ -241,6 +241,7 @@ struct ExtensionDecl {                   // `extension fn Receiver.name<...>(...
     std::vector<StmtPtr> body;
     ExprPtr exprBody;
     bool exprBodied = false;
+    std::vector<TargetBinding> bindings; // per-target FFI arms (a bound method on an existing type, e.g. string)
 };
 struct ValueDecl {                       // top-level `const` / `let`
     bool isConst = false;

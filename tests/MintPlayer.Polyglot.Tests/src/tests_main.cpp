@@ -676,6 +676,20 @@ int main() {
               "P14b: TS emits interface + implements + get() indexer access");
     }
 
+    // P14b — std.strings: a bound extension method on `string` (a method on a builtin type via the binding
+    // mechanism). `s.toUpper()` lowers to the per-target template, not a literal `.toUpper()` call.
+    {
+        const char* prog =
+            "import \"std.strings\"\n"
+            "fn shout(s: string): string => s.toUpper()\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "s.ToUpper()") && !has(cs.code, "s.toUpper()"),
+              "P14b: bound string extension -> C# .ToUpper()");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "s.toUpperCase()"), "P14b: bound string extension -> JS .toUpperCase()");
+    }
+
     // P10 — the core prelude (Error/Iterable) is ALWAYS linked (no import, no lib): with a bare `compile`,
     // Error constructs + maps per target and `.message` binds — proving they're core-prelude extern classes,
     // not emitter hardcodes.

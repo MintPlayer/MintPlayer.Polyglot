@@ -558,6 +558,17 @@ private:
                 return s + "\"";
             }
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
+            case ir::ExprKind::Char: { // C# char literal `'x'` (escape `'`, `\`, control chars)
+                std::string s = "'";
+                for (char c : static_cast<const ir::CharLit&>(e).value) {
+                    if (c == '\'' || c == '\\') { s += '\\'; s += c; }
+                    else if (c == '\n') s += "\\n";
+                    else if (c == '\t') s += "\\t";
+                    else if (c == '\r') s += "\\r";
+                    else s += c;
+                }
+                return s + "'";
+            }
             case ir::ExprKind::Var:   return csIdent(static_cast<const ir::Var&>(e).name);
             case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_;
             case ir::ExprKind::Unary: {

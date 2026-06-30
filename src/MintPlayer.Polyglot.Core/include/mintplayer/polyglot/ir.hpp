@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With };
+enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With };
 
 struct Expr {
     ExprKind kind;
@@ -49,6 +49,10 @@ struct BoolLit : Expr {
 struct StrLit : Expr {
     std::string value;
     StrLit(SourcePos p, Type t, std::string v) : Expr(ExprKind::Str, p, std::move(t)), value(std::move(v)) {}
+};
+struct CharLit : Expr { // a char literal `'A'`: C# `'A'` (char), TS `"A"` (string — TS has no char type)
+    std::string value;
+    CharLit(SourcePos p, Type t, std::string v) : Expr(ExprKind::Char, p, std::move(t)), value(std::move(v)) {}
 };
 struct NullLit : Expr { // the `null` literal (C# `null` / TS `null`)
     explicit NullLit(SourcePos p, Type t) : Expr(ExprKind::Null, p, std::move(t)) {}

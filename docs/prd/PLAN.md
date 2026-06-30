@@ -418,10 +418,18 @@ sample 08's `secondOrNull(): T? … ?? -1` compiles+runs byte-identical. **`x!` 
 refused** with a diagnostic (faithful force-unwrap = follow-up). *Deferred:* local `let x: T?` declared-type
 normalization inside bodies; nested/already-nullable `T` (`Option<Option<T>>`); `?.` on a generic-nullable.
 
-**Still open in P14:** **P14a** — the permanent compile-run gate (build the C#, run the TS) so the P14b bugs
-can't regress. **P14b** — the remaining output miscompiles + the empty-list-literal `[]`→C# `List<object>`
-bug (a bidirectional-typing gap like `None`'s) + the aspirational `string` std methods (`isEmpty`/`toI32`/
-`toUpper`/`codePoints`) that block samples 06/08/09.
+**P14a ✅ + P14b ✅ done (2026-06-30).** The compile-run gate (`tests/samples/run-emit.ps1`) builds the C# +
+runs the TS for every sample; **all 10 now compile+run (0 xfail).** Fixed, worst-first: the `with`-copy
+lowering hole (`ir::With`); empty-list `[]`→`List<object>` + precise match-binding types + local `T?`
+(expected-type propagation); `print` of bool (`True`→`true`) and of floats (InvariantCulture); C# keyword
+identifiers (`@base`), interp-string `\n` escaping, self-contained list literals; **interfaces** (were never
+emitted), record `implements`/base clauses, real **indexers** (`operator get`→C# `this[]`/TS `get()`); a TS
+class `implements` interfaces vs `extends` a class; the `Type<Args>()` construction-result type now carries
+its args; **char literals** (`ir::CharLit`); and **`std.strings`** (a new module of bound extension methods —
+`isEmpty`/`len`/`toUpper`/`toLower`/`charAt`/`codePoints`/`toI32`) built on a new general capability:
+**extension methods with binding arms** (`extension fn string.toUpper() { actual(target) extern(…) }`), plus
+fixing `mergeDecls` to merge an imported module's extensions. New conformance programs: `empty_list`,
+`bool_print`, `float_print`, `strings`. (06 trimmed a non-numeric input that can't parse faithfully cross-target.)
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

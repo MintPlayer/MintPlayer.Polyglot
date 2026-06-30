@@ -3,6 +3,7 @@
 // Exercises §3.A: strings/char (both targets UTF-16, near 1:1).
 
 import { print } from "std.io"
+import "std.strings"
 
 // Count code POINTS, not code units — astral chars (e.g. emoji) are surrogate
 // pairs in UTF-16 on both targets (SPEC §8).
@@ -22,7 +23,7 @@ fn main() {
   print("‘${name}’ is ${age}, ${age * 2} doubled.\n")
 
   let emoji = "🍰"                  // one code point, two UTF-16 units
-  print(emoji.length)               // 2   (code units — same on C# and TS)
+  print(emoji.len())                // 2   (code units — same on C# and TS)
   print(codePointCount(emoji))      // 1   (code points)
 
   let c: char = 'A'

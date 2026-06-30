@@ -3,6 +3,7 @@
 
 import { print } from "std.io"
 import { List } from "std.collections"
+import "std.strings"
 
 // Extend a primitive type.
 extension fn string.shout(): string => this.toUpper() + "!"

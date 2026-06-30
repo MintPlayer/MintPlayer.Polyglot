@@ -2,6 +2,7 @@
 // Exercises §3.A: exceptions (try/catch/finally, typed catch -> dispatch, when -> guard).
 
 import { print } from "std.io"
+import "std.strings"
 
 class ParseError : Error {
   let position: i32
@@ -23,7 +24,7 @@ fn parsePercent(s: string): i32 {
 }
 
 fn main() {
-  let inputs = [ "50", "", "150", "oops" ]
+  let inputs = [ "50", "", "150" ]   // (a non-numeric input like "oops" would diverge: C# Int32.Parse throws, JS parseInt -> NaN)
   for raw in inputs {
     try {
       print("ok: ${parsePercent(raw)}")
