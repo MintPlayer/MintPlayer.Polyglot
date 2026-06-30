@@ -207,9 +207,15 @@ unspecified, and a child may bump a per-emitter counter). Byte-for-byte no-op: u
 `renderArgs(children)` primitive (the `(a, b, c)` affix is identical across targets, so an engine constant,
 not spec data) — C# `Call`/`MethodCall`/`New`/`MakeCase` and TS `Call`/`MethodCall` (plain + extension form)/
 `New`. Args are emitted into a left-to-right vector first, then wrapped; byte-for-byte no-op (all four gates
-green). *Next:* dynamic-affix list nodes (`ListLit`, whose C# open carries the rendered element type), then
-lift the IR walk into the engine proper (the `SpecEmitter` class that owns the switch + a `BackendHooks` seam
-for the imperative kinds).
+green). **Slice 3c ✅:** `ListLit` now renders via `renderDelimited` too — TS's static `[…]` affix lives in
+the spec `delimited` table (`"list"`), while C#'s open affix is *computed* (`new …List<elem> { `, carrying
+the rendered element type) and passed to the same primitive, proving `renderDelimited` handles dynamic
+affixes, not just spec constants. All delimited/list-shaped expression nodes now route through the shared
+primitives (byte-for-byte no-op, all gates green). *Next:* lift the IR walk into the engine proper — the
+`SpecEmitter` class that owns the `emitExpr`/`emitStmt` switch + a `BackendHooks` seam for the imperative
+kinds (`Cast`, `Match`, `Try`, interpolation, numeric narrowing, operator-method dispatch). This is the big
+structural slice; approach is to keep growing the shared free-function surface until the residual per-emitter
+code is small enough that the "lift into one engine class" becomes mechanical, rather than a risky big-bang.
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type

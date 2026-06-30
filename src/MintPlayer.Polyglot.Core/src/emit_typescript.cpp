@@ -25,7 +25,7 @@ const BackendSpec& typescriptSpec() {
          {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
         {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
         {{"==", "==="}, {"!=", "!=="}}, // binaryOp: always strict equality, never JS loose ==/!=
-        {{"tuple", {"[", ", ", "]"}}}, // delimited: TS tuple `[a, b]`
+        {{"tuple", {"[", ", ", "]"}}, {"list", {"[", ", ", "]"}}}, // delimited: TS tuple/list literal `[a, b]`
     };
     return spec;
 }
@@ -725,9 +725,9 @@ private:
             }
             case ir::ExprKind::ListLit: {
                 const auto& l = static_cast<const ir::ListLit&>(e);
-                std::string s = "[";
-                for (std::size_t i = 0; i < l.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*l.elements[i]); }
-                return s + "]";
+                std::vector<std::string> parts;
+                for (const auto& el : l.elements) parts.push_back(emitExpr(*el));
+                return renderDelimited(typescriptSpec().delimited.at("list"), parts);
             }
             case ir::ExprKind::Tuple: {
                 const auto& t = static_cast<const ir::Tuple&>(e);

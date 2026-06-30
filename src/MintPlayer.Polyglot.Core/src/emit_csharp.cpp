@@ -633,9 +633,11 @@ private:
                 // A list literal is built-in syntax (like TS `[…]`), so its container is inherent — the BCL
                 // List — independent of whether std.collections is imported. (The `List<T>` *type* spelling
                 // is still registry-driven; only methods like `.add` need the import.)
-                std::string s = "new global::System.Collections.Generic.List<" + csType(l.elem) + "> { ";
-                for (std::size_t i = 0; i < l.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*l.elements[i]); }
-                return s + " }";
+                std::vector<std::string> parts;
+                for (const auto& el : l.elements) parts.push_back(emitExpr(*el));
+                // Dynamic open affix: the BCL List<…> spelling carries the rendered element type.
+                return renderDelimited({"new global::System.Collections.Generic.List<" + csType(l.elem) + "> { ",
+                                        ", ", " }"}, parts);
             }
             case ir::ExprKind::Tuple: {
                 const auto& t = static_cast<const ir::Tuple&>(e);
