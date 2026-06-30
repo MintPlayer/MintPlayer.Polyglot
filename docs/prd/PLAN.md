@@ -366,6 +366,40 @@ String-wrap canary died once `print`'s TS body wrapped *universally*).
   silently renaming user identifiers. A blanket "uppercase-first" is **not** a substitute for native-member
   bindings (a native name isn't always a capitalization away — it would silently miscompile, violating §3).
 
+## P14 — Emitted-output correctness (compile-run the output) + `Option<T>` (in progress, 2026-06-30)
+**Why:** the samples gate (`tests/samples/run-compile.ps1`) only checks the *transpiler* succeeds, not that
+the emitted code **compiles and runs**. Manually compiling every sample's C# (`dotnet`) + running its TS
+(`node`) surfaced a cluster of output-only miscompiles the transpile-only gate was green over — the §3
+"never miscompile" law was being broken silently. This milestone hardens that.
+
+**P14a — the gate.** A permanent compile-run gate: for each sample, build the emitted C# and run the
+emitted TS, asserting **each compiles + runs without error** (NOT a stdout cross-compare — samples emit
+floats, non-deterministic across targets per §3.D; reuse the conformance csproj/dotnet/node harness). An
+honest xfail map for cases blocked on a *documented* missing feature (with the reason), same pattern as the
+transpile gate.
+
+**P14b — the bugs it surfaced (2026-06-30), to fix:**
+- **`02_records_operators` — `__polyglot_unlowered_expr__`** in BOTH targets: an expression never lowered
+  (suspect `with`-copy or operator-result `.member`, e.g. `(a + b).x`). *Scariest — a real lowering hole.*
+- **`03_enums_unions_match` — C# CS1001 "identifier expected"**: bad C# emission (TS ok).
+- **`04_generics` — C# CS1020 / TS `compareTo is not a function`**: interface-method dispatch over a generic
+  (`maxOf<T: Comparable<T>>`, `a.compareTo(b)`) + the indexer (`operator fn get`).
+- **`09_strings` — C# CS1039 "unterminated string"**: a string-literal **escaping** bug in C# emission.
+- **`07_using_disposal` — `Disposable` not found** (both): `use`/disposal + interface emission/`IDisposable`.
+- **Aspirational std methods** (`string.isEmpty`/`toI32`/`toUpper`/`codePoints`, in 06/08/09): not a compiler
+  bug — these std methods don't exist yet. Either add a small `string` std surface or trim the samples.
+
+**P14c — `Option<T>` (the faithful nullable-generic fix).** `T?` over an **unconstrained** type parameter
+can't be faithfully compiled to C#: `… : null` is CS0403 (null can't convert to unconstrained `T`); `T?` +
+`default` *compiles* but `default(T)` is `0`/`false` for value types, **not** an absent marker — so
+`List<i32>.secondOrNull()` would return `0` in C# while TS returns `null` (silent divergence + `0 ?? -1`
+doesn't even type-check). Verified empirically (2026-06-30). Decision (the language designer's call):
+**build a real `Option<T>` std type** — the faithful cross-target "optional value" (`Some(x)`/`None`) — rather
+than refuse or emit a lying `default`. `T?` over a generic lowers to `Option<T>`; design (representation per
+target, relation to the existing `?`/`null`/`??`/`x!` machinery, `match`/`Some`/`None`, std-type vs union vs
+extern-class) under active investigation. (The earlier "refuse-now" option is the fallback if the design
+proves out of scope.)
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

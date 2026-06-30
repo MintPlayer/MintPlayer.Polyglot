@@ -100,7 +100,12 @@ a queryable tree); **bit-exact cross-target floating point** (see §3.D).
   class is a later option if BigInt proves too slow.
 - **float (32-bit) vs double:** default lets `float` ride a JS `double`; `Math.fround`-per-op strictness is
   **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity.
-- **nullability:** normalize `null`/`undefined`; pick one and stick to it.
+- **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics need a real
+  `Option<T>` (decided 2026-06-30, in progress — see PLAN P14c):** `T?` over an *unconstrained* type
+  parameter has no faithful C# emission — `null` is a compile error (CS0403), and `T?`+`default(T)` returns
+  `0`/`false` for value types rather than an absent marker, diverging silently from TS's `null`. So `T?` on a
+  generic lowers to an `Option<T>` std type (`Some(x)`/`None`) instead of a bare target nullable. `T?` on
+  concrete/reference types keeps using the native nullable.
 - **equality / hashing:** generate structural `Equals`/`GetHashCode`; identity hash via a side `WeakMap`.
 
 ### D. The determinism honesty clause
@@ -385,6 +390,14 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   (`DevelopmentDependency`/`PrivateAssets`). The payoff of the §4.3 zero-runtime-dep native CLI: the
   consuming dev needs no extra SDK/runtime. Depends only on a stable CLI, so it can ship independently of
   P9/P10. A sibling npm/build-script story does the same for TS.
+- **P13 — Std as real modules + the `lib` prelude.** ✅ `print`/`Math` are real `std.io`/`std.math` exports
+  (not builtins); a `lib` prelude auto-imports them ambiently. Also delivered the §4.6 type-mapping/
+  construction binding (P10 precursor) — `extern class`es declare their per-target type + ctor, and
+  `List`/`Error`/`Iterable` are fully dogfooded onto it (zero hardcoded type mappings in the emitters). See
+  §4.6 and PLAN P13.
+- **P14 — Emitted-output correctness + `Option<T>`.** 🚧 A compile-run gate (build the C#, run the TS — not
+  just transpile) that caught a cluster of output-only miscompiles the transpile gate missed; fix those; and
+  add a faithful **`Option<T>`** std type for nullable generics (§3.C). See PLAN P14.
 - **Stretch:** further targets as downloadable backends, source maps, **editor tooling** (a TextMate
   highlighting grammar for `.pg` — independent of the compiler, ships early for VS Code *and* Visual Studio
   2022+; plus an **LSP** server `polyglot lsp` built on the frontend-as-a-library, with thin VS Code and
