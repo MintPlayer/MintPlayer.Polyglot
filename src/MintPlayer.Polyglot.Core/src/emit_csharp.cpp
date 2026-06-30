@@ -585,7 +585,7 @@ private:
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
                 int p = operatorPrecedence(b.op);
-                std::string expr = child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
+                std::string expr = child(*b.lhs, p, false) + " " + csharpSpec().binOp(b.op) + " " + child(*b.rhs, p, true);
                 // C# promotes sub-32 integer arithmetic to `int`, so it doesn't wrap at 8/16 bits — cast
                 // back to wrap like the source type. (int/uint/long/ulong already wrap unchecked.)
                 if (const char* c = subWordCast(e.type)) return "(" + std::string(c) + ")(" + expr + ")";

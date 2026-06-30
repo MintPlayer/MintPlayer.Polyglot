@@ -24,6 +24,7 @@ const BackendSpec& typescriptSpec() {
          {"i8", "number"}, {"i16", "number"}, {"i32", "number"}, {"u8", "number"}, {"u16", "number"},
          {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
         {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
+        {{"==", "==="}, {"!=", "!=="}}, // binaryOp: always strict equality, never JS loose ==/!=
     };
     return spec;
 }
@@ -651,7 +652,7 @@ private:
                         return b.op == "==" ? call : "!" + call;
                     }
                     int pe = operatorPrecedence(b.op);
-                    return child(*b.lhs, pe, false) + (b.op == "==" ? " === " : " !== ") + child(*b.rhs, pe, true);
+                    return child(*b.lhs, pe, false) + " " + typescriptSpec().binOp(b.op) + " " + child(*b.rhs, pe, true);
                 }
                 if (isUserType(b.lhs->type)) { // operator overload -> method call (TS has no operators)
                     std::string method = opMethod(b.op);
@@ -677,7 +678,7 @@ private:
                     if (b.op == "+" || b.op == "-" || b.op == "/" || b.op == "%")
                         return narrowTs(n, lhs + " " + b.op + " " + rhs);
                 }
-                return lhs + " " + b.op + " " + rhs;
+                return lhs + " " + typescriptSpec().binOp(b.op) + " " + rhs;
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);

@@ -191,8 +191,12 @@ data)** + **Hooks (C++ for the imperative 30%: `tsConvert`, TS `try` lowering, n
 method dispatch, record equality, `Match`, interpolation)** + capability set, over **one shared emit engine**.
 Migration is incremental, each slice a byte-for-byte no-op enforced by the golden/differential/round-trip
 gates. **Slice 1 ✅:** the scalar type-leaf table extracted into `BackendSpec` (`backend_spec.hpp`); both
-emitters consult their spec instead of hardcoded type ladders. *Next slices:* operator/precedence + literal-
-suffix tables → spec; per-node templates + the `SpecEmitter` engine; declaration scaffolds; formalize Hooks.
+emitters consult their spec instead of hardcoded type ladders. **Slice 2 ✅:** the remaining tabular operator/
+literal data is now in the spec — `intSuffix` (literal suffixes, since slice 1) plus the new `binaryOp`
+spelling table (TS `==`→`===`/`!=`→`!==`; C# identity) consulted via `BackendSpec::binOp()` at every binary
+emission; precedence stays a shared free function (`operatorPrecedence`, identical across targets, so not
+per-backend data). Numeric-overflow wrapping and operator-overload dispatch stay imperative Hooks. *Next
+slices:* per-node templates + the `SpecEmitter` engine; declaration scaffolds; formalize Hooks.
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type

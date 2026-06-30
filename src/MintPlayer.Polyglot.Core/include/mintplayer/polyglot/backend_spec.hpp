@@ -22,6 +22,18 @@ struct BackendSpec {
     // TS {i64:"n", u64:"n"}). A type not in the map takes no suffix.
     std::unordered_map<std::string, std::string> intSuffix;
 
+    // A binary-operator symbol -> its target spelling, for operators that diverge from the source symbol
+    // (TS {"==":"===", "!=":"!=="} — never JS loose ==/!=; C# emits every operator verbatim). A missing
+    // entry means "emit the source symbol unchanged"; see binOp(). Numeric-overflow wrapping and operator
+    // overloading are imperative Hooks, not table entries — this is only the bare spelling.
+    std::unordered_map<std::string, std::string> binaryOp;
+
+    // The target spelling of a binary operator (default: the source symbol verbatim).
+    std::string binOp(const std::string& op) const {
+        auto it = binaryOp.find(op);
+        return it == binaryOp.end() ? op : it->second;
+    }
+
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal tables now.)
