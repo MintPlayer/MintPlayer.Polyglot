@@ -683,9 +683,9 @@ private:
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
-                std::string s = c.mangledCallee + "(";
-                for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
-                return s + ")";
+                std::vector<std::string> args;
+                for (const auto& a : c.args) args.push_back(emitExpr(*a));
+                return c.mangledCallee + renderArgs(args);
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
@@ -701,14 +701,15 @@ private:
                     return narrowTs(mc.staticType, "Number.parseInt(" + arg + ", 10)"); // i8..u32
                 }
                 if (mc.isExtension) { // free-function form: name(obj, args)
-                    std::string s = mc.method + "(" + emitExpr(*mc.object);
-                    for (const auto& a : mc.args) s += ", " + emitExpr(*a);
-                    return s + ")";
+                    std::vector<std::string> args;
+                    args.push_back(emitExpr(*mc.object));
+                    for (const auto& a : mc.args) args.push_back(emitExpr(*a));
+                    return mc.method + renderArgs(args);
                 }
                 std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
-                std::string s = recv + "." + mc.method + "(";
-                for (std::size_t i = 0; i < mc.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.args[i]); }
-                return s + ")";
+                std::vector<std::string> args;
+                for (const auto& a : mc.args) args.push_back(emitExpr(*a));
+                return recv + "." + mc.method + renderArgs(args);
             }
             case ir::ExprKind::Cond: {
                 const auto& c = static_cast<const ir::Cond&>(e);
@@ -767,9 +768,9 @@ private:
                     for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += tsType(n.typeArgs[i]); }
                     ctor += ">";
                 }
-                std::string s = "new " + ctor + "(";
-                for (std::size_t i = 0; i < n.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*n.args[i]); }
-                return s + ")";
+                std::vector<std::string> args;
+                for (const auto& a : n.args) args.push_back(emitExpr(*a));
+                return "new " + ctor + renderArgs(args);
             }
             case ir::ExprKind::MakeCase: {
                 const auto& mc = static_cast<const ir::MakeCase&>(e);

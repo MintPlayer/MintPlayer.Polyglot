@@ -66,6 +66,12 @@ inline std::string renderCond(const std::string& c, const std::string& t, const 
     return "(" + c + " ? " + t + " : " + e + ")";
 }
 
+// An argument list `(a, b, c)` — the affix is identical across C# and TS (unlike tuple brackets), so it's a
+// shared engine constant rather than per-backend spec data. Callers prepend the callee/`new T`/`recv.m`.
+inline std::string renderArgs(const std::vector<std::string>& children) {
+    return renderDelimited({"(", ", ", ")"}, children);
+}
+
 // Binary-operator precedence (higher binds tighter), used by the engine for parenthesization. Identical
 // across C# and TS — a shared engine concern, not per-backend data — so it lives here, not in a BackendSpec.
 inline int operatorPrecedence(const std::string& op) {

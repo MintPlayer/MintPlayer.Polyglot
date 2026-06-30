@@ -203,8 +203,13 @@ on the spec; e.g. tuple `(a, b)` vs `[a, b]`) and `renderCond(c,t,e)` (identical
 rule not per-backend data), both in `backend_spec.hpp`. `Cond` and `Tuple` in both emitters now route through
 them; children are emitted into explicit left-to-right locals first (C++ leaves `operator+`/argument order
 unspecified, and a child may bump a per-emitter counter). Byte-for-byte no-op: unit + 37/37 conformance +
-10/10 emit + 10/10 round-trip. *Next:* widen `renderDelimited` to the call-arg family (`New`/`Call`/
-`MethodCall` arg lists) and add the dynamic-affix list nodes, then lift the IR walk into the engine proper.
+10/10 emit + 10/10 round-trip. **Slice 3b ✅:** the call-argument family now routes through the shared
+`renderArgs(children)` primitive (the `(a, b, c)` affix is identical across targets, so an engine constant,
+not spec data) — C# `Call`/`MethodCall`/`New`/`MakeCase` and TS `Call`/`MethodCall` (plain + extension form)/
+`New`. Args are emitted into a left-to-right vector first, then wrapped; byte-for-byte no-op (all four gates
+green). *Next:* dynamic-affix list nodes (`ListLit`, whose C# open carries the rendered element type), then
+lift the IR walk into the engine proper (the `SpecEmitter` class that owns the switch + a `BackendHooks` seam
+for the imperative kinds).
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type
