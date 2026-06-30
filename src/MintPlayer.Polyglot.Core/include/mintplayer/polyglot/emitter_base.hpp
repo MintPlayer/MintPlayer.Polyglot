@@ -24,6 +24,22 @@ protected:
         out_ += '\n';
     }
 
+    // Emit a block body: the statements, indented one level, with no braces of their own.
+    void blockBody(const std::vector<ir::StmtPtr>& body) {
+        ++indent_;
+        for (const auto& s : body) emitStmt(*s);
+        --indent_;
+    }
+
+    // Emit `head` followed by a brace-delimited block, per the target's brace style — the one real
+    // divergence in block control flow: K&R puts `{` on the head line (TS), Allman on its own line (C#).
+    void headBlock(const std::string& head, const std::vector<ir::StmtPtr>& body) {
+        if (bracesOnHeadLine()) line(head + " {");
+        else { line(head); line("{"); }
+        blockBody(body);
+        line("}");
+    }
+
     // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
     std::string inlineBlock(const std::vector<ir::StmtPtr>& body) {
         std::string saved = std::move(out_);
@@ -57,6 +73,11 @@ protected:
                 line(r.value ? "return " + emitExpr(*r.value) + ";" : "return;");
                 return;
             }
+            case ir::StmtKind::While: { // `while (cond)` head is identical across targets; braces via headBlock
+                const auto& w = static_cast<const ir::While&>(s);
+                headBlock("while (" + emitExpr(*w.cond) + ")", w.body);
+                return;
+            }
             default:
                 emitStmtTarget(s);
                 return;
@@ -66,6 +87,7 @@ protected:
     // Hooks the concrete backend implements.
     virtual std::string emitExpr(const ir::Expr& e) = 0;
     virtual void emitStmtTarget(const ir::Stmt& s) = 0;
+    virtual bool bracesOnHeadLine() const = 0; // K&R (TS) vs Allman (C#) — see headBlock()
 
 public:
     virtual ~EmitterBase() = default;

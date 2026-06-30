@@ -393,6 +393,8 @@ private:
         line("}");
     }
 
+    bool bracesOnHeadLine() const override { return false; } // C# is Allman-braced
+
     void emitStmtTarget(const ir::Stmt& s) override {
         switch (s.kind) {
             case ir::StmtKind::Let: {
@@ -448,26 +450,21 @@ private:
                 if (i.hasElse) { line("else"); emitBlock(i.elseBody); }
                 break;
             }
-            case ir::StmtKind::While: {
-                const auto& w = static_cast<const ir::While&>(s);
-                line("while (" + emitExpr(*w.cond) + ")");
-                emitBlock(w.body);
-                break;
-            }
             case ir::StmtKind::For: {
                 const auto& f = static_cast<const ir::For&>(s);
+                std::string head;
                 if (f.isRange) {
                     std::string cmp = f.inclusive ? " <= " : " < ";
-                    line("for (var " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
-                         f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++)");
+                    head = "for (var " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
+                           f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++)";
                 } else if (!f.tupleBindings.empty()) { // `foreach (var (a, b) in seq)`
                     std::string names;
                     for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += f.tupleBindings[i]; }
-                    line("foreach (var (" + names + ") in " + emitExpr(*f.iterable) + ")");
+                    head = "foreach (var (" + names + ") in " + emitExpr(*f.iterable) + ")";
                 } else {
-                    line("foreach (var " + f.binding + " in " + emitExpr(*f.iterable) + ")");
+                    head = "foreach (var " + f.binding + " in " + emitExpr(*f.iterable) + ")";
                 }
-                emitBlock(f.body);
+                headBlock(head, f.body);
                 break;
             }
         }

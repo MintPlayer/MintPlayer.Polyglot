@@ -223,8 +223,15 @@ rendered there, with `emitStmt`'s `default` routing every other kind to a pure-v
 concrete backends override (alongside the pure-virtual `emitExpr`). `CSharpEmitter`/`TypeScriptEmitter` now
 `: public EmitterBase`, with their duplicated state/helpers/leaf-cases deleted. The leaf-statement code was
 copied verbatim (same `+`-chains), so no evaluation-order change. Byte-for-byte no-op: all four gates green.
-*Next:* a brace-style abstraction so the block control-flow (`If`/`While`/`For`/`Use`) can move up too
-(C# Allman vs TS K&R is the only real divergence), then `Let`/`Yield`/`Throw` via small per-target affixes.
+**Slice 4b ✅ (brace-style abstraction):** the one real divergence in block control flow — C# Allman (`{` on
+its own line) vs TS K&R (`{` on the head line) — is now a single `bracesOnHeadLine()` hook + a shared
+`headBlock(head, body)` / `blockBody(body)` pair on `EmitterBase`. `While` (head content `while (cond)` is
+identical across targets) moved fully into the base; `For` keeps its target-specific head-building
+(`foreach…in` vs `for…of`, range/tuple forms) in the concrete emitter but wraps the block via `headBlock`.
+Byte-for-byte no-op: all four gates green. *Next:* `If` (the `else` arm merges the brace in K&R: `} else {`)
+and `Use` (try/finally + dispose) behind the same brace hook, then the leaf-ish `Yield`/`Throw`/`Let` via
+small per-target affixes — after which the residual per-emitter statement code is just declarations + the
+genuine imperative hooks (`Try`/`Match`).
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type
