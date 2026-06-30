@@ -203,8 +203,7 @@ emitters consult their spec instead of hardcoded type ladders. **Slice 2 ✅:** 
 literal data is now in the spec — `intSuffix` (literal suffixes, since slice 1) plus the new `binaryOp`
 spelling table (TS `==`→`===`/`!=`→`!==`; C# identity) consulted via `BackendSpec::binOp()` at every binary
 emission; precedence stays a shared free function (`operatorPrecedence`, identical across targets, so not
-per-backend data). Numeric-overflow wrapping and operator-overload dispatch stay imperative Hooks. *Next
-slices:* per-node templates + the `SpecEmitter` engine; declaration scaffolds; formalize Hooks.
+per-backend data). Numeric-overflow wrapping and operator-overload dispatch stay imperative Hooks.
 **Slice 3a ✅ (engine seam seeded):** the first per-node templates + the shared render primitives that are
 the seed of the `SpecEmitter` — `renderDelimited(DelimitedTemplate, children)` (open/sep/close affix table
 on the spec; e.g. tuple `(a, b)` vs `[a, b]`) and `renderCond(c,t,e)` (identical across targets, so a shared
@@ -219,11 +218,9 @@ green). **Slice 3c ✅:** `ListLit` now renders via `renderDelimited` too — TS
 the spec `delimited` table (`"list"`), while C#'s open affix is *computed* (`new …List<elem> { `, carrying
 the rendered element type) and passed to the same primitive, proving `renderDelimited` handles dynamic
 affixes, not just spec constants. All delimited/list-shaped expression nodes now route through the shared
-primitives (byte-for-byte no-op, all gates green). *Next:* lift the IR walk into the engine proper — the
-`SpecEmitter` class that owns the `emitExpr`/`emitStmt` switch + a `BackendHooks` seam for the imperative
-kinds (`Cast`, `Match`, `Try`, interpolation, numeric narrowing, operator-method dispatch). This is the big
-structural slice; approach is to keep growing the shared free-function surface until the residual per-emitter
-code is small enough that the "lift into one engine class" becomes mechanical, rather than a risky big-bang.
+primitives (byte-for-byte no-op, all gates green). (The slices below then lifted the *statement* walk into an
+engine class incrementally — keeping the shared surface growing rather than a risky big-bang — and found, per
+the top Status, that the *expression* walk could not be lifted the same way: it is per-target by shape.)
 **Slice 4a ✅ (the engine class is born):** a new `EmitterBase` (`include/.../emitter_base.hpp`) owns the
 byte-identical walk machinery — the `out_`/`indent_` buffer, `line()`, `inlineBlock()` — and the statement
 dispatch; the leaf statements whose spelling is identical across targets (`Assign`/`ExprStmt`/`Return`) are
@@ -257,11 +254,15 @@ the per-target "imperative 30%" and stay in the concrete emitters. The one genui
 two `emitBlock` methods (a same-name/different-contract footgun — C# Allman-braced vs TS brace-less) are
 **deleted**; every block now routes through the base's single `headBlock`/`blockBody` pair (function, method,
 operator, extension, class-init bodies, and `Try`'s try/catch/finally). Byte-for-byte no-op across every
-function/method body: all four gates green. *Next:* formalize the imperative **Hook tier** — give the
-residual per-target methods (`Cast`/`tsConvert`, `Match`, `Try`, interpolation, numeric narrowing, operator-
-method dispatch, the declaration emitters) a documented place as the backend's hook surface, completing the
-`{spec data + hooks}` shape. The full declarative-scaffold DSL for declarations is deferred until a third
-backend exists to extract it from (the "never guess the format" discipline).
+function/method body: all four gates green. **Slice 4f ✅ (Hook tier formalized — P9 closed):** the
+backend↔engine **hook surface** is documented in `emitter_base.hpp` as the contract it is — two granularities,
+wholesale per-target walks (`emitExpr`, `emitStmtTarget`) and fine-grained spellings (`bracesOnHeadLine`/
+`localDecl`/`yieldStmt`/`rethrowStmt`); `design/backend-spec.md` §3 was rewritten to describe the *realized*
+architecture (correcting the original speculative `SpecEmitter`/per-node-`BackendHooks` sketch). The residual
+imperative codegen (`Cast`/`tsConvert`, `Match`, `Try`, interpolation, numeric narrowing, operator-method
+dispatch, the declaration emitters) is the backend's private imperative tier behind those walks. The full
+declarative-scaffold DSL for declarations is deferred until a third backend exists to extract it from (the
+"never guess the format" discipline).
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type
@@ -440,7 +441,7 @@ String-wrap canary died once `print`'s TS body wrapped *universally*).
   silently renaming user identifiers. A blanket "uppercase-first" is **not** a substitute for native-member
   bindings (a native name isn't always a capitalization away — it would silently miscompile, violating §3).
 
-## P14 — Emitted-output correctness (compile-run the output) + `Option<T>` (in progress, 2026-06-30)
+## P14 — Emitted-output correctness (compile-run the output) + `Option<T>` — ✅ done (2026-06-30)
 **Why:** the samples gate (`tests/samples/run-compile.ps1`) only checks the *transpiler* succeeds, not that
 the emitted code **compiles and runs**. Manually compiling every sample's C# (`dotnet`) + running its TS
 (`node`) surfaced a cluster of output-only miscompiles the transpile-only gate was green over — the §3
@@ -449,7 +450,7 @@ the emitted code **compiles and runs**. Manually compiling every sample's C# (`d
 **P14a — the gate. ✅ done.** `tests/samples/run-emit.ps1`: for each sample, build the emitted C# and run the
 emitted TS, asserting **each compiles + runs without error** (NOT a stdout cross-compare — samples emit
 floats, non-deterministic across targets per §3.D; reuses the conformance csproj/dotnet/node harness). xfail
-map for cases blocked on a documented gap. Currently **4 compile+run, 6 xfail.**
+map for cases blocked on a documented gap (now empty — see the P14a/b summary below: **10 compile+run, 0 xfail**).
 
 **P14b — the bugs it surfaced (2026-06-30):**
 - ✅ **`02_records_operators` — `__polyglot_unlowered_expr__`**: the `with`-copy expression was never lowered.
@@ -458,13 +459,14 @@ map for cases blocked on a documented gap. Currently **4 compile+run, 6 xfail.**
   element type from the target slot. Plus precise match-binding types + local `T?` normalization.
 - ✅ **`print` of a bool diverged** (C# `True` vs JS `true`): std.io C# `print` lowercases bools (conformance
   `bool_print`). *Surfaced while fixing 02.*
-- ⏳ **`03_enums_unions_match` — C# CS1001 "identifier expected"**: bad C# emission (TS ok).
-- ⏳ **`04_generics` — C# CS1020 / TS `compareTo is not a function`**: interface-method dispatch over a generic
-  (`maxOf<T: Comparable<T>>`, `a.compareTo(b)`) + the indexer (`operator fn get`).
-- ⏳ **`09_strings` — C# CS1039 "unterminated string"**: a string-literal **escaping** bug in C# emission.
-- ⏳ **`07_using_disposal` — `Disposable` not found** (both): `use`/disposal + interface emission/`IDisposable`.
-- ⏳ **Aspirational std methods** (`string.isEmpty`/`toI32`/`toUpper`/`codePoints`, in 06/08/09): not a compiler
-  bug — these std methods don't exist yet. Either add a small `string` std surface or trim the samples.
+- ✅ **`03_enums_unions_match` — C# CS1001**: C# keyword-escaped identifiers (`@base`) + interp-string `\n`
+  escaping + float InvariantCulture + self-contained list literals.
+- ✅ **`04_generics` — C# CS1020 / TS `compareTo is not a function`**: emit **interfaces** (were never emitted)
+  + record `implements`/base clauses + real **indexers** (`operator get` → C# `this[]` / TS `get()`).
+- ✅ **`09_strings` — C# CS1039 "unterminated string"**: the interp-string escaping fix above.
+- ✅ **`07_using_disposal` — `Disposable` not found**: interface emission + a TS class `implements` interfaces.
+- ✅ **Aspirational std methods** (`string.isEmpty`/`toI32`/`toUpper`/`codePoints`): added as **`std.strings`**,
+  a module of bound extension methods (the new "extension methods with binding arms" capability).
 
 **P14c — `Option<T>` (the faithful nullable-generic fix).** `T?` over an **unconstrained** type parameter
 can't be faithfully compiled to C#: `… : null` is CS0403 (null can't convert to unconstrained `T`); `T?` +

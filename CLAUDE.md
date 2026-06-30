@@ -117,10 +117,14 @@ loading — dedup, cycle detection, deps-first merge; CLI `FileModuleResolver` (
 resolver; **collision detection** closes the silent value/union-case/extension holes. *Phase-2 deferred*
 (needs a per-file import-scope table): selective-import visibility restriction + `as` rebinding.
 std.io ships File bindings (readText/writeText/…) via the capability mechanism; std is still embedded-source.
-**P9 🚧 in progress — declarative backend DSL** (design + extraction map: `docs/design/backend-spec.md`).
-Catalog found backends are ~70% tabular / ~30% imperative → a backend = **Spec (data)** + **Hooks (C++ for
-the imperative 30%)** over one shared emit engine; extraction is incremental, each slice a byte-for-byte
-no-op. Slice 1 ✅: scalar type-leaf table → `BackendSpec` (`backend_spec.hpp`), both emitters consult it.
+**P9 ✅ done (to the principled two-backend extent) — declarative backend engine** (design + slice log:
+`docs/design/backend-spec.md`). A `{Spec data + Hooks}` split extracted from the two native backends across
+byte-for-byte no-op slices: **`EmitterBase`** (`emitter_base.hpp`/`.cpp`) owns the statement walk + buffer/
+indentation + brace abstraction; **`BackendSpec`** carries the scalar/suffix/operator/bracket tables + shared
+render primitives; the backend↔engine **hook surface** is the pure virtuals `emitExpr`/`emitStmtTarget`/
+`bracesOnHeadLine`/`localDecl`/`yieldStmt`/`rethrowStmt`. Extraction proved the **expression walk + declaration
+shapes are irreducibly per-target**, so they stay as each backend's imperative tier; the data-only declarative
+DSL is **deferred to P10** (extract from a third backend, never guess — §4.3).
 **P13 ✅ done — std as real modules + the `lib` prelude** (PRD §4.6): `print` is now `std.io`'s generic
 `expect/actual print<T>` (TS body wraps `console.log(String(x))` universally so bigint/number print like C#
 `WriteLine`); `Math` is an `extern class Math` in `std.math` (bound static members + `PI`/`E`; `min/max/abs`

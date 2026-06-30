@@ -2,8 +2,10 @@
 
 > Concrete realization of [`plugins-and-targets.md`](plugins-and-targets.md) §4 ("backends are declarative
 > plugins") for the zero-dependency C++ core. This is *extracted* from the two hand-written backends
-> (`emit_csharp.cpp`, `emit_typescript.cpp`), per the §4 discipline — never guessed. Status: **design +
-> incremental extraction in progress.**
+> (`emit_csharp.cpp`, `emit_typescript.cpp`), per the §4 discipline — never guessed. Status: **done to the
+> principled two-backend extent** — the shared engine (`EmitterBase`) + `BackendSpec` data + the documented
+> hook surface are extracted; the expression walk and declaration shapes proved irreducibly per-target and
+> stay as each backend's imperative tier, with the data-only declarative DSL deferred to a third backend (P10).
 
 ## 1. What a backend actually is, after extraction
 
@@ -101,8 +103,13 @@ third backend (P10) that would justify extracting it — never guessed (the §4.
 
 ## 4. Incremental migration (keep the gate green at every step)
 
+> **This was the original plan; the realized path diverged — see §3 and the PLAN P9 slice log (1 → 4f).**
+> In particular, steps 3–4 below guessed a node-rendering `SpecEmitter` + per-node `BackendHooks`; extraction
+> instead lifted the *statement* walk into `EmitterBase` and left the *expression* walk and declaration shapes
+> as each backend's per-target imperative tier. Steps 1–2 and 5 landed substantially as written.
+
 The P9 gate is **byte-for-byte parity with the current native output** — enforced continuously by the
-existing golden unit tests + the 29-program differential conformance + the 10-sample round-trip. So the
+existing golden unit tests + the 37-program differential conformance + the 10-sample round-trip. So the
 extraction proceeds in slices, each a no-op on output:
 
 1. **Type-leaf + literal-suffix tables → `BackendSpec`** (this commit). Both emitters consult the spec for
