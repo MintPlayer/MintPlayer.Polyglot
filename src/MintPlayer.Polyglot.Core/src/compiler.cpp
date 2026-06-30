@@ -62,7 +62,7 @@ extern class List<T> {
 // on the §3.B refuse-list, so it's permitted.
 const char* STD_IO = R"PG(
 expect fn print<T>(x: T)
-actual(csharp)     fn print<T>(x: T) { extern("global::System.Console.WriteLine(x)") }
+actual(csharp)     fn print<T>(x: T) { extern("global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object)x)") }
 actual(typescript) fn print<T>(x: T) { extern("console.log(String(x))") }
 
 expect fn readText(path: string): string

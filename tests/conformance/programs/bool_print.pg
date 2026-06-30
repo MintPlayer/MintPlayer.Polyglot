@@ -1,0 +1,8 @@
+// P14b — printing a bool must agree across targets: C# `WriteLine(true)` is "True" but JS `String(true)`
+// is "true", so std.io's C# `print` lowercases bools. (Integers/strings already agree.)
+fn main() {
+  print(1 < 2)      // true
+  print(2 < 1)      // false
+  print(3 == 3)     // true
+  print(7)          // 7   (non-bool unaffected)
+}

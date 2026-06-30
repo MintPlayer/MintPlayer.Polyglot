@@ -184,7 +184,7 @@ int main() {
         check(has(cs.code, "public static int add(int a, int b)"), "C#: function signature mapped");
         // print is now std.io's generic `print<T>` (capability mechanism): its csharp `actual` body is the
         // Console.WriteLine, and the call site is a normal free-function call (Program.print(...)).
-        check(has(cs.code, "global::System.Console.WriteLine(x)"), "C#: std.io print body -> Console.WriteLine");
+        check(has(cs.code, "global::System.Console.WriteLine(x is bool"), "C#: std.io print body -> Console.WriteLine (bool-lowercasing)");
         check(has(cs.code, "Program.print(Program.add(sum, 100))"), "C#: print call site -> Program.print");
         check(has(cs.code, "static void Main() { main(); }"), "C#: main entry point emitted");
     }
