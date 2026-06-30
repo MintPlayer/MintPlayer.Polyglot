@@ -83,6 +83,7 @@ public:
         for (const auto& u : unit.unions) {
             ir::Union iu;
             iu.name = u.name;
+            iu.generics = generics(u.generics);
             for (const auto& c : u.cases) {
                 ir::UnionCase ic;
                 ic.name = c.name;

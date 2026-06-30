@@ -370,7 +370,13 @@ private:
                 // hard error, not a silent last-wins overwrite.
                 if (unionCtors_.count(c.name))
                     diags_.error(c.pos, "duplicate union case '" + c.name + "'");
-                FnSig sig; for (const auto& p : c.params) sig.params.push_back(p.type); sig.result = tNamed(d.name);
+                // A generic union's case is a generic constructor: `Some(value: T): Option<T>`. Carrying the
+                // union's type params (sig.generics) + a parameterized result lets `Some(5)` infer Option<i32>.
+                FnSig sig; for (const auto& p : c.params) sig.params.push_back(p.type);
+                for (const auto& g : d.generics) sig.generics.push_back(g.name);
+                TypeRef res = tNamed(d.name);
+                for (const auto& g : d.generics) res.args.push_back(namedType(g.name));
+                sig.result = res;
                 unionCtors_[c.name] = sig;
                 unionCaseOwner_[c.name] = d.name;
                 unionAllCases_[d.name].push_back(c.name);
@@ -457,7 +463,7 @@ private:
         for (const auto& d : u.records)    { pushGenerics(d.generics); resolveBounds(d.generics, d.pos); resolveParams(d.fields, d.pos); for (const auto& b : d.bases) resolveTypeRef(b, d.pos); resolveMembers(d.members); popGenerics(d.generics); }
         for (const auto& d : u.classes)    { pushGenerics(d.generics); resolveBounds(d.generics, d.pos); for (const auto& b : d.bases) resolveTypeRef(b, d.pos); resolveMembers(d.members); popGenerics(d.generics); }
         for (const auto& d : u.interfaces) { pushGenerics(d.generics); resolveBounds(d.generics, d.pos); for (const auto& b : d.bases) resolveTypeRef(b, d.pos); resolveMembers(d.members); popGenerics(d.generics); }
-        for (const auto& d : u.unions)     for (const auto& c : d.cases) resolveParams(c.params, c.pos);
+        for (const auto& d : u.unions) { pushGenerics(d.generics); resolveBounds(d.generics, d.pos); for (const auto& c : d.cases) resolveParams(c.params, c.pos); popGenerics(d.generics); }
         for (const auto& d : u.extensions) { pushGenerics(d.generics); resolveBounds(d.generics, d.pos); resolveTypeRef(d.receiver, d.pos); resolveParams(d.params, d.pos); resolveTypeRef(d.returnType, d.pos); popGenerics(d.generics); }
         for (const auto& v : u.values)     if (v.hasType) resolveTypeRef(v.type, v.pos);
     }
@@ -930,7 +936,10 @@ private:
             if (t->second.hasCtor) checkArgs(t->second.ctorParams, argTypes, e.args, "'" + name + "'", e.pos, t->second.ctorRequired);
             return tNamed(name);
         }
-        if (auto uc = unionCtors_.find(name); uc != unionCtors_.end()) { checkArgs(uc->second.params, argTypes, e.args, "'" + name + "'", e.pos); return uc->second.result; }
+        if (auto uc = unionCtors_.find(name); uc != unionCtors_.end()) {
+            checkArgs(uc->second.params, argTypes, e.args, "'" + name + "'", e.pos);
+            return inferResult(uc->second.generics, uc->second.params, argTypes, uc->second.result); // Some(5) -> Option<i32>
+        }
         if (auto f = fns_.find(name); f != fns_.end()) {
             const FnSig* chosen = resolveOverload(f->second, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }

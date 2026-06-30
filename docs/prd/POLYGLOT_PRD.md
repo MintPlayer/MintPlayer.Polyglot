@@ -100,12 +100,13 @@ a queryable tree); **bit-exact cross-target floating point** (see §3.D).
   class is a later option if BigInt proves too slow.
 - **float (32-bit) vs double:** default lets `float` ride a JS `double`; `Math.fround`-per-op strictness is
   **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity.
-- **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics need a real
+- **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics use a real
   `Option<T>` (decided 2026-06-30, in progress — see PLAN P14c):** `T?` over an *unconstrained* type
-  parameter has no faithful C# emission — `null` is a compile error (CS0403), and `T?`+`default(T)` returns
-  `0`/`false` for value types rather than an absent marker, diverging silently from TS's `null`. So `T?` on a
-  generic lowers to an `Option<T>` std type (`Some(x)`/`None`) instead of a bare target nullable. `T?` on
-  concrete/reference types keeps using the native nullable.
+  parameter has no faithful native emission — C# `null` is CS0403, `T?`+`default(T)` returns `0` for value
+  types (silent divergence from TS `null`), and `Nullable<T>` is value-types-only (CS0453). So `T?` whose
+  base is a bare generic parameter **desugars to a real `Option<T>` generic union** (`Some(x)`/`None`),
+  emitted via the existing union machinery (tagged on both targets — distinguishes `Some(null)` from `None`).
+  Concrete/reference `T?` keeps the idiomatic native nullable (C# `int?`/ref, TS `T | null`).
 - **equality / hashing:** generate structural `Equals`/`GetHashCode`; identity hash via a side `WeakMap`.
 
 ### D. The determinism honesty clause

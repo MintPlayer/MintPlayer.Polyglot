@@ -271,6 +271,7 @@ struct UnionCase {
 struct UnionDecl {
     std::string name;
     SourcePos pos;
+    std::vector<GenericParam> generics;  // `union Option<T> { … }`
     std::vector<UnionCase> cases;
 };
 

@@ -350,6 +350,7 @@ struct UnionCase {
 };
 struct Union {
     std::string name;
+    std::vector<GenericParam> generics; // `union Option<T> { … }`
     std::vector<UnionCase> cases;
 };
 struct ClassField {

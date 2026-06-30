@@ -393,12 +393,25 @@ transpile gate.
 can't be faithfully compiled to C#: `… : null` is CS0403 (null can't convert to unconstrained `T`); `T?` +
 `default` *compiles* but `default(T)` is `0`/`false` for value types, **not** an absent marker — so
 `List<i32>.secondOrNull()` would return `0` in C# while TS returns `null` (silent divergence + `0 ?? -1`
-doesn't even type-check). Verified empirically (2026-06-30). Decision (the language designer's call):
-**build a real `Option<T>` std type** — the faithful cross-target "optional value" (`Some(x)`/`None`) — rather
-than refuse or emit a lying `default`. `T?` over a generic lowers to `Option<T>`; design (representation per
-target, relation to the existing `?`/`null`/`??`/`x!` machinery, `match`/`Some`/`None`, std-type vs union vs
-extern-class) under active investigation. (The earlier "refuse-now" option is the fallback if the design
-proves out of scope.)
+doesn't even type-check); and `Nullable<T>` is `where T : struct` (CS0453), illegal for an unconstrained `T`.
+All three verified empirically (2026-06-30).
+
+**Design chosen (2026-06-30, "solid over quick"):** a real **`Option<T>` generic discriminated union** in the
+core prelude — `union Option<T> { Some(value: T), None }` — emitted via the *existing* union machinery
+(C# `abstract record`+`sealed record`s, TS tagged union). `T?` whose base is a **bare generic type
+parameter** is sugar that **desugars in the front-end** to `Option<T>`; everything concrete (`string?`,
+`i32?`, `Record?`) keeps the idiomatic **native** nullable (C# `int?`/ref, TS `T | null`) since that's
+faithful there. Rationale: the tagged union distinguishes `Some(null)` from `None` on both targets (the
+asymmetric "TS `T | null` + C# wrapper" alternative cannot — a latent §3 divergence), and desugaring to
+existing union+`match` primitives means **no per-target optional special-casing in the emitters**. The
+prerequisite — generic unions — is independently valuable (`Result<T,E>`, …).
+
+*Slices (each gate-green + compile-run verified):* **(1)** generic unions through parser/AST/IR/lower/both
+emitters; **(2)** `Option<T>` in the core prelude + explicit `Some`/`None`/`match`; **(3)** desugar
+`T?`-over-a-generic → `Option<T>` (sema type-normalization + `T`→`Some`/`null`→`None` coercion via
+`checkConvert` + `??`→`match`/`x!`→payload lowering), so sample 08 stays verbatim and its **C# compiles+runs**;
+**(4)** the permanent compile-run gate (P14a). Edge cases to handle/refuse explicitly: nested/already-nullable
+`T` (`Option<Option<T>>`), `?.` on a generic-nullable.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

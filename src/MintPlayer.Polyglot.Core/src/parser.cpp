@@ -394,6 +394,7 @@ private:
         d.pos = peek().pos;
         expect(TokKind::KwUnion, "'union'");
         d.name = expect(TokKind::Identifier, "a union name").text;
+        d.generics = parseGenericParams(); // `union Option<T> { … }` — type params shared by all cases
         expect(TokKind::LBrace, "'{'");
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
             UnionCase c;

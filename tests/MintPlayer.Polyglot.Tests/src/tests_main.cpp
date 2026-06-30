@@ -583,6 +583,23 @@ int main() {
         check(ts.ok && has(ts.code, "number[]"), "P10: List<i32> -> number[] from the mapping (TS)");
     }
 
+    // P14 slice 1 — generic discriminated unions: `union Box<T>` declares + constructs (type inferred) +
+    // matches, byte-identical across targets (C# generic record hierarchy, TS generic tagged union).
+    {
+        const char* prog =
+            "union Box<T> { Full(value: T), Empty }\n"
+            "fn unwrap<T>(b: Box<T>, dflt: T): T => match b { Full(v) => v, Empty => dflt }\n"
+            "fn main() { print(unwrap(Full(5), 0)) }\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "abstract record Box<T>") && has(cs.code, "sealed record Full<T>(T value) : Box<T>")
+                    && has(cs.code, "new Full<int>(5)") && has(cs.code, "Full<T>(var v)"),
+              "P14: generic union — C# record hierarchy + typed construction + typed pattern");
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok && has(ts.code, "type Box<T> = { tag: \"Full\"; value: T } | { tag: \"Empty\" }")
+                    && has(ts.code, "{ tag: \"Full\", value: 5 }"),
+              "P14: generic union — TS tagged union + construction");
+    }
+
     // P10 — the core prelude (Error/Iterable) is ALWAYS linked (no import, no lib): with a bare `compile`,
     // Error constructs + maps per target and `.message` binds — proving they're core-prelude extern classes,
     // not emitter hardcodes.

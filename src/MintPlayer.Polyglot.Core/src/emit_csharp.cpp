@@ -185,23 +185,26 @@ private:
     }
 
     void emitUnion(const ir::Union& u) {
-        line("abstract record " + u.name + ";");
+        std::string g = csGenerics(u.generics); // "" or "<T>"; the base reference reuses the same param names
+        line("abstract record " + u.name + g + ";");
         for (const auto& c : u.cases) {
-            std::string s = "sealed record " + c.name + "(";
+            std::string s = "sealed record " + c.name + g + "(";
             for (std::size_t i = 0; i < c.fields.size(); ++i) { if (i) s += ", "; s += csType(c.fields[i].type) + " " + c.fields[i].name; }
-            line(s + ") : " + u.name + ";");
+            line(s + ") : " + u.name + g + ";");
         }
     }
 
-    std::string patternCs(const ir::Pattern& p) {
+    // `genArgs` is the scrutinee union's type-arg suffix ("" or "<int>"): a generic union's case records are
+    // generic, so the C# pattern must name `Full<int>` / `Empty<int>`, not the open `Full`/`Empty`.
+    std::string patternCs(const ir::Pattern& p, const std::string& genArgs = "") {
         switch (p.kind) {
             case ir::PatternKind::Wildcard: return "_";
             case ir::PatternKind::Literal:  return emitExpr(*p.literal);
             case ir::PatternKind::Binding:  return "var " + p.binding;
             case ir::PatternKind::EnumCase: return p.enumType + "." + p.enumCase;
             case ir::PatternKind::Ctor: {
-                if (p.binders.empty()) return p.ctorCase + " _"; // type pattern (payload-free)
-                std::string s = p.ctorCase + "(";
+                if (p.binders.empty()) return p.ctorCase + genArgs + " _"; // type pattern (payload-free)
+                std::string s = p.ctorCase + genArgs + "(";
                 for (std::size_t i = 0; i < p.binders.size(); ++i) { if (i) s += ", "; s += "var " + p.binders[i].binding; }
                 return s + ")";
             }
@@ -584,7 +587,15 @@ private:
             }
             case ir::ExprKind::MakeCase: {
                 const auto& mc = static_cast<const ir::MakeCase&>(e);
-                std::string s = "new " + mc.caseName + "(";
+                std::string s = "new " + mc.caseName;
+                // A generic union's case record is itself generic (`Some<T>`): supply the type args from the
+                // construction's result type (`Option<i32>` -> `new Some<int>(…)`). Non-generic: no `<…>`.
+                if (!e.type.args.empty()) {
+                    s += "<";
+                    for (std::size_t i = 0; i < e.type.args.size(); ++i) { if (i) s += ", "; s += csType(e.type.args[i]); }
+                    s += ">";
+                }
+                s += "(";
                 for (std::size_t i = 0; i < mc.fields.size(); ++i) { if (i) s += ", "; s += emitExpr(*mc.fields[i].value); }
                 return s + ")";
             }
@@ -604,12 +615,19 @@ private:
             case ir::ExprKind::Match: {
                 const auto& m = static_cast<const ir::Match&>(e);
                 std::string s = atom(*m.scrutinee) + " switch { ";
+                // A generic union scrutinee (`Box<int>`) needs its case patterns spelled `Full<int>` etc.
+                std::string genArgs;
+                if (!m.scrutinee->type.args.empty()) {
+                    genArgs = "<";
+                    for (std::size_t i = 0; i < m.scrutinee->type.args.size(); ++i) { if (i) genArgs += ", "; genArgs += csType(m.scrutinee->type.args[i]); }
+                    genArgs += ">";
+                }
                 bool hasCatchAll = false;
                 for (std::size_t i = 0; i < m.arms.size(); ++i) {
                     if (i) s += ", ";
                     const ir::Pattern& p = m.arms[i].pattern;
                     if (!m.arms[i].guard && (p.kind == ir::PatternKind::Wildcard || p.kind == ir::PatternKind::Binding)) hasCatchAll = true;
-                    s += patternCs(p);
+                    s += patternCs(p, genArgs);
                     if (m.arms[i].guard) s += " when " + emitExpr(*m.arms[i].guard);
                     s += " => " + emitExpr(*m.arms[i].body);
                 }

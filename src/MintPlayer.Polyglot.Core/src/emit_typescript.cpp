@@ -211,7 +211,7 @@ private:
 
     // Union -> a discriminated-union type alias (stripped at runtime; construction makes {tag,...} objects).
     void emitUnion(const ir::Union& u) {
-        std::string s = "type " + u.name + " = ";
+        std::string s = "type " + u.name + tsGenerics(u.generics) + " = "; // `type Option<T> = …`
         for (std::size_t i = 0; i < u.cases.size(); ++i) {
             if (i) s += " | ";
             s += "{ tag: \"" + u.cases[i].name + "\"";

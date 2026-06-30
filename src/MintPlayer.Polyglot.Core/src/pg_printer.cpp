@@ -128,7 +128,7 @@ private:
     }
 
     void printUnion(const UnionDecl& d) {
-        line("union " + d.name + " {");
+        line("union " + d.name + generics(d.generics) + " {");
         ++indent_;
         for (const auto& c : d.cases) {
             std::string s = c.name;

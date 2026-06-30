@@ -1,0 +1,16 @@
+// P14 slice 1 — generic discriminated unions: declaration, generic construction (type inferred from the
+// payload), and exhaustive match, all byte-identical across C# (record hierarchy) and TS (tagged union).
+union Box<T> {
+  Full(value: T)
+  Empty
+}
+
+fn unwrap<T>(b: Box<T>, dflt: T): T => match b {
+  Full(v) => v,
+  Empty => dflt,
+}
+
+fn main() {
+  print(unwrap(Full(5), 0))      // 5   (Full(5) infers Box<i32>)
+  print(unwrap(Full(42), 99))    // 42
+}
