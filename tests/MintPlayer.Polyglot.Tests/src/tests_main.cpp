@@ -186,7 +186,8 @@ int main() {
         // Console.WriteLine, and the call site is a normal free-function call (Program.print(...)).
         check(has(cs.code, "global::System.Console.WriteLine(x is bool"), "C#: std.io print body -> Console.WriteLine (bool-lowercasing)");
         check(has(cs.code, "Program.print(Program.add(sum, 100))"), "C#: print call site -> Program.print");
-        check(has(cs.code, "static void Main() { main(); }"), "C#: main entry point emitted");
+        check(has(cs.code, "static void Main() {") && has(cs.code, "InvariantCulture") && has(cs.code, "main(); }"),
+              "C#: main entry point emitted (with invariant-culture pin)");
     }
 
     // TypeScript emission (golden substrings).

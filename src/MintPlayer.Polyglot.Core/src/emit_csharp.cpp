@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <string>
+#include <unordered_set>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
 
@@ -94,6 +95,22 @@ std::string csType(const TypeRef& t) {
     return "object";
 }
 
+// A `.pg` identifier that collides with a C# reserved keyword (field/param/local/member named `base`,
+// `default`, `class`, …) is emitted as a `@`-verbatim identifier so the C# compiles. (TS has no such escape,
+// but the colliding set differs and `base` etc. are legal TS identifiers, so TS names emit verbatim.)
+std::string csIdent(const std::string& n) {
+    static const std::unordered_set<std::string> kw = {
+        "abstract","as","base","bool","break","byte","case","catch","char","checked","class","const","continue",
+        "decimal","default","delegate","do","double","else","enum","event","explicit","extern","false","finally",
+        "fixed","float","for","foreach","goto","if","implicit","in","int","interface","internal","is","lock","long",
+        "namespace","new","null","object","operator","out","override","params","private","protected","public",
+        "readonly","ref","return","sbyte","sealed","short","sizeof","stackalloc","static","string","struct","switch",
+        "this","throw","true","try","typeof","uint","ulong","unchecked","unsafe","ushort","using","virtual","void",
+        "volatile","while",
+    };
+    return kw.count(n) ? "@" + n : n;
+}
+
 std::string csGenerics(const std::vector<ir::GenericParam>& gs) {
     if (gs.empty()) return "";
     std::string s = "<";
@@ -154,13 +171,19 @@ public:
         out_ += "static class Program\n{\n";
         indent_ = 1;
         for (const auto& g : m.globals) // top-level const/let -> static readonly field
-            line("static readonly " + csType(g.type) + " " + g.name + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
+            line("static readonly " + csType(g.type) + " " + csIdent(g.name) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
         for (const auto& fn : m.functions) {
             if (!fn.actualTarget.empty() && fn.actualTarget != "csharp") continue; // other target's `actual`
             emitFunction(fn);
         }
         for (const auto& fn : m.functions) {
-            if (fn.isEntry) { line(""); line("static void Main() { main(); }"); break; }
+            if (fn.isEntry) {
+                line("");
+                // Pin the invariant culture so number formatting (WriteLine/interpolation) matches JS — C#
+                // is culture-dependent (e.g. "12,5" on a comma-locale machine), JS always uses '.'. §3.
+                line("static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main(); }");
+                break;
+            }
         }
         out_ += "}\n";
         return out_;
@@ -189,7 +212,7 @@ private:
         line("abstract record " + u.name + g + ";");
         for (const auto& c : u.cases) {
             std::string s = "sealed record " + c.name + g + "(";
-            for (std::size_t i = 0; i < c.fields.size(); ++i) { if (i) s += ", "; s += csType(c.fields[i].type) + " " + c.fields[i].name; }
+            for (std::size_t i = 0; i < c.fields.size(); ++i) { if (i) s += ", "; s += csType(c.fields[i].type) + " " + csIdent(c.fields[i].name); }
             line(s + ") : " + u.name + g + ";");
         }
     }
@@ -200,12 +223,12 @@ private:
         switch (p.kind) {
             case ir::PatternKind::Wildcard: return "_";
             case ir::PatternKind::Literal:  return emitExpr(*p.literal);
-            case ir::PatternKind::Binding:  return "var " + p.binding;
+            case ir::PatternKind::Binding:  return "var " + csIdent(p.binding);
             case ir::PatternKind::EnumCase: return p.enumType + "." + p.enumCase;
             case ir::PatternKind::Ctor: {
                 if (p.binders.empty()) return p.ctorCase + genArgs + " _"; // type pattern (payload-free)
                 std::string s = p.ctorCase + genArgs + "(";
-                for (std::size_t i = 0; i < p.binders.size(); ++i) { if (i) s += ", "; s += "var " + p.binders[i].binding; }
+                for (std::size_t i = 0; i < p.binders.size(); ++i) { if (i) s += ", "; s += "var " + csIdent(p.binders[i].binding); }
                 return s + ")";
             }
         }
@@ -214,7 +237,7 @@ private:
 
     void emitRecord(const ir::Record& r) {
         std::string head = "record " + r.name + csGenerics(r.generics) + "(";
-        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) head += ", "; head += csType(r.fields[i].type) + " " + r.fields[i].name; }
+        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) head += ", "; head += csType(r.fields[i].type) + " " + csIdent(r.fields[i].name); }
         head += ")" + csWhere(r.generics);
         if (r.methods.empty()) { line(head + ";"); return; }
         line(head);
@@ -240,7 +263,7 @@ private:
             // `static readonly` (not `const`) for immutable statics: it accepts any initializer expression,
             // not just compile-time constants, and reads identically as `Owner.Name`.
             std::string mods = f.isStatic ? (f.isMutable ? "static " : "static readonly ") : (f.isMutable ? "" : "readonly ");
-            std::string decl = "public " + mods + csType(f.type) + " " + f.name;
+            std::string decl = "public " + mods + csType(f.type) + " " + csIdent(f.name);
             if (f.init) decl += " = " + emitExpr(*f.init);
             line(decl + ";");
         }
@@ -263,7 +286,7 @@ private:
 
     // `T name` or `T name = default` — a parameter declaration with its optional default value.
     std::string csParam(const ir::Param& p) {
-        std::string s = csType(p.type) + " " + p.name;
+        std::string s = csType(p.type) + " " + csIdent(p.name);
         if (p.defaultValue) s += " = " + emitExpr(*p.defaultValue);
         return s;
     }
@@ -362,7 +385,7 @@ private:
         switch (s.kind) {
             case ir::StmtKind::Let: {
                 const auto& l = static_cast<const ir::Let&>(s);
-                line("var " + l.name + " = " + emitExpr(*l.init) + ";");
+                line("var " + csIdent(l.name) + " = " + emitExpr(*l.init) + ";");
                 break;
             }
             case ir::StmtKind::Assign: {
@@ -390,7 +413,7 @@ private:
             }
             case ir::StmtKind::Use: {
                 const auto& u = static_cast<const ir::Use&>(s);
-                line("var " + u.binding + " = " + emitExpr(*u.init) + ";");
+                line("var " + csIdent(u.binding) + " = " + emitExpr(*u.init) + ";");
                 line("try");
                 emitBlock(u.body);
                 line("finally");
@@ -491,6 +514,9 @@ private:
                 for (std::size_t i = 0; i < in.chunks.size(); ++i) {
                     for (char c : in.chunks[i]) { // escape for an interpolated-string literal
                         if (c == '"' || c == '\\') { s += '\\'; s += c; }
+                        else if (c == '\n') s += "\\n"; // a raw newline/tab/CR would break the `$"…"` literal
+                        else if (c == '\t') s += "\\t";
+                        else if (c == '\r') s += "\\r";
                         else if (c == '{') s += "{{";
                         else if (c == '}') s += "}}";
                         else s += c;
@@ -500,7 +526,7 @@ private:
                 return s + "\"";
             }
             case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
-            case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
+            case ir::ExprKind::Var:   return csIdent(static_cast<const ir::Var&>(e).name);
             case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_;
             case ir::ExprKind::Unary: {
                 const auto& u = static_cast<const ir::Unary&>(e);
@@ -534,7 +560,7 @@ private:
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
                 std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
-                return base + (m.nullSafe ? "?." : ".") + m.field;
+                return base + (m.nullSafe ? "?." : ".") + csIdent(m.field);
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
@@ -558,8 +584,10 @@ private:
             }
             case ir::ExprKind::ListLit: {
                 const auto& l = static_cast<const ir::ListLit&>(e);
-                TypeRef listType; listType.name = "List"; listType.args = {l.elem}; // spelled via the List extern-class mapping
-                std::string s = "new " + csType(listType) + " { ";
+                // A list literal is built-in syntax (like TS `[…]`), so its container is inherent — the BCL
+                // List — independent of whether std.collections is imported. (The `List<T>` *type* spelling
+                // is still registry-driven; only methods like `.add` need the import.)
+                std::string s = "new global::System.Collections.Generic.List<" + csType(l.elem) + "> { ";
                 for (std::size_t i = 0; i < l.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*l.elements[i]); }
                 return s + " }";
             }
@@ -572,7 +600,7 @@ private:
             case ir::ExprKind::With: { // C# records support `with` natively
                 const auto& w = static_cast<const ir::With&>(e);
                 std::string s = atom(*w.base) + " with { ";
-                for (std::size_t i = 0; i < w.fields.size(); ++i) { if (i) s += ", "; s += w.fields[i].name + " = " + emitExpr(*w.fields[i].value); }
+                for (std::size_t i = 0; i < w.fields.size(); ++i) { if (i) s += ", "; s += csIdent(w.fields[i].name) + " = " + emitExpr(*w.fields[i].value); }
                 return s + " }";
             }
             case ir::ExprKind::Bound:

@@ -1,0 +1,8 @@
+// P14b — printing a float must agree cross-target. C# number formatting is culture-dependent (a comma-locale
+// machine prints "0,25"); JS always uses '.'. The C# entry point pins InvariantCulture so they match.
+// Only `÷` is used (reproducible cross-target per §3.D), so the values are exact.
+fn main() {
+  print(1.0 / 4.0)     // 0.25
+  print(3.0 / 2.0)     // 1.5
+  print(10.0 / 8.0)    // 1.25
+}
