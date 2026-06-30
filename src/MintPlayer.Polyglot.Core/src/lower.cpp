@@ -553,6 +553,8 @@ private:
             }
             case StmtKind::Return:
                 return std::make_unique<ir::Return>(s.pos, s.value ? expr(*s.value) : nullptr);
+            case StmtKind::Break:    return std::make_unique<ir::Break>(s.pos);
+            case StmtKind::Continue: return std::make_unique<ir::Continue>(s.pos);
             case StmtKind::Yield:
                 sawYield_ = true;
                 return std::make_unique<ir::Yield>(s.pos, s.value ? expr(*s.value) : nullptr);

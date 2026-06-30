@@ -12,6 +12,7 @@ void EmitterBase::line(const std::string& s) {
 
 void EmitterBase::blockBody(const std::vector<ir::StmtPtr>& body) {
     ++indent_;
+    if (body.empty() && blockStyle() == BlockStyle::ColonIndent) line("pass"); // Python has no empty block
     for (const auto& s : body) emitStmt(*s);
     --indent_;
 }
@@ -96,6 +97,8 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             line(r.value ? "return " + emitExpr(*r.value) + stmtEnd() : std::string("return") + stmtEnd());
             return;
         }
+        case ir::StmtKind::Break:    line(std::string("break") + stmtEnd());    return; // identical spelling, all targets
+        case ir::StmtKind::Continue: line(std::string("continue") + stmtEnd()); return;
         case ir::StmtKind::While: { // `while (cond)` head is identical across targets; block form via headBlock
             const auto& w = static_cast<const ir::While&>(s);
             headBlock("while (" + emitExpr(*w.cond) + ")", w.body);

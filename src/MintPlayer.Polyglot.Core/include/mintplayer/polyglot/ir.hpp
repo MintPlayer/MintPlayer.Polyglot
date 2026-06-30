@@ -196,7 +196,7 @@ struct Match : Expr {
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Yield, Throw, Try, Use };
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue, Yield, Throw, Try, Use };
 
 struct Stmt {
     StmtKind kind;
@@ -251,6 +251,8 @@ struct Return : Stmt {
     ExprPtr value; // may be null
     Return(SourcePos p, ExprPtr v) : Stmt(StmtKind::Return, p), value(std::move(v)) {}
 };
+struct Break : Stmt { explicit Break(SourcePos p) : Stmt(StmtKind::Break, p) {} };
+struct Continue : Stmt { explicit Continue(SourcePos p) : Stmt(StmtKind::Continue, p) {} };
 struct Yield : Stmt { // `yield <value>` inside an iterator: C# `yield return`, TS generator `yield`
     ExprPtr value;
     Yield(SourcePos p, ExprPtr v) : Stmt(StmtKind::Yield, p), value(std::move(v)) {}

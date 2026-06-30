@@ -3,6 +3,7 @@
 #include <cctype>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
@@ -84,12 +85,13 @@ public:
 private:
     BlockStyle blockStyle() const override { return BlockStyle::ColonIndent; }
     const char* stmtEnd() const override { return ""; }                                 // Python: no terminator
-    std::string localDecl(const std::string& name, bool) override { return name; }       // bare `name = ...`
+    std::string localDecl(const std::string& name, bool) override { return pyId(name); }  // bare `name = ...`
     std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
     std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
     const char* throwKeyword() const override { return "raise"; }     // `throw v` -> `raise v`
 
     std::unordered_map<std::string, const ir::ExternType*> externTypes_;
+    int tmp_ = 0; // fresh-name counter for the walrus temporaries that keep `?.`/`??` single-evaluated
 
     // The Python spelling of a named type: an `extern class`'s pyType template (Error -> "Exception") if one
     // is registered, else the bare name (user types, which Python needs no annotation for). Used for class
@@ -124,10 +126,25 @@ private:
         return out;
     }
 
+    // Escape a source identifier that collides with a Python keyword (e.g. a local `def`/`class`/`in`) by
+    // suffixing `_`. Applied uniformly to every binding site and reference so the renaming stays consistent.
+    static std::string pyId(const std::string& s) {
+        static const std::unordered_set<std::string> kw = {
+            "False","None","True","and","as","assert","async","await","break","class","continue","def","del",
+            "elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal",
+            "not","or","pass","raise","return","try","while","with","yield","match","case"};
+        return kw.count(s) ? s + "_" : s;
+    }
+
+    // A parameter: escaped name + optional `= default` (Python supports default args natively).
+    std::string param(const ir::Param& p) {
+        return pyId(p.name) + (p.defaultValue ? " = " + emitExpr(*p.defaultValue) : "");
+    }
+
     void emitFunction(const ir::Function& fn) {
         // Extensions lower to plain free functions (`self` is the receiver param) with no mangledName.
         std::string sig = "def " + pyName(fn.mangledName.empty() ? fn.name : fn.mangledName) + "(";
-        for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += fn.params[i].name; }
+        for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += param(fn.params[i]); }
         sig += ")";
         if (fn.exprBodied) {
             openBlock(sig);
@@ -164,11 +181,11 @@ private:
         openBlock("class " + r.name);
         ++indent_;
         std::string ctor = "def __init__(self";
-        for (const auto& f : r.fields) ctor += ", " + f.name;
+        for (const auto& f : r.fields) ctor += ", " + pyId(f.name);
         openBlock(ctor + ")");
         ++indent_;
         if (r.fields.empty()) line("pass");
-        for (const auto& f : r.fields) line("self." + f.name + " = " + f.name);
+        for (const auto& f : r.fields) line("self." + f.name + " = " + pyId(f.name));
         --indent_;
         openBlock("def __eq__(self, other)");
         ++indent_;
@@ -186,8 +203,9 @@ private:
         --indent_;
     }
 
-    // A class -> a Python class: `__init__` (with super()), methods. Instance fields are set in __init__ (no
-    // separate declaration); static fields and field initializers outside init are a later slice.
+    // A class -> a Python class. `const`/`static` fields become class-level attributes (read as `Owner.name`).
+    // Instance-field initializers run in __init__ (after super, before the init body); plain instance fields
+    // with no initializer need no declaration (Python sets them on first assignment in the init body).
     void emitClass(const ir::Class& c) {
         std::string head = "class " + c.name;
         if (!c.bases.empty()) {
@@ -198,9 +216,14 @@ private:
         openBlock(head);
         ++indent_;
         bool any = false;
-        if (c.hasInit) {
+        for (const auto& f : c.fields)
+            if (f.isStatic && f.init) { line(f.name + " = " + emitExpr(*f.init)); any = true; } // class attribute
+
+        bool hasFieldInit = false;
+        for (const auto& f : c.fields) if (!f.isStatic && f.init) hasFieldInit = true;
+        if (c.hasInit || hasFieldInit) {
             std::string sig = "def __init__(self";
-            for (const auto& p : c.initParams) sig += ", " + p.name;
+            for (const auto& p : c.initParams) sig += ", " + param(p); // empty when synthesized for field inits
             openBlock(sig + ")");
             ++indent_;
             if (c.hasSuper) {
@@ -208,8 +231,10 @@ private:
                 for (const auto& a : c.superArgs) sa.push_back(emitExpr(*a));
                 line("super().__init__" + renderArgs(sa));
             }
+            for (const auto& f : c.fields)
+                if (!f.isStatic && f.init) line("self." + f.name + " = " + emitExpr(*f.init));
             for (const auto& s : c.initBody) emitStmt(*s);
-            if (!c.hasSuper && c.initBody.empty()) line("pass");
+            if (!c.hasSuper && !hasFieldInit && c.initBody.empty()) line("pass");
             --indent_;
             any = true;
         }
@@ -234,7 +259,7 @@ private:
         std::string sig = "def " + name + "(";
         bool first = true;
         if (!m.isStatic) { sig += "self"; first = false; } // static members take no receiver
-        for (const auto& p : m.params) { if (!first) sig += ", "; first = false; sig += p.name; }
+        for (const auto& p : m.params) { if (!first) sig += ", "; first = false; sig += param(p); }
         sig += ")";
         if (m.exprBodied) {
             openBlock(sig);
@@ -260,13 +285,13 @@ private:
             const auto& f = static_cast<const ir::For&>(s);
             if (f.isRange) {
                 std::string hi = f.inclusive ? "(" + emitExpr(*f.rangeEnd) + ") + 1" : emitExpr(*f.rangeEnd);
-                headBlock("for " + f.binding + " in range(" + emitExpr(*f.rangeStart) + ", " + hi + ")", f.body);
+                headBlock("for " + pyId(f.binding) + " in range(" + emitExpr(*f.rangeStart) + ", " + hi + ")", f.body);
             } else if (!f.tupleBindings.empty()) {
                 std::string names;
-                for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += f.tupleBindings[i]; }
+                for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += pyId(f.tupleBindings[i]); }
                 headBlock("for " + names + " in " + emitExpr(*f.iterable), f.body);
             } else {
-                headBlock("for " + f.binding + " in " + emitExpr(*f.iterable), f.body);
+                headBlock("for " + pyId(f.binding) + " in " + emitExpr(*f.iterable), f.body);
             }
             return;
         }
@@ -405,7 +430,7 @@ private:
             case ir::ExprKind::Bool:   return static_cast<const ir::BoolLit&>(e).value ? "True" : "False";
             case ir::ExprKind::Null:   return "None";
             case ir::ExprKind::Str:    return escape(static_cast<const ir::StrLit&>(e).value);
-            case ir::ExprKind::Var:    return static_cast<const ir::Var&>(e).name;
+            case ir::ExprKind::Var:    return pyId(static_cast<const ir::Var&>(e).name);
             case ir::ExprKind::This:   return "self";
             case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw Python verbatim
             case ir::ExprKind::Unary: {
@@ -417,6 +442,10 @@ private:
             }
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
+                if (b.op == "??") { // `a ?? d` -> `(t if (t := a) is not None else d)` (single eval of a)
+                    std::string t = "__c" + std::to_string(tmp_++);
+                    return "(" + t + " if (" + t + " := " + emitExpr(*b.lhs) + ") is not None else " + emitExpr(*b.rhs) + ")";
+                }
                 int p = operatorPrecedence(b.op);
                 // §3.C: fixed-width int arithmetic wraps at each boundary; `/`/`%` truncate toward zero like
                 // .NET (Python `//`/`%` floor), via the prelude helpers. Comparisons/logic (bool result) and
@@ -443,6 +472,10 @@ private:
             }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
+                if (m.nullSafe) { // `obj?.field` -> `(t.field if (t := obj) is not None else None)` (single eval)
+                    std::string t = "__o" + std::to_string(tmp_++);
+                    return "(" + t + "." + m.field + " if (" + t + " := " + emitExpr(*m.object) + ") is not None else None)";
+                }
                 std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
                 return base + "." + m.field; // `this.f` -> `self.f` (This emits "self")
             }
@@ -469,7 +502,7 @@ private:
             case ir::ExprKind::Lambda: {
                 const auto& l = static_cast<const ir::Lambda&>(e);
                 std::string params;
-                for (std::size_t i = 0; i < l.params.size(); ++i) { if (i) params += ", "; params += l.params[i].name; }
+                for (std::size_t i = 0; i < l.params.size(); ++i) { if (i) params += ", "; params += pyId(l.params[i].name); }
                 // Python lambdas are single-expression; a statement-bodied lambda needs a nested def (later).
                 if (l.exprBodied) return "lambda " + params + ": " + emitExpr(*l.body);
                 return "__py_unsupported_block_lambda__";
@@ -485,6 +518,20 @@ private:
             case ir::ExprKind::Index: { // `recv[i]` -> Python subscription (lists index directly)
                 const auto& ix = static_cast<const ir::Index&>(e);
                 return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
+            }
+            case ir::ExprKind::Tuple: { // `(a, b)` -> a Python tuple
+                const auto& t = static_cast<const ir::Tuple&>(e);
+                std::vector<std::string> els;
+                for (const auto& el : t.elements) els.push_back(emitExpr(*el));
+                std::string s = renderDelimited({"(", ", ", ")"}, els);
+                return els.size() == 1 ? "(" + els[0] + ",)" : s; // 1-tuples need a trailing comma in Python
+            }
+            case ir::ExprKind::Interp: { // string interpolation -> `"lit" + str(hole) + …` (str() like C# ToString)
+                const auto& in = static_cast<const ir::Interp&>(e);
+                std::string s = escape(in.chunks[0]);
+                for (std::size_t i = 0; i < in.holes.size(); ++i)
+                    s += " + str(" + emitExpr(*in.holes[i]) + ") + " + escape(in.chunks[i + 1]);
+                return s;
             }
             case ir::ExprKind::MakeCase: { // union-case construction -> a tagged dict
                 const auto& mc = static_cast<const ir::MakeCase&>(e);
