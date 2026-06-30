@@ -52,7 +52,10 @@ public:
     // Flips to true per feature as emit_python.cpp gains it; the rest stay refused (never miscompiled).
     bool supports(Feature f) const override {
         switch (f) {
-            case Feature::Closures: return true; // expression-bodied lambdas -> Python `lambda`
+            case Feature::Closures:           return true; // expression-bodied lambdas -> Python `lambda`
+            case Feature::Iterators:          return true; // a `def` containing `yield` is already a generator
+            case Feature::OperatorOverloading: return true; // `operator fn plus` -> a `__add__` dunder
+            case Feature::Properties:         return true; // computed property -> `@property`
             default: return false;
         }
     }

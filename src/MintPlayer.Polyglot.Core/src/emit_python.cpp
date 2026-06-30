@@ -29,6 +29,22 @@ bool isFloatType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && (t.name == "f32" || t.name == "f64");
 }
 
+// Operator symbol -> Python dunder. Python HAS operator overloading, so an `operator fn plus` emits a real
+// `__add__` and `a + b` dispatches to it at the use site (no method-call rewrite as C#-less TS needs).
+const char* opDunder(const std::string& sym) {
+    if (sym == "+")  return "__add__";
+    if (sym == "-")  return "__sub__";
+    if (sym == "*")  return "__mul__";
+    if (sym == "/")  return "__truediv__";
+    if (sym == "%")  return "__mod__";
+    if (sym == "==") return "__eq__";
+    if (sym == "<")  return "__lt__";
+    if (sym == "<=") return "__le__";
+    if (sym == ">")  return "__gt__";
+    if (sym == ">=") return "__ge__";
+    return nullptr;
+}
+
 class PythonEmitter : public EmitterBase {
 public:
     std::string emit(const ir::Module& m) {
@@ -130,10 +146,18 @@ private:
         --indent_;
     }
 
-    // A record/class method -> a `def` with a leading `self`. Only plain methods reach here: a Property or
-    // Operator member would trip Python's capability gating (both off) and be refused before emit.
+    // A record/class member -> a `def` with a leading `self`. Three member kinds map idiomatically:
+    //   Method    -> `def name(self, ...)`
+    //   Operator   -> `def __add__(self, ...)` (Python dispatches `a + b` to the dunder natively)
+    //   Property   -> `@property` + `def name(self)` (accessed as `a.prop`, no call)
     void emitMethod(const ir::Method& m) {
-        std::string sig = "def " + m.name + "(self";
+        std::string name = m.name;
+        if (m.kind == ir::MethodKind::Operator) {
+            if (const char* d = opDunder(m.opSymbol)) name = d;
+        } else if (m.kind == ir::MethodKind::Property) {
+            line("@property");
+        }
+        std::string sig = "def " + name + "(self";
         for (const auto& p : m.params) sig += ", " + p.name;
         sig += ")";
         if (m.exprBodied) {
