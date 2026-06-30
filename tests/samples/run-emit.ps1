@@ -39,7 +39,6 @@ $csproj = @'
 
 # Sample -> the P14b gap that keeps its emitted code from compiling/running. Remove an entry when fixed.
 $xfail = @{
-    "02_records_operators.pg" = "lowering hole: operator-result `.member` / `with`-copy emits __polyglot_unlowered_expr__"
     "03_enums_unions_match.pg" = "C# emission error CS1001 (enum/identifier)"
     "04_generics.pg"           = "interface-method dispatch over a generic (compareTo) + indexer"
     "06_exceptions.pg"         = "aspirational string std methods (isEmpty / toI32)"

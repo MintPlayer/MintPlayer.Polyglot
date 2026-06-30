@@ -672,7 +672,7 @@ private:
                 declareForBinding(p.sub[i], sub);
             }
         } else {
-            declarePattern(p);
+            declarePattern(p, elem);
         }
     }
 

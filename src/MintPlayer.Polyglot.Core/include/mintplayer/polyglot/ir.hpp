@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond };
+enum class ExprKind { Int, Float, Bool, Str, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With };
 
 struct Expr {
     ExprKind kind;
@@ -135,6 +135,12 @@ struct ListLit : Expr { // list literal `[a, b, c]`; `elem` is the element type 
 struct Tuple : Expr { // tuple literal `(a, b)`: C# ValueTuple, TS array `[a, b]`
     std::vector<ExprPtr> elements;
     Tuple(SourcePos p, Type t) : Expr(ExprKind::Tuple, p, std::move(t)) {}
+};
+struct WithField { std::string name; ExprPtr value; }; // one `name = value` override of a `with`-copy
+struct With : Expr { // record copy `base with { f = v, … }`: C# native `with`; TS rebuilds via the ctor
+    ExprPtr base;
+    std::vector<WithField> fields; // the overridden fields (others copied from base)
+    With(SourcePos p, Type t, ExprPtr b) : Expr(ExprKind::With, p, std::move(t)), base(std::move(b)) {}
 };
 // A bound call/access: a portable std method/property resolved to a per-target FFI template. Each backend
 // substitutes `$this`->receiver and `$0`,`$1`,…->args into its own template. A `$this = …` template emits

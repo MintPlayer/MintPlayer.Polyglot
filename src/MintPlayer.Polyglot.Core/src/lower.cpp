@@ -481,10 +481,15 @@ private:
                 for (const auto& a : e.args) tup->elements.push_back(expr(*a));
                 return tup;
             }
+            case ExprKind::With: { // record copy `base with { f = v, … }`
+                auto w = std::make_unique<ir::With>(e.pos, e.type, expr(*e.lhs));
+                for (const auto& f : e.fields) w->fields.push_back({f.name, expr(*f.value)});
+                return w;
+            }
             // A surface form with no lowering rule must FAIL LOUDLY, not silently emit a placeholder: a
             // silent `0` once masked an unlowered `if`-expression as a cross-target-identical miscompile
             // (both backends were equally wrong, so the differential gate couldn't see it). This poison
-            // identifier breaks the emitted C#/TS build instead. (Still unlowered: CharLit, Super-expr, With.)
+            // identifier breaks the emitted C#/TS build instead. (Still unlowered: CharLit, Super-expr.)
             default: return std::make_unique<ir::Extern>(e.pos, e.type, "__polyglot_unlowered_expr__");
         }
     }

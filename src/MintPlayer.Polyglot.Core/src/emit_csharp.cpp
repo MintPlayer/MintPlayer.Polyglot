@@ -569,6 +569,12 @@ private:
                 for (std::size_t i = 0; i < t.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*t.elements[i]); }
                 return s + ")";
             }
+            case ir::ExprKind::With: { // C# records support `with` natively
+                const auto& w = static_cast<const ir::With&>(e);
+                std::string s = atom(*w.base) + " with { ";
+                for (std::size_t i = 0; i < w.fields.size(); ++i) { if (i) s += ", "; s += w.fields[i].name + " = " + emitExpr(*w.fields[i].value); }
+                return s + " }";
+            }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::New: {

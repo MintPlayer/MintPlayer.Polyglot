@@ -164,10 +164,14 @@ public:
         out_.clear();
         indent_ = 0;
         recordNames_.clear();
+        recordFields_.clear();
         externMap_.clear();
         for (const auto& et : m.externTypes) externMap_[et.name] = &et;
         g_externTypes = &externMap_;
-        for (const auto& r : m.records) recordNames_.insert(r.name); // records compare structurally (§3.C)
+        for (const auto& r : m.records) { // records compare structurally (§3.C); a TS record is a class
+            recordNames_.insert(r.name);
+            for (const auto& f : r.fields) recordFields_[r.name].push_back(f.name); // ctor arg order, for `with`
+        }
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
@@ -189,7 +193,9 @@ private:
     std::string out_;
     int indent_ = 0;
     std::unordered_set<std::string> recordNames_;
+    std::unordered_map<std::string, std::vector<std::string>> recordFields_; // record name -> ctor field order
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
+    int tmp_ = 0; // fresh-name counter (e.g. the `with`-copy IIFE binder)
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
@@ -679,6 +685,27 @@ private:
                 std::string s = "[";
                 for (std::size_t i = 0; i < t.elements.size(); ++i) { if (i) s += ", "; s += emitExpr(*t.elements[i]); }
                 return s + "]";
+            }
+            case ir::ExprKind::With: {
+                // A TS record is a class, so rebuild via its ctor (preserving the prototype/methods): each
+                // field is the override or copied from the base. Bind the base to a temp (IIFE) unless it's a
+                // simple var, so it's evaluated once — matching C#'s `expr with { … }`.
+                const auto& w = static_cast<const ir::With&>(e);
+                const auto fit = recordFields_.find(e.type.name);
+                std::unordered_map<std::string, std::string> overrides;
+                for (const auto& f : w.fields) overrides[f.name] = emitExpr(*f.value);
+                bool simple = w.base->kind == ir::ExprKind::Var;
+                std::string baseRef = simple ? emitExpr(*w.base) : "__w" + std::to_string(tmp_++);
+                std::string ctor = "new " + e.type.name + "(";
+                if (fit != recordFields_.end())
+                    for (std::size_t i = 0; i < fit->second.size(); ++i) {
+                        if (i) ctor += ", ";
+                        auto o = overrides.find(fit->second[i]);
+                        ctor += o != overrides.end() ? o->second : baseRef + "." + fit->second[i];
+                    }
+                ctor += ")";
+                if (simple) return ctor;
+                return "(() => { const " + baseRef + " = " + emitExpr(*w.base) + "; return " + ctor + "; })()";
             }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
