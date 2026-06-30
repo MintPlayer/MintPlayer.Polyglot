@@ -643,6 +643,19 @@ int main() {
               "P14: extension returning T? — receiver inference gives Option<int> (C#)");
     }
 
+    // P14b — bidirectional typing: an empty list literal takes its element type from the target slot, so it
+    // emits `List<int>` (valid), not `List<object>` (a CS1503 miscompile). Also a match binding is typed
+    // precisely from the scrutinee (no longer Unknown).
+    {
+        const char* prog =
+            "import { List } from \"std.collections\"\n"
+            "fn mk(): List<i32> { var xs: List<i32> = []\n  return xs }\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "new global::System.Collections.Generic.List<int> {") && !has(cs.code, "List<object>"),
+              "P14b: empty list literal takes its element type from the target (List<int>, not List<object>)");
+    }
+
     // P10 — the core prelude (Error/Iterable) is ALWAYS linked (no import, no lib): with a bare `compile`,
     // Error constructs + maps per target and `.message` binds — proving they're core-prelude extern classes,
     // not emitter hardcodes.

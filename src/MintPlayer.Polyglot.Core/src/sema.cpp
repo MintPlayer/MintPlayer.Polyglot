@@ -604,6 +604,13 @@ private:
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
         if (!slot) return;
         if (target.kind == TypeRef::Kind::Named && target.name == "Option" && !target.args.empty()) { coerceToOptional(slot, target); return; }
+        // A list literal takes its element type from the target — so `[]` is `List<i32>`, not `List<unknown>`
+        // (which emits invalid C# `List<object>`), and elements widen to the target element type.
+        if (target.kind == TypeRef::Kind::Named && target.name == "List" && !target.args.empty() && slot->kind == ExprKind::ListLit) {
+            for (auto& el : slot->args) checkConvert(el, target.args[0], ctx);
+            slot->type = target;
+            return;
+        }
         instantiateBareCases(slot, target); // a contextually-typed bare union case (`None`) takes `target`
         TypeRef from = slot->type;
         if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
@@ -627,10 +634,29 @@ private:
         return false;
     }
 
-    void declarePattern(const Pattern& p) {
+    // Declare a pattern's bindings, typed from the matched value `scrut`: a binding takes `scrut`; a ctor
+    // pattern's sub-bindings take the case's field types with the union's generics substituted from `scrut`'s
+    // args (so `match o: Option<i32> { Some(v) => … }` types `v` as i32, not Unknown); tuple sub-patterns
+    // take the matched element types.
+    void declarePattern(const Pattern& p, const TypeRef& scrut) {
         switch (p.kind) {
-            case PatKind::Binding: declare(p.name, p.hasType ? p.type : tUnknown(), false, p.pos); break;
-            case PatKind::Ctor: case PatKind::Tuple: for (const auto& s : p.sub) declarePattern(s); break;
+            case PatKind::Binding:
+                declare(p.name, p.hasType ? p.type : scrut, false, p.pos);
+                break;
+            case PatKind::Ctor: {
+                std::vector<TypeRef> fieldTypes;
+                if (auto uc = unionCtors_.find(p.name); uc != unionCtors_.end()) {
+                    std::unordered_set<std::string> gen(uc->second.generics.begin(), uc->second.generics.end());
+                    std::unordered_map<std::string, TypeRef> binds;
+                    for (std::size_t i = 0; i < uc->second.generics.size() && i < scrut.args.size(); ++i) binds[uc->second.generics[i]] = scrut.args[i];
+                    for (const auto& pt : uc->second.params) fieldTypes.push_back(substGeneric(pt, gen, binds));
+                }
+                for (std::size_t i = 0; i < p.sub.size(); ++i) declarePattern(p.sub[i], i < fieldTypes.size() ? fieldTypes[i] : tUnknown());
+                break;
+            }
+            case PatKind::Tuple:
+                for (std::size_t i = 0; i < p.sub.size(); ++i) declarePattern(p.sub[i], i < scrut.args.size() ? scrut.args[i] : tUnknown());
+                break;
             default: break;
         }
     }
@@ -654,7 +680,7 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 TypeRef init = checkExpr(*s.value);
-                if (s.hasDeclType) { resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
+                if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.pos);
                 break;
             }
@@ -696,7 +722,7 @@ private:
             }
             case StmtKind::Use:
                 if (s.value) checkExpr(*s.value);
-                if (s.hasDeclType) resolveTypeRef(s.declType, s.pos);
+                if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); }
                 pushScope();
                 declare(s.name, s.hasDeclType ? s.declType : tUnknown(), false, s.pos);
                 for (auto& st : s.thenBody) checkStmt(*st);
@@ -1089,7 +1115,7 @@ private:
 
         for (auto& arm : e.arms) {
             pushScope();
-            declarePattern(arm.pattern);
+            declarePattern(arm.pattern, st);
             if (arm.guard) requireBool(checkExpr(*arm.guard), arm.pattern.pos, "'match' guard");
             if (arm.bodyIsBlock) for (auto& s : arm.block) checkStmt(*s);
             else if (arm.body) result = checkExpr(*arm.body);
