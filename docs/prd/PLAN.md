@@ -311,8 +311,10 @@ validation rejects them — `std.io` has no `print`, `std.math` doesn't exist) a
 fidelity gate `fmt`s rather than compiles. Make the std honestly import-based; keep `i32.parse` global and
 `Error`/`Iterable` core. Three tracks, sequenced (the `lib` track is a prerequisite for low-churn rollout):
 
-- **`lib` prelude (do first):** add a `LibConfig` (list of names) param to `compile()`; synthesize one
-  whole-module `ImportDecl` per entry (`"io"` → `std.io`), tagged lib-origin; reuse `linkModules`. Add a
+- **`lib` prelude (do first):** add a `LibConfig` (list of specifiers) param to `compile()`; synthesize one
+  whole-module `ImportDecl` per entry, tagged lib-origin; reuse `linkModules`. A bare word (`"io"`) is sugar
+  for `std.io`; a qualified entry (`"acme.physics"`) is a full specifier resolved like any import — so
+  third-party plugins auto-import by their own namespace, no per-publisher special-casing. Add a
   `dropShadowedLibDecls` pre-link pass so a lib decl **loses silently** to any user/explicit decl of the same
   name (explicit-vs-explicit and lib-vs-lib still hard-error). Provenance via an `isLibAuto` flag on
   `ImportDecl` + an `originLib` tag threaded through `mergeDecls`. CLI `--lib io,math`; `pgconfig.json`

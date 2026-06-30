@@ -309,9 +309,12 @@ builtins. A two-track investigation found the design clean:
 
 - **The `lib` prelude — auto-import without losing the "everything is a real import" model.** A workspace
   `lib: ["io", "math"]` auto-imports those std modules into every file, so `print(…)`/`Math.sqrt(…)` need no
-  explicit import. Mechanism: a `LibConfig` (just names) is passed to `compile()`; it **synthesizes one
-  whole-module `ImportDecl` per entry** (`"io"` → `std.io`), tagged lib-origin, and the existing
-  `linkModules` merges them. **Precedence (Rust-prelude / Python-builtins / TS-`lib` semantics):** a
+  explicit import. Mechanism: a `LibConfig` (just specifiers) is passed to `compile()`; it **synthesizes one
+  whole-module `ImportDecl` per entry**, tagged lib-origin, and the existing `linkModules` merges them.
+  **A `lib` entry is a module specifier resolved through the same chain as `import`:** a *bare word* (`"io"`)
+  is sugar for the std module `std.io`, while a *qualified* name (`"acme.physics"`) is used as-is and resolved
+  via the resolver / (future) plugin registry — so a **third-party plugin auto-imports by its own namespace**,
+  with no per-publisher special-casing. **Precedence (Rust-prelude / Python-builtins / TS-`lib` semantics):** a
   lib-imported decl is *ambient and lowest-priority* — it **loses silently** to any user declaration or
   explicit import of the same name (a pre-link `dropShadowedLibDecls` pass drops it before sema's collision
   tables build); explicit-vs-explicit collisions still hard-error (P12 unchanged), and lib-vs-lib collisions

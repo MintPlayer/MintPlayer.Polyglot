@@ -433,6 +433,12 @@ int main() {
         EmitResult dd = compile("import { List } from \"std.collections\"\nfn main() { var xs: List<i32> = [1]\n  print(xs.count) }\n",
                                 Target::CSharp, nullptr, lib);
         check(dd.ok, "P13: explicit import + lib dedups (no collision)");
+        // (4) a QUALIFIED lib entry is a full specifier resolved like any import (third-party plugin
+        //     namespace, not just std) — `app.helpers` resolves through the resolver, used un-imported.
+        MapModuleResolver plug({{"app.helpers", "fn helper(): i32 => 42\n"}});
+        LibConfig pluginLib{{"app.helpers"}};
+        EmitResult pl = compile("fn main() { print(helper()) }\n", Target::CSharp, &plug, pluginLib);
+        check(pl.ok && has(pl.code, "helper()"), "P13: a qualified lib entry auto-imports a non-std (plugin) module");
     }
 
     // P13 — a user-authored "plugin class" (extern class + per-target binding arms) works in a .pg file:

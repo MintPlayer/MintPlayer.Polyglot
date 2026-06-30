@@ -225,7 +225,15 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
     if (lib.libs.empty()) return;
 
     CompilationUnit staging;
-    for (const auto& name : lib.libs) { ImportDecl d; d.path = "std." + name; staging.imports.push_back(std::move(d)); }
+    for (const auto& name : lib.libs) {
+        ImportDecl d;
+        // A bare word ("io") is sugar for the std module `std.io`; a qualified name ("acme.physics") is a
+        // full specifier used as-is — resolved through the same chain as `import` (std registry, then the
+        // resolver / plugin registry). So a third-party plugin auto-imports by its own namespace, no
+        // per-publisher special-casing.
+        d.path = name.find('.') != std::string::npos ? name : "std." + name;
+        staging.imports.push_back(std::move(d));
+    }
     linkModules(staging, resolver, diags);
     if (diags.hasErrors()) return;
 
