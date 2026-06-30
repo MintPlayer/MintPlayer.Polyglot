@@ -223,6 +223,7 @@ public:
     void run(CompilationUnit& unit) {
         collectTypeNames(unit);
         liftExtensionGenerics(unit);
+        normalizeOptionalGenerics(unit); // `T?` (generic T) -> Option<T>, before tables read the types
         buildTables(unit);
         resolveAllTypes(unit);
 
@@ -331,6 +332,36 @@ private:
             collectReceiverVars(e.receiver, have, found);
             for (const auto& n : found) { GenericParam g; g.name = n; e.generics.push_back(std::move(g)); }
         }
+    }
+
+    // `T?` where `T` is a type parameter in scope has no faithful native nullable (PRD §3.C): rewrite it to
+    // the core `Option<T>` union. Concrete `T?` (`string?`, `i32?`, `List<T>?`) keeps the native nullable.
+    // Runs before buildTables so every table + downstream pass sees the normalized type.
+    static void normalizeOptional(TypeRef& t, const std::unordered_set<std::string>& gens) {
+        for (auto& a : t.args) normalizeOptional(a, gens);
+        for (auto& r : t.ret) normalizeOptional(r, gens);
+        if (t.nullable && t.kind == TypeRef::Kind::Named && gens.count(t.name)) {
+            TypeRef inner; inner.kind = TypeRef::Kind::Named; inner.name = t.name; // the bare `T`
+            t.name = "Option"; t.nullable = false; t.args = { std::move(inner) };
+        }
+    }
+    static void normalizeMembers(std::vector<Member>& ms, std::unordered_set<std::string> classGens) {
+        for (auto& m : ms) {
+            auto g = classGens; for (const auto& mg : m.generics) g.insert(mg.name);
+            if (m.kind == MemberKind::Field || m.kind == MemberKind::Const || m.kind == MemberKind::Property) normalizeOptional(m.type, g);
+            else { for (auto& p : m.params) normalizeOptional(p.type, g); normalizeOptional(m.returnType, g); }
+        }
+    }
+    void normalizeOptionalGenerics(CompilationUnit& u) {
+        auto setOf = [](const std::vector<GenericParam>& gs) { std::unordered_set<std::string> s; for (const auto& g : gs) s.insert(g.name); return s; };
+        for (auto& fn : u.functions)  { auto g = setOf(fn.generics); for (auto& p : fn.params) normalizeOptional(p.type, g); normalizeOptional(fn.returnType, g); }
+        for (auto& d : u.records)     { auto g = setOf(d.generics); for (auto& f : d.fields) normalizeOptional(f.type, g); normalizeMembers(d.members, g); }
+        for (auto& d : u.classes)     { auto g = setOf(d.generics); normalizeMembers(d.members, g); }
+        for (auto& d : u.interfaces)  { auto g = setOf(d.generics); normalizeMembers(d.members, g); }
+        for (auto& d : u.unions)      { auto g = setOf(d.generics); for (auto& c : d.cases) for (auto& p : c.params) normalizeOptional(p.type, g); }
+        for (auto& d : u.extensions)  { auto g = setOf(d.generics); for (auto& p : d.params) normalizeOptional(p.type, g); normalizeOptional(d.returnType, g); }
+        for (auto& v : u.values)      if (v.hasType) { std::unordered_set<std::string> g; normalizeOptional(v.type, g); }
+        // (local `let x: T?` declared types inside bodies are normalized lazily in checkStmt's resolve.)
     }
 
     static MemberInfo memberInfo(const Member& m) {
@@ -543,10 +574,33 @@ private:
         }
     }
 
+    // Synthesize a `Some(inner)` construction around `slot`, typed `opt` (lower turns the Call into a
+    // MakeCase). Used to wrap a bare `T` value flowing into an `Option<T>` slot (the `T?` sugar).
+    void wrapSome(ExprPtr& slot, const TypeRef& opt) {
+        auto call = std::make_unique<Expr>();
+        call->kind = ExprKind::Call; call->pos = slot->pos; call->type = opt;
+        auto callee = std::make_unique<Expr>(); callee->kind = ExprKind::Name; callee->text = "Some"; callee->pos = slot->pos;
+        call->lhs = std::move(callee);
+        call->args.push_back(std::move(slot));
+        slot = std::move(call);
+    }
+    // Coerce a value into an `Option<X>` slot (the `T?`-sugar leaf rules), recursing through if/match so each
+    // branch is coerced: `null` -> `None`, a bare `None` -> typed None, an already-Option value -> instantiate,
+    // a bare `X` value -> `Some(value)`.
+    void coerceToOptional(ExprPtr& slot, const TypeRef& opt) {
+        if (!slot) return;
+        if (slot->kind == ExprKind::IfExpr) { coerceToOptional(slot->rhs, opt); coerceToOptional(slot->extra, opt); slot->type = opt; return; }
+        if (slot->kind == ExprKind::Match)  { for (auto& a : slot->arms) if (!a.bodyIsBlock && a.body) coerceToOptional(a.body, opt); slot->type = opt; return; }
+        if (slot->kind == ExprKind::NullLit) { auto none = std::make_unique<Expr>(); none->kind = ExprKind::Name; none->text = "None"; none->pos = slot->pos; none->type = opt; slot = std::move(none); return; }
+        if (slot->type.kind == TypeRef::Kind::Named && slot->type.name == "Option") { instantiateBareCases(slot, opt); return; } // already optional (or a bare None)
+        wrapSome(slot, opt); // a present value of the element type
+    }
+
     // A value flowing into a typed slot (let/assign/return/argument): widen losslessly if possible, else
     // a numeric mismatch demands an explicit cast and any other known-scalar mismatch is a type error.
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
         if (!slot) return;
+        if (target.kind == TypeRef::Kind::Named && target.name == "Option" && !target.args.empty()) { coerceToOptional(slot, target); return; }
         instantiateBareCases(slot, target); // a contextually-typed bare union case (`None`) takes `target`
         TypeRef from = slot->type;
         if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
