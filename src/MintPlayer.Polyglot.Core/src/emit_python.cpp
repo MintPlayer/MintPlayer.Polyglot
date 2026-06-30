@@ -370,6 +370,16 @@ private:
             }
             case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
                 return substTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
+            case ir::ExprKind::ListLit: { // `[a, b, c]` -> a Python list (List<T> maps to the native list)
+                const auto& l = static_cast<const ir::ListLit&>(e);
+                std::vector<std::string> els;
+                for (const auto& el : l.elements) els.push_back(emitExpr(*el));
+                return renderDelimited({"[", ", ", "]"}, els);
+            }
+            case ir::ExprKind::Index: { // `recv[i]` -> Python subscription (lists index directly)
+                const auto& ix = static_cast<const ir::Index&>(e);
+                return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
+            }
             case ir::ExprKind::MakeCase: { // union-case construction -> a tagged dict
                 const auto& mc = static_cast<const ir::MakeCase&>(e);
                 std::string s = "{\"tag\": \"" + mc.caseName + "\"";

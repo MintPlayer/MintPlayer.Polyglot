@@ -27,30 +27,37 @@ extern class List<T> {
   type {
     actual(csharp)     extern("global::System.Collections.Generic.List<$0>")
     actual(typescript) extern("$0[]")
+    actual(python)     extern("list")
   }
   init() {
     actual(csharp)     extern("new $T()")
     actual(typescript) extern("[]")
+    actual(python)     extern("[]")
   }
   let count: i32 {
     actual(csharp)     extern("$this.Count")
     actual(typescript) extern("$this.length")
+    actual(python)     extern("len($this)")
   }
   fn add(item: T) {
     actual(csharp)     extern("$this.Add($0)")
     actual(typescript) extern("$this.push($0)")
+    actual(python)     extern("$this.append($0)")
   }
   fn clear() {
     actual(csharp)     extern("$this.Clear()")
     actual(typescript) extern("$this = []")
+    actual(python)     extern("$this = []")
   }
   fn removeAll(pred: (T) => bool) {
     actual(csharp)     extern("$this.RemoveAll($0)")
     actual(typescript) extern("$this = $this.filter(__e => !(($0)(__e)))")
+    actual(python)     extern("$this = [__e for __e in $this if not (($0)(__e))]")
   }
   fn removeAt(index: i32) {
     actual(csharp)     extern("$this.RemoveAt($0)")
     actual(typescript) extern("$this.splice($0, 1)")
+    actual(python)     extern("$this.pop($0)")
   }
 }
 )PG";
