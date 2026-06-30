@@ -71,6 +71,7 @@ public:
         for (const auto& arm : arms) {
             if (arm.target == "csharp") b->csTemplate = arm.code;
             else if (arm.target == "typescript") b->tsTemplate = arm.code;
+            else if (arm.target == "python") b->pyTemplate = arm.code;
         }
         return b;
     }
@@ -125,12 +126,14 @@ public:
             for (const auto& b : c.typeBindings) {
                 if (b.target == "csharp") et.csType = b.code;
                 else if (b.target == "typescript") et.tsType = b.code;
+                else if (b.target == "python") et.pyType = b.code;
             }
             for (const auto& mem : c.members)
                 if (mem.kind == MemberKind::Init)
                     for (const auto& b : mem.bindings) {
                         if (b.target == "csharp") et.csCtor = b.code;
                         else if (b.target == "typescript") et.tsCtor = b.code;
+                        else if (b.target == "python") et.pyCtor = b.code;
                     }
             m.externTypes.push_back(std::move(et));
         }

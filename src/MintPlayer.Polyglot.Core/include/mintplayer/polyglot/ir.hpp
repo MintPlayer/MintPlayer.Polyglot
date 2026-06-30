@@ -154,6 +154,7 @@ struct Bound : Expr {
     std::vector<ExprPtr> args;
     std::string csTemplate;
     std::string tsTemplate;
+    std::string pyTemplate;
     Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 
@@ -401,8 +402,8 @@ struct Global { // a top-level `const`/`let` value
 // `tsType` (spelling) and at construction (ctor), so a user plugin class maps + constructs the same way.
 struct ExternType {
     std::string name;
-    std::string csType, tsType;   // type-spelling templates; empty -> emitter falls back to the bare name
-    std::string csCtor, tsCtor;   // ctor templates; empty -> no bound constructor (use a plain `new Name(…)`)
+    std::string csType, tsType, pyType;   // type-spelling templates; empty -> emitter falls back to the bare name
+    std::string csCtor, tsCtor, pyCtor;   // ctor templates; empty -> no bound constructor (use a plain `new Name(…)`)
 };
 
 struct Module {

@@ -98,38 +98,47 @@ extern class Math {
   const PI: f64 {
     actual(csharp)     extern("global::System.Math.PI")
     actual(typescript) extern("Math.PI")
+    actual(python)     extern("__import__('math').pi")
   }
   const E: f64 {
     actual(csharp)     extern("global::System.Math.E")
     actual(typescript) extern("Math.E")
+    actual(python)     extern("__import__('math').e")
   }
   static fn sqrt(x: f64): f64 {
     actual(csharp)     extern("global::System.Math.Sqrt($0)")
     actual(typescript) extern("Math.sqrt($0)")
+    actual(python)     extern("__import__('math').sqrt($0)")
   }
   static fn ln(x: f64): f64 {
     actual(csharp)     extern("global::System.Math.Log($0)")
     actual(typescript) extern("Math.log($0)")
+    actual(python)     extern("__import__('math').log($0)")
   }
   static fn floor(x: f64): f64 {
     actual(csharp)     extern("global::System.Math.Floor($0)")
     actual(typescript) extern("Math.floor($0)")
+    actual(python)     extern("float(__import__('math').floor($0))")
   }
   static fn ceil(x: f64): f64 {
     actual(csharp)     extern("global::System.Math.Ceiling($0)")
     actual(typescript) extern("Math.ceil($0)")
+    actual(python)     extern("float(__import__('math').ceil($0))")
   }
   static fn min<T>(a: T, b: T): T {
     actual(csharp)     extern("global::System.Math.Min($0, $1)")
     actual(typescript) extern("((a, b) => (a <= b ? a : b))($0, $1)")
+    actual(python)     extern("min($0, $1)")
   }
   static fn max<T>(a: T, b: T): T {
     actual(csharp)     extern("global::System.Math.Max($0, $1)")
     actual(typescript) extern("((a, b) => (a >= b ? a : b))($0, $1)")
+    actual(python)     extern("max($0, $1)")
   }
   static fn abs<T>(x: T): T {
     actual(csharp)     extern("global::System.Math.Abs($0)")
     actual(typescript) extern("((a) => (a < (a - a) ? -a : a))($0)")
+    actual(python)     extern("abs($0)")
   }
 }
 )PG";

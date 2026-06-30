@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/emit.hpp"
 
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -292,6 +293,22 @@ private:
         return value + " if " + armCond(a, bs) + " else " + matchChain(arms, i + 1);
     }
 
+    // Substitute a bound FFI template's placeholders: `$this`->receiver, `$T`->the type name (ctor templates),
+    // `$0`,`$1`,…->args. Mirrors the C#/TS backends so a std/plugin binding's python arm renders the same way.
+    std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
+        std::string out;
+        for (std::size_t i = 0; i < tmpl.size();) {
+            if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
+            else if (tmpl.compare(i, 2, "$T") == 0) { out += b.type.name; i += 2; }
+            else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
+                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+                if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
+                i += 2;
+            } else out += tmpl[i++];
+        }
+        return out;
+    }
+
     std::string emitExpr(const ir::Expr& e) override {
         switch (e.kind) {
             case ir::ExprKind::Int:    return static_cast<const ir::IntLit&>(e).text;
@@ -351,6 +368,8 @@ private:
                 if (l.exprBodied) return "lambda " + params + ": " + emitExpr(*l.body);
                 return "__py_unsupported_block_lambda__";
             }
+            case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
+                return substTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::MakeCase: { // union-case construction -> a tagged dict
                 const auto& mc = static_cast<const ir::MakeCase&>(e);
                 std::string s = "{\"tag\": \"" + mc.caseName + "\"";
