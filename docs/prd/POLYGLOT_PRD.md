@@ -283,11 +283,13 @@ collisions are accidental" model. The decided design (from a three-track investi
 > (parsed, recorded, but not yet semantically applied). The safety property — never silently shadow/
 > miscompile — holds today; the encapsulation niceties are the follow-up.
 
-### 4.6 Std-as-real-modules + the `lib` prelude (design — 2026-06-29)
-The module system exposed a contradiction: `print` and the `Math` namespace are **hardcoded builtins**, yet
+### 4.6 Std-as-real-modules + the `lib` prelude (design — 2026-06-29; ✅ shipped — 2026-06-30)
+The module system exposed a contradiction: `print` and the `Math` namespace *were* **hardcoded builtins**, yet
 the samples `import { print } from "std.io"` / `import { sqrt } from "std.math"` — which the P12 import
-validation now actively **rejects** (`std.io` has no `print`; `std.math` doesn't exist). The samples only
-"passed" because the fidelity gate `fmt`s them, never compiles. Decision (the language designer's call):
+validation actively **rejected** (`std.io` had no `print`; `std.math` didn't exist). The samples only
+"passed" because the fidelity gate `fmt`s them, never compiles. This is now resolved (P13): `print`/`Math` are
+real std-module exports and the samples compile via `tests/samples/run-compile.ps1`. Decision (the language
+designer's call):
 **`print` and `Math` become real std-module exports — usable only via import — while `i32.parse` & friends
 stay global primitive static methods.** Ergonomics are restored by a **`lib` prelude**, not by keeping
 builtins. A two-track investigation found the design clean:

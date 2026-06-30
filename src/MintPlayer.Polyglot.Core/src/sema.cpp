@@ -881,10 +881,14 @@ private:
         if (e.lhs->kind != ExprKind::Name) { checkExpr(*e.lhs); return tUnknown(); }
 
         const std::string& name = e.lhs->text;
-        if (name == "print") {
-            if (argTypes.size() != 1) diags_.error(e.pos, "print expects exactly one argument");
-            else { Ty a = scalarTyOf(argTypes[0]); if (a != Ty::Unknown && !(isNumeric(a) || a == Ty::Bool || a == Ty::String)) diags_.error(e.pos, std::string("print cannot print a value of type ") + tyName(a)); }
-            return namedType("unit");
+        // `print` is the std.io `print<T>` function (import-only), but it keeps a printable-arg guard: its
+        // generic signature accepts any T, yet a non-scalar would emit divergent output (C# ToString vs JS
+        // String) — a §3 miscompile. Diagnose here, then fall through to normal resolution (so it's still
+        // import-gated and emits as an ordinary call to std.io.print).
+        if (name == "print" && argTypes.size() == 1) {
+            Ty a = scalarTyOf(argTypes[0]);
+            if (a != Ty::Unknown && !(isNumeric(a) || a == Ty::Bool || a == Ty::String))
+                diags_.error(e.pos, std::string("print cannot print a value of type ") + tyName(a));
         }
         if (const Local* l = lookup(name)) { // calling a function-valued local (lambda/delegate); lenient on args
             return l->type.kind == TypeRef::Kind::Function && !l->type.ret.empty() ? l->type.ret[0] : tUnknown();

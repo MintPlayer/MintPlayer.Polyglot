@@ -32,6 +32,13 @@ bool has(const std::string& haystack, const std::string& needle) {
     return haystack.find(needle) != std::string::npos;
 }
 
+// Compile with the std prelude auto-imported (print/Math/List available without explicit imports), the
+// way a normal build runs with `--lib`. Tests that exercise import-only / unknown-type behavior use the
+// bare `compile` (no lib) instead.
+EmitResult compileStd(const std::string& src, Target target) {
+    return compile(src, target, nullptr, LibConfig{{"io", "math", "collections"}});
+}
+
 // A backend that supports the whole §3.A surface except one feature — used to prove §3.E gating bites.
 class StubBackend : public Backend {
 public:
@@ -171,20 +178,25 @@ int main() {
 
     // C# emission (golden substrings).
     {
-        EmitResult cs = compile(kProgram, Target::CSharp);
+        EmitResult cs = compileStd(kProgram, Target::CSharp);
         check(cs.ok, "compile: program -> C# succeeds");
         check(!has(cs.code, "using System;"), "C#: no `using` (BCL refs are global::-qualified)");
         check(has(cs.code, "public static int add(int a, int b)"), "C#: function signature mapped");
-        check(has(cs.code, "global::System.Console.WriteLine(Program.add(sum, 100))"), "C#: print -> global::System.Console.WriteLine");
+        // print is now std.io's generic `print<T>` (capability mechanism): its csharp `actual` body is the
+        // Console.WriteLine, and the call site is a normal free-function call (Program.print(...)).
+        check(has(cs.code, "global::System.Console.WriteLine(x)"), "C#: std.io print body -> Console.WriteLine");
+        check(has(cs.code, "Program.print(Program.add(sum, 100))"), "C#: print call site -> Program.print");
         check(has(cs.code, "static void Main() { main(); }"), "C#: main entry point emitted");
     }
 
     // TypeScript emission (golden substrings).
     {
-        EmitResult ts = compile(kProgram, Target::TypeScript);
+        EmitResult ts = compileStd(kProgram, Target::TypeScript);
         check(ts.ok, "compile: program -> TS succeeds");
         check(has(ts.code, "function add(a: number, b: number): number"), "TS: function signature mapped");
-        check(has(ts.code, "console.log(add(sum, 100))"), "TS: print -> console.log");
+        // print's typescript `actual` wraps in String(...) so bigint/number print identically to C# WriteLine.
+        check(has(ts.code, "console.log(String(x))"), "TS: std.io print body -> console.log(String(x))");
+        check(has(ts.code, "print(add(sum, 100))"), "TS: print call site");
         check(has(ts.code, "\nmain();\n"), "TS: top-level main() call emitted");
     }
 
@@ -211,6 +223,11 @@ int main() {
         EmitResult r = compile(src, Target::CSharp);
         check(r.ok, name);
     };
+    // Same, but with the std prelude (for programs that call `print` and friends).
+    auto resolvesStd = [&](const char* src, const std::string& name) {
+        EmitResult r = compileStd(src, Target::CSharp);
+        check(r.ok, name);
+    };
     rejects("fn f(x: Widget) {}\n", "P4: rejects unknown type in a parameter");
     rejects("record A(x: i32)\nrecord A(y: i32)\n", "P4: rejects duplicate type declaration");
     rejects("fn f<T>(x: T): Nope => x\n", "P4: rejects unknown type in a generic return");
@@ -227,8 +244,11 @@ int main() {
 
     // P4 — AST -> typed IR lowering.
     {
+        // (print is now a std module function, not an intrinsic, so this drives the pipeline with a
+        // user-defined unit-returning function `show` to exercise typed-call lowering without the prelude.)
         const char* src = "fn add(a: i32, b: i32): i32 {\n  return a + b\n}\n"
-                          "fn main() {\n  print(add(1, 2))\n}\n";
+                          "fn show(n: i32) {}\n"
+                          "fn main() {\n  show(add(1, 2))\n}\n";
         DiagnosticBag d;
         auto unit = parse(lex(src, d), d);
         mintplayer::polyglot::check(unit, d); // annotate resolved types
@@ -237,7 +257,7 @@ int main() {
         check(has(ir, "fn add(a: i32, b: i32): i32 {"), "IR: function signature carries types");
         check(has(ir, "return (a:i32 + b:i32):i32"), "IR: binary expression is typed");
         check(has(ir, "fn main(): unit [entry] {"), "IR: main resolved as the entry point");
-        check(has(ir, "print(add(1:i32, 2:i32):i32):unit"), "IR: print intrinsic + typed call resolved");
+        check(has(ir, "show(add(1:i32, 2:i32):i32):unit"), "IR: nested typed call resolved");
     }
 
     // P4-5 — pattern-match exhaustiveness.
@@ -300,7 +320,7 @@ int main() {
     refuses("fn f(e: Expression<i32>) {}\n", "expression trees", "P6: refuses LINQ expression trees");
     refuses("fn f(d: dynamic) {}\n", "dynamic", "P6: refuses 'dynamic' / runtime code-gen");
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
-    resolves("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
+    resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");
     rejects("fn f(x: i32): i32 => x\nfn f(y: i32): i32 => y\nfn main() {}\n",
             "P6: rejects a true duplicate (same parameter types)");
@@ -308,7 +328,7 @@ int main() {
     // P7 — portable-core guard: `extern` is only allowed inside a target-gated `actual`.
     rejects("fn portable(): i32 => extern(\"42\")\nfn main() {}\n",
             "P7: extern is refused in portable code");
-    resolves("expect fn a(): i32\nactual(csharp) fn a(): i32 => extern(\"42\")\n"
+    resolvesStd("expect fn a(): i32\nactual(csharp) fn a(): i32 => extern(\"42\")\n"
              "actual(typescript) fn a(): i32 => extern(\"42\")\nfn main() { print(a()) }\n",
              "P7: extern is allowed inside an actual");
 
@@ -325,7 +345,7 @@ int main() {
             "  xs.removeAll((v) => v < 2)\n"
             "  xs.clear()\n"
             "}\n";
-        EmitResult cs = compile(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, Target::CSharp);
         check(cs.ok, "P8: List program -> C# compiles");
         check(has(cs.code, "global::System.Collections.Generic.List<int>"), "P8 C#: List<i32> -> System.Collections.Generic.List<int>");
         check(has(cs.code, ".Add(3)"), "P8 C#: list.add -> .Add");
@@ -334,7 +354,7 @@ int main() {
         check(has(cs.code, "xs.Clear()"), "P8 C#: list.clear -> .Clear()");
         check(!has(cs.code, "class List"), "P8 C#: extern class List is not emitted");
 
-        EmitResult ts = compile(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, Target::TypeScript);
         check(ts.ok, "P8: List program -> TS compiles");
         check(has(ts.code, "number[]"), "P8 TS: List<i32> -> number[]");
         check(has(ts.code, ".push(3)"), "P8 TS: list.add -> .push");
@@ -356,11 +376,11 @@ int main() {
             "  writeText(\"a.txt\", \"hi\")\n"
             "  print(readText(\"a.txt\"))\n"
             "}\n";
-        EmitResult cs = compile(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, Target::CSharp);
         check(cs.ok, "P8: std.io program -> C# compiles");
         check(has(cs.code, "global::System.IO.File.ReadAllText(path)"), "P8 C#: readText -> File.ReadAllText");
         check(has(cs.code, "global::System.IO.File.WriteAllText(path, content)"), "P8 C#: writeText -> File.WriteAllText");
-        EmitResult ts = compile(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, Target::TypeScript);
         check(ts.ok, "P8: std.io program -> TS compiles");
         check(has(ts.code, "readFileSync(path"), "P8 TS: readText -> fs.readFileSync");
         check(has(ts.code, "writeFileSync(path, content)"), "P8 TS: writeText -> fs.writeFileSync");
@@ -377,10 +397,10 @@ int main() {
             "import { bump } from \"util\"\n"
             "import { baseVal } from \"base\"\n"
             "fn main() { print(bump(2) + baseVal()) }\n"; // (40+2) + 40 = 82
-        EmitResult cs = compile(prog, Target::CSharp, &r);
+        EmitResult cs = compile(prog, Target::CSharp, &r, LibConfig{{"io"}});
         check(cs.ok, "P12: transitive user-module resolution compiles");
         check(has(cs.code, "baseVal") && has(cs.code, "bump"), "P12: imported module decls are merged");
-        EmitResult ts = compile(prog, Target::TypeScript, &r);
+        EmitResult ts = compile(prog, Target::TypeScript, &r, LibConfig{{"io"}});
         check(ts.ok, "P12: transitive resolution compiles to TS too");
     }
     {
@@ -419,7 +439,7 @@ int main() {
 
     // P13 — the `lib` prelude: auto-import std modules, ambient + silently shadowable.
     {
-        LibConfig lib{{"collections"}};
+        LibConfig lib{{"collections", "io"}}; // io so the programs' `print(...)` resolves via the prelude too
         // (1) List usable with NO explicit import when 'collections' is in lib; it links the real module
         //     (so `xs.count` lowers to the .Count binding, not the lenient bare `.count`).
         EmitResult r = compile("fn main() { var xs: List<i32> = [1]\n  print(xs.count) }\n",
@@ -436,7 +456,7 @@ int main() {
         // (4) a QUALIFIED lib entry is a full specifier resolved like any import (third-party plugin
         //     namespace, not just std) — `app.helpers` resolves through the resolver, used un-imported.
         MapModuleResolver plug({{"app.helpers", "fn helper(): i32 => 42\n"}});
-        LibConfig pluginLib{{"app.helpers"}};
+        LibConfig pluginLib{{"app.helpers", "io"}};
         EmitResult pl = compile("fn main() { print(helper()) }\n", Target::CSharp, &plug, pluginLib);
         check(pl.ok && has(pl.code, "helper()"), "P13: a qualified lib entry auto-imports a non-std (plugin) module");
     }
@@ -467,25 +487,35 @@ int main() {
             "  const K: i32 { actual(csharp) extern(\"42\")  actual(typescript) extern(\"42\") }\n"
             "}\n"
             "fn main() { print(MyMath.twice(5))\n  print(MyMath.K) }\n";
-        EmitResult cs = compile(prog, Target::CSharp);
-        check(cs.ok && has(cs.code, "(5 * 2)") && has(cs.code, "WriteLine(42)") && !has(cs.code, "class MyMath"),
+        // twice(5) inlines to (5 * 2); the static const K inlines to 42 (passed to the print free function).
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok && has(cs.code, "(5 * 2)") && has(cs.code, "Program.print(42)") && !has(cs.code, "class MyMath"),
               "P13: static method + static const bindings fire on an extern class (C#)");
-        EmitResult ts = compile(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, Target::TypeScript);
         check(ts.ok && has(ts.code, "(5 * 2)") && !has(ts.code, "class MyMath"),
               "P13: static bindings fire on an extern class (TS)");
     }
 
     // P13 — TypeArg inference: a generic call's return type is the inferred argument type, not a bare `T`.
-    // Canary: only a correctly-inferred i64 return makes TS wrap the print in String() (BigInt -> no `n`).
+    // Checked on the typed IR (`call(args):returnType`); the emitted-code correctness is covered by the
+    // differential gate. The canary is the substituted return type on the call node.
     {
-        EmitResult one = compile("fn pick<T>(a: T, b: T): T => a\nfn main() { print(pick(1i64, 2i64)) }\n", Target::TypeScript);
-        check(one.ok && has(one.code, "String("), "P13: single type-arg return inferred (i64 -> String wrap)");
+        auto callIr = [&](const char* src) -> std::string {
+            DiagnosticBag d;
+            auto unit = parse(lex(src, d), d);
+            mintplayer::polyglot::check(unit, d);
+            if (d.hasErrors()) return "<type error>";
+            return ir::dump(lower(unit));
+        };
+        // single type-arg: pick<T>(T,T):T applied to i64 -> the call node is typed i64, not a bare T.
+        std::string one = callIr("fn pick<T>(a: T, b: T): T => a\nfn use1(): i64 => pick(1i64, 2i64)\n");
+        check(has(one, "pick(1:i64, 2:i64):i64"), "P13: single type-arg return inferred (i64)");
         // two type-args, return the SECOND (V=i64): inference must bind V, not just the first param.
-        EmitResult two = compile("fn snd<K, V>(k: K, v: V): V => v\nfn main() { print(snd(1i32, 2i64)) }\n", Target::TypeScript);
-        check(two.ok && has(two.code, "String("), "P13: 2nd-of-two type-args return inferred (i64 -> String wrap)");
-        // return the FIRST i32 while the 2nd arg is i64: result is i32, so NO String wrap.
-        EmitResult fst = compile("fn fst<K, V>(k: K, v: V): K => k\nfn main() { print(fst(1i32, 2i64)) }\n", Target::TypeScript);
-        check(fst.ok && !has(fst.code, "String("), "P13: 1st-of-two type-args return inferred (i32 -> no wrap)");
+        std::string two = callIr("fn snd<K, V>(k: K, v: V): V => v\nfn use2(): i64 => snd(1i32, 2i64)\n");
+        check(has(two, "snd(1:i32, 2:i64):i64"), "P13: 2nd-of-two type-args return inferred (i64)");
+        // return the FIRST (K=i32) while the 2nd arg is i64: the result is i32, not i64.
+        std::string fst = callIr("fn fst<K, V>(k: K, v: V): K => k\nfn use3(): i32 => fst(1i32, 2i64)\n");
+        check(has(fst, "fst(1:i32, 2:i64):i32"), "P13: 1st-of-two type-args return inferred (i32)");
     }
 
     // P13 — unknown/unimported types fail compilation, not just in signatures but in LOCAL positions too

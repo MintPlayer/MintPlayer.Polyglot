@@ -42,7 +42,8 @@ function Test-Program($name, $stem, $cliArgs) {
     Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $dir | Out-Null
 
-    & $Cli @cliArgs --out $dir | Out-Null
+    # `--lib io` auto-imports std.io so programs can call `print` without an explicit import (the prelude).
+    & $Cli @cliArgs --lib io --out $dir | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name (transpile failed)"; return $false }
 
     $csproj | Set-Content (Join-Path $dir "$stem.csproj")

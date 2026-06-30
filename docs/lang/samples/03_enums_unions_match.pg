@@ -2,7 +2,7 @@
 // Exercises §3.A: enums, pattern matching / discriminated unions, guards.
 
 import { print } from "std.io"
-import { PI } from "std.math"
+import { Math } from "std.math"
 
 enum Direction { North, East, South, West }
 
@@ -16,7 +16,7 @@ union Shape {
 
 // `match` is an expression; the compiler checks all union cases are covered.
 fn area(s: Shape): f64 => match s {
-  Circle(r)        => PI * r * r,
+  Circle(r)        => Math.PI * r * r,
   Rect(w, h)       => w * h,
   Triangle(b, h)   => 0.5 * b * h,
   Empty            => 0.0,

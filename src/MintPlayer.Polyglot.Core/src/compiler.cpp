@@ -40,6 +40,10 @@ extern class List<T> {
     actual(csharp)     extern("$this.RemoveAll($0)")
     actual(typescript) extern("$this = $this.filter(__e => !(($0)(__e)))")
   }
+  fn removeAt(index: i32) {
+    actual(csharp)     extern("$this.RemoveAt($0)")
+    actual(typescript) extern("$this.splice($0, 1)")
+  }
 }
 )PG";
 
@@ -49,6 +53,10 @@ extern class List<T> {
 // use a block body `{ extern("…") }` (an `=> extern` expression-body would expect a value). File IO is not
 // on the §3.B refuse-list, so it's permitted.
 const char* STD_IO = R"PG(
+expect fn print<T>(x: T)
+actual(csharp)     fn print<T>(x: T) { extern("global::System.Console.WriteLine(x)") }
+actual(typescript) fn print<T>(x: T) { extern("console.log(String(x))") }
+
 expect fn readText(path: string): string
 actual(csharp)     fn readText(path: string): string => extern("global::System.IO.File.ReadAllText(path)")
 actual(typescript) fn readText(path: string): string => extern("require('fs').readFileSync(path, 'utf8')")

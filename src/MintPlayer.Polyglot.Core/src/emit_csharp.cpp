@@ -23,7 +23,6 @@ const BackendSpec& csharpSpec() {
          {"u8", "byte"}, {"u16", "ushort"}, {"u32", "uint"}, {"u64", "ulong"},
          {"f32", "float"}, {"f64", "double"}, {"bool", "bool"}, {"string", "string"}},
         {{"i64", "L"}, {"u64", "UL"}, {"u32", "U"}}, // intSuffix
-        "global::System.Console.WriteLine",          // printFn
     };
     return spec;
 }
@@ -496,9 +495,7 @@ private:
                 const auto& c = static_cast<const ir::Call&>(e);
                 // Free functions live in `static class Program`; qualify them so calls from emitted classes
                 // resolve. A function-valued local (closure param) is called bare.
-                std::string callee = c.isPrint ? csharpSpec().printFn
-                                   : c.isFree  ? "Program." + c.callee
-                                   : c.callee;
+                std::string callee = c.isFree ? "Program." + c.callee : c.callee;
                 std::string s = callee + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";

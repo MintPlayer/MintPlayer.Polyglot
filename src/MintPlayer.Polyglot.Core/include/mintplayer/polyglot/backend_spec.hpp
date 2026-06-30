@@ -22,10 +22,9 @@ struct BackendSpec {
     // TS {i64:"n", u64:"n"}). A type not in the map takes no suffix.
     std::unordered_map<std::string, std::string> intSuffix;
 
-    // ---- naming rules (the catalog's "naming/identity" bucket) ----
-    std::string printFn;        // the `print` intrinsic target ("global::System.Console.WriteLine" / "console.log")
-    // (Math used to live here as a namespace+rename table; it's now the std.math `extern class`, bound per
-    // target via templates — see compiler.cpp STD_MATH — so no Math data lives in the backend spec.)
+    // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
+    // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
+    // data lives in the backend spec anymore. It carries only type/literal tables now.)
 };
 
 // Binary-operator precedence (higher binds tighter), used by the engine for parenthesization. Identical

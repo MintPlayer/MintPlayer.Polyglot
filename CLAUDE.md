@@ -121,12 +121,19 @@ std.io ships File bindings (readText/writeText/…) via the capability mechanism
 Catalog found backends are ~70% tabular / ~30% imperative → a backend = **Spec (data)** + **Hooks (C++ for
 the imperative 30%)** over one shared emit engine; extraction is incremental, each slice a byte-for-byte
 no-op. Slice 1 ✅: scalar type-leaf table → `BackendSpec` (`backend_spec.hpp`), both emitters consult it.
-**Roadmap: P10** (plugin distribution, needs P9), **P11** (build-integration NuGet, independent), **P13**
-(designed — PRD §4.6: make `print`/`Math` real std modules via the binding mechanism, keep `i32.parse`
-global, + a **`lib` prelude** auto-import à la tsconfig `lib`/Rust prelude so they need no explicit import).
-NOTE: `print`/`Math` are still hardcoded builtins today, and `docs/lang/samples/*.pg` `import` them from
-`std.io`/`std.math` — those imports are **broken** (don't compile; only `fmt`'d by the fidelity gate); P13
-fixes this.
+**P13 ✅ done — std as real modules + the `lib` prelude** (PRD §4.6): `print` is now `std.io`'s generic
+`expect/actual print<T>` (TS body wraps `console.log(String(x))` universally so bigint/number print like C#
+`WriteLine`); `Math` is an `extern class Math` in `std.math` (bound static members + `PI`/`E`; `min/max/abs`
+are call-site-inlined bindings since a generic C# `Math.Min<T>` wouldn't compile); `i32.parse` stays global,
+`Error`/`Iterable` stay core. The **`lib` prelude** (`LibConfig` 4th arg to `compile()`, CLI `--lib io,math`)
+auto-imports std modules ambiently and **silently loses to** any user/explicit decl of the same name; a bare
+entry (`"io"`) means `std.io`, a qualified one (`"acme.physics"`) is a full specifier so third-party plugins
+auto-import by their own namespace. Also delivered: **TypeArg inference** (bind generic params from arg types,
+substitute the return) as the principled fix for generic-call return types; `List.removeAt`. The
+`docs/lang/samples/*.pg` now **compile** (gate: `tests/samples/run-compile.ps1`), not just `fmt` — 8/10
+green; `06_exceptions` (Error.message base-member resolution) + `08_extensions` (extension on a generic
+receiver `List<T>` — receiver type-var not scoped) are xfail'd as follow-ups (see PLAN P13).
+**Roadmap: P10** (plugin distribution, needs P9), **P11** (build-integration NuGet, independent).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

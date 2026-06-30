@@ -2,6 +2,7 @@
 // Exercises §3.A: generics (overloading via constraints), indexers, properties.
 
 import { print } from "std.io"
+import { List } from "std.collections"
 
 interface Comparable<T> {
   fn compareTo(other: T): i32;

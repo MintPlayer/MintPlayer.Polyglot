@@ -22,6 +22,7 @@
 // and a class's own static/const members referenced unqualified.
 // ============================================================================
 
+import { print } from "std.io"
 import { List } from "std.collections"
 import { Math } from "std.math"
 

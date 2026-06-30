@@ -2,6 +2,7 @@
 // Exercises §3.A: extension methods (-> static calls on both targets).
 
 import { print } from "std.io"
+import { List } from "std.collections"
 
 // Extend a primitive type.
 extension fn string.shout(): string => this.toUpper() + "!"

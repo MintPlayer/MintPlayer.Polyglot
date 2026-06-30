@@ -24,7 +24,6 @@ const BackendSpec& typescriptSpec() {
          {"i8", "number"}, {"i16", "number"}, {"i32", "number"}, {"u8", "number"}, {"u16", "number"},
          {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
         {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
-        "console.log", // printFn
     };
     return spec;
 }
@@ -606,11 +605,7 @@ private:
             }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
-                // console.log prints a BigInt with a trailing `n` (util.inspect); String() drops it so the
-                // output matches C#'s Console.WriteLine(long). (Template `${x}` already omits the `n`.)
-                if (c.isPrint && c.args.size() == 1 && isI64(c.args[0]->type))
-                    return typescriptSpec().printFn + "(String(" + emitExpr(*c.args[0]) + "))";
-                std::string s = (c.isPrint ? typescriptSpec().printFn : c.mangledCallee) + "(";
+                std::string s = c.mangledCallee + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) s += ", "; s += emitExpr(*c.args[i]); }
                 return s + ")";
             }

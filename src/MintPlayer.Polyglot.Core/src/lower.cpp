@@ -389,7 +389,7 @@ private:
                     for (const auto& a : e.args) mc->args.push_back(expr(*a));
                     return mc;
                 }
-                auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, callee == "print");
+                auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, /*isPrint=*/false); // print is now std.io.print, a normal free fn
                 call->isFree = freeFns_.count(callee) > 0; // a top-level fn (vs a function-valued local)
                 call->mangledCallee = e.overloadName.empty() ? callee : e.overloadName; // TS overload target
                 for (const auto& a : e.args) call->args.push_back(expr(*a));

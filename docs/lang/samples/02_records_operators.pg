@@ -3,7 +3,7 @@
 // Exercises §3.A: operators, properties, records (the immutable value kind).
 
 import { print } from "std.io"
-import { sqrt } from "std.math"
+import { Math } from "std.math"
 
 record Vec2(x: f64, y: f64) {
   // Operator overloads are fixed-named methods (SPEC §6.1): plus/minus/times.
@@ -12,7 +12,7 @@ record Vec2(x: f64, y: f64) {
   operator fn times(s: f64): Vec2  => Vec2(this.x * s, this.y * s)
 
   // Read-only computed properties.
-  let length: f64 => sqrt(this.x * this.x + this.y * this.y)
+  let length: f64 => Math.sqrt(this.x * this.x + this.y * this.y)
 
   fn dot(o: Vec2): f64 => this.x * o.x + this.y * o.y
 }

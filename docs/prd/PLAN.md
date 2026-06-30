@@ -304,12 +304,13 @@ extension) are each a clear diagnostic; the in-process tests cover all of this w
 (no filesystem); existing single-file programs are unaffected. (Phase-2 visibility/`as` is the remaining
 gate.)
 
-## P13 — Std as real modules + the `lib` prelude
-Close the "builtins that bypass imports" gap (full design in PRD §4.6). Today `print` and the `Math`
-namespace are hardcoded builtins; the samples that `import` them are actually **broken** (the import
-validation rejects them — `std.io` has no `print`, `std.math` doesn't exist) and only survive because the
-fidelity gate `fmt`s rather than compiles. Make the std honestly import-based; keep `i32.parse` global and
-`Error`/`Iterable` core. Three tracks, sequenced (the `lib` track is a prerequisite for low-churn rollout):
+## P13 ✅ done — Std as real modules + the `lib` prelude
+Close the "builtins that bypass imports" gap (full design in PRD §4.6). `print` and the `Math` namespace
+*were* hardcoded builtins; the samples that `import`ed them were actually **broken** (the import validation
+rejected them — `std.io` had no `print`, `std.math` didn't exist) and only survived because the fidelity
+gate `fmt`s rather than compiles. The std is now honestly import-based; `i32.parse` stays global and
+`Error`/`Iterable` stay core. All three tracks landed, sequenced (the `lib` track was a prerequisite for
+low-churn rollout):
 
 - **`lib` prelude (do first):** add a `LibConfig` (list of specifiers) param to `compile()`; synthesize one
   whole-module `ImportDecl` per entry, tagged lib-origin; reuse `linkModules`. A bare word (`"io"`) is sugar
@@ -329,12 +330,26 @@ fidelity gate `fmt`s rather than compiles. Make the std honestly import-based; k
   `actual` overloads carry the `String(…)` wrap (pure data); retain a one-line sema guard rejecting
   non-printable args (no `Printable` bound needed yet). Delete the `isPrint` flag + `printFn`.
 
-*Gate:* `print`/`Math` are unresolved without an import or a matching `lib` entry; `--lib io math` (or
-`import`s) makes them available; a user `print`/`Math` or explicit import **silently shadows** the lib one
+*Gate (all green):* `print`/`Math` are unresolved without an import or a matching `lib` entry; `--lib io math`
+(or `import`s) makes them available; a user `print`/`Math` or explicit import **silently shadows** the lib one
 (no error) while two explicit imports of a name still error; the (now-fixed) `docs/lang/samples/*.pg` join a
-**compile** check, not just `fmt`; and the `math` + all `print`-using conformance programs stay byte-identical
-across C#/TS (goldens regenerated where the Math min/max template changes). A full `Printable` bound and
-per-name `lib` config are explicitly out of scope.
+**compile** check (`tests/samples/run-compile.ps1`), not just `fmt`; and the `math` + all `print`-using
+conformance programs stay byte-identical across C#/TS. A full `Printable` bound and per-name `lib` config
+remain out of scope. *Delivered (2026-06-30):* TypeArg inference (generic-return substitution) as the
+principled fix for generic-call return types; `List.removeAt` added to the `std.collections` binding; the
+in-process suite gained a `compileStd` prelude helper and an IR-level TypeArg-inference canary (the old
+String-wrap canary died once `print`'s TS body wrapped *universally*).
+
+**Follow-up gaps surfaced by the sample compile gate (xfail'd in `run-compile.ps1`, not P13 scope):**
+- **`06_exceptions.pg` — `Error.message`:** member access on a value of a user class that `: Error` can't
+  reach the base's `message`. Needs (a) base-class member resolution in `findMember`, and (b) `Error` modelled
+  so `message` is a *bound* property (C# `.Message` vs JS `.message` differ in case, so it can't be a plain
+  field — it needs the per-target binding mechanism). Likely an `extern class Error`.
+- **`08_extensions.pg` — extension on a generic receiver:** `extension fn List<T>.secondOrNull(): T?` doesn't
+  put the receiver's type variable `T` in scope; the parser captures `List<T>` as the receiver type but
+  doesn't register `T` as the extension's generic param (so the signature/return `T?` see an unknown `T`).
+  Needs the parser to lift single-identifier receiver type-args into the extension's `generics`, threaded
+  through sema + both emitters' signature output.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
