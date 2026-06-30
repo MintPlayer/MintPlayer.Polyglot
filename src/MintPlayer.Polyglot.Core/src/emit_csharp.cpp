@@ -443,13 +443,6 @@ private:
                 if (t.hasFinally) { line("finally"); emitBlock(t.finallyBody); }
                 break;
             }
-            case ir::StmtKind::If: {
-                const auto& i = static_cast<const ir::If&>(s);
-                line("if (" + emitExpr(*i.cond) + ")");
-                emitBlock(i.thenBody);
-                if (i.hasElse) { line("else"); emitBlock(i.elseBody); }
-                break;
-            }
             case ir::StmtKind::For: {
                 const auto& f = static_cast<const ir::For&>(s);
                 std::string head;

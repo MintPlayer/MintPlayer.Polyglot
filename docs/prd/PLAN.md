@@ -228,10 +228,13 @@ its own line) vs TS K&R (`{` on the head line) — is now a single `bracesOnHead
 `headBlock(head, body)` / `blockBody(body)` pair on `EmitterBase`. `While` (head content `while (cond)` is
 identical across targets) moved fully into the base; `For` keeps its target-specific head-building
 (`foreach…in` vs `for…of`, range/tuple forms) in the concrete emitter but wraps the block via `headBlock`.
-Byte-for-byte no-op: all four gates green. *Next:* `If` (the `else` arm merges the brace in K&R: `} else {`)
-and `Use` (try/finally + dispose) behind the same brace hook, then the leaf-ish `Yield`/`Throw`/`Let` via
-small per-target affixes — after which the residual per-emitter statement code is just declarations + the
-genuine imperative hooks (`Try`/`Match`).
+Byte-for-byte no-op: all four gates green. **Slice 4c ✅:** `If` joins `While` in the base — its `if (cond)`
+head is identical across targets, and the `else` arm's only divergence (K&R merges the close+else+open onto
+one `} else {` line; Allman puts `}`/`else`/`{` on separate lines) is captured by the same
+`bracesOnHeadLine()` hook. Removed from both concrete emitters; all four gates green. The whole `if/while/for`
+trio now lives in `EmitterBase`. *Next:* `Use` (try/finally + dispose) behind the brace hook, then the
+leaf-ish `Yield`/`Throw`/`Let` via small per-target affixes — after which the residual per-emitter statement
+code is just declarations + the genuine imperative hooks (`Try`/`Match`).
 
 The backends, generalized. *Extract* a declarative backend format from the two **native** C#/TS backends
 (P4/P5) — a rule/template per IR node (context-aware: precedence, expr-vs-stmt position), the std-type

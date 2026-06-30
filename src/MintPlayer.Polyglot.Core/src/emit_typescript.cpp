@@ -512,14 +512,6 @@ private:
             case ir::StmtKind::Try:
                 emitTry(static_cast<const ir::Try&>(s));
                 break;
-            case ir::StmtKind::If: {
-                const auto& i = static_cast<const ir::If&>(s);
-                line("if (" + emitExpr(*i.cond) + ") {");
-                emitBlock(i.thenBody);
-                if (i.hasElse) { line("} else {"); emitBlock(i.elseBody); line("}"); }
-                else line("}");
-                break;
-            }
             case ir::StmtKind::For: {
                 const auto& f = static_cast<const ir::For&>(s);
                 std::string head;

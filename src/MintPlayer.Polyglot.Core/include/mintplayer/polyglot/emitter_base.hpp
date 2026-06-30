@@ -78,6 +78,17 @@ protected:
                 headBlock("while (" + emitExpr(*w.cond) + ")", w.body);
                 return;
             }
+            case ir::StmtKind::If: { // `if (cond)` head is identical; the else arm merges the brace in K&R
+                const auto& i = static_cast<const ir::If&>(s);
+                std::string head = "if (" + emitExpr(*i.cond) + ")";
+                if (bracesOnHeadLine()) line(head + " {");
+                else { line(head); line("{"); }
+                blockBody(i.thenBody);
+                if (!i.hasElse) { line("}"); return; }
+                if (bracesOnHeadLine()) { line("} else {"); blockBody(i.elseBody); line("}"); }
+                else { line("}"); line("else"); line("{"); blockBody(i.elseBody); line("}"); }
+                return;
+            }
             default:
                 emitStmtTarget(s);
                 return;
