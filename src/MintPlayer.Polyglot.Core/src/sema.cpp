@@ -655,6 +655,11 @@ private:
                 break;
             }
             case PatKind::Tuple:
+                // §3.B never-miscompile: tuple patterns bind + type-check here but have no lowering yet, so a
+                // `match` on a tuple would emit against undefined names. Refuse cleanly until it's a real
+                // feature. (`for (a, b) in …` destructuring is a separate, supported path — see declareForBinding.)
+                diags_.error(p.pos, "tuple patterns in 'match' are not yet supported; destructure the tuple after "
+                                    "the match, or use a `for (a, b) in …` binding");
                 for (std::size_t i = 0; i < p.sub.size(); ++i) declarePattern(p.sub[i], i < scrut.args.size() ? scrut.args[i] : tUnknown());
                 break;
             default: break;

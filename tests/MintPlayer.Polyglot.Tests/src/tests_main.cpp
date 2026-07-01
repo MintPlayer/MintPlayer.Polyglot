@@ -349,6 +349,15 @@ int main() {
                          Target::Python).ok,
               "P9-V: an unused portable fn missing this target's actual is not refused");
     }
+    // P9-V audit — a tuple pattern in `match` binds + type-checks but has no lowering, so it must refuse
+    // (never miscompile) rather than emit a call against undefined binders. (for-in destructuring is fine.)
+    {
+        EmitResult r = compileStd("fn f(p: (i32, i32)): i32 => match p { (a, b) => a + b }\n"
+                                  "fn main() { print(f((1, 2))) }\n", Target::CSharp);
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "tuple patterns in 'match'")) named = true;
+        check(!r.ok && named, "P9-V audit: a tuple pattern in match is refused, not miscompiled");
+    }
 
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {

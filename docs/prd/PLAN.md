@@ -321,6 +321,15 @@ instead of silently emitting a call to an undefined function. The check lives in
 (e.g. `std.io.readText` has no python arm, but a python program that never calls it is unaffected — which is
 why all 36 python programs still pass). Unit-tested (refuse on python / compile on C# / unused-is-fine).
 
+**Audit follow-up ✅ (2026-07-01): tuple patterns in `match` refused (were a silent miscompile).** The same
+audit that found the break/continue drop found another: a **tuple pattern in `match`** (`match p { (a, b) => … }`)
+binds + type-checks in sema but has no lowering — it collapsed to a wildcard and emitted a switch arm
+referencing undefined binders (invalid code). Now refused cleanly in sema (`declarePattern`) with a
+diagnostic pointing at destructuring-after-match or a `for (a, b) in …` binding (which *is* supported — a
+separate path). Full tuple-pattern support (positional binders → `Item1`/`[0]` per target + nested-literal
+exhaustiveness) is a deliberate future slice, not an audit side-fix. With this, **every `ir` StmtKind is
+lowered** (the break/continue fix closed the statement default) and the remaining silent fallbacks are gone.
+
 ## P10 — Plugin distribution + ecosystem (the endpoint of §4.4)
 The downloadable, declarative plugin system: a **workspace config (`pgconfig.json`)** declaring target
 *environments* (desktop/web/mobile/…) + plugins+versions; **download → shared cache → verify → lockfile**
