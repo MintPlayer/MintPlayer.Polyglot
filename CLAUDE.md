@@ -117,14 +117,16 @@ loading — dedup, cycle detection, deps-first merge; CLI `FileModuleResolver` (
 resolver; **collision detection** closes the silent value/union-case/extension holes. *Phase-2 deferred*
 (needs a per-file import-scope table): selective-import visibility restriction + `as` rebinding.
 std.io ships File bindings (readText/writeText/…) via the capability mechanism; std is still embedded-source.
-**P9 ✅ done (to the principled two-backend extent) — declarative backend engine** (design + slice log:
-`docs/design/backend-spec.md`). A `{Spec data + Hooks}` split extracted from the two native backends across
-byte-for-byte no-op slices: **`EmitterBase`** (`emitter_base.hpp`/`.cpp`) owns the statement walk + buffer/
-indentation + brace abstraction; **`BackendSpec`** carries the scalar/suffix/operator/bracket tables + shared
-render primitives; the backend↔engine **hook surface** is the pure virtuals `emitExpr`/`emitStmtTarget`/
-`bracesOnHeadLine`/`localDecl`/`yieldStmt`/`rethrowStmt`. Extraction proved the **expression walk + declaration
-shapes are irreducibly per-target**, so they stay as each backend's imperative tier; the data-only declarative
-DSL is **deferred to P10** (extract from a third backend, never guess — §4.3).
+**P9 ✅ done — declarative backend engine + DSL extracted (validated across three backends)** (design + slice
+log: `docs/design/backend-spec.md`). A `{Spec data + Hooks}` split across byte-for-byte no-op slices:
+**`EmitterBase`** (`emitter_base.hpp`/`.cpp`) owns the statement walk + buffer/indentation + block abstraction
+and reads all per-target data through one `spec()` accessor; **`BackendSpec`** is the extracted declarative
+DSL — **all** per-target data: scalar/suffix/operator/bracket tables + block style + statement terminator +
+throw keyword + bool/null literal spellings (string escaping is the shared `renderString` primitive). Every
+backend, incl. Python, is now a `{Spec + Hooks}` instance. The residual **hook surface** is genuine behavior:
+`emitExpr`/`emitStmtTarget`/`localDecl`/`yieldStmt`/`rethrowStmt` + the per-target declaration emitters.
+Extraction proved (and a third, non-sibling backend confirmed) the **expression walk + declaration shapes are
+irreducibly per-target** — they can't be flattened to data without an embedded DSL the zero-dep core forbids.
 **P9-V ✅ done — third backend (Python) validation spike** (`emit_python.cpp`, gate `tests/conformance/run-python.ps1`,
 opt-in `--target python`). A non-sibling colon+indent target brought up to validate the engine generalizes,
 now covering the **full §3.A surface — all 36 conformance programs (incl. the FruitCake north star) agree

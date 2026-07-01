@@ -1,11 +1,13 @@
 # Design note — the declarative backend spec (P9)
 
 > Concrete realization of [`plugins-and-targets.md`](plugins-and-targets.md) §4 ("backends are declarative
-> plugins") for the zero-dependency C++ core. This is *extracted* from the two hand-written backends
-> (`emit_csharp.cpp`, `emit_typescript.cpp`), per the §4 discipline — never guessed. Status: **done to the
-> principled two-backend extent** — the shared engine (`EmitterBase`) + `BackendSpec` data + the documented
-> hook surface are extracted; the expression walk and declaration shapes proved irreducibly per-target and
-> stay as each backend's imperative tier, with the data-only declarative DSL deferred to a third backend (P10).
+> plugins") for the zero-dependency C++ core. This is *extracted* from the hand-written backends
+> (`emit_csharp.cpp`, `emit_typescript.cpp`, `emit_python.cpp`), per the §4 discipline — never guessed.
+> **Status: DSL extracted and validated across three backends (✅ 2026-07-01).** The shared engine
+> (`EmitterBase`) + the `BackendSpec` declarative data + the documented hook surface are extracted; all
+> per-target *data* now lives in `BackendSpec` (§3), and all three backends are `{Spec + Hooks}` instances
+> over the one engine. The expression walk and declaration shapes proved **irreducibly per-target** — a
+> conclusion now backed by a third, non-sibling backend (Python), not a two-backend guess (§6).
 
 ## 1. What a backend actually is, after extraction
 
@@ -72,25 +74,39 @@ per-node `BackendHooks` (`emitCast`, `emitTry`, `narrowBinary`, `emitMatch`, …
 the cleanly-shared layer is the **statement walk**, not the expression walk, so the realized split is:
 
 ```cpp
-// 1. Spec — the tabular data both emitters consult (backend_spec.hpp). What actually landed:
+// 1. Spec — ALL per-target data, in one struct (backend_spec.hpp). Every backend (incl. Python) has one:
 struct BackendSpec {
-    std::string name;                                                  // "csharp" / "typescript"
+    std::string name;                                                  // "csharp"/"typescript"/"python"
     std::unordered_map<std::string, std::string> scalarType;           // "i8" -> "sbyte" / "number"
     std::unordered_map<std::string, std::string> intSuffix;            // "i64" -> "L" / "n"
     std::unordered_map<std::string, std::string> binaryOp;             // "==" -> "===" (TS); C# verbatim
     std::unordered_map<std::string, DelimitedTemplate> delimited;      // "tuple"/"list" bracket affixes
+    BlockStyle blockStyle;                                             // Allman / K&R / colon+indent
+    std::string stmtEnd;                                              // ";" / "" (Python)
+    std::string throwKeyword;                                         // "throw" / "raise"
+    std::string trueLit, falseLit, nullLit;                          // "true"/"false"/"null" vs Python's
     std::string binOp(const std::string&) const;
 };
-// plus shared, target-identical render primitives (renderDelimited/renderArgs/renderCond) and the
-// operatorPrecedence() table — engine concerns, not per-backend data.
+// plus shared, target-identical render primitives (renderDelimited/renderArgs/renderCond/renderString) and
+// the operatorPrecedence() table — engine concerns, not per-backend data.
 
 // 2. Engine — EmitterBase (emitter_base.hpp/.cpp) owns the IR *statement* walk + output buffer/indentation:
-//    line/blockBody/headBlock/inlineBlock, every leaf statement, the if/while/for trio, Let/Yield/Throw/Use.
+//    line/blockBody/headBlock/inlineBlock, every leaf statement, the if/while/for trio, Let/Yield/Throw/Use/
+//    Break/Continue. It reads all per-target data through the one `spec()` accessor.
 
-// 3. Hooks — the pure virtuals EmitterBase calls (the backend↔engine contract). Two granularities:
-//    (a) wholesale per-target walks: emitExpr (the entire expression walk) and emitStmtTarget (For + Try);
-//    (b) fine-grained spellings: bracesOnHeadLine, localDecl, yieldStmt, rethrowStmt.
+// 3. Hooks — the pure virtuals EmitterBase calls (the backend↔engine contract), now cleanly split:
+//    (a) data:      spec() — returns the BackendSpec (replaced the old blockStyle()/stmtEnd()/throwKeyword()
+//                   constant-hooks; those were data, so they moved into the Spec);
+//    (b) wholesale per-target walks: emitExpr (the entire expression walk) and emitStmtTarget (For + Try);
+//    (c) fine-grained behavior (real per-target logic, not constants): localDecl, yieldStmt, rethrowStmt.
 ```
+
+The DSL-extraction endpoint is thus reached to the extent the architecture allows: **a backend's declarative
+description is exactly `BackendSpec`** (types, literals, operators, brackets, block style, terminators), and
+the residual C++ is the irreducible imperative tier — the expression walk and declaration emitters — which
+three backends confirm cannot be flattened to data without a full embedded DSL the zero-dep core forbids
+(§4's "full-power local tier"). A hypothetical fourth *sibling* target could be a new `BackendSpec` + the few
+hooks; a non-sibling still needs its own imperative tier, exactly as Python did.
 
 Why expressions stayed wholesale-per-target: almost every expression node spells differently per target
 (numeric narrowing/BigInt boundaries, `Cast`/`tsConvert`, `Match`, interpolation, operator-method dispatch),
@@ -187,5 +203,7 @@ transpile to Python byte-identical to the C# oracle** (`run-python.ps1`). The fi
   *every* target** (`default: return nullptr`) — a §3.B miscompile the C#/TS diff gate structurally could not
   catch (both dropped them identically, so they agreed). Now `ir::Break`/`Continue` emit in the shared engine.
 
-The declarative DSL (the P9 endpoint) can now be extracted from **three** working backends instead of
-two-plus-a-guess. Full slice log: `../prd/PLAN.md` §P9-V.
+The declarative DSL (the P9 endpoint) was then extracted from these **three** working backends instead of
+two-plus-a-guess — see the header + §3: all per-target data consolidated into `BackendSpec` (blockStyle/
+stmtEnd/throwKeyword lifted from constant-hooks, bool/null spellings, string escaping → the shared
+`renderString`), each backend reduced to `{Spec + Hooks}`. Full slice log: `../prd/PLAN.md` §P9 / §P9-V.

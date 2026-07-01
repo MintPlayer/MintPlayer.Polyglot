@@ -185,14 +185,18 @@ generator. *Not yet done here:* wiring the generated output back into the live M
 scope — that repo's build is not run from here) and a real module-resolution system (std is embedded source).
 
 ## P9 — Declarative backend engine + DSL — ✅ done (to the principled two-backend extent)
-**Status:** the shared engine + spec extraction is complete for two backends. `EmitterBase` owns the statement
-walk, the output buffer/indentation, and the brace abstraction; `BackendSpec` carries the scalar/suffix/
-operator/bracket tables; the shared render primitives (`renderDelimited`/`renderArgs`/`renderCond`) capture the
-target-identical expression structure; and the backend↔engine **hook surface** is documented (the pure virtuals
-`emitExpr`/`emitStmtTarget`/`bracesOnHeadLine`/`localDecl`/`yieldStmt`/`rethrowStmt`). Extraction proved the
-expression walk and declaration shapes are irreducibly per-target, so they remain the concrete backends'
-imperative tier; the **data-only declarative-DSL endpoint is deferred to P10** (extract from a third backend,
-never guess — §4.3). The slice log (1 → 4e) and the realized C++ shape are in `design/backend-spec.md` §3–4.
+**Status: ✅ complete — the declarative DSL is extracted, validated across three backends.** `EmitterBase`
+owns the statement walk, the output buffer/indentation, and the block abstraction, and reads all per-target
+data through one `spec()` accessor; **`BackendSpec` is the extracted DSL — every per-target datum**: scalar/
+suffix/operator/bracket tables + block style + statement terminator + throw keyword + bool/null literal
+spellings (string escaping is the shared `renderString` primitive; `renderDelimited`/`renderArgs`/`renderCond`
+capture the target-identical expression structure). Every backend — including the non-sibling Python — is now
+a `{Spec + Hooks}` instance. The residual **hook surface** is genuine per-target behavior: `emitExpr`/
+`emitStmtTarget`/`localDecl`/`yieldStmt`/`rethrowStmt` + the declaration emitters. Extraction proved (and the
+third backend confirmed) the expression walk and declaration shapes are **irreducibly per-target** — they
+can't be flattened to data without an embedded DSL the zero-dep core forbids (§4's "full-power local tier").
+The slice log (1 → 4f, then the DSL-consolidation slices: renderString, spec-data, bool/null) and the realized
+C++ shape are in `design/backend-spec.md` §3–4.
 **Concrete design + extraction map: [`../design/backend-spec.md`](../design/backend-spec.md).** A structural
 catalog of both emitters found the split is ~70% tabular / ~30% imperative, so a backend = **Spec (declarative
 data)** + **Hooks (C++ for the imperative 30%: `tsConvert`, TS `try` lowering, numeric narrowing, operator-
@@ -311,7 +315,10 @@ keyword escaping, class consts/statics, field initializers, default params, stri
 `?.`/`??`/`!`, + the break/continue fix). `PythonBackend::supports` now returns `true` for everything (the
 StubBackend test still proves gating bites).
 
-**The declarative DSL (P9 endpoint) can now be extracted from three backends instead of guessed.**
+**The declarative DSL (P9 endpoint) was extracted from three backends instead of guessed ✅ (2026-07-01):**
+all per-target data consolidated into `BackendSpec` (blockStyle/stmtEnd/throwKeyword lifted from
+constant-hooks; bool/null spellings; string escaping → shared `renderString`), each backend reduced to
+`{Spec + Hooks}`, Python given its own Spec. See `design/backend-spec.md` header + §3.
 
 **Follow-up ✅ (2026-07-01): target-gated portability refusal.** Closed the §3.B gap surfaced by the spike —
 a call to a portable function (one with `actual` impls) on a target that has no `actual` for it now **refuses
