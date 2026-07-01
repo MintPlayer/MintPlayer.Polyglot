@@ -25,6 +25,20 @@
 namespace mintplayer::polyglot {
 namespace {
 
+// Python's declarative Spec — the engine consults it for block style, statement terminator, and throw
+// keyword. The type/operator/bracket tables stay empty: Python emits no type annotations, spells operators
+// through pyOp(), and brackets list/tuple literals inline — those are its imperative Hook tier, not data.
+const BackendSpec& pythonSpec() {
+    static const BackendSpec spec = {
+        "python",
+        {}, {}, {}, {},              // scalarType / intSuffix / binaryOp / delimited: unused by this backend
+        BlockStyle::ColonIndent,     // colon+indent, no braces
+        "",                          // no statement terminator
+        "raise",                     // `throw v` -> `raise v`
+    };
+    return spec;
+}
+
 bool isIntType(const TypeRef& t) {
     if (t.kind != TypeRef::Kind::Named) return false;
     const std::string& n = t.name;
@@ -86,12 +100,10 @@ public:
     }
 
 private:
-    BlockStyle blockStyle() const override { return BlockStyle::ColonIndent; }
-    const char* stmtEnd() const override { return ""; }                                 // Python: no terminator
+    const BackendSpec& spec() const override { return pythonSpec(); }
     std::string localDecl(const std::string& name, bool) override { return pyId(name); }  // bare `name = ...`
     std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
     std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
-    const char* throwKeyword() const override { return "raise"; }     // `throw v` -> `raise v`
 
     std::unordered_map<std::string, const ir::ExternType*> externTypes_;
     int tmp_ = 0; // fresh-name counter for the walrus temporaries that keep `?.`/`??` single-evaluated

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "mintplayer/polyglot/backend_spec.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 
 // Shared walk machinery for the hand-written backends — the seed of the P9 `SpecEmitter` engine (see
@@ -15,14 +16,7 @@
 
 namespace mintplayer::polyglot {
 
-// How a target delimits a block. The brace family differs only in where `{` sits; an indentation target
-// (Python) has no braces at all — `head:` then an indented body, no closer. headBlock() and the If/While
-// statements consult this so the shared statement walk serves all three.
-enum class BlockStyle {
-    BracesAllman, // `head` ⏎ `{` … `}`   (C#)
-    BracesKnR,    // `head {` … `}`        (TypeScript)
-    ColonIndent,  // `head:` … (indent only, no closer)  (Python)
-};
+// BlockStyle now lives in backend_spec.hpp — it is per-target Spec data (see BackendSpec::blockStyle).
 
 class EmitterBase {
 protected:
@@ -61,11 +55,14 @@ protected:
     virtual std::string emitExpr(const ir::Expr& e) = 0;     // the entire expression walk
     virtual void emitStmtTarget(const ir::Stmt& s) = 0;      // the statements emitStmt does not handle (For, Try)
     //
-    //   (b) Fine-grained spelling hooks. The engine owns the *structure* of these statements; only a short
-    //       spelling differs per target, so the backend supplies just that string.
-    virtual BlockStyle blockStyle() const = 0;                                  // braces (C#/TS) vs colon+indent (Py)
-    virtual const char* stmtEnd() const { return ";"; }                         // statement terminator; Python: ""
-    virtual const char* throwKeyword() const { return "throw"; }                // `throw v`; Python: `raise v`
+    //   (b) The Spec — all per-target *data* the engine consults (block style, statement terminator, throw
+    //       keyword, plus the type/literal/operator/bracket tables the concrete emitters read). One accessor
+    //       replaces the former blockStyle()/stmtEnd()/throwKeyword() constant-hooks: those were data, and
+    //       data belongs in the Spec.
+    virtual const BackendSpec& spec() const = 0;
+    //
+    //   (c) Fine-grained spelling hooks with real per-target logic (not constants): the local-declaration
+    //       keyword, the yield form, and the value-less rethrow.
     virtual std::string localDecl(const std::string& name, bool isMutable) = 0; // `var x`/`let|const x`/`x` (Let, Use)
     virtual std::string yieldStmt(const std::string& value, bool hasValue) = 0; // `yield return v;`/`yield v;` …
     virtual std::string rethrowStmt() = 0;                                      // value-less `throw;`/`throw __e;`

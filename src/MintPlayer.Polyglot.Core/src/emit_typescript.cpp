@@ -27,6 +27,7 @@ const BackendSpec& typescriptSpec() {
         {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
         {{"==", "==="}, {"!=", "!=="}}, // binaryOp: always strict equality, never JS loose ==/!=
         {{"tuple", {"[", ", ", "]"}}, {"list", {"[", ", ", "]"}}}, // delimited: TS tuple/list literal `[a, b]`
+        BlockStyle::BracesKnR,          // TS is K&R-braced; stmtEnd ";" + throw keyword "throw" are the defaults
     };
     return spec;
 }
@@ -468,7 +469,7 @@ private:
         line("}");
     }
 
-    BlockStyle blockStyle() const override { return BlockStyle::BracesKnR; } // TS is K&R-braced
+    const BackendSpec& spec() const override { return typescriptSpec(); }
 
     std::string localDecl(const std::string& name, bool isMutable) override { return std::string(isMutable ? "let " : "const ") + name; }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield " + v + ";" : "return;"; }

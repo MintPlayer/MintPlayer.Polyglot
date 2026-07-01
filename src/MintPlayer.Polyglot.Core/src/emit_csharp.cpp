@@ -27,6 +27,7 @@ const BackendSpec& csharpSpec() {
         {{"i64", "L"}, {"u64", "UL"}, {"u32", "U"}}, // intSuffix
         {}, // binaryOp: C# emits every operator verbatim
         {{"tuple", {"(", ", ", ")"}}}, // delimited: C# tuple `(a, b)`
+        BlockStyle::BracesAllman,       // C# is Allman-braced; stmtEnd ";" + throw keyword "throw" are the defaults
     };
     return spec;
 }
@@ -379,7 +380,7 @@ private:
         headBlock(sig, fn.body);
     }
 
-    BlockStyle blockStyle() const override { return BlockStyle::BracesAllman; } // C# is Allman-braced
+    const BackendSpec& spec() const override { return csharpSpec(); }
 
     std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + csIdent(name); }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }

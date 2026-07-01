@@ -11,8 +11,17 @@
 
 namespace mintplayer::polyglot {
 
+// How a target delimits a block. The brace family differs only in where `{` sits; an indentation target
+// (Python) has no braces at all — `head:` then an indented body, no closer. The shared statement engine
+// (EmitterBase) consults this so one statement walk serves all three targets.
+enum class BlockStyle {
+    BracesAllman, // `head` ⏎ `{` … `}`   (C#)
+    BracesKnR,    // `head {` … `}`        (TypeScript)
+    ColonIndent,  // `head:` … (indent only, no closer)  (Python)
+};
+
 struct BackendSpec {
-    std::string name; // "csharp" / "typescript"
+    std::string name; // "csharp" / "typescript" / "python"
 
     // A leaf/scalar `.pg` type name -> its target-language spelling. Captures the per-target leaf mapping
     // (e.g. "i64" -> "long" / "bigint"; TS maps "char" -> "string", C# does not). Structural types
@@ -41,6 +50,14 @@ struct BackendSpec {
     // affix ("(", ", ", ")") is identical across targets, so it stays a literal in the engine, not here.
     struct DelimitedTemplate { std::string open, sep, close; };
     std::unordered_map<std::string, DelimitedTemplate> delimited;
+
+    // Statement-shape data the shared engine consults (previously constant-returning virtual hooks — pure
+    // per-target *data* misfiled as behavior; the three-backend spike confirmed these are the only such
+    // knobs). `blockStyle` picks brace-family vs colon+indent; `stmtEnd` is the terminator (";" / "" for
+    // Python); `throwKeyword` spells a value `throw`/`raise`. Defaults suit the brace family (C#/TS).
+    BlockStyle blockStyle = BlockStyle::BracesKnR;
+    std::string stmtEnd = ";";
+    std::string throwKeyword = "throw";
 
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
