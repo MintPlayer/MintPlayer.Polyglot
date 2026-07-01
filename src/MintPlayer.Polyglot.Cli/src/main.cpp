@@ -513,7 +513,14 @@ int runLsp(const std::vector<std::string>&) {
             if (opts["root"].kind == json::Value::Kind::String) root = opts["root"].asString();
             if (opts["lib"].kind == json::Value::Kind::String) srv.lib_ = opts["lib"].asString();
             srv.root_ = root;
-            lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"utf-8\",\"textDocumentSync\":1,"
+            // Only pick "utf-8" if the client offered it (LSP requires choosing from its positionEncodings);
+            // otherwise fall back to the utf-16 default. Our columns are byte offsets = utf-16 units for
+            // ASCII, so either encoding maps correctly for ASCII (a non-ASCII walk is the documented follow-up).
+            bool utf8 = false;
+            for (const auto& e : params["capabilities"]["general"]["positionEncodings"].items())
+                if (e.asString() == "utf-8") utf8 = true;
+            std::string enc = utf8 ? "utf-8" : "utf-16";
+            lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"" + enc + "\",\"textDocumentSync\":1,"
                          "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true,"
                          "\"documentFormattingProvider\":true},"
                          "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"0.0.1\"}}");

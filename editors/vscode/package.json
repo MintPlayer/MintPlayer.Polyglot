@@ -25,7 +25,7 @@
       {
         "language": "polyglot",
         "scopeName": "source.polyglot",
-        "path": "../grammars/polyglot.tmLanguage.json"
+        "path": "./syntaxes/polyglot.tmLanguage.json"
       }
     ],
     "configuration": {
