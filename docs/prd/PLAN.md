@@ -311,10 +311,15 @@ keyword escaping, class consts/statics, field initializers, default params, stri
 `?.`/`??`/`!`, + the break/continue fix). `PythonBackend::supports` now returns `true` for everything (the
 StubBackend test still proves gating bites).
 
-**The declarative DSL (P9 endpoint) can now be extracted from three backends instead of guessed.** Smaller
-follow-up noted in passing: a portable `expect fn` with **no `actual` for the active target** still emits a
-broken program rather than refusing — a general §3.B gap (not Python-specific; exposed because Python was the
-first target reached without full std arms). Worth a dedicated refusal in the expect/actual resolver.
+**The declarative DSL (P9 endpoint) can now be extracted from three backends instead of guessed.**
+
+**Follow-up ✅ (2026-07-01): target-gated portability refusal.** Closed the §3.B gap surfaced by the spike —
+a call to a portable function (one with `actual` impls) on a target that has no `actual` for it now **refuses
+with a call-site diagnostic** ("portable function 'f' has no 'actual' implementation for target 'python'")
+instead of silently emitting a call to an undefined function. The check lives in `checkCapabilities`
+(target-aware) and is **keyed on call sites**, so an *unused* portable fn missing this target's arm is fine
+(e.g. `std.io.readText` has no python arm, but a python program that never calls it is unaffected — which is
+why all 36 python programs still pass). Unit-tested (refuse on python / compile on C# / unused-is-fine).
 
 ## P10 — Plugin distribution + ecosystem (the endpoint of §4.4)
 The downloadable, declarative plugin system: a **workspace config (`pgconfig.json`)** declaring target

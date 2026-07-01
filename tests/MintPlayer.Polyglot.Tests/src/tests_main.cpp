@@ -334,6 +334,22 @@ int main() {
              "actual(typescript) fn a(): i32 => extern(\"42\")\nfn main() { print(a()) }\n",
              "P7: extern is allowed inside an actual");
 
+    // P9-V — target-gated portability (§3.B): calling a portable fn (one with `actual`s) on a target that has
+    // no `actual` for it must refuse, not silently emit a call to an undefined function. Keyed on call sites,
+    // so an *unused* portable fn missing this target's arm is fine (e.g. std.io.readText on Python).
+    {
+        const char* noPy = "expect fn answer(): i32\nactual(csharp) fn answer(): i32 => 42\n"
+                           "actual(typescript) fn answer(): i32 => 42\nfn main() { print(answer()) }\n";
+        EmitResult py = compileStd(noPy, Target::Python);
+        bool named = false;
+        for (const auto& d : py.diagnostics) if (has(d.message, "no 'actual'") && has(d.message, "python")) named = true;
+        check(!py.ok && named, "P9-V: calling a portable fn with no actual for the target is refused");
+        check(compileStd(noPy, Target::CSharp).ok, "P9-V: the same call compiles for a target that has the actual");
+        check(compileStd("expect fn unused(): i32\nactual(csharp) fn unused(): i32 => 1\nfn main() { print(1) }\n",
+                         Target::Python).ok,
+              "P9-V: an unused portable fn missing this target's actual is not refused");
+    }
+
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
         const char* prog =

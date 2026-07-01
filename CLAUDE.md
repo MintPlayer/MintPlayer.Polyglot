@@ -135,9 +135,10 @@ layer served Python unchanged; declarations stay per-target (often cleaner — s
 the root**, notably that **`break`/`continue` were silently dropped in lowering for all targets** (a §3.B
 miscompile the C#/TS diff gate couldn't catch — both dropped them identically; now `ir::Break`/`Continue`
 emit in the shared engine). `PythonBackend::supports` returns `true` for everything. The declarative DSL (P9
-endpoint) can now be extracted from **three** backends instead of guessed. Slice log in PLAN §P9-V. *Noted
-follow-up:* a portable `expect fn` with no `actual` for the target still emits a broken program rather than
-refusing (general §3.B gap, not Python-specific).
+endpoint) can now be extracted from **three** backends instead of guessed. Slice log in PLAN §P9-V.
+Follow-up ✅ (2026-07-01): a call to a portable fn (one with `actual`s) on a target lacking one now **refuses**
+with a call-site diagnostic (`checkCapabilities`, call-site-keyed so unused portable fns are unaffected) —
+closing that §3.B silent-broken-output gap.
 **P13 ✅ done — std as real modules + the `lib` prelude** (PRD §4.6): `print` is now `std.io`'s generic
 `expect/actual print<T>` (TS body wraps `console.log(String(x))` universally so bigint/number print like C#
 `WriteLine`); `Math` is an `extern class Math` in `std.math` (bound static members + `PI`/`E`; `min/max/abs`

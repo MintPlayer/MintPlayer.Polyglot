@@ -2,6 +2,9 @@
 
 #include <array>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace mintplayer::polyglot {
 
@@ -14,6 +17,7 @@ namespace {
 class Collector {
 public:
     std::vector<FeatureUse> uses;
+    std::vector<std::pair<std::string, SourcePos>> calls; // free-function call sites: (callee name, pos)
 
     void run(const CompilationUnit& u) {
         for (const auto& e : u.extensions) {
@@ -75,6 +79,8 @@ private:
         if (!e) return;
         if (e->kind == ExprKind::Match)  mark(Feature::PatternMatching, e->pos);
         if (e->kind == ExprKind::Lambda) mark(Feature::Closures, e->pos);
+        if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name)
+            calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`
         expr(e->lhs.get());
         expr(e->rhs.get());
         expr(e->extra.get());
@@ -98,10 +104,27 @@ std::vector<FeatureUse> collectFeatureUses(const CompilationUnit& unit) {
 }
 
 void checkCapabilities(const CompilationUnit& unit, const Backend& backend, DiagnosticBag& diags) {
-    for (const auto& use : collectFeatureUses(unit)) {
+    Collector c;
+    c.run(unit);
+    for (const auto& use : c.uses) {
         if (!backend.supports(use.feature))
             diags.error(use.pos, std::string("target '") + backend.name() + "' does not support " +
                                       featureName(use.feature) + "; remove it or drop that target");
+    }
+
+    // §3.B / §4.4: a target-gated portable function (one with `actual` impls) must have an `actual` for THIS
+    // target at every call site — else the call would emit against a function the backend never defines (a
+    // silent broken program). Keyed on *calls*, so an unused portable fn missing this target's arm is fine
+    // (e.g. std.io's readText has no python arm, but a python program that never calls it is unaffected).
+    std::unordered_map<std::string, std::unordered_set<std::string>> actualTargets; // fn name -> targets with an actual
+    for (const auto& f : unit.functions)
+        if (!f.actualTarget.empty()) actualTargets[f.name].insert(f.actualTarget);
+    for (const auto& call : c.calls) {
+        auto it = actualTargets.find(call.first);
+        if (it != actualTargets.end() && !it->second.count(backend.name()))
+            diags.error(call.second, std::string("portable function '") + call.first +
+                                          "' has no 'actual' implementation for target '" + backend.name() +
+                                          "'; add `actual(" + backend.name() + ")` or drop that target");
     }
 }
 
