@@ -61,6 +61,17 @@ function activate(context) {
     })
   );
 
+  // Colorize those virtual std documents like ordinary .pg files: mark them as the `polyglot` language so
+  // the same TextMate grammar (and theme colors) applies. Their scheme isn't in the LSP document selector,
+  // so they get grammar highlighting only — the server never analyzes the read-only std source.
+  const asPolyglot = (doc) => {
+    if (doc.uri.scheme === 'polyglot' && doc.languageId !== 'polyglot') {
+      vscode.languages.setTextDocumentLanguage(doc, 'polyglot');
+    }
+  };
+  context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(asPolyglot));
+  vscode.workspace.textDocuments.forEach(asPolyglot);
+
   client.start().catch((err) => {
     vscode.window.showWarningMessage(
       `Polyglot: could not start the language server ('${command} lsp'). ` +
