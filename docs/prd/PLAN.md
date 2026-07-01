@@ -972,6 +972,14 @@ Signing/trust is the deferred mitigation. **Highest risks:** the DSL expressing 
 wrap (mitigated by the fixed-primitive library, defined *from* the current emitters, not guessed); C# spec byte-perfect
 as the oracle; and "no rule" must be a loud error (load-time exhaustiveness validation is the defense).
 
+**As-built (2026-07-01, in progress):** ordering the *lowest-risk data migration first* (the already-tabular Spec,
+before the interpreter). **Slice-2-start ✅:** `loadBackendSpec`/`backendSpecToJson` (`backend_spec_json.hpp/.cpp`,
+over the existing `json.hpp`) parse+serialize a `BackendSpec`, validating `name` + the `blockStyle` enum and failing
+loudly otherwise. The **C# backend's Spec now loads from an embedded JSON document** (`CSHARP_SPEC_JSON` in
+`emit_csharp.cpp`) instead of a compiled-in struct — the imperative Hooks are unchanged, only the tabular data's
+source moved to JSON; output is byte-identical (run-diff 38/38 + unit tests green, incl. 4 new P18 tests). TS + Python
+specs → JSON next, then the interpreter engine + dual-run harness (slice 1 proper) + `Target`→`BackendHandle`.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

@@ -5,7 +5,10 @@
 #include <unordered_set>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
+#include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/emitter_base.hpp"
+
+#include <cassert>
 
 // Hand-written IR -> C# pretty-printer. Walks the typed IR; wraps the program's free functions in a
 // `static class Program`, maps the `print` intrinsic -> global::System.Console.WriteLine and the entry
@@ -16,19 +19,30 @@ namespace mintplayer::polyglot {
 
 namespace {
 
-// The C# backend's declarative data (P9 slice 1: the scalar type-leaf table). `char` is absent on purpose
-// — C# lets it fall through to the named-type path (-> `char`); the structural cases stay in csType.
+// The C# backend's declarative data, now a JSON spec (P18 slice 1: the tabular ~70% loads from data instead
+// of a compiled-in struct — PRD §4.10). `char` is absent on purpose — C# lets it fall through to the named-type
+// path (-> `char`); the structural cases stay in csType. The imperative Hooks below are unchanged; only the
+// Spec's source moved to JSON. Output is byte-identical (the differential/golden gates enforce it).
+const char* CSHARP_SPEC_JSON = R"JSON({
+  "name": "csharp",
+  "scalarType": { "unit": "void", "i8": "sbyte", "i16": "short", "i32": "int", "i64": "long",
+                  "u8": "byte", "u16": "ushort", "u32": "uint", "u64": "ulong",
+                  "f32": "float", "f64": "double", "bool": "bool", "string": "string" },
+  "intSuffix": { "i64": "L", "u64": "UL", "u32": "U" },
+  "binaryOp": {},
+  "delimited": { "tuple": { "open": "(", "sep": ", ", "close": ")" } },
+  "blockStyle": "bracesAllman",
+  "stmtEnd": ";",
+  "throwKeyword": "throw",
+  "trueLit": "true", "falseLit": "false", "nullLit": "null"
+})JSON";
+
 const BackendSpec& csharpSpec() {
-    static const BackendSpec spec = {
-        "csharp",
-        {{"unit", "void"}, {"i8", "sbyte"}, {"i16", "short"}, {"i32", "int"}, {"i64", "long"},
-         {"u8", "byte"}, {"u16", "ushort"}, {"u32", "uint"}, {"u64", "ulong"},
-         {"f32", "float"}, {"f64", "double"}, {"bool", "bool"}, {"string", "string"}},
-        {{"i64", "L"}, {"u64", "UL"}, {"u32", "U"}}, // intSuffix
-        {}, // binaryOp: C# emits every operator verbatim
-        {{"tuple", {"(", ", ", ")"}}}, // delimited: C# tuple `(a, b)`
-        BlockStyle::BracesAllman,       // C# is Allman-braced; stmtEnd ";" + throw keyword "throw" are the defaults
-    };
+    static const BackendSpec spec = [] {
+        SpecLoadResult r = loadBackendSpec(CSHARP_SPEC_JSON);
+        assert(r.ok && "embedded C# backend spec must parse"); // our own spec: a parse failure is a build bug
+        return r.spec;
+    }();
     return spec;
 }
 

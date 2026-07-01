@@ -4,6 +4,7 @@
 #include <string>
 
 #include "mintplayer/polyglot/backend.hpp"
+#include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 #include "mintplayer/polyglot/json.hpp"
@@ -1016,6 +1017,36 @@ int main() {
         bool plain = false;
         for (const auto& d : r.diagnostics) if (has(d.message, "unknown type")) plain = true;
         check(!r.ok && plain, "P6: a non-refused unknown type still says 'unknown type'");
+    }
+
+    // P18 slice 1 — BackendSpec loads from / serializes to JSON (the tabular ~70% becomes data; PRD §4.10).
+    {
+        // A representative spec parses; the fields land where expected; blockStyle maps.
+        const char* js = R"({ "name":"demo", "scalarType":{"i32":"int"}, "intSuffix":{"i64":"L"},
+            "binaryOp":{"==":"==="}, "delimited":{"tuple":{"open":"[","sep":", ","close":"]"}},
+            "blockStyle":"colonIndent", "stmtEnd":"", "throwKeyword":"raise",
+            "trueLit":"True","falseLit":"False","nullLit":"None" })";
+        SpecLoadResult r = loadBackendSpec(js);
+        check(r.ok && r.spec.name == "demo" && r.spec.scalarType.at("i32") == "int" &&
+              r.spec.binOp("==") == "===" && r.spec.blockStyle == BlockStyle::ColonIndent &&
+              r.spec.stmtEnd == "" && r.spec.throwKeyword == "raise" && r.spec.nullLit == "None" &&
+              r.spec.delimited.at("tuple").open == "[",
+              "P18: loadBackendSpec parses fields + blockStyle enum");
+
+        // Missing name / unknown blockStyle fail loudly (never a silent bad spec).
+        check(!loadBackendSpec(R"({"scalarType":{}})").ok, "P18: spec without 'name' is rejected");
+        check(!loadBackendSpec(R"({"name":"x","blockStyle":"squiggly"})").ok, "P18: unknown blockStyle is rejected");
+
+        // Round-trip: serialize → parse → equal struct.
+        SpecLoadResult back = loadBackendSpec(backendSpecToJson(r.spec));
+        check(back.ok && back.spec.name == r.spec.name &&
+              back.spec.scalarType == r.spec.scalarType && back.spec.intSuffix == r.spec.intSuffix &&
+              back.spec.binaryOp == r.spec.binaryOp && back.spec.blockStyle == r.spec.blockStyle &&
+              back.spec.stmtEnd == r.spec.stmtEnd && back.spec.throwKeyword == r.spec.throwKeyword &&
+              back.spec.trueLit == r.spec.trueLit && back.spec.falseLit == r.spec.falseLit &&
+              back.spec.nullLit == r.spec.nullLit &&
+              back.spec.delimited.at("tuple").open == r.spec.delimited.at("tuple").open,
+              "P18: BackendSpec round-trips through JSON");
     }
 
     if (g_failures == 0) {
