@@ -81,7 +81,10 @@ both sides), function overloading (→ compile-time name-mangling; C# keeps the 
 parameter type), **numeric conversions via explicit casts `(T)x`** (not a `toI64()`/`toU32()` method swamp)
 with **implicit lossless widening** (a narrower value flows into a wider slot automatically — assignment,
 argument, return, mixed-width arithmetic; narrowing, lossy `i64→f64`, and sign changes require the cast —
-see SPEC §3), strings/char (**both targets are UTF-16** — near 1:1, with surrogate-pair care).
+see SPEC §3), strings/char (**both targets are UTF-16** — near 1:1, with surrogate-pair care), and
+**single-threaded `async`/`await`** (a "colored function" → C# `async Task<T>`, TS `async … Promise<T>`,
+Python `async def`; the author writes the unwrapped `T` — *designed §4.7, not yet implemented; it is the
+first supported feature a real target (PHP) can't express, so it's capability-gated per §3.E*).
 
 ### B. Refused — out loud, with clear compiler diagnostics (the 🔴 list)
 Threads / `lock` / `Interlocked` / `Parallel.*` (single-threaded async only); runtime reflection /
@@ -145,6 +148,12 @@ site*. Several targets also lack operator overloading, properties, etc.
   This means the gate is in place *before* a target that can't do a feature ever ships (no retrofit — the
   lesson from Haxe's late threading-capability retrofit); a third backend just declares a smaller set and
   the existing check starts biting. (A `StubBackend` test exercises the refusal today.)
+- **`async`/`await` is the first supported feature with a plausible target that can't express it** (design
+  §4.7): C#/TS/JS/Python all have it, but **PHP has no native `async`/`await`** (Fibers/amphp are
+  library-level, not call-site-preserving), so a PHP backend would declare `Feature::Async = false` and the
+  gate would refuse async when PHP is a configured target — exactly this clause's purpose. Note the
+  intersection is currently *emergent*: the CLI compiles each target in a loop and fails if any refuses, so
+  "usable only if ALL targets support it" already holds without a `pgconfig.json` intersection pass (P10).
 
 This is the **survivor pattern**: Kotlin Multiplatform makes the common surface literally the intersection;
 Haxe (`target.threaded`…), Rust (`cfg`/`target_feature`), LLVM target features, and Protobuf editions all
@@ -342,6 +351,76 @@ compile check, not just `fmt`), and hello-world stays `print(…)` via `lib: ["i
 > target type spelling (feeding the P9 backend type table) + a constructor template is **P10** work — the
 > Binding mechanism's complete form. See PLAN P10 and `design/backend-spec.md` §4a.
 
+### 4.7 Async/await (design — 2026-07-01; investigated by a 4-agent team, not yet implemented)
+
+Single-threaded `async`/`await` is the **sanctioned concurrency model** (§3.B refuses threads/locks; async is
+what's left). It is a **"colored function"** exactly like iterators (`yield`) — the iterator machinery is the
+proven precedent this design follows, with two deliberate divergences noted below. **Status: designed, not
+built.** Today `async`/`await` are lexed (`KwAsync`/`KwAwait`) and reserved in the grammar, but: a top-level
+`async fn` fails to parse, `async` on a *method* parses into `Member.modifiers` and is then **silently
+dropped** (a latent no-op — emits a sync method), and `await` has no parser production (errors). Building it
+closes that silent hole.
+
+**The model.** `async fn foo(): T` is a function whose body may `await`; callers `await foo()` to get a `T`.
+The author writes the **unwrapped** return type `T` (idiomatic + portable — see the decision below); each
+backend synthesizes its own async wrapper. `await e` is a **prefix expression** at unary precedence (so
+postfix `.`/`()`/`[]` binds tighter: `await a.b()` = `await (a.b())`), matching C#/TS.
+
+**Return-type mapping — DECISION: backend-synthesized wrapper (not a user-written `Task<T>`).**
+Two options were weighed (design-it-twice):
+- *Option A (rejected):* mirror iterators — the user writes `Task<T>` and it's an `extern class` in `STD_CORE`
+  (like `Iterable<T>`), so emitters stay mapping-free. Rejected because it's **un-idiomatic** (`return x` of
+  type `T` under a `Task<T>` signature) and **non-portable** — the wrapper name differs per target (`Task` vs
+  `Promise`), so there's no single spelling for `.pg` source.
+- *Option B (chosen):* the author writes the **unwrapped `T`**; the `Task<T>`/`Promise<T>`/coroutine wrapper is
+  **implied by the `async` coloring and synthesized at backend emission**. Sema's `return`-checking is
+  unchanged (`currentReturn_` stays `T`); the IR stays a faithful high-level tree; the per-target wrappers are
+  exactly the backend tier's job (§4.2 "specialize per target"); `.pg` source stays portable (one spelling).
+  The `extern class` type registry is for *named types the user writes* — the async wrapper isn't one.
+
+**Per-pass implementation map** (each dimension investigated; file refs current as of 2026-07-01):
+- **Surface (lexer done).** AST: add `bool isAsync` to `FunctionDecl`; promote method-`async` from the
+  `modifiers` string to a typed `isAsync`; add `ExprKind::Await` (operand in `lhs`, a *distinct* kind — do not
+  reuse `Unary` with `text="await"`). Parser: consume a leading `async` in `parseFunction` + route top-level
+  `async fn` from the unit dispatcher; set `Member.isAsync` and strip `"async"` from `modifiers`; parse
+  `await` in `parseUnary` (not `parsePrimary`); add `KwAwait` to `beginsExpr` (fixes the `(i64)await x`
+  cast-lookahead). Printer (`pg_printer.cpp`): emit `async ` on `printFunction`/`printMember` and `await ` in
+  `expr()` — *strip-from-modifiers + re-emit-from-flag must ship together or the round-trip gate regresses.*
+- **IR + sema + lowering.** IR: `bool isAsync` on `ir::Function` + `ir::Method`; an `Await` expr node (mirrors
+  `ir::Unary`, one operand). Lowering: carry `f.isAsync = fn.isAsync` (async is **declared**, so — unlike
+  iterators' `sawYield_` inference — no body scan is needed for correctness); lower `Await` straight through.
+  Sema: track an `inAsync_` flag (alongside `currentReturn_`/`inActual_`); **validate `await` only inside an
+  `async fn`** (new rigor — a stray `await` would be a native compile error on all targets = a miscompile the
+  PRD forbids); **refuse `async` + `yield`** (async iterators / `IAsyncEnumerable` are a genuine third color,
+  out of scope for v1); allow async-without-`await` (optional soft warning later). `await e` **typing v1 =
+  identity** (`await e` has `e`'s type) — under Option B an async call already yields the unwrapped `T`, so
+  `await call()` is `T` with zero unwrap logic. *Principled follow-up (flagged, not v1): a real `Awaitable<T>`
+  so `await` requires `e: Task<T>` and unwraps to `T`, symmetric to `List/Iterable<T>` element unwrapping.*
+- **Backends (shared engine needs ZERO changes — async is signature-level, `await` is an expression).**
+  - **C#**: signature gets an `async ` prefix and the return wraps to `Task<T>` (bare `Task` for `unit`);
+    `await e` → `await <atom(e)>`; entry — keep the InvariantCulture pin first (load-bearing §3.D), then
+    `main().GetAwaiter().GetResult();` (**never `async void Main`**).
+  - **TypeScript**: extend the `function*`/`function` signature choice to `async function`; return wraps to
+    `Promise<T>` (`Promise<void>` for `unit`); `await e`; entry keeps a **floating `main();`** — NOT top-level
+    `await` (the conformance runner executes the `.ts` as a script; top-level await needs ESM and fails).
+  - **Python**: `async def`; no return annotation; `await e`; entry becomes `asyncio.run(main())` with a
+    prepended `import asyncio`, emitted only when needed via a `needsAsyncio_` flag mirroring `needsIdiv_`.
+  - Use each backend's existing `atom()` helper for the awaited operand (parenthesization).
+- **Capability gating (§3.E) — a ~4-line change following the `Iterators` precedent.** Add `Feature::Async`
+  to the `Feature` enum + `kAllFeatures[]`; add a `featureName()` case (`"async"`; the switch has no default,
+  so omitting it silently yields `"?"`); the three current backends already `return true` from `supports()`,
+  so **nothing gates today** — a future PHP backend (no native `async`/`await`) returns false and the existing
+  `checkCapabilities` refuses cleanly. The Collector (`capability.cpp`) marks async when it sees an `async`
+  fn/method decl **or** an `Await` expr (mark on both). **Multi-target "only if ALL targets support it" needs
+  no new code:** it already emerges from the CLI compiling each target in a loop (`ok &= emitOne(...)`), so a
+  build fails if any configured target refuses. A real `pgconfig.json`-driven intersection pass is P10, out of
+  scope here. Add a `StubBackend(Feature::Async)` test (mirrors the P5.E gate proof).
+
+**Scope for v1:** `async fn`/`async` methods, `await` expressions, the three entry wrappers, `Feature::Async`
+gating, and the `async`+`yield` refusal. **Out of scope:** async iterators (`for await`), a real awaitable
+type (identity typing for now), cancellation tokens, `Task.WhenAll`-style combinators (bind via std when
+needed), and the multi-target `pgconfig.json` intersection (P10).
+
 ---
 
 ## 5. Testing strategy
@@ -420,6 +499,13 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   samples now compile+run**. Added a faithful **`Option<T>`** generic union for nullable generics (§3.C),
   generic unions, interfaces/indexers/record-implements emission, `std.strings` (bound extension methods),
   char literals, and faithful bool/float printing. See PLAN P14.
+- **P15 — Single-threaded async/await.** 🚧 Designed (§4.7, from a 4-agent investigation), not yet built.
+  A "colored function" like iterators: `isAsync` on `ir::Function`/`Method` + an `Await` expr node; the author
+  writes the unwrapped `T` and each backend synthesizes its own wrapper (C# `async Task<T>`, TS `async …
+  Promise<T>`, Python `async def` + `asyncio.run` entry); `await` parses at unary precedence; `Feature::Async`
+  gates it (all three current backends support it — the gate bites only for a future target like PHP). Sema
+  validates `await` only inside `async fn` and refuses `async`+`yield` (async iterators out of scope). Closes
+  the current silent hole where `async` on a method parses but is dropped. Full design + per-pass map: §4.7.
 - **Stretch:** further targets as downloadable backends, source maps, **editor tooling** (a TextMate
   highlighting grammar for `.pg` — independent of the compiler, ships early for VS Code *and* Visual Studio
   2022+; plus an **LSP** server `polyglot lsp` built on the frontend-as-a-library, with thin VS Code and

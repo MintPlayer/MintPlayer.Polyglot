@@ -397,7 +397,9 @@ diagnostic (e.g. naming `Thread` or `decimal`) so the message is "Polyglot refus
 miscompile.
 
 - **Threads / concurrency primitives** — `lock`, `Interlocked`, `Parallel.*`, thread spawning. Single-
-  threaded `async`/`await` only (§4 reserves `async`; full semantics specced when first exercised).
+  threaded `async`/`await` only (§4 reserves `async`; **full design now in PRD §4.7** — a colored function,
+  author writes the unwrapped `T`, per-backend wrapper (`Task<T>`/`Promise<T>`/`async def`), capability-gated;
+  not yet implemented as of 2026-07-01).
 - **Runtime reflection** — `Activator`, open-world `Type.GetType(string)`, attribute introspection at run
   time. (Defeats tree-shaking; #1 bloat source.)
 - **Finalizers / GC hooks** — no `~T()`, no `GC.*`. Deterministic disposal is `use` (§5.2) — that's all.

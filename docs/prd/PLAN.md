@@ -569,6 +569,39 @@ its args; **char literals** (`ir::CharLit`); and **`std.strings`** (a new module
 fixing `mergeDecls` to merge an imported module's extensions. New conformance programs: `empty_list`,
 `bool_print`, `float_print`, `strings`. (06 trimmed a non-numeric input that can't parse faithfully cross-target.)
 
+## P15 — Single-threaded async/await — 🚧 designed (2026-07-01), not yet built
+**Full design: PRD §4.7** (produced by a 4-agent investigation of surface / sema+IR+lower / backends /
+capability). A "colored function" like iterators, with two deliberate divergences from the iterator precedent:
+async is **declared** (no `sawAwait_` inference needed) and the return-type wrapper is **backend-synthesized**,
+not user-written (Option B — keeps `.pg` source portable: author writes the unwrapped `T`).
+
+**Key decisions (locked):** (1) author writes `async fn f(): T`, backends wrap (`Task<T>` / `Promise<T>` /
+`async def`) — NOT an `extern class Task` (Option A rejected: un-idiomatic + non-portable). (2) `await` is a
+distinct `ExprKind::Await` at **unary precedence** (not a `Unary` with `text`, not `parsePrimary`). (3) sema
+validates `await` only inside `async fn` (else a native compile error = a §3.B miscompile) and **refuses
+`async`+`yield`** (async iterators out of scope v1). (4) `await e` typing is **identity in v1** (an async call
+already yields the unwrapped `T`); a real `Awaitable<T>` unwrap is the principled follow-up. (5) `Feature::Async`
+gates it; all 3 backends support it, so it bites only for a future PHP-like target; multi-target "all must
+support it" already emerges from the per-target CLI loop (no `pgconfig.json` pass needed — that's P10).
+
+**Slice plan (each gate-green; the shared engine `emitter_base`/`backend_spec` needs ZERO changes):**
+1. **AST + parser + printer.** `bool isAsync` on `FunctionDecl`; promote method-`async` from `Member.modifiers`
+   to a typed flag (strip from modifiers **and** re-emit in `printMember` together — else the roundtrip gate
+   regresses); `ExprKind::Await`. Parser: consume leading `async` in `parseFunction` + route top-level `async fn`;
+   parse `await` in `parseUnary`; add `KwAwait` to `beginsExpr`. Printer: `async ` prefix + `await ` expr.
+   Gate: fidelity roundtrip on new async samples.
+2. **IR + lower.** `isAsync` on `ir::Function`+`ir::Method` (carry from the AST flag, like `isEntry`); `ir::Await`
+   node (mirrors `ir::Unary`); lower `Await` straight through.
+3. **Sema.** `inAsync_` flag; validate `await` placement; refuse `async`+`yield`; identity typing for `await e`.
+4. **Backends** (per-target, from PRD §4.7): C# `async `+`Task<T>`/`Task` + `main().GetAwaiter().GetResult()`;
+   TS `async function`+`Promise<T>`/`Promise<void>` + floating `main();`; Python `async def` + `asyncio.run(main())`
+   with an `import asyncio` prepend via a `needsAsyncio_` flag (mirrors `needsIdiv_`). `await e` → `await atom(e)`
+   in each `emitExpr`.
+5. **Capability + tests.** `Feature::Async` in the enum + `kAllFeatures[]` + `featureName()` case; Collector marks
+   it on an async decl or an `Await` expr; `StubBackend(Feature::Async)` refusal test. New conformance program(s)
+   exercising `async fn` + `await` across all three targets (the output must be deterministic — e.g. await an
+   already-resolved value / a simple async chain, no wall-clock).
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

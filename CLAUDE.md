@@ -168,7 +168,15 @@ declaring `extern class Error` (→`System.Exception`/`Error`, ctor, `message` p
 (→`IEnumerable<$0>`/`Iterable<$0>`). The emitters now have **zero** hardcoded type mappings. Backlog: idiomatic
 per-target member casing (PLAN P13).
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
-(build-integration NuGet, independent).
+(build-integration NuGet, independent), **P15 — single-threaded async/await** (🚧 fully designed in **PRD §4.7**
+from a 4-agent investigation, not yet built: a colored function like iterators — `isAsync` on `ir::Function`/
+`Method` + an `Await` expr node; author writes the unwrapped `T`, each backend synthesizes its wrapper
+(C# `async Task<T>` w/ `main().GetAwaiter().GetResult()`, TS `async … Promise<T>` w/ floating `main();`,
+Python `async def` w/ `asyncio.run(main())`+`import asyncio`); `await` parses at unary precedence; new
+`Feature::Async` gates it (all 3 current backends support it; bites only for a future PHP-like target); sema
+validates `await` only in `async fn` + refuses `async`+`yield`; return-type wrapping is backend-side (Option B),
+NOT an extern-class/lowering transform — keeps `.pg` source portable. Fixes the current silent hole where
+`async` on a method parses into `Member.modifiers` and is dropped. Shared engine needs zero changes).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.
