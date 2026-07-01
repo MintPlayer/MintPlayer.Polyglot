@@ -189,7 +189,8 @@ symbols, semantic tokens, formatting, references, rename (file-local), completio
 thin `vscode-languageclient` client (plain JS, no bundler; F5 via repo-root `.vscode` → build CLI + `npm install`).
 A minimal **`pgconfig.json`** (`{root,lib}`, CLI/LSP layer, core stays IO-free) drives module resolution. The CLI
 now **statically links the CRT** (self-contained — see PRD §4.3). Not built: **P16d** the Visual Studio client;
-deferred tail: member completion, in-scope local filtering, live cross-file edits, non-ASCII position walk.
+deferred tail: member completion, in-scope local filtering, non-ASCII position walk. Live cross-file edits ✅ done
+(a `BufferResolver` serves open unsaved imports; `didChange` re-analyzes all open docs).
 **P17 ✅ done — live generated-output preview** (PRD §4.9, from a 2-agent investigation; slice plan PLAN §P17):
 see a `.pg`'s emitted C#/TS/Python **live as you type**, rendered read-only into a `polyglot-gen:` virtual editor
 opened beside the source (colored for free by the built-in target grammars). One new in-memory LSP request

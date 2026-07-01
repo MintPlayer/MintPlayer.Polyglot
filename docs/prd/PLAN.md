@@ -721,9 +721,14 @@ VS-2026/v145 SDK generation.
 - **VS Code client uses NO bundler.** The plan said esbuild; in practice the extension stays plain CommonJS
   (`main: ./extension.js`) with a single runtime dep (`vscode-languageclient`). F5's `prepare-extension`
   preLaunchTask runs `build-cli` (VS 18 MSBuild) + `npm install` in `editors/vscode`. `node_modules` is gitignored.
-- **The buffer-aware `ModuleResolver` was deferred.** The LSP analyzes the open buffer as the *entry* file but
-  resolves its imports from **disk** (`FileModuleResolver`). So an unsaved edit in an imported file isn't seen
-  by a dependent file until saved. Fine for v1; the buffer-aware wrapper is the follow-up for live cross-file editing.
+- **Buffer-aware `ModuleResolver` ✅ (2026-07-01) — live cross-file editing.** A `BufferResolver` wraps
+  `FileModuleResolver` and serves an **open editor buffer's unsaved text** for any imported module the editor has
+  open (matched by real path via `fs::equivalent`, robust to uri-encoding/drive-case; only the source is swapped,
+  the disk `canonicalPath` stays the dedup/cycle identity). Used in both `analyzeDoc` and the P17 `generatedSource`
+  preview. To *trigger* dependents, `didChange` now re-analyzes **every open doc** (not just the edited one), so
+  editing an imported `.pg` refreshes its dependents' diagnostics + preview immediately, before save. (Naive
+  re-analyze-all is cheap for the few files an editor holds open; dependency-tracked re-analysis is a later
+  optimization.) Spawn-tested: A importing `helper` from B goes red the instant B's *unsaved* buffer drops it.
 - **Position encoding is negotiated:** the server advertises `utf-8` only if the client offered it in
   `capabilities.general.positionEncodings`, else falls back to `utf-16` (correct for ASCII either way; the
   UTF-8↔UTF-16 column walk for non-ASCII lines is still a follow-up).
@@ -739,8 +744,8 @@ VS-2026/v145 SDK generation.
   `documentFormatting`, `references`, `rename` (file-local only), `completion` (bare names + keywords), and the
   custom `polyglot/moduleSource` for std virtual documents.
 - **P16 deferred tail (all minor):** member completion (`obj.`), in-scope-only local filtering, semantic tokens
-  inside the read-only std virtual docs, live cross-file edits (buffer-aware resolver), and the non-ASCII
-  position walk. Plus **P16d** (Visual Studio) above.
+  inside the read-only std virtual docs, and the non-ASCII position walk. (Live cross-file edits ✅ done —
+  buffer-aware resolver, above.) Plus **P16d** (Visual Studio) above.
 
 ## P17 — Live generated-output preview — ✅ done (2026-07-01; §4.9, 2-agent investigation)
 See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and

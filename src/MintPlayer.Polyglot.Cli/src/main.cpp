@@ -459,6 +459,30 @@ void lspSend(const std::string& body) {
     std::fflush(stdout);
 }
 
+// A ModuleResolver that serves an OPEN editor buffer's (possibly unsaved) text for any imported module the
+// editor currently has open, delegating to the on-disk resolver otherwise. So editing an imported .pg updates
+// its dependents live, before the import is saved. Matching is by real path (`fs::equivalent`, robust to
+// uri-encoding/drive-case), and only the source text is swapped — the `canonicalPath` (dedup/cycle identity)
+// stays the disk path, so transitive loading is unaffected.
+class BufferResolver : public ModuleResolver {
+public:
+    BufferResolver(ModuleResolver& disk, const std::map<std::string, std::string>& buffers)
+        : disk_(disk), buffers_(buffers) {}
+    std::optional<ResolvedModule> resolve(const std::string& spec, const std::string& importer) override {
+        auto r = disk_.resolve(spec, importer);
+        if (r) {
+            for (const auto& kv : buffers_) {
+                std::error_code ec;
+                if (fs::equivalent(uriToPath(kv.first), r->canonicalPath, ec) && !ec) { r->source = kv.second; break; }
+            }
+        }
+        return r;
+    }
+private:
+    ModuleResolver& disk_;
+    const std::map<std::string, std::string>& buffers_;
+};
+
 struct LspServer {
     std::map<std::string, std::string> text_;    // uri -> current source (Full-sync buffer)
     std::map<std::string, SemanticModel> model_; // uri -> latest analyzed model
@@ -488,7 +512,8 @@ struct LspServer {
 
     void analyzeDoc(const std::string& uri) {
         DocContext ctx = contextFor(uri);
-        FileModuleResolver resolver(ctx.root, ctx.entryDir);
+        FileModuleResolver disk(ctx.root, ctx.entryDir);
+        BufferResolver resolver(disk, text_); // see unsaved edits in open imported modules
         AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(ctx.libStr), uriToPath(uri));
         model_[uri] = std::move(a.model);
         sources_[uri] = std::move(a.sources);
@@ -510,7 +535,8 @@ struct LspServer {
         auto tgt = targetFromString(targetName);
         if (!tgt) return empty();
         DocContext ctx = contextFor(uri);
-        FileModuleResolver resolver(ctx.root, ctx.entryDir);
+        FileModuleResolver disk(ctx.root, ctx.entryDir);
+        BufferResolver resolver(disk, text_); // preview reflects unsaved edits in open imported modules
         EmitResult r = compile(text_[uri], *tgt, &resolver, parseLibList(ctx.libStr));
         return "{\"target\":" + json::quote(targetName) + ",\"code\":" + json::quote(r.code) +
                ",\"ok\":" + (r.ok ? "true" : "false") +
@@ -785,7 +811,10 @@ int runLsp(const std::vector<std::string>&) {
             std::string uri = params["textDocument"]["uri"].asString();
             const auto& changes = params["contentChanges"].items();
             if (!changes.empty()) srv.text_[uri] = changes.back()["text"].asString(); // Full sync
-            srv.analyzeDoc(uri);
+            // Re-analyze every open doc (not just the edited one) so a dependent importing this now-edited,
+            // still-unsaved buffer refreshes live — the BufferResolver serves the open text. Cheap for the
+            // handful of files an editor holds open; dependency-tracked re-analysis is a later optimization.
+            for (const auto& kv : srv.text_) srv.analyzeDoc(kv.first);
         } else if (method == "workspace/didChangeWatchedFiles") {
             // pgconfig.json changed — re-analyze every open document so their diagnostics reflect the new
             // root/lib immediately (each analyzeDoc re-reads the manifest and re-publishes).
