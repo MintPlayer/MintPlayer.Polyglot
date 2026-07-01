@@ -39,19 +39,25 @@ VS-LSP clients over the same server. Not started yet.
 
 ## Running the VS Code extension (dev)
 
-The extension is plain JS — no build step. Point a VS Code *Extension Development Host* at it:
+The extension is plain JS — no build step. **Open the `editors/vscode` folder in VS Code and press F5.** That
+runs the *Run Polyglot extension (testbench)* launch profile (`.vscode/launch.json`), which starts an
+Extension Development Host with the extension loaded and opens `editors/vscode/testbench/` — a folder with a
+sample `hello.pg` and a pre-wired `polyglot.cliPath` pointing at the Debug build of the CLI (`x64/Debug/…`,
+resolved relative to the workspace, so it's portable). Build the solution first so that exe exists.
 
+In the dev host:
+1. `hello.pg` opens colorized (grammar).
+2. **Format Document** (Shift+Alt+F) reformats via `polyglot fmt`.
+3. Introduce an error (e.g. `let n: i32 = "oops"`) and save — a squiggle appears (via `polyglot check --json`).
+
+A second profile, *Run Polyglot extension (empty)*, launches the host without opening a folder. If you point
+it at your own workspace, set **`polyglot.cliPath`** yourself (a bare `polyglot` uses PATH; a relative path is
+resolved against the workspace root; an absolute path is used as-is) and **`polyglot.lib`** (default `io,math`).
+
+Manual alternative (opens an arbitrary folder):
 ```
 code --extensionDevelopmentPath=editors/vscode <a folder with .pg files>
 ```
-
-or open `editors/vscode` in VS Code and press **F5**. Then:
-
-1. Open a `.pg` file — it colorizes immediately (grammar).
-2. Set **`polyglot.cliPath`** to your built CLI (a source checkout builds it at
-   `x64/Debug/MintPlayer.Polyglot.Cli.exe`); leave it as `polyglot` if the CLI is on `PATH`.
-3. **Format Document** (Shift+Alt+F) reformats via `polyglot fmt`.
-4. Errors appear as you open/save (via `polyglot check --json`).
 
 > Note: `package.json` references the canonical grammar at `../grammars/…` so there is a single source of
 > truth during development. Packaging with `vsce` (which bundles only files under the extension root) will

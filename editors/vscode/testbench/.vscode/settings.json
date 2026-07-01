@@ -1,0 +1,6 @@
+{
+  "// note": "cliPath is resolved relative to this workspace root by the extension. This points at a Debug build of the CLI in a source checkout; change it if you build Release or install the CLI on PATH.",
+  "polyglot.cliPath": "../../../x64/Debug/MintPlayer.Polyglot.Cli.exe",
+  "polyglot.lib": "io,math",
+  "editor.formatOnSave": false
+}

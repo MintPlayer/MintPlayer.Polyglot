@@ -1,0 +1,21 @@
+// Polyglot extension testbench — this folder opens automatically in the Extension Development Host (F5).
+//
+// Things to try:
+//   • Syntax coloring: keywords, types, strings + ${...} interpolation, numbers, comments.
+//   • Format Document (Shift+Alt+F) — reformats via `polyglot fmt`.
+//   • Introduce an error (e.g. `let n: i32 = "oops"`) and save — a squiggle appears (via `polyglot check`).
+
+record Point(x: f64, y: f64)
+
+fn distanceSquared(a: Point, b: Point): f64 {
+  let dx = a.x - b.x
+  let dy = a.y - b.y
+  return dx * dx + dy * dy
+}
+
+async fn main() {
+  let p = Point(3.0, 4.0)
+  let q = Point(0.0, 0.0)
+  let d2 = distanceSquared(p, q)
+  print("distance squared = ${d2}")
+}

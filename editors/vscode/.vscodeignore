@@ -1,0 +1,4 @@
+.vscode/**
+testbench/**
+.gitignore
+**/*.map

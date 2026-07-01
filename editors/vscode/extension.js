@@ -15,9 +15,19 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-/** Resolve the configured CLI path (defaults to `polyglot` on PATH). */
+/**
+ * Resolve the configured CLI path. A bare command name (`polyglot`) is left as-is for a PATH lookup; a path
+ * containing a separator is resolved — if relative — against the workspace root, so a checkout can point at
+ * its built `x64/Debug/MintPlayer.Polyglot.Cli.exe` with a portable relative path (see testbench settings).
+ */
 function cliPath() {
-  return vscode.workspace.getConfiguration('polyglot').get('cliPath', 'polyglot');
+  const raw = vscode.workspace.getConfiguration('polyglot').get('cliPath', 'polyglot');
+  if (path.isAbsolute(raw)) return raw;
+  if (raw.includes('/') || raw.includes('\\')) {
+    const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+    if (ws) return path.resolve(ws.uri.fsPath, raw);
+  }
+  return raw;
 }
 
 /** Run the CLI with args; resolve with {code, stdout, stderr} (never rejects on a non-zero exit). */
