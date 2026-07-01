@@ -622,10 +622,29 @@ support it" already emerges from the per-target CLI loop (no `pgconfig.json` pas
    exercising `async fn` + `await` across all three targets (the output must be deterministic — e.g. await an
    already-resolved value / a simple async chain, no wall-clock).
 
+## Editor tooling — 🚧 Tier 1 in progress (2026-07-01; brought forward from Stretch)
+Both editors (VS Code + Visual Studio), sequenced Tier 1 → Tier 2. Guiding principle: **language intelligence
+is written once in the C++ frontend; every editor is a thin client.** Layout + full plan: `editors/README.md`.
+- **Tier 1a — highlighting ✅ (VS Code).** A single declarative TextMate grammar
+  (`editors/grammars/polyglot.tmLanguage.json`) built from the real lexer keyword set + string-interpolation
+  /number-suffix rules; consumed natively by VS Code *and* Visual Studio 2022+. VS Code extension scaffold in
+  `editors/vscode/` (package.json + language-configuration.json + extension.js). Keep the grammar in sync with
+  `src/.../lexer.cpp` + `docs/lang/grammar.ebnf`.
+- **Tier 1b — formatting + diagnostics ✅ (engine + VS Code).** New **`polyglot check <file> --json`** CLI
+  command runs the frontend (lex/parse/sema + C#-reference capability gating) and prints
+  `[{line,col,severity,message}]`; the extension surfaces those as squiggles on open/save and wires
+  `polyglot fmt` as the document formatter. (Live-on-type diagnostics wait for the LSP, which holds the buffer.)
+- **Tier 1c — Visual Studio highlighting (next).** Package the same grammar as a VSIX-consumable TextMate
+  grammar; register the `.pg` file type.
+- **Tier 2 — `polyglot lsp` (the intelligence layer, not started).** Go-to-def / hover / completion / document
+  symbols over the frontend-as-a-library. Prerequisite: a **position-indexed semantic model** (retain the
+  resolved symbol table; map source position → symbol → definition position — today sema's tables are
+  name-keyed and transient). Then both editors are thin LSP clients over one server.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
-- **Editor tooling (highlighting + LSP), per editor:**
+- **Editor tooling — full detail (now tracked above):**
   - **Syntax highlighting** — a TextMate grammar (`.tmLanguage`/`.json`) for `.pg`. Independent of the
     compiler (no frontend reuse needed) and **can land early/cheaply**: it gives VS Code (and most editors)
     coloring immediately, and Visual Studio 2022+ consumes TextMate grammars too. Keep it in sync with

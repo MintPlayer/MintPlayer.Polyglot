@@ -1,0 +1,49 @@
+{
+  "name": "polyglot-lang",
+  "displayName": "Polyglot",
+  "description": "Language support for Polyglot (.pg): syntax highlighting, formatting, and diagnostics.",
+  "version": "0.0.1",
+  "publisher": "mintplayer",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages", "Formatters", "Linters"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:polyglot"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "polyglot",
+        "aliases": ["Polyglot", "polyglot"],
+        "extensions": [".pg"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "polyglot",
+        "scopeName": "source.polyglot",
+        "path": "../grammars/polyglot.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Polyglot",
+      "properties": {
+        "polyglot.cliPath": {
+          "type": "string",
+          "default": "polyglot",
+          "description": "Path to the polyglot CLI executable. Defaults to 'polyglot' on PATH; set to e.g. the built x64/Debug/MintPlayer.Polyglot.Cli.exe for a source checkout."
+        },
+        "polyglot.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report parse/type errors from `polyglot check` on open and save."
+        },
+        "polyglot.lib": {
+          "type": "string",
+          "default": "io,math",
+          "description": "Comma-separated `lib` prelude passed to `polyglot check` (so ambient names like `print`/`Math` resolve). Mirrors the CLI's --lib. Until per-project config lands (P10/P11), this is the assumed prelude."
+        }
+      }
+    }
+  }
+}

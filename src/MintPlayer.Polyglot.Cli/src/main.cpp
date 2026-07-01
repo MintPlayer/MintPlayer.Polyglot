@@ -21,10 +21,13 @@ void printUsage() {
         << "  polyglot --version\n"
         << "  polyglot build <input.pg> [--target <csharp|typescript|python>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
         << "  polyglot fmt <input.pg>\n"
+        << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>]\n"
         << "\n"
         << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
-        << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n";
+        << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
+        << "  check  Reports parse/type diagnostics without emitting. --json prints a machine-readable\n"
+        << "         array (line/col/severity/message) for editor tooling.\n";
 }
 
 // Read an entire file into a string. Returns false if it could not be opened.
@@ -164,6 +167,88 @@ int runBuild(const std::vector<std::string>& args) {
     return ok ? 0 : 1;
 }
 
+// Escape a string for embedding in a JSON double-quoted value.
+std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    static const char* hex = "0123456789abcdef";
+                    out += "\\u00";
+                    out += hex[(c >> 4) & 0xF];
+                    out += hex[c & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+// `polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>]` — runs the frontend (lex/parse/sema +
+// capability gating for the reference target) and reports diagnostics, without emitting any output. This is
+// the editor-tooling entry point: `--json` prints a machine-readable array editors turn into squiggles.
+// (The reference target is C#, whose capability set is the full §3.A surface, so nothing gates spuriously.)
+int runCheck(const std::vector<std::string>& args) {
+    fs::path input;
+    fs::path root;
+    std::string libArg;
+    bool json = false;
+
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (a == "--json") json = true;
+        else if (a == "--root" && i + 1 < args.size()) root = args[++i];
+        else if (a == "--lib" && i + 1 < args.size()) libArg = args[++i];
+        else if (!a.empty() && a[0] == '-') { std::cerr << "polyglot: unknown option '" << a << "'\n"; return 64; }
+        else if (input.empty()) input = a;
+        else { std::cerr << "polyglot: unexpected argument '" << a << "'\n"; return 64; }
+    }
+    if (input.empty()) { std::cerr << "polyglot: 'check' needs an input file\n"; return 64; }
+
+    std::string source;
+    if (!readFile(input, source)) {
+        std::cerr << "polyglot: cannot open '" << input.string() << "'\n";
+        return 66;
+    }
+
+    fs::path entryDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
+    if (root.empty()) root = entryDir;
+    FileModuleResolver resolver(root, entryDir);
+
+    LibConfig lib;
+    for (std::size_t b = 0, e; b <= libArg.size(); b = e + 1) {
+        e = libArg.find(',', b);
+        if (e == std::string::npos) e = libArg.size();
+        std::string name = libArg.substr(b, e - b);
+        if (!name.empty()) lib.libs.push_back(name);
+    }
+
+    EmitResult result = compile(source, Target::CSharp, &resolver, lib);
+
+    if (json) {
+        std::cout << "[";
+        for (std::size_t i = 0; i < result.diagnostics.size(); ++i) {
+            const auto& d = result.diagnostics[i];
+            if (i) std::cout << ",";
+            std::cout << "{\"line\":" << d.pos.line << ",\"col\":" << d.pos.col
+                      << ",\"severity\":\"error\",\"message\":\"" << jsonEscape(d.message) << "\"}";
+        }
+        std::cout << "]\n";
+    } else {
+        reportDiagnostics(input, result);
+        if (result.ok) std::cout << "polyglot: no problems in " << input.string() << "\n";
+    }
+    return result.ok ? 0 : 1;
+}
+
 int runFmt(const std::vector<std::string>& args) {
     if (args.size() < 2) {
         std::cerr << "polyglot: 'fmt' needs an input file\n";
@@ -202,6 +287,9 @@ int main(int argc, char** argv) {
     }
     if (args[0] == "fmt") {
         return runFmt(args);
+    }
+    if (args[0] == "check") {
+        return runCheck(args);
     }
 
     std::cerr << "polyglot: unknown command '" << args[0] << "'\n\n";
