@@ -1,14 +1,17 @@
 {
   "name": "polyglot-lang",
   "displayName": "Polyglot",
-  "description": "Language support for Polyglot (.pg): syntax highlighting, formatting, and diagnostics.",
+  "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting).",
   "version": "0.0.1",
   "publisher": "mintplayer",
   "license": "SEE LICENSE IN ../../LICENSE",
-  "engines": { "vscode": "^1.75.0" },
+  "engines": { "vscode": "^1.82.0" },
   "categories": ["Programming Languages", "Formatters", "Linters"],
   "main": "./extension.js",
   "activationEvents": ["onLanguage:polyglot"],
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "contributes": {
     "languages": [
       {
@@ -31,17 +34,18 @@
         "polyglot.cliPath": {
           "type": "string",
           "default": "polyglot",
-          "description": "Path to the polyglot CLI executable. Defaults to 'polyglot' on PATH; set to e.g. the built x64/Debug/MintPlayer.Polyglot.Cli.exe for a source checkout."
-        },
-        "polyglot.diagnostics.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Report parse/type errors from `polyglot check` on open and save."
+          "description": "Path to the polyglot CLI executable (which hosts the language server via `polyglot lsp`). Defaults to 'polyglot' on PATH; a relative path is resolved against the workspace root; set it to the built x64/Debug/MintPlayer.Polyglot.Cli.exe for a source checkout."
         },
         "polyglot.lib": {
           "type": "string",
           "default": "io,math",
-          "description": "Comma-separated `lib` prelude passed to `polyglot check` (so ambient names like `print`/`Math` resolve). Mirrors the CLI's --lib. Until per-project config lands (P10/P11), this is the assumed prelude."
+          "description": "Comma-separated `lib` prelude sent to the server so ambient names (print, Math) resolve. Mirrors the CLI's --lib. Until per-project config (pgconfig.json) lands, this is the assumed prelude."
+        },
+        "polyglot.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the JSON-RPC traffic between VS Code and `polyglot lsp` (for debugging the server)."
         }
       }
     }

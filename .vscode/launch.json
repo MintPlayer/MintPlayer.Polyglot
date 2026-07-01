@@ -5,7 +5,7 @@
       "name": "Run Polyglot VS Code extension",
       "type": "extensionHost",
       "request": "launch",
-      "preLaunchTask": "build-cli",
+      "preLaunchTask": "prepare-extension",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode",
         "${workspaceFolder}/editors/vscode/testbench"

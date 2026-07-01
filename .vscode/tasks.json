@@ -17,6 +17,21 @@
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": "$msCompile",
       "presentation": { "reveal": "silent", "clear": true }
+    },
+    {
+      "label": "npm-install-extension",
+      "detail": "Install the VS Code extension's dependencies (vscode-languageclient) so the LSP client can load.",
+      "type": "shell",
+      "command": "npm install --no-audit --no-fund",
+      "options": { "cwd": "${workspaceFolder}/editors/vscode" },
+      "presentation": { "reveal": "silent" },
+      "problemMatcher": []
+    },
+    {
+      "label": "prepare-extension",
+      "detail": "Build the CLI (which hosts `polyglot lsp`) and install the extension deps before launching.",
+      "dependsOn": ["build-cli", "npm-install-extension"],
+      "dependsOrder": "sequence"
     }
   ]
 }

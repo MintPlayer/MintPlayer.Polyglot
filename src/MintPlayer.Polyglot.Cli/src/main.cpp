@@ -456,6 +456,18 @@ struct LspServer {
         return "{\"contents\":{\"kind\":\"markdown\",\"value\":" + json::quote(md) + "}}";
     }
 
+    std::string formatting(const json::Value& params) {
+        std::string uri = params["textDocument"]["uri"].asString();
+        auto it = text_.find(uri);
+        if (it == text_.end()) return "null";
+        EmitResult r = format(it->second);
+        if (!r.ok) return "[]"; // a parse error — leave the buffer untouched (diagnostics show why)
+        int endLine = 0, endCol = 0;
+        for (char c : it->second) { if (c == '\n') { ++endLine; endCol = 0; } else ++endCol; }
+        return "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":" + std::to_string(endLine) +
+               ",\"character\":" + std::to_string(endCol) + "}},\"newText\":" + json::quote(r.code) + "}]";
+    }
+
     std::string documentSymbol(const json::Value& params) {
         std::string uri = params["textDocument"]["uri"].asString();
         auto it = model_.find(uri);
@@ -502,7 +514,8 @@ int runLsp(const std::vector<std::string>&) {
             if (opts["lib"].kind == json::Value::Kind::String) srv.lib_ = opts["lib"].asString();
             srv.root_ = root;
             lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"utf-8\",\"textDocumentSync\":1,"
-                         "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true},"
+                         "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true,"
+                         "\"documentFormattingProvider\":true},"
                          "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"0.0.1\"}}");
         } else if (method == "shutdown") {
             lspReply(id, "null");
@@ -526,6 +539,8 @@ int runLsp(const std::vector<std::string>&) {
             lspReply(id, srv.definition(params));
         } else if (method == "textDocument/documentSymbol") {
             lspReply(id, srv.documentSymbol(params));
+        } else if (method == "textDocument/formatting") {
+            lspReply(id, srv.formatting(params));
         } else if (method == "textDocument/hover") {
             lspReply(id, srv.hover(params));
         } else if (!id.isNull()) {
