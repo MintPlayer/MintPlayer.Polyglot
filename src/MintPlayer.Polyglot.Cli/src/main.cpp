@@ -475,8 +475,10 @@ struct LspServer {
     void publishDiagnostics(const std::string& uri, const std::vector<Diagnostic>& diags) {
         const std::string& text = text_.count(uri) ? text_[uri] : uri; // uri unused when text absent
         std::string arr;
-        for (std::size_t i = 0; i < diags.size(); ++i) {
-            const auto& d = diags[i];
+        bool first = true;
+        for (const auto& d : diags) {
+            if (d.pos.fileId != 1) continue; // only this file's own diagnostics (fileId 1 = the entry); an
+                                             // imported module's errors belong to (and show in) that module.
             int sl = d.pos.line, sc = d.pos.col, el = d.end.line, ec = d.end.col;
             if (el == sl && ec == sc) { // widen a point to the identifier at that spot (else a 1-char range)
                 std::size_t off = byteOffset(text, sl, sc), end = off;
@@ -486,7 +488,8 @@ struct LspServer {
             }
             int sev = d.severity == Severity::Warning ? 2 : d.severity == Severity::Info ? 3
                     : d.severity == Severity::Hint ? 4 : 1;
-            if (i) arr += ",";
+            if (!first) arr += ",";
+            first = false;
             arr += "{\"range\":" + rangeJson(sl, sc, el, ec) + ",\"severity\":" + std::to_string(sev) +
                    ",\"source\":\"polyglot\",\"message\":" + json::quote(d.message) + "}";
         }
@@ -738,6 +741,10 @@ int runLsp(const std::vector<std::string>&) {
             const auto& changes = params["contentChanges"].items();
             if (!changes.empty()) srv.text_[uri] = changes.back()["text"].asString(); // Full sync
             srv.analyzeDoc(uri);
+        } else if (method == "workspace/didChangeWatchedFiles") {
+            // pgconfig.json changed — re-analyze every open document so their diagnostics reflect the new
+            // root/lib immediately (each analyzeDoc re-reads the manifest and re-publishes).
+            for (const auto& kv : srv.text_) srv.analyzeDoc(kv.first);
         } else if (method == "textDocument/didClose") {
             std::string uri = params["textDocument"]["uri"].asString();
             srv.text_.erase(uri);

@@ -37,7 +37,12 @@ function activate(context) {
   };
   const clientOptions = {
     documentSelector: [{ scheme: 'file', language: 'polyglot' }],
-    synchronize: { configurationSection: 'polyglot' },
+    synchronize: {
+      configurationSection: 'polyglot',
+      // Watch pgconfig.json so editing root/lib re-analyzes open .pg files immediately (the server handles
+      // workspace/didChangeWatchedFiles by re-analyzing every open document).
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/pgconfig.json')
+    },
     initializationOptions: {
       root: ws ? ws.uri.fsPath : undefined,
       lib: cfg.get('lib', 'io,math')
