@@ -441,8 +441,8 @@ private:
                 return it == csharpSpec().intSuffix.end() ? text : text + it->second;
             }
             case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
-            case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? "true" : "false";
-            case ir::ExprKind::Null:  return "null";
+            case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? spec().trueLit : spec().falseLit;
+            case ir::ExprKind::Null:  return spec().nullLit;
             case ir::ExprKind::Interp: { // C# interpolated string `$"…{expr}…"`
                 const auto& in = static_cast<const ir::Interp&>(e);
                 std::string s = "$\"";

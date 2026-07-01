@@ -59,6 +59,13 @@ struct BackendSpec {
     std::string stmtEnd = ";";
     std::string throwKeyword = "throw";
 
+    // Boolean / null literal spellings (C#/TS `true`/`false`/`null`; Python `True`/`False`/`None`). Read by
+    // each backend's expression walk. (`this`/`self` is NOT here — C# rebinds it in a `with`-copy IIFE, so it
+    // carries behavior, not just a spelling.)
+    std::string trueLit = "true";
+    std::string falseLit = "false";
+    std::string nullLit = "null";
+
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)

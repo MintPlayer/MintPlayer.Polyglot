@@ -35,6 +35,7 @@ const BackendSpec& pythonSpec() {
         BlockStyle::ColonIndent,     // colon+indent, no braces
         "",                          // no statement terminator
         "raise",                     // `throw v` -> `raise v`
+        "True", "False", "None",     // bool / null literal spellings
     };
     return spec;
 }
@@ -442,8 +443,8 @@ private:
         switch (e.kind) {
             case ir::ExprKind::Int:    return static_cast<const ir::IntLit&>(e).text;
             case ir::ExprKind::Float:  return static_cast<const ir::FloatLit&>(e).text;
-            case ir::ExprKind::Bool:   return static_cast<const ir::BoolLit&>(e).value ? "True" : "False";
-            case ir::ExprKind::Null:   return "None";
+            case ir::ExprKind::Bool:   return static_cast<const ir::BoolLit&>(e).value ? spec().trueLit : spec().falseLit;
+            case ir::ExprKind::Null:   return spec().nullLit;
             case ir::ExprKind::Str:    return renderString(static_cast<const ir::StrLit&>(e).value);
             case ir::ExprKind::Var:    return pyId(static_cast<const ir::Var&>(e).name);
             case ir::ExprKind::This:   return "self";
