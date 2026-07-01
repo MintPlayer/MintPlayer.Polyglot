@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -401,6 +402,21 @@ int semanticTokenType(SymbolKind k) {
     }
 }
 
+// The LSP CompletionItemKind for a symbol offered as a bare (non-member) name. Returns 0 for kinds that are
+// only reachable via member access (methods/fields) — the caller skips those.
+int completionKind(SymbolKind k) {
+    switch (k) {
+        case SymbolKind::Function:  return 3;  // Function
+        case SymbolKind::Type:      return 7;  // Class
+        case SymbolKind::Value:     return 21; // Constant
+        case SymbolKind::Parameter:
+        case SymbolKind::Local:     return 6;  // Variable
+        case SymbolKind::UnionCase:
+        case SymbolKind::EnumCase:  return 20; // EnumMember
+        default:                    return 0;  // Method/Field — member-access only
+    }
+}
+
 // Read one Content-Length-framed message body from stdin. False on EOF.
 bool lspRead(std::string& body) {
     std::size_t len = 0;
@@ -610,6 +626,31 @@ struct LspServer {
         return "{\"data\":[" + data + "]}";
     }
 
+    // A first-cut completion: keywords + every bare-callable symbol the model knows (file-local and imported
+    // functions/types/values/cases/locals). Context-insensitive — the client filters by the typed prefix.
+    // Member completion (`obj.`) needs the receiver's type and is a follow-up; methods/fields are omitted here.
+    std::string completion(const json::Value& params) {
+        std::string items;
+        bool first = true;
+        std::set<std::string> seen;
+        auto add = [&](const std::string& label, int kind) {
+            if (kind == 0 || !seen.insert(label + "\x1f" + std::to_string(kind)).second) return;
+            if (!first) items += ",";
+            first = false;
+            items += "{\"label\":" + json::quote(label) + ",\"kind\":" + std::to_string(kind) + "}";
+        };
+        auto it = model_.find(params["textDocument"]["uri"].asString());
+        if (it != model_.end())
+            for (const auto& d : it->second.defs) add(d.name, completionKind(d.kind));
+        static const char* kw[] = {
+            "fn", "let", "var", "const", "if", "else", "while", "do", "for", "in", "match", "when", "return",
+            "break", "continue", "yield", "record", "class", "interface", "enum", "union", "extension",
+            "import", "async", "await", "try", "catch", "finally", "throw", "use", "with", "operator",
+            "true", "false", "null", "this", "super"};
+        for (const char* k : kw) add(k, 14); // Keyword
+        return "[" + items + "]";
+    }
+
     std::string formatting(const json::Value& params) {
         std::string uri = params["textDocument"]["uri"].asString();
         auto it = text_.find(uri);
@@ -677,6 +718,7 @@ int runLsp(const std::vector<std::string>&) {
             lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"" + enc + "\",\"textDocumentSync\":1,"
                          "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true,"
                          "\"documentFormattingProvider\":true,\"referencesProvider\":true,\"renameProvider\":true,"
+                         "\"completionProvider\":{},"
                          "\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"type\","
                          "\"method\",\"property\",\"variable\",\"parameter\",\"enumMember\"],"
                          "\"tokenModifiers\":[\"declaration\"]},\"full\":true}},"
@@ -711,6 +753,8 @@ int runLsp(const std::vector<std::string>&) {
             lspReply(id, srv.references(params));
         } else if (method == "textDocument/rename") {
             lspReply(id, srv.rename(params));
+        } else if (method == "textDocument/completion") {
+            lspReply(id, srv.completion(params));
         } else if (method == "textDocument/hover") {
             lspReply(id, srv.hover(params));
         } else if (!id.isNull()) {
