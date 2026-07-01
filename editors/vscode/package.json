@@ -13,6 +13,28 @@
     "vscode-languageclient": "^9.0.1"
   },
   "contributes": {
+    "commands": [
+      {
+        "command": "polyglot.showOutput",
+        "title": "Show Generated Output",
+        "category": "Polyglot",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "polyglot.selectTarget",
+        "title": "Select Generated-Output Target",
+        "category": "Polyglot"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "polyglot.showOutput",
+          "when": "resourceLangId == polyglot",
+          "group": "navigation"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "polyglot",
@@ -46,6 +68,12 @@
           "enum": ["off", "messages", "verbose"],
           "default": "off",
           "description": "Trace the JSON-RPC traffic between VS Code and `polyglot lsp` (for debugging the server)."
+        },
+        "polyglot.preview.defaultTarget": {
+          "type": "string",
+          "enum": ["csharp", "typescript", "python"],
+          "default": "csharp",
+          "description": "The target shown first when opening the live generated-output preview (Show Generated Output). Switch it any time from the 'Output: …' status-bar item."
         }
       }
     }

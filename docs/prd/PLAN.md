@@ -775,6 +775,15 @@ code behind the existing seams — `compile()`, emission, and `analyze()` are un
    `getWorkspaceFolder(sourceUri)` and pass **that** folder's `{root,lib}` into `polyglot/emit`, not
    `workspaceFolders[0]` (so imports in a second root resolve correctly).
 
+**As-built (P17a+P17b — 2026-07-01):** server slice shipped exactly as planned (spawn-tested: C#/TS/Python emit
+`ok` for a valid doc; broken/unknown-target/unopened all `ok:false`). Client delta from step 9: the client sends
+**only `{uri, target}`** and the **server** derives `{root,lib}` from the file's nearest `pgconfig.json` (the
+`contextFor` walk-up, re-read per request) — so multi-root resolution is correct *without* the client computing an
+owning folder, and preview output always matches the diagnostics. `polyglot-gen:` URIs carry `{src,target}` as JSON
+in the query; coloring via the `.cs/.ts/.py` extension + an explicit `setTextDocumentLanguage`. The preview follows
+the active `.pg` (guarding against following gen/std virtual docs), debounces on-type at 200 ms, and keeps a
+per-gen-URI last-good cache pruned when its source closes.
+
 **P17c — Optional: the "Polyglot Outputs" TreeView (discovery polish).**
 10. An activity-bar `viewsContainers` + `views` `TreeDataProvider`: open `.pg` files as roots, each expanding to
     C#/TypeScript/Python leaves whose `command` runs `polyglot.showOutput` for that target. Renders *no code* —
