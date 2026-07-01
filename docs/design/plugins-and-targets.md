@@ -8,6 +8,11 @@
 > code), downloaded + versioned via a workspace config; **target backends are themselves declarative
 > plugins**; and there are **two plugin tiers** (declarative-downloaded vs. full-power-local). This
 > supersedes v0.1's "full power from the start."
+>
+> **v0.3 change (2026-07-01):** distribution is resolved — **no per-plugin executables**; a plugin is a
+> declarative artifact fetched from a feed by name+version, and **`polyglot install`** is the single trusted
+> writer of a **global per-user registry** (§6.1). This settles the "distribute an .exe per plugin that
+> self-registers" idea against the declarative-only stance.
 
 ---
 
@@ -148,6 +153,35 @@ Illustrative only (shape TBD; the `.json` extension keeps editors' schema/valida
 // against pgconfig.lock.json.
 ```
 
+### 6.1 Distribution — `polyglot install` + a global registry (resolved 2026-07-01)
+
+A plugin is a **declarative artifact** — a bundle of `.json`/`.pg` (backend spec, bindings, type maps,
+capability set, build-dependency declarations) — published to a **feed** and fetched by name+version. There
+is **no per-plugin executable.** (The "ship an .exe per plugin that writes a shared registry when run" idea
+was considered and rejected: it reintroduces fetch-and-run — the precise attack surface §6 refuses — and
+letting every plugin scribble the shared registry invites concurrent-write/corruption/trust problems.)
+Instead:
+
+- **`polyglot install <plugin>[@version]` is the single trusted writer.** It resolves the plugin from the
+  feed, verifies integrity, extracts it zip-slip-safe into the **shared cache**, and records it in a
+  **global per-user registry** — `%APPDATA%\polyglot\registry.json` (Windows) / `$XDG_CONFIG_HOME/polyglot/
+  registry.json` (else). Core stays IO-free; the CLI/LSP layer reads it, exactly like `pgconfig.json`. The
+  registry indexes each installed plugin's id, version, declared targets, capability set, cache path, and
+  integrity hash.
+- **Two-level resolution.** The global registry is the machine-wide *installed* set; the per-project
+  `pgconfig.json` pins *which* plugins + versions a workspace actually uses. A project resolves against the
+  cache the registry points at; `pgconfig.lock.json` pins integrity per §6.
+- **Feed — leading candidate is an existing package registry (npm).** Reusing npmjs.com buys versioning,
+  immutable integrity hashes, and a global CDN for free; a plugin is just a package whose payload is the
+  declarative bundle. **Consumed as data only** — Polyglot fetches+extracts the tarball via the registry
+  HTTP API and **never runs npm lifecycle scripts** (running them would reintroduce fetch-and-run). A generic
+  URL / file-hosting feed (a bundle + a hash pinned in the lockfile) is the fallback and keeps Polyglot
+  **feed-agnostic**: a registry entry records a *source + integrity*, npm being one source kind. An
+  own-registry + signing service is a later detail (open #4).
+- **Editor tie-in.** The LSP reads the same global registry, so the `polyglot/targets` list (PLAN §P17
+  deferred / §P10) enumerates installed backends and the P17 "Show Generated Output" preview picks up a
+  plugin's target with **no client change**.
+
 ## 7. Sequencing — design for it now, build it incrementally
 
 - **P2 (MVP) → P5:** a walking-skeleton slice end-to-end first (P2), then widen front-end (P3), semantics+IR
@@ -184,7 +218,9 @@ Illustrative only (shape TBD; the `.json` extension keeps editors' schema/valida
 4. ~~Trust/security~~ — **modeled in §6** (declarative-only downloads + integrity/pinning/safe-extraction +
    the honest output-trust caveat). A registry + signing infrastructure is a P10+ detail.
 5. **Config & lockfile shape** — `pgconfig.json` + `pgconfig.lock.json` (filenames fixed; internal schema
-   + registry/version resolution still TBD). Defer to P10.
+   still TBD). **Distribution resolved (§6.1, 2026-07-01):** no plugin executables; `polyglot install` +
+   a global per-user registry; feed candidate npm (consumed data-only), URL fallback, feed-agnostic. The
+   remaining sub-question is the concrete feed choice + own-registry/signing (own-registry deferred, open #4).
 
 ---
 

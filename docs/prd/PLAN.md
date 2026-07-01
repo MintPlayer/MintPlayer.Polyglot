@@ -367,6 +367,14 @@ Remaining hardcoded core type: **`Error`** (`csType`→`System.Exception`, the `
 always-linked **core module** is the last dogfood step (backlog below). This is the "Binding" mechanism
 (plugins-and-targets.md §2) at its complete form. See `design/backend-spec.md` §4a.
 
+**Distribution model — resolved 2026-07-01 (design note §6.1):** no per-plugin executables; a plugin is a
+declarative artifact fetched from a feed by name+version, and **`polyglot install <plugin>[@version]`** is the
+single trusted writer of a **global per-user registry** (`%APPDATA%\polyglot\registry.json` / XDG), distinct from
+the per-project `pgconfig.json` that pins which installed plugins a workspace uses. Feed candidate is npm (reuse
+versioning/integrity/CDN, **consumed data-only — no lifecycle scripts**), with a generic URL/file-hosting fallback
+and a feed-agnostic `{source, integrity}` registry entry. Rejected: the "ship an .exe per plugin that self-registers"
+idea (reintroduces fetch-and-run; every plugin writing the shared registry invites corruption/trust problems).
+
 **Editor tie-in:** once backends are downloadable, the **editor's target list must come from the registry**, not a
 hardcode. Add a server-advertised `polyglot/targets` list (`{ id, displayName, fileExtension }` per registered
 backend) so the P17 preview ("Show Generated Output" + the Outputs tree) picks up plugin backends with no client
