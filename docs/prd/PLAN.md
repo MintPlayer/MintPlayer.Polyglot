@@ -580,8 +580,16 @@ at unary precedence; top-level `async fn`/`async expect`/`async actual` via `par
 gates `await` placement + refuses `async`+`yield`; `Feature::Async` (all 3 backends `supports`, StubBackend
 proves it bites). Backends synthesize the wrapper (Option B): C# `async Task<T>`/`Task` + `main().GetAwaiter().GetResult()`;
 TS `async…Promise<T>`/`Promise<void>` + floating `main();`; Python `async def` + `asyncio.run(main())` with a
-`needsAsyncio_`-gated `import asyncio` prepend. `await e` → `await atom(e)` in each `emitExpr`. *Deferred (unchanged):*
-`await` typing is identity in v1 — a real `Awaitable<T>` unwrap is the principled follow-up.
+`needsAsyncio_`-gated `import asyncio` prepend. `await e` → `await atom(e)` in each `emitExpr`.
+
+**Follow-up ✅ (2026-07-01) — real `Awaitable<T>` unwrap** (replaced the v1 identity typing): a call to an
+async fn/method now types as the compile-time-only `Awaitable<T>` (an `isAsync` bit on sema's `FnSig`/`MemberInfo`
+wraps the inferred result); `await` unwraps `Awaitable<T>` → `T`. This makes sema catch the two mistakes the
+identity model missed — **forgot-to-await** (`return f()` / `let x: i32 = f()` / `print(f())` all refuse, naming
+the fix) and **awaited-a-non-async-value** (`await plain()` refuses) — and mirrors C#/TS, where `return f()`
+from an async fn requires `return await f()`. `Awaitable` is never written by the author and never reaches
+emission (locals infer via `var`/`const`; backends synthesize the real `Task`/`Promise` from `isAsync`), so all
+gates stay byte-identical.
 
 A "colored function" like iterators, with two deliberate divergences from the iterator precedent:
 async is **declared** (no `sawAwait_` inference needed) and the return-type wrapper is **backend-synthesized**,

@@ -175,8 +175,10 @@ portable): C# `async Task<T>` w/ `main().GetAwaiter().GetResult()`, TS `async �
 `main();`, Python `async def` w/ `asyncio.run(main())`+`import asyncio`. Sema (`inAsync_`) validates `await`
 only in an `async fn` + refuses `async`+`yield` (no async iterators v1); `Feature::Async` gates it (all 3
 backends support it; bites only for a future PHP-like target). Conformance #38 `async_await.pg` agrees C#/TS
-+ Python. `await` typing is identity in v1 (a real `Awaitable<T>` unwrap is the follow-up). Shared engine
-unchanged, as designed.
++ Python. **`await` typing is a real `Awaitable<T>` unwrap** (an async call types as the compile-time-only
+`Awaitable<T>` via an `isAsync` bit on sema's `FnSig`/`MemberInfo`; `await` unwraps to `T`) — so sema catches
+forgot-to-await (`return f()`/`print(f())` refuse) and awaited-non-async (`await plain()` refuses), mirroring
+C#/TS. `Awaitable` is never author-written and never emitted. Shared engine unchanged, as designed.
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
 (build-integration NuGet, independent).
 

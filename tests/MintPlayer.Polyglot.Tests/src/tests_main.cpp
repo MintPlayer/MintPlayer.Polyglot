@@ -454,6 +454,36 @@ int main() {
         }
     }
 
+    // P15 — Awaitable<T> unwrap (§4.7). An async call types as `Awaitable<T>`; `await` unwraps it to `T`.
+    // This lets sema catch "forgot to await" and "awaited a non-async value" — and mirrors C#/TS, where
+    // `return f()` from an async fn (f async) requires `return await f()`.
+    {
+        auto asyncRefuses = [&](const char* src, const std::string& needle, const std::string& name) {
+            EmitResult r = compileStd(src, Target::CSharp);
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, needle)) named = true;
+            check(!r.ok && named, name);
+        };
+        const char* leaf = "async fn f(): i32 => 21\n";
+        // `await` unwraps to the underlying T: `let x = await f()` gives an i32 usable in arithmetic.
+        resolvesStd((std::string(leaf) + "async fn main() {\n  let x = await f()\n  print(x + 1)\n}\n").c_str(),
+                    "P15 Awaitable: `await f()` unwraps to i32 (usable in arithmetic)");
+        // `return await g()` chains async fns (the awaited result is the unwrapped T).
+        resolvesStd((std::string(leaf) + "async fn g(): i32 {\n  return await f()\n}\n"
+                     "async fn main() { print(await g()) }\n").c_str(),
+                    "P15 Awaitable: `return await g()` chains async calls");
+        // Forgot-await, caught: returning an async call's Awaitable<i32> where i32 is expected is a type error.
+        asyncRefuses((std::string(leaf) + "async fn g(): i32 {\n  return f()\n}\n"
+                      "async fn main() { print(await g()) }\n").c_str(), "Awaitable",
+                     "P15 Awaitable: `return f()` (missing await) is a type error");
+        // Forgot-await, caught: printing an un-awaited async result would print a Task/Promise — refused.
+        asyncRefuses((std::string(leaf) + "async fn main() { print(f()) }\n").c_str(), "await",
+                     "P15 Awaitable: printing an un-awaited async result is refused");
+        // Awaiting a plain value (not an async result) is a mistake — the only awaitables are async calls.
+        asyncRefuses("fn plain(): i32 => 1\nasync fn main() {\n  let x = await plain()\n  print(x)\n}\n",
+                     "not awaitable", "P15 Awaitable: awaiting a non-async call is refused");
+    }
+
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
         const char* prog =

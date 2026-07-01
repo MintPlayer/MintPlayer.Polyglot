@@ -393,10 +393,15 @@ Two options were weighed (design-it-twice):
   Sema: track an `inAsync_` flag (alongside `currentReturn_`/`inActual_`); **validate `await` only inside an
   `async fn`** (new rigor — a stray `await` would be a native compile error on all targets = a miscompile the
   PRD forbids); **refuse `async` + `yield`** (async iterators / `IAsyncEnumerable` are a genuine third color,
-  out of scope for v1); allow async-without-`await` (optional soft warning later). `await e` **typing v1 =
-  identity** (`await e` has `e`'s type) — under Option B an async call already yields the unwrapped `T`, so
-  `await call()` is `T` with zero unwrap logic. *Principled follow-up (flagged, not v1): a real `Awaitable<T>`
-  so `await` requires `e: Task<T>` and unwraps to `T`, symmetric to `List/Iterable<T>` element unwrapping.*
+  out of scope for v1); allow async-without-`await` (optional soft warning later). `await e` **typing (as
+  built, 2026-07-01): a real `Awaitable<T>` unwrap.** A call to an async fn/method types as the compile-time-only
+  `Awaitable<T>` (an `isAsync` bit on `FnSig`/`MemberInfo` wraps the inferred result); `await` unwraps
+  `Awaitable<T>` → `T`, symmetric to `List/Iterable<T>` element unwrapping. This catches **forgot-to-await**
+  (`return f()`/`let x: i32 = f()`/`print(f())` refuse — `checkConvert` + the print guard name the fix) and
+  **awaited-a-non-async-value** (`await plain()` refuses), and mirrors C#/TS where `return f()` from an async fn
+  requires `return await f()`. `Awaitable` is never author-written and never reaches emission (locals infer via
+  `var`/`const`; backends synthesize the real `Task`/`Promise` from `isAsync`), so all conformance stays
+  byte-identical. *(The v0 plan shipped identity typing as a stopgap; this replaced it the same day.)*
 - **Backends (shared engine needs ZERO changes — async is signature-level, `await` is an expression).**
   - **C#**: signature gets an `async ` prefix and the return wraps to `Task<T>` (bare `Task` for `unit`);
     `await e` → `await <atom(e)>`; entry — keep the InvariantCulture pin first (load-bearing §3.D), then
@@ -418,9 +423,10 @@ Two options were weighed (design-it-twice):
   scope here. Add a `StubBackend(Feature::Async)` test (mirrors the P5.E gate proof).
 
 **Scope for v1:** `async fn`/`async` methods, `await` expressions, the three entry wrappers, `Feature::Async`
-gating, and the `async`+`yield` refusal. **Out of scope:** async iterators (`for await`), a real awaitable
-type (identity typing for now), cancellation tokens, `Task.WhenAll`-style combinators (bind via std when
-needed), and the multi-target `pgconfig.json` intersection (P10).
+gating, the `async`+`yield` refusal, and the `Awaitable<T>` unwrap (an async call is `Awaitable<T>`; `await`
+unwraps it, so forgot-await / awaited-non-async are caught). **Out of scope:** async iterators (`for await`),
+a user-nameable awaitable type / `Task.WhenAll`-style combinators (bind via std when needed), cancellation
+tokens, and the multi-target `pgconfig.json` intersection (P10).
 
 ---
 

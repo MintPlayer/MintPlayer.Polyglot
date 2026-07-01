@@ -133,6 +133,7 @@ struct MemberInfo {
     std::vector<TypeRef> params;  // Method/Operator/Init
     TypeRef type;                 // field/property type, or method/operator return type
     bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
+    bool isAsync = false;         // an `async` method — its call result is `Awaitable<ret>` (§4.7)
     std::size_t required = 0;     // leading params with no default — the minimum a call must supply
     std::vector<std::string> generics; // the method's own type-param names (for TypeArg inference)
     std::vector<std::string> numericParams; // subset of `generics` bounded by INumber (must infer to a number)
@@ -153,6 +154,7 @@ struct FnSig {
     std::vector<std::string> generics; // the function's type-param names (for TypeArg inference)
     std::vector<std::string> numericParams; // subset of `generics` bounded by INumber (must infer to a number)
     TypeRef receiver;                  // extensions only: the declared receiver type (for inference from it)
+    bool isAsync = false;              // an `async fn` — its call result is `Awaitable<result>` (§4.7)
 };
 
 // The generic-param names bounded by the INumber marker — those whose inferred type argument must be numeric.
@@ -390,6 +392,7 @@ private:
         mi.type = (m.kind == MemberKind::Field || m.kind == MemberKind::Const ||
                    m.kind == MemberKind::Property) ? m.type : m.returnType;
         for (const auto& mod : m.modifiers) if (mod == "static") mi.isStatic = true;
+        mi.isAsync = m.isAsync;
         return mi;
     }
     void addMembers(TypeInfo& ti, const std::vector<Member>& members) {
@@ -435,6 +438,7 @@ private:
             if (!fn.actualTarget.empty()) continue;
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
             sig.required = requiredCount(fn.params);
+            sig.isAsync = fn.isAsync;
             for (const auto& g : fn.generics) sig.generics.push_back(g.name);
             sig.numericParams = numericBounded(fn.generics);
             auto& set = fns_[fn.name];
@@ -473,6 +477,16 @@ private:
     }
     bool knownType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && !t.name.empty() && types_.count(t.name) != 0;
+    }
+
+    // `Awaitable<T>` — the type of an in-flight async result. Compile-time-only (§4.7): the author never
+    // writes it (they write the unwrapped `T` and `await` to get it back); each backend synthesizes the real
+    // wrapper (`Task<T>`/`Promise<T>`) from the callee's `isAsync` flag, so this name never reaches emission.
+    static TypeRef awaitable(const TypeRef& inner) {
+        TypeRef a; a.kind = TypeRef::Kind::Named; a.name = "Awaitable"; a.args.push_back(inner); return a;
+    }
+    static bool isAwaitable(const TypeRef& t) {
+        return t.kind == TypeRef::Kind::Named && t.name == "Awaitable";
     }
 
     // ---- type resolution (P4-1) ----
@@ -621,6 +635,12 @@ private:
     // a numeric mismatch demands an explicit cast and any other known-scalar mismatch is a type error.
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
         if (!slot) return;
+        // An un-awaited async result (`Awaitable<T>`) used where a plain value is expected — e.g. `return f()`
+        // inside an async fn — is the "forgot to await" mistake. Refuse it (as C#/TS do), naming the fix. §4.7
+        if (isAwaitable(slot->type) && !isAwaitable(target)) {
+            diags_.error(slot->pos, "this is an async result (Awaitable) — add 'await' before using it (" + ctx + ") (PRD §4.7)");
+            return;
+        }
         if (target.kind == TypeRef::Kind::Named && target.name == "Option" && !target.args.empty()) { coerceToOptional(slot, target); return; }
         // A list literal takes its element type from the target — so `[]` is `List<i32>`, not `List<unknown>`
         // (which emits invalid C# `List<object>`), and elements widen to the target element type.
@@ -828,10 +848,18 @@ private:
             case ExprKind::Super:     return tUnknown();
             case ExprKind::Name:      return checkName(e);
             case ExprKind::Unary:     return checkUnary(e);
-            case ExprKind::Await:     { // `await e` — legal only in an async fn; result type is identity in v1
+            case ExprKind::Await:     { // `await e` unwraps `Awaitable<T>` (an async call's result) to `T` (§4.7)
                 TypeRef t = checkExpr(*e.lhs);
-                if (!inAsync_)
+                if (!inAsync_) { // placement error takes precedence; still unwrap so downstream typing is sane
                     diags_.error(e.pos, "'await' is only allowed inside an 'async fn' (PRD §4.7)");
+                    return isAwaitable(t) && !t.args.empty() ? t.args[0] : t;
+                }
+                if (isAwaitable(t)) return t.args.empty() ? tUnknown() : t.args[0];
+                // The only awaitables are async-call results; awaiting a plain value is a mistake. Diagnose it
+                // when the operand's type is definitely known (a scalar or a nominal type), lenient otherwise.
+                if (scalarTyOf(t) != Ty::Unknown || knownType(t))
+                    diags_.error(e.pos, "'await' expects the result of an async call — this value is not "
+                                        "awaitable (did you await a non-async call?) (PRD §4.7)");
                 return t;
             }
             case ExprKind::Binary:    return checkBinary(e);
@@ -1099,7 +1127,8 @@ private:
                         std::string what = "static method '" + typeName + "." + method + "'";
                         checkArgs(m->params, argTypes, e.args, what, e.pos, m->required);
                         checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, what, e.pos);
-                        return inferResult(m->generics, m->params, argTypes, m->type);
+                        TypeRef r = inferResult(m->generics, m->params, argTypes, m->type);
+                        return m->isAsync ? awaitable(r) : r;
                     }
                     diags_.error(e.pos, "type '" + typeName + "' has no static method '" + method + "'");
                     return tUnknown();
@@ -1117,7 +1146,7 @@ private:
                 }
             }
             if (knownType(recv)) {
-                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); return inferResult(m->generics, m->params, argTypes, m->type); }
+                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); TypeRef r = inferResult(m->generics, m->params, argTypes, m->type); return m->isAsync ? awaitable(r) : r; }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
             return tUnknown();
@@ -1130,6 +1159,8 @@ private:
         // String) — a §3 miscompile. Diagnose here, then fall through to normal resolution (so it's still
         // import-gated and emits as an ordinary call to std.io.print).
         if (name == "print" && argTypes.size() == 1) {
+            if (isAwaitable(argTypes[0])) // an un-awaited async result would print a Task/Promise — a §3 divergence
+                diags_.error(e.pos, "cannot print the result of an async call directly — did you forget 'await'? (PRD §4.7)");
             Ty a = scalarTyOf(argTypes[0]);
             if (a != Ty::Unknown && !(isNumeric(a) || a == Ty::Bool || a == Ty::String))
                 diags_.error(e.pos, std::string("print cannot print a value of type ") + tyName(a));
@@ -1152,7 +1183,8 @@ private:
             checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
             checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
-            return inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
+            TypeRef r = inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
+            return chosen->isAsync ? awaitable(r) : r;
         }
         // (`Error(msg)` construction is handled by the types_ branch above — Error is a core-prelude type.)
         // A bare call inside a class body may target one of its own static methods.
@@ -1161,7 +1193,8 @@ private:
                 m && m->isStatic && (m->kind == MemberKind::Method || m->kind == MemberKind::Operator)) {
                 checkArgs(m->params, argTypes, e.args, "static method '" + currentClass_ + "." + name + "'", e.pos, m->required);
                 e.staticOwner = currentClass_;
-                return inferResult(m->generics, m->params, argTypes, m->type);
+                TypeRef r = inferResult(m->generics, m->params, argTypes, m->type);
+                return m->isAsync ? awaitable(r) : r;
             }
         }
         diags_.error(e.pos, "call to undeclared function '" + name + "'");
