@@ -243,6 +243,7 @@ public:
             currentReturn_ = fn.returnType;
             currentThis_ = tUnknown();
             inActual_ = !fn.actualTarget.empty(); // only an `actual` body is a target-gated region (§4.4)
+            inAsync_ = fn.isAsync;
             pushGenerics(fn.generics);
             pushScope();
             for (const auto& p : fn.params) declare(p.name, p.type, false, p.pos);
@@ -250,6 +251,7 @@ public:
             popScope();
             popGenerics(fn.generics);
             inActual_ = false;
+            inAsync_ = false;
         }
         for (auto& d : unit.records) checkTypeBody(d.name, d.generics, d.members, &d.fields);
         for (auto& d : unit.classes) checkTypeBody(d.name, d.generics, d.members, nullptr);
@@ -291,6 +293,7 @@ private:
     std::string currentClass_;  // enclosing type name while checking a member body; survives into static
                                 // methods (where currentThis_ is Unknown) so its statics/consts resolve unqualified
     bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
+    bool inAsync_ = false;  // checking an `async fn`/method body — the only place `await` is allowed (§4.7)
 
     // ---- scopes ----
     void pushScope() { scopes_.emplace_back(); }
@@ -528,12 +531,14 @@ private:
                 for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
                 currentThis_ = isStatic ? tUnknown() : tNamed(typeName); // no `this` inside a static method
                 currentReturn_ = (m.kind == MemberKind::Init) ? namedType("unit") : m.returnType;
+                inAsync_ = m.isAsync;
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 for (const auto& p : m.params) declare(p.name, p.type, false, p.pos);
                 if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Init) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
+                inAsync_ = false;
                 currentThis_ = tNamed(typeName);
             } else if (m.kind == MemberKind::Property && m.init) {
                 currentReturn_ = m.type;
@@ -717,7 +722,12 @@ private:
             }
             case StmtKind::ExprStmt: checkExpr(*s.value); break;
             case StmtKind::Throw:    if (s.value) checkExpr(*s.value); break;
-            case StmtKind::Yield:    if (s.value) checkExpr(*s.value); break;
+            case StmtKind::Yield:
+                if (inAsync_)
+                    diags_.error(s.pos, "Polyglot refuses async iterators — a function cannot be both 'async' "
+                                        "and use 'yield' (PRD §4.7)");
+                if (s.value) checkExpr(*s.value);
+                break;
             case StmtKind::If: {
                 requireBool(checkExpr(*s.value), s.pos, "'if' condition");
                 checkBlock(s.thenBody);
@@ -818,6 +828,12 @@ private:
             case ExprKind::Super:     return tUnknown();
             case ExprKind::Name:      return checkName(e);
             case ExprKind::Unary:     return checkUnary(e);
+            case ExprKind::Await:     { // `await e` — legal only in an async fn; result type is identity in v1
+                TypeRef t = checkExpr(*e.lhs);
+                if (!inAsync_)
+                    diags_.error(e.pos, "'await' is only allowed inside an 'async fn' (PRD §4.7)");
+                return t;
+            }
             case ExprKind::Binary:    return checkBinary(e);
             case ExprKind::Cast:      return checkCast(e);
             case ExprKind::Extern: // raw target code — type asserted by context (§4.4 FFI)

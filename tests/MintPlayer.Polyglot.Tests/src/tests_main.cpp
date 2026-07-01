@@ -174,6 +174,12 @@ int main() {
                    "  print(\"hi ${name}, you are ${age * 2} in dog years!\")\n"
                    "  print(\"${a.b(1)}-${c}-plain\")\n  print(\"no holes here\")\n}\n",
                    "round-trip: string interpolation");
+        // P15 async/await: `async fn`/method prefix + `await` expr survive a print/parse round-trip.
+        roundtrips("async fn fetch(url: string): i32 => 200\n"
+                   "async fn main() {\n  let code = await fetch(\"x\")\n  print(code)\n}\n",
+                   "round-trip: async fn + await stable");
+        roundtrips("class Client {\n  async fn get(url: string): i32 => 1\n}\n",
+                   "round-trip: async method stable");
     }
 
     // C# emission (golden substrings).
@@ -380,6 +386,72 @@ int main() {
                    "INumber: a user <T: INumber> fn rejects a non-numeric arg");
         resolvesStd("fn twice<T: INumber>(x: T): T => x\nfn main() { print(twice(21)) }\n",
                     "INumber: a user <T: INumber> fn accepts a numeric arg");
+    }
+
+    // P15 — async/await. Author writes the unwrapped `T` (§4.7 Option B); each backend synthesizes its wrapper
+    // (C# Task<T> + GetAwaiter().GetResult(); TS Promise<T> + floating main(); Python async def + asyncio.run).
+    {
+        const char* prog =
+            "async fn doubleIt(x: i32): i32 => x * 2\n"
+            "async fn main() {\n  let r = await doubleIt(21)\n  print(r)\n}\n";
+
+        EmitResult cs = compileStd(prog, Target::CSharp);
+        check(cs.ok, "P15 C#: async program compiles");
+        check(has(cs.code, "async global::System.Threading.Tasks.Task<int> doubleIt"),
+              "P15 C#: async fn -> `async Task<T>` (unwrapped T wrapped by the backend)");
+        check(has(cs.code, "async global::System.Threading.Tasks.Task main"),
+              "P15 C#: async unit fn -> `async Task` (bare, no <T>)");
+        check(has(cs.code, "await Program.doubleIt(21)"), "P15 C#: `await e` emits `await`");
+        check(has(cs.code, "main().GetAwaiter().GetResult();"),
+              "P15 C#: async main is driven synchronously from Main()");
+
+        EmitResult ts = compileStd(prog, Target::TypeScript);
+        check(ts.ok, "P15 TS: async program compiles");
+        check(has(ts.code, "async function doubleIt(x: number): Promise<number>"),
+              "P15 TS: async fn -> `async function …: Promise<T>`");
+        check(has(ts.code, "async function main(): Promise<void>"),
+              "P15 TS: async unit fn -> `Promise<void>`");
+        check(has(ts.code, "await doubleIt(21)"), "P15 TS: `await e` emits `await`");
+        check(has(ts.code, "\nmain();\n"), "P15 TS: async main is a floating top-level call");
+
+        EmitResult py = compileStd(prog, Target::Python);
+        check(py.ok, "P15 Python: async program compiles");
+        check(has(py.code, "async def doubleIt("), "P15 Python: async fn -> `async def`");
+        check(has(py.code, "async def main("), "P15 Python: async main -> `async def`");
+        check(has(py.code, "await doubleIt(21)"), "P15 Python: `await e` emits `await`");
+        check(has(py.code, "asyncio.run(main())") && has(py.code, "import asyncio"),
+              "P15 Python: async main -> asyncio.run + `import asyncio` prepended");
+
+        // sema §4.7: `await` outside an async fn is refused (else a native compile error = a §3.B miscompile).
+        {
+            EmitResult r = compileStd("fn doubleIt(x: i32): i32 => x * 2\n"
+                                      "fn main() { print(await doubleIt(1)) }\n", Target::CSharp);
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, "await") && has(d.message, "async fn")) named = true;
+            check(!r.ok && named, "P15 sema: `await` outside an async fn is refused");
+        }
+        // sema §4.7: `async` + `yield` (async iterators) is refused — out of scope for v1.
+        {
+            EmitResult r = compileStd("async fn g(): Iterable<i32> {\n  yield 1\n}\nfn main() { print(1) }\n",
+                                      Target::CSharp);
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, "async") && has(d.message, "yield")) named = true;
+            check(!r.ok && named, "P15 sema: an `async` fn using `yield` is refused (no async iterators)");
+        }
+        // §3.E: a backend that lacks Async refuses an async program (proves the capability bites).
+        {
+            DiagnosticBag d;
+            auto unit = parse(lex(prog, d), d);
+            StubBackend noAsync(Feature::Async);
+            DiagnosticBag da;
+            checkCapabilities(unit, noAsync, da);
+            bool named = false;
+            for (const auto& it : da.items()) if (has(it.message, "async") && has(it.message, "stub")) named = true;
+            check(da.hasErrors() && named, "P15 §3.E: a backend lacking `async` refuses the program");
+            // all three real backends support async, so none of them gate it
+            DiagnosticBag dcs; checkCapabilities(unit, *findBackend("csharp"), dcs);
+            check(!dcs.hasErrors(), "P15 §3.E: csharp (full capability set) accepts async");
+        }
     }
 
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.

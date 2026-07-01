@@ -85,7 +85,12 @@ public:
         }
         for (const auto& fn : m.extensions) emitFunction(fn); // extensions -> free fns; `x.m()` calls `m(x)`
         for (const auto& fn : m.functions)
-            if (fn.isEntry) { line(pyName(fn.mangledName) + "()"); break; } // top-level entry call
+            if (fn.isEntry) { // an `async fn main` must be driven by the event loop; else a plain call
+                line(fn.isAsync ? "asyncio.run(" + pyName(fn.mangledName) + "())" : pyName(fn.mangledName) + "()");
+                if (fn.isAsync) needsAsyncio_ = true;
+                break;
+            }
+        if (needsAsyncio_) out_ = "import asyncio\n" + out_; // `asyncio.run(main())` needs the module
         if (needsIdiv_) out_ = idivPrelude() + out_; // C#-faithful truncating int `/` and `%`
         return out_;
     }
@@ -159,7 +164,8 @@ private:
 
     void emitFunction(const ir::Function& fn) {
         // Extensions lower to plain free functions (`self` is the receiver param) with no mangledName.
-        std::string sig = "def " + pyName(fn.mangledName.empty() ? fn.name : fn.mangledName) + "(";
+        std::string sig = std::string(fn.isAsync ? "async def " : "def ") +
+                          pyName(fn.mangledName.empty() ? fn.name : fn.mangledName) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += param(fn.params[i]); }
         sig += ")";
         if (fn.exprBodied) {
@@ -272,7 +278,7 @@ private:
             line("@property");
         }
         if (m.isStatic) line("@staticmethod");
-        std::string sig = "def " + name + "(";
+        std::string sig = std::string(m.isAsync ? "async def " : "def ") + name + "(";
         bool first = true;
         if (!m.isStatic) { sig += "self"; first = false; } // static members take no receiver
         for (const auto& p : m.params) { if (!first) sig += ", "; first = false; sig += param(p); }
@@ -353,6 +359,7 @@ private:
     }
 
     bool needsIdiv_ = false; // set when a fixed-width int `/`/`%` is emitted -> prepend the trunc helpers
+    bool needsAsyncio_ = false; // set when an `async fn main` entry is emitted -> prepend `import asyncio`
 
     // §3.C integer faithfulness: wrap an int result to its width so it overflows like .NET (Python ints are
     // arbitrary-precision). Unsigned masks; signed masks then sign-extends via the (m ^ SIGN) - SIGN trick —
@@ -455,6 +462,10 @@ private:
                                                                               : emitExpr(*u.operand);
                 if (u.op == "-" && isIntType(e.type)) return wrapInt(e.type, "-" + operand); // negate can overflow (i8 min)
                 return (u.op == "!" ? "not " : u.op) + operand;
+            }
+            case ir::ExprKind::Await: {
+                const auto& a = static_cast<const ir::Await&>(e);
+                return "await " + atom(*a.operand);
             }
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);

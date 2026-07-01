@@ -25,7 +25,10 @@ public:
             for (const auto& s : e.body) stmt(s.get());
             expr(e.exprBody.get());
         }
-        for (const auto& f : u.functions) for (const auto& s : f.body) stmt(s.get());
+        for (const auto& f : u.functions) {
+            if (f.isAsync) mark(Feature::Async, f.pos);
+            for (const auto& s : f.body) stmt(s.get());
+        }
         for (const auto& d : u.records)    typeBody(d.members);
         for (const auto& d : u.interfaces) typeBody(d.members);
         for (const auto& d : u.classes) {
@@ -52,6 +55,7 @@ private:
         for (const auto& m : members) {
             if (m.kind == MemberKind::Operator) mark(Feature::OperatorOverloading, m.pos);
             if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
+            if (m.isAsync) mark(Feature::Async, m.pos);
             for (const auto& s : m.body) stmt(s.get());
             expr(m.exprBody.get());
             expr(m.init.get());
@@ -79,6 +83,7 @@ private:
         if (!e) return;
         if (e->kind == ExprKind::Match)  mark(Feature::PatternMatching, e->pos);
         if (e->kind == ExprKind::Lambda) mark(Feature::Closures, e->pos);
+        if (e->kind == ExprKind::Await)  mark(Feature::Async, e->pos);
         if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name)
             calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`
         expr(e->lhs.get());

@@ -377,9 +377,10 @@ private:
             return;
         }
         // method and operator both become regular methods (a + b calls a.plus(b) at the use site)
-        std::string sig = std::string(m.isStatic ? "static " : "") + m.name + tsGenerics(m.generics) + "(";
+        std::string sig = std::string(m.isStatic ? "static " : "") + (m.isAsync ? "async " : "") +
+                          m.name + tsGenerics(m.generics) + "(";
         for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(m.params[i]); }
-        sig += "): " + tsType(m.returnType) + " {";
+        sig += "): " + (m.isAsync ? tsAsyncReturn(m.returnType) : tsType(m.returnType)) + " {";
         line(sig);
         ++indent_;
         if (m.exprBodied) line("return " + emitExpr(*m.exprBody) + ";");
@@ -425,10 +426,14 @@ private:
         line("}");
     }
 
+    // `async fn`: author writes the unwrapped `T`; TS needs `Promise<T>` (`Promise<void>` for unit). §4.7
+    std::string tsAsyncReturn(const TypeRef& ret) { return "Promise<" + tsType(ret) + ">"; }
+
     void emitFunction(const ir::Function& fn) {
-        std::string sig = std::string(fn.isIterator ? "function* " : "function ") + fn.mangledName + tsGenerics(fn.generics) + "(";
+        std::string kw = fn.isAsync ? "async function " : (fn.isIterator ? "function* " : "function ");
+        std::string sig = kw + fn.mangledName + tsGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(fn.params[i]); }
-        sig += "): " + tsType(fn.returnType);
+        sig += "): " + (fn.isAsync ? tsAsyncReturn(fn.returnType) : tsType(fn.returnType));
         headBlock(sig, fn.body);
     }
 
@@ -546,6 +551,10 @@ private:
                                                                               : emitExpr(*u.operand);
                 if (isSmallInt(e.type) && u.op == "-") return narrowTs(e.type.name, "-" + operand); // wrap negate
                 return u.op + operand;
+            }
+            case ir::ExprKind::Await: {
+                const auto& a = static_cast<const ir::Await&>(e);
+                return "await " + atom(*a.operand);
             }
             case ir::ExprKind::Cast: {
                 const auto& c = static_cast<const ir::Cast&>(e);

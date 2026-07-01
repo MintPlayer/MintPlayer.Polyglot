@@ -212,6 +212,7 @@ private:
                 break;
             }
             case ExprKind::Unary: { const auto& u = static_cast<const Unary&>(e); repr = u.op + expr(*u.operand); break; }
+            case ExprKind::Await: { const auto& a = static_cast<const Await&>(e); repr = "await " + expr(*a.operand); break; }
             case ExprKind::Cast: { const auto& c = static_cast<const Cast&>(e); repr = "(" + typeName(e.type) + ")" + expr(*c.operand); break; }
             case ExprKind::Extern: { repr = "extern(\"" + static_cast<const Extern&>(e).code + "\")"; break; }
             case ExprKind::Binary: {

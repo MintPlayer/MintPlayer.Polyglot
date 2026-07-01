@@ -569,9 +569,21 @@ its args; **char literals** (`ir::CharLit`); and **`std.strings`** (a new module
 fixing `mergeDecls` to merge an imported module's extensions. New conformance programs: `empty_list`,
 `bool_print`, `float_print`, `strings`. (06 trimmed a non-numeric input that can't parse faithfully cross-target.)
 
-## P15 — Single-threaded async/await — 🚧 designed (2026-07-01), not yet built
+## P15 — Single-threaded async/await — ✅ done (2026-07-01)
 **Full design: PRD §4.7** (produced by a 4-agent investigation of surface / sema+IR+lower / backends /
-capability). A "colored function" like iterators, with two deliberate divergences from the iterator precedent:
+capability). Built exactly to the 5-slice plan below; the shared engine (`emitter_base`/`backend_spec`)
+needed **zero** changes as predicted. Conformance program #38 (`async_await.pg`) agrees byte-for-byte across
+C#/TS **and** Python (`14 | 20`); all gates green (unit + C#/TS 38/38 + Python 37/37 + samples 10 + fidelity 10).
+Delivered: `bool isAsync` on `FunctionDecl`/`Member`/`ir::Function`/`ir::Method` (method `async` promoted from
+`Member.modifiers` to a typed flag, re-emitted by `printMember`); `ExprKind::Await` (AST + `ir::Await`) parsed
+at unary precedence; top-level `async fn`/`async expect`/`async actual` via `parseAsyncFunction`; sema `inAsync_`
+gates `await` placement + refuses `async`+`yield`; `Feature::Async` (all 3 backends `supports`, StubBackend
+proves it bites). Backends synthesize the wrapper (Option B): C# `async Task<T>`/`Task` + `main().GetAwaiter().GetResult()`;
+TS `async…Promise<T>`/`Promise<void>` + floating `main();`; Python `async def` + `asyncio.run(main())` with a
+`needsAsyncio_`-gated `import asyncio` prepend. `await e` → `await atom(e)` in each `emitExpr`. *Deferred (unchanged):*
+`await` typing is identity in v1 — a real `Awaitable<T>` unwrap is the principled follow-up.
+
+A "colored function" like iterators, with two deliberate divergences from the iterator precedent:
 async is **declared** (no `sawAwait_` inference needed) and the return-type wrapper is **backend-synthesized**,
 not user-written (Option B — keeps `.pg` source portable: author writes the unwrapped `T`).
 

@@ -140,7 +140,8 @@ private:
     }
 
     void printFunction(const FunctionDecl& fn) {
-        std::string sig = "fn " + fn.name + generics(fn.generics) + "(" + params(fn.params) + ")";
+        std::string sig = std::string(fn.isAsync ? "async " : "") + "fn " + fn.name +
+                          generics(fn.generics) + "(" + params(fn.params) + ")";
         if (!isUnit(fn.returnType)) sig += ": " + typeStr(fn.returnType);
         line(sig + " {");
         ++indent_;
@@ -170,7 +171,8 @@ private:
                 break;
             case MemberKind::Method:
             case MemberKind::Operator: {
-                std::string head = mods + (m.kind == MemberKind::Operator ? "operator fn " : "fn ") +
+                std::string head = mods + (m.isAsync ? "async " : "") +
+                                   (m.kind == MemberKind::Operator ? "operator fn " : "fn ") +
                                    m.name + generics(m.generics) + "(" + params(m.params) + ")";
                 if (!isUnit(m.returnType)) head += ": " + typeStr(m.returnType);
                 if (!m.hasBody) line(head);                          // interface stub
@@ -385,6 +387,11 @@ private:
                 const Expr& o = *e.lhs;
                 bool wrap = o.kind == ExprKind::Binary || o.kind == ExprKind::Range || o.kind == ExprKind::IfExpr;
                 return e.text + (wrap ? "(" + expr(o) + ")" : expr(o));
+            }
+            case ExprKind::Await: {
+                const Expr& o = *e.lhs;
+                bool wrap = o.kind == ExprKind::Binary || o.kind == ExprKind::Range || o.kind == ExprKind::IfExpr;
+                return "await " + (wrap ? "(" + expr(o) + ")" : expr(o));
             }
             case ExprKind::Binary: {
                 int p = prec(e.text);

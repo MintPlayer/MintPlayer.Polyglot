@@ -30,12 +30,14 @@ enum class Feature {
     Exceptions,          // throw / try / catch / finally
     Disposal,            // `use` deterministic disposal
     Inheritance,         // class `: Base` + `super`
+    Async,               // `async fn` + `await` (single-threaded coroutines); a future PHP-like target may lack it
 };
 const char* featureName(Feature f); // stable lowerCamel id for diagnostics, e.g. "extensionMethods"
 
 inline constexpr Feature kAllFeatures[] = {
     Feature::ExtensionMethods, Feature::OperatorOverloading, Feature::Properties, Feature::Iterators,
     Feature::PatternMatching, Feature::Closures, Feature::Exceptions, Feature::Disposal, Feature::Inheritance,
+    Feature::Async,
 };
 
 class Backend {

@@ -169,6 +169,7 @@ public:
             f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
             f.isEntry = (fn.name == "main" && fn.params.empty());
+            f.isAsync = fn.isAsync;
             for (const auto& p : fn.params) f.params.push_back(irParam(p));
             sawYield_ = false;
             f.body = block(fn.body);
@@ -347,6 +348,7 @@ private:
     ir::Method method(const Member& m) {
         ir::Method im;
         im.name = m.name;
+        im.isAsync = m.isAsync;
         for (const auto& mod : m.modifiers) if (mod == "static") im.isStatic = true;
         im.generics = generics(m.generics);
         if (m.kind == MemberKind::Property) {
@@ -392,6 +394,7 @@ private:
                 if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
                 return std::make_unique<ir::This>(e.pos, e.type);
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
+            case ExprKind::Await:     return std::make_unique<ir::Await>(e.pos, e.type, expr(*e.lhs));
             case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
             // `x!` asserts the non-null type sema put on the node: a cast to it (C# unwraps a Nullable<T>
             // value type via `(int)x`; for reference types it's an identity cast — TS strips both).

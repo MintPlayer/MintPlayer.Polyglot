@@ -102,7 +102,7 @@ struct MatchArm {
 enum class ExprKind {
     IntLit, FloatLit, CharLit, StringLit, InterpString, BoolLit, NullLit,
     Name, This, Super,
-    Unary, Binary, Range, Cast, Extern,
+    Unary, Binary, Range, Cast, Extern, Await,
     Call, Member, Index, NullAssert,
     Lambda, ListLit, TupleLit, With, IfExpr, Match,
 };
@@ -175,6 +175,7 @@ struct FunctionDecl {
     std::vector<StmtPtr> body;
     bool isExpect = false;         // `expect fn` — a capability signature with no body (§4.4)
     std::string actualTarget;      // `actual(<target>) fn` — the per-target implementation; empty otherwise
+    bool isAsync = false;          // `async fn` — a coroutine; each backend wraps the return in Task/Promise/async def (§4.7)
 };
 
 // A per-target call-site binding for a method/property: raw target code with `$this` (the receiver)
@@ -191,7 +192,8 @@ enum class MemberKind { Field, Const, Init, Method, Operator, Property };
 struct Member {
     MemberKind kind;
     SourcePos pos;
-    std::vector<std::string> modifiers;  // abstract/open/override/static/private/async
+    std::vector<std::string> modifiers;  // abstract/open/override/static/private
+    bool isAsync = false;                // `async` method — return wrapped in Task/Promise/async def (§4.7)
     std::string name;                    // field/const/method/operator/property name (Init: "init")
     bool isMutable = false;              // Field/Property: var vs let
     TypeRef type;                        // Field/Const/Property type

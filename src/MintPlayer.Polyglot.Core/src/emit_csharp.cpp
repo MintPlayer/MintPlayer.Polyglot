@@ -189,7 +189,9 @@ public:
                 line("");
                 // Pin the invariant culture so number formatting (WriteLine/interpolation) matches JS — C#
                 // is culture-dependent (e.g. "12,5" on a comma-locale machine), JS always uses '.'. §3.
-                line("static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main(); }");
+                // An `async fn main` returns a Task; block on it synchronously so `Main` stays `void`. §4.7
+                std::string call = fn.isAsync ? "main().GetAwaiter().GetResult();" : "main();";
+                line("static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; " + call + " }");
                 break;
             }
         }
@@ -336,7 +338,9 @@ private:
             thisAlias_.clear();
             return;
         }
-        std::string sig = std::string("public ") + (m.isStatic ? "static " : "") + csType(m.returnType) + " " + m.name + csGenerics(m.generics) + "(";
+        std::string ret = m.isAsync ? csAsyncReturn(m.returnType) : csType(m.returnType);
+        std::string sig = std::string("public ") + (m.isStatic ? "static " : "") + (m.isAsync ? "async " : "") +
+                          ret + " " + m.name + csGenerics(m.generics) + "(";
         for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
         sig += ")" + csWhere(m.generics);
         if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
@@ -375,9 +379,18 @@ private:
         else headBlock(sig, f.body);
     }
 
+    // `async fn`: the author writes the unwrapped `T`; C# needs `Task<T>` (or a bare `Task` for unit). §4.7
+    static bool isUnitType(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "unit"; }
+    std::string csAsyncReturn(const TypeRef& ret) {
+        return isUnitType(ret) ? "global::System.Threading.Tasks.Task"
+                               : "global::System.Threading.Tasks.Task<" + csType(ret) + ">";
+    }
+
     void emitFunction(const ir::Function& fn) {
         // `public` so calls qualified as `Program.fn(...)` from emitted classes resolve (free fns live here).
-        std::string sig = "public static " + csType(fn.returnType) + " " + fn.name + csGenerics(fn.generics) + "(";
+        std::string ret = fn.isAsync ? csAsyncReturn(fn.returnType) : csType(fn.returnType);
+        std::string sig = std::string("public static ") + (fn.isAsync ? "async " : "") + ret + " " +
+                          fn.name + csGenerics(fn.generics) + "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += csParam(fn.params[i]); }
         sig += ")" + csWhere(fn.generics);
         headBlock(sig, fn.body);
@@ -482,6 +495,10 @@ private:
                 std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
                                                                               : emitExpr(*u.operand);
                 return u.op + operand;
+            }
+            case ir::ExprKind::Await: {
+                const auto& a = static_cast<const ir::Await&>(e);
+                return "await " + atom(*a.operand);
             }
             case ir::ExprKind::Cast: { // C# handles every numeric conversion natively
                 const auto& c = static_cast<const ir::Cast&>(e);

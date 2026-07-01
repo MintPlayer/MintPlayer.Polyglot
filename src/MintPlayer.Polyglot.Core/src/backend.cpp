@@ -19,6 +19,7 @@ const char* featureName(Feature f) {
         case Feature::Exceptions:          return "exceptions";
         case Feature::Disposal:            return "disposal";
         case Feature::Inheritance:         return "inheritance";
+        case Feature::Async:               return "async";
     }
     return "?";
 }

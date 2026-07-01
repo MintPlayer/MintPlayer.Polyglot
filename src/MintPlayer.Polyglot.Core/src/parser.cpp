@@ -14,6 +14,7 @@ public:
         while (!at(TokKind::End)) {
             if (at(TokKind::KwImport)) unit.imports.push_back(parseImport());
             else if (at(TokKind::KwFn)) unit.functions.push_back(parseFunction());
+            else if (at(TokKind::KwAsync)) unit.functions.push_back(parseAsyncFunction());
             else if (at(TokKind::KwExpect)) unit.functions.push_back(parseExpect());
             else if (at(TokKind::KwActual)) unit.functions.push_back(parseActual());
             else if (at(TokKind::KwEnum)) unit.enums.push_back(parseEnum());
@@ -199,7 +200,10 @@ private:
     Member parseMember() {
         Member m;
         m.pos = peek().pos;
-        while (atModifier()) m.modifiers.push_back(modifierText(advance().kind));
+        while (atModifier()) {
+            if (at(TokKind::KwAsync)) { m.isAsync = true; advance(); }
+            else m.modifiers.push_back(modifierText(advance().kind));
+        }
 
         if (at(TokKind::KwInit)) {
             m.kind = MemberKind::Init;
@@ -485,6 +489,16 @@ private:
         } else {
             fn.body = parseBlock();
         }
+        return fn;
+    }
+
+    // `async` precedes `fn`/`expect`/`actual` at top level (mirrors the method modifier position).
+    FunctionDecl parseAsyncFunction() {
+        expect(TokKind::KwAsync, "'async'");
+        FunctionDecl fn = at(TokKind::KwExpect) ? parseExpect()
+                        : at(TokKind::KwActual) ? parseActual()
+                        : parseFunction();
+        fn.isAsync = true;
         return fn;
     }
 
@@ -807,6 +821,12 @@ private:
     }
     ExprPtr parseUnary() {
         if (isCastAhead()) return parseCast(); // `(i64)expr` binds at unary precedence
+        if (at(TokKind::KwAwait)) {
+            auto p = advance().pos;
+            auto e = mk(ExprKind::Await, p);
+            e->lhs = parseUnary();
+            return e;
+        }
         if (at(TokKind::Not) || at(TokKind::Minus) || at(TokKind::Tilde)) {
             const char* op = at(TokKind::Not) ? "!" : at(TokKind::Minus) ? "-" : "~";
             auto p = advance().pos;
@@ -952,7 +972,7 @@ private:
             case TokKind::StringLit: case TokKind::InterpStart: case TokKind::KwTrue: case TokKind::KwFalse:
             case TokKind::KwNull: case TokKind::KwThis: case TokKind::KwSuper: case TokKind::LParen:
             case TokKind::LBracket: case TokKind::Minus: case TokKind::Not: case TokKind::Tilde:
-            case TokKind::KwIf: case TokKind::KwMatch:
+            case TokKind::KwIf: case TokKind::KwMatch: case TokKind::KwAwait:
                 return true;
             default: return false;
         }

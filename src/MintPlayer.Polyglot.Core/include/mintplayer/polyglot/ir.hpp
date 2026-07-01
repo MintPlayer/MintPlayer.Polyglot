@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With };
+enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With };
 
 struct Expr {
     ExprKind kind;
@@ -78,6 +78,10 @@ struct Unary : Expr {
     std::string op;
     ExprPtr operand;
     Unary(SourcePos p, Type t, std::string o, ExprPtr e) : Expr(ExprKind::Unary, p, std::move(t)), op(std::move(o)), operand(std::move(e)) {}
+};
+struct Await : Expr { // `await e` — only inside an async fn; `type` is the unwrapped result (identity in v1)
+    ExprPtr operand;
+    Await(SourcePos p, Type t, ExprPtr e) : Expr(ExprKind::Await, p, std::move(t)), operand(std::move(e)) {}
 };
 struct Binary : Expr {
     std::string op;
@@ -317,6 +321,7 @@ struct Function {
     std::vector<StmtPtr> body;
     bool isEntry = false;    // a `fn main()` with no params — the program entry point
     bool isIterator = false; // body contains `yield` — C# `IEnumerable<T>`+`yield return`, TS `function*`
+    bool isAsync = false;    // `async fn` — C# `async Task<T>` / TS `async…Promise<T>` / Python `async def` (§4.7)
     bool isExtension = false; // an `extension fn T.m(...)`: params[0] is the receiver `self` (type T)
     std::string actualTarget; // `actual(<target>)` impl — emitted only by the matching backend; else empty
     bool exprBodied = false; // `=> expr` vs block (extensions; regular fns always use a block today)
@@ -336,6 +341,7 @@ struct Method {
     Type returnType;
     bool exprBodied = false;      // `=> expr` vs block
     bool isStatic = false;        // a `static fn` member — called as `Type.method(...)`, no `this`
+    bool isAsync = false;         // `async` method — return wrapped in Task/Promise/async def (§4.7)
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
 };

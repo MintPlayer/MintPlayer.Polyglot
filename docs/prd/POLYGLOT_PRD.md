@@ -351,12 +351,13 @@ compile check, not just `fmt`), and hello-world stays `print(…)` via `lib: ["i
 > target type spelling (feeding the P9 backend type table) + a constructor template is **P10** work — the
 > Binding mechanism's complete form. See PLAN P10 and `design/backend-spec.md` §4a.
 
-### 4.7 Async/await (design — 2026-07-01; investigated by a 4-agent team, not yet implemented)
+### 4.7 Async/await (design — 2026-07-01; investigated by a 4-agent team; **implemented 2026-07-01**, PLAN §P15)
 
 Single-threaded `async`/`await` is the **sanctioned concurrency model** (§3.B refuses threads/locks; async is
 what's left). It is a **"colored function"** exactly like iterators (`yield`) — the iterator machinery is the
-proven precedent this design follows, with two deliberate divergences noted below. **Status: designed, not
-built.** Today `async`/`await` are lexed (`KwAsync`/`KwAwait`) and reserved in the grammar, but: a top-level
+proven precedent this design follows, with two deliberate divergences noted below. **Status: ✅ implemented**
+(built exactly to this design; conformance #38 `async_await.pg` agrees across C#/TS/Python; the description
+below is retained as the as-built spec). *Historical note — before P15,* `async`/`await` were lexed (`KwAsync`/`KwAwait`) and reserved in the grammar, but: a top-level
 `async fn` fails to parse, `async` on a *method* parses into `Member.modifiers` and is then **silently
 dropped** (a latent no-op — emits a sync method), and `await` has no parser production (errors). Building it
 closes that silent hole.
@@ -499,13 +500,13 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   samples now compile+run**. Added a faithful **`Option<T>`** generic union for nullable generics (§3.C),
   generic unions, interfaces/indexers/record-implements emission, `std.strings` (bound extension methods),
   char literals, and faithful bool/float printing. See PLAN P14.
-- **P15 — Single-threaded async/await.** 🚧 Designed (§4.7, from a 4-agent investigation), not yet built.
+- **P15 — Single-threaded async/await.** ✅ Done (2026-07-01; §4.7, from a 4-agent investigation).
   A "colored function" like iterators: `isAsync` on `ir::Function`/`Method` + an `Await` expr node; the author
   writes the unwrapped `T` and each backend synthesizes its own wrapper (C# `async Task<T>`, TS `async …
   Promise<T>`, Python `async def` + `asyncio.run` entry); `await` parses at unary precedence; `Feature::Async`
   gates it (all three current backends support it — the gate bites only for a future target like PHP). Sema
-  validates `await` only inside `async fn` and refuses `async`+`yield` (async iterators out of scope). Closes
-  the current silent hole where `async` on a method parses but is dropped. Full design + per-pass map: §4.7.
+  validates `await` only inside `async fn` and refuses `async`+`yield` (async iterators out of scope). Closed
+  the prior silent hole where `async` on a method parsed but was dropped. Full design + per-pass map: §4.7.
 - **Stretch:** further targets as downloadable backends, source maps, **editor tooling** (a TextMate
   highlighting grammar for `.pg` — independent of the compiler, ships early for VS Code *and* Visual Studio
   2022+; plus an **LSP** server `polyglot lsp` built on the frontend-as-a-library, with thin VS Code and

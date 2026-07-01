@@ -167,16 +167,18 @@ Carried as an `ir::ExternType` registry on the IR module that `csType`/`tsType` 
 declaring `extern class Error` (→`System.Exception`/`Error`, ctor, `message` property) and `Iterable`
 (→`IEnumerable<$0>`/`Iterable<$0>`). The emitters now have **zero** hardcoded type mappings. Backlog: idiomatic
 per-target member casing (PLAN P13).
+**P15 ✅ done — single-threaded async/await** (design: **PRD §4.7**, from a 4-agent investigation). A colored
+function like iterators: `isAsync` on `FunctionDecl`/`Member`/`ir::Function`/`ir::Method` (method `async`
+promoted from `Member.modifiers` to a typed flag) + an `Await` expr node (AST + `ir::Await`) parsed at unary
+precedence; author writes the unwrapped `T` and each backend synthesizes its wrapper (Option B — keeps `.pg`
+portable): C# `async Task<T>` w/ `main().GetAwaiter().GetResult()`, TS `async … Promise<T>` w/ floating
+`main();`, Python `async def` w/ `asyncio.run(main())`+`import asyncio`. Sema (`inAsync_`) validates `await`
+only in an `async fn` + refuses `async`+`yield` (no async iterators v1); `Feature::Async` gates it (all 3
+backends support it; bites only for a future PHP-like target). Conformance #38 `async_await.pg` agrees C#/TS
++ Python. `await` typing is identity in v1 (a real `Awaitable<T>` unwrap is the follow-up). Shared engine
+unchanged, as designed.
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
-(build-integration NuGet, independent), **P15 — single-threaded async/await** (🚧 fully designed in **PRD §4.7**
-from a 4-agent investigation, not yet built: a colored function like iterators — `isAsync` on `ir::Function`/
-`Method` + an `Await` expr node; author writes the unwrapped `T`, each backend synthesizes its wrapper
-(C# `async Task<T>` w/ `main().GetAwaiter().GetResult()`, TS `async … Promise<T>` w/ floating `main();`,
-Python `async def` w/ `asyncio.run(main())`+`import asyncio`); `await` parses at unary precedence; new
-`Feature::Async` gates it (all 3 current backends support it; bites only for a future PHP-like target); sema
-validates `await` only in `async fn` + refuses `async`+`yield`; return-type wrapping is backend-side (Option B),
-NOT an extern-class/lowering transform — keeps `.pg` source portable. Fixes the current silent hole where
-`async` on a method parses into `Member.modifiers` and is dropped. Shared engine needs zero changes).
+(build-integration NuGet, independent).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.
