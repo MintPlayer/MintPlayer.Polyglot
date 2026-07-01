@@ -128,8 +128,10 @@ u8/u16/u32 narrowing (TS bit-ops; C# casts), i32 `|0`/`Math.imul`, **i64/u64 →
 **implicit lossless widening** (replacing conversion methods); and **function overloading** (compile-time
 resolution; C# native name / TS param-mangled). 8 new differential programs (int_overflow, int64,
 int_widths, equality, casts, widening, overloading) + refusal/overload unit tests. *Deferred to its own
-step (low value):* opt-in strict-f32 `Math.fround`, statement-level `lock`/`unsafe` refusals, null/undefined
-normalization (better with std). Numeric conversion design recorded in PRD §3.A / SPEC §3.
+step (low value):* opt-in strict-f32 `Math.fround`, null/undefined normalization (better with std).
+**Statement-level `lock`/`unsafe` refusals ✅ done** (2026-07-01): parseStmt catches the C#-habit form and
+emits a targeted §3.B "Polyglot refuses" message + brace-balanced-skips the construct (no cascade). Numeric
+conversion design recorded in PRD §3.A / SPEC §3.
 
 ## P7 — Std core + expect/actual + FFI (the three plugin mechanisms, as first-party code) ✅ done (2026-06-29)
 A minimal portable standard library in `.pg` (math, basic collections, iterators) compiled to both

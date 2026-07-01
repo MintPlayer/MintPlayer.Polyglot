@@ -89,8 +89,9 @@ used feature a target can't emit — C#/TS declare the full set so nothing gates
 proves it bites). **P6 ✅ done — faithfulness pass:** §3.B **refusal diagnostics** ("Polyglot refuses X");
 **all integer widths faithful** (i8…u32 narrowing, i64/u64 → **BigInt**); **structural equality** for
 records; **explicit casts `(T)x`** + **implicit lossless widening** (no conversion methods); **function
-overloading** (C# native name / TS param-mangled). *Deferred tail:* strict-f32 `Math.fround`, `lock`/
-`unsafe` statement refusals, null normalization. **P7 ✅ done — std core + the three plugin mechanisms as
+overloading** (C# native name / TS param-mangled). *Deferred tail:* strict-f32 `Math.fround`, null
+normalization (`lock`/`unsafe` statement refusals ✅ done — parseStmt emits a targeted §3.B message).
+**P7 ✅ done — std core + the three plugin mechanisms as
 first-party code:** **static methods** (`Type.method()`); **`i32.parse`/`f64.parse`** (string→number);
 the **`Math`** namespace (replacement); **`expect`/`actual`** target-gated capabilities (each backend
 emits only its `actual`); **`extern("…")`** raw-code FFI (binding); and the **portable-core guard**
@@ -109,7 +110,7 @@ target type). **Embedded std module**: `import std.collections.{ List }` links a
 (no FS resolver yet). List element typing (`[...]`, `lst[i]`, `for x in`/`for (a,b) in`) is compiler-level.
 Also lowered+emitted for the first time (all previously hit a silent `0`): `null`, `x!` (→ non-null cast),
 `??`, string interpolation, index, tuple literal, top-level globals, tuple destructuring. *Deferred tail
-(unchanged):* strict-f32 `Math.fround`, `lock`/`unsafe` refusals, null normalization.
+(unchanged):* strict-f32 `Math.fround`, null normalization (`lock`/`unsafe` refusals now ✅ done).
 **P12 ✅ phase-1 done — modules/imports** (PRD §4.5): TS-style `import { a, b as c } from "spec"` (+ `* as ns`,
 bare; `from`/`as` contextual, quoted specifier so `"std.io"`=logical, `"./x"`=relative); a **`ModuleResolver`**
 seam (`compile(src, target, ModuleResolver*=nullptr)`, Core stays IO-free) with transitive cross-`.pg`
