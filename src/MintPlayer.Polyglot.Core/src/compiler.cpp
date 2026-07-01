@@ -254,6 +254,9 @@ const StdModule STD_MODULES[] = {
     {"std.strings", STD_STRINGS},
 };
 
+// The always-linked core prelude's logical name, so its embedded source is servable (Error/Iterable/…).
+const char* kCoreModuleName = "std.core";
+
 // Append all top-level declarations of a loaded module into the root unit (the module's own `imports` were
 // already processed by the caller). Output stays single-file per target: everything lands in one unit.
 void mergeDecls(CompilationUnit& mod, CompilationUnit& root) {
@@ -327,8 +330,8 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
 // Merge the always-on core prelude (Error/Iterable) into `unit`. Idempotent and user-shadow-safe: a core
 // type already declared in `unit` (e.g. a user `class Error`) is left to collide in sema, not silently
 // double-merged. Runs before any import linking so the core types are authoritative.
-void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags) {
-    std::vector<Token> toks = lex(STD_CORE, diags);
+void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags, SourceMap* src) {
+    std::vector<Token> toks = lex(STD_CORE, diags, src ? src->add(kCoreModuleName) : 0);
     if (diags.hasErrors()) return;
     CompilationUnit core = parse(toks, diags);
     if (diags.hasErrors()) return;
@@ -365,7 +368,8 @@ std::string fnSigKey(const std::string& name, const std::vector<Param>& ps) {
 // declaration or an explicitly-imported one (functions compared by name+signature, so user overloads of a
 // lib function survive). Shadowed lib decls are dropped SILENTLY (ambient, lowest priority). A name exported
 // by two different lib entries is left to collide in sema (a prelude must be internally consistent).
-void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver* resolver, DiagnosticBag& diags) {
+void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver* resolver, DiagnosticBag& diags,
+                    SourceMap* src) {
     if (lib.libs.empty()) return;
 
     CompilationUnit staging;
@@ -378,7 +382,7 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
         d.path = name.find('.') != std::string::npos ? name : "std." + name;
         staging.imports.push_back(std::move(d));
     }
-    linkModules(staging, resolver, diags, nullptr); // ambient prelude = std (fileId 0; click-through deferred)
+    linkModules(staging, resolver, diags, src); // stamp lib modules so their symbols get fileIds (std click-through)
     if (diags.hasErrors()) return;
 
     std::unordered_set<std::string> types, values, fns, exts;
@@ -403,15 +407,23 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
 
 } // namespace
 
+// The embedded source of a first-party module by logical name (for the language server to serve std
+// definitions as read-only virtual documents). Empty when the name isn't a known embedded module.
+std::string embeddedModuleSource(const std::string& name) {
+    if (name == kCoreModuleName || name == "core") return STD_CORE;
+    for (const auto& m : STD_MODULES) if (name == m.path) return m.source;
+    return std::string();
+}
+
 // Link the core prelude + imported + lib modules into a parsed `unit`, then type-check it — the shared
 // front end behind both `compile()` (which then lowers/emits) and `analyze()` (which returns the checked
 // AST for tooling). Bails between passes on the first error. `model`/`req` are forwarded to `check` so the
 // LSP path can request a semantic model; `compile` passes nullptr and pays nothing.
 bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfig& lib, DiagnosticBag& diags,
                  SemanticModel* model, const SemanticRequest* req, SourceMap* src) {
-    linkCoreModule(unit, diags);                 if (diags.hasErrors()) return false; // Error/Iterable (no import)
-    linkModules(unit, resolver, diags, src);     if (diags.hasErrors()) return false; // imported std + user modules
-    linkLibModules(unit, lib, resolver, diags);  if (diags.hasErrors()) return false; // ambient prelude
+    linkCoreModule(unit, diags, src);               if (diags.hasErrors()) return false; // Error/Iterable (no import)
+    linkModules(unit, resolver, diags, src);        if (diags.hasErrors()) return false; // imported std + user modules
+    linkLibModules(unit, lib, resolver, diags, src); if (diags.hasErrors()) return false; // ambient prelude
     check(unit, diags, model, req);
     return !diags.hasErrors();
 }

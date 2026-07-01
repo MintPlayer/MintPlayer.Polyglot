@@ -690,9 +690,13 @@ grammar; required finishing name-token positions (`namePos` on all type/member/v
     entry (id 1) and each loaded module at its `loadImports` lex boundary, returning a `SourceMap` (fileId →
     canonical origin). Sema registers imported symbols as `external` defs carrying their module's fileId, so a
     ref to an imported symbol resolves to it; the LSP maps the def's fileId → a `file://` Location (F12 on
-    `Vec2`/`length` jumps into `geometry.pg`). *Deferred:* click-through into embedded std (needs a
-    `polyglot:<name>` virtual-document provider — those defs currently return no location).
-11. `references`/`rename`; `completion` (keywords + in-scope names first; member completion last — needs receiver type).
+    `Vec2`/`length` jumps into `geometry.pg`). **std click-through ✅** — core/lib/imported std modules are
+    stamped too; a std def maps to a `polyglot:<name>` URI the server serves via a `polyglot/moduleSource`
+    request, and the VS Code extension registers a content provider so clicking `print`/`Math`/`Error` opens
+    the embedded std source read-only (plaintext for now; `.pg` highlighting of the virtual doc is a follow-up).
+11. **`references`/`rename` ✅** (from the model; rename is file-local-only) and **`completion` ✅** (keywords +
+    bare-callable symbols, context-insensitive). *Deferred:* member completion (`obj.`, needs receiver type)
+    and in-scope-only local filtering.
 
 **P16d — Visual Studio LSP client.** An `ILanguageClient` VSIX pointing at `polyglot lsp` (after the VS Code
 client proves the server); target the VS-2026/v145 SDK generation.

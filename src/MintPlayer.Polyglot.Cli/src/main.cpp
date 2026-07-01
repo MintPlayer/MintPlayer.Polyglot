@@ -510,8 +510,10 @@ struct LspServer {
         auto sit = sources_.find(requestUri);
         if (sit == sources_.end()) return "";
         const std::string& canon = sit->second.canon(fid);
-        if (canon.empty() || !fs::path(canon).is_absolute()) return "";
-        return pathToUri(canon);
+        if (canon.empty()) return "";
+        if (fs::path(canon).is_absolute()) return pathToUri(canon);            // a resolver-loaded .pg file
+        if (canon.rfind("std.", 0) == 0) return "polyglot:" + canon;           // embedded std -> virtual document
+        return "";
     }
 
     std::string definition(const json::Value& params) {
@@ -755,6 +757,11 @@ int runLsp(const std::vector<std::string>&) {
             lspReply(id, srv.rename(params));
         } else if (method == "textDocument/completion") {
             lspReply(id, srv.completion(params));
+        } else if (method == "polyglot/moduleSource") {
+            // Custom request: serve an embedded std module's source for a `polyglot:<name>` virtual document.
+            std::string u = params["uri"].asString();
+            std::string name = u.rfind("polyglot:", 0) == 0 ? u.substr(9) : u;
+            lspReply(id, "{\"source\":" + json::quote(embeddedModuleSource(name)) + "}");
         } else if (method == "textDocument/hover") {
             lspReply(id, srv.hover(params));
         } else if (!id.isNull()) {

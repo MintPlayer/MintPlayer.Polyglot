@@ -105,4 +105,9 @@ struct AnalysisResult {
 AnalysisResult analyze(const std::string& source, ModuleResolver* resolver = nullptr,
                        const LibConfig& lib = {}, const std::string& entryPath = "");
 
+// The embedded source of a first-party module by logical name ("std.io", "std.math", "std.core", …) — the
+// language server serves these as read-only virtual documents so go-to-definition can open a std symbol's
+// declaration. Empty when `name` isn't a known embedded module.
+std::string embeddedModuleSource(const std::string& name);
+
 } // namespace mintplayer::polyglot

@@ -45,6 +45,22 @@ function activate(context) {
   };
 
   client = new LanguageClient('polyglot', 'Polyglot Language Server', serverOptions, clientOptions);
+
+  // Serve `polyglot:<module>` virtual documents (embedded std sources) so go-to-definition can open a std
+  // symbol's declaration read-only. The server returns the source via a custom `polyglot/moduleSource` request.
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider('polyglot', {
+      provideTextDocumentContent: async (uri) => {
+        try {
+          const res = await client.sendRequest('polyglot/moduleSource', { uri: uri.toString() });
+          return (res && res.source) || `// no embedded source for ${uri.toString()}`;
+        } catch (_e) {
+          return `// language server unavailable for ${uri.toString()}`;
+        }
+      }
+    })
+  );
+
   client.start().catch((err) => {
     vscode.window.showWarningMessage(
       `Polyglot: could not start the language server ('${command} lsp'). ` +
