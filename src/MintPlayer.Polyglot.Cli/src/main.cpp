@@ -1,10 +1,20 @@
+#include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
+#include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
 using namespace mintplayer::polyglot;
@@ -22,12 +32,15 @@ void printUsage() {
         << "  polyglot build <input.pg> [--target <csharp|typescript|python>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>]\n"
+        << "  polyglot lsp\n"
         << "\n"
         << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
         << "  check  Reports parse/type diagnostics without emitting. --json prints a machine-readable\n"
-        << "         array (line/col/severity/message) for editor tooling.\n";
+        << "         array (line/col/severity/message) for editor tooling.\n"
+        << "  lsp    Runs the Language Server over stdio (JSON-RPC): diagnostics, go-to-definition,\n"
+        << "         document symbols, hover. Spawned by the editor extensions; not for interactive use.\n";
 }
 
 // Read an entire file into a string. Returns false if it could not be opened.
@@ -279,6 +292,249 @@ int runFmt(const std::vector<std::string>& args) {
     return 0;
 }
 
+// ============================ LSP server (`polyglot lsp`) — PRD §4.8 ============================
+// A zero-dependency Language Server over the frontend `analyze()` facade. Transport is Content-Length-framed
+// JSON-RPC 2.0 on stdio; the JSON reader lives in Core. We negotiate the `utf-8` position encoding so LSP
+// columns are byte offsets that map to our 1-based line/col with just a ±1 shift (no UTF-16 walk yet).
+
+int hexVal(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// `file:///c%3A/x/y.pg` -> a native path. Percent-decodes and drops the leading slash before a Windows drive.
+std::string uriToPath(const std::string& uri) {
+    std::string u = uri;
+    if (u.rfind("file://", 0) == 0) u = u.substr(7);
+    std::string out;
+    for (std::size_t k = 0; k < u.size(); ++k) {
+        if (u[k] == '%' && k + 2 < u.size()) {
+            int hi = hexVal(u[k + 1]), lo = hexVal(u[k + 2]);
+            if (hi >= 0 && lo >= 0) { out += static_cast<char>(hi * 16 + lo); k += 2; continue; }
+        }
+        out += u[k];
+    }
+#ifdef _WIN32
+    if (out.size() >= 3 && out[0] == '/' && out[2] == ':') out.erase(0, 1);
+#endif
+    return out;
+}
+
+std::size_t byteOffset(const std::string& text, int line, int col) {
+    std::size_t off = 0;
+    for (int ln = 1; ln < line && off < text.size(); ++off) if (text[off] == '\n') ++ln;
+    off += static_cast<std::size_t>(col - 1);
+    return off < text.size() ? off : text.size();
+}
+bool identPart(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+// Map our SymbolKind -> the LSP SymbolKind enum (numeric).
+int lspSymbolKind(SymbolKind k) {
+    switch (k) {
+        case SymbolKind::Function:  return 12; // Function
+        case SymbolKind::Type:      return 5;  // Class
+        case SymbolKind::Method:    return 6;  // Method
+        case SymbolKind::Field:     return 8;  // Field
+        case SymbolKind::Value:     return 14; // Constant
+        case SymbolKind::UnionCase:
+        case SymbolKind::EnumCase:  return 22; // EnumMember
+        default:                    return 13; // Variable
+    }
+}
+
+// Read one Content-Length-framed message body from stdin. False on EOF.
+bool lspRead(std::string& body) {
+    std::size_t len = 0;
+    std::string line;
+    int c;
+    for (;;) {
+        line.clear();
+        while ((c = std::getchar()) != EOF && c != '\n') if (c != '\r') line += static_cast<char>(c);
+        if (c == EOF && line.empty()) return false;
+        if (line.empty()) break; // blank line ends the headers
+        static const char* kCL = "Content-Length:";
+        if (line.rfind(kCL, 0) == 0) len = std::strtoul(line.c_str() + std::strlen(kCL), nullptr, 10);
+    }
+    body.assign(len, '\0');
+    std::size_t got = 0;
+    while (got < len) { std::size_t n = std::fread(&body[got], 1, len - got, stdin); if (!n) break; got += n; }
+    body.resize(got);
+    return true;
+}
+void lspSend(const std::string& body) {
+    std::string h = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+    std::fwrite(h.data(), 1, h.size(), stdout);
+    std::fwrite(body.data(), 1, body.size(), stdout);
+    std::fflush(stdout);
+}
+
+struct LspServer {
+    std::map<std::string, std::string> text_;    // uri -> current source (Full-sync buffer)
+    std::map<std::string, SemanticModel> model_; // uri -> latest analyzed model
+    std::string root_;
+    std::string lib_ = "io,math";
+
+    // A range from 1-based (line,col) positions, emitted as 0-based LSP positions (utf-8 = byte columns).
+    static std::string rangeJson(int sl, int sc, int el, int ec) {
+        return "{\"start\":{\"line\":" + std::to_string(sl - 1) + ",\"character\":" + std::to_string(sc - 1) +
+               "},\"end\":{\"line\":" + std::to_string(el - 1) + ",\"character\":" + std::to_string(ec - 1) + "}}";
+    }
+
+    LibConfig libConfig() const {
+        LibConfig lib;
+        for (std::size_t b = 0, e; b <= lib_.size(); b = e + 1) {
+            e = lib_.find(',', b);
+            if (e == std::string::npos) e = lib_.size();
+            std::string n = lib_.substr(b, e - b);
+            if (!n.empty()) lib.libs.push_back(n);
+        }
+        return lib;
+    }
+
+    void analyzeDoc(const std::string& uri) {
+        fs::path p(uriToPath(uri));
+        fs::path entryDir = p.has_parent_path() ? p.parent_path() : fs::path(".");
+        fs::path root = root_.empty() ? entryDir : fs::path(root_);
+        FileModuleResolver resolver(root, entryDir);
+        AnalysisResult a = analyze(text_[uri], &resolver, libConfig());
+        model_[uri] = std::move(a.model);
+        publishDiagnostics(uri, a.diagnostics);
+    }
+
+    void publishDiagnostics(const std::string& uri, const std::vector<Diagnostic>& diags) {
+        const std::string& text = text_.count(uri) ? text_[uri] : uri; // uri unused when text absent
+        std::string arr;
+        for (std::size_t i = 0; i < diags.size(); ++i) {
+            const auto& d = diags[i];
+            int sl = d.pos.line, sc = d.pos.col, el = d.end.line, ec = d.end.col;
+            if (el == sl && ec == sc) { // widen a point to the identifier at that spot (else a 1-char range)
+                std::size_t off = byteOffset(text, sl, sc), end = off;
+                while (end < text.size() && identPart(text[end])) ++end;
+                ec = sc + static_cast<int>(end - off);
+                if (ec == sc) ec = sc + 1;
+            }
+            int sev = d.severity == Severity::Warning ? 2 : d.severity == Severity::Info ? 3
+                    : d.severity == Severity::Hint ? 4 : 1;
+            if (i) arr += ",";
+            arr += "{\"range\":" + rangeJson(sl, sc, el, ec) + ",\"severity\":" + std::to_string(sev) +
+                   ",\"source\":\"polyglot\",\"message\":" + json::quote(d.message) + "}";
+        }
+        lspSend("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":" +
+                json::quote(uri) + ",\"diagnostics\":[" + arr + "]}}");
+    }
+
+    const SemanticModel* modelFor(const json::Value& params, int& line, int& col, std::string& uri) {
+        uri = params["textDocument"]["uri"].asString();
+        line = static_cast<int>(params["position"]["line"].asInt()) + 1;
+        col = static_cast<int>(params["position"]["character"].asInt()) + 1;
+        auto it = model_.find(uri);
+        return it == model_.end() ? nullptr : &it->second;
+    }
+
+    std::string definition(const json::Value& params) {
+        int line, col; std::string uri;
+        const SemanticModel* m = modelFor(params, line, col, uri);
+        if (!m) return "null";
+        const SymbolDef* d = m->definitionAt(line, col);
+        if (!d) return "null";
+        int sl = d->nameSpan.start.line, sc = d->nameSpan.start.col;
+        return "{\"uri\":" + json::quote(uri) + ",\"range\":" + rangeJson(sl, sc, sl, sc + d->nameSpan.length) + "}";
+    }
+
+    std::string hover(const json::Value& params) {
+        int line, col; std::string uri;
+        const SemanticModel* m = modelFor(params, line, col, uri);
+        if (!m) return "null";
+        const SymbolDef* d = m->definitionAt(line, col);
+        if (!d) return "null";
+        static const char* kindNames[] = {"fn", "type", "value", "param", "let", "field", "method", "case", "case"};
+        std::string sig = std::string(kindNames[static_cast<int>(d->kind)]) + " " + d->name;
+        if (!d->type.name.empty()) sig += ": " + d->type.name;
+        std::string md = "```polyglot\n" + sig + "\n```";
+        return "{\"contents\":{\"kind\":\"markdown\",\"value\":" + json::quote(md) + "}}";
+    }
+
+    std::string documentSymbol(const json::Value& params) {
+        std::string uri = params["textDocument"]["uri"].asString();
+        auto it = model_.find(uri);
+        if (it == model_.end()) return "[]";
+        std::string arr;
+        bool first = true;
+        for (const SymbolDef* s : it->second.documentSymbols()) {
+            int sl = s->nameSpan.start.line, sc = s->nameSpan.start.col;
+            std::string r = rangeJson(sl, sc, sl, sc + s->nameSpan.length);
+            if (!first) arr += ",";
+            first = false;
+            arr += "{\"name\":" + json::quote(s->name) + ",\"kind\":" + std::to_string(lspSymbolKind(s->kind)) +
+                   ",\"range\":" + r + ",\"selectionRange\":" + r + "}";
+        }
+        return "[" + arr + "]";
+    }
+};
+
+void lspReply(const json::Value& id, const std::string& resultJson) {
+    std::string idStr = id.kind == json::Value::Kind::String ? json::quote(id.asString())
+                      : id.kind == json::Value::Kind::Number ? id.str
+                      : "null";
+    lspSend("{\"jsonrpc\":\"2.0\",\"id\":" + idStr + ",\"result\":" + resultJson + "}");
+}
+
+int runLsp(const std::vector<std::string>&) {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    LspServer srv;
+    std::string body;
+    while (lspRead(body)) {
+        json::Value msg = json::parse(body);
+        const std::string& method = msg["method"].asString();
+        const json::Value& id = msg["id"];
+        const json::Value& params = msg["params"];
+
+        if (method == "initialize") {
+            std::string root = uriToPath(params["rootUri"].asString());
+            if (root.empty()) root = params["rootPath"].asString();
+            const json::Value& opts = params["initializationOptions"];
+            if (opts["root"].kind == json::Value::Kind::String) root = opts["root"].asString();
+            if (opts["lib"].kind == json::Value::Kind::String) srv.lib_ = opts["lib"].asString();
+            srv.root_ = root;
+            lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"utf-8\",\"textDocumentSync\":1,"
+                         "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true},"
+                         "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"0.0.1\"}}");
+        } else if (method == "shutdown") {
+            lspReply(id, "null");
+        } else if (method == "exit") {
+            break;
+        } else if (method == "textDocument/didOpen") {
+            std::string uri = params["textDocument"]["uri"].asString();
+            srv.text_[uri] = params["textDocument"]["text"].asString();
+            srv.analyzeDoc(uri);
+        } else if (method == "textDocument/didChange") {
+            std::string uri = params["textDocument"]["uri"].asString();
+            const auto& changes = params["contentChanges"].items();
+            if (!changes.empty()) srv.text_[uri] = changes.back()["text"].asString(); // Full sync
+            srv.analyzeDoc(uri);
+        } else if (method == "textDocument/didClose") {
+            std::string uri = params["textDocument"]["uri"].asString();
+            srv.text_.erase(uri);
+            srv.model_.erase(uri);
+            srv.publishDiagnostics(uri, {}); // clear squiggles for a closed file
+        } else if (method == "textDocument/definition") {
+            lspReply(id, srv.definition(params));
+        } else if (method == "textDocument/documentSymbol") {
+            lspReply(id, srv.documentSymbol(params));
+        } else if (method == "textDocument/hover") {
+            lspReply(id, srv.hover(params));
+        } else if (!id.isNull()) {
+            lspReply(id, "null"); // unknown request — answer so the client doesn't hang
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -300,6 +556,9 @@ int main(int argc, char** argv) {
     }
     if (args[0] == "check") {
         return runCheck(args);
+    }
+    if (args[0] == "lsp") {
+        return runLsp(args);
     }
 
     std::cerr << "polyglot: unknown command '" << args[0] << "'\n\n";

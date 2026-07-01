@@ -6,6 +6,7 @@
 #include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/ir.hpp"
+#include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
@@ -573,6 +574,22 @@ int main() {
         const SymbolDef* m = a.model.definitionAt(6, 11);
         check(m && m->name == "tick" && m->kind == SymbolKind::Method && m->nameSpan.start.line == 2,
               "P16 step2: go-to-def on a method call resolves to the method");
+    }
+
+    // P16 step 3 — the hand-written JSON reader that backs the language server's request parsing.
+    {
+        json::Value v = json::parse(R"({"a":1,"b":"hi\nA","c":[true,false,null],"d":{"e":3.5}})");
+        check(v.kind == json::Value::Kind::Object, "json: parses an object");
+        check(v["a"].asInt() == 1, "json: integer member");
+        check(v["b"].asString() == "hi\nA", "json: string escapes + \\uXXXX");
+        check(v["c"].items().size() == 3 && v["c"].items()[0].asBool(), "json: array + bool");
+        check(v["c"].items()[2].isNull(), "json: null element");
+        check(v["d"]["e"].asNumber() == 3.5, "json: nested object + number");
+        check(v["missing"].isNull(), "json: absent member returns the Null sentinel");
+        // a \uXXXX surrogate pair decodes to one code point (U+1F600 = the UTF-8 bytes F0 9F 98 80)
+        check(json::parse(R"("😀")").asString() == "\xF0\x9F\x98\x80", "json: multibyte UTF-8 passes through");
+        check(json::parse("\"\\uD83D\\uDE00\"").asString() == "\xF0\x9F\x98\x80", "json: \\u surrogate pair -> UTF-8");
+        check(json::quote("a\"b\\c") == "\"a\\\"b\\\\c\"", "json: quote escapes \" and backslash");
     }
 
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.

@@ -85,6 +85,7 @@
     <ClCompile Include="src\lower.cpp" />
     <ClCompile Include="src\backend.cpp" />
     <ClCompile Include="src\capability.cpp" />
+    <ClCompile Include="src\json.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
