@@ -617,6 +617,21 @@ int main() {
               "P16c: the entry file's own symbols are file-local (fileId 1)");
     }
 
+    // P16c — find-references: symbolAt + referencesTo find every use of a symbol.
+    {
+        const char* prog =
+            "fn twice(x: i32): i32 => x + x\n"    // line 1
+            "fn main() {\n"                        // line 2
+            "  let n = twice(2)\n"                 // line 3: `twice` call at col 11, `n` decl at col 7
+            "  print(twice(n))\n"                  // line 4: `twice` call at col 9, `n` use at col 15
+            "}\n";
+        AnalysisResult a = analyze(prog, nullptr, LibConfig{{"io", "math"}}, "m.pg");
+        int fn = a.model.symbolAt(3, 11);
+        check(fn >= 0 && a.model.referencesTo(fn).size() == 2, "P16c refs: both calls to a function are found");
+        int local = a.model.symbolAt(3, 7); // clicking the `n` declaration resolves to the same symbol
+        check(local >= 0 && a.model.referencesTo(local).size() == 1, "P16c refs: the local's single use is found");
+    }
+
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
         const char* prog =

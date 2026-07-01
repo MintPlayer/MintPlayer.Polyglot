@@ -60,6 +60,24 @@ struct SemanticModel {
         return nullptr;
     }
 
+    // The definition index of the symbol at (line, col) — via a reference covering it, or its own name;
+    // -1 if none. The shared entry point for references/rename (definitionAt returns the def; this the index).
+    int symbolAt(int line, int col) const {
+        for (const auto& r : refs)
+            if (r.def >= 0 && r.span.covers(line, col)) return r.def;
+        for (std::size_t i = 0; i < defs.size(); ++i)
+            if (!defs[i].external && defs[i].nameSpan.covers(line, col)) return static_cast<int>(i);
+        return -1;
+    }
+
+    // Every reference-use span resolving to definition index `d` (in this file; the model records only the
+    // edited file's references). Callers add the declaration's own span separately when wanted.
+    std::vector<Span> referencesTo(int d) const {
+        std::vector<Span> out;
+        for (const auto& r : refs) if (r.def == d) out.push_back(r.span);
+        return out;
+    }
+
     // File-local top-level/member definitions, for `textDocument/documentSymbol` (locals + parameters are
     // excluded — they aren't document-scope symbols).
     std::vector<const SymbolDef*> documentSymbols() const {

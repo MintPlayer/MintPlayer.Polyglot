@@ -486,26 +486,75 @@ struct LspServer {
         return it == model_.end() ? nullptr : &it->second;
     }
 
+    // The URI a definition's fileId lives in: fileId 1 = the entry (the request doc); a higher id is another
+    // resolved module, mapped through the SourceMap to a file:// URI. Returns "" for embedded std / unknown
+    // (no on-disk file) — those aren't navigable as files (std click-through is served virtually elsewhere).
+    std::string uriForFileId(const std::string& requestUri, int fid) {
+        if (fid == 1) return requestUri;
+        auto sit = sources_.find(requestUri);
+        if (sit == sources_.end()) return "";
+        const std::string& canon = sit->second.canon(fid);
+        if (canon.empty() || !fs::path(canon).is_absolute()) return "";
+        return pathToUri(canon);
+    }
+
     std::string definition(const json::Value& params) {
         int line, col; std::string uri;
         const SemanticModel* m = modelFor(params, line, col, uri);
         if (!m) return "null";
         const SymbolDef* d = m->definitionAt(line, col);
         if (!d) return "null";
-        // Resolve which file the definition lives in. fileId 1 = the entry (this doc); a higher id is another
-        // module — map it through the SourceMap to a file:// URI. Embedded std (no on-disk file) isn't
-        // navigable yet, so return null there rather than a bogus location.
-        std::string targetUri = uri;
-        int fid = d->nameSpan.start.fileId;
-        if (fid != 1) {
-            auto sit = sources_.find(uri);
-            if (sit == sources_.end()) return "null";
-            const std::string& canon = sit->second.canon(fid);
-            if (canon.empty() || !fs::path(canon).is_absolute()) return "null";
-            targetUri = pathToUri(canon);
-        }
+        std::string targetUri = uriForFileId(uri, d->nameSpan.start.fileId);
+        if (targetUri.empty()) return "null";
         int sl = d->nameSpan.start.line, sc = d->nameSpan.start.col;
         return "{\"uri\":" + json::quote(targetUri) + ",\"range\":" + rangeJson(sl, sc, sl, sc + d->nameSpan.length) + "}";
+    }
+
+    std::string references(const json::Value& params) {
+        int line, col; std::string uri;
+        const SemanticModel* m = modelFor(params, line, col, uri);
+        if (!m) return "[]";
+        int d = m->symbolAt(line, col);
+        if (d < 0) return "[]";
+        bool incDecl = params["context"]["includeDeclaration"].asBool(true);
+        std::string arr;
+        bool first = true;
+        auto emit = [&](const std::string& u, int sl, int sc, int len) {
+            if (u.empty()) return;
+            if (!first) arr += ",";
+            first = false;
+            arr += "{\"uri\":" + json::quote(u) + ",\"range\":" + rangeJson(sl, sc, sl, sc + len) + "}";
+        };
+        for (const Span& s : m->referencesTo(d)) emit(uri, s.start.line, s.start.col, s.length); // uses (this file)
+        if (incDecl) { // the declaration (its own file)
+            const SymbolDef& def = m->defs[static_cast<std::size_t>(d)];
+            emit(uriForFileId(uri, def.nameSpan.start.fileId), def.nameSpan.start.line, def.nameSpan.start.col,
+                 def.nameSpan.length);
+        }
+        return "[" + arr + "]";
+    }
+
+    std::string rename(const json::Value& params) {
+        int line, col; std::string uri;
+        const SemanticModel* m = modelFor(params, line, col, uri);
+        if (!m) return "null";
+        int d = m->symbolAt(line, col);
+        if (d < 0) return "null";
+        const SymbolDef& def = m->defs[static_cast<std::size_t>(d)];
+        // Only file-local symbols: the declaration and all recorded uses are in this file, so one atomic
+        // single-file edit. A symbol defined in another module would need edits across files we don't index.
+        if (def.external || def.nameSpan.start.fileId != 1) return "null";
+        std::string newName = params["newName"].asString();
+        std::string edits;
+        bool first = true;
+        auto edit = [&](int sl, int sc, int len) {
+            if (!first) edits += ",";
+            first = false;
+            edits += "{\"range\":" + rangeJson(sl, sc, sl, sc + len) + ",\"newText\":" + json::quote(newName) + "}";
+        };
+        edit(def.nameSpan.start.line, def.nameSpan.start.col, def.nameSpan.length);
+        for (const Span& s : m->referencesTo(d)) edit(s.start.line, s.start.col, s.length);
+        return "{\"changes\":{" + json::quote(uri) + ":[" + edits + "]}}";
     }
 
     std::string hover(const json::Value& params) {
@@ -627,7 +676,7 @@ int runLsp(const std::vector<std::string>&) {
             std::string enc = utf8 ? "utf-8" : "utf-16";
             lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"" + enc + "\",\"textDocumentSync\":1,"
                          "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true,"
-                         "\"documentFormattingProvider\":true,"
+                         "\"documentFormattingProvider\":true,\"referencesProvider\":true,\"renameProvider\":true,"
                          "\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"type\","
                          "\"method\",\"property\",\"variable\",\"parameter\",\"enumMember\"],"
                          "\"tokenModifiers\":[\"declaration\"]},\"full\":true}},"
@@ -658,6 +707,10 @@ int runLsp(const std::vector<std::string>&) {
             lspReply(id, srv.formatting(params));
         } else if (method == "textDocument/semanticTokens/full") {
             lspReply(id, srv.semanticTokens(params));
+        } else if (method == "textDocument/references") {
+            lspReply(id, srv.references(params));
+        } else if (method == "textDocument/rename") {
+            lspReply(id, srv.rename(params));
         } else if (method == "textDocument/hover") {
             lspReply(id, srv.hover(params));
         } else if (!id.isNull()) {

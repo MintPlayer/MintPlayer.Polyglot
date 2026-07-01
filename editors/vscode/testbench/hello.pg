@@ -5,7 +5,7 @@ record Point(x: f64, y: f64)
 fn distanceSquared(a: Point, b: Point): f64 {
     let dx = a.x - b.x
     let dy = a.y - b.y
-    let n: i32 = "oops"
+    let n: string = "oops"
     return dx * dx + dy * dy
 }
 
