@@ -234,12 +234,22 @@ int runCheck(const std::vector<std::string>& args) {
     EmitResult result = compile(source, Target::CSharp, &resolver, lib);
 
     if (json) {
+        auto severityName = [](Severity s) {
+            switch (s) {
+                case Severity::Warning: return "warning";
+                case Severity::Info:    return "info";
+                case Severity::Hint:    return "hint";
+                default:                return "error";
+            }
+        };
         std::cout << "[";
         for (std::size_t i = 0; i < result.diagnostics.size(); ++i) {
             const auto& d = result.diagnostics[i];
             if (i) std::cout << ",";
             std::cout << "{\"line\":" << d.pos.line << ",\"col\":" << d.pos.col
-                      << ",\"severity\":\"error\",\"message\":\"" << jsonEscape(d.message) << "\"}";
+                      << ",\"endLine\":" << d.end.line << ",\"endCol\":" << d.end.col
+                      << ",\"severity\":\"" << severityName(d.severity) << "\""
+                      << ",\"message\":\"" << jsonEscape(d.message) << "\"}";
         }
         std::cout << "]\n";
     } else {
