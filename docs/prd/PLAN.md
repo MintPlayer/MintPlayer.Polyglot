@@ -700,8 +700,30 @@ grammar; required finishing name-token positions (`namePos` on all type/member/v
     bare-callable symbols, context-insensitive). *Deferred:* member completion (`obj.`, needs receiver type)
     and in-scope-only local filtering.
 
-**P16d — Visual Studio LSP client.** An `ILanguageClient` VSIX pointing at `polyglot lsp` (after the VS Code
-client proves the server); target the VS-2026/v145 SDK generation.
+**P16d — Visual Studio LSP client — ⬜ not started (the last P16 piece).** An `ILanguageClient` VSIX pointing at
+`polyglot lsp` + a coloring VSIX bundling `editors/vscode/syntaxes/polyglot.tmLanguage.json`; target the
+VS-2026/v145 SDK generation.
+
+**As-built notes (deltas from the plan above — 2026-07-01):**
+- **VS Code client uses NO bundler.** The plan said esbuild; in practice the extension stays plain CommonJS
+  (`main: ./extension.js`) with a single runtime dep (`vscode-languageclient`). F5's `prepare-extension`
+  preLaunchTask runs `build-cli` (VS 18 MSBuild) + `npm install` in `editors/vscode`. `node_modules` is gitignored.
+- **The buffer-aware `ModuleResolver` was deferred.** The LSP analyzes the open buffer as the *entry* file but
+  resolves its imports from **disk** (`FileModuleResolver`). So an unsaved edit in an imported file isn't seen
+  by a dependent file until saved. Fine for v1; the buffer-aware wrapper is the follow-up for live cross-file editing.
+- **Position encoding is negotiated:** the server advertises `utf-8` only if the client offered it in
+  `capabilities.general.positionEncodings`, else falls back to `utf-16` (correct for ASCII either way; the
+  UTF-8↔UTF-16 column walk for non-ASCII lines is still a follow-up).
+- **The CLI statically links the CRT** (`/MTd`,`/MT` across Core/Cli/Tests) so it depends only on `KERNEL32.dll`
+  — required for VS Code to spawn it (its extension host lacks the CRT DLLs on PATH) and load-bearing for the P11
+  NuGet (runs on a consumer machine with no CRT prereqs). See PRD §4.3.
+- **Implemented LSP capabilities:** `publishDiagnostics` (live on-type, point ranges widened to the identifier),
+  `definition` (same-file + cross-module + std virtual docs), `hover`, `documentSymbol`, `semanticTokens/full`,
+  `documentFormatting`, `references`, `rename` (file-local only), `completion` (bare names + keywords), and the
+  custom `polyglot/moduleSource` for std virtual documents.
+- **P16 deferred tail (all minor):** member completion (`obj.`), in-scope-only local filtering, semantic tokens
+  inside the read-only std virtual docs, live cross-file edits (buffer-aware resolver), and the non-ASCII
+  position walk. Plus **P16d** (Visual Studio) above.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

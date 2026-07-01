@@ -179,8 +179,19 @@ backends support it; bites only for a future PHP-like target). Conformance #38 `
 `Awaitable<T>` via an `isAsync` bit on sema's `FnSig`/`MemberInfo`; `await` unwraps to `T`) — so sema catches
 forgot-to-await (`return f()`/`print(f())` refuse) and awaited-non-async (`await plain()` refuses), mirroring
 C#/TS. `Awaitable` is never author-written and never emitted. Shared engine unchanged, as designed.
+**P16 ✅ (except the VS client) — editor tooling & the language server** (design: **PRD §4.8**, from a 4-agent
+investigation; slice log: **PLAN §P16**). A shared TextMate grammar (`editors/vscode/syntaxes/`) + a zero-dep
+**`polyglot lsp`** stdio JSON-RPC server built on a new front-end seam **`analyze()`** (returns the checked AST +
+a position-indexed **`SemanticModel`** + a `SourceMap`, without lowering/emitting) and a sema-hook that records
+defs/refs. Capabilities: diagnostics (live on-type), go-to-def (same-file + **cross-module** via `SourcePos.fileId`
++ `SourceMap` + `file://`, and **std** via `polyglot:<name>` virtual docs the server serves), hover, document
+symbols, semantic tokens, formatting, references, rename (file-local), completion. The **VS Code extension** is a
+thin `vscode-languageclient` client (plain JS, no bundler; F5 via repo-root `.vscode` → build CLI + `npm install`).
+A minimal **`pgconfig.json`** (`{root,lib}`, CLI/LSP layer, core stays IO-free) drives module resolution. The CLI
+now **statically links the CRT** (self-contained — see PRD §4.3). Not built: **P16d** the Visual Studio client;
+deferred tail: member completion, in-scope local filtering, live cross-file edits, non-ASCII position walk.
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
-(build-integration NuGet, independent).
+(build-integration NuGet, independent), **P16d** (Visual Studio LSP client).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

@@ -207,6 +207,10 @@ from-scratch, zero-native-deps spirit of the sibling repos; the same path Haxe/N
   shipped inside a NuGet package's `build/` targets and run during `dotnet build` to transpile `.pg` → `.cs`
   with **no extra SDK/runtime** for the consumer — the `Grpc.Tools` pattern, where a native compiler runs at
   build to feed `@(Compile)`. A managed/Roslyn host couldn't be embedded as cleanly. See PLAN P11.
+- **Static CRT (2026-07-01):** the projects link the runtime statically (`/MTd`,`/MT`), so the CLI depends only
+  on `KERNEL32.dll` — no MSVC/UCRT DLLs. This is what "self-contained" means in practice: it spawns under
+  VS Code's extension host (which lacks the debug CRT on PATH — the bug that surfaced this) and will run on a
+  P11 consumer machine with no prerequisites.
 
 ### 4.4 Standard library & platform APIs — the bounded strategy
 The investigation's headline cost. Polyglot bounds it deliberately:
