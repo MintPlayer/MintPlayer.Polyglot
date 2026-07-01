@@ -228,11 +228,14 @@ const FnSig* resolveOverload(const std::vector<FnSig>& set, const std::vector<Ty
 struct Local {
     TypeRef type;
     bool isMutable;
+    int defId = -1;  // index into the SemanticModel's defs when indexing is on (§4.8); -1 otherwise
 };
 
 class Checker {
 public:
     Checker(DiagnosticBag& diags) : diags_(diags) {}
+    Checker(DiagnosticBag& diags, SemanticModel* model, const SemanticRequest* req)
+        : diags_(diags), model_(model), req_(req) {}
 
     void run(CompilationUnit& unit) {
         collectTypeNames(unit);
@@ -241,7 +244,18 @@ public:
         buildTables(unit);
         resolveAllTypes(unit);
 
-        for (auto& fn : unit.functions) {
+        // Pre-register file-local function definitions so a call from any user body resolves to one (the
+        // linker appends merged std/import decls, so indices [0, userFunctions) are the entry file's own).
+        if (model_ && req_)
+            for (std::size_t i = 0; i < unit.functions.size() && i < req_->userFunctions; ++i) {
+                const auto& fn = unit.functions[i];
+                int id = recordDef(SymbolKind::Function, fn.name, fn.namePos, fn.returnType);
+                fnDefId_.emplace(fn.name, id); // first decl of a name wins (overload precision is a follow-up)
+            }
+
+        for (std::size_t i = 0; i < unit.functions.size(); ++i) {
+            auto& fn = unit.functions[i];
+            recordModel_ = model_ && req_ && i < req_->userFunctions; // index the entry file's own bodies only
             currentReturn_ = fn.returnType;
             currentThis_ = tUnknown();
             inActual_ = !fn.actualTarget.empty(); // only an `actual` body is a target-gated region (§4.4)
@@ -254,6 +268,7 @@ public:
             popGenerics(fn.generics);
             inActual_ = false;
             inAsync_ = false;
+            recordModel_ = false;
         }
         for (auto& d : unit.records) checkTypeBody(d.name, d.generics, d.members, &d.fields);
         for (auto& d : unit.classes) checkTypeBody(d.name, d.generics, d.members, nullptr);
@@ -297,13 +312,35 @@ private:
     bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
     bool inAsync_ = false;  // checking an `async fn`/method body — the only place `await` is allowed (§4.7)
 
+    // ---- semantic model (LSP; §4.8). Populated only when model_ != nullptr, and only for file-local symbols.
+    SemanticModel* model_ = nullptr;
+    const SemanticRequest* req_ = nullptr;
+    bool recordModel_ = false;                       // true only while checking a file-local (user) decl body
+    std::unordered_map<std::string, int> fnDefId_;   // user function name -> its SymbolDef index (for call refs)
+
+    int recordDef(SymbolKind kind, const std::string& name, SourcePos namePos, const TypeRef& type) {
+        if (!model_) return -1;
+        SymbolDef d;
+        d.kind = kind;
+        d.name = name;
+        d.nameSpan = {namePos, static_cast<int>(name.size())};
+        d.type = type;
+        model_->defs.push_back(std::move(d));
+        return static_cast<int>(model_->defs.size()) - 1;
+    }
+    void recordRef(SourcePos pos, const std::string& name, int defId) {
+        if (!model_ || !recordModel_ || defId < 0) return;
+        model_->refs.push_back({{pos, static_cast<int>(name.size())}, defId});
+    }
+
     // ---- scopes ----
     void pushScope() { scopes_.emplace_back(); }
     void popScope() { scopes_.pop_back(); }
     void declare(const std::string& name, TypeRef type, bool isMutable, SourcePos pos) {
         auto& top = scopes_.back();
         if (top.count(name)) diags_.error(pos, "'" + name + "' is already declared in this scope");
-        top[name] = {std::move(type), isMutable};
+        int defId = recordModel_ ? recordDef(SymbolKind::Local, name, pos, type) : -1;
+        top[name] = {std::move(type), isMutable, defId};
     }
     const Local* lookup(const std::string& name) const {
         for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
@@ -908,7 +945,7 @@ private:
     }
 
     TypeRef checkName(Expr& e) {
-        if (const Local* l = lookup(e.text)) return l->type;
+        if (const Local* l = lookup(e.text)) { recordRef(e.pos, e.text, l->defId); return l->type; }
         auto v = values_.find(e.text); if (v != values_.end()) return v->second;
         auto uc = unionCtors_.find(e.text); if (uc != unionCtors_.end() && uc->second.params.empty()) return uc->second.result;
         if (const MemberInfo* m = enclosingStatic(e.text)) { e.staticOwner = currentClass_; return m->type; }
@@ -1166,6 +1203,7 @@ private:
                 diags_.error(e.pos, std::string("print cannot print a value of type ") + tyName(a));
         }
         if (const Local* l = lookup(name)) { // calling a function-valued local (lambda/delegate); lenient on args
+            recordRef(e.lhs->pos, name, l->defId);
             return l->type.kind == TypeRef::Kind::Function && !l->type.ret.empty() ? l->type.ret[0] : tUnknown();
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
@@ -1178,6 +1216,7 @@ private:
             return inferResult(uc->second.generics, uc->second.params, argTypes, uc->second.result); // Some(5) -> Option<i32>
         }
         if (auto f = fns_.find(name); f != fns_.end()) {
+            if (auto it = fnDefId_.find(name); it != fnDefId_.end()) recordRef(e.lhs->pos, name, it->second);
             const FnSig* chosen = resolveOverload(f->second, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
             checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
@@ -1267,8 +1306,8 @@ private:
 
 } // namespace
 
-void check(CompilationUnit& unit, DiagnosticBag& diags) {
-    Checker checker(diags);
+void check(CompilationUnit& unit, DiagnosticBag& diags, SemanticModel* model, const SemanticRequest* req) {
+    Checker checker(diags, model, req);
     checker.run(unit);
 }
 

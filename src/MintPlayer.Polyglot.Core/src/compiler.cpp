@@ -402,6 +402,19 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
 
 } // namespace
 
+// Link the core prelude + imported + lib modules into a parsed `unit`, then type-check it — the shared
+// front end behind both `compile()` (which then lowers/emits) and `analyze()` (which returns the checked
+// AST for tooling). Bails between passes on the first error. `model`/`req` are forwarded to `check` so the
+// LSP path can request a semantic model; `compile` passes nullptr and pays nothing.
+bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfig& lib, DiagnosticBag& diags,
+                 SemanticModel* model, const SemanticRequest* req) {
+    linkCoreModule(unit, diags);                 if (diags.hasErrors()) return false; // Error/Iterable (no import)
+    linkModules(unit, resolver, diags);          if (diags.hasErrors()) return false; // imported std + user modules
+    linkLibModules(unit, lib, resolver, diags);  if (diags.hasErrors()) return false; // ambient prelude
+    check(unit, diags, model, req);
+    return !diags.hasErrors();
+}
+
 EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver, const LibConfig& lib) {
     EmitResult result;
     DiagnosticBag diags;
@@ -412,17 +425,7 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
     CompilationUnit unit = parse(tokens, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    linkCoreModule(unit, diags); // always-on core prelude: Error/Iterable (no import needed)
-    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
-
-    linkModules(unit, resolver, diags); // pull in imported std + user modules (transitively) before checking
-    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
-
-    linkLibModules(unit, lib, resolver, diags); // auto-import the prelude (ambient; loses to user/explicit)
-    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
-
-    check(unit, diags);
-    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
+    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr)) { result.diagnostics = diags.items(); return result; }
 
     const char* targetName = target == Target::CSharp ? "csharp"
                            : target == Target::TypeScript ? "typescript"
@@ -450,6 +453,34 @@ EmitResult format(const std::string& source) {
 
     result.code = printSource(unit);
     result.ok = true;
+    return result;
+}
+
+AnalysisResult analyze(const std::string& source, ModuleResolver* resolver, const LibConfig& lib) {
+    AnalysisResult result;
+    DiagnosticBag diags;
+
+    std::vector<Token> tokens = lex(source, diags);
+    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
+
+    CompilationUnit unit = parse(tokens, diags);
+    if (diags.hasErrors()) { result.diagnostics = diags.items(); result.unit = std::move(unit); return result; }
+
+    // The entry file's own decls occupy indices [0, count) in each vector; the front end APPENDS merged
+    // std/import/lib decls after them, so this boundary tells the semantic model which symbols are file-local.
+    SemanticRequest req;
+    req.userFunctions  = unit.functions.size();
+    req.userRecords    = unit.records.size();
+    req.userClasses    = unit.classes.size();
+    req.userInterfaces = unit.interfaces.size();
+    req.userEnums      = unit.enums.size();
+    req.userUnions     = unit.unions.size();
+    req.userExtensions = unit.extensions.size();
+    req.userValues     = unit.values.size();
+
+    runFrontEnd(unit, resolver, lib, diags, &result.model, &req); // build the model even if check reports errors
+    result.diagnostics = diags.items();
+    result.unit = std::move(unit);
     return result;
 }
 

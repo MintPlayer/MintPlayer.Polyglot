@@ -12,6 +12,8 @@ namespace mintplayer::polyglot {
 struct SourcePos {
     int line = 1;
     int col = 1;
+    int fileId = 0;   // index into the compilation's source-file table (0 = the primary/only file). Rides by
+                      // value through every token/AST/IR position, so multi-file positions cost no plumbing (§4.8).
 };
 
 struct Diagnostic {

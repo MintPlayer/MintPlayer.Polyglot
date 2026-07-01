@@ -472,7 +472,9 @@ private:
         FunctionDecl fn;
         fn.pos = peek().pos;
         expect(TokKind::KwFn, "'fn'");
-        fn.name = expect(TokKind::Identifier, "a function name").text;
+        Token nameTok = expect(TokKind::Identifier, "a function name");
+        fn.name = nameTok.text;
+        fn.namePos = nameTok.pos;
         fn.generics = parseGenericParams();
         expect(TokKind::LParen, "'('");
         fn.params = parseParamList();

@@ -484,6 +484,47 @@ int main() {
                      "not awaitable", "P15 Awaitable: awaiting a non-async call is refused");
     }
 
+    // P16a — the position-indexed semantic model (LSP foundation, §4.8). `analyze()` returns a SemanticModel;
+    // `definitionAt` maps a use site to its definition; `documentSymbols` lists file-local declarations.
+    {
+        const char* prog =
+            "fn add(a: i32, b: i32): i32 => a + b\n"   // line 1
+            "fn main() {\n"                            // line 2
+            "  let x = add(1, 2)\n"                     // line 3: `add` call callee at col 11
+            "  print(x)\n"                              // line 4: `x` use at col 9
+            "}\n";
+        AnalysisResult a = analyze(prog, nullptr, LibConfig{{"io", "math"}});
+        check(a.diagnostics.empty(), "P16a: a clean program analyzes with no diagnostics");
+
+        // go-to-def on the `add` call (line 3) resolves to the `fn add` definition on line 1.
+        const SymbolDef* d = a.model.definitionAt(3, 11);
+        check(d && d->name == "add" && d->kind == SymbolKind::Function && d->nameSpan.start.line == 1,
+              "P16a: go-to-def on a function call resolves to its definition");
+
+        // go-to-def on the `x` use (line 4) resolves to the local `let x` on line 3.
+        const SymbolDef* lx = a.model.definitionAt(4, 9);
+        check(lx && lx->name == "x" && lx->kind == SymbolKind::Local && lx->nameSpan.start.line == 3,
+              "P16a: go-to-def on a local use resolves to its declaration");
+
+        // a position with nothing resolvable returns nullptr (not a crash / false hit).
+        check(a.model.definitionAt(2, 1) == nullptr, "P16a: definitionAt on a keyword returns nothing");
+
+        // documentSymbols lists the file's functions, not its locals/parameters.
+        bool hasAdd = false, hasMain = false, hasLocalOrParam = false;
+        for (const SymbolDef* s : a.model.documentSymbols()) {
+            if (s->name == "add")  hasAdd = true;
+            if (s->name == "main") hasMain = true;
+            if (s->kind == SymbolKind::Local || s->kind == SymbolKind::Parameter) hasLocalOrParam = true;
+        }
+        check(hasAdd && hasMain && !hasLocalOrParam,
+              "P16a: documentSymbols lists functions and excludes locals/params");
+
+        // `print` comes from the ambient lib (external) — it is not offered as a file-local definition.
+        bool hasPrint = false;
+        for (const SymbolDef* s : a.model.documentSymbols()) if (s->name == "print") hasPrint = true;
+        check(!hasPrint, "P16a: an external (lib) symbol is not a file-local document symbol");
+    }
+
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
         const char* prog =

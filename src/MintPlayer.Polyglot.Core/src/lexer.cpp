@@ -35,14 +35,14 @@ const std::unordered_map<std::string, TokKind>& keywords() {
 
 class Cursor {
 public:
-    Cursor(const std::string& src) : src_(src) {}
+    Cursor(const std::string& src, int fileId) : src_(src), fileId_(fileId) {}
 
     bool eof() const { return idx_ >= src_.size(); }
     char peek(std::size_t ahead = 0) const {
         std::size_t i = idx_ + ahead;
         return i < src_.size() ? src_[i] : '\0';
     }
-    SourcePos pos() const { return {line_, col_}; }
+    SourcePos pos() const { return {line_, col_, fileId_}; }
 
     char advance() {
         char c = src_[idx_++];
@@ -55,6 +55,7 @@ private:
     std::size_t idx_ = 0;
     int line_ = 1;
     int col_ = 1;
+    int fileId_ = 0;
 };
 
 // One chunk of a (possibly interpolated) string, scanned after the opening quote or a `${...}` hole.
@@ -114,9 +115,9 @@ std::string scanQuoted(Cursor& cur, char quote, bool& terminated) {
 
 } // namespace
 
-std::vector<Token> lex(const std::string& source, DiagnosticBag& diags) {
+std::vector<Token> lex(const std::string& source, DiagnosticBag& diags, int fileId) {
     std::vector<Token> out;
-    Cursor cur(source);
+    Cursor cur(source, fileId);
     std::vector<int> interpDepth; // brace depth per open interpolation hole; non-empty = inside `${ ... }`
 
     auto push = [&](TokKind kind, std::string text, SourcePos pos) {

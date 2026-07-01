@@ -4,7 +4,9 @@
 #include <string>
 #include <vector>
 
+#include "mintplayer/polyglot/ast.hpp"
 #include "mintplayer/polyglot/diagnostics.hpp"
+#include "mintplayer/polyglot/semantic_model.hpp"
 
 // MintPlayer.Polyglot core library — public surface.
 //
@@ -72,5 +74,18 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
 // Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.
 EmitResult format(const std::string& source);
+
+// The front-end-only result for editor tooling (PRD §4.8): runs lex -> parse -> link -> check and returns
+// the checked AST, its diagnostics, and a position-indexed `SemanticModel` — WITHOUT lowering/emitting.
+// This is what `polyglot lsp` queries for diagnostics, go-to-definition, and document symbols. Diagnostics
+// are returned even when non-empty; the model is populated when the front end reaches `check` (so a file
+// with only type errors still answers go-to-def), and is empty when lexing/parsing/linking fails first.
+struct AnalysisResult {
+    CompilationUnit unit;                  // the checked (merged) AST — move-only
+    std::vector<Diagnostic> diagnostics;
+    SemanticModel model;
+};
+AnalysisResult analyze(const std::string& source, ModuleResolver* resolver = nullptr,
+                       const LibConfig& lib = {});
 
 } // namespace mintplayer::polyglot

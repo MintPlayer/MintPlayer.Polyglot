@@ -168,7 +168,8 @@ struct Stmt {
 struct FunctionDecl {
     std::string name;
     std::string mangledName;       // per-target name for overloads (set by sema); == name when not overloaded
-    SourcePos pos;
+    SourcePos pos;                 // the `fn` keyword
+    SourcePos namePos;             // the function-name identifier (where go-to-definition targets it; §4.8)
     std::vector<GenericParam> generics;
     std::vector<Param> params;
     TypeRef returnType = namedType("unit");
