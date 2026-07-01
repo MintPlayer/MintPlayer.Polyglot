@@ -135,6 +135,7 @@ struct MemberInfo {
     bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
     std::size_t required = 0;     // leading params with no default — the minimum a call must supply
     std::vector<std::string> generics; // the method's own type-param names (for TypeArg inference)
+    std::vector<std::string> numericParams; // subset of `generics` bounded by INumber (must infer to a number)
 };
 struct TypeInfo {
     std::vector<GenericParam> generics;
@@ -150,8 +151,18 @@ struct FnSig {
     std::size_t required = 0;        // leading params with no default
     TypeRef result = namedType("unit");
     std::vector<std::string> generics; // the function's type-param names (for TypeArg inference)
+    std::vector<std::string> numericParams; // subset of `generics` bounded by INumber (must infer to a number)
     TypeRef receiver;                  // extensions only: the declared receiver type (for inference from it)
 };
+
+// The generic-param names bounded by the INumber marker — those whose inferred type argument must be numeric.
+inline std::vector<std::string> numericBounded(const std::vector<GenericParam>& gs) {
+    std::vector<std::string> out;
+    for (const auto& g : gs)
+        for (const auto& b : g.bounds)
+            if (b.kind == TypeRef::Kind::Named && b.name == "INumber") { out.push_back(g.name); break; }
+    return out;
+}
 
 // How many leading parameters a caller MUST supply: the count before the first defaulted one.
 // (Defaults are trailing by convention; a non-defaulted param after a default is a latent error
@@ -371,6 +382,7 @@ private:
         mi.kind = m.kind;
         for (const auto& p : m.params) mi.params.push_back(p.type);
         for (const auto& g : m.generics) mi.generics.push_back(g.name);
+        mi.numericParams = numericBounded(m.generics);
         mi.required = requiredCount(m.params);
         mi.type = (m.kind == MemberKind::Field || m.kind == MemberKind::Const ||
                    m.kind == MemberKind::Property) ? m.type : m.returnType;
@@ -421,6 +433,7 @@ private:
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
             sig.required = requiredCount(fn.params);
             for (const auto& g : fn.generics) sig.generics.push_back(g.name);
+            sig.numericParams = numericBounded(fn.generics);
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
                 if (sameParamList(existing.params, sig.params))
@@ -986,6 +999,28 @@ private:
         return substGeneric(result, gen, binds);
     }
 
+    // INumber enforcement: a generic param bounded by INumber must infer to a numeric type. Reject a
+    // non-numeric type argument (e.g. `Math.max("a", "b")`) at Polyglot compile time rather than deferring to
+    // the target (a C# overload error, or — worse — a silent TS NaN). An uninferred T is left alone (a
+    // separate arity/type diagnostic covers it); so is a still-generic T (calling one generic from another).
+    void checkNumericBounds(const std::vector<std::string>& numericParams, const std::vector<std::string>& generics,
+                            const std::vector<TypeRef>& params, const std::vector<TypeRef>& args,
+                            const std::string& what, SourcePos pos) {
+        if (numericParams.empty()) return;
+        std::unordered_set<std::string> gen(generics.begin(), generics.end());
+        std::unordered_map<std::string, TypeRef> binds;
+        for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) unifyGeneric(gen, params[i], args[i], binds);
+        for (const auto& n : numericParams) {
+            auto it = binds.find(n);
+            if (it == binds.end()) continue;
+            const TypeRef& t = it->second;
+            if (gen.count(t.name)) continue; // still generic (T bound to another type param) — not yet concrete
+            if (t.kind == TypeRef::Kind::Named && !t.name.empty() && !isNumericTypeName(t))
+                diags_.error(pos, what + " requires a numeric argument (type parameter '" + n +
+                                      "' is constrained to INumber), found " + t.name);
+        }
+    }
+
     TypeRef checkMember(Expr& e) {
         // Enum case access: `EnumName.Case`.
         if (e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text)) return tNamed(e.lhs->text);
@@ -1045,7 +1080,9 @@ private:
                 }
                 if (types_.count(typeName)) {
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
-                        checkArgs(m->params, argTypes, e.args, "static method '" + typeName + "." + method + "'", e.pos, m->required);
+                        std::string what = "static method '" + typeName + "." + method + "'";
+                        checkArgs(m->params, argTypes, e.args, what, e.pos, m->required);
+                        checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, what, e.pos);
                         return inferResult(m->generics, m->params, argTypes, m->type);
                     }
                     diags_.error(e.pos, "type '" + typeName + "' has no static method '" + method + "'");
@@ -1064,7 +1101,7 @@ private:
                 }
             }
             if (knownType(recv)) {
-                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); return inferResult(m->generics, m->params, argTypes, m->type); }
+                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); return inferResult(m->generics, m->params, argTypes, m->type); }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
             return tUnknown();
@@ -1097,6 +1134,7 @@ private:
             const FnSig* chosen = resolveOverload(f->second, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
             checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
+            checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
             return inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
         }

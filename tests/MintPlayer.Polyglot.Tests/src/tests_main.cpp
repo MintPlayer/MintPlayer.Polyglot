@@ -358,6 +358,25 @@ int main() {
         for (const auto& d : r.diagnostics) if (has(d.message, "tuple patterns in 'match'")) named = true;
         check(!r.ok && named, "P9-V audit: a tuple pattern in match is refused, not miscompiled");
     }
+    // INumber — a generic param bounded by the numeric marker must infer to a number; a non-numeric type
+    // argument is refused at Polyglot compile time (better DX than a target-compiler error / TS NaN).
+    {
+        auto refusesNum = [&](const char* src, const std::string& name) {
+            EmitResult r = compileStd(src, Target::CSharp);
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, "INumber")) named = true;
+            check(!r.ok && named, name);
+        };
+        refusesNum("fn main() { print(Math.max(\"a\", \"b\")) }\n", "INumber: Math.max on strings is refused");
+        refusesNum("fn main() { print(Math.abs(true)) }\n", "INumber: Math.abs on bool is refused");
+        resolvesStd("fn main() { print(Math.max(3, 8))\n print((i32)Math.round(2.7)) }\n",
+                    "INumber: Math.max/round on numbers still resolve");
+        // The constraint is general, not Math-specific: a user `<T: INumber>` fn enforces it too.
+        refusesNum("fn twice<T: INumber>(x: T): T => x\nfn main() { print(twice(\"hi\")) }\n",
+                   "INumber: a user <T: INumber> fn rejects a non-numeric arg");
+        resolvesStd("fn twice<T: INumber>(x: T): T => x\nfn main() { print(twice(21)) }\n",
+                    "INumber: a user <T: INumber> fn accepts a numeric arg");
+    }
 
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
