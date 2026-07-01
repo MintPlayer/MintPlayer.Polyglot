@@ -61,9 +61,28 @@ inline std::string renderDelimited(const BackendSpec::DelimitedTemplate& t,
     return s + t.close;
 }
 
-// A conditional expression `(c ? t : e)` — identical spelling in C# and TS, so a shared rule.
+// A conditional expression `(c ? t : e)` — the C#/TS spelling (Python's `t if c else e` is its own hook).
 inline std::string renderCond(const std::string& c, const std::string& t, const std::string& e) {
     return "(" + c + " ? " + t + " : " + e + ")";
+}
+
+// A double-quoted string literal with the target-independent escape set. The escape rules (\\ \" \n \t \r)
+// and the `"` delimiter are byte-identical across C#, TS, and Python — the three-backend spike confirmed the
+// per-target `escape()` copies were the same primitive — so string escaping is a shared engine rule, not
+// per-target Spec data.
+inline std::string renderString(const std::string& v) {
+    std::string s = "\"";
+    for (char c : v) {
+        switch (c) {
+            case '\\': s += "\\\\"; break;
+            case '"':  s += "\\\""; break;
+            case '\n': s += "\\n";  break;
+            case '\t': s += "\\t";  break;
+            case '\r': s += "\\r";  break;
+            default:   s += c;      break;
+        }
+    }
+    return s + "\"";
 }
 
 // An argument list `(a, b, c)` — the affix is identical across C# and TS (unlike tuple brackets), so it's a

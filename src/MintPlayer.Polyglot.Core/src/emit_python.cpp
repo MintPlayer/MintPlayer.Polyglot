@@ -432,7 +432,7 @@ private:
             case ir::ExprKind::Float:  return static_cast<const ir::FloatLit&>(e).text;
             case ir::ExprKind::Bool:   return static_cast<const ir::BoolLit&>(e).value ? "True" : "False";
             case ir::ExprKind::Null:   return "None";
-            case ir::ExprKind::Str:    return escape(static_cast<const ir::StrLit&>(e).value);
+            case ir::ExprKind::Str:    return renderString(static_cast<const ir::StrLit&>(e).value);
             case ir::ExprKind::Var:    return pyId(static_cast<const ir::Var&>(e).name);
             case ir::ExprKind::This:   return "self";
             case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw Python verbatim
@@ -531,9 +531,9 @@ private:
             }
             case ir::ExprKind::Interp: { // string interpolation -> `"lit" + str(hole) + …` (str() like C# ToString)
                 const auto& in = static_cast<const ir::Interp&>(e);
-                std::string s = escape(in.chunks[0]);
+                std::string s = renderString(in.chunks[0]);
                 for (std::size_t i = 0; i < in.holes.size(); ++i)
-                    s += " + str(" + emitExpr(*in.holes[i]) + ") + " + escape(in.chunks[i + 1]);
+                    s += " + str(" + emitExpr(*in.holes[i]) + ") + " + renderString(in.chunks[i + 1]);
                 return s;
             }
             case ir::ExprKind::MakeCase: { // union-case construction -> a tagged dict
@@ -566,20 +566,6 @@ private:
         }
     }
 
-    std::string escape(const std::string& v) {
-        std::string s = "\"";
-        for (char c : v) {
-            switch (c) {
-                case '\\': s += "\\\\"; break;
-                case '"':  s += "\\\""; break;
-                case '\n': s += "\\n";  break;
-                case '\t': s += "\\t";  break;
-                case '\r': s += "\\r";  break;
-                default:   s += c;      break;
-            }
-        }
-        return s + "\"";
-    }
 };
 
 } // namespace

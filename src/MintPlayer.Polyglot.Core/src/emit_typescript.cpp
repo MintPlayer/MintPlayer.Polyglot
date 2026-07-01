@@ -499,21 +499,6 @@ private:
         }
     }
 
-    std::string escape(const std::string& v) {
-        std::string s = "\"";
-        for (char c : v) {
-            switch (c) {
-                case '\\': s += "\\\\"; break;
-                case '"':  s += "\\\""; break;
-                case '\n': s += "\\n"; break;
-                case '\t': s += "\\t"; break;
-                case '\r': s += "\\r"; break;
-                default:   s += c; break;
-            }
-        }
-        return s + "\"";
-    }
-
     std::string child(const ir::Expr& c, int parentPrec, bool isRight) {
         std::string inner = emitExpr(c);
         if (c.kind == ir::ExprKind::Binary) {
@@ -547,8 +532,8 @@ private:
                 }
                 return s + "`";
             }
-            case ir::ExprKind::Str:   return escape(static_cast<const ir::StrLit&>(e).value);
-            case ir::ExprKind::Char:  return escape(static_cast<const ir::CharLit&>(e).value); // TS has no char -> string
+            case ir::ExprKind::Str:   return renderString(static_cast<const ir::StrLit&>(e).value);
+            case ir::ExprKind::Char:  return renderString(static_cast<const ir::CharLit&>(e).value); // TS has no char -> string
             case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
             case ir::ExprKind::This:  return "this";
             case ir::ExprKind::Unary: {
