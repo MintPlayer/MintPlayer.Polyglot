@@ -139,23 +139,23 @@ targets/environments, and the compiler can state "this module can only target {c
   **pinned in a lockfile**), strict version pinning, zip-slip-/path-traversal-safe extraction into the
   shared cache, bounded/validated parsing (no billion-laughs/zip-bomb), and no executable bits.
 
-Illustrative only (shape TBD; the `.json` extension keeps editors' schema/validation happy):
+The full resolved schema is **§6.3**; the shape in brief (the `.json` extension keeps editors' schema/validation happy):
 ```jsonc
-// pgconfig.json — workspace config
+// pgconfig.json — workspace config (see §6.3 for the full field spec)
 {
-  "workspace": "fruitcake",
-  "targets": {
-    "cs": { "backend": "@polyglot/csharp@1.4.0", "environments": ["desktop"] },
-    "py": { "backend": "@polyglot/python@0.3.1",  "environments": ["cli"] }
+  "root": ".",
+  "dependencies": {                       // ALL plugin packages this codebase needs (npm name → version)
+    "@polyglot/csharp":   "1.4.0",        //   a LANGUAGE plugin (a target you compile TO)
+    "@polyglot/python":   "0.3.1",        //   a downloaded language plugin — adds Python, no core change
+    "@polyglot/winforms": "1.0.2",        //   a LIBRARY/binding plugin (code you import) — cs/desktop + build deps
+    "std.io": "*", "std.math": "*"        //   std library plugins
   },
-  "plugins": {
-    "@polyglot/winforms": "1.0.2",   // cs/desktop binding + build deps
-    "@polyglot/web-dom":  "1.1.0"    // ts/web binding
-  }
+  "targets": ["csharp", "python"],        // which language(s) to emit (must be language deps); overridable by --target
+  "lib": ["io", "math"],                  // ambient (no-import) LIBRARY modules — a SUBSET of dependencies
+  "environments": { "csharp": ["desktop"], "python": ["cli"] }
 }
-// "@polyglot/csharp" is bundled but still pinned; "@polyglot/python" is a DOWNLOADED
-// declarative backend that adds Python with no core change. Resolved + verified
-// against pgconfig.lock.json.
+// Integrity per dependency is pinned in pgconfig.lock.json. "@polyglot/csharp" is
+// bundled in-box but still listed + pinned (uniform resolution). §6.3 has the details.
 ```
 
 ### 6.1 Distribution — `polyglot install` + a global registry (resolved 2026-07-01)
@@ -222,6 +222,44 @@ preserved), registry-visible + pinnable like any plugin ("bundled but still pinn
 plugins omit the `backend` block and carry only `stdModules`/`externTypes`/`buildDeps` — already fully
 expressible today (P7/P8/P10 mechanisms interpret exactly this data).
 
+### 6.3 The `pgconfig.json` schema (resolved 2026-07-01)
+
+The project manifest, parsed in the CLI/LSP layer (Core stays IO-free). It evolves from the minimal `{root, lib}`
+shipped at P16 to the full form below at P10/P18 — additively, so today's files keep working.
+
+- **`root`** *(string)* — module-resolution root (shipped, P16). Relative imports (`"./x"`) resolve from the file;
+  bare logical imports (`"a.b"`) from `root`.
+- **`dependencies`** *(map: npm-package-name → version-range)* — **every plugin package this codebase needs.** The
+  umbrella dependency set; the lockfile pins each one's integrity. Two *kinds* of entry (distinguished by the
+  installed plugin's `kind`, not by pgconfig syntax — see §6.2):
+  - a **language plugin** — *what you compile TO* (`@polyglot/csharp`, `@polyglot/python`, `@polyglot/kotlin`…). A
+    target choice.
+  - a **library/binding plugin** — *what you `import` and call* (`std.io`, `@polyglot/winforms`…). Ordinary code deps.
+  `polyglot install` (no arg, in a project) installs everything here not yet in the global registry, writing the
+  lockfile. This is the field the user flagged as missing; it is the P18/P10 addition.
+- **`targets`** *(list of language-plugin target ids)* — which language(s) to **emit**. Must each resolve to a
+  *language* plugin in `dependencies`. A per-build `--target <name>` overrides/selects among them. (Target selection
+  is distinct from dependency: you *depend on* a language plugin, and separately *choose* to emit to it — a codebase
+  can depend on several and emit to any/all.)
+- **`lib`** *(list of ambient module names)* — LIBRARY modules auto-imported into every file with no `import`
+  statement (shipped, P16: `["io","math"]` → `std.io`/`std.math`). **A subset of `dependencies`**: every `lib` entry
+  must resolve to an installed library dependency (or a built-in). `lib` never contains language plugins. Ambient +
+  lowest-priority: a `lib` name loses silently to any user decl or explicit import of the same name.
+- **`environments`** *(map: target id → environment list)* — desktop/web/mobile/cli availability gating (§6). A
+  plugin symbol is usable only when its plugin is installed **and** the active target matches **and** the active
+  environment is among the plugin's declared ones — else a clean §3.B-style refusal.
+
+**Two-level resolution:** the **global registry** (`polyglot install`'s output, §6.1) = the machine-wide *installed*
+set; **`pgconfig.json` `dependencies`** = which of them (+ versions) *this* project uses; **`pgconfig.lock.json`**
+pins the integrity hash per dependency (re-verified on load). A dependency named but not installed → "run
+`polyglot install <name>@<version>`".
+
+**The load-bearing invariant (why this is RCE-safe):** a plugin — language or library — is **data the trusted Core
+interprets**, never an executable the toolchain runs. The developer writes `.pg`; the CLI resolves the chosen
+`targets` to their language plugins' JSON specs (§6.2) and the **Core's interpreter** (§4.10) emits the target
+source by interpreting that data. The plugin is a passive spec, not a transpiler — that is precisely what keeps
+`polyglot install` + transpile safe against fetch-and-run RCE.
+
 ## 7. Sequencing — design for it now, build it incrementally
 
 - **P2 (MVP) → P5:** a walking-skeleton slice end-to-end first (P2), then widen front-end (P3), semantics+IR
@@ -257,10 +295,12 @@ expressible today (P7/P8/P10 mechanisms interpret exactly this data).
    core*; could instead be a bundled `@polyglot/std`.
 4. ~~Trust/security~~ — **modeled in §6** (declarative-only downloads + integrity/pinning/safe-extraction +
    the honest output-trust caveat). A registry + signing infrastructure is a P10+ detail.
-5. **Config & lockfile shape** — `pgconfig.json` + `pgconfig.lock.json` (filenames fixed; internal schema
-   still TBD). **Distribution resolved (§6.1, 2026-07-01):** no plugin executables; `polyglot install` +
-   a global per-user registry; feed candidate npm (consumed data-only), URL fallback, feed-agnostic. The
-   remaining sub-question is the concrete feed choice + own-registry/signing (own-registry deferred, open #4).
+5. ~~Config & lockfile shape~~ — **resolved (§6.3, 2026-07-01):** `pgconfig.json` = `{root, dependencies,
+   targets, lib, environments}` + `pgconfig.lock.json` for integrity pinning; `dependencies` is the umbrella
+   plugin set (language *and* library plugins), `targets` selects what to emit, `lib` ⊆ dependencies is the
+   ambient library subset. **Distribution resolved (§6.1):** no plugin executables; `polyglot install` + a global
+   per-user registry; feed candidate npm (consumed data-only), URL fallback, feed-agnostic. Remaining sub-question:
+   the concrete feed choice + own-registry/signing (own-registry deferred, open #4).
 
 ---
 

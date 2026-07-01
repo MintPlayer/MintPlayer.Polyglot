@@ -961,7 +961,10 @@ closed `MatchOp{style}` strategy vocabulary) rejected — it makes the Core *gue
 8. **Backend distribution (with P10):** the npm-wrapped `polyglot-plugin.json` package (spec + capabilities +
    `externTypes` + `builddeps` + `std/*.pg`), `polyglot install` fetching via the npm HTTP API **data-only** (verify
    SHA-512, zip-slip-safe extract, never run scripts), `--target <name>`→registry→cache→`BackendHandle`, and the
-   editor `polyglot/targets` picking up installed languages (closes the `extension.js` `FIXME(P10)`).
+   editor `polyglot/targets` picking up installed languages (closes the `extension.js` `FIXME(P10)`). The
+   **`pgconfig.json` schema** this rides is resolved in design note §6.3: `dependencies` (umbrella plugin set —
+   language + library), `targets` (emit selection), `lib` ⊆ dependencies (ambient), + `pgconfig.lock.json` integrity
+   pinning. A plugin is data the Core interprets — never executed — which is what keeps install+transpile RCE-safe.
 
 **Honest residual (unchanged from §6.1):** data-only kills *transpile-time* RCE, not *runtime* trust — a malicious
 declarative binding can still emit hostile *target* code; plugin output needs the same trust as any dependency.
