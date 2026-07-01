@@ -147,6 +147,16 @@ extern class Math {
     actual(typescript) extern("((a) => (a < (a - a) ? -a : a))($0)")
     actual(python)     extern("abs($0)")
   }
+  // round-to-nearest, type-preserving (f32 in -> f32 out, f64 -> f64). Generic covers both float widths, so
+  // no overload is needed. C# `Math.Round` has only a `double` overload, so the result is cast back to `$T`
+  // (the inferred return type: `float`/`double`); JS `Math.round` and Python `round` take a number directly.
+  // Halfway cases are NOT bit-reproducible cross-target (C#/Python round-half-to-even, JS rounds half up) —
+  // §3.D covers only + - * / sqrt — so callers relying on exact parity must avoid exact-.5 inputs.
+  static fn round<T>(x: T): T {
+    actual(csharp)     extern("(($T) global::System.Math.Round($0))")
+    actual(typescript) extern("Math.round($0)")
+    actual(python)     extern("float(round($0))")
+  }
 }
 )PG";
 
