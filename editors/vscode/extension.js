@@ -13,6 +13,9 @@ let client;
 
 // The three emit targets: display name, file extension (drives built-in language detection + tab title),
 // language id (belt-and-suspenders coloring), and line-comment prefix (for the stale banner).
+// FIXME(P10): this must not stay hardcoded — the real target set is the CLI's backend registry (plus any
+// downloadable P10 backends). Derive it from a server-advertised target list (`polyglot/targets`) instead.
+// See PRD §4.9 (deferred) / PLAN §P17 deferred tail + §P10.
 const TARGETS = {
   csharp:     { name: 'C#',         ext: 'cs', langId: 'csharp',     comment: '//' },
   typescript: { name: 'TypeScript', ext: 'ts', langId: 'typescript', comment: '//' },

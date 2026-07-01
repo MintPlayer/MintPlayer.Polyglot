@@ -367,6 +367,11 @@ Remaining hardcoded core type: **`Error`** (`csType`→`System.Exception`, the `
 always-linked **core module** is the last dogfood step (backlog below). This is the "Binding" mechanism
 (plugins-and-targets.md §2) at its complete form. See `design/backend-spec.md` §4a.
 
+**Editor tie-in:** once backends are downloadable, the **editor's target list must come from the registry**, not a
+hardcode. Add a server-advertised `polyglot/targets` list (`{ id, displayName, fileExtension }` per registered
+backend) so the P17 preview ("Show Generated Output" + the Outputs tree) picks up plugin backends with no client
+change. Currently hardcoded in `extension.js` `TARGETS` (`FIXME(P10)`); see PLAN §P17 deferred tail.
+
 ## P11 — Build integration: the `.pg`-aware NuGet (and npm) on-ramp
 Make adoption frictionless: a developer adds a package to an ordinary C# project, drops in `.pg` files,
 runs `dotnet build`, and the `.pg` is transpiled to C# and compiled into the assembly with **no manual
@@ -803,8 +808,16 @@ last successful output` banner; it must **never** blank the pane on a transient 
 half-emitted code as valid. Real errors already squiggle in the `.pg` editor. Per-target honesty: a Python preview
 may legitimately fail (walking-skeleton subset) where C#/TS succeed — say so in the banner, don't hide it.
 
-**Deferred (post-P17):** a Webview with source-map gutter lines linking a `.pg` line to its output line (the one
-job a real editor can't do); pre-warming the non-visible targets on idle to make target-switch instant.
+**Deferred (post-P17):**
+- **Target list from the backend registry, not hardcoded (belongs with P10).** `extension.js` `TARGETS` hardcodes
+  the three targets + their `{name, ext, langId, comment}`. The real set is the CLI's backend registry — and, with
+  P10, downloadable backends too. Fix: a server-advertised list (a `polyglot/targets` request, or an `initialize`
+  field) of `{ id, displayName, fileExtension }` per registered backend; the client derives `TARGETS` from it
+  (langId via VS Code's extension detection; comment prefix defaults to `//` with an override), so a plugin backend
+  shows up in "Show Generated Output" + the Outputs tree with **no client change**. Blocked on the registry being
+  queryable across the LSP seam → do it in P10. Flagged at the code site (`extension.js` `FIXME(P10)`).
+- A Webview with source-map gutter lines linking a `.pg` line to its output line (the one job a real editor can't
+  do); pre-warming targets on idle.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

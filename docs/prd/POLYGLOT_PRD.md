@@ -596,6 +596,16 @@ emitter + debounce + follow-active-editor + status-bar switcher; optional tree) 
 `polyglot.showOutput` command, an editor-title menu icon, a `polyglot.preview.defaultTarget` setting, and — if the
 tree ships — `viewsContainers`/`views`). No Core change. Full slice log: PLAN §P17.
 
+**Deferred — the target list must not stay hardcoded (ties into P10).** The client currently hardcodes the three
+targets and their `{name, ext, langId, comment}` (`extension.js` `TARGETS`). The **real** target set is the CLI's
+backend registry — and, once P10 lands, the *downloadable* backends too. The principled fix is a server-advertised
+target list (a `polyglot/targets` request, or a field in the `initialize` result) returning each registered
+backend's descriptor `{ id, displayName, fileExtension }`; the client derives `TARGETS` from it (langId falls out of
+the extension via VS Code's own detection; the comment prefix defaults to `//` with a per-target override), so a
+plugin backend appears in "Show Generated Output" and the Outputs tree **with no extension change**. This is small
+but blocked on the backend registry being queryable across the LSP seam; it belongs with P10's downloadable-backend
+work. Until then the hardcoded list is a knowing stopgap, flagged at the code site.
+
 ---
 
 ## 5. Testing strategy
