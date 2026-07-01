@@ -752,6 +752,22 @@ preview** (`polyglot/emit` → a `ToolWindowPane`, the "P17-for-VS" follow-up). 
 `PolyglotLanguageClient` + CLI resolution — server starts, all standard features light up; (5) Tools→Options CLI-path
 page (+ optional bundled CLI); (6, deferred) custom-message std docs + emit tool window.
 
+**As-built (2026-07-01) — slices 1–4 done, headless build green; interactive test pending.** The VSIX at
+`editors/vs/` (`MintPlayer.Polyglot.VisualStudio.csproj`) **builds headlessly** with the VS 18 MSBuild and packages
+correctly — verified the `.vsix` contains the MEF assembly, the manifest, and the grammar bundle
+(`Grammars/polyglot/{package.json, syntaxes/polyglot.tmLanguage.json, language-configuration.json}`, copied from
+`editors/vscode` at build via the `CopyPolyglotGrammar` target, git-ignored). Delivered: `PolyglotContentType.cs`
+(content type `code.remote` base + `.pg`), `PolyglotLanguageClient.cs` (`ILanguageClient` launching `polyglot lsp`,
+`Connection(stdout, stdin)`, `{root:null, lib:"io,math"}` init options), `PolyglotCli.cs` (`POLYGLOT_CLI` env →
+bundled → PATH). Build gotchas solved: set `VSToolsPath` from `MSBuildExtensionsPath` (the x86 fallback is empty);
+add framework refs `System` + `System.ComponentModel.Composition` (MEF, not auto-referenced in a legacy net472
+project); the manifest needs `<ProductArchitecture>amd64</ProductArchitecture>` on the install target for VS 18.
+NuGet: `Microsoft.VisualStudio.SDK` 17.0.32112.339 + `Microsoft.VSSDK.BuildTools` 17.0.5234. **Not yet done:**
+interactive verification in `devenv /rootsuffix Exp` (a GUI step — the user must open a `.pg` file and confirm
+coloring + the LSP features light up; and confirm VS's TextMate engine actually picks up the bundled grammar, the
+one piece not verifiable headlessly), slice 5 (Options page / bundled CLI), and slice 6 (deferred custom-message
+features).
+
 **As-built notes (deltas from the plan above — 2026-07-01):**
 - **VS Code client uses NO bundler.** The plan said esbuild; in practice the extension stays plain CommonJS
   (`main: ./extension.js`) with a single runtime dep (`vscode-languageclient`). F5's `prepare-extension`

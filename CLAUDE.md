@@ -188,8 +188,13 @@ defs/refs. Capabilities: diagnostics (live on-type), go-to-def (same-file + **cr
 symbols, semantic tokens, formatting, references, rename (file-local), completion. The **VS Code extension** is a
 thin `vscode-languageclient` client (plain JS, no bundler; F5 via repo-root `.vscode` → build CLI + `npm install`).
 A minimal **`pgconfig.json`** (`{root,lib}`, CLI/LSP layer, core stays IO-free) drives module resolution. The CLI
-now **statically links the CRT** (self-contained — see PRD §4.3). Not built: **P16d** the Visual Studio client;
-the P16 deferred tail is now **empty** (only **P16d**, the Visual Studio client, remains of P16). ✅ done:
+now **statically links the CRT** (self-contained — see PRD §4.3). **P16d (Visual Studio client) 🚧 slices 1–4 built,
+headless build green** — a VSIX at `editors/vs/` (`ILanguageClient` launching `polyglot lsp` + `polyglot` content
+type + `.pg` association + the shared TextMate grammar bundled at build); builds with the VS 18 MSBuild
+(`VSToolsPath` from `MSBuildExtensionsPath`; framework refs `System`+`System.ComponentModel.Composition`; manifest
+`ProductArchitecture=amd64`; SDK 17.0 NuGet, `InstallationTarget [17.0,)`). **Interactive `devenv /rootsuffix Exp`
+verification is the user's step** (not headless); Options page + custom-message std-docs/emit-preview deferred.
+The P16 deferred tail is now **empty**. ✅ done:
 live cross-file edits (a `BufferResolver` serves open unsaved imports; `didChange` re-analyzes all open docs);
 semantic tokens/hover/def inside `polyglot:` std virtual docs (scheme added to the selector; std analyzed from
 synced text, diagnostics suppressed); **member completion** (`obj.` — `SymbolDef.owner` on members; LSP analyzes a
