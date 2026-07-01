@@ -121,13 +121,16 @@ std::string csGenerics(const std::vector<ir::GenericParam>& gs) {
     for (std::size_t i = 0; i < gs.size(); ++i) { if (i) s += ", "; s += gs[i].name; }
     return s + ">";
 }
-// C# puts bounds in trailing `where T : A, B` clauses (one per bounded parameter).
+// C# puts bounds in trailing `where T : A, B` clauses (one per bounded parameter). The `INumber` marker is
+// a Polyglot compile-time-only numeric constraint (no C# equivalent), so it is erased here.
 std::string csWhere(const std::vector<ir::GenericParam>& gs) {
     std::string s;
     for (const auto& g : gs) {
-        if (g.bounds.empty()) continue;
+        std::vector<const TypeRef*> bounds;
+        for (const auto& b : g.bounds) if (b.name != "INumber") bounds.push_back(&b);
+        if (bounds.empty()) continue;
         s += " where " + g.name + " : ";
-        for (std::size_t i = 0; i < g.bounds.size(); ++i) { if (i) s += ", "; s += csType(g.bounds[i]); }
+        for (std::size_t i = 0; i < bounds.size(); ++i) { if (i) s += ", "; s += csType(*bounds[i]); }
     }
     return s;
 }

@@ -124,16 +124,19 @@ std::string opMethod(const std::string& op) {
     return "";
 }
 
-// TS carries bounds inline on each parameter: `<T extends A & B, U>`.
+// TS carries bounds inline on each parameter: `<T extends A & B, U>`. The `INumber` marker is a Polyglot
+// compile-time-only numeric constraint (no TS equivalent), so it is erased here.
 std::string tsGenerics(const std::vector<ir::GenericParam>& gs) {
     if (gs.empty()) return "";
     std::string s = "<";
     for (std::size_t i = 0; i < gs.size(); ++i) {
         if (i) s += ", ";
         s += gs[i].name;
-        if (!gs[i].bounds.empty()) {
+        std::vector<const TypeRef*> bounds;
+        for (const auto& b : gs[i].bounds) if (b.name != "INumber") bounds.push_back(&b);
+        if (!bounds.empty()) {
             s += " extends ";
-            for (std::size_t j = 0; j < gs[i].bounds.size(); ++j) { if (j) s += " & "; s += tsType(gs[i].bounds[j]); }
+            for (std::size_t j = 0; j < bounds.size(); ++j) { if (j) s += " & "; s += tsType(*bounds[j]); }
         }
     }
     return s + ">";

@@ -132,17 +132,17 @@ extern class Math {
     actual(typescript) extern("Math.ceil($0)")
     actual(python)     extern("float(__import__('math').ceil($0))")
   }
-  static fn min<T>(a: T, b: T): T {
+  static fn min<T: INumber>(a: T, b: T): T {
     actual(csharp)     extern("global::System.Math.Min($0, $1)")
     actual(typescript) extern("((a, b) => (a <= b ? a : b))($0, $1)")
     actual(python)     extern("min($0, $1)")
   }
-  static fn max<T>(a: T, b: T): T {
+  static fn max<T: INumber>(a: T, b: T): T {
     actual(csharp)     extern("global::System.Math.Max($0, $1)")
     actual(typescript) extern("((a, b) => (a >= b ? a : b))($0, $1)")
     actual(python)     extern("max($0, $1)")
   }
-  static fn abs<T>(x: T): T {
+  static fn abs<T: INumber>(x: T): T {
     actual(csharp)     extern("global::System.Math.Abs($0)")
     actual(typescript) extern("((a) => (a < (a - a) ? -a : a))($0)")
     actual(python)     extern("abs($0)")
@@ -152,7 +152,7 @@ extern class Math {
   // (the inferred return type: `float`/`double`); JS `Math.round` and Python `round` take a number directly.
   // Halfway cases are NOT bit-reproducible cross-target (C#/Python round-half-to-even, JS rounds half up) —
   // §3.D covers only + - * / sqrt — so callers relying on exact parity must avoid exact-.5 inputs.
-  static fn round<T>(x: T): T {
+  static fn round<T: INumber>(x: T): T {
     actual(csharp)     extern("(($T) global::System.Math.Round($0))")
     actual(typescript) extern("Math.round($0)")
     actual(python)     extern("float(round($0))")
@@ -230,6 +230,13 @@ extern class Iterable<T> {
     actual(python)     extern("list")
   }
 }
+// A marker constraint for numeric type parameters, like .NET's System.Numerics.INumber<T>: the numeric
+// scalars (i8..u64, f32, f64) satisfy it. Used only as a generic bound (`<T: INumber>`) so a non-numeric
+// type argument to a numeric-generic (Math.min/max/abs/round, or user code) is rejected at Polyglot compile
+// time — better DX than the target compiler catching it (C#) or, worse, a silent NaN (TS). It is
+// compile-time-only: the bound is ERASED from the emitted C#/TS (see csWhere / tsGenerics), since the target
+// languages already type-check numeric operations and have no matching constraint spelling.
+extern class INumber { }
 union Option<T> {
   Some(value: T)
   None
