@@ -325,7 +325,8 @@ private:
     std::unordered_map<std::string, int> valueDefId_;  // user top-level const/let name -> SymbolDef index
     std::unordered_map<std::string, int> memberDefId_; // "Type.member" -> SymbolDef index (own members)
 
-    int recordDef(SymbolKind kind, const std::string& name, SourcePos namePos, const TypeRef& type, bool external = false) {
+    int recordDef(SymbolKind kind, const std::string& name, SourcePos namePos, const TypeRef& type,
+                  bool external = false, const std::string& owner = "") {
         if (!model_) return -1;
         SymbolDef d;
         d.kind = kind;
@@ -333,6 +334,7 @@ private:
         d.nameSpan = {namePos, static_cast<int>(name.size())};
         d.type = type;
         d.external = external;
+        d.owner = owner;
         model_->defs.push_back(std::move(d));
         return static_cast<int>(model_->defs.size()) - 1;
     }
@@ -351,7 +353,7 @@ private:
                          : (m.kind == MemberKind::Property) ? SymbolKind::Method
                          : SymbolKind::Field;
             const TypeRef& t = (m.kind == MemberKind::Method || m.kind == MemberKind::Operator) ? m.returnType : m.type;
-            memberDefId_.emplace(name + "." + m.name, recordDef(k, m.name, m.namePos, t, external));
+            memberDefId_.emplace(name + "." + m.name, recordDef(k, m.name, m.namePos, t, external, name));
         }
     }
     // Register EVERY merged declaration so references resolve — the entry file's own (indices [0, userX),
@@ -368,7 +370,7 @@ private:
             bool ext = i >= req_->userRecords;
             registerType(r.name, r.namePos, r.members, ext);
             for (const auto& f : r.fields) // positional record fields (Param.pos is already the name)
-                memberDefId_.emplace(r.name + "." + f.name, recordDef(SymbolKind::Field, f.name, f.pos, f.type, ext));
+                memberDefId_.emplace(r.name + "." + f.name, recordDef(SymbolKind::Field, f.name, f.pos, f.type, ext, r.name));
         }
         for (std::size_t i = 0; i < unit.classes.size(); ++i)    registerType(unit.classes[i].name,    unit.classes[i].namePos,    unit.classes[i].members,    i >= req_->userClasses);
         for (std::size_t i = 0; i < unit.interfaces.size(); ++i) registerType(unit.interfaces[i].name, unit.interfaces[i].namePos, unit.interfaces[i].members, i >= req_->userInterfaces);

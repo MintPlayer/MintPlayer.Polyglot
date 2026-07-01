@@ -518,8 +518,10 @@ Visual Studio: a coloring-only VSIX (bundling the shared grammar) can land anyti
 at `polyglot lsp` follows once the VS Code client proves the server.
 
 **Scope for v1 (same-file):** definition/hover/document-symbols/semantic-tokens/diagnostics for symbols in the file
-being edited (locals, params, functions, types, members). **Deferred:** cross-module go-to-def (needs the `fileId`
-stamping + virtual URIs), find-references/rename, and member *completion* (needs receiver-type resolution).
+being edited (locals, params, functions, types, members). *(All since delivered beyond v1: cross-module go-to-def
+via `fileId` stamping + virtual URIs, find-references/rename, live cross-file edits, semantic tokens in std virtual
+docs, and member `completion` via a repaired-buffer receiver-type resolution — PLAN §P16c + tail. Remaining minor
+deferrals: in-scope-only local filtering + a non-ASCII UTF-16 position walk.)*
 
 ### 4.9 Live generated-output preview (design — 2026-07-01; investigated by a 2-agent team)
 

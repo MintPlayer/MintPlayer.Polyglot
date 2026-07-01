@@ -36,6 +36,7 @@ struct SymbolDef {
     Span nameSpan;
     TypeRef type;         // best-effort; may be absent/unknown
     bool external = false;// merged from std/an import, not the file being edited (not offered as a target yet)
+    std::string owner;    // Field/Method: the owning type's name (for member completion `obj.`); else empty
 };
 
 // A use site: an identifier occurrence resolved to a definition. `def` indexes `SemanticModel::defs`, or is

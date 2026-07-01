@@ -710,8 +710,8 @@ grammar; required finishing name-token positions (`namePos` on all type/member/v
     so they get the same TextMate grammar highlighting as `.pg` files (grammar only — their scheme isn't in the
     LSP selector, so the server never analyzes the read-only std source).
 11. **`references`/`rename` ✅** (from the model; rename is file-local-only) and **`completion` ✅** (keywords +
-    bare-callable symbols, context-insensitive). *Deferred:* member completion (`obj.`, needs receiver type)
-    and in-scope-only local filtering.
+    bare-callable symbols, context-insensitive). **Member completion (`obj.`) ✅ (2026-07-01)** — see the tail
+    note below. *Deferred:* in-scope-only local filtering.
 
 **P16d — Visual Studio LSP client — ⬜ not started (the last P16 piece).** An `ILanguageClient` VSIX pointing at
 `polyglot lsp` + a coloring VSIX bundling `editors/vscode/syntaxes/polyglot.tmLanguage.json`; target the
@@ -749,8 +749,20 @@ VS-2026/v145 SDK generation.
   coloring + hover + go-to-def, not just TextMate grammar. Their diagnostics are **not** published (analyzing std
   standalone would raise link-context noise on code the user can't edit). Spawn-tested: `std.math` returns
   non-empty semantic tokens and zero published diagnostics.
-- **P16 deferred tail (all minor):** member completion (`obj.`), in-scope-only local filtering, and the non-ASCII
-  position walk. (Live cross-file edits + std-doc semantic tokens ✅ done, above.) Plus **P16d** (Visual Studio) above.
+- **Member completion (`obj.`) ✅ (2026-07-01).** Typing `.` after a receiver lists that type's members. The
+  model now carries an `owner` (the owning type name) on Field/Method defs (set in sema's `registerType` + the
+  positional-record-fields loop). The LSP detects the member context by scanning left from the cursor over an
+  identifier prefix to a `.`, then **analyzes a repaired buffer** (the trailing `.member` dropped so it parses even
+  mid-edit) via a new `analyzeText` helper, resolves the receiver identifier's type from that model
+  (`definitionAt` → `type.name`), and emits the defs whose `owner` matches (Field=5/Method=2 kinds; bare
+  completion still excludes members via `completionKind`→0). `.` is advertised as a completion trigger character.
+  Works for value receivers **and** type names (`Math.` lists statics for free, since a type reference's def type
+  is the type itself). Spawn-tested: `v.` on a `Vec2` local lists `x`/`y`/`length`, no keyword leakage. *v1
+  limits (follow-ups):* only the receiver type's **direct** members (no inherited base-class members yet), and
+  **`this.`** isn't resolved (needs the enclosing type, which the model doesn't expose).
+- **P16 deferred tail (now just one, minor):** in-scope-only local filtering (completion offers locals from every
+  function; precise filtering needs block-end positions the AST doesn't record — a parser change), and the
+  non-ASCII UTF-16 position walk (moot while VS Code negotiates utf-8). Plus **P16d** (Visual Studio) above.
 
 ## P17 — Live generated-output preview — ✅ done (2026-07-01; §4.9, 2-agent investigation)
 See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and

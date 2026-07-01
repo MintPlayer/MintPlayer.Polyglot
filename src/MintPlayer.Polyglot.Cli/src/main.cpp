@@ -523,6 +523,16 @@ struct LspServer {
         if (uri.rfind("file:", 0) == 0) publishDiagnostics(uri, a.diagnostics);
     }
 
+    // Analyze arbitrary text as if it were `uri` (same resolver/lib context), returning just the model —
+    // used by member completion, which analyzes a repaired buffer (the trailing `.member` dropped so it
+    // parses) to resolve the receiver's type. Does not store/publish anything.
+    SemanticModel analyzeText(const std::string& uri, const std::string& text) {
+        DocContext ctx = contextFor(uri);
+        FileModuleResolver disk(ctx.root, ctx.entryDir);
+        BufferResolver resolver(disk, text_);
+        return std::move(analyze(text, &resolver, parseLibList(ctx.libStr), uriToPath(uri)).model);
+    }
+
     // Custom request `polyglot/emit`: params { uri, target } -> { target, code, ok, diagnostics }. Runs the
     // full compile() in memory (no disk write) for a live preview of the emitted target source. One target per
     // request; the client debounces on edit and re-requests on target switch. compile() never returns partial
@@ -705,9 +715,9 @@ struct LspServer {
         return "{\"data\":[" + data + "]}";
     }
 
-    // A first-cut completion: keywords + every bare-callable symbol the model knows (file-local and imported
-    // functions/types/values/cases/locals). Context-insensitive — the client filters by the typed prefix.
-    // Member completion (`obj.`) needs the receiver's type and is a follow-up; methods/fields are omitted here.
+    // Completion. In a member context (`obj.` / `obj.pre`) it lists the receiver type's members; otherwise it
+    // offers keywords + every bare symbol the model knows (file-local + imported). Context-insensitive within
+    // each mode — the client filters by the typed prefix.
     std::string completion(const json::Value& params) {
         std::string items;
         bool first = true;
@@ -718,7 +728,42 @@ struct LspServer {
             first = false;
             items += "{\"label\":" + json::quote(label) + ",\"kind\":" + std::to_string(kind) + "}";
         };
-        auto it = model_.find(params["textDocument"]["uri"].asString());
+
+        std::string uri = params["textDocument"]["uri"].asString();
+        int line = static_cast<int>(params["position"]["line"].asInt()) + 1;
+        int col = static_cast<int>(params["position"]["character"].asInt()) + 1;
+
+        // Member context: an identifier prefix immediately preceded by '.' — resolve the receiver's type and
+        // list its members. Analyze a REPAIRED buffer (the `.member` under the cursor removed) so the receiver
+        // parses even mid-edit; look the receiver up in that model; then emit defs owned by its type.
+        auto tit = text_.find(uri);
+        if (tit != text_.end()) {
+            const std::string& text = tit->second;
+            std::size_t off = byteOffset(text, line, col);
+            std::size_t ps = off;
+            while (ps > 0 && identPart(text[ps - 1])) --ps;           // start of the partial member
+            if (ps > 0 && text[ps - 1] == '.') {                      // member access
+                std::size_t dot = ps - 1, re = dot, rs = dot;
+                while (rs > 0 && identPart(text[rs - 1])) --rs;       // the receiver identifier [rs, re)
+                if (rs < re) {
+                    std::string repaired = text.substr(0, dot) + text.substr(off);
+                    SemanticModel m = analyzeText(uri, repaired);
+                    std::size_t lineStart = byteOffset(text, line, 1);
+                    int rcol = static_cast<int>(rs - lineStart) + 1;
+                    const SymbolDef* rd = m.definitionAt(line, rcol);
+                    if (rd && !rd->type.name.empty()) {
+                        const std::string& ty = rd->type.name;
+                        // Explicit member kinds (Field=5 / Method=2) — completionKind() deliberately maps these
+                        // to 0 to keep them OUT of the bare-symbol list; here in member context we want them.
+                        for (const auto& d : m.defs)
+                            if (d.owner == ty) add(d.name, d.kind == SymbolKind::Field ? 5 : 2);
+                    }
+                }
+                return "[" + items + "]"; // after a '.', never fall through to keywords/bare symbols
+            }
+        }
+
+        auto it = model_.find(uri);
         if (it != model_.end())
             for (const auto& d : it->second.defs) add(d.name, completionKind(d.kind));
         static const char* kw[] = {
@@ -797,7 +842,7 @@ int runLsp(const std::vector<std::string>&) {
             lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"" + enc + "\",\"textDocumentSync\":1,"
                          "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true,"
                          "\"documentFormattingProvider\":true,\"referencesProvider\":true,\"renameProvider\":true,"
-                         "\"completionProvider\":{},"
+                         "\"completionProvider\":{\"triggerCharacters\":[\".\"]},"
                          "\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"type\","
                          "\"method\",\"property\",\"variable\",\"parameter\",\"enumMember\"],"
                          "\"tokenModifiers\":[\"declaration\"]},\"full\":true}},"
