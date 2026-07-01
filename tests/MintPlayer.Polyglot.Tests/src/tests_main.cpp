@@ -321,6 +321,10 @@ int main() {
     refuses("fn f(p: IntPtr) {}\n", "pointers", "P6: refuses IntPtr (pointers/unsafe)");
     refuses("fn f(e: Expression<i32>) {}\n", "expression trees", "P6: refuses LINQ expression trees");
     refuses("fn f(d: dynamic) {}\n", "dynamic", "P6: refuses 'dynamic' / runtime code-gen");
+    // §3.B statement forms: `lock`/`unsafe` are unspeakable, so a C#-habit statement is refused out loud
+    // (a targeted message, not a confusing parse error) with no cascade errors.
+    refuses("fn main() { lock (m) { print(1) } }\n", "locks", "P6: refuses a `lock` statement");
+    refuses("fn main() { unsafe { print(1) } }\n", "unsafe", "P6: refuses an `unsafe` block");
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
     resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");

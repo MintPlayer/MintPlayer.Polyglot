@@ -522,6 +522,33 @@ private:
     }
 
     StmtPtr parseStmt() {
+        // §3.B: `lock`/`unsafe` are unspeakable (no grammar), but a C#-habituated author will still try them.
+        // Catch the statement form and refuse out loud with a targeted message instead of a confusing parse
+        // error, then skip the whole construct (its trailing `{ … }` block, brace-balanced) so no cascade
+        // errors follow. Not routed through error()/panic — the balanced skip leaves the cursor correctly
+        // positioned, so the enclosing block resumes cleanly.
+        if (atContextual("lock") || atContextual("unsafe")) {
+            SourcePos sp = peek().pos;
+            diags_.error(sp, peek().text == "lock"
+                ? "Polyglot refuses threads and locks — it targets single-threaded async only, so there is no `lock` statement (PRD §3.B)"
+                : "Polyglot refuses `unsafe` — no unsafe blocks, pointers, or stackalloc (PRD §3.B)");
+            advance(); // the lock/unsafe keyword
+            while (!at(TokKind::End) && !at(TokKind::LBrace) && !at(TokKind::Semicolon)) advance(); // skip any `(expr)`
+            if (at(TokKind::LBrace)) { // skip the balanced `{ … }` body
+                int depth = 0;
+                do {
+                    if (at(TokKind::LBrace)) ++depth;
+                    else if (at(TokKind::RBrace)) --depth;
+                    advance();
+                } while (depth > 0 && !at(TokKind::End));
+            } else {
+                accept(TokKind::Semicolon);
+            }
+            auto s = std::make_unique<Stmt>();
+            s->kind = StmtKind::ExprStmt;
+            s->pos = sp;
+            return s; // discarded: compilation aborts on the diagnostic before sema
+        }
         if (at(TokKind::KwLet) || at(TokKind::KwVar)) return parseLet();
         if (at(TokKind::KwIf)) return parseIf();
         if (at(TokKind::KwWhile)) return parseWhile();
