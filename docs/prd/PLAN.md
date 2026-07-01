@@ -717,6 +717,10 @@ VS-2026/v145 SDK generation.
 - **The CLI statically links the CRT** (`/MTd`,`/MT` across Core/Cli/Tests) so it depends only on `KERNEL32.dll`
   — required for VS Code to spawn it (its extension host lacks the CRT DLLs on PATH) and load-bearing for the P11
   NuGet (runs on a consumer machine with no CRT prereqs). See PRD §4.3.
+- **pgconfig.json is live:** the VS Code client watches `**/pgconfig.json`; on change the server re-analyzes
+  every open document (`workspace/didChangeWatchedFiles`), so root/lib edits refresh diagnostics immediately.
+  `publishDiagnostics` emits only the entry file's own diagnostics (fileId 1) — an imported module's errors
+  show in that module, not leaked into the importer.
 - **Implemented LSP capabilities:** `publishDiagnostics` (live on-type, point ranges widened to the identifier),
   `definition` (same-file + cross-module + std virtual docs), `hover`, `documentSymbol`, `semanticTokens/full`,
   `documentFormatting`, `references`, `rename` (file-local only), `completion` (bare names + keywords), and the
