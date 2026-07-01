@@ -83,6 +83,7 @@ private:
     DiagnosticBag& diags_;
     std::size_t idx_ = 0;
     bool panicked_ = false;
+    SourcePos lastBlockEnd_;   // the most recent block's closing '}' position — read right after parseBlock()
     int pendingAngles_ = 0; // leftover '>' borrowed from a split '>>' / '>>>' when closing nested generics
 
     const Token& peek(std::size_t ahead = 0) const {
@@ -192,8 +193,8 @@ private:
 
     void parseMemberBody(Member& m) {
         if (tryParseBindings(m)) return;
-        if (accept(TokKind::Arrow)) { m.exprBody = parseExpr(); m.hasBody = true; m.exprBodied = true; }
-        else if (at(TokKind::LBrace)) { m.body = parseBlock(); m.hasBody = true; m.exprBodied = false; }
+        if (accept(TokKind::Arrow)) { m.exprBody = parseExpr(); m.hasBody = true; m.exprBodied = true; m.bodyEnd = peek().pos; }
+        else if (at(TokKind::LBrace)) { m.body = parseBlock(); m.hasBody = true; m.exprBodied = false; m.bodyEnd = lastBlockEnd_; }
         else { accept(TokKind::Semicolon); m.hasBody = false; } // interface stub
     }
 
@@ -488,8 +489,10 @@ private:
             ret->pos = peek().pos;
             ret->value = parseExpr();
             fn.body.push_back(std::move(ret));
+            fn.bodyEnd = peek().pos;
         } else {
             fn.body = parseBlock();
+            fn.bodyEnd = lastBlockEnd_;
         }
         return fn;
     }
@@ -533,6 +536,7 @@ private:
                 panicked_ = false;
             }
         }
+        lastBlockEnd_ = peek().pos; // the '}' (or EOF) — a block's end, for scope extents (§4.8)
         expect(TokKind::RBrace, "'}'");
         return stmts;
     }

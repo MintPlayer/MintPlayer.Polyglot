@@ -37,6 +37,8 @@ struct SymbolDef {
     TypeRef type;         // best-effort; may be absent/unknown
     bool external = false;// merged from std/an import, not the file being edited (not offered as a target yet)
     std::string owner;    // Field/Method: the owning type's name (for member completion `obj.`); else empty
+    SourcePos scopeStart; // Local/Parameter: the enclosing fn/method extent (for in-scope completion filtering);
+    SourcePos scopeEnd;   // both default (line 0) = no scope recorded → treated as always in scope.
 };
 
 // A use site: an identifier occurrence resolved to a definition. `def` indexes `SemanticModel::defs`, or is

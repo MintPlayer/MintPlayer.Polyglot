@@ -760,9 +760,16 @@ VS-2026/v145 SDK generation.
   is the type itself). Spawn-tested: `v.` on a `Vec2` local lists `x`/`y`/`length`, no keyword leakage. *v1
   limits (follow-ups):* only the receiver type's **direct** members (no inherited base-class members yet), and
   **`this.`** isn't resolved (needs the enclosing type, which the model doesn't expose).
-- **P16 deferred tail (now just one, minor):** in-scope-only local filtering (completion offers locals from every
-  function; precise filtering needs block-end positions the AST doesn't record — a parser change), and the
-  non-ASCII UTF-16 position walk (moot while VS Code negotiates utf-8). Plus **P16d** (Visual Studio) above.
+- **In-scope-only local filtering ✅ (2026-07-01).** Bare completion no longer offers locals/params from other
+  functions. The parser now records each fn/method body's end (`bodyEnd`, from the closing `}` — a new
+  `lastBlockEnd_` captured in `parseBlock`); sema stamps every Local/Parameter def with its enclosing
+  `[scopeStart, scopeEnd]` (fn/method name → body end); the LSP offers a local only when the cursor falls in that
+  range (defs with no recorded scope — top-level, lambdas — stay always-offered, as before). Function-level
+  granularity (a local in an inner block is in scope for the whole enclosing fn — fine for completion). Spawn-tested:
+  inside `main`, its own local shows but a sibling function's local doesn't, while functions stay offered.
+- **P16 deferred tail (now just one, and moot in practice):** the non-ASCII UTF-16 position walk — the server's
+  columns are byte offsets, correct under the `utf-8` encoding VS Code negotiates; only a hypothetical utf-16-only
+  client on non-ASCII lines is affected. Plus **P16d** (Visual Studio) above.
 
 ## P17 — Live generated-output preview — ✅ done (2026-07-01; §4.9, 2-agent investigation)
 See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and

@@ -256,12 +256,14 @@ public:
             currentThis_ = tUnknown();
             inActual_ = !fn.actualTarget.empty(); // only an `actual` body is a target-gated region (§4.4)
             inAsync_ = fn.isAsync;
+            scopeStart_ = fn.namePos; scopeEnd_ = fn.bodyEnd; // locals here are in scope only within this fn
             pushGenerics(fn.generics);
             pushScope();
             for (const auto& p : fn.params) declare(p.name, p.type, false, p.pos);
             checkBlock(fn.body);
             popScope();
             popGenerics(fn.generics);
+            scopeStart_ = {}; scopeEnd_ = {};
             inActual_ = false;
             inAsync_ = false;
             recordModel_ = false;
@@ -320,6 +322,7 @@ private:
     SemanticModel* model_ = nullptr;
     const SemanticRequest* req_ = nullptr;
     bool recordModel_ = false;                       // true only while checking a file-local (user) decl body
+    SourcePos scopeStart_, scopeEnd_;                // enclosing fn/method extent; stamped on Local/Parameter defs (§4.8)
     std::unordered_map<std::string, int> fnDefId_;     // user function name -> its SymbolDef index (for call refs)
     std::unordered_map<std::string, int> typeDefId_;   // user type name -> SymbolDef index (construction refs)
     std::unordered_map<std::string, int> valueDefId_;  // user top-level const/let name -> SymbolDef index
@@ -335,6 +338,7 @@ private:
         d.type = type;
         d.external = external;
         d.owner = owner;
+        if (kind == SymbolKind::Local || kind == SymbolKind::Parameter) { d.scopeStart = scopeStart_; d.scopeEnd = scopeEnd_; }
         model_->defs.push_back(std::move(d));
         return static_cast<int>(model_->defs.size()) - 1;
     }
@@ -632,12 +636,14 @@ private:
                 currentThis_ = isStatic ? tUnknown() : tNamed(typeName); // no `this` inside a static method
                 currentReturn_ = (m.kind == MemberKind::Init) ? namedType("unit") : m.returnType;
                 inAsync_ = m.isAsync;
+                scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 for (const auto& p : m.params) declare(p.name, p.type, false, p.pos);
                 if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Init) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
+                scopeStart_ = {}; scopeEnd_ = {};
                 inAsync_ = false;
                 currentThis_ = tNamed(typeName);
             } else if (m.kind == MemberKind::Property && m.init) {

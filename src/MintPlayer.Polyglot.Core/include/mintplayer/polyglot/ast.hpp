@@ -175,6 +175,7 @@ struct FunctionDecl {
     std::vector<Param> params;
     TypeRef returnType = namedType("unit");
     std::vector<StmtPtr> body;
+    SourcePos bodyEnd;             // end of the body (the `}` / end of `=> expr`) — the scope extent for locals (§4.8 completion)
     bool isExpect = false;         // `expect fn` — a capability signature with no body (§4.4)
     std::string actualTarget;      // `actual(<target>) fn` — the per-target implementation; empty otherwise
     bool isAsync = false;          // `async fn` — a coroutine; each backend wraps the return in Task/Promise/async def (§4.7)
@@ -205,6 +206,7 @@ struct Member {
     std::vector<Param> params;           // Method/Operator/Init
     TypeRef returnType;                  // Method/Operator
     std::vector<StmtPtr> body;           // block body
+    SourcePos bodyEnd;                   // end of the body (`}` / end of `=> expr`) — scope extent for locals (§4.8)
     ExprPtr exprBody;                    // `=> expr` body
     bool hasBody = false;                // false = stub (interface method `;`)
     bool exprBodied = false;             // true = `=> expr`, false = block

@@ -765,7 +765,17 @@ struct LspServer {
 
         auto it = model_.find(uri);
         if (it != model_.end())
-            for (const auto& d : it->second.defs) add(d.name, completionKind(d.kind));
+            for (const auto& d : it->second.defs) {
+                // A local/param is offered only where it's in scope (its enclosing fn/method extent). Defs with
+                // no recorded scope (scopeEnd.line==0 — e.g. top-level, lambdas) are always offered, as before.
+                if ((d.kind == SymbolKind::Local || d.kind == SymbolKind::Parameter) && d.scopeEnd.line != 0) {
+                    bool inScope =
+                        (line > d.scopeStart.line || (line == d.scopeStart.line && col >= d.scopeStart.col)) &&
+                        (line < d.scopeEnd.line   || (line == d.scopeEnd.line   && col <= d.scopeEnd.col));
+                    if (!inScope) continue;
+                }
+                add(d.name, completionKind(d.kind));
+            }
         static const char* kw[] = {
             "fn", "let", "var", "const", "if", "else", "while", "do", "for", "in", "match", "when", "return",
             "break", "continue", "yield", "record", "class", "interface", "enum", "union", "extension",

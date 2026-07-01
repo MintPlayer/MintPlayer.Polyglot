@@ -189,12 +189,13 @@ symbols, semantic tokens, formatting, references, rename (file-local), completio
 thin `vscode-languageclient` client (plain JS, no bundler; F5 via repo-root `.vscode` → build CLI + `npm install`).
 A minimal **`pgconfig.json`** (`{root,lib}`, CLI/LSP layer, core stays IO-free) drives module resolution. The CLI
 now **statically links the CRT** (self-contained — see PRD §4.3). Not built: **P16d** the Visual Studio client;
-deferred tail: in-scope local filtering (needs AST block-end positions), non-ASCII position walk (moot under utf-8).
+deferred tail: only the non-ASCII UTF-16 position walk remains (moot under the utf-8 encoding VS Code negotiates).
 ✅ done: live cross-file edits (a `BufferResolver` serves open unsaved imports; `didChange` re-analyzes all open
 docs); semantic tokens/hover/def inside `polyglot:` std virtual docs (scheme added to the selector; std analyzed
 from synced text, diagnostics suppressed); **member completion** (`obj.` — `SymbolDef.owner` on members; LSP
 analyzes a repaired buffer to resolve the receiver type, emits owner-matching members; `.` trigger char; `Math.`
-statics work; v1 skips inherited members + `this.`).
+statics work; v1 skips inherited members + `this.`); **in-scope local filtering** (parser records fn/method
+`bodyEnd`; sema stamps Local/Parameter defs with `[scopeStart,scopeEnd]`; LSP offers a local only in-range).
 **P17 ✅ done — live generated-output preview** (PRD §4.9, from a 2-agent investigation; slice plan PLAN §P17):
 see a `.pg`'s emitted C#/TS/Python **live as you type**, rendered read-only into a `polyglot-gen:` virtual editor
 opened beside the source (colored for free by the built-in target grammars). One new in-memory LSP request
