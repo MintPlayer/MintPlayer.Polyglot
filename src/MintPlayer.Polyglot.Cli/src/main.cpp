@@ -389,6 +389,36 @@ std::size_t byteOffset(const std::string& text, int line, int col) {
 }
 bool identPart(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
+// UTF-8 lead-byte -> its sequence length (1..4); a stray continuation/invalid byte counts as 1.
+int utf8Seq(unsigned char c) {
+    return c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
+}
+// UTF-16 code units spanned by the first `nbytes` bytes of UTF-8 string `s` (a 4-byte/astral char = 2 units).
+int utf16Units(const std::string& s, std::size_t nbytes) {
+    int u = 0;
+    for (std::size_t i = 0; i < nbytes && i < s.size();) {
+        int seq = utf8Seq(static_cast<unsigned char>(s[i]));
+        u += seq == 4 ? 2 : 1;
+        i += seq;
+    }
+    return u;
+}
+// The line's text (1-based line, newline excluded) — for per-line UTF-16<->byte column conversion.
+std::string lineOf(const std::string& text, int line) {
+    std::size_t start = byteOffset(text, line, 1), end = start;
+    while (end < text.size() && text[end] != '\n') ++end;
+    return text.substr(start, end - start);
+}
+// 1-based byte column -> 1-based UTF-16 column on `lineText`.
+int protoColFromByte(const std::string& lineText, int byteCol) { return 1 + utf16Units(lineText, static_cast<std::size_t>(byteCol - 1)); }
+// 1-based UTF-16 column -> 1-based byte column on `lineText`.
+int byteColFromUtf16(const std::string& lineText, int protoCol) {
+    int target = protoCol - 1, u = 0;
+    std::size_t i = 0;
+    while (i < lineText.size() && u < target) { int seq = utf8Seq(static_cast<unsigned char>(lineText[i])); u += seq == 4 ? 2 : 1; i += seq; }
+    return static_cast<int>(i) + 1;
+}
+
 // Map our SymbolKind -> the LSP SymbolKind enum (numeric).
 int lspSymbolKind(SymbolKind k) {
     switch (k) {
@@ -489,11 +519,33 @@ struct LspServer {
     std::map<std::string, SourceMap> sources_;   // uri -> its fileId->origin map (for cross-module locations)
     std::string root_;
     std::string lib_ = "io,math";
+    bool utf16_ = false;  // negotiated position encoding: false = utf-8 (byte columns, no conversion) / true = utf-16.
 
-    // A range from 1-based (line,col) positions, emitted as 0-based LSP positions (utf-8 = byte columns).
+    // A range from 1-based (line,col) positions, emitted as 0-based LSP positions (byte columns).
     static std::string rangeJson(int sl, int sc, int el, int ec) {
         return "{\"start\":{\"line\":" + std::to_string(sl - 1) + ",\"character\":" + std::to_string(sc - 1) +
                "},\"end\":{\"line\":" + std::to_string(el - 1) + ",\"character\":" + std::to_string(ec - 1) + "}}";
+    }
+
+    // Position-encoding conversion (only bites when utf-16 was negotiated; utf-8 = identity, so the VS Code
+    // path is byte-for-byte unchanged). Internal columns are 1-based byte offsets; the client speaks utf-16
+    // code units. Conversion needs the line's text, looked up in `text_` by uri — for a cross-file range in a
+    // doc we don't have open, we fall back to byte columns (correct for ASCII; the documented residual).
+
+    // Client position -> internal 1-based byte column. `protoChar0` is the 0-based character from the request.
+    int inCol(const std::string& uri, int line, int protoChar0) {
+        if (!utf16_) return protoChar0 + 1;
+        auto it = text_.find(uri);
+        if (it == text_.end()) return protoChar0 + 1;
+        return byteColFromUtf16(lineOf(it->second, line), protoChar0 + 1);
+    }
+    // Emit a range in `docUri`, converting byte columns to utf-16 when negotiated.
+    std::string encRange(const std::string& docUri, int sl, int sc, int el, int ec) {
+        if (!utf16_) return rangeJson(sl, sc, el, ec);
+        auto it = text_.find(docUri);
+        if (it == text_.end()) return rangeJson(sl, sc, el, ec);
+        const std::string& t = it->second;
+        return rangeJson(sl, protoColFromByte(lineOf(t, sl), sc), el, protoColFromByte(lineOf(t, el), ec));
     }
 
     // Module-resolution context for an open doc, derived from its nearest pgconfig.json (falling back to the
@@ -574,7 +626,7 @@ struct LspServer {
                     : d.severity == Severity::Hint ? 4 : 1;
             if (!first) arr += ",";
             first = false;
-            arr += "{\"range\":" + rangeJson(sl, sc, el, ec) + ",\"severity\":" + std::to_string(sev) +
+            arr += "{\"range\":" + encRange(uri, sl, sc, el, ec) + ",\"severity\":" + std::to_string(sev) +
                    ",\"source\":\"polyglot\",\"message\":" + json::quote(d.message) + "}";
         }
         lspSend("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":" +
@@ -584,7 +636,7 @@ struct LspServer {
     const SemanticModel* modelFor(const json::Value& params, int& line, int& col, std::string& uri) {
         uri = params["textDocument"]["uri"].asString();
         line = static_cast<int>(params["position"]["line"].asInt()) + 1;
-        col = static_cast<int>(params["position"]["character"].asInt()) + 1;
+        col = inCol(uri, line, static_cast<int>(params["position"]["character"].asInt()));
         auto it = model_.find(uri);
         return it == model_.end() ? nullptr : &it->second;
     }
@@ -612,7 +664,7 @@ struct LspServer {
         std::string targetUri = uriForFileId(uri, d->nameSpan.start.fileId);
         if (targetUri.empty()) return "null";
         int sl = d->nameSpan.start.line, sc = d->nameSpan.start.col;
-        return "{\"uri\":" + json::quote(targetUri) + ",\"range\":" + rangeJson(sl, sc, sl, sc + d->nameSpan.length) + "}";
+        return "{\"uri\":" + json::quote(targetUri) + ",\"range\":" + encRange(targetUri, sl, sc, sl, sc + d->nameSpan.length) + "}";
     }
 
     std::string references(const json::Value& params) {
@@ -628,7 +680,7 @@ struct LspServer {
             if (u.empty()) return;
             if (!first) arr += ",";
             first = false;
-            arr += "{\"uri\":" + json::quote(u) + ",\"range\":" + rangeJson(sl, sc, sl, sc + len) + "}";
+            arr += "{\"uri\":" + json::quote(u) + ",\"range\":" + encRange(u, sl, sc, sl, sc + len) + "}";
         };
         for (const Span& s : m->referencesTo(d)) emit(uri, s.start.line, s.start.col, s.length); // uses (this file)
         if (incDecl) { // the declaration (its own file)
@@ -655,7 +707,7 @@ struct LspServer {
         auto edit = [&](int sl, int sc, int len) {
             if (!first) edits += ",";
             first = false;
-            edits += "{\"range\":" + rangeJson(sl, sc, sl, sc + len) + ",\"newText\":" + json::quote(newName) + "}";
+            edits += "{\"range\":" + encRange(uri, sl, sc, sl, sc + len) + ",\"newText\":" + json::quote(newName) + "}";
         };
         edit(def.nameSpan.start.line, def.nameSpan.start.col, def.nameSpan.length);
         for (const Span& s : m->referencesTo(d)) edit(s.start.line, s.start.col, s.length);
@@ -679,9 +731,12 @@ struct LspServer {
     // knows, classified by symbol kind. Delta-encoded (5 ints/token, document order) with `declaration` set on
     // def sites. Layers on top of the TextMate grammar (which still colors keywords/strings/numbers/operators).
     std::string semanticTokens(const json::Value& params) {
-        auto it = model_.find(params["textDocument"]["uri"].asString());
+        std::string uri = params["textDocument"]["uri"].asString();
+        auto it = model_.find(uri);
         if (it == model_.end()) return "{\"data\":[]}";
         const SemanticModel& m = it->second;
+        auto tt = text_.find(uri);
+        const std::string* textp = tt == text_.end() ? nullptr : &tt->second; // for utf-16 column conversion
         struct Tok { int line, col, len, type, mod; };
         std::vector<Tok> toks;
         for (const auto& d : m.defs)
@@ -702,12 +757,18 @@ struct LspServer {
             if (t.line == lastLine && t.col == lastCol) continue; // LSP requires non-overlapping tokens
             lastLine = t.line;
             lastCol = t.col;
-            int line0 = t.line - 1, char0 = t.col - 1;
+            int col1 = t.col, len1 = t.len;
+            if (utf16_ && textp) { // byte column/length -> utf-16 code units on this line
+                std::string ln = lineOf(*textp, t.line);
+                col1 = protoColFromByte(ln, t.col);
+                len1 = protoColFromByte(ln, t.col + t.len) - col1;
+            }
+            int line0 = t.line - 1, char0 = col1 - 1;
             int dLine = line0 - prevLine;
             int dChar = dLine == 0 ? char0 - prevChar : char0;
             if (!first) data += ",";
             first = false;
-            data += std::to_string(dLine) + "," + std::to_string(dChar) + "," + std::to_string(t.len) + "," +
+            data += std::to_string(dLine) + "," + std::to_string(dChar) + "," + std::to_string(len1) + "," +
                     std::to_string(t.type) + "," + std::to_string(t.mod);
             prevLine = line0;
             prevChar = char0;
@@ -731,7 +792,7 @@ struct LspServer {
 
         std::string uri = params["textDocument"]["uri"].asString();
         int line = static_cast<int>(params["position"]["line"].asInt()) + 1;
-        int col = static_cast<int>(params["position"]["character"].asInt()) + 1;
+        int col = inCol(uri, line, static_cast<int>(params["position"]["character"].asInt()));
 
         // Member context: an identifier prefix immediately preceded by '.' — resolve the receiver's type and
         // list its members. Analyze a REPAIRED buffer (the `.member` under the cursor removed) so the receiver
@@ -805,7 +866,7 @@ struct LspServer {
         bool first = true;
         for (const SymbolDef* s : it->second.documentSymbols()) {
             int sl = s->nameSpan.start.line, sc = s->nameSpan.start.col;
-            std::string r = rangeJson(sl, sc, sl, sc + s->nameSpan.length);
+            std::string r = encRange(uri, sl, sc, sl, sc + s->nameSpan.length);
             if (!first) arr += ",";
             first = false;
             arr += "{\"name\":" + json::quote(s->name) + ",\"kind\":" + std::to_string(lspSymbolKind(s->kind)) +
@@ -843,12 +904,13 @@ int runLsp(const std::vector<std::string>&) {
             if (opts["lib"].kind == json::Value::Kind::String) srv.lib_ = opts["lib"].asString();
             srv.root_ = root;
             // Only pick "utf-8" if the client offered it (LSP requires choosing from its positionEncodings);
-            // otherwise fall back to the utf-16 default. Our columns are byte offsets = utf-16 units for
-            // ASCII, so either encoding maps correctly for ASCII (a non-ASCII walk is the documented follow-up).
+            // otherwise fall back to the utf-16 default. Our columns are byte offsets; under utf-16 the server
+            // converts columns per line (inCol/encRange/semanticTokens) so non-ASCII positions are correct too.
             bool utf8 = false;
             for (const auto& e : params["capabilities"]["general"]["positionEncodings"].items())
                 if (e.asString() == "utf-8") utf8 = true;
             std::string enc = utf8 ? "utf-8" : "utf-16";
+            srv.utf16_ = !utf8;
             lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"" + enc + "\",\"textDocumentSync\":1,"
                          "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true,"
                          "\"documentFormattingProvider\":true,\"referencesProvider\":true,\"renameProvider\":true,"

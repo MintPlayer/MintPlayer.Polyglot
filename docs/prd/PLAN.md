@@ -767,9 +767,16 @@ VS-2026/v145 SDK generation.
   range (defs with no recorded scope — top-level, lambdas — stay always-offered, as before). Function-level
   granularity (a local in an inner block is in scope for the whole enclosing fn — fine for completion). Spawn-tested:
   inside `main`, its own local shows but a sibling function's local doesn't, while functions stay offered.
-- **P16 deferred tail (now just one, and moot in practice):** the non-ASCII UTF-16 position walk — the server's
-  columns are byte offsets, correct under the `utf-8` encoding VS Code negotiates; only a hypothetical utf-16-only
-  client on non-ASCII lines is affected. Plus **P16d** (Visual Studio) above.
+- **Non-ASCII UTF-16 position walk ✅ (2026-07-01) — the deferred tail is now empty.** When a client negotiates
+  `utf-16` (VS Code negotiates `utf-8`, so that path is unchanged — every conversion is guarded by a `utf16_` flag
+  and is pure identity under utf-8), the server converts columns per line between its internal byte offsets and the
+  client's utf-16 code units: **incoming** positions via `inCol` (used by `modelFor` + completion), **outgoing**
+  ranges via `encRange` (diagnostics, definition, references, rename, documentSymbol — using the target doc's text,
+  falling back to byte columns for a cross-file doc we don't have open), and **semantic tokens** convert each
+  token's start column *and* length. Helpers `utf16Units`/`byteColFromUtf16`/`protoColFromByte`/`lineOf` (a 4-byte
+  astral char = 2 utf-16 units). Spawn-tested with a `"é"`-containing line under forced utf-16: references reports
+  the utf-16 column and go-to-def from a utf-16 cursor resolves correctly. **All P16 tail items are done; only
+  P16d (the Visual Studio client) remains of P16.**
 
 ## P17 — Live generated-output preview — ✅ done (2026-07-01; §4.9, 2-agent investigation)
 See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and
