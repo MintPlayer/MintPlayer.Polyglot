@@ -676,8 +676,10 @@ serving publishDiagnostics / definition / hover / documentSymbol / formatting. T
    as the server command (`args:["lsp"]`); pass `{root,lib}` as `initializationOptions`. **Remove** the
    `check`/`fmt` shell-out providers (superseded by `publishDiagnostics`/`formatting`); **keep** the grammar
    (semantic tokens layer on top) + `language-configuration.json`. Add a bundle `preLaunchTask`.
-9. **Minimal `pgconfig.json`** (`{root, lib, paths?}`) parsed in the CLI/LSP layer → the resolver + `LibConfig`
-   the core already consumes (core stays IO-free). A strict subset/precursor of P10's manifest.
+9. **Minimal `pgconfig.json`** ✅ (2026-07-01) — `{root, lib}` parsed in the CLI/LSP layer (Core JSON reader) →
+   the resolver + `LibConfig` the core already consumes (core stays IO-free). Found by walking up from the file;
+   the LSP re-reads it per analysis and it wins over `initializationOptions`; explicit `check`/`build` flags win
+   over it. Testbench demo: `editors/vscode/testbench/pgconfig.json` + a `"geometry"` import. `paths` deferred to P10.
 
 **P16c — Cross-module + richer features.**
 10. Stamp each module's `fileId`/URI at its lex boundary (`loadImports`/`linkCoreModule`); embedded std → a

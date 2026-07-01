@@ -1,0 +1,5 @@
+{
+  "//": "Polyglot project manifest. The CLI (check/build) and the language server read this to resolve modules with no flags. `root` is relative to this file (the base for logical imports like \"geometry\"); `lib` is the ambient prelude auto-imported everywhere (so `print` and `Math` resolve).",
+  "root": ".",
+  "lib": ["io", "math"]
+}

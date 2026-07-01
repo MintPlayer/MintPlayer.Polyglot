@@ -60,6 +60,43 @@ bool writeFile(const fs::path& path, const std::string& content) {
     return true;
 }
 
+// Split a comma-separated lib list ("io,math") into a LibConfig, trimming blank entries.
+LibConfig parseLibList(const std::string& libArg) {
+    LibConfig lib;
+    for (std::size_t b = 0, e; b <= libArg.size(); b = e + 1) {
+        e = libArg.find(',', b);
+        if (e == std::string::npos) e = libArg.size();
+        std::string name = libArg.substr(b, e - b);
+        if (!name.empty()) lib.libs.push_back(name);
+    }
+    return lib;
+}
+
+// The minimal project manifest (PRD §4.8): `{ "root": <dir>, "lib": ["io","math"] }`. `root` is resolved
+// against the pgconfig.json that declares it; `lib` is the ambient prelude. Found by walking up from a start
+// directory to the first pgconfig.json. Parsed with the Core JSON reader — Core stays IO-free; this is
+// CLI/LSP glue that produces the same `root`/`lib` the compiler already accepts. A precursor of P10's file.
+struct PgConfig {
+    bool found = false;
+    std::string root; // absolute, resolved against the config's directory
+    std::string lib;  // comma-joined lib names
+};
+PgConfig loadPgConfig(const fs::path& startDir) {
+    for (fs::path d = startDir;; d = d.parent_path()) {
+        std::string src;
+        if (readFile(d / "pgconfig.json", src)) {
+            json::Value v = json::parse(src);
+            PgConfig pc;
+            pc.found = true;
+            std::string r = v["root"].asString();
+            pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
+            for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
+            return pc;
+        }
+        if (!d.has_parent_path() || d.parent_path() == d) return {};
+    }
+}
+
 // Resolves a cross-`.pg` import to a file. A bare specifier ("a.b.c") is a logical module name resolved
 // under the workspace root (a.b.c -> <root>/a/b/c.pg); a "./x"/"../x" specifier is resolved relative to
 // the importing file. (std.* never reaches here — the Core serves it from its embedded registry first.)
@@ -156,16 +193,14 @@ int runBuild(const std::vector<std::string>& args) {
     std::cout << "polyglot build " << input.string() << "\n";
 
     fs::path entryDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
+    // A pgconfig.json near the input fills in root/lib the user didn't pass explicitly (explicit flags win).
+    PgConfig pc = loadPgConfig(entryDir);
+    if (root.empty() && pc.found && !pc.root.empty()) root = pc.root;
+    if (libArg.empty() && pc.found) libArg = pc.lib;
     if (root.empty()) root = entryDir;
     FileModuleResolver resolver(root, entryDir);
 
-    LibConfig lib; // split `--lib io,math` on commas (trimming blanks)
-    for (std::size_t b = 0, e; b <= libArg.size(); b = e + 1) {
-        e = libArg.find(',', b);
-        if (e == std::string::npos) e = libArg.size();
-        std::string name = libArg.substr(b, e - b);
-        if (!name.empty()) lib.libs.push_back(name);
-    }
+    LibConfig lib = parseLibList(libArg);
 
     bool ok = true;
     if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs", &resolver, lib);
@@ -233,16 +268,13 @@ int runCheck(const std::vector<std::string>& args) {
     }
 
     fs::path entryDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
+    PgConfig pc = loadPgConfig(entryDir); // fills root/lib the user didn't pass explicitly
+    if (root.empty() && pc.found && !pc.root.empty()) root = pc.root;
+    if (libArg.empty() && pc.found) libArg = pc.lib;
     if (root.empty()) root = entryDir;
     FileModuleResolver resolver(root, entryDir);
 
-    LibConfig lib;
-    for (std::size_t b = 0, e; b <= libArg.size(); b = e + 1) {
-        e = libArg.find(',', b);
-        if (e == std::string::npos) e = libArg.size();
-        std::string name = libArg.substr(b, e - b);
-        if (!name.empty()) lib.libs.push_back(name);
-    }
+    LibConfig lib = parseLibList(libArg);
 
     EmitResult result = compile(source, Target::CSharp, &resolver, lib);
 
@@ -382,23 +414,17 @@ struct LspServer {
                "},\"end\":{\"line\":" + std::to_string(el - 1) + ",\"character\":" + std::to_string(ec - 1) + "}}";
     }
 
-    LibConfig libConfig() const {
-        LibConfig lib;
-        for (std::size_t b = 0, e; b <= lib_.size(); b = e + 1) {
-            e = lib_.find(',', b);
-            if (e == std::string::npos) e = lib_.size();
-            std::string n = lib_.substr(b, e - b);
-            if (!n.empty()) lib.libs.push_back(n);
-        }
-        return lib;
-    }
-
     void analyzeDoc(const std::string& uri) {
         fs::path p(uriToPath(uri));
         fs::path entryDir = p.has_parent_path() ? p.parent_path() : fs::path(".");
-        fs::path root = root_.empty() ? entryDir : fs::path(root_);
+        // A pgconfig.json near the file drives root/lib and wins over the client's initializationOptions
+        // (re-read each analysis, so editing pgconfig.json takes effect on the next change).
+        PgConfig pc = loadPgConfig(entryDir);
+        fs::path root = pc.found && !pc.root.empty() ? fs::path(pc.root)
+                      : (root_.empty() ? entryDir : fs::path(root_));
+        std::string libStr = pc.found ? pc.lib : lib_;
         FileModuleResolver resolver(root, entryDir);
-        AnalysisResult a = analyze(text_[uri], &resolver, libConfig());
+        AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(libStr));
         model_[uri] = std::move(a.model);
         publishDiagnostics(uri, a.diagnostics);
     }

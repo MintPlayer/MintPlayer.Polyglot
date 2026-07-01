@@ -45,9 +45,11 @@ solution with the **VS 18 Insiders MSBuild** — this is a C++/v145 project, *no
 Extension Development Host with the extension loaded and opens `editors/vscode/testbench/`. One keypress = build
 CLI + install deps + launch + a ready `.pg` workspace.
 
-The dev host opens `editors/vscode/testbench/` — a `hello.pg` with a pre-wired `polyglot.cliPath` pointing at
-the Debug CLI (`x64/Debug/…`, resolved relative to the workspace, so it's portable across checkouts). The
-extension starts the language server by spawning that CLI as `polyglot lsp`.
+The dev host opens `editors/vscode/testbench/` — a `hello.pg` (+ a `geometry.pg` it imports) with a pre-wired
+`polyglot.cliPath` pointing at the Debug CLI (`x64/Debug/…`, resolved relative to the workspace, so it's
+portable across checkouts). The extension starts the language server by spawning that CLI as `polyglot lsp`.
+A **`pgconfig.json`** in the testbench supplies `root` (so the `"geometry"` import resolves) and `lib`
+(`io,math`, so `print`/`Math` resolve) — no editor `polyglot.lib` setting needed.
 
 In the dev host:
 1. `hello.pg` opens colorized (grammar).
@@ -56,9 +58,11 @@ In the dev host:
    buffer, so no save needed).
 4. **Go to Definition** (F12) / hover on a function, type, or local jumps to / describes its declaration.
 
-If you open your own workspace instead, run `npm install` in `editors/vscode` once, set **`polyglot.cliPath`**
-(bare `polyglot` uses PATH; a relative path resolves against the workspace root; absolute is used as-is) and
-**`polyglot.lib`** (default `io,math`). `polyglot.trace.server` toggles JSON-RPC tracing for debugging.
+If you open your own workspace instead, run `npm install` in `editors/vscode` once and set **`polyglot.cliPath`**
+(bare `polyglot` uses PATH; a relative path resolves against the workspace root; absolute is used as-is). For
+`root`/`lib`, drop a **`pgconfig.json`** (`{ "root": ".", "lib": ["io","math"] }`) in the project — the server
+finds it by walking up from each file, and it wins over the `polyglot.lib` setting. `polyglot.trace.server`
+toggles JSON-RPC tracing for debugging.
 
 Manual alternative (opens an arbitrary folder):
 ```

@@ -498,10 +498,12 @@ walk decl vectors) come first; `definition`/`hover`/`semanticTokens`/`completion
 unchanged — origin rides inside each node's now-file-stamped `pos`. Until then, same-file queries mark merged
 std/prelude/import decls `external` and honestly answer "definition not in this file."
 
-**`pgconfig.json`** (your project manifest): minimal `{ root, lib, paths? }`, parsed in the **CLI/LSP layer** (core
-stays IO-free) into the same `FileModuleResolver` root + `LibConfig` the core already consumes — so the LSP resolves
-modules with no per-keystroke flags. It is a strict **subset/precursor of P10's manifest** (P10 later *adds*
-`environments`/`plugins`/lockfile to the same file), independent of P11.
+**`pgconfig.json`** (your project manifest): minimal `{ root, lib }`, parsed in the **CLI/LSP layer** with the Core
+JSON reader (core stays IO-free) into the same `FileModuleResolver` root + `LibConfig` the core already consumes —
+so the LSP (and `check`/`build`) resolve modules with no per-keystroke flags. **✅ implemented 2026-07-01:** found by
+walking up from the file; the LSP re-reads it each analysis and it wins over the client's `initializationOptions`;
+explicit CLI flags still win over it. A strict **subset/precursor of P10's manifest** (P10 later *adds*
+`environments`/`plugins`/lockfile + a `paths` search-map to the same file), independent of P11.
 
 **Editor clients.** VS Code: add `vscode-languageclient` (the extension's first npm dep) with a light **esbuild** bundle
 (source stays JS); reuse the existing `cliPath()` resolver as the server command (`args: ["lsp"]`); pass `{root, lib}`
