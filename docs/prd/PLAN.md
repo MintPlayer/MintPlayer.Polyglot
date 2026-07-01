@@ -779,10 +779,16 @@ code behind the existing seams — `compile()`, emission, and `analyze()` are un
 `ok` for a valid doc; broken/unknown-target/unopened all `ok:false`). Client delta from step 9: the client sends
 **only `{uri, target}`** and the **server** derives `{root,lib}` from the file's nearest `pgconfig.json` (the
 `contextFor` walk-up, re-read per request) — so multi-root resolution is correct *without* the client computing an
-owning folder, and preview output always matches the diagnostics. `polyglot-gen:` URIs carry `{src,target}` as JSON
-in the query; coloring via the `.cs/.ts/.py` extension + an explicit `setTextDocumentLanguage`. The preview follows
-the active `.pg` (guarding against following gen/std virtual docs), debounces on-type at 200 ms, and keeps a
-per-gen-URI last-good cache pruned when its source closes.
+owning folder, and preview output always matches the diagnostics. Client UX delta from steps 6/8: **"Show Generated
+Output" opens *all three* targets at once** (each its own permanent tab beside the source), not one selected target
+— a `.pg` genuinely has C#/TS/Python outputs, so surfacing all is the least-surprising behavior. Consequently the
+single-target status-bar switcher / `selectTarget` / `preview.defaultTarget` (built first, then reworked on user
+feedback) were **dropped**; opening a *single* target on demand is the Explorer tree's job (`openGenerated`). To let
+multiple tabs follow one source without per-source tab churn, `polyglot-gen:` URIs are keyed by **target only**
+(`{target}` in the query) and render whatever `previewSourceUri` currently points at; following the active `.pg`
+(guarding against gen/std virtual docs) and the 200 ms debounce both just re-fire every open preview. Coloring via
+the `.cs/.ts/.py` extension + an explicit `setTextDocumentLanguage`; last-good cache keyed `target::src`, pruned on
+source close.
 
 **P17c — the "Polyglot Outputs" TreeView (discovery) — ✅ done.**
 10. A `TreeDataProvider` **in the Explorer** (`contributes.views.explorer`, gated by a `polyglot.hasOutputs`

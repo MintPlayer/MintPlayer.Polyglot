@@ -97,135 +97,105 @@ function activate(context) {
   context.subscriptions.push({ dispose: () => { try { if (client) client.stop(); } catch (_e) { /* ignore */ } } });
 }
 
-// Live generated-output preview (PRD §4.9 / PLAN §P17). Render the emitted C#/TS/Python for the focused .pg
-// into a read-only virtual document (scheme `polyglot-gen:`) opened beside the source, refreshed on-type. The
-// server produces the code in memory via the custom `polyglot/emit` request — no file is written. Coloring is
-// free: the gen URI carries a .cs/.ts/.py extension (and we set the languageId explicitly), so the built-in
-// target-language grammars apply. Read-only is by construction (content-provider docs can't be edited/saved).
+// Live generated-output preview (PRD §4.9 / PLAN §P17). "Show Generated Output" opens all three emitted targets
+// (C#/TS/Python) for the focused .pg, each in its own read-only tab (scheme `polyglot-gen:`) beside the source,
+// refreshed on-type. The server produces the code in memory via the custom `polyglot/emit` request — no file is
+// written. Coloring is free: each gen URI carries a .cs/.ts/.py extension (and we set the languageId), so the
+// built-in target-language grammars apply. Read-only is by construction (content-provider docs can't be saved).
+// Gen URIs are keyed by target only; content follows the active .pg via previewSourceUri, so the tabs re-render
+// in place instead of churning per source. The Explorer "Polyglot Outputs" tree opens a single target on demand.
 function setupGeneratedPreview(context) {
-  const cfg = vscode.workspace.getConfiguration('polyglot');
-  let currentTarget = context.workspaceState.get('polyglot.previewTarget') || cfg.get('preview.defaultTarget', 'csharp');
-  if (!TARGETS[currentTarget]) currentTarget = 'csharp';
-
-  let previewSourceUri = null; // toString() of the .pg the preview currently follows
-  let previewOpen = false;     // is a polyglot-gen: tab open?
+  let previewSourceUri = null; // toString() of the .pg the previews currently follow
   let debounce;
-  const lastGood = new Map();  // genUri.toString() -> last successful emitted code
+  const lastGood = new Map();  // `${target}::${src}` -> last successful emitted code
 
-  // A deterministic gen URI for (source, target): same inputs -> identical URI, so on-type refresh fires the
-  // exact URI of the open preview doc. The source uri + target ride in the query as JSON (VS Code decodes it
-  // on `.query` access — the standard content-provider pattern).
-  const genUriFor = (srcUri, target) => {
-    const base = path.basename(vscode.Uri.parse(srcUri).fsPath).replace(/\.pg$/i, '');
-    return vscode.Uri.parse(`polyglot-gen:/${base}.${TARGETS[target].ext}`)
-      .with({ query: JSON.stringify({ src: srcUri, target }) });
-  };
+  // Gen URIs are keyed by TARGET only; the source they render is read from previewSourceUri at render time. So
+  // the (up to) three preview tabs follow the active .pg by re-rendering in place — no per-source tab churn.
+  const genUriFor = (target) =>
+    vscode.Uri.parse(`polyglot-gen:/output.${TARGETS[target].ext}`).with({ query: JSON.stringify({ target }) });
 
   const emitter = new vscode.EventEmitter();
   const provider = {
     onDidChange: emitter.event,
     provideTextDocumentContent: async (uri) => {
-      let src, target;
-      try { ({ src, target } = JSON.parse(uri.query)); } catch (_e) { return '// Polyglot: bad preview URI'; }
-      const prefix = (TARGETS[target] || TARGETS.csharp).comment;
+      let target;
+      try { ({ target } = JSON.parse(uri.query)); } catch (_e) { target = 'csharp'; }
+      const t = TARGETS[target] || TARGETS.csharp;
+      const src = previewSourceUri;
+      if (!src) return `${t.comment} Polyglot: open a .pg file to preview its ${t.name} output`;
+      const key = `${target}::${src}`;
       try {
         const res = await client.sendRequest('polyglot/emit', { uri: src, target });
-        if (res && res.ok) { lastGood.set(uri.toString(), res.code); return res.code; }
+        if (res && res.ok) { lastGood.set(key, res.code); return res.code; }
         const n = (res && res.diagnostics && res.diagnostics.length) || 0;
-        const banner = `${prefix} Polyglot: ${n} error${n === 1 ? '' : 's'} — showing last successful output (stale)\n`;
-        const prev = lastGood.get(uri.toString());
+        const banner = `${t.comment} Polyglot: ${n} error${n === 1 ? '' : 's'} — showing last successful output (stale)\n`;
+        const prev = lastGood.get(key);
         return prev !== undefined ? banner + prev
-          : `${prefix} Polyglot: ${n} error${n === 1 ? '' : 's'} — no successful output yet`;
+          : `${t.comment} Polyglot: ${n} error${n === 1 ? '' : 's'} — no successful output yet`;
       } catch (_e) {
-        return `${prefix} Polyglot: language server unavailable`;
+        return `${t.comment} Polyglot: language server unavailable`;
       }
     }
   };
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('polyglot-gen', provider));
 
-  const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusItem.command = 'polyglot.selectTarget';
-  statusItem.tooltip = 'Polyglot: switch the generated-output preview target';
-  context.subscriptions.push(statusItem);
-  const updateStatus = (editor) => {
-    statusItem.text = `$(file-code) Output: ${TARGETS[currentTarget].name}`;
-    if (editor && editor.document.languageId === 'polyglot' && editor.document.uri.scheme === 'file') statusItem.show();
-    else statusItem.hide();
+  // Re-render every open preview tab (they all follow previewSourceUri).
+  const refreshOpen = () => {
+    for (const d of vscode.workspace.textDocuments) if (d.uri.scheme === 'polyglot-gen') emitter.fire(d.uri);
   };
-  updateStatus(vscode.window.activeTextEditor);
 
-  const refreshPreview = async () => {
-    if (!previewOpen || !previewSourceUri) return;
-    const genUri = genUriFor(previewSourceUri, currentTarget);
+  // Open one target's preview beside the source as a permanent tab (preview:false), so multiple targets coexist.
+  const openTarget = async (target) => {
+    const genUri = genUriFor(target);
     const doc = await vscode.workspace.openTextDocument(genUri);
-    await vscode.languages.setTextDocumentLanguage(doc, TARGETS[currentTarget].langId);
-    await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: true, preserveFocus: true });
-    emitter.fire(genUri); // re-pull in case the doc was cached from a prior edit
+    await vscode.languages.setTextDocumentLanguage(doc, TARGETS[target].langId);
+    await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: false, preserveFocus: true });
+    emitter.fire(genUri);
+  };
+
+  const activePgUri = () => {
+    const e = vscode.window.activeTextEditor;
+    return e && e.document.languageId === 'polyglot' && e.document.uri.scheme === 'file' ? e.document.uri.toString() : null;
   };
 
   context.subscriptions.push(
+    // Show ALL generated outputs (C#/TS/Python) for the active .pg — each in its own tab beside the source.
     vscode.commands.registerCommand('polyglot.showOutput', async () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== 'polyglot' || editor.document.uri.scheme !== 'file') {
-        vscode.window.showInformationMessage('Polyglot: open a .pg file to preview its generated output.');
-        return;
-      }
-      previewSourceUri = editor.document.uri.toString();
-      previewOpen = true;
-      await refreshPreview();
+      const src = activePgUri();
+      if (!src) { vscode.window.showInformationMessage('Polyglot: open a .pg file to preview its generated output.'); return; }
+      previewSourceUri = src;
+      for (const t of Object.keys(TARGETS)) await openTarget(t);
     }),
-    vscode.commands.registerCommand('polyglot.selectTarget', async () => {
-      const pick = await vscode.window.showQuickPick(
-        Object.keys(TARGETS).map((k) => ({ label: TARGETS[k].name, target: k })),
-        { placeHolder: 'Select the Polyglot generated-output target' });
-      if (!pick) return;
-      currentTarget = pick.target;
-      context.workspaceState.update('polyglot.previewTarget', currentTarget);
-      updateStatus(vscode.window.activeTextEditor);
-      await refreshPreview();
-    }),
-    // Open a specific (source, target) preview — the command a "Polyglot Outputs" tree leaf runs.
+    // Open a single (source, target) preview — the command a "Polyglot Outputs" tree leaf runs.
     vscode.commands.registerCommand('polyglot.openGenerated', async (srcUri, target) => {
       if (!TARGETS[target]) return;
-      currentTarget = target;
-      context.workspaceState.update('polyglot.previewTarget', currentTarget);
-      updateStatus(vscode.window.activeTextEditor);
       previewSourceUri = srcUri;
-      previewOpen = true;
-      await refreshPreview();
+      await openTarget(target);
     })
   );
 
-  // Follow the focused .pg — but never follow a gen/std virtual doc (that would thrash the preview).
+  // Follow the focused .pg: re-render open previews for the newly-active source (never follow a gen/std doc).
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
-    updateStatus(editor);
-    if (!editor || !previewOpen) return;
+    if (!editor) return;
     const d = editor.document;
     if (d.uri.scheme !== 'file' || d.languageId !== 'polyglot') return;
     if (d.uri.toString() === previewSourceUri) return;
     previewSourceUri = d.uri.toString();
-    refreshPreview();
+    refreshOpen();
   }));
 
   // Debounced on-type refresh of the followed source.
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument((e) => {
-    if (!previewOpen || !previewSourceUri) return;
-    if (e.document.uri.toString() !== previewSourceUri) return;
+    if (!previewSourceUri || e.document.uri.toString() !== previewSourceUri) return;
     clearTimeout(debounce);
-    debounce = setTimeout(() => emitter.fire(genUriFor(previewSourceUri, currentTarget)), 200);
+    debounce = setTimeout(refreshOpen, 200);
   }));
 
-  // Lifecycle: when the last gen tab closes, stop following; drop a closed source's cached output.
+  // Drop a closed .pg source's cached output.
   context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((doc) => {
-    if (doc.uri.scheme === 'polyglot-gen') {
-      if (!vscode.workspace.textDocuments.some((d) => d.uri.scheme === 'polyglot-gen')) previewOpen = false;
-      return;
-    }
     if (doc.uri.scheme === 'file' && doc.languageId === 'polyglot') {
-      const s = doc.uri.toString();
-      for (const k of [...lastGood.keys()]) {
-        try { if (JSON.parse(vscode.Uri.parse(k).query).src === s) lastGood.delete(k); } catch (_e) { /* ignore */ }
-      }
+      const suffix = `::${doc.uri.toString()}`;
+      for (const k of [...lastGood.keys()]) if (k.endsWith(suffix)) lastGood.delete(k);
     }
   }));
 

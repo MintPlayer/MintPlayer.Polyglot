@@ -196,9 +196,11 @@ opened beside the source (colored for free by the built-in target grammars). One
 `polyglot/emit` → `compile()` (no disk I/O, **zero Core change** — it's a CLI handler + client code over P16's
 virtual-doc/custom-request plumbing); client-debounced request/response, one target per request, last-good-with-
 stale-banner error UX (never a miscompile shown as valid). Delivered: `polyglot/emit` (spawn-tested), the
-`polyglot-gen:` provider + follow-active-editor + 200 ms debounce, a status-bar target switcher
-(`polyglot.selectTarget`, persisted), and an Explorer "Polyglot Outputs" tree (`polyglot.openGenerated`, gated by a
-`polyglot.hasOutputs` context key). Multi-root is server-side (per-file `pgconfig.json` walk-up in `contextFor`).
+`polyglot-gen:` provider + follow-active-editor + 200 ms debounce. **"Show Generated Output" opens all three targets
+at once** (one tab each, target-only gen URIs that follow the active `.pg`); an Explorer "Polyglot Outputs" tree
+(`polyglot.openGenerated`, gated by a `polyglot.hasOutputs` context key) opens a single target on demand. Multi-root
+is server-side (per-file `pgconfig.json` walk-up in `contextFor`). (The single-target status-bar switcher was built
+then dropped on feedback.)
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
 (build-integration NuGet, independent), **P16d** (Visual Studio LSP client).
 

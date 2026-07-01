@@ -547,12 +547,15 @@ throws away free grammar coloring and native editor affordances for a large re-i
 project's reuse-the-platform grain). The one legitimate future Webview use — gutter source-map lines linking a `.pg`
 line to its output line — is a post-P17 stretch, not this feature.
 
-**One preview, following focus, with a target switch** (the lean configuration): keep a single generated tab that
-shows *the selected target* for *the focused `.pg`*, retargeted via `window.onDidChangeActiveTextEditor`; switch
-target through a **StatusBarItem** (`Output: C#` → a `QuickPick` of the three) persisted in workspace state. Open
-with `preview:true`+`preserveFocus:true` so it reuses one tab and never steals the cursor. An **optional `TreeView`**
-(activity-bar "Polyglot Outputs": each open `.pg` → C#/TypeScript/Python leaves whose command opens the same virtual
-doc) is *discovery only* — a thin navigator over the identical provider, added as polish, not required for v1.
+**All targets, following focus** (as built — the design initially sketched one switchable tab, but a `.pg` genuinely
+emits C#/TS/Python, so "Show Generated Output" opens *all three* at once, each its own tab beside the source, and
+that's the least-surprising behavior): the tabs are `preview:false`+`preserveFocus:true` (permanent, cursor stays in
+the `.pg`) and all **follow the focused `.pg`** via `window.onDidChangeActiveTextEditor`. To follow without
+per-source tab churn, each gen URI is keyed by **target only** and renders whatever the current `previewSourceUri`
+points at — so following just re-fires the open tabs in place. A single target on demand is the **Explorer
+`TreeView` "Polyglot Outputs"**'s job (each open `.pg` → C#/TypeScript/Python leaves whose command opens that one
+target) — a thin navigator over the identical provider. (The first cut added a status-bar target switcher for a
+single-tab model; it was dropped on user feedback in favor of all-targets + the tree.)
 
 **Server side — one new request, zero Core change.** `compile(source, target, resolver, lib)` is already a pure
 in-memory function returning `EmitResult { ok, code, diagnostics }` — `code` is the emitted target text, and it
@@ -691,8 +694,9 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   virtual document (`polyglot-gen:` scheme) opened beside the source and colored for free by the built-in
   target-language grammars. One new in-memory LSP request (`polyglot/emit` → `compile()`, no disk I/O, no Core
   change), client-debounced request/response, last-good-with-stale-banner error UX (never a miscompile shown as
-  valid); a status-bar target switcher + an Explorer "Polyglot Outputs" tree for discovery. A follow of `P16`'s
-  virtual-doc + custom-request plumbing. Full design + slice plan: §4.9 / PLAN §P17.
+  valid). "Show Generated Output" opens **all three targets** beside the source (one tab each, following the active
+  `.pg`); an Explorer "Polyglot Outputs" tree opens a single target on demand. A follow of `P16`'s virtual-doc +
+  custom-request plumbing. Full design + slice plan: §4.9 / PLAN §P17.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
