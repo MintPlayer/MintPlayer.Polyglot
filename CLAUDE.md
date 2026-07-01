@@ -143,9 +143,12 @@ with a call-site diagnostic (`checkCapabilities`, call-site-keyed so unused port
 closing that §3.B silent-broken-output gap.
 **P13 ✅ done — std as real modules + the `lib` prelude** (PRD §4.6): `print` is now `std.io`'s generic
 `expect/actual print<T>` (TS body wraps `console.log(String(x))` universally so bigint/number print like C#
-`WriteLine`); `Math` is an `extern class Math` in `std.math` (bound static members + `PI`/`E`; `min/max/abs`
-are call-site-inlined bindings since a generic C# `Math.Min<T>` wouldn't compile); `i32.parse` stays global,
-`Error`/`Iterable` stay core. The **`lib` prelude** (`LibConfig` 4th arg to `compile()`, CLI `--lib io,math`)
+`WriteLine`); `Math` is an `extern class Math` in `std.math` (bound static members + `PI`/`E`; `min/max/abs/round`
+are call-site-inlined generic bindings — a generic C# `Math.Min<T>` wouldn't compile — constrained
+`<T: INumber>`); `i32.parse` stays global, `Error`/`Iterable`/`INumber` stay core. **`INumber`** is a
+compile-time-only numeric marker constraint (à la .NET's `System.Numerics.INumber<T>`, core `extern class`,
+satisfied by `i8..u64`/`f32`/`f64`): sema rejects a non-numeric arg to any `<T: INumber>` generic ahead of
+time (`checkNumericBounds`), and the bound is erased from emission (`csWhere`/`tsGenerics`). The **`lib` prelude** (`LibConfig` 4th arg to `compile()`, CLI `--lib io,math`)
 auto-imports std modules ambiently and **silently loses to** any user/explicit decl of the same name; a bare
 entry (`"io"`) means `std.io`, a qualified one (`"acme.physics"`) is a full specifier so third-party plugins
 auto-import by their own namespace. Also delivered: **TypeArg inference** (bind generic params from arg types,

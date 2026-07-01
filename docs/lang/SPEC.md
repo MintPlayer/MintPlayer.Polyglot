@@ -177,7 +177,10 @@ marked `open` (→ C# `virtual`; TS is structurally virtual anyway). `override` 
 overriding an `open` base method **and** when implementing an interface method (Kotlin's rule — intent is
 always explicit; the backend emits C# `override` / explicit interface impl / a plain TS method as
 appropriate). Generic bounds use `<T: Bound>`, multiple via `<T: A & B>` (C# `where`; TS intersection /
-structural).
+structural). One built-in bound is **`INumber`** — a core marker constraint (like .NET's
+`System.Numerics.INumber<T>`) satisfied by the numeric scalars (`i8`..`u64`, `f32`, `f64`); `std.math`'s
+`min`/`max`/`abs`/`round` use it, and a non-numeric type argument is rejected at Polyglot compile time. It is
+compile-time-only — erased from the emitted C#/TS, which already type-check numeric operations.
 
 ### 4.5 Enums vs unions
 
