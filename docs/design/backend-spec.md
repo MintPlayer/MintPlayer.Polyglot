@@ -207,3 +207,63 @@ The declarative DSL (the P9 endpoint) was then extracted from these **three** wo
 two-plus-a-guess — see the header + §3: all per-target data consolidated into `BackendSpec` (blockStyle/
 stmtEnd/throwKeyword lifted from constant-hooks, bool/null spellings, string escaping → the shared
 `renderString`), each backend reduced to `{Spec + Hooks}`. Full slice log: `../prd/PLAN.md` §P9 / §P9-V.
+
+---
+
+## 6. The pure-JSON DSL endpoint — languages as data plugins (design 2026-07-01; PRD §4.10, PLAN §P18)
+
+The §1 `{Spec + Hooks}` split reduced the *data* (~70%) to `BackendSpec`, leaving the ~30% imperative Hooks
+(the `emitExpr` walk, declaration emitters, numeric-faithfulness, `Match`/`Try`, interpolation). A 4-agent
+investigation established that this residual is **not** irreducible to data — almost all of it is a *fixed
+decision tree over IR fields that renders strings*, i.e. exactly what a **bounded template interpreter**
+evaluates. P9's correct point was narrower: *don't guess the DSL format from ≤3 backends, and don't ship a
+scripting runtime.* With three working backends to extract from, the format is now derivable. Verdict: **≈85%**
+flattens to data with the base interpreter, **≈95%+** with a small fixed set of added Core primitives, the <5%
+remainder being genuine target limits the §3.E capability gate already refuses (never a miscompile).
+
+**The `Rule` grammar (Design A — chosen; a flat template-per-node table + a weak expression sub-language).** A
+`Rule` is JSON that evaluates to a string, over a fixed, **non-Turing-complete** interpreter:
+```
+Rule := string                                   // literal
+      | {"tmpl":[Rule,…]}                         // concat
+      | {"get":"node.field"}                      // read an IR field
+      | {"emit":"node.child"}                     // recurse a child IR node
+      | {"emitChild":"node.child","side":"l|r"}   // recurse WITH precedence parenthesization (interpreter-computed)
+      | {"type":"node.typeRef"}                   // render a TypeRef via the plugin's type rules
+      | {"map":"path","each":Rule,"join":sep}     // bounded list iteration ($ = element)
+      | {"fold":{"list":"path","dir":"r","each":Rule,"seed":Rule}}   // right-fold (match/try chains)
+      | {"interleave":{"lits":"p","holes":"p","lit":Rule,"hole":Rule}}  // interpolation zip
+      | {"case":{"when":[[Test,Rule],…],"else":Rule}}                  // conditional
+      | {"call":"helper","with":{…}}              // named sub-rule (depth-capped)
+      | {"let":{"name":Rule},"in":Rule} | {"fresh":"prefix"}          // single-eval / fresh temp
+      | {"require":{"bucket":"imports","key":"asyncio","text":"…"}}   // dedup'd preamble (the one side effect)
+      | {"fn":"builtin","args":[Rule,…]}          // a FIXED builtin (ident/pascalCase/escape/opSpelling/wrap/…)
+Test := eq | in | has | isKind | typeIs | any | all | and | or | not   // no arithmetic, no plugin loops
+```
+Precedence lives in a declared `precedence` table; `emitChild` computes parenthesization in C++ (identical
+across all three backends today — plugins never author paren logic). Numeric faithfulness flattens to
+`intWrap`/`binaryWrap` tables + a `wrap` builtin + `require`d prelude fragments. The builtin set is **fixed and
+in-Core** — adding one is a trusted Core change; a plugin can only *select among* + *substitute into* its own
+templates, which is what makes it RCE-safe by construction.
+
+**Design B (rejected):** a closed vocabulary of typed strategy-ops (`MatchOp{style:"switchExpr"|"ifChain"|
+"ternaryFold"}`, `DeclClassOp{equalsPolicy:…}`). Lower plugin-author burden, but it puts the Core in the
+business of *predicting every future target's idioms* — the exact speculation this project forbids. Design A's
+template neutrality means a novel target stresses the *data*, not the Core, and degrades to the same boundary B
+would hit anyway.
+
+**The honest ceiling.** No per-plugin escape-to-code (that reintroduces RCE). Each residual decision is either
+*(a) a fixed bounded Core primitive/predicate* — `typeIsRecord` (TS structural `.equals`), `any`/`all`
+(C# exhaustiveness default), and pushing `hasCatchAll`-style module facts into **lowering** as precomputed IR
+bits so interpreter context stays node-local — or *(b) unsupportable for external plugins*, refused by the
+capability gate (Python expression-only `lambda`). Completeness = "expressible as selection-among +
+substitution-into templates using only fixed primitives?".
+
+**The interpreter + migration.** `EmitterBase` generalizes into the rule interpreter (its buffer/block/indent
+machinery is reused verbatim). `Target` enum → a string name + a schema-validated immutable `BackendHandle`
+(bytes from the host; Core stays IO-free). `compile()` takes a handle; `analyze()` unchanged. Validated
+**at load** (every claimed feature has a rule; "no rule" is a hard error — the anti-silent-drop lesson from
+§P9-V). Migration is the §4 plan taken to completion: interpreter + dual-run harness → migrate C# (the oracle)
+then TS then Python one node-family at a time, each byte-identical across all 38+37 programs → flip default →
+delete `emit_csharp/typescript/python.cpp` + `kRegistry[]`. Only then is "a downloaded backend = JSON in an npm
+package" earned. Full slice plan: `../prd/PLAN.md` §P18; distribution/packaging: `plugins-and-targets.md` §6.1.

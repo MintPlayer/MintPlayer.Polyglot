@@ -914,6 +914,61 @@ may legitimately fail (walking-skeleton subset) where C#/TS succeed — say so i
 - A Webview with source-map gutter lines linking a `.pg` line to its output line (the one job a real editor can't
   do); pre-warming targets on idle.
 
+## P18 — Data-driven backends: languages as pure-JSON plugins — 🚧 designed (2026-07-01; §4.10, 4-agent investigation)
+Turn target languages into **installable, pure-data JSON plugins** — no Core change, no plugin code (RCE-safe). This
+is the completion of PLAN P9 (the declarative-DSL endpoint) + the backend half of P10 distribution, and the
+prerequisite the user set before publishing the editor extensions. **Full design: PRD §4.10; detailed DSL +
+interpreter in `docs/design/backend-spec.md`; packaging/safety in `docs/design/plugins-and-targets.md` §6.1/§4.**
+
+**The reframe:** P9's "irreducible 30% imperative" was overstated *for the pure-data question* — almost all of it is
+a fixed decision tree over IR fields rendering strings. Verdict from the investigation: **≈85%** flattens to data
+with a ~10-primitive interpreter; **≈95%+** by adding a small fixed set of bounded, audited Core primitives; the
+remaining **<5%** is genuine target limits (Python expression-only `lambda`) the §3.E capability gate already refuses.
+No per-plugin escape hatch exists (that would reintroduce RCE) — completeness comes from **Core primitive growth**,
+bounded by "expressible as selection-among + substitution-into plugin templates using only fixed primitives?"
+
+**The DSL (Design A, chosen over a "strategy vocabulary"):** one JSON `Rule` per `ir::ExprKind`/`StmtKind`/decl kind,
+interpreted by a fixed non-Turing-complete vocabulary — `tmpl`/`get`/`emit`/`emitChild` (interpreter-computed
+precedence parenthesization from a declared `precedence` table — plugins never author paren logic), `type`,
+`map`/`fold`/`interleave` (bounded list iteration), `case`+weak `Test` (`eq`/`in`/`has`/`isKind`/`typeIs`/`any`/`all`,
+no arithmetic), `call` (depth-capped helpers), `let`/`fresh`, `require` (dedup'd import/preamble buckets placed by the
+`program` rule — the one controlled side effect), + a fixed builtin set (`ident`/keyword-escape, casing,
+`escapeString`/`escapeInterp`, `opSpelling`, `wrap`). Worked JSON was designed for every hard case (precedence,
+`Match` in 3 idioms, `Try`, records/unions, iterators, async, interpolation, numeric-wrap matrices). Design B (a
+closed `MatchOp{style}` strategy vocabulary) rejected — it makes the Core *guess* future targets' idioms.
+
+**Slices (each proven byte-identical before it counts — the P9/P9-V discipline):**
+1. **Interpreter engine** (`backend_engine.hpp/.cpp`) reusing `EmitterBase`'s buffer/block machinery; a **dual-run
+   test harness** (emit via C++ backend AND via the interpreted spec; assert byte-equal) gates every later slice.
+   `Target` enum → a string name + a `BackendHandle` (parsed, schema-validated-at-load, immutable spec bytes from the
+   host; Core stays IO-free). `compile()` takes a handle; **`analyze()` unchanged**. `loadBackend()` validates
+   exhaustively at load (every claimed feature has a rule; unknown primitive/slot → hard error; "no rule" is never a
+   silent drop — the P9-V lesson).
+2. **Migrate the already-tabular ≈70%** (scalar/operator/literal/precedence/block tables) of C# (the differential
+   *oracle* — must be byte-perfect first), then TS, then Python, into JSON specs behind the dual-run gate.
+3. **Migrate the hard nodes** — `Match`/`Try`/`Cast`/interpolation/**numeric faithfulness** (`intWrap`/`binaryWrap`
+   tables + `wrap` builtin + `require`d prelude fragments like `_pg_idiv`) — plus the small fixed primitives the
+   ceiling needs (`fold`/`interleave`/`any`/`all`/`fresh`/`require`).
+4. **Push module-semantic queries into lowering** as precomputed IR bits (`typeIsRecord` for TS structural `.equals`,
+   `hasCatchAll` for C# exhaustiveness) so the interpreter context stays node-local.
+5. **Migrate declarations** (record/class/union/enum/interface/extension/`program` wrapper — most template volume,
+   least logic).
+6. **Flip default to interpreted** (C++ backends stay one release behind `--legacy-backend`), then **delete
+   `emit_csharp/typescript/python.cpp` + `kRegistry[]`**; the three targets are now three in-box JSON specs.
+7. **Std de-hardcoding:** the ~90 `actual(target)` arms in `compiler.cpp` become per-plugin data (a new target ships
+   its own std arms), riding the P12 `ModuleResolver` + `lib` prelude seams — the hidden per-`(module×member×target)`
+   scaling cost the inventory surfaced.
+8. **Backend distribution (with P10):** the npm-wrapped `polyglot-plugin.json` package (spec + capabilities +
+   `externTypes` + `builddeps` + `std/*.pg`), `polyglot install` fetching via the npm HTTP API **data-only** (verify
+   SHA-512, zip-slip-safe extract, never run scripts), `--target <name>`→registry→cache→`BackendHandle`, and the
+   editor `polyglot/targets` picking up installed languages (closes the `extension.js` `FIXME(P10)`).
+
+**Honest residual (unchanged from §6.1):** data-only kills *transpile-time* RCE, not *runtime* trust — a malicious
+declarative binding can still emit hostile *target* code; plugin output needs the same trust as any dependency.
+Signing/trust is the deferred mitigation. **Highest risks:** the DSL expressing `Match`/`Try`/type-spelling/numeric
+wrap (mitigated by the fixed-primitive library, defined *from* the current emitters, not guessed); C# spec byte-perfect
+as the oracle; and "no rule" must be a loud error (load-time exhaustiveness validation is the defense).
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

@@ -213,8 +213,17 @@ at once** (one tab each, target-only gen URIs that follow the active `.pg`); an 
 (`polyglot.openGenerated`, gated by a `polyglot.hasOutputs` context key) opens a single target on demand. Multi-root
 is server-side (per-file `pgconfig.json` walk-up in `contextFor`). (The single-target status-bar switcher was built
 then dropped on feedback.)
+**P18 🚧 designed — data-driven backends (languages as pure-JSON plugins)** (PRD §4.10; DSL/interpreter detail
+`docs/design/backend-spec.md` §6; packaging `docs/design/plugins-and-targets.md` §6.2; slice plan PLAN §P18; from a
+4-agent investigation). Replace the compiled-in C#/TS/Python `Backend` classes + `Target` enum with a **bounded,
+RCE-safe JSON emission DSL** (Design A — ~10 fixed interpreter primitives, non-Turing-complete, no plugin code) that
+`EmitterBase` interprets, so a language is an installable npm-wrapped data plugin with no Core change. Reframes P9's
+"irreducible 30%": ≈85% data with the base interpreter, ≈95%+ with a few *fixed* added Core primitives, <5% remainder
+= target limits the §3.E gate refuses. Migration = P9's extract-from-working-backends + byte-identical dual-run +
+delete-the-C++ discipline; `Target` enum → string name + validated `BackendHandle`; `analyze()` unchanged. **This is
+the prerequisite the user set before publishing the editor extensions.** Not yet built.
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
-(build-integration NuGet, independent), **P16d** (Visual Studio LSP client).
+(build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P18** (data-driven backends, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

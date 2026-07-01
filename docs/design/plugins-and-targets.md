@@ -13,6 +13,11 @@
 > declarative artifact fetched from a feed by name+version, and **`polyglot install`** is the single trusted
 > writer of a **global per-user registry** (§6.1). This settles the "distribute an .exe per plugin that
 > self-registers" idea against the declarative-only stance.
+>
+> **v0.4 change (2026-07-01):** **backends become pure-JSON data plugins too** (§6.2) — a 4-agent investigation
+> established the emission Hooks flatten to a bounded, RCE-safe JSON DSL (§4.10 / `backend-spec.md` §6), so a
+> language is an installable data plugin, not compiled-in C++. Reframes P9's "irreducible 30%" as ≈85% data /
+> ≈95%+ with a few fixed Core primitives / <5% target-limits-the-gate-refuses. Slice plan: PLAN §P18.
 
 ---
 
@@ -181,6 +186,41 @@ Instead:
 - **Editor tie-in.** The LSP reads the same global registry, so the `polyglot/targets` list (PLAN §P17
   deferred / §P10) enumerates installed backends and the P17 "Show Generated Output" preview picks up a
   plugin's target with **no client change**.
+
+### 6.2 The language-plugin package (backends as pure JSON — 2026-07-01; PRD §4.10 / PLAN §P18)
+
+A **backend** plugin is an npm package whose payload is data only (no `.js`/`bin`/lifecycle scripts are ever
+consulted — see the trust model above). It contains a `polyglot-plugin.json` manifest referencing:
+- **`backend.spec`** — the JSON emission DSL for the target (§4.10 / `backend-spec.md` §6: the `Rule` table per
+  IR node kind + precedence/type/literal/naming tables). This is what makes a backend *data*, not code.
+- **`backend.capabilities`** — the §3.E `Feature` set the target supports (the Core intersects it across all
+  configured targets; out-of-set use is refused naming the capability + target). Tri-state where it matters
+  (`extensionMethods: native | free-function | false`).
+- **`backend.{targetId, displayName, fileExtension, commentSyntax}`** — identity + editor metadata.
+- **`externTypes`** — the `extern class` → target-type + construction templates (the `ir::ExternType` data).
+- **`buildDeps`** — target build-system deps to thread into the emitted project (C# SDK/PackageReference, TS
+  npm deps + tsconfig lib, Python requirements) — §4 "Build-dependency declaration".
+- **`stdModules`** — any bound std `.pg` modules the plugin ships (a new target brings *its own* `actual`
+  arms — this is how the ~90 hardcoded `actual(target)` arms in `compiler.cpp` stop being a per-target Core
+  edit; PLAN §P18 slice 7).
+
+```jsonc
+// polyglot-plugin.json
+{ "schema": 1, "id": "@polyglot/kotlin", "version": "0.1.0", "kind": "backend",
+  "backend": { "targetId": "kotlin", "displayName": "Kotlin", "fileExtension": ".kt",
+               "commentSyntax": { "line": "//", "block": ["/*","*/"] },
+               "capabilities": { "extensionMethods": "native", "operatorOverloading": true, "async": true, … },
+               "spec": "backend/spec.json", "externTypes": "types/externtypes.json" },
+  "buildDeps": "builddeps.json",
+  "stdModules": { "std.io": "std/std.io.pg", "std.math": "std/std.math.pg" } }
+```
+The registry entry (§6.1) for a backend carries `targets: [{id, displayName, fileExtension}]` + the capability
+set + cache path + integrity hash — so `--target <name>` resolves name→registry→cache→spec bytes→`BackendHandle`
+(Core interprets; the CLI does the IO), and the editor `polyglot/targets` (§6.1 tie-in) needs no extra source.
+The built-in C#/TS/Python migrate to this exact shape as **in-box specs embedded in the binary** (zero-dep
+preserved), registry-visible + pinnable like any plugin ("bundled but still pinned"). `kind: "binding"|"std"`
+plugins omit the `backend` block and carry only `stdModules`/`externTypes`/`buildDeps` — already fully
+expressible today (P7/P8/P10 mechanisms interpret exactly this data).
 
 ## 7. Sequencing — design for it now, build it incrementally
 
