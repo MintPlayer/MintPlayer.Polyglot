@@ -183,6 +183,16 @@ function setupGeneratedPreview(context) {
       context.workspaceState.update('polyglot.previewTarget', currentTarget);
       updateStatus(vscode.window.activeTextEditor);
       await refreshPreview();
+    }),
+    // Open a specific (source, target) preview — the command a "Polyglot Outputs" tree leaf runs.
+    vscode.commands.registerCommand('polyglot.openGenerated', async (srcUri, target) => {
+      if (!TARGETS[target]) return;
+      currentTarget = target;
+      context.workspaceState.update('polyglot.previewTarget', currentTarget);
+      updateStatus(vscode.window.activeTextEditor);
+      previewSourceUri = srcUri;
+      previewOpen = true;
+      await refreshPreview();
     })
   );
 
@@ -218,6 +228,43 @@ function setupGeneratedPreview(context) {
       }
     }
   }));
+
+  // "Polyglot Outputs" tree (discovery): each open .pg expands to C#/TypeScript/Python leaves; clicking a leaf
+  // opens that (source, target) preview via polyglot.openGenerated. The tree renders no code — it navigates to
+  // the same virtual docs. A `polyglot.hasOutputs` context key hides the Explorer section when no .pg is open.
+  const openPg = () => vscode.workspace.textDocuments.filter((d) => d.uri.scheme === 'file' && d.languageId === 'polyglot');
+  const treeChanged = new vscode.EventEmitter();
+  const treeProvider = {
+    onDidChangeTreeData: treeChanged.event,
+    getChildren: (el) => {
+      if (!el) return openPg().map((d) => ({ kind: 'source', uri: d.uri.toString(), fsPath: d.uri.fsPath }));
+      if (el.kind === 'source') return Object.keys(TARGETS).map((t) => ({ kind: 'target', src: el.uri, target: t }));
+      return [];
+    },
+    getTreeItem: (el) => {
+      if (el.kind === 'source') {
+        const item = new vscode.TreeItem(path.basename(el.fsPath), vscode.TreeItemCollapsibleState.Expanded);
+        item.iconPath = new vscode.ThemeIcon('file-code');
+        item.resourceUri = vscode.Uri.parse(el.uri);
+        return item;
+      }
+      const item = new vscode.TreeItem(TARGETS[el.target].name, vscode.TreeItemCollapsibleState.None);
+      item.description = `.${TARGETS[el.target].ext}`;
+      item.iconPath = new vscode.ThemeIcon('symbol-file');
+      item.command = { command: 'polyglot.openGenerated', title: 'Open Generated Output', arguments: [el.src, el.target] };
+      return item;
+    }
+  };
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('polyglotOutputs', treeProvider));
+  const refreshTree = () => {
+    vscode.commands.executeCommand('setContext', 'polyglot.hasOutputs', openPg().length > 0);
+    treeChanged.fire();
+  };
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(refreshTree),
+    vscode.workspace.onDidCloseTextDocument(refreshTree)
+  );
+  refreshTree();
 }
 
 function deactivate() {

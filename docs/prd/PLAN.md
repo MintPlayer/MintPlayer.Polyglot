@@ -729,7 +729,7 @@ VS-2026/v145 SDK generation.
   inside the read-only std virtual docs, live cross-file edits (buffer-aware resolver), and the non-ASCII
   position walk. Plus **P16d** (Visual Studio) above.
 
-## P17 — Live generated-output preview — 🚧 designed (2026-07-01; §4.9, 2-agent investigation)
+## P17 — Live generated-output preview — ✅ done (2026-07-01; §4.9, 2-agent investigation)
 See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and
 rendered into a **read-only virtual editor opened beside** the source — reusing P16's virtual-doc + custom-LSP-
 request plumbing almost verbatim. **Full design + rationale: PRD §4.9.** The file tree is *not* where code renders
@@ -784,10 +784,12 @@ in the query; coloring via the `.cs/.ts/.py` extension + an explicit `setTextDoc
 the active `.pg` (guarding against following gen/std virtual docs), debounces on-type at 200 ms, and keeps a
 per-gen-URI last-good cache pruned when its source closes.
 
-**P17c — Optional: the "Polyglot Outputs" TreeView (discovery polish).**
-10. An activity-bar `viewsContainers` + `views` `TreeDataProvider`: open `.pg` files as roots, each expanding to
-    C#/TypeScript/Python leaves whose `command` runs `polyglot.showOutput` for that target. Renders *no code* —
-    it's a navigator over the same virtual docs. Add only if a persistent per-file output browser earns its keep.
+**P17c — the "Polyglot Outputs" TreeView (discovery) — ✅ done.**
+10. A `TreeDataProvider` **in the Explorer** (`contributes.views.explorer`, gated by a `polyglot.hasOutputs`
+    context key so it's hidden when no `.pg` is open — cheaper than an activity-bar `viewsContainer`, which would
+    need a shipped SVG icon): open `.pg` files as roots, each expanding to C#/TypeScript/Python leaves whose
+    `command` runs `polyglot.openGenerated(src, target)` (a specific-target opener added beside `showOutput`).
+    Renders *no code* — it's a navigator over the same virtual docs. Refreshes on `.pg` open/close.
 
 **Error-behavior invariant (§3.B-adjacent):** `compile()` never returns partial/garbage — on failure it's
 `{ok:false, code:""}`. The client keeps the **last-good** output visible with a `// Polyglot: N errors — showing

@@ -190,14 +190,17 @@ thin `vscode-languageclient` client (plain JS, no bundler; F5 via repo-root `.vs
 A minimal **`pgconfig.json`** (`{root,lib}`, CLI/LSP layer, core stays IO-free) drives module resolution. The CLI
 now **statically links the CRT** (self-contained — see PRD §4.3). Not built: **P16d** the Visual Studio client;
 deferred tail: member completion, in-scope local filtering, live cross-file edits, non-ASCII position walk.
-**P17 🚧 designed — live generated-output preview** (PRD §4.9, from a 2-agent investigation; slice plan PLAN §P17):
+**P17 ✅ done — live generated-output preview** (PRD §4.9, from a 2-agent investigation; slice plan PLAN §P17):
 see a `.pg`'s emitted C#/TS/Python **live as you type**, rendered read-only into a `polyglot-gen:` virtual editor
 opened beside the source (colored for free by the built-in target grammars). One new in-memory LSP request
 `polyglot/emit` → `compile()` (no disk I/O, **zero Core change** — it's a CLI handler + client code over P16's
 virtual-doc/custom-request plumbing); client-debounced request/response, one target per request, last-good-with-
-stale-banner error UX (never a miscompile shown as valid). Not yet built.
+stale-banner error UX (never a miscompile shown as valid). Delivered: `polyglot/emit` (spawn-tested), the
+`polyglot-gen:` provider + follow-active-editor + 200 ms debounce, a status-bar target switcher
+(`polyglot.selectTarget`, persisted), and an Explorer "Polyglot Outputs" tree (`polyglot.openGenerated`, gated by a
+`polyglot.hasOutputs` context key). Multi-root is server-side (per-file `pgconfig.json` walk-up in `contextFor`).
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
-(build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P17** (live output preview, above).
+(build-integration NuGet, independent), **P16d** (Visual Studio LSP client).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

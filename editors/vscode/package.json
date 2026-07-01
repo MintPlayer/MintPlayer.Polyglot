@@ -35,6 +35,16 @@
         }
       ]
     },
+    "views": {
+      "explorer": [
+        {
+          "id": "polyglotOutputs",
+          "name": "Polyglot Outputs",
+          "visibility": "collapsed",
+          "when": "polyglot.hasOutputs"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "polyglot",

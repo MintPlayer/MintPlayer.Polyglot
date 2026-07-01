@@ -686,12 +686,13 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   name-token positions, an `analyze()` seam (checked AST without emit), and a sema-hook `SymbolIndex`
   (occurrence → definition). Same-file first; cross-module go-to-def (via `fileId` stamping + `polyglot:` virtual
   URIs for embedded std) and a minimal `pgconfig.json` follow. Full design + per-pass map: §4.8; slice plan: PLAN §P16.
-- **P17 — Live generated-output preview.** 🚧 Designed (2026-07-01; §4.9, from a 2-agent investigation).
+- **P17 — Live generated-output preview.** ✅ Done (2026-07-01; §4.9, from a 2-agent investigation).
   See the code a `.pg` becomes — emitted C#/TS/Python — **live as you type**, rendered into a read-only
   virtual document (`polyglot-gen:` scheme) opened beside the source and colored for free by the built-in
   target-language grammars. One new in-memory LSP request (`polyglot/emit` → `compile()`, no disk I/O, no Core
   change), client-debounced request/response, last-good-with-stale-banner error UX (never a miscompile shown as
-  valid). A follow of `P16`'s virtual-doc + custom-request plumbing. Full design + slice plan: §4.9 / PLAN §P17.
+  valid); a status-bar target switcher + an Explorer "Polyglot Outputs" tree for discovery. A follow of `P16`'s
+  virtual-doc + custom-request plumbing. Full design + slice plan: §4.9 / PLAN §P17.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
