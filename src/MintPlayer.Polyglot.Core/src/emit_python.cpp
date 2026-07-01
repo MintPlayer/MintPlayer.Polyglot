@@ -7,7 +7,10 @@
 #include <vector>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
+#include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/emitter_base.hpp"
+
+#include <cassert>
 
 // Hand-written IR -> Python pretty-printer — the THIRD backend, added to validate the P9 shared engine
 // against a non-brace target (PRD §4.3; the engine was extracted from two brace-family backends, C#/TS).
@@ -25,18 +28,25 @@
 namespace mintplayer::polyglot {
 namespace {
 
-// Python's declarative Spec — the engine consults it for block style, statement terminator, and throw
-// keyword. The type/operator/bracket tables stay empty: Python emits no type annotations, spells operators
-// through pyOp(), and brackets list/tuple literals inline — those are its imperative Hook tier, not data.
+// Python's declarative Spec, now a JSON spec (P18 — PRD §4.10). The engine consults it for block style,
+// statement terminator, and throw keyword. The type/operator/bracket tables stay empty: Python emits no type
+// annotations, spells operators through pyOp(), and brackets list/tuple literals inline — those are its
+// imperative Hook tier, not data. Only the Spec's source moved; output is byte-identical.
+const char* PY_SPEC_JSON = R"JSON({
+  "name": "python",
+  "scalarType": {}, "intSuffix": {}, "binaryOp": {}, "delimited": {},
+  "blockStyle": "colonIndent",
+  "stmtEnd": "",
+  "throwKeyword": "raise",
+  "trueLit": "True", "falseLit": "False", "nullLit": "None"
+})JSON";
+
 const BackendSpec& pythonSpec() {
-    static const BackendSpec spec = {
-        "python",
-        {}, {}, {}, {},              // scalarType / intSuffix / binaryOp / delimited: unused by this backend
-        BlockStyle::ColonIndent,     // colon+indent, no braces
-        "",                          // no statement terminator
-        "raise",                     // `throw v` -> `raise v`
-        "True", "False", "None",     // bool / null literal spellings
-    };
+    static const BackendSpec spec = [] {
+        SpecLoadResult r = loadBackendSpec(PY_SPEC_JSON);
+        assert(r.ok && "embedded Python backend spec must parse");
+        return r.spec;
+    }();
     return spec;
 }
 

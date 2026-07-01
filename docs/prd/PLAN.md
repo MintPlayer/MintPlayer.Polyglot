@@ -977,8 +977,10 @@ before the interpreter). **Slice-2-start ✅:** `loadBackendSpec`/`backendSpecTo
 over the existing `json.hpp`) parse+serialize a `BackendSpec`, validating `name` + the `blockStyle` enum and failing
 loudly otherwise. The **C# backend's Spec now loads from an embedded JSON document** (`CSHARP_SPEC_JSON` in
 `emit_csharp.cpp`) instead of a compiled-in struct — the imperative Hooks are unchanged, only the tabular data's
-source moved to JSON; output is byte-identical (run-diff 38/38 + unit tests green, incl. 4 new P18 tests). TS + Python
-specs → JSON next, then the interpreter engine + dual-run harness (slice 1 proper) + `Target`→`BackendHandle`.
+source moved to JSON; output is byte-identical (run-diff 38/38 + unit tests green, incl. 4 new P18 tests).
+**Slice-2 ✅ (all three):** the TypeScript (`TS_SPEC_JSON`) and Python (`PY_SPEC_JSON`) Specs also load from
+embedded JSON now — all three backends' tabular data is data-from-JSON, byte-identical (run-diff 38/38, run-python
+37/37, unit tests green). Next: the interpreter engine + dual-run harness (slice 1 proper) + `Target`→`BackendHandle`.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

@@ -5,7 +5,10 @@
 #include <unordered_set>
 
 #include "mintplayer/polyglot/backend_spec.hpp"
+#include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/emitter_base.hpp"
+
+#include <cassert>
 
 // Hand-written IR -> TypeScript pretty-printer. Walks the typed IR; emits free `function`s, maps the
 // `print` intrinsic -> console.log, and appends a top-level call to the entry function. Output stays
@@ -15,20 +18,31 @@ namespace mintplayer::polyglot {
 
 namespace {
 
-// The TS backend's declarative data (P9 slice 1: the scalar type-leaf table). Unlike C#, TS maps `char` ->
-// `string` and the 64-bit ints -> `bigint`; structural cases (List/tuple/function/nullable) stay in tsType.
+// The TS backend's declarative data, now a JSON spec (P18: the tabular ~70% loads from data — PRD §4.10).
+// Unlike C#, TS maps `char` -> `string` and the 64-bit ints -> `bigint`; structural cases
+// (List/tuple/function/nullable) stay in tsType. Only the Spec's source moved; output is byte-identical.
+const char* TS_SPEC_JSON = R"JSON({
+  "name": "typescript",
+  "scalarType": { "unit": "void", "bool": "boolean", "string": "string", "char": "string",
+                  "i64": "bigint", "u64": "bigint",
+                  "i8": "number", "i16": "number", "i32": "number", "u8": "number", "u16": "number",
+                  "u32": "number", "f32": "number", "f64": "number" },
+  "intSuffix": { "i64": "n", "u64": "n" },
+  "binaryOp": { "==": "===", "!=": "!==" },
+  "delimited": { "tuple": { "open": "[", "sep": ", ", "close": "]" },
+                 "list":  { "open": "[", "sep": ", ", "close": "]" } },
+  "blockStyle": "bracesKnR",
+  "stmtEnd": ";",
+  "throwKeyword": "throw",
+  "trueLit": "true", "falseLit": "false", "nullLit": "null"
+})JSON";
+
 const BackendSpec& typescriptSpec() {
-    static const BackendSpec spec = {
-        "typescript",
-        {{"unit", "void"}, {"bool", "boolean"}, {"string", "string"}, {"char", "string"},
-         {"i64", "bigint"}, {"u64", "bigint"},
-         {"i8", "number"}, {"i16", "number"}, {"i32", "number"}, {"u8", "number"}, {"u16", "number"},
-         {"u32", "number"}, {"f32", "number"}, {"f64", "number"}},
-        {{"i64", "n"}, {"u64", "n"}}, // intSuffix: 64-bit ints are BigInt literals (`7n`)
-        {{"==", "==="}, {"!=", "!=="}}, // binaryOp: always strict equality, never JS loose ==/!=
-        {{"tuple", {"[", ", ", "]"}}, {"list", {"[", ", ", "]"}}}, // delimited: TS tuple/list literal `[a, b]`
-        BlockStyle::BracesKnR,          // TS is K&R-braced; stmtEnd ";" + throw keyword "throw" are the defaults
-    };
+    static const BackendSpec spec = [] {
+        SpecLoadResult r = loadBackendSpec(TS_SPEC_JSON);
+        assert(r.ok && "embedded TypeScript backend spec must parse");
+        return r.spec;
+    }();
     return spec;
 }
 
