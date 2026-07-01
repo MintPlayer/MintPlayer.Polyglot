@@ -517,7 +517,10 @@ struct LspServer {
         AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(ctx.libStr), uriToPath(uri));
         model_[uri] = std::move(a.model);
         sources_[uri] = std::move(a.sources);
-        publishDiagnostics(uri, a.diagnostics);
+        // Only real files get squiggles. A `polyglot:<std>` virtual doc is read-only embedded std source we
+        // analyze solely to power its semantic tokens / hover / go-to-def — analyzing it standalone may raise
+        // link-context diagnostics that would be noise on code the user can't edit, so we don't publish them.
+        if (uri.rfind("file:", 0) == 0) publishDiagnostics(uri, a.diagnostics);
     }
 
     // Custom request `polyglot/emit`: params { uri, target } -> { target, code, ok, diagnostics }. Runs the
@@ -823,7 +826,7 @@ int runLsp(const std::vector<std::string>&) {
             std::string uri = params["textDocument"]["uri"].asString();
             srv.text_.erase(uri);
             srv.model_.erase(uri);
-            srv.publishDiagnostics(uri, {}); // clear squiggles for a closed file
+            if (uri.rfind("file:", 0) == 0) srv.publishDiagnostics(uri, {}); // clear squiggles for a closed file
         } else if (method == "textDocument/definition") {
             lspReply(id, srv.definition(params));
         } else if (method == "textDocument/documentSymbol") {

@@ -47,7 +47,10 @@ function activate(context) {
     debug: { command, args: ['lsp'], transport: TransportKind.stdio }
   };
   const clientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'polyglot' }],
+    // `file:` = real .pg files; `polyglot:` = the read-only embedded std virtual docs (so they get semantic
+    // tokens / hover / go-to-def too, not just TextMate coloring). The server suppresses diagnostics for the
+    // latter (analyzing std standalone would raise link-context noise on code the user can't edit).
+    documentSelector: [{ scheme: 'file', language: 'polyglot' }, { scheme: 'polyglot', language: 'polyglot' }],
     synchronize: {
       configurationSection: 'polyglot',
       // Watch pgconfig.json so editing root/lib re-analyzes open .pg files immediately (the server handles

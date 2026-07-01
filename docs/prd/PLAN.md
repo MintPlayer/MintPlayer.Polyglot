@@ -743,9 +743,14 @@ VS-2026/v145 SDK generation.
   `definition` (same-file + cross-module + std virtual docs), `hover`, `documentSymbol`, `semanticTokens/full`,
   `documentFormatting`, `references`, `rename` (file-local only), `completion` (bare names + keywords), and the
   custom `polyglot/moduleSource` for std virtual documents.
-- **P16 deferred tail (all minor):** member completion (`obj.`), in-scope-only local filtering, semantic tokens
-  inside the read-only std virtual docs, and the non-ASCII position walk. (Live cross-file edits ✅ done —
-  buffer-aware resolver, above.) Plus **P16d** (Visual Studio) above.
+- **Semantic tokens (+ hover/go-to-def) inside std virtual docs ✅ (2026-07-01).** The `polyglot:` scheme is now
+  in the client's document selector, so the read-only embedded std docs are analyzed (from their synced text —
+  `std.*` imports resolve via the Core's embedded registry with no file resolver) and get accurate identifier
+  coloring + hover + go-to-def, not just TextMate grammar. Their diagnostics are **not** published (analyzing std
+  standalone would raise link-context noise on code the user can't edit). Spawn-tested: `std.math` returns
+  non-empty semantic tokens and zero published diagnostics.
+- **P16 deferred tail (all minor):** member completion (`obj.`), in-scope-only local filtering, and the non-ASCII
+  position walk. (Live cross-file edits + std-doc semantic tokens ✅ done, above.) Plus **P16d** (Visual Studio) above.
 
 ## P17 — Live generated-output preview — ✅ done (2026-07-01; §4.9, 2-agent investigation)
 See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and
