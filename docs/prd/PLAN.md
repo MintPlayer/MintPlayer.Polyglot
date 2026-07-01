@@ -729,6 +729,66 @@ VS-2026/v145 SDK generation.
   inside the read-only std virtual docs, live cross-file edits (buffer-aware resolver), and the non-ASCII
   position walk. Plus **P16d** (Visual Studio) above.
 
+## P17 — Live generated-output preview — 🚧 designed (2026-07-01; §4.9, 2-agent investigation)
+See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and
+rendered into a **read-only virtual editor opened beside** the source — reusing P16's virtual-doc + custom-LSP-
+request plumbing almost verbatim. **Full design + rationale: PRD §4.9.** The file tree is *not* where code renders
+(a `TreeView` item is label+icon only — it can't show colored code); a virtual document is, and it gets built-in
+target-language coloring for free. Each slice keeps every gate green (all additions are new handlers / new client
+code behind the existing seams — `compile()`, emission, and `analyze()` are untouched).
+
+**P17a — Server: the `polyglot/emit` request (CLI only, zero Core change).**
+1. **`compile()` is already suitable** — pure, in-memory, returns `EmitResult { ok, code, diagnostics }`; the CLI's
+   `build` verb writes to disk, `compile()` does not. So the whole feature is one new handler.
+2. **Factor `contextFor(uri)`** out of `LspServer::analyzeDoc` (the `entryDir`/`loadPgConfig`/`root`/`libStr`/
+   `FileModuleResolver` block) so preview and diagnostics resolve modules *identically* (same `pgconfig.json`
+   `{root,lib}`). Add free helpers `targetFromString(str) → optional<Target>` (also tidy `runBuild`'s inline
+   string compares) and `diagnosticsToJson(diags)` (shared with `check --json`).
+3. **`LspServer::generatedSource(params)`** beside `moduleSource`: guard `text_.count(uri)` (reply
+   `{ok:false,code:"",diagnostics:[]}` if the doc isn't open — never insert an empty `text_[uri]`); build the
+   resolver from `contextFor(uri)`; `compile(text_[uri], targetFromString(target), &resolver, parseLibList(lib))`;
+   serialize `{ target, code, ok, diagnostics }`. **One target per request** (not a bundled three-target map).
+4. **Dispatch arm** `else if (method == "polyglot/emit")` in `runLsp`, beside `polyglot/moduleSource`. No
+   `initialize` capability change (custom `polyglot/*` requests aren't in the standard capability set).
+   *Verify:* a spawn-based test (like the pgconfig watch test) — didOpen a doc, request `polyglot/emit` for each
+   target, assert `ok` + non-empty `code` for C#/TS; assert a broken doc returns `{ok:false,code:""}` + diagnostics.
+
+**P17b — Client: the live preview surface (`extension.js` + `package.json`).**
+5. **`polyglot-gen:` `TextDocumentContentProvider`** (clone the existing `polyglot:` provider): URI encodes
+   `(sourcePath, target)` with a `.cs`/`.ts`/`.py` extension so language detection colors it automatically;
+   `provideTextDocumentContent` calls `client.sendRequest('polyglot/emit', {uri, target})` and returns
+   `res.code` (or the last-good text + a stale banner when `!res.ok`). Back its `onDidChange` with a
+   `vscode.EventEmitter<Uri>`.
+6. **Command `polyglot.showOutput`** (+ an editor-title menu icon on `polyglot` files) opens the gen doc
+   `ViewColumn.Beside`, `preview:true`, `preserveFocus:true` (reuse one tab, keep the cursor in the `.pg`).
+   Coloring belt-and-suspenders: `setTextDocumentLanguage(doc, 'csharp'|'typescript'|'python')` on open (same
+   hook that marks `polyglot:` docs).
+7. **Liveness:** debounce (~150–250 ms) `onDidChangeTextDocument` for the previewed `.pg` → `emitter.fire(genUri)`;
+   VS Code re-pulls and diff-patches the visible editor in place (scroll/cursor preserved). Guard stale responses
+   with a per-URI request sequence. Emit reflects the **in-memory buffer** (unsaved), not disk.
+8. **Follow the active editor:** `onDidChangeActiveTextEditor` retargets the preview to the focused `.pg` —
+   **guard the feedback loop** (ignore activations of `polyglot-gen:`/`polyglot:` docs; only follow
+   `file:`+`polyglot`). **Target switch** via a `StatusBarItem` (`Output: C#`) → `QuickPick` of the three,
+   persisted in workspace state; a `polyglot.preview.defaultTarget` setting seeds it.
+9. **Lifecycle + multi-root:** push provider/emitter/command/status-bar into `context.subscriptions`; on
+   `onDidCloseTextDocument` drop that doc's last-good cache. Resolve the source's owning folder via
+   `getWorkspaceFolder(sourceUri)` and pass **that** folder's `{root,lib}` into `polyglot/emit`, not
+   `workspaceFolders[0]` (so imports in a second root resolve correctly).
+
+**P17c — Optional: the "Polyglot Outputs" TreeView (discovery polish).**
+10. An activity-bar `viewsContainers` + `views` `TreeDataProvider`: open `.pg` files as roots, each expanding to
+    C#/TypeScript/Python leaves whose `command` runs `polyglot.showOutput` for that target. Renders *no code* —
+    it's a navigator over the same virtual docs. Add only if a persistent per-file output browser earns its keep.
+
+**Error-behavior invariant (§3.B-adjacent):** `compile()` never returns partial/garbage — on failure it's
+`{ok:false, code:""}`. The client keeps the **last-good** output visible with a `// Polyglot: N errors — showing
+last successful output` banner; it must **never** blank the pane on a transient parse error mid-typing, nor render
+half-emitted code as valid. Real errors already squiggle in the `.pg` editor. Per-target honesty: a Python preview
+may legitimately fail (walking-skeleton subset) where C#/TS succeed — say so in the banner, don't hide it.
+
+**Deferred (post-P17):** a Webview with source-map gutter lines linking a `.pg` line to its output line (the one
+job a real editor can't do); pre-warming the non-visible targets on idle to make target-switch instant.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

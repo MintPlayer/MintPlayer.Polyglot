@@ -521,6 +521,78 @@ at `polyglot lsp` follows once the VS Code client proves the server.
 being edited (locals, params, functions, types, members). **Deferred:** cross-module go-to-def (needs the `fileId`
 stamping + virtual URIs), find-references/rename, and member *completion* (needs receiver-type resolution).
 
+### 4.9 Live generated-output preview (design — 2026-07-01; investigated by a 2-agent team)
+
+**The want.** While editing a `.pg` file, *see the code it becomes* — the emitted C#/TS/Python — **live, as you
+type**, and be able to **browse the std/plugin sources** the program pulls in (the `std.math`-style modules already
+openable read-only by Ctrl+clicking a std symbol). Today `polyglot build` writes those files to disk; the preview
+must produce them **on demand, in memory, never touching the filesystem**, so it's a pure view of the current
+(possibly unsaved) buffer.
+
+**Where it renders — a real editor beside the source, not the file tree.** The crux question ("explorer? a tree
+that expands a `.pg` into its outputs?") resolves to: **the file tree is the wrong place to *render* code** — a
+`TreeView` item is only label+icon, it can't show colored code. Render into a **read-only virtual document**
+(`TextDocumentContentProvider`, a new `polyglot-gen:` scheme) opened **`ViewColumn.Beside`** the active `.pg`
+editor — the *exact* mechanism the `polyglot:` std docs already use, and the same platform pattern VS Code itself
+uses for "go to definition into generated/decompiled sources." This buys three things for free: **coloring** (set
+the virtual doc's `languageId` to the built-in `csharp`/`typescript`/`python` — reuse their grammars, zero grammar
+work; the URL carries a `.cs`/`.ts`/`.py` extension so detection is automatic, with an explicit
+`setTextDocumentLanguage` fallback), **read-only correctness** (content-provider docs are non-editable/non-savable
+by construction — no "don't save the generated file" guard), and **liveness** (a `vscode.EventEmitter<Uri>` backing
+the provider's `onDidChange`; fire it on a debounced source edit → VS Code re-pulls and *diff-patches the visible
+editor in place*, preserving scroll/cursor). This is strictly better than the Markdown-preview analogue, which must
+use a Webview because Markdown renders to HTML — our output is *code*, so a real editor beats a webview on every
+axis (find, select, copy, minimap, folding, go-to). **A Webview is explicitly rejected** for the rendering (it
+throws away free grammar coloring and native editor affordances for a large re-implementation cost, against the
+project's reuse-the-platform grain). The one legitimate future Webview use — gutter source-map lines linking a `.pg`
+line to its output line — is a post-P17 stretch, not this feature.
+
+**One preview, following focus, with a target switch** (the lean configuration): keep a single generated tab that
+shows *the selected target* for *the focused `.pg`*, retargeted via `window.onDidChangeActiveTextEditor`; switch
+target through a **StatusBarItem** (`Output: C#` → a `QuickPick` of the three) persisted in workspace state. Open
+with `preview:true`+`preserveFocus:true` so it reuses one tab and never steals the cursor. An **optional `TreeView`**
+(activity-bar "Polyglot Outputs": each open `.pg` → C#/TypeScript/Python leaves whose command opens the same virtual
+doc) is *discovery only* — a thin navigator over the identical provider, added as polish, not required for v1.
+
+**Server side — one new request, zero Core change.** `compile(source, target, resolver, lib)` is already a pure
+in-memory function returning `EmitResult { ok, code, diagnostics }` — `code` is the emitted target text, and it
+never writes to disk (the CLI's `build` verb is what writes; `compile()` does not). So a new custom LSP request
+**`polyglot/emit`** (params `{ uri, target }` → `{ target, code, ok, diagnostics }`) lives entirely in the CLI's
+`LspServer` beside `polyglot/moduleSource`: look up the open buffer in `text_`, build the **same** resolver/lib from
+`pgconfig.json` that `analyzeDoc` already computes (factor that block into a shared `contextFor(uri)` helper so
+preview output is *always consistent with the squiggles*), call `compile()`, serialize the result. It does **not**
+reuse `analyze()`'s cached `SemanticModel`/`SourceMap` (a preview needs neither) — `analyze()` deliberately stops
+before lower/emit, so there is no mid-pipeline state to reuse; the preview re-runs the full pipeline, which is
+negligible for an editor-sized file and only fires on the debounced request. Single-threaded stdio ⇒ no races; the
+only I/O is the resolver reading imported `.pg` files, exactly as diagnostics already do.
+
+**Contract-honest error behavior** (this is a §3.B-adjacent concern — *never present a miscompile as valid*).
+`compile()` stops at the first failing pass and returns `{ ok:false, code:"", diagnostics:[…] }` — never partial or
+garbage output. The **server stays dumb** (returns that verbatim); the **client owns the policy**: keep the
+**last-good** output visible with a one-line stale banner (`// Polyglot: N errors — showing last successful output`)
+rather than blanking the pane on every half-typed keystroke, and never render half-emitted code as if valid. The
+real errors already surface as squiggles in the `.pg` editor. Note **per-target honesty**: `compile()` runs
+`checkCapabilities` for the *previewed* target, so a Python preview may legitimately fail where C#/TS succeed
+(Python is still the walking-skeleton subset) — surface that in the banner, don't paper over it.
+
+**Liveness model — request/response, client-debounced; no server push.** The client already knows when the buffer
+changed (it sent `didChange`) and which target the pane shows, so it fires a debounced (~150–250 ms) `polyglot/emit`
+and re-requests on target switch. A server→`client` push notification would be the first of its kind, would need
+the server to track "which target is each pane showing," and buys nothing — rejected. **One target per request**
+(not a bundled three-target map): the pane shows one target; bundling triples payload and emits two targets nobody's
+looking at. Guard stale responses with a per-URI request sequence so a slow emit can't overwrite a newer one; emit
+from the **in-memory buffer** (unsaved text), not disk; on `didClose` drop the doc's last-good cache.
+**Multi-root correctness:** resolve the emitted file's owning folder via `getWorkspaceFolder(sourceUri)` and pass
+*that* folder's `{root,lib}` (its `pgconfig.json`), not `workspaceFolders[0]`, so imports in a second root resolve
+right.
+
+**Touch list.** Server: `main.cpp` only — a `contextFor(uri)` helper (extracted from `analyzeDoc`), a
+`targetFromString` helper (also tidies `runBuild`), a `diagnosticsToJson` helper (shared with `check --json`), a
+`generatedSource`/`emit` handler, and one dispatch arm. Client: `extension.js` (a `polyglot-gen:` provider +
+emitter + debounce + follow-active-editor + status-bar switcher; optional tree) and `package.json` (a
+`polyglot.showOutput` command, an editor-title menu icon, a `polyglot.preview.defaultTarget` setting, and — if the
+tree ships — `viewsContainers`/`views`). No Core change. Full slice log: PLAN §P17.
+
 ---
 
 ## 5. Testing strategy
@@ -614,6 +686,12 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   name-token positions, an `analyze()` seam (checked AST without emit), and a sema-hook `SymbolIndex`
   (occurrence → definition). Same-file first; cross-module go-to-def (via `fileId` stamping + `polyglot:` virtual
   URIs for embedded std) and a minimal `pgconfig.json` follow. Full design + per-pass map: §4.8; slice plan: PLAN §P16.
+- **P17 — Live generated-output preview.** 🚧 Designed (2026-07-01; §4.9, from a 2-agent investigation).
+  See the code a `.pg` becomes — emitted C#/TS/Python — **live as you type**, rendered into a read-only
+  virtual document (`polyglot-gen:` scheme) opened beside the source and colored for free by the built-in
+  target-language grammars. One new in-memory LSP request (`polyglot/emit` → `compile()`, no disk I/O, no Core
+  change), client-debounced request/response, last-good-with-stale-banner error UX (never a miscompile shown as
+  valid). A follow of `P16`'s virtual-doc + custom-request plumbing. Full design + slice plan: §4.9 / PLAN §P17.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 

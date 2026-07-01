@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -242,6 +243,38 @@ std::string jsonEscape(const std::string& s) {
     return out;
 }
 
+// A target name (`csharp`/`typescript`/`python`) -> the Target enum; nullopt for anything else.
+std::optional<Target> targetFromString(const std::string& t) {
+    if (t == "csharp")     return Target::CSharp;
+    if (t == "typescript") return Target::TypeScript;
+    if (t == "python")     return Target::Python;
+    return std::nullopt;
+}
+
+// Serialize diagnostics as a JSON array of {line,col,endLine,endCol,severity,message}. Shared by
+// `check --json` and the LSP `polyglot/emit` preview response (whole-file list, no identifier-widening —
+// that widening is a squiggle-only concern of publishDiagnostics).
+std::string diagnosticsToJson(const std::vector<Diagnostic>& diags) {
+    auto severityName = [](Severity s) {
+        switch (s) {
+            case Severity::Warning: return "warning";
+            case Severity::Info:    return "info";
+            case Severity::Hint:    return "hint";
+            default:                return "error";
+        }
+    };
+    std::string out = "[";
+    for (std::size_t i = 0; i < diags.size(); ++i) {
+        const auto& d = diags[i];
+        if (i) out += ",";
+        out += "{\"line\":" + std::to_string(d.pos.line) + ",\"col\":" + std::to_string(d.pos.col) +
+               ",\"endLine\":" + std::to_string(d.end.line) + ",\"endCol\":" + std::to_string(d.end.col) +
+               ",\"severity\":\"" + severityName(d.severity) + "\",\"message\":\"" + jsonEscape(d.message) + "\"}";
+    }
+    out += "]";
+    return out;
+}
+
 // `polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>]` — runs the frontend (lex/parse/sema +
 // capability gating for the reference target) and reports diagnostics, without emitting any output. This is
 // the editor-tooling entry point: `--json` prints a machine-readable array editors turn into squiggles.
@@ -281,24 +314,7 @@ int runCheck(const std::vector<std::string>& args) {
     EmitResult result = compile(source, Target::CSharp, &resolver, lib);
 
     if (json) {
-        auto severityName = [](Severity s) {
-            switch (s) {
-                case Severity::Warning: return "warning";
-                case Severity::Info:    return "info";
-                case Severity::Hint:    return "hint";
-                default:                return "error";
-            }
-        };
-        std::cout << "[";
-        for (std::size_t i = 0; i < result.diagnostics.size(); ++i) {
-            const auto& d = result.diagnostics[i];
-            if (i) std::cout << ",";
-            std::cout << "{\"line\":" << d.pos.line << ",\"col\":" << d.pos.col
-                      << ",\"endLine\":" << d.end.line << ",\"endCol\":" << d.end.col
-                      << ",\"severity\":\"" << severityName(d.severity) << "\""
-                      << ",\"message\":\"" << jsonEscape(d.message) << "\"}";
-        }
-        std::cout << "]\n";
+        std::cout << diagnosticsToJson(result.diagnostics) << "\n";
     } else {
         reportDiagnostics(input, result);
         if (result.ok) std::cout << "polyglot: no problems in " << input.string() << "\n";
@@ -456,20 +472,49 @@ struct LspServer {
                "},\"end\":{\"line\":" + std::to_string(el - 1) + ",\"character\":" + std::to_string(ec - 1) + "}}";
     }
 
-    void analyzeDoc(const std::string& uri) {
+    // Module-resolution context for an open doc, derived from its nearest pgconfig.json (falling back to the
+    // client's initializationOptions). Shared by analyzeDoc (diagnostics) and generatedSource (preview) so a
+    // live preview resolves imports + lib exactly as the squiggles do. Re-read each call, so editing
+    // pgconfig.json takes effect on the next analysis.
+    struct DocContext { fs::path root, entryDir; std::string libStr; };
+    DocContext contextFor(const std::string& uri) const {
         fs::path p(uriToPath(uri));
         fs::path entryDir = p.has_parent_path() ? p.parent_path() : fs::path(".");
-        // A pgconfig.json near the file drives root/lib and wins over the client's initializationOptions
-        // (re-read each analysis, so editing pgconfig.json takes effect on the next change).
         PgConfig pc = loadPgConfig(entryDir);
         fs::path root = pc.found && !pc.root.empty() ? fs::path(pc.root)
                       : (root_.empty() ? entryDir : fs::path(root_));
-        std::string libStr = pc.found ? pc.lib : lib_;
-        FileModuleResolver resolver(root, entryDir);
-        AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(libStr), uriToPath(uri));
+        return { root, entryDir, pc.found ? pc.lib : lib_ };
+    }
+
+    void analyzeDoc(const std::string& uri) {
+        DocContext ctx = contextFor(uri);
+        FileModuleResolver resolver(ctx.root, ctx.entryDir);
+        AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(ctx.libStr), uriToPath(uri));
         model_[uri] = std::move(a.model);
         sources_[uri] = std::move(a.sources);
         publishDiagnostics(uri, a.diagnostics);
+    }
+
+    // Custom request `polyglot/emit`: params { uri, target } -> { target, code, ok, diagnostics }. Runs the
+    // full compile() in memory (no disk write) for a live preview of the emitted target source. One target per
+    // request; the client debounces on edit and re-requests on target switch. compile() never returns partial
+    // output — on failure it's { ok:false, code:"" } and the client keeps its last-good text with a stale
+    // banner (never a miscompile shown as valid).
+    std::string generatedSource(const json::Value& params) {
+        std::string uri = params["uri"].asString();
+        std::string targetName = params["target"].asString();
+        auto empty = [&]() {
+            return "{\"target\":" + json::quote(targetName) + ",\"code\":\"\",\"ok\":false,\"diagnostics\":[]}";
+        };
+        if (!text_.count(uri)) return empty();          // doc not open — never insert an empty text_[uri]
+        auto tgt = targetFromString(targetName);
+        if (!tgt) return empty();
+        DocContext ctx = contextFor(uri);
+        FileModuleResolver resolver(ctx.root, ctx.entryDir);
+        EmitResult r = compile(text_[uri], *tgt, &resolver, parseLibList(ctx.libStr));
+        return "{\"target\":" + json::quote(targetName) + ",\"code\":" + json::quote(r.code) +
+               ",\"ok\":" + (r.ok ? "true" : "false") +
+               ",\"diagnostics\":" + diagnosticsToJson(r.diagnostics) + "}";
     }
 
     void publishDiagnostics(const std::string& uri, const std::vector<Diagnostic>& diags) {
@@ -769,6 +814,9 @@ int runLsp(const std::vector<std::string>&) {
             std::string u = params["uri"].asString();
             std::string name = u.rfind("polyglot:", 0) == 0 ? u.substr(9) : u;
             lspReply(id, "{\"source\":" + json::quote(embeddedModuleSource(name)) + "}");
+        } else if (method == "polyglot/emit") {
+            // Custom request: emit a live in-memory preview of the target source for an open .pg doc.
+            lspReply(id, srv.generatedSource(params));
         } else if (method == "textDocument/hover") {
             lspReply(id, srv.hover(params));
         } else if (!id.isNull()) {

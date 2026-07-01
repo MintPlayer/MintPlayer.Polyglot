@@ -1,3 +1,5 @@
+// import { Math } from "std.math"
+
 // A companion module in the testbench, resolved via pgconfig's `root` as the logical import "geometry".
 // `length` calls Math.sqrt — exercising the ambient `math` lib that pgconfig.json auto-imports.
 
