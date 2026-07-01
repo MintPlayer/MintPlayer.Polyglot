@@ -1,4 +1,4 @@
-import { Vec2, length } from "geometry"
+import { Vec2, length } from "./geometry"
 
 record Point(x: f64, y: f64)
 

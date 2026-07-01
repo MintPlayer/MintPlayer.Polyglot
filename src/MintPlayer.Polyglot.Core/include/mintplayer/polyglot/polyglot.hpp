@@ -75,17 +75,34 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.
 EmitResult format(const std::string& source);
 
+// Maps a SourcePos.fileId to the source it came from, so cross-module positions stay unambiguous after the
+// linker merges every module into one unit (§4.8). Index 0 is unknown/synthetic (the always-linked core
+// prelude + anything unstamped). analyze() assigns the entry file id 1 and each transitively loaded module
+// the next id. The stored identity is the module's canonical name: an on-disk path for resolver-loaded
+// modules (which the LSP turns into a file:// location for cross-module go-to-definition), or a logical
+// "std.x" for embedded std modules.
+struct SourceMap {
+    std::vector<std::string> files{std::string()}; // index 0 reserved for "unknown"
+    int add(const std::string& canon) { files.push_back(canon); return static_cast<int>(files.size()) - 1; }
+    const std::string& canon(int fileId) const {
+        return (fileId > 0 && fileId < static_cast<int>(files.size())) ? files[fileId] : files[0];
+    }
+};
+
 // The front-end-only result for editor tooling (PRD §4.8): runs lex -> parse -> link -> check and returns
-// the checked AST, its diagnostics, and a position-indexed `SemanticModel` — WITHOUT lowering/emitting.
-// This is what `polyglot lsp` queries for diagnostics, go-to-definition, and document symbols. Diagnostics
-// are returned even when non-empty; the model is populated when the front end reaches `check` (so a file
-// with only type errors still answers go-to-def), and is empty when lexing/parsing/linking fails first.
+// the checked AST, its diagnostics, a position-indexed `SemanticModel`, and the `SourceMap` naming each
+// fileId. This is what `polyglot lsp` queries for diagnostics, go-to-definition, and document symbols.
+// Diagnostics are returned even when non-empty; the model is populated when the front end reaches `check`
+// (so a file with only type errors still answers go-to-def), and is empty when lex/parse/link fails first.
 struct AnalysisResult {
     CompilationUnit unit;                  // the checked (merged) AST — move-only
     std::vector<Diagnostic> diagnostics;
     SemanticModel model;
+    SourceMap sources;
 };
+// `entryPath` names the entry file in the SourceMap (its own definitions get fileId 1); pass the document
+// path from the editor. Empty is fine for one-off checks that don't need cross-module locations.
 AnalysisResult analyze(const std::string& source, ModuleResolver* resolver = nullptr,
-                       const LibConfig& lib = {});
+                       const LibConfig& lib = {}, const std::string& entryPath = "");
 
 } // namespace mintplayer::polyglot

@@ -592,6 +592,31 @@ int main() {
         check(json::quote("a\"b\\c") == "\"a\\\"b\\\\c\"", "json: quote escapes \" and backslash");
     }
 
+    // P16c — cross-module go-to-def: a reference to an imported symbol resolves to an EXTERNAL definition
+    // tagged with its module's fileId, which the SourceMap names (the LSP turns that into a cross-file Location).
+    {
+        MapModuleResolver resolver({ {"./geo", "record Vec2(x: f64, y: f64)\n"} });
+        const char* prog =
+            "import { Vec2 } from \"./geo\"\n"       // line 1
+            "fn main() {\n"                          // line 2
+            "  let v = Vec2(1.0, 2.0)\n"              // line 3: `Vec2` call at col 11
+            "  print(v.x)\n"
+            "}\n";
+        AnalysisResult a = analyze(prog, &resolver, LibConfig{{"io", "math"}}, "main.pg");
+
+        const SymbolDef* d = a.model.definitionAt(3, 11);
+        check(d && d->name == "Vec2" && d->kind == SymbolKind::Type && d->external,
+              "P16c: a reference to an imported symbol resolves to an external definition");
+        int fid = d ? d->nameSpan.start.fileId : 0;
+        check(fid > 1 && a.sources.canon(fid) == "./geo",
+              "P16c: the external def carries its module's fileId, named by the SourceMap");
+
+        const SymbolDef* mainDef = nullptr;
+        for (const auto& def : a.model.defs) if (def.name == "main") mainDef = &def;
+        check(mainDef && !mainDef->external && mainDef->nameSpan.start.fileId == 1,
+              "P16c: the entry file's own symbols are file-local (fileId 1)");
+    }
+
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
         const char* prog =

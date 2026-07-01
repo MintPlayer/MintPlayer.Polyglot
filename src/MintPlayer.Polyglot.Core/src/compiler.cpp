@@ -286,7 +286,7 @@ void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, Diag
 // through `resolver`. `visited` dedups; `stack` (the in-progress chain) detects import cycles.
 void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::string& selfPath,
                  ModuleResolver* resolver, DiagnosticBag& diags,
-                 std::unordered_set<std::string>& visited, std::vector<std::string>& stack) {
+                 std::unordered_set<std::string>& visited, std::vector<std::string>& stack, SourceMap* src) {
     stack.push_back(selfPath);
     for (const auto& imp : unit.imports) {
         std::string source, canon;
@@ -311,13 +311,14 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
         }
         if (!visited.insert(canon).second) continue; // already loaded (imported more than once)
 
-        std::vector<Token> toks = lex(source, diags);
+        int fileId = src ? src->add(canon) : 0; // stamp this module's tokens so its positions stay unambiguous
+        std::vector<Token> toks = lex(source, diags, fileId);
         if (diags.hasErrors()) return;
         CompilationUnit mod = parse(toks, diags);
         if (diags.hasErrors()) return;
 
         validateImportNames(imp, mod, diags);
-        loadImports(root, mod, canon, resolver, diags, visited, stack); // dependencies first (post-order)
+        loadImports(root, mod, canon, resolver, diags, visited, stack, src); // dependencies first (post-order)
         mergeDecls(mod, root);
     }
     stack.pop_back();
@@ -339,10 +340,10 @@ void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags) {
 }
 
 // Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports).
-void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags) {
+void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags, SourceMap* src) {
     std::unordered_set<std::string> visited;
     std::vector<std::string> stack;
-    loadImports(unit, unit, "", resolver, diags, visited, stack);
+    loadImports(unit, unit, "", resolver, diags, visited, stack, src);
 }
 
 // A stable identity string for a type (so a lib function only shadows a user function of the SAME signature,
@@ -377,7 +378,7 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
         d.path = name.find('.') != std::string::npos ? name : "std." + name;
         staging.imports.push_back(std::move(d));
     }
-    linkModules(staging, resolver, diags);
+    linkModules(staging, resolver, diags, nullptr); // ambient prelude = std (fileId 0; click-through deferred)
     if (diags.hasErrors()) return;
 
     std::unordered_set<std::string> types, values, fns, exts;
@@ -407,9 +408,9 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
 // AST for tooling). Bails between passes on the first error. `model`/`req` are forwarded to `check` so the
 // LSP path can request a semantic model; `compile` passes nullptr and pays nothing.
 bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfig& lib, DiagnosticBag& diags,
-                 SemanticModel* model, const SemanticRequest* req) {
+                 SemanticModel* model, const SemanticRequest* req, SourceMap* src) {
     linkCoreModule(unit, diags);                 if (diags.hasErrors()) return false; // Error/Iterable (no import)
-    linkModules(unit, resolver, diags);          if (diags.hasErrors()) return false; // imported std + user modules
+    linkModules(unit, resolver, diags, src);     if (diags.hasErrors()) return false; // imported std + user modules
     linkLibModules(unit, lib, resolver, diags);  if (diags.hasErrors()) return false; // ambient prelude
     check(unit, diags, model, req);
     return !diags.hasErrors();
@@ -425,7 +426,7 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
     CompilationUnit unit = parse(tokens, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr)) { result.diagnostics = diags.items(); return result; }
+    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr)) { result.diagnostics = diags.items(); return result; }
 
     const char* targetName = target == Target::CSharp ? "csharp"
                            : target == Target::TypeScript ? "typescript"
@@ -456,11 +457,13 @@ EmitResult format(const std::string& source) {
     return result;
 }
 
-AnalysisResult analyze(const std::string& source, ModuleResolver* resolver, const LibConfig& lib) {
+AnalysisResult analyze(const std::string& source, ModuleResolver* resolver, const LibConfig& lib,
+                       const std::string& entryPath) {
     AnalysisResult result;
     DiagnosticBag diags;
 
-    std::vector<Token> tokens = lex(source, diags);
+    int entryFileId = result.sources.add(entryPath.empty() ? "<entry>" : entryPath); // fileId 1 = the entry
+    std::vector<Token> tokens = lex(source, diags, entryFileId);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     CompilationUnit unit = parse(tokens, diags);
@@ -478,7 +481,7 @@ AnalysisResult analyze(const std::string& source, ModuleResolver* resolver, cons
     req.userExtensions = unit.extensions.size();
     req.userValues     = unit.values.size();
 
-    runFrontEnd(unit, resolver, lib, diags, &result.model, &req); // build the model even if check reports errors
+    runFrontEnd(unit, resolver, lib, diags, &result.model, &req, &result.sources); // build model even on check errors
     result.diagnostics = diags.items();
     result.unit = std::move(unit);
     return result;

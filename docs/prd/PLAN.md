@@ -686,8 +686,12 @@ grammar; required finishing name-token positions (`namePos` on all type/member/v
    over it. Testbench demo: `editors/vscode/testbench/pgconfig.json` + a `"geometry"` import. `paths` deferred to P10.
 
 **P16c — Cross-module + richer features.**
-10. Stamp each module's `fileId`/URI at its lex boundary (`loadImports`/`linkCoreModule`); embedded std → a
-    `polyglot:<name>` virtual document the server serves from `STD_MODULES`. Cross-module go-to-def.
+10. **Cross-module go-to-definition ✅ (2026-07-01).** `SourcePos` carries a `fileId`; `analyze()` stamps the
+    entry (id 1) and each loaded module at its `loadImports` lex boundary, returning a `SourceMap` (fileId →
+    canonical origin). Sema registers imported symbols as `external` defs carrying their module's fileId, so a
+    ref to an imported symbol resolves to it; the LSP maps the def's fileId → a `file://` Location (F12 on
+    `Vec2`/`length` jumps into `geometry.pg`). *Deferred:* click-through into embedded std (needs a
+    `polyglot:<name>` virtual-document provider — those defs currently return no location).
 11. `references`/`rename`; `completion` (keywords + in-scope names first; member completion last — needs receiver type).
 
 **P16d — Visual Studio LSP client.** An `ILanguageClient` VSIX pointing at `polyglot lsp` (after the VS Code

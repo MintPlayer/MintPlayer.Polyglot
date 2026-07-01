@@ -355,6 +355,15 @@ std::string uriToPath(const std::string& uri) {
     return out;
 }
 
+// A native path -> a file:// URI (inverse of uriToPath), for cross-module go-to-definition Locations.
+std::string pathToUri(const std::string& p) {
+    std::string s = p;
+    for (char& c : s) if (c == '\\') c = '/';
+    if (s.size() >= 2 && s[1] == ':') return "file:///" + s; // Windows drive: file:///c:/...
+    if (!s.empty() && s[0] == '/') return "file://" + s;     // POSIX absolute
+    return "file:///" + s;
+}
+
 std::size_t byteOffset(const std::string& text, int line, int col) {
     std::size_t off = 0;
     for (int ln = 1; ln < line && off < text.size(); ++off) if (text[off] == '\n') ++ln;
@@ -421,6 +430,7 @@ void lspSend(const std::string& body) {
 struct LspServer {
     std::map<std::string, std::string> text_;    // uri -> current source (Full-sync buffer)
     std::map<std::string, SemanticModel> model_; // uri -> latest analyzed model
+    std::map<std::string, SourceMap> sources_;   // uri -> its fileId->origin map (for cross-module locations)
     std::string root_;
     std::string lib_ = "io,math";
 
@@ -440,8 +450,9 @@ struct LspServer {
                       : (root_.empty() ? entryDir : fs::path(root_));
         std::string libStr = pc.found ? pc.lib : lib_;
         FileModuleResolver resolver(root, entryDir);
-        AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(libStr));
+        AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(libStr), uriToPath(uri));
         model_[uri] = std::move(a.model);
+        sources_[uri] = std::move(a.sources);
         publishDiagnostics(uri, a.diagnostics);
     }
 
@@ -481,8 +492,20 @@ struct LspServer {
         if (!m) return "null";
         const SymbolDef* d = m->definitionAt(line, col);
         if (!d) return "null";
+        // Resolve which file the definition lives in. fileId 1 = the entry (this doc); a higher id is another
+        // module — map it through the SourceMap to a file:// URI. Embedded std (no on-disk file) isn't
+        // navigable yet, so return null there rather than a bogus location.
+        std::string targetUri = uri;
+        int fid = d->nameSpan.start.fileId;
+        if (fid != 1) {
+            auto sit = sources_.find(uri);
+            if (sit == sources_.end()) return "null";
+            const std::string& canon = sit->second.canon(fid);
+            if (canon.empty() || !fs::path(canon).is_absolute()) return "null";
+            targetUri = pathToUri(canon);
+        }
         int sl = d->nameSpan.start.line, sc = d->nameSpan.start.col;
-        return "{\"uri\":" + json::quote(uri) + ",\"range\":" + rangeJson(sl, sc, sl, sc + d->nameSpan.length) + "}";
+        return "{\"uri\":" + json::quote(targetUri) + ",\"range\":" + rangeJson(sl, sc, sl, sc + d->nameSpan.length) + "}";
     }
 
     std::string hover(const json::Value& params) {
