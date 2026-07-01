@@ -525,6 +525,56 @@ int main() {
         check(!hasPrint, "P16a: an external (lib) symbol is not a file-local document symbol");
     }
 
+    // P16 step 2 — type / member / value references. go-to-def on a construction, a member access, and a
+    // top-level value; document symbols include types and members.
+    {
+        const char* prog =
+            "const Scale: f64 = 2.0\n"                 // line 1
+            "record Point(x: f64, y: f64)\n"           // line 2
+            "fn main() {\n"                            // line 3
+            "  let p = Point(1.0, 2.0)\n"               // line 4: `Point` at col 11
+            "  print(p.x)\n"                            // line 5: `.x` member name at col 11
+            "  print(Scale)\n"                          // line 6: `Scale` at col 9
+            "}\n";
+        AnalysisResult a = analyze(prog, nullptr, LibConfig{{"io", "math"}});
+        check(a.diagnostics.empty(), "P16 step2: program with a record + value analyzes clean");
+
+        const SymbolDef* ty = a.model.definitionAt(4, 11);
+        check(ty && ty->name == "Point" && ty->kind == SymbolKind::Type && ty->nameSpan.start.line == 2,
+              "P16 step2: go-to-def on a construction resolves to the type");
+
+        const SymbolDef* fld = a.model.definitionAt(5, 11);
+        check(fld && fld->name == "x" && fld->kind == SymbolKind::Field && fld->nameSpan.start.line == 2,
+              "P16 step2: go-to-def on a member access resolves to the field");
+
+        const SymbolDef* val = a.model.definitionAt(6, 9);
+        check(val && val->name == "Scale" && val->kind == SymbolKind::Value && val->nameSpan.start.line == 1,
+              "P16 step2: go-to-def on a value use resolves to its declaration");
+
+        bool hasPoint = false, hasScale = false;
+        for (const SymbolDef* s : a.model.documentSymbols()) {
+            if (s->name == "Point") hasPoint = true;
+            if (s->name == "Scale") hasScale = true;
+        }
+        check(hasPoint && hasScale, "P16 step2: documentSymbols includes the type and the value");
+    }
+
+    // P16 step 2 — a class method reference resolves to the method definition.
+    {
+        const char* prog =
+            "class Counter {\n"                        // line 1
+            "  fn tick(): i32 => 1\n"                   // line 2
+            "}\n"
+            "fn main() {\n"
+            "  let c = Counter()\n"
+            "  print(c.tick())\n"                       // line 6: `tick` method name at col 11
+            "}\n";
+        AnalysisResult a = analyze(prog, nullptr, LibConfig{{"io", "math"}});
+        const SymbolDef* m = a.model.definitionAt(6, 11);
+        check(m && m->name == "tick" && m->kind == SymbolKind::Method && m->nameSpan.start.line == 2,
+              "P16 step2: go-to-def on a method call resolves to the method");
+    }
+
     // P8 — List<T> as a first-party .pg std type, bound to each target via the FFI binding mechanism.
     {
         const char* prog =

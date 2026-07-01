@@ -244,14 +244,10 @@ public:
         buildTables(unit);
         resolveAllTypes(unit);
 
-        // Pre-register file-local function definitions so a call from any user body resolves to one (the
-        // linker appends merged std/import decls, so indices [0, userFunctions) are the entry file's own).
-        if (model_ && req_)
-            for (std::size_t i = 0; i < unit.functions.size() && i < req_->userFunctions; ++i) {
-                const auto& fn = unit.functions[i];
-                int id = recordDef(SymbolKind::Function, fn.name, fn.namePos, fn.returnType);
-                fnDefId_.emplace(fn.name, id); // first decl of a name wins (overload precision is a follow-up)
-            }
+        // Pre-register file-local definitions (functions, types + members, values) so a reference from any
+        // user body resolves to one. The linker APPENDS merged std/import decls, so indices [0, userX) are
+        // the entry file's own. (First decl of a name wins; overload precision is a follow-up.)
+        if (model_ && req_) registerUserSymbols(unit);
 
         for (std::size_t i = 0; i < unit.functions.size(); ++i) {
             auto& fn = unit.functions[i];
@@ -270,8 +266,16 @@ public:
             inAsync_ = false;
             recordModel_ = false;
         }
-        for (auto& d : unit.records) checkTypeBody(d.name, d.generics, d.members, &d.fields);
-        for (auto& d : unit.classes) checkTypeBody(d.name, d.generics, d.members, nullptr);
+        for (std::size_t i = 0; i < unit.records.size(); ++i) {
+            recordModel_ = model_ && req_ && i < req_->userRecords; // record refs inside user type bodies too
+            checkTypeBody(unit.records[i].name, unit.records[i].generics, unit.records[i].members, &unit.records[i].fields);
+            recordModel_ = false;
+        }
+        for (std::size_t i = 0; i < unit.classes.size(); ++i) {
+            recordModel_ = model_ && req_ && i < req_->userClasses;
+            checkTypeBody(unit.classes[i].name, unit.classes[i].generics, unit.classes[i].members, nullptr);
+            recordModel_ = false;
+        }
         for (auto& d : unit.extensions) { // `this` denotes the receiver inside an extension body
             currentReturn_ = d.returnType;
             currentThis_ = d.receiver;
@@ -316,7 +320,10 @@ private:
     SemanticModel* model_ = nullptr;
     const SemanticRequest* req_ = nullptr;
     bool recordModel_ = false;                       // true only while checking a file-local (user) decl body
-    std::unordered_map<std::string, int> fnDefId_;   // user function name -> its SymbolDef index (for call refs)
+    std::unordered_map<std::string, int> fnDefId_;     // user function name -> its SymbolDef index (for call refs)
+    std::unordered_map<std::string, int> typeDefId_;   // user type name -> SymbolDef index (construction refs)
+    std::unordered_map<std::string, int> valueDefId_;  // user top-level const/let name -> SymbolDef index
+    std::unordered_map<std::string, int> memberDefId_; // "Type.member" -> SymbolDef index (own members)
 
     int recordDef(SymbolKind kind, const std::string& name, SourcePos namePos, const TypeRef& type) {
         if (!model_) return -1;
@@ -331,6 +338,40 @@ private:
     void recordRef(SourcePos pos, const std::string& name, int defId) {
         if (!model_ || !recordModel_ || defId < 0) return;
         model_->refs.push_back({{pos, static_cast<int>(name.size())}, defId});
+    }
+
+    // Register a file-local nominal type + its members as definitions (so a construction / member access
+    // can resolve to them). Members are keyed "Type.member". Definition positions are the decl keyword for
+    // now (jumps to the right line); precise name columns are a follow-up like FunctionDecl::namePos.
+    void registerType(const std::string& name, SourcePos pos, const std::vector<Member>& members) {
+        typeDefId_.emplace(name, recordDef(SymbolKind::Type, name, pos, tNamed(name)));
+        for (const auto& m : members) {
+            SymbolKind k = (m.kind == MemberKind::Method || m.kind == MemberKind::Operator) ? SymbolKind::Method
+                         : (m.kind == MemberKind::Property) ? SymbolKind::Method
+                         : SymbolKind::Field;
+            const TypeRef& t = (m.kind == MemberKind::Method || m.kind == MemberKind::Operator) ? m.returnType : m.type;
+            memberDefId_.emplace(name + "." + m.name, recordDef(k, m.name, m.pos, t));
+        }
+    }
+    void registerUserSymbols(const CompilationUnit& unit) {
+        for (std::size_t i = 0; i < unit.functions.size() && i < req_->userFunctions; ++i) {
+            const auto& fn = unit.functions[i];
+            fnDefId_.emplace(fn.name, recordDef(SymbolKind::Function, fn.name, fn.namePos, fn.returnType));
+        }
+        for (std::size_t i = 0; i < unit.records.size()    && i < req_->userRecords; ++i) {
+            const auto& r = unit.records[i];
+            registerType(r.name, r.pos, r.members);
+            for (const auto& f : r.fields) // positional record fields (precise name positions)
+                memberDefId_.emplace(r.name + "." + f.name, recordDef(SymbolKind::Field, f.name, f.pos, f.type));
+        }
+        for (std::size_t i = 0; i < unit.classes.size()    && i < req_->userClasses; ++i)    registerType(unit.classes[i].name,    unit.classes[i].pos,    unit.classes[i].members);
+        for (std::size_t i = 0; i < unit.interfaces.size() && i < req_->userInterfaces; ++i) registerType(unit.interfaces[i].name, unit.interfaces[i].pos, unit.interfaces[i].members);
+        for (std::size_t i = 0; i < unit.enums.size()      && i < req_->userEnums; ++i)      typeDefId_.emplace(unit.enums[i].name,  recordDef(SymbolKind::Type, unit.enums[i].name,  unit.enums[i].pos,  tNamed(unit.enums[i].name)));
+        for (std::size_t i = 0; i < unit.unions.size()     && i < req_->userUnions; ++i)     typeDefId_.emplace(unit.unions[i].name, recordDef(SymbolKind::Type, unit.unions[i].name, unit.unions[i].pos, tNamed(unit.unions[i].name)));
+        for (std::size_t i = 0; i < unit.values.size()     && i < req_->userValues; ++i) {
+            const auto& v = unit.values[i];
+            valueDefId_.emplace(v.name, recordDef(SymbolKind::Value, v.name, v.pos, v.hasType ? v.type : TypeRef{}));
+        }
     }
 
     // ---- scopes ----
@@ -946,7 +987,11 @@ private:
 
     TypeRef checkName(Expr& e) {
         if (const Local* l = lookup(e.text)) { recordRef(e.pos, e.text, l->defId); return l->type; }
-        auto v = values_.find(e.text); if (v != values_.end()) return v->second;
+        auto v = values_.find(e.text);
+        if (v != values_.end()) {
+            if (auto it = valueDefId_.find(e.text); it != valueDefId_.end()) recordRef(e.pos, e.text, it->second);
+            return v->second;
+        }
         auto uc = unionCtors_.find(e.text); if (uc != unionCtors_.end() && uc->second.params.empty()) return uc->second.result;
         if (const MemberInfo* m = enclosingStatic(e.text)) { e.staticOwner = currentClass_; return m->type; }
         if (fns_.count(e.text) || typeNames_.count(e.text) || unionCtors_.count(e.text)) return tUnknown();
@@ -1108,7 +1153,10 @@ private:
         // Static member access `Type.MEMBER` (e.g. `Math.PI` on the std.math extern class): the LHS is a
         // type name, so resolve the member on the type rather than evaluating the LHS as a value.
         if (e.lhs->kind == ExprKind::Name && types_.count(e.lhs->text)) {
-            if (const MemberInfo* m = findMember(e.lhs->text, e.text)) { TypeRef t = m->type; if (e.flag) t.nullable = true; return t; }
+            if (const MemberInfo* m = findMember(e.lhs->text, e.text)) {
+                if (auto it = memberDefId_.find(e.lhs->text + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
+                TypeRef t = m->type; if (e.flag) t.nullable = true; return t;
+            }
             diags_.error(e.pos, "type '" + e.lhs->text + "' has no member '" + e.text + "'");
             return tUnknown();
         }
@@ -1116,8 +1164,10 @@ private:
         TypeRef recv = checkExpr(*e.lhs);
         TypeRef result = tUnknown();
         if (knownType(recv)) {
-            if (const MemberInfo* m = findMember(recv.name, e.text)) result = m->type;
-            else diags_.error(e.pos, "type '" + recv.name + "' has no member '" + e.text + "'");
+            if (const MemberInfo* m = findMember(recv.name, e.text)) {
+                result = m->type;
+                if (auto it = memberDefId_.find(recv.name + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
+            } else diags_.error(e.pos, "type '" + recv.name + "' has no member '" + e.text + "'");
         }
         if (e.flag) result.nullable = true; // null-safe `?.`
         return result;
@@ -1161,6 +1211,7 @@ private:
                 }
                 if (types_.count(typeName)) {
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
+                        if (auto it = memberDefId_.find(typeName + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                         std::string what = "static method '" + typeName + "." + method + "'";
                         checkArgs(m->params, argTypes, e.args, what, e.pos, m->required);
                         checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, what, e.pos);
@@ -1183,7 +1234,7 @@ private:
                 }
             }
             if (knownType(recv)) {
-                if (const MemberInfo* m = findMember(recv.name, method)) { checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); TypeRef r = inferResult(m->generics, m->params, argTypes, m->type); return m->isAsync ? awaitable(r) : r; }
+                if (const MemberInfo* m = findMember(recv.name, method)) { if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second); checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); TypeRef r = inferResult(m->generics, m->params, argTypes, m->type); return m->isAsync ? awaitable(r) : r; }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
             return tUnknown();
@@ -1207,6 +1258,7 @@ private:
             return l->type.kind == TypeRef::Kind::Function && !l->type.ret.empty() ? l->type.ret[0] : tUnknown();
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
+            if (auto it = typeDefId_.find(name); it != typeDefId_.end()) recordRef(e.lhs->pos, name, it->second);
             if (t->second.hasCtor) checkArgs(t->second.ctorParams, argTypes, e.args, "'" + name + "'", e.pos, t->second.ctorRequired);
             TypeRef r = tNamed(name); r.args = e.typeArgs; // carry `Box<i32>()`'s args so the result is Box<i32>
             return r;

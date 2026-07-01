@@ -857,11 +857,12 @@ private:
         for (;;) {
             if (at(TokKind::Dot) || at(TokKind::QuestionDot)) {
                 bool nullSafe = at(TokKind::QuestionDot);
-                auto p = advance().pos;
-                auto m = mk(ExprKind::Member, p);
+                advance(); // '.' / '?.'
+                Token nameTok = expect(TokKind::Identifier, "a member name");
+                auto m = mk(ExprKind::Member, nameTok.pos); // anchor at the member name (tooling + diagnostics)
                 m->flag = nullSafe;
                 m->lhs = std::move(e);
-                m->text = expect(TokKind::Identifier, "a member name").text;
+                m->text = nameTok.text;
                 e = std::move(m);
             } else if (at(TokKind::Lt) && (e->kind == ExprKind::Name || e->kind == ExprKind::Member) &&
                        genericCallAhead()) {
