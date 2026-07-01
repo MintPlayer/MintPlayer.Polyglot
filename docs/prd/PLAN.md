@@ -666,7 +666,11 @@ all conformance/samples/fidelity gates green throughout (additions sit behind de
 (`json.hpp/.cpp`) + a `polyglot lsp` stdio JSON-RPC server (Full sync, utf-8 position encoding, cached per-uri model)
 serving publishDiagnostics / definition / hover / documentSymbol / formatting. The VS Code extension is now a
 `vscode-languageclient` client spawning `polyglot lsp`; the old shell-out `fmt`/`check` providers are removed
-(diagnostics are live on-type). *Deferred (P16b tail):* semanticTokens + completion.
+(diagnostics are live on-type). **semanticTokens ✅ (2026-07-01)** — delta-encoded `semanticTokens/full`
+classified from the model (function/type/method/property/variable/enumMember + `declaration`), layered over the
+grammar; required finishing name-token positions (`namePos` on all type/member/value/let decls, matching
+`FunctionDecl`) — which also makes go-to-def anchor at the name, not the keyword. Also implemented: `pgconfig.json`
+(step 9). *Deferred:* completion; cross-module (P16c); the Visual Studio client (P16d).
 6. **JSON reader** in Core (`json.hpp/.cpp`) — hand-written, ~300 lines, unit-tested (incl. `\uXXXX` + surrogate pairs).
 7. **`polyglot lsp`** CLI subcommand: binary-stdio `Content-Length` framing + JSON-RPC dispatch; lifecycle;
    negotiate `positionEncoding:"utf-8"`; open-document store + **buffer-aware `ModuleResolver`** (Full sync);

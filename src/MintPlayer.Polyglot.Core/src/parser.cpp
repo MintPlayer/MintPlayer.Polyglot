@@ -218,7 +218,7 @@ private:
         if (at(TokKind::KwConst)) {
             m.kind = MemberKind::Const;
             advance();
-            m.name = expect(TokKind::Identifier, "a constant name").text;
+            { Token nt = expect(TokKind::Identifier, "a constant name"); m.name = nt.text; m.namePos = nt.pos; }
             expect(TokKind::Colon, "':'");
             m.type = parseType();
             if (at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual) { // a bound const (e.g. Math.PI)
@@ -234,7 +234,7 @@ private:
             m.kind = at(TokKind::KwOperator) ? MemberKind::Operator : MemberKind::Method;
             advance();
             if (m.kind == MemberKind::Operator) expect(TokKind::KwFn, "'fn'");
-            m.name = expect(TokKind::Identifier, "a method name").text;
+            { Token nt = expect(TokKind::Identifier, "a method name"); m.name = nt.text; m.namePos = nt.pos; }
             m.generics = parseGenericParams();
             expect(TokKind::LParen, "'('");
             m.params = parseParamList();
@@ -247,7 +247,7 @@ private:
         if (at(TokKind::KwLet) || at(TokKind::KwVar)) {
             m.isMutable = at(TokKind::KwVar);
             advance();
-            m.name = expect(TokKind::Identifier, "a member name").text;
+            { Token nt = expect(TokKind::Identifier, "a member name"); m.name = nt.text; m.namePos = nt.pos; }
             expect(TokKind::Colon, "':'");
             m.type = parseType();
             if (at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual) { m.kind = MemberKind::Property; tryParseBindings(m); }
@@ -281,7 +281,7 @@ private:
         RecordDecl d;
         d.pos = peek().pos;
         expect(TokKind::KwRecord, "'record'");
-        d.name = expect(TokKind::Identifier, "a record name").text;
+        { Token nt = expect(TokKind::Identifier, "a record name"); d.name = nt.text; d.namePos = nt.pos; }
         d.generics = parseGenericParams();
         expect(TokKind::LParen, "'('");
         d.fields = parseParamList();
@@ -303,7 +303,7 @@ private:
         while (at(TokKind::KwAbstract) || at(TokKind::KwOpen) || at(TokKind::KwSealed))
             d.modifiers.push_back(modifierText(advance().kind));
         expect(TokKind::KwClass, "'class'");
-        d.name = expect(TokKind::Identifier, "a class name").text;
+        { Token nt = expect(TokKind::Identifier, "a class name"); d.name = nt.text; d.namePos = nt.pos; }
         d.generics = parseGenericParams();
         if (accept(TokKind::Colon)) {
             do { d.bases.push_back(parseType()); } while (accept(TokKind::Comma));
@@ -332,7 +332,7 @@ private:
         InterfaceDecl d;
         d.pos = peek().pos;
         expect(TokKind::KwInterface, "'interface'");
-        d.name = expect(TokKind::Identifier, "an interface name").text;
+        { Token nt = expect(TokKind::Identifier, "an interface name"); d.name = nt.text; d.namePos = nt.pos; }
         d.generics = parseGenericParams();
         if (accept(TokKind::Colon)) {
             do { d.bases.push_back(parseType()); } while (accept(TokKind::Comma));
@@ -365,7 +365,7 @@ private:
         d.pos = peek().pos;
         d.isConst = at(TokKind::KwConst);
         advance(); // const / let
-        d.name = expect(TokKind::Identifier, "a name").text;
+        { Token nt = expect(TokKind::Identifier, "a name"); d.name = nt.text; d.namePos = nt.pos; }
         if (accept(TokKind::Colon)) { d.type = parseType(); d.hasType = true; }
         expect(TokKind::Assign, "'='");
         d.init = parseExpr();
@@ -377,7 +377,7 @@ private:
         EnumDecl d;
         d.pos = peek().pos;
         expect(TokKind::KwEnum, "'enum'");
-        d.name = expect(TokKind::Identifier, "an enum name").text;
+        { Token nt = expect(TokKind::Identifier, "an enum name"); d.name = nt.text; d.namePos = nt.pos; }
         expect(TokKind::LBrace, "'{'");
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
             EnumCase c;
@@ -398,7 +398,7 @@ private:
         UnionDecl d;
         d.pos = peek().pos;
         expect(TokKind::KwUnion, "'union'");
-        d.name = expect(TokKind::Identifier, "a union name").text;
+        { Token nt = expect(TokKind::Identifier, "a union name"); d.name = nt.text; d.namePos = nt.pos; }
         d.generics = parseGenericParams(); // `union Option<T> { … }` — type params shared by all cases
         expect(TokKind::LBrace, "'{'");
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
@@ -638,7 +638,7 @@ private:
         s->kind = StmtKind::Use;
         s->pos = peek().pos;
         advance(); // use
-        s->name = expect(TokKind::Identifier, "a binding name").text;
+        { Token nt = expect(TokKind::Identifier, "a binding name"); s->name = nt.text; s->namePos = nt.pos; }
         if (accept(TokKind::Colon)) { s->declType = parseType(); s->hasDeclType = true; }
         expect(TokKind::Assign, "'='");
         s->value = parseExpr();
@@ -679,7 +679,7 @@ private:
         s->pos = peek().pos;
         s->isMutable = at(TokKind::KwVar);
         advance();
-        s->name = expect(TokKind::Identifier, "a binding name").text;
+        { Token nt = expect(TokKind::Identifier, "a binding name"); s->name = nt.text; s->namePos = nt.pos; }
         if (accept(TokKind::Colon)) { s->declType = parseType(); s->hasDeclType = true; }
         expect(TokKind::Assign, "'='");
         s->value = parseExpr();

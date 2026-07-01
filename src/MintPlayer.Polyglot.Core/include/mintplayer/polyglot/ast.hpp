@@ -147,6 +147,7 @@ struct Stmt {
     SourcePos pos;
 
     std::string name;               // Let / Use binding name
+    SourcePos namePos;              // Let / Use: the binding-name identifier (go-to-def / semantic-token anchor)
     bool isMutable = false;         // Let: `var` (true) vs `let` (false)
     TypeRef declType;               // Let / Use: explicit annotation (when hasDeclType)
     bool hasDeclType = false;
@@ -193,6 +194,7 @@ enum class MemberKind { Field, Const, Init, Method, Operator, Property };
 struct Member {
     MemberKind kind;
     SourcePos pos;
+    SourcePos namePos;                   // the member-name identifier (go-to-def / semantic-token anchor)
     std::vector<std::string> modifiers;  // abstract/open/override/static/private
     bool isAsync = false;                // `async` method — return wrapped in Task/Promise/async def (§4.7)
     std::string name;                    // field/const/method/operator/property name (Init: "init")
@@ -212,6 +214,7 @@ struct Member {
 struct RecordDecl {
     std::string name;
     SourcePos pos;
+    SourcePos namePos;                   // the type-name identifier (go-to-def / semantic-token anchor)
     std::vector<GenericParam> generics;
     std::vector<Param> fields;           // positional fields
     std::vector<TypeRef> bases;          // implemented interfaces
@@ -221,6 +224,7 @@ struct ClassDecl {
     std::vector<std::string> modifiers;
     std::string name;
     SourcePos pos;
+    SourcePos namePos;                   // the type-name identifier (go-to-def / semantic-token anchor)
     std::vector<GenericParam> generics;
     std::vector<TypeRef> bases;          // base class and/or interfaces
     std::vector<Member> members;
@@ -230,6 +234,7 @@ struct ClassDecl {
 struct InterfaceDecl {
     std::string name;
     SourcePos pos;
+    SourcePos namePos;                   // the type-name identifier (go-to-def / semantic-token anchor)
     std::vector<GenericParam> generics;
     std::vector<TypeRef> bases;
     std::vector<Member> members;
@@ -250,6 +255,7 @@ struct ValueDecl {                       // top-level `const` / `let`
     bool isConst = false;
     std::string name;
     SourcePos pos;
+    SourcePos namePos;                   // the value-name identifier (go-to-def / semantic-token anchor)
     TypeRef type;
     bool hasType = false;
     ExprPtr init;
@@ -264,6 +270,7 @@ struct EnumCase {
 struct EnumDecl {
     std::string name;
     SourcePos pos;
+    SourcePos namePos;                   // the type-name identifier (go-to-def / semantic-token anchor)
     std::vector<EnumCase> cases;
 };
 
@@ -275,6 +282,7 @@ struct UnionCase {
 struct UnionDecl {
     std::string name;
     SourcePos pos;
+    SourcePos namePos;                   // the type-name identifier (go-to-def / semantic-token anchor)
     std::vector<GenericParam> generics;  // `union Option<T> { … }`
     std::vector<UnionCase> cases;
 };

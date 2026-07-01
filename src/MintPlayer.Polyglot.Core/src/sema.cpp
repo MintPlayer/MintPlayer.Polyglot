@@ -343,14 +343,14 @@ private:
     // Register a file-local nominal type + its members as definitions (so a construction / member access
     // can resolve to them). Members are keyed "Type.member". Definition positions are the decl keyword for
     // now (jumps to the right line); precise name columns are a follow-up like FunctionDecl::namePos.
-    void registerType(const std::string& name, SourcePos pos, const std::vector<Member>& members) {
-        typeDefId_.emplace(name, recordDef(SymbolKind::Type, name, pos, tNamed(name)));
+    void registerType(const std::string& name, SourcePos namePos, const std::vector<Member>& members) {
+        typeDefId_.emplace(name, recordDef(SymbolKind::Type, name, namePos, tNamed(name)));
         for (const auto& m : members) {
             SymbolKind k = (m.kind == MemberKind::Method || m.kind == MemberKind::Operator) ? SymbolKind::Method
                          : (m.kind == MemberKind::Property) ? SymbolKind::Method
                          : SymbolKind::Field;
             const TypeRef& t = (m.kind == MemberKind::Method || m.kind == MemberKind::Operator) ? m.returnType : m.type;
-            memberDefId_.emplace(name + "." + m.name, recordDef(k, m.name, m.pos, t));
+            memberDefId_.emplace(name + "." + m.name, recordDef(k, m.name, m.namePos, t));
         }
     }
     void registerUserSymbols(const CompilationUnit& unit) {
@@ -360,17 +360,17 @@ private:
         }
         for (std::size_t i = 0; i < unit.records.size()    && i < req_->userRecords; ++i) {
             const auto& r = unit.records[i];
-            registerType(r.name, r.pos, r.members);
-            for (const auto& f : r.fields) // positional record fields (precise name positions)
+            registerType(r.name, r.namePos, r.members);
+            for (const auto& f : r.fields) // positional record fields (Param.pos is already the name)
                 memberDefId_.emplace(r.name + "." + f.name, recordDef(SymbolKind::Field, f.name, f.pos, f.type));
         }
-        for (std::size_t i = 0; i < unit.classes.size()    && i < req_->userClasses; ++i)    registerType(unit.classes[i].name,    unit.classes[i].pos,    unit.classes[i].members);
-        for (std::size_t i = 0; i < unit.interfaces.size() && i < req_->userInterfaces; ++i) registerType(unit.interfaces[i].name, unit.interfaces[i].pos, unit.interfaces[i].members);
-        for (std::size_t i = 0; i < unit.enums.size()      && i < req_->userEnums; ++i)      typeDefId_.emplace(unit.enums[i].name,  recordDef(SymbolKind::Type, unit.enums[i].name,  unit.enums[i].pos,  tNamed(unit.enums[i].name)));
-        for (std::size_t i = 0; i < unit.unions.size()     && i < req_->userUnions; ++i)     typeDefId_.emplace(unit.unions[i].name, recordDef(SymbolKind::Type, unit.unions[i].name, unit.unions[i].pos, tNamed(unit.unions[i].name)));
+        for (std::size_t i = 0; i < unit.classes.size()    && i < req_->userClasses; ++i)    registerType(unit.classes[i].name,    unit.classes[i].namePos,    unit.classes[i].members);
+        for (std::size_t i = 0; i < unit.interfaces.size() && i < req_->userInterfaces; ++i) registerType(unit.interfaces[i].name, unit.interfaces[i].namePos, unit.interfaces[i].members);
+        for (std::size_t i = 0; i < unit.enums.size()      && i < req_->userEnums; ++i)      typeDefId_.emplace(unit.enums[i].name,  recordDef(SymbolKind::Type, unit.enums[i].name,  unit.enums[i].namePos,  tNamed(unit.enums[i].name)));
+        for (std::size_t i = 0; i < unit.unions.size()     && i < req_->userUnions; ++i)     typeDefId_.emplace(unit.unions[i].name, recordDef(SymbolKind::Type, unit.unions[i].name, unit.unions[i].namePos, tNamed(unit.unions[i].name)));
         for (std::size_t i = 0; i < unit.values.size()     && i < req_->userValues; ++i) {
             const auto& v = unit.values[i];
-            valueDefId_.emplace(v.name, recordDef(SymbolKind::Value, v.name, v.pos, v.hasType ? v.type : TypeRef{}));
+            valueDefId_.emplace(v.name, recordDef(SymbolKind::Value, v.name, v.namePos, v.hasType ? v.type : TypeRef{}));
         }
     }
 
@@ -802,7 +802,7 @@ private:
             case StmtKind::Let: {
                 TypeRef init = checkExpr(*s.value);
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
-                declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.pos);
+                declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
                 break;
             }
             case StmtKind::Assign: {
@@ -850,7 +850,7 @@ private:
                 if (s.value) checkExpr(*s.value);
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); }
                 pushScope();
-                declare(s.name, s.hasDeclType ? s.declType : tUnknown(), false, s.pos);
+                declare(s.name, s.hasDeclType ? s.declType : tUnknown(), false, s.namePos);
                 for (auto& st : s.thenBody) checkStmt(*st);
                 popScope();
                 break;

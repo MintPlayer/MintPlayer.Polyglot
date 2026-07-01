@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -376,6 +377,21 @@ int lspSymbolKind(SymbolKind k) {
     }
 }
 
+// The semantic-token legend index for a symbol (must match the tokenTypes array declared in `initialize`).
+int semanticTokenType(SymbolKind k) {
+    switch (k) {
+        case SymbolKind::Function:  return 0; // function
+        case SymbolKind::Type:      return 1; // type
+        case SymbolKind::Method:    return 2; // method
+        case SymbolKind::Field:     return 3; // property
+        case SymbolKind::Value:     return 4; // variable
+        case SymbolKind::Parameter: return 5; // parameter
+        case SymbolKind::UnionCase:
+        case SymbolKind::EnumCase:  return 6; // enumMember
+        default:                    return 4; // Local -> variable
+    }
+}
+
 // Read one Content-Length-framed message body from stdin. False on EOF.
 bool lspRead(std::string& body) {
     std::size_t len = 0;
@@ -482,6 +498,46 @@ struct LspServer {
         return "{\"contents\":{\"kind\":\"markdown\",\"value\":" + json::quote(md) + "}}";
     }
 
+    // Accurate identifier coloring: emit an LSP semantic token for every definition and reference the model
+    // knows, classified by symbol kind. Delta-encoded (5 ints/token, document order) with `declaration` set on
+    // def sites. Layers on top of the TextMate grammar (which still colors keywords/strings/numbers/operators).
+    std::string semanticTokens(const json::Value& params) {
+        auto it = model_.find(params["textDocument"]["uri"].asString());
+        if (it == model_.end()) return "{\"data\":[]}";
+        const SemanticModel& m = it->second;
+        struct Tok { int line, col, len, type, mod; };
+        std::vector<Tok> toks;
+        for (const auto& d : m.defs)
+            if (!d.external && d.nameSpan.length > 0)
+                toks.push_back({d.nameSpan.start.line, d.nameSpan.start.col, d.nameSpan.length, semanticTokenType(d.kind), 1});
+        for (const auto& r : m.refs)
+            if (r.def >= 0 && r.span.length > 0)
+                toks.push_back({r.span.start.line, r.span.start.col, r.span.length,
+                                semanticTokenType(m.defs[static_cast<std::size_t>(r.def)].kind), 0});
+        // stable_sort keeps insertion order (defs before body refs) so a position emitted for two overlapping
+        // symbols — e.g. a record field that's also an in-scope local in a method body — keeps the first.
+        std::stable_sort(toks.begin(), toks.end(),
+                         [](const Tok& a, const Tok& b) { return a.line != b.line ? a.line < b.line : a.col < b.col; });
+        std::string data;
+        int prevLine = 0, prevChar = 0, lastLine = -1, lastCol = -1;
+        bool first = true;
+        for (const auto& t : toks) {
+            if (t.line == lastLine && t.col == lastCol) continue; // LSP requires non-overlapping tokens
+            lastLine = t.line;
+            lastCol = t.col;
+            int line0 = t.line - 1, char0 = t.col - 1;
+            int dLine = line0 - prevLine;
+            int dChar = dLine == 0 ? char0 - prevChar : char0;
+            if (!first) data += ",";
+            first = false;
+            data += std::to_string(dLine) + "," + std::to_string(dChar) + "," + std::to_string(t.len) + "," +
+                    std::to_string(t.type) + "," + std::to_string(t.mod);
+            prevLine = line0;
+            prevChar = char0;
+        }
+        return "{\"data\":[" + data + "]}";
+    }
+
     std::string formatting(const json::Value& params) {
         std::string uri = params["textDocument"]["uri"].asString();
         auto it = text_.find(uri);
@@ -548,7 +604,10 @@ int runLsp(const std::vector<std::string>&) {
             std::string enc = utf8 ? "utf-8" : "utf-16";
             lspReply(id, "{\"capabilities\":{\"positionEncoding\":\"" + enc + "\",\"textDocumentSync\":1,"
                          "\"definitionProvider\":true,\"documentSymbolProvider\":true,\"hoverProvider\":true,"
-                         "\"documentFormattingProvider\":true},"
+                         "\"documentFormattingProvider\":true,"
+                         "\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"type\","
+                         "\"method\",\"property\",\"variable\",\"parameter\",\"enumMember\"],"
+                         "\"tokenModifiers\":[\"declaration\"]},\"full\":true}},"
                          "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"0.0.1\"}}");
         } else if (method == "shutdown") {
             lspReply(id, "null");
@@ -574,6 +633,8 @@ int runLsp(const std::vector<std::string>&) {
             lspReply(id, srv.documentSymbol(params));
         } else if (method == "textDocument/formatting") {
             lspReply(id, srv.formatting(params));
+        } else if (method == "textDocument/semanticTokens/full") {
+            lspReply(id, srv.semanticTokens(params));
         } else if (method == "textDocument/hover") {
             lspReply(id, srv.hover(params));
         } else if (!id.isNull()) {

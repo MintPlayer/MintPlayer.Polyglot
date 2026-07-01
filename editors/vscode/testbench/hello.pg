@@ -1,30 +1,19 @@
-// Polyglot extension testbench — this folder opens automatically in the Extension Development Host (F5).
-//
-// Things to try:
-//   • Syntax coloring: keywords, types, strings + ${...} interpolation, numbers, comments.
-//   • Format Document (Shift+Alt+F) — reformats via `polyglot fmt`.
-//   • Introduce an error (e.g. `let n: i32 = "oops"`) and save — a squiggle appears (via `polyglot check`).
-//   • pgconfig.json (next to this file) provides `root` + `lib` — so this import and `print`/`Math` resolve
-//     with no editor settings. Try Go to Definition (F12) on Point, distanceSquared, the fields, and locals.
-
 import { Vec2, length } from "geometry"
 
 record Point(x: f64, y: f64)
 
-fn distanceSquared(a: Point, b: Point): f64 {let dx = a.x - b.x
-  let dy = a.y - b.y
-
-  let n: i32 = "oops"
-
-  return dx * dx + dy * dy
+fn distanceSquared(a: Point, b: Point): f64 {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    let n: i32 = "oops"
+    return dx * dx + dy * dy
 }
 
 async fn main() {
-  let p = Point(3.0, 4.0)
-  let q = Point(0.0, 0.0)
-  let d2 = distanceSquared(p, q)
-  print("distance squared = ${d2}")
-
-  let v = Vec2(3.0, 4.0)                 // Vec2 + length come from "geometry" (resolved via pgconfig root)
-  print("length = ${length(v)}")        // length() uses Math.sqrt (from the ambient `math` lib)
+    let p = Point(3.0, 4.0)
+    let q = Point(0.0, 0.0)
+    let d2 = distanceSquared(p, q)
+    print("distance squared = ${d2}")
+    let v = Vec2(3.0, 4.0)
+    print("length = ${length(v)}")
 }
