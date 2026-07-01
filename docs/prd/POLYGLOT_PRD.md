@@ -514,8 +514,15 @@ explicit CLI flags still win over it. A strict **subset/precursor of P10's manif
 as `initializationOptions`. The LSP's `publishDiagnostics`/`textDocument/formatting`/`semanticTokens` **supersede and
 replace** the current `check`/`fmt` shell-out providers (gaining on-type + unsaved-buffer diagnostics with real
 ranges); the grammar and `language-configuration.json` stay; the CLI `check`/`fmt` subcommands stay for headless/CI.
-Visual Studio: a coloring-only VSIX (bundling the shared grammar) can land anytime; an `ILanguageClient` VSIX pointing
-at `polyglot lsp` follows once the VS Code client proves the server.
+Visual Studio (P16d, designed 2026-07-01): a single VSIX at `editors/vs/` — a MEF `[Export(typeof(ILanguageClient))]
+[ContentType("polyglot")]` client whose `ActivateAsync` launches `polyglot lsp` over stdio (`Connection(stdout,
+stdin)`), a `polyglot` content type (`BaseDefinition = code.remote`) + `.pg` file association, and the **same shared
+TextMate grammar** bundled for the offline coloring floor (semantic tokens refine on top). The full standard LSP set
+flows through `ILanguageClient` with no VS-specific code; VS sends utf-16 positions, which the server already handles.
+v1 ships the standard set + coloring; the VS-Code-specific extras (std virtual-doc click-through, generated-output
+preview) are deferred behind `ILanguageClientCustomMessage2` follow-ups. The VSSDK is installed on the VS 18 build
+host and the VSIX builds headlessly with the repo's VS 18 MSBuild; testing the running extension needs an interactive
+`devenv /rootsuffix Exp`. Legacy VSSDK `.csproj`, `net472`, `InstallationTarget [17.0,)`. Slice plan: PLAN §P16d.
 
 **Scope for v1 (same-file):** definition/hover/document-symbols/semantic-tokens/diagnostics for symbols in the file
 being edited (locals, params, functions, types, members). *(All since delivered beyond v1: cross-module go-to-def

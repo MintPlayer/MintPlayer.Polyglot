@@ -713,9 +713,44 @@ grammar; required finishing name-token positions (`namePos` on all type/member/v
     bare-callable symbols, context-insensitive). **Member completion (`obj.`) ✅ (2026-07-01)** — see the tail
     note below. *Deferred:* in-scope-only local filtering.
 
-**P16d — Visual Studio LSP client — ⬜ not started (the last P16 piece).** An `ILanguageClient` VSIX pointing at
-`polyglot lsp` + a coloring VSIX bundling `editors/vscode/syntaxes/polyglot.tmLanguage.json`; target the
-VS-2026/v145 SDK generation.
+**P16d — Visual Studio LSP client — 🚧 in progress (2026-07-01; 2-agent investigation).** A single VSIX at
+`editors/vs/` that reuses the *same* `polyglot lsp` server VS Code drives, so no analysis logic is reimplemented.
+**Build/test reality (probed on this machine):** the VSSDK **is installed** on VS 18 Insiders and a VSIX **builds
+headlessly** with the repo's VS 18 MSBuild (`$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets` imports cleanly under
+`VisualStudioVersion=18.0`, verified); **testing the running extension needs an interactive `devenv /rootsuffix
+Exp`** — a GUI step that is the user's, not automatable here.
+
+**Architecture (from reading the server + VS Code client):**
+- **`[Export(typeof(ILanguageClient))] [ContentType("polyglot")]`** MEF component whose `ActivateAsync` launches
+  `polyglot lsp` and returns `new Connection(process.StandardOutput.BaseStream, process.StandardInput.BaseStream)`
+  (server→client, client→server — order is load-bearing). Sends `{root, lib}` as `initializationOptions`, mirroring
+  the VS Code client. The full standard set the server advertises (diagnostics, definition, hover, documentSymbol,
+  semanticTokens, formatting, references, rename, `.`-completion) then flows **with zero VS-specific code**.
+- **Content type** `polyglot` with `BaseDefinition = code.remote` (`CodeRemoteContentDefinition` — required for
+  LSP-backed buffers) + a `FileExtensionToContentTypeDefinition` mapping `.pg`. This is what routes `.pg` buffers to
+  the client.
+- **Position encoding:** do **not** force utf-8 — VS's client sends utf-16, and the server already does the correct
+  per-line utf-16 conversion (the P16-tail work). Nothing to do.
+- **Coloring:** bundle the **shared TextMate grammar** (`editors/vscode/syntaxes/polyglot.tmLanguage.json` +
+  `language-configuration.json`, copied at build so they stay canonical in `editors/vscode/`) in the VS-Code
+  contribution shape VS's TextMate engine reads — the offline/instant floor — with the server's `semanticTokens`
+  refining on top for free. Same posture as VS Code; ship both.
+- **CLI path:** resolve like the VS Code `cliPath` — a Tools→Options page, else a bundled per-RID CLI, else
+  `polyglot` on PATH.
+- **Project shape:** a **legacy VSSDK `.csproj`** (VSIX project-type GUID; SDK-style isn't fully supported for VSIX
+  on the 18 SDK), `net472`, `InstallationTarget [17.0,)` (VS 18 loads 17.0+ extensions), VS SDK referenced via
+  stable **17.x** NuGet (`Microsoft.VisualStudio.SDK` + `Microsoft.VSSDK.BuildTools`).
+
+**v1 scope (ships): the full standard LSP set above + TextMate coloring + CLI-path resolution.** **Deferred** (the
+VS-Code-specific glue with no turnkey VS analogue, each a later slice via `ILanguageClientCustomMessage2`): the
+`polyglot:` **std virtual-doc click-through** (`polyglot/moduleSource` → a read-only buffer) and the **generated-output
+preview** (`polyglot/emit` → a `ToolWindowPane`, the "P17-for-VS" follow-up). Go-to-def into std resolves to a
+`polyglot:…` URI VS can't open → it no-ops gracefully until then.
+
+**Slices (commit each):** (1) VSSDK project + manifest + deps (empty MEF) builds & deploys to Exp; (2) content-type +
+`.pg` association; (3) bundle the TextMate grammar — **coloring-only milestone, shippable alone**; (4)
+`PolyglotLanguageClient` + CLI resolution — server starts, all standard features light up; (5) Tools→Options CLI-path
+page (+ optional bundled CLI); (6, deferred) custom-message std docs + emit tool window.
 
 **As-built notes (deltas from the plan above — 2026-07-01):**
 - **VS Code client uses NO bundler.** The plan said esbuild; in practice the extension stays plain CommonJS
