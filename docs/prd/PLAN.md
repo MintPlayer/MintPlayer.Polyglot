@@ -644,7 +644,10 @@ A zero-dep JSON-RPC server over the frontend-as-a-library; VS Code + Visual Stud
 **Full design + per-pass map: PRD §4.8.** Four load-bearing changes, then the server, then clients. Each
 phase is gate-green (unit + conformance stay untouched — all additions are behind defaulted/optional seams).
 
-**P16a — Frontend foundation + semantic model (no LSP yet; unit-tested in-process).**
+**P16a — Frontend foundation + semantic model — ✅ done (2026-07-01).** Shipped across 4 commits: `SourcePos.fileId`
++ `analyze()` seam + same-file `SemanticModel` (functions/params/locals), then `Diagnostic` ranges+severity, then
+type/member/value references. Go-to-def resolves functions, types, members, locals, and values in the file; unit-tested;
+all conformance/samples/fidelity gates green throughout (additions sit behind defaulted/optional seams).
 1. **`SourcePos { …; int fileId = 0; }`** (`diagnostics.hpp`) + thread `fileId` into `lex(source, diags, fileId=0)`.
    Defaulted → every existing site + test compiles unchanged (single-file = fileId 0). *(§4.8 change 1)*
 2. **Parser name-token positions:** capture `expect(Identifier).pos` into a `namePos`/`nameSpan` on decls +
@@ -659,7 +662,11 @@ phase is gate-green (unit + conformance stay untouched — all additions are beh
    `external`. Query API: `definitionAt`, `documentSymbols`, `hoverAt` (post-check `Expr.type`). Structures +
    correctness notes (shadowing, overloads, unresolved sentinel) in §4.8 change 4.
 
-**P16b — The server + VS Code client (same-file intelligence shipped).**
+**P16b — The server + VS Code client — ✅ done (2026-07-01; same-file intelligence shipped).** Zero-dep JSON reader
+(`json.hpp/.cpp`) + a `polyglot lsp` stdio JSON-RPC server (Full sync, utf-8 position encoding, cached per-uri model)
+serving publishDiagnostics / definition / hover / documentSymbol / formatting. The VS Code extension is now a
+`vscode-languageclient` client spawning `polyglot lsp`; the old shell-out `fmt`/`check` providers are removed
+(diagnostics are live on-type). *Deferred (P16b tail):* semanticTokens + completion.
 6. **JSON reader** in Core (`json.hpp/.cpp`) — hand-written, ~300 lines, unit-tested (incl. `\uXXXX` + surrogate pairs).
 7. **`polyglot lsp`** CLI subcommand: binary-stdio `Content-Length` framing + JSON-RPC dispatch; lifecycle;
    negotiate `positionEncoding:"utf-8"`; open-document store + **buffer-aware `ModuleResolver`** (Full sync);
