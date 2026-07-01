@@ -428,6 +428,93 @@ unwraps it, so forgot-await / awaited-non-async are caught). **Out of scope:** a
 a user-nameable awaitable type / `Task.WhenAll`-style combinators (bind via std when needed), cancellation
 tokens, and the multi-target `pgconfig.json` intersection (P10).
 
+### 4.8 Editor tooling & the language server (design — 2026-07-01; investigated by a 4-agent team)
+
+**Two layers, deliberately separated.** (1) A declarative **TextMate grammar** (`editors/grammars/polyglot.tmLanguage.json`)
+is the coloring floor — instant, offline, parse-error-tolerant, consumed *natively* by both VS Code and Visual
+Studio, zero compiler dependency. (2) A **`polyglot lsp`** Language Server is the intelligence layer:
+go-to-definition, hover, completion, document symbols, find-references, and **semantic tokens** (which *refine*
+the grammar's coloring — the accurate way to distinguish a function call from a variable from a type, which regex
+cannot). The grammar stays; semantic tokens layer on top. **Tier 1** (grammar + `fmt`/`check`-shell-out
+formatting/diagnostics in a build-free VS Code extension) is ✅ shipped; **Tier 2** is the LSP, designed here.
+
+**Core principle — write the intelligence once.** The server is a thin JSON-RPC loop over the existing C++
+frontend; VS Code and Visual Studio are both standard LSP clients over it. No language analysis is reimplemented
+per editor. Zero external deps holds (CLAUDE.md): we hand-write a small JSON reader to match the JSON we already
+hand-emit.
+
+**The four load-bearing changes** (each independently identified by the investigation):
+1. **`SourcePos` gains `int fileId = 0`** (`diagnostics.hpp`). Defaulted → all ~90 use-sites copy by value and keep
+   compiling unchanged; the *only* literal construction is in the lexer (`lexer.cpp:45`). Thread a `fileId` into
+   `lex(source, diags, fileId=0)` and every token/AST/IR position inherits it by copy. This is the foundation for
+   multi-file positions (cross-module go-to-def and honest multi-file diagnostics) and is near-zero-risk.
+2. **The parser captures the *name-token* position.** Today decl `pos` points at the *keyword* (`fn`/`class`/…) and
+   `Member`-expr `pos` at the *dot* — `expect(Identifier)` consumes and discards the name token. `Name` expressions,
+   `Param`, and `Pattern` positions are already precise (so *references* are free). A mechanical per-site change —
+   capture `expect(...).pos` into a `namePos`/`nameSpan` field — gives precise go-to-def *targets* and
+   document-symbol selection ranges.
+3. **`analyze(source, resolver, lib) → { CompilationUnit, diagnostics }`** — split the front half out of `compile()`
+   (lex→parse→link→sema, stopping *before* lower/emit). `compile()` then calls `analyze` and lowers. Today the
+   checked AST is discarded; the server needs it. This one refactor enables the whole server.
+4. **The `SymbolIndex` (a sema by-product).** Resolution is already centralized and correct in
+   `checkName`/`checkCall`/`checkMember`/`findMember`/`resolveOverload`. Add an optional `SemanticModel* out = nullptr`
+   to `check()` (matching the `ModuleResolver*` optional-seam convention; `compile()` passes `nullptr` and pays
+   nothing). At each resolution site record a **`SymbolRef` (occurrence span → resolved `SymbolDef` id)**; at each
+   `declare`/`buildTables` site record a **`SymbolDef`** (kind, name, `nameSpan`, type, id, `external` flag). This
+   is a **sema hook, not a standalone pass**: a separate walker would re-implement ~200 lines of scope/overload/
+   inheritance logic and *still* couldn't do members (which need the receiver's type, only known inside sema).
+   Shadowing is naturally correct because refs are recorded mid-walk when the scope stack is exactly right; overloads
+   link to the chosen `FnSig`; unresolved refs get a sentinel id (highlight still works). **Hover needs no sema
+   change** — a post-check read-only walk reads the `Expr.type` sema already annotates in place.
+
+**Query API** (over the `SemanticModel`): `definitionAt(line,col)` (binary-search the ref spans → follow to the def),
+`documentSymbols()` (the `!external` defs, grouped by kind), `hoverAt()` (post-check `Expr.type`), later
+`referencesTo(id)` / `completionAt(...)`.
+
+**The server** (lives in the CLI as a new `polyglot lsp` subcommand — one more `if` branch; the JSON reader lives in
+Core as a testable IO-free primitive):
+- **Transport:** `Content-Length`-framed JSON-RPC 2.0 over stdio. `_setmode(_O_BINARY)` on stdin/stdout is mandatory
+  on Windows or `\r\n` translation corrupts the byte framing. Lifecycle `initialize`/`initialized`/`shutdown`/`exit`;
+  advertise only implemented capabilities.
+- **Position encoding:** LSP columns are UTF-16 by default but our columns are UTF-8 *bytes*. **Negotiate
+  `positionEncoding: "utf-8"` at `initialize`** (VS Code supports it) so only a ±1 line/col shift remains — the
+  UTF-16 conversion walk is deferred as a fallback for clients that refuse utf-8. The lexer never changes.
+- **Doc sync:** **Full** (`change=1`), not incremental — files are small and the whole-program compile is fast; keep
+  it boring. An open-document store (`uri → {text, version}`) plus a **buffer-aware `ModuleResolver`** that wraps
+  `FileModuleResolver` and serves open-buffer text for open docs → unsaved-edit reparsing reuses the entire import/
+  link machinery with **zero Core change**. Cache the `CompilationUnit` + `SymbolIndex` by `(uri, version)`.
+- **Diagnostics need real ranges + severity.** `Diagnostic` today is a single point + a hardcoded "error"; extend it
+  with an end position and a severity so `publishDiagnostics` is a genuine upgrade over the client's word-range guess.
+- **Semantic tokens** are delta-encoded (`[Δline, Δstart, length, type, modifiers]` per token, document-ordered) with a
+  declared legend; classify from the lexer first (keyword/string/number/operator), upgrade identifiers via the
+  `SymbolIndex`.
+
+**Capabilities by cost:** `publishDiagnostics` (~free — reuses `EmitResult.diagnostics`) and `documentSymbol` (cheap —
+walk decl vectors) come first; `definition`/`hover`/`semanticTokens`/`completion` all hinge on the `SymbolIndex`.
+
+**Cross-module** (the harder milestone): stamp each module's `fileId`/URI at its lex boundary in `loadImports`/
+`linkCoreModule` (keyed on the `canon` path/name those already compute); embedded std modules get a virtual URI
+(`polyglot:std.collections`) the server serves from the same `STD_MODULES` registry. The merge (`mergeDecls`) is
+unchanged — origin rides inside each node's now-file-stamped `pos`. Until then, same-file queries mark merged
+std/prelude/import decls `external` and honestly answer "definition not in this file."
+
+**`pgconfig.json`** (your project manifest): minimal `{ root, lib, paths? }`, parsed in the **CLI/LSP layer** (core
+stays IO-free) into the same `FileModuleResolver` root + `LibConfig` the core already consumes — so the LSP resolves
+modules with no per-keystroke flags. It is a strict **subset/precursor of P10's manifest** (P10 later *adds*
+`environments`/`plugins`/lockfile to the same file), independent of P11.
+
+**Editor clients.** VS Code: add `vscode-languageclient` (the extension's first npm dep) with a light **esbuild** bundle
+(source stays JS); reuse the existing `cliPath()` resolver as the server command (`args: ["lsp"]`); pass `{root, lib}`
+as `initializationOptions`. The LSP's `publishDiagnostics`/`textDocument/formatting`/`semanticTokens` **supersede and
+replace** the current `check`/`fmt` shell-out providers (gaining on-type + unsaved-buffer diagnostics with real
+ranges); the grammar and `language-configuration.json` stay; the CLI `check`/`fmt` subcommands stay for headless/CI.
+Visual Studio: a coloring-only VSIX (bundling the shared grammar) can land anytime; an `ILanguageClient` VSIX pointing
+at `polyglot lsp` follows once the VS Code client proves the server.
+
+**Scope for v1 (same-file):** definition/hover/document-symbols/semantic-tokens/diagnostics for symbols in the file
+being edited (locals, params, functions, types, members). **Deferred:** cross-module go-to-def (needs the `fileId`
+stamping + virtual URIs), find-references/rename, and member *completion* (needs receiver-type resolution).
+
 ---
 
 ## 5. Testing strategy
@@ -513,10 +600,16 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   gates it (all three current backends support it — the gate bites only for a future target like PHP). Sema
   validates `await` only inside `async fn` and refuses `async`+`yield` (async iterators out of scope). Closed
   the prior silent hole where `async` on a method parsed but was dropped. Full design + per-pass map: §4.7.
-- **Stretch:** further targets as downloadable backends, source maps, **editor tooling** (a TextMate
-  highlighting grammar for `.pg` — independent of the compiler, ships early for VS Code *and* Visual Studio
-  2022+; plus an **LSP** server `polyglot lsp` built on the frontend-as-a-library, with thin VS Code and
-  Visual Studio (VSIX) clients), a plugin registry + signing/trust infrastructure. (See PLAN Stretch.)
+- **P16 — Editor tooling & the language server.** 🚧 In progress (2026-07-01; §4.8, from a 4-agent
+  investigation). **Tier 1 ✅** (shared TextMate grammar + a build-free VS Code extension: highlighting +
+  `fmt` formatting + `check --json` diagnostics; repo-root F5 launch). **Tier 2** = a zero-dep `polyglot lsp`
+  server over the frontend-as-a-library — go-to-def / hover / completion / document-symbols / semantic-tokens —
+  with VS Code and Visual Studio as thin LSP clients. Four load-bearing changes: `SourcePos.fileId`, parser
+  name-token positions, an `analyze()` seam (checked AST without emit), and a sema-hook `SymbolIndex`
+  (occurrence → definition). Same-file first; cross-module go-to-def (via `fileId` stamping + `polyglot:` virtual
+  URIs for embedded std) and a minimal `pgconfig.json` follow. Full design + per-pass map: §4.8; slice plan: PLAN §P16.
+- **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
+  infrastructure. (See PLAN Stretch.)
 
 ---
 

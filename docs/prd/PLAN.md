@@ -636,10 +636,49 @@ is written once in the C++ frontend; every editor is a thin client.** Layout + f
   `polyglot fmt` as the document formatter. (Live-on-type diagnostics wait for the LSP, which holds the buffer.)
 - **Tier 1c — Visual Studio highlighting (next).** Package the same grammar as a VSIX-consumable TextMate
   grammar; register the `.pg` file type.
-- **Tier 2 — `polyglot lsp` (the intelligence layer, not started).** Go-to-def / hover / completion / document
-  symbols over the frontend-as-a-library. Prerequisite: a **position-indexed semantic model** (retain the
-  resolved symbol table; map source position → symbol → definition position — today sema's tables are
-  name-keyed and transient). Then both editors are thin LSP clients over one server.
+- **Tier 1c — Visual Studio highlighting.** Package the same grammar as a coloring-only VSIX; register `.pg`.
+  Can land anytime (trivial, reuses the shared grammar).
+
+## P16 (Tier 2) — `polyglot lsp` language server — 🚧 designed (2026-07-01; §4.8, 4-agent investigation)
+A zero-dep JSON-RPC server over the frontend-as-a-library; VS Code + Visual Studio are thin LSP clients.
+**Full design + per-pass map: PRD §4.8.** Four load-bearing changes, then the server, then clients. Each
+phase is gate-green (unit + conformance stay untouched — all additions are behind defaulted/optional seams).
+
+**P16a — Frontend foundation + semantic model (no LSP yet; unit-tested in-process).**
+1. **`SourcePos { …; int fileId = 0; }`** (`diagnostics.hpp`) + thread `fileId` into `lex(source, diags, fileId=0)`.
+   Defaulted → every existing site + test compiles unchanged (single-file = fileId 0). *(§4.8 change 1)*
+2. **Parser name-token positions:** capture `expect(Identifier).pos` into a `namePos`/`nameSpan` on decls +
+   `Member` exprs (today they point at the keyword/dot; `Name`/`Param`/`Pattern` are already precise). Mechanical.
+   *(§4.8 change 2)*
+3. **Extend `Diagnostic`** with an end position + a severity (today: a bare point + hardcoded "error"), so LSP
+   diagnostics carry real ranges. Update `check --json` to emit them.
+4. **`analyze(source, resolver, lib) → { CompilationUnit, diagnostics }`** — split the front half out of
+   `compile()` (stops before lower/emit); `compile()` calls it then lowers. *(§4.8 change 3)*
+5. **`SemanticModel` via a sema hook:** optional `SemanticModel* out = nullptr` on `check()`; emit `SymbolDef`
+   at `declare`/`buildTables`, `SymbolRef` at `checkName`/`checkCall`/`checkMember`; mark merged std/import decls
+   `external`. Query API: `definitionAt`, `documentSymbols`, `hoverAt` (post-check `Expr.type`). Structures +
+   correctness notes (shadowing, overloads, unresolved sentinel) in §4.8 change 4.
+
+**P16b — The server + VS Code client (same-file intelligence shipped).**
+6. **JSON reader** in Core (`json.hpp/.cpp`) — hand-written, ~300 lines, unit-tested (incl. `\uXXXX` + surrogate pairs).
+7. **`polyglot lsp`** CLI subcommand: binary-stdio `Content-Length` framing + JSON-RPC dispatch; lifecycle;
+   negotiate `positionEncoding:"utf-8"`; open-document store + **buffer-aware `ModuleResolver`** (Full sync);
+   cache `(uri,version) → {unit, model}`. Capabilities in cost order: `publishDiagnostics` → `documentSymbol`
+   → `definition` → `hover` → `semanticTokens/full`.
+8. **VS Code client:** add `vscode-languageclient` + an **esbuild** bundle (source stays JS); reuse `cliPath()`
+   as the server command (`args:["lsp"]`); pass `{root,lib}` as `initializationOptions`. **Remove** the
+   `check`/`fmt` shell-out providers (superseded by `publishDiagnostics`/`formatting`); **keep** the grammar
+   (semantic tokens layer on top) + `language-configuration.json`. Add a bundle `preLaunchTask`.
+9. **Minimal `pgconfig.json`** (`{root, lib, paths?}`) parsed in the CLI/LSP layer → the resolver + `LibConfig`
+   the core already consumes (core stays IO-free). A strict subset/precursor of P10's manifest.
+
+**P16c — Cross-module + richer features.**
+10. Stamp each module's `fileId`/URI at its lex boundary (`loadImports`/`linkCoreModule`); embedded std → a
+    `polyglot:<name>` virtual document the server serves from `STD_MODULES`. Cross-module go-to-def.
+11. `references`/`rename`; `completion` (keywords + in-scope names first; member completion last — needs receiver type).
+
+**P16d — Visual Studio LSP client.** An `ILanguageClient` VSIX pointing at `polyglot lsp` (after the VS Code
+client proves the server); target the VS-2026/v145 SDK generation.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
