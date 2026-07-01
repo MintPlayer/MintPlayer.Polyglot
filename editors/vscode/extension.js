@@ -51,11 +51,12 @@ function activate(context) {
       `Set "polyglot.cliPath" to your built MintPlayer.Polyglot.Cli.exe. (${err && err.message ? err.message : err})`
     );
   });
-  context.subscriptions.push({ dispose: () => client && client.stop() });
+  // Stop defensively on dispose: if start() failed the client may be mid-'starting', where stop() throws.
+  context.subscriptions.push({ dispose: () => { try { if (client) client.stop(); } catch (_e) { /* ignore */ } } });
 }
 
 function deactivate() {
-  return client ? client.stop() : undefined;
+  try { return client ? client.stop() : undefined; } catch (_e) { return undefined; }
 }
 
 module.exports = { activate, deactivate };
