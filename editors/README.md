@@ -39,11 +39,18 @@ VS-LSP clients over the same server. Not started yet.
 
 ## Running the VS Code extension (dev)
 
-The extension is plain JS — no build step. **Open the `editors/vscode` folder in VS Code and press F5.** That
-runs the *Run Polyglot extension (testbench)* launch profile (`.vscode/launch.json`), which starts an
-Extension Development Host with the extension loaded and opens `editors/vscode/testbench/` — a folder with a
-sample `hello.pg` and a pre-wired `polyglot.cliPath` pointing at the Debug build of the CLI (`x64/Debug/…`,
-resolved relative to the workspace, so it's portable). Build the solution first so that exe exists.
+**Recommended — open the repo root and press F5.** The repo-root `.vscode/launch.json` has a *Run Polyglot VS
+Code extension* profile whose `preLaunchTask` (`build-cli` in `.vscode/tasks.json`) builds the solution with the
+**VS 18 Insiders MSBuild** first (this is a C++/v145 project — *not* `dotnet build`), then starts an Extension
+Development Host with the extension loaded and opens `editors/vscode/testbench/`. So one keypress = build CLI +
+launch + a ready `.pg` workspace.
+
+Alternative — **open the `editors/vscode` folder** and press F5 (uses `editors/vscode/.vscode/launch.json`).
+Lighter, but it does *not* build the CLI first, so build the solution yourself beforehand.
+
+Either way the dev host opens `editors/vscode/testbench/` — a folder with a sample `hello.pg` and a pre-wired
+`polyglot.cliPath` pointing at the Debug CLI (`x64/Debug/…`, resolved relative to the workspace, so it's
+portable across checkouts).
 
 In the dev host:
 1. `hello.pg` opens colorized (grammar).

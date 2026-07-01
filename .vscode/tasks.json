@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build-cli",
+      "detail": "Build the solution (Debug|x64) with the VS 18 Insiders MSBuild — required v145 toolset (see CLAUDE.md). NOT `dotnet build`: this is a C++ project.",
+      "type": "process",
+      "command": "C:\\Program Files\\Microsoft Visual Studio\\18\\Insiders\\MSBuild\\Current\\Bin\\MSBuild.exe",
+      "args": [
+        "${workspaceFolder}\\MintPlayer.Polyglot.sln",
+        "/p:Configuration=Debug",
+        "/p:Platform=x64",
+        "/m",
+        "/nologo",
+        "/v:minimal"
+      ],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$msCompile",
+      "presentation": { "reveal": "silent", "clear": true }
+    }
+  ]
+}
