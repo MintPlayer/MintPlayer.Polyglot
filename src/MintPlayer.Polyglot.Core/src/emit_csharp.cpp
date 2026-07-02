@@ -4,11 +4,13 @@
 #include <string>
 #include <unordered_set>
 
+#include "mintplayer/polyglot/backend_engine.hpp"
 #include "mintplayer/polyglot/backend_spec.hpp"
 #include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/emitter_base.hpp"
 
 #include <cassert>
+#include <unordered_map>
 
 // Hand-written IR -> C# pretty-printer. Walks the typed IR; wraps the program's free functions in a
 // `static class Program`, maps the `print` intrinsic -> global::System.Console.WriteLine and the entry
@@ -45,6 +47,85 @@ const BackendSpec& csharpSpec() {
     }();
     return spec;
 }
+
+// P18 slice 4: the first emitter HOOKS migrated from imperative C++ to declarative JSON Rules — the leaf
+// literals (no child recursion). emitExpr looks up the rule for the node kind and interprets it; kinds without
+// a rule still run the C++ switch. Byte-identical (the differential + golden gates are the oracle). The
+// recursive families (binary/call/…) migrate next, once the child-emission primitives land.
+const char* CSHARP_EXPR_RULES_JSON = R"JSON({
+  "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
+  "Float": { "get": "node.text" },
+  "Bool":  { "case": { "when": [ [ {"eq":["node.value","true"]}, {"get":"spec.trueLit"} ] ],
+                       "else": {"get":"spec.falseLit"} } },
+  "Null":  { "get": "spec.nullLit" },
+  "Str":   { "fn": "escapeString", "args": [ {"get":"node.value"} ] }
+})JSON";
+
+const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
+    static const std::unordered_map<std::string, engine::Rule> rules = [] {
+        std::unordered_map<std::string, engine::Rule> m;
+        json::Value doc = json::parse(CSHARP_EXPR_RULES_JSON);
+        for (const auto& kv : doc.members) {
+            bool ok = true;
+            std::string err;
+            engine::Rule r = engine::parseRule(kv.second, ok, err);
+            assert(ok && "embedded C# expr rule must parse");
+            m.emplace(kv.first, std::move(r));
+        }
+        return m;
+    }();
+    return rules;
+}
+
+// The ExprKind name used to key the rule table (only the migrated leaf kinds; "" routes to the C++ switch).
+const char* csExprRuleKey(ir::ExprKind k) {
+    switch (k) {
+        case ir::ExprKind::Int:   return "Int";
+        case ir::ExprKind::Float: return "Float";
+        case ir::ExprKind::Bool:  return "Bool";
+        case ir::ExprKind::Null:  return "Null";
+        case ir::ExprKind::Str:   return "Str";
+        default:                  return "";
+    }
+}
+
+// EvalContext over an ir::Expr + the backend spec — the seam that plugs the interpreter into the real IR.
+// Exposes leaf fields (`node.text`/`node.value`/`node.type`), spec literals (`spec.*`), and the fixed builtins
+// the rules invoke (intSuffix lookup, string escaping). Recursive child access is added when the recursive
+// families migrate.
+class CsExprCtx : public engine::EvalContext {
+public:
+    CsExprCtx(const ir::Expr& e, const BackendSpec& spec) : e_(e), spec_(spec) {}
+
+    std::string get(const std::string& path) const override {
+        if (path == "node.type")     return e_.type.name;
+        if (path == "spec.nullLit")  return spec_.nullLit;
+        if (path == "spec.trueLit")  return spec_.trueLit;
+        if (path == "spec.falseLit") return spec_.falseLit;
+        if (path == "node.text") {
+            if (e_.kind == ir::ExprKind::Int)   return static_cast<const ir::IntLit&>(e_).text;
+            if (e_.kind == ir::ExprKind::Float) return static_cast<const ir::FloatLit&>(e_).text;
+        }
+        if (path == "node.value") {
+            if (e_.kind == ir::ExprKind::Bool) return static_cast<const ir::BoolLit&>(e_).value ? "true" : "false";
+            if (e_.kind == ir::ExprKind::Str)  return static_cast<const ir::StrLit&>(e_).value;
+        }
+        return "";
+    }
+    bool has(const std::string& path) const override { return !get(path).empty(); }
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
+        if (name == "intSuffix") {
+            auto it = spec_.intSuffix.find(args.empty() ? std::string() : args[0]);
+            return it == spec_.intSuffix.end() ? std::string() : it->second;
+        }
+        if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
+        return "";
+    }
+
+private:
+    const ir::Expr& e_;
+    const BackendSpec& spec_;
+};
 
 // The current module's `extern class` type map (name -> spelling/ctor templates), set at the top of each
 // emit() so the free `csType` can consult declared spellings without threading the map through every call
@@ -464,15 +545,17 @@ private:
     }
 
     std::string emitExpr(const ir::Expr& e) override {
-        switch (e.kind) {
-            case ir::ExprKind::Int: { // C# integer-literal suffix for the wider/unsigned types
-                const std::string& text = static_cast<const ir::IntLit&>(e).text;
-                auto it = csharpSpec().intSuffix.find(e.type.name);
-                return it == csharpSpec().intSuffix.end() ? text : text + it->second;
+        // Migrated leaf literals (Int/Float/Bool/Null/Str) are now JSON Rules interpreted here; every other
+        // kind still runs the C++ switch below. (P18 slice 4.)
+        if (const char* key = csExprRuleKey(e.kind); key[0] != '\0') {
+            const auto& rules = csharpExprRules();
+            auto it = rules.find(key);
+            if (it != rules.end()) {
+                CsExprCtx ctx(e, spec());
+                return engine::evalRule(it->second, ctx);
             }
-            case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
-            case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? spec().trueLit : spec().falseLit;
-            case ir::ExprKind::Null:  return spec().nullLit;
+        }
+        switch (e.kind) {
             case ir::ExprKind::Interp: { // C# interpolated string `$"…{expr}…"`
                 const auto& in = static_cast<const ir::Interp&>(e);
                 std::string s = "$\"";
@@ -490,7 +573,6 @@ private:
                 }
                 return s + "\"";
             }
-            case ir::ExprKind::Str:   return renderString(static_cast<const ir::StrLit&>(e).value);
             case ir::ExprKind::Char: { // C# char literal `'x'` (escape `'`, `\`, control chars)
                 std::string s = "'";
                 for (char c : static_cast<const ir::CharLit&>(e).value) {

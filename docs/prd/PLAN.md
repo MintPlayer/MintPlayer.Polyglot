@@ -986,9 +986,15 @@ embedded JSON now — all three backends' tabular data is data-from-JSON, byte-i
 an `EvalContext` seam (`get`/`has`/`builtin`). Non-Turing-complete, no plugin code (RCE-safe by construction);
 malformed rules fail loudly. 11 new unit tests over a mock context. **Deliberately deferred to the IR-wiring slice**
 (don't guess the shape): the recursive child-emission primitives `emit`/`emitChild`/`map`/`fold`/`interleave` — they
-plug into `ir::Expr` where their shape is grounded. Next: wire the interpreter to a real `ir::Expr` family via an
-`EvalContext`-over-IR + the dual-run harness (emit via C++ hook vs interpreted, assert byte-equal), then
-`Target`→`BackendHandle`.
+plug into `ir::Expr` where their shape is grounded.
+**Slice-4 (first hooks → data) ✅:** the C# emitter's **leaf-literal hooks** (Int/Float/Bool/Null/Str) are now JSON
+`Rule`s interpreted at emit time, not C++ — driven by `CSHARP_EXPR_RULES_JSON` + a `CsExprCtx` (EvalContext over
+`ir::Expr`: exposes `node.text`/`node.value`/`node.type` + `spec.*` literals + the `intSuffix`/`escapeString`
+builtins). `emitExpr` looks up the rule for the node kind (via `csExprRuleKey`) and interprets it; unmigrated kinds
+still run the C++ switch. **Byte-identical** — the existing differential (run-diff 38/38, run-python 37/37) + golden
+unit tests are the byte-identity oracle, so a separate toggle-harness is redundant for an in-place migration (noted
+as an engineering call). First real proof the imperative ~30% flattens to data. Next: the recursive families —
+`emit`/`emitChild`/`map` primitives grounded here — then `Target`→`BackendHandle`, then TS/Python + the rest.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
