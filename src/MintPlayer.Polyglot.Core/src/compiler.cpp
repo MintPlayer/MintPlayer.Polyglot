@@ -428,9 +428,27 @@ bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfi
     return !diags.hasErrors();
 }
 
-EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver, const LibConfig& lib) {
+BackendHandle findTarget(const std::string& name) {
+    BackendHandle h;
+    h.name_ = name;
+    h.backend_ = findBackend(name);
+    if (!h.backend_) {
+        std::string known;
+        for (const auto& n : backendNames()) { if (!known.empty()) known += ", "; known += n; }
+        h.error_ = "unknown target '" + name + "' (known targets: " + known + ")";
+    }
+    return h;
+}
+
+EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib) {
     EmitResult result;
     DiagnosticBag diags;
+
+    if (!target.ok()) { // validated at resolve; refuse here so callers can't emit with a bad handle
+        diags.error({}, target.error());
+        result.diagnostics = diags.items();
+        return result;
+    }
 
     std::vector<Token> tokens = lex(source, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
@@ -440,16 +458,12 @@ EmitResult compile(const std::string& source, Target target, ModuleResolver* res
 
     if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr)) { result.diagnostics = diags.items(); return result; }
 
-    const char* targetName = target == Target::CSharp ? "csharp"
-                           : target == Target::TypeScript ? "typescript"
-                           : "python";
-    const Backend* backend = findBackend(targetName);
     // §3.E: refuse any used feature this target can't emit, before lowering/emitting (never miscompile).
-    checkCapabilities(unit, *backend, diags);
+    checkCapabilities(unit, *target.backend(), diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     ir::Module module = lower(unit);
-    result.code = backend->emit(module);
+    result.code = target.backend()->emit(module);
     result.ok = true;
     return result;
 }

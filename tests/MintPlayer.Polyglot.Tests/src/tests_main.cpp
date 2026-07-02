@@ -40,7 +40,7 @@ bool has(const std::string& haystack, const std::string& needle) {
 // Compile with the std prelude auto-imported (print/Math/List available without explicit imports), the
 // way a normal build runs with `--lib`. Tests that exercise import-only / unknown-type behavior use the
 // bare `compile` (no lib) instead.
-EmitResult compileStd(const std::string& src, Target target) {
+EmitResult compileStd(const std::string& src, const BackendHandle& target) {
     return compile(src, target, nullptr, LibConfig{{"io", "math", "collections"}});
 }
 
@@ -226,7 +226,7 @@ int main() {
 
     // C# emission (golden substrings).
     {
-        EmitResult cs = compileStd(kProgram, Target::CSharp);
+        EmitResult cs = compileStd(kProgram, findTarget("csharp"));
         check(cs.ok, "compile: program -> C# succeeds");
         check(!has(cs.code, "using System;"), "C#: no `using` (BCL refs are global::-qualified)");
         check(has(cs.code, "public static int add(int a, int b)"), "C#: function signature mapped");
@@ -240,7 +240,7 @@ int main() {
 
     // TypeScript emission (golden substrings).
     {
-        EmitResult ts = compileStd(kProgram, Target::TypeScript);
+        EmitResult ts = compileStd(kProgram, findTarget("typescript"));
         check(ts.ok, "compile: program -> TS succeeds");
         check(has(ts.code, "function add(a: number, b: number): number"), "TS: function signature mapped");
         // print's typescript `actual` wraps in String(...) so bigint/number print identically to C# WriteLine.
@@ -251,15 +251,15 @@ int main() {
 
     // Operator precedence is preserved with minimal parentheses.
     {
-        EmitResult a = compile("fn f(): i32 => 1 + 2 * 3\n", Target::CSharp);
+        EmitResult a = compile("fn f(): i32 => 1 + 2 * 3\n", findTarget("csharp"));
         check(a.ok && has(a.code, "return 1 + 2 * 3;"), "emit: precedence keeps 1 + 2 * 3 unparenthesized");
-        EmitResult b = compile("fn g(): i32 => (1 + 2) * 3\n", Target::CSharp);
+        EmitResult b = compile("fn g(): i32 => (1 + 2) * 3\n", findTarget("csharp"));
         check(b.ok && has(b.code, "return (1 + 2) * 3;"), "emit: precedence parenthesizes (1 + 2) * 3");
     }
 
     // Type checker rejects bad programs with diagnostics (never a miscompile).
     auto rejects = [&](const char* src, const std::string& name) {
-        EmitResult r = compile(src, Target::CSharp);
+        EmitResult r = compile(src, findTarget("csharp"));
         check(!r.ok && !r.diagnostics.empty(), name);
     };
     rejects("fn main() { let x = 1 + true; }\n", "sema: rejects i32 + bool");
@@ -269,12 +269,12 @@ int main() {
 
     // P4 — name / type resolution across the declaration surface.
     auto resolves = [&](const char* src, const std::string& name) {
-        EmitResult r = compile(src, Target::CSharp);
+        EmitResult r = compile(src, findTarget("csharp"));
         check(r.ok, name);
     };
     // Same, but with the std prelude (for programs that call `print` and friends).
     auto resolvesStd = [&](const char* src, const std::string& name) {
-        EmitResult r = compileStd(src, Target::CSharp);
+        EmitResult r = compileStd(src, findTarget("csharp"));
         check(r.ok, name);
     };
     rejects("fn f(x: Widget) {}\n", "P4: rejects unknown type in a parameter");
@@ -359,7 +359,7 @@ int main() {
 
     // P6 — §3.B refusals surface as targeted "Polyglot refuses X" diagnostics, not generic "unknown type".
     auto refuses = [&](const char* src, const std::string& needle, const std::string& name) {
-        EmitResult r = compile(src, Target::CSharp);
+        EmitResult r = compile(src, findTarget("csharp"));
         bool named = false;
         for (const auto& d : r.diagnostics) if (has(d.message, "refuses") && has(d.message, needle)) named = true;
         check(!r.ok && named, name);
@@ -392,20 +392,20 @@ int main() {
     {
         const char* noPy = "expect fn answer(): i32\nactual(csharp) fn answer(): i32 => 42\n"
                            "actual(typescript) fn answer(): i32 => 42\nfn main() { print(answer()) }\n";
-        EmitResult py = compileStd(noPy, Target::Python);
+        EmitResult py = compileStd(noPy, findTarget("python"));
         bool named = false;
         for (const auto& d : py.diagnostics) if (has(d.message, "no 'actual'") && has(d.message, "python")) named = true;
         check(!py.ok && named, "P9-V: calling a portable fn with no actual for the target is refused");
-        check(compileStd(noPy, Target::CSharp).ok, "P9-V: the same call compiles for a target that has the actual");
+        check(compileStd(noPy, findTarget("csharp")).ok, "P9-V: the same call compiles for a target that has the actual");
         check(compileStd("expect fn unused(): i32\nactual(csharp) fn unused(): i32 => 1\nfn main() { print(1) }\n",
-                         Target::Python).ok,
+                         findTarget("python")).ok,
               "P9-V: an unused portable fn missing this target's actual is not refused");
     }
     // P9-V audit — a tuple pattern in `match` binds + type-checks but has no lowering, so it must refuse
     // (never miscompile) rather than emit a call against undefined binders. (for-in destructuring is fine.)
     {
         EmitResult r = compileStd("fn f(p: (i32, i32)): i32 => match p { (a, b) => a + b }\n"
-                                  "fn main() { print(f((1, 2))) }\n", Target::CSharp);
+                                  "fn main() { print(f((1, 2))) }\n", findTarget("csharp"));
         bool named = false;
         for (const auto& d : r.diagnostics) if (has(d.message, "tuple patterns in 'match'")) named = true;
         check(!r.ok && named, "P9-V audit: a tuple pattern in match is refused, not miscompiled");
@@ -414,7 +414,7 @@ int main() {
     // argument is refused at Polyglot compile time (better DX than a target-compiler error / TS NaN).
     {
         auto refusesNum = [&](const char* src, const std::string& name) {
-            EmitResult r = compileStd(src, Target::CSharp);
+            EmitResult r = compileStd(src, findTarget("csharp"));
             bool named = false;
             for (const auto& d : r.diagnostics) if (has(d.message, "INumber")) named = true;
             check(!r.ok && named, name);
@@ -437,7 +437,7 @@ int main() {
             "async fn doubleIt(x: i32): i32 => x * 2\n"
             "async fn main() {\n  let r = await doubleIt(21)\n  print(r)\n}\n";
 
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok, "P15 C#: async program compiles");
         check(has(cs.code, "async global::System.Threading.Tasks.Task<int> doubleIt"),
               "P15 C#: async fn -> `async Task<T>` (unwrapped T wrapped by the backend)");
@@ -447,7 +447,7 @@ int main() {
         check(has(cs.code, "main().GetAwaiter().GetResult();"),
               "P15 C#: async main is driven synchronously from Main()");
 
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok, "P15 TS: async program compiles");
         check(has(ts.code, "async function doubleIt(x: number): Promise<number>"),
               "P15 TS: async fn -> `async function …: Promise<T>`");
@@ -456,7 +456,7 @@ int main() {
         check(has(ts.code, "await doubleIt(21)"), "P15 TS: `await e` emits `await`");
         check(has(ts.code, "\nmain();\n"), "P15 TS: async main is a floating top-level call");
 
-        EmitResult py = compileStd(prog, Target::Python);
+        EmitResult py = compileStd(prog, findTarget("python"));
         check(py.ok, "P15 Python: async program compiles");
         check(has(py.code, "async def doubleIt("), "P15 Python: async fn -> `async def`");
         check(has(py.code, "async def main("), "P15 Python: async main -> `async def`");
@@ -467,7 +467,7 @@ int main() {
         // sema §4.7: `await` outside an async fn is refused (else a native compile error = a §3.B miscompile).
         {
             EmitResult r = compileStd("fn doubleIt(x: i32): i32 => x * 2\n"
-                                      "fn main() { print(await doubleIt(1)) }\n", Target::CSharp);
+                                      "fn main() { print(await doubleIt(1)) }\n", findTarget("csharp"));
             bool named = false;
             for (const auto& d : r.diagnostics) if (has(d.message, "await") && has(d.message, "async fn")) named = true;
             check(!r.ok && named, "P15 sema: `await` outside an async fn is refused");
@@ -475,7 +475,7 @@ int main() {
         // sema §4.7: `async` + `yield` (async iterators) is refused — out of scope for v1.
         {
             EmitResult r = compileStd("async fn g(): Iterable<i32> {\n  yield 1\n}\nfn main() { print(1) }\n",
-                                      Target::CSharp);
+                                      findTarget("csharp"));
             bool named = false;
             for (const auto& d : r.diagnostics) if (has(d.message, "async") && has(d.message, "yield")) named = true;
             check(!r.ok && named, "P15 sema: an `async` fn using `yield` is refused (no async iterators)");
@@ -501,7 +501,7 @@ int main() {
     // `return f()` from an async fn (f async) requires `return await f()`.
     {
         auto asyncRefuses = [&](const char* src, const std::string& needle, const std::string& name) {
-            EmitResult r = compileStd(src, Target::CSharp);
+            EmitResult r = compileStd(src, findTarget("csharp"));
             bool named = false;
             for (const auto& d : r.diagnostics) if (has(d.message, needle)) named = true;
             check(!r.ok && named, name);
@@ -686,7 +686,7 @@ int main() {
             "  xs.removeAll((v) => v < 2)\n"
             "  xs.clear()\n"
             "}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok, "P8: List program -> C# compiles");
         check(has(cs.code, "global::System.Collections.Generic.List<int>"), "P8 C#: List<i32> -> System.Collections.Generic.List<int>");
         check(has(cs.code, ".Add(3)"), "P8 C#: list.add -> .Add");
@@ -695,7 +695,7 @@ int main() {
         check(has(cs.code, "xs.Clear()"), "P8 C#: list.clear -> .Clear()");
         check(!has(cs.code, "class List"), "P8 C#: extern class List is not emitted");
 
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok, "P8: List program -> TS compiles");
         check(has(ts.code, "number[]"), "P8 TS: List<i32> -> number[]");
         check(has(ts.code, ".push(3)"), "P8 TS: list.add -> .push");
@@ -717,11 +717,11 @@ int main() {
             "  writeText(\"a.txt\", \"hi\")\n"
             "  print(readText(\"a.txt\"))\n"
             "}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok, "P8: std.io program -> C# compiles");
         check(has(cs.code, "global::System.IO.File.ReadAllText(path)"), "P8 C#: readText -> File.ReadAllText");
         check(has(cs.code, "global::System.IO.File.WriteAllText(path, content)"), "P8 C#: writeText -> File.WriteAllText");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok, "P8: std.io program -> TS compiles");
         check(has(ts.code, "readFileSync(path"), "P8 TS: readText -> fs.readFileSync");
         check(has(ts.code, "writeFileSync(path, content)"), "P8 TS: writeText -> fs.writeFileSync");
@@ -738,10 +738,10 @@ int main() {
             "import { bump } from \"util\"\n"
             "import { baseVal } from \"base\"\n"
             "fn main() { print(bump(2) + baseVal()) }\n"; // (40+2) + 40 = 82
-        EmitResult cs = compile(prog, Target::CSharp, &r, LibConfig{{"io"}});
+        EmitResult cs = compile(prog, findTarget("csharp"), &r, LibConfig{{"io"}});
         check(cs.ok, "P12: transitive user-module resolution compiles");
         check(has(cs.code, "baseVal") && has(cs.code, "bump"), "P12: imported module decls are merged");
-        EmitResult ts = compile(prog, Target::TypeScript, &r, LibConfig{{"io"}});
+        EmitResult ts = compile(prog, findTarget("typescript"), &r, LibConfig{{"io"}});
         check(ts.ok, "P12: transitive resolution compiles to TS too");
     }
     {
@@ -750,7 +750,7 @@ int main() {
             {"a", "import { fromB } from \"b\"\nfn fromA(): i32 => fromB()\n"},
             {"b", "import { fromA } from \"a\"\nfn fromB(): i32 => fromA()\n"},
         });
-        EmitResult res = compile("import { fromA } from \"a\"\nfn main() { print(fromA()) }\n", Target::CSharp, &r);
+        EmitResult res = compile("import { fromA } from \"a\"\nfn main() { print(fromA()) }\n", findTarget("csharp"), &r);
         bool cyclic = false;
         for (const auto& d : res.diagnostics) if (has(d.message, "import cycle")) cyclic = true;
         check(!res.ok && cyclic, "P12: an import cycle is reported (no hang)");
@@ -758,7 +758,7 @@ int main() {
     {
         // An unknown user module (resolver returns nullopt) is an "unknown module" diagnostic.
         MapModuleResolver r({});
-        EmitResult res = compile("import { x } from \"missing\"\nfn main() {}\n", Target::CSharp, &r);
+        EmitResult res = compile("import { x } from \"missing\"\nfn main() {}\n", findTarget("csharp"), &r);
         bool unknown = false;
         for (const auto& d : res.diagnostics) if (has(d.message, "unknown module")) unknown = true;
         check(!res.ok && unknown, "P12: an unresolvable user module is rejected");
@@ -772,7 +772,7 @@ int main() {
     {
         // A type defined in both the entry and an imported module collides (no silent merge).
         MapModuleResolver r({{"m", "record R(x: i32)\n"}});
-        EmitResult res = compile("import { R } from \"m\"\nrecord R(y: i32)\nfn main() {}\n", Target::CSharp, &r);
+        EmitResult res = compile("import { R } from \"m\"\nrecord R(y: i32)\nfn main() {}\n", findTarget("csharp"), &r);
         bool dup = false;
         for (const auto& d : res.diagnostics) if (has(d.message, "duplicate type")) dup = true;
         check(!res.ok && dup, "P12: a cross-module type collision is rejected");
@@ -784,21 +784,21 @@ int main() {
         // (1) List usable with NO explicit import when 'collections' is in lib; it links the real module
         //     (so `xs.count` lowers to the .Count binding, not the lenient bare `.count`).
         EmitResult r = compile("fn main() { var xs: List<i32> = [1]\n  print(xs.count) }\n",
-                               Target::CSharp, nullptr, lib);
+                               findTarget("csharp"), nullptr, lib);
         check(r.ok && has(r.code, ".Count"), "P13: lib auto-imports std.collections (List.count -> .Count)");
         // (2) a user declaration silently shadows the lib's same-named one (NO collision error).
         EmitResult sh = compile("record List(x: i32)\nfn main() { print(List(5).x) }\n",
-                                Target::CSharp, nullptr, lib);
+                                findTarget("csharp"), nullptr, lib);
         check(sh.ok, "P13: a user decl silently shadows the lib prelude (no collision)");
         // (3) an explicit import of a lib module dedups against the lib auto-import (no collision).
         EmitResult dd = compile("import { List } from \"std.collections\"\nfn main() { var xs: List<i32> = [1]\n  print(xs.count) }\n",
-                                Target::CSharp, nullptr, lib);
+                                findTarget("csharp"), nullptr, lib);
         check(dd.ok, "P13: explicit import + lib dedups (no collision)");
         // (4) a QUALIFIED lib entry is a full specifier resolved like any import (third-party plugin
         //     namespace, not just std) — `app.helpers` resolves through the resolver, used un-imported.
         MapModuleResolver plug({{"app.helpers", "fn helper(): i32 => 42\n"}});
         LibConfig pluginLib{{"app.helpers", "io"}};
-        EmitResult pl = compile("fn main() { print(helper()) }\n", Target::CSharp, &plug, pluginLib);
+        EmitResult pl = compile("fn main() { print(helper()) }\n", findTarget("csharp"), &plug, pluginLib);
         check(pl.ok && has(pl.code, "helper()"), "P13: a qualified lib entry auto-imports a non-std (plugin) module");
     }
 
@@ -811,10 +811,10 @@ int main() {
             "}\n"
             "fn drive(w: Widget): i32 { w.poke(3)\n  return 0 }\n"
             "fn main() {}\n";
-        EmitResult cs = compile(prog, Target::CSharp);
+        EmitResult cs = compile(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "w.Poke(3)") && !has(cs.code, "class Widget"),
               "P13: user plugin class member binding fires in C# (extern class not emitted)");
-        EmitResult ts = compile(prog, Target::TypeScript);
+        EmitResult ts = compile(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "w.poke(3)") && !has(ts.code, "class Widget"),
               "P13: user plugin class member binding fires in TS");
     }
@@ -829,10 +829,10 @@ int main() {
             "}\n"
             "fn main() { print(MyMath.twice(5))\n  print(MyMath.K) }\n";
         // twice(5) inlines to (5 * 2); the static const K inlines to 42 (passed to the print free function).
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "(5 * 2)") && has(cs.code, "Program.print(42)") && !has(cs.code, "class MyMath"),
               "P13: static method + static const bindings fire on an extern class (C#)");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "(5 * 2)") && !has(ts.code, "class MyMath"),
               "P13: static bindings fire on an extern class (TS)");
     }
@@ -871,9 +871,9 @@ int main() {
             "class MyErr : Error {\n  init(message: string) { super(message) }\n}\n"
             "fn describe(e: MyErr): string => e.message\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "e.Message"), "P13: Error.message resolves on a subclass and binds to C# .Message");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "e.message"), "P13: Error.message binds to JS .message");
     }
 
@@ -885,9 +885,9 @@ int main() {
             "extension fn List<T>.firstOrNull(): T? => if this.count >= 1 { this[0] } else { null }\n"
             "fn head(xs: List<i32>): i32 => xs.firstOrNull() ?? -1\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "firstOrNull<T>("), "P13: extension on a generic receiver scopes T (C# generic signature)");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "firstOrNull<T>("), "P13: extension on a generic receiver scopes T (TS generic signature)");
     }
 
@@ -901,11 +901,11 @@ int main() {
             "}\n"
             "fn make(): Widget => Widget(7)\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "global::Acme.Widget make()") && has(cs.code, "new global::Acme.Widget(7)")
                     && !has(cs.code, "class Widget"),
               "P10: user extern class maps its type + constructs ($T) in C#");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "make(): Widget") && has(ts.code, "new Widget(7)") && !has(ts.code, "class Widget"),
               "P10: user extern class maps its type + constructs ($T) in TS");
     }
@@ -917,10 +917,10 @@ int main() {
             "import { List } from \"std.collections\"\n"
             "fn mk(): List<i32> { var xs: List<i32> = [1]\n  return xs }\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "global::System.Collections.Generic.List<int>"),
               "P10: List type spelling comes from its extern-class mapping (C#)");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "number[]"), "P10: List<i32> -> number[] from the mapping (TS)");
     }
 
@@ -931,11 +931,11 @@ int main() {
             "union Box<T> { Full(value: T), Empty }\n"
             "fn unwrap<T>(b: Box<T>, dflt: T): T => match b { Full(v) => v, Empty => dflt }\n"
             "fn main() { print(unwrap(Full(5), 0)) }\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "abstract record Box<T>") && has(cs.code, "sealed record Full<T>(T value) : Box<T>")
                     && has(cs.code, "new Full<int>(5)") && has(cs.code, "Full<T>(var v)"),
               "P14: generic union — C# record hierarchy + typed construction + typed pattern");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "type Box<T> = { tag: \"Full\"; value: T } | { tag: \"Empty\" }")
                     && has(ts.code, "{ tag: \"Full\", value: 5 }"),
               "P14: generic union — TS tagged union + construction");
@@ -950,10 +950,10 @@ int main() {
             "fn main() { print(orElse(opt(false, 9), -1)) }\n";
         // compileStd libs io (for print)/math/collections but NOT any "option" module — so Option resolving
         // proves it's in the always-linked core prelude.
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "new Some<int>(v)") && has(cs.code, "new None<int>()"),
               "P14: core Option — Some/None construct in C# (None typed from context)");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "{ tag: \"Some\", value: v }") && has(ts.code, "{ tag: \"None\" }"),
               "P14: core Option — Some/None construct in TS");
     }
@@ -964,11 +964,11 @@ int main() {
         const char* prog =
             "fn pickIf<T>(c: bool, v: T): T? => if c { v } else { null }\n"
             "fn main() { print(pickIf(true, 7) ?? -1) }\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "Option<T> pickIf<T>") && has(cs.code, "new Some<T>(v)") && has(cs.code, "new None<T>()")
                     && has(cs.code, "Some<int>(var __opt0) => __opt0") && has(cs.code, "None<int> _ => -1"),
               "P14: T? sugar — desugars to Option, ?? lowers to match (C#)");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "_m.tag === \"Some\"") && has(ts.code, "_m.tag === \"None\""),
               "P14: T? sugar — ?? lowers to a tagged match (TS)");
     }
@@ -979,7 +979,7 @@ int main() {
             "extension fn List<T>.secondOrNull(): T? => if this.count >= 2 { this[1] } else { null }\n"
             "fn head2(xs: List<i32>): i32 => xs.secondOrNull() ?? -1\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "Some<int>(var __opt0)"),
               "P14: extension returning T? — receiver inference gives Option<int> (C#)");
     }
@@ -992,7 +992,7 @@ int main() {
             "import { List } from \"std.collections\"\n"
             "fn mk(): List<i32> { var xs: List<i32> = []\n  return xs }\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "new global::System.Collections.Generic.List<int> {") && !has(cs.code, "List<object>"),
               "P14b: empty list literal takes its element type from the target (List<int>, not List<object>)");
     }
@@ -1006,11 +1006,11 @@ int main() {
             "class Bag {\n  operator fn get(i: i32): i32 => i\n}\n"
             "fn at(b: Bag): i32 => b[3]\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "interface Shrinkable") && has(cs.code, "record Box(int n) : Shrinkable")
                     && has(cs.code, "public int this[int i] =>"),
               "P14b: C# emits interface + record base + this[] indexer");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "interface Shrinkable") && has(ts.code, "class Box implements Shrinkable")
                     && has(ts.code, "b.get(3)"),
               "P14b: TS emits interface + implements + get() indexer access");
@@ -1023,10 +1023,10 @@ int main() {
             "import \"std.strings\"\n"
             "fn shout(s: string): string => s.toUpper()\n"
             "fn main() {}\n";
-        EmitResult cs = compileStd(prog, Target::CSharp);
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "s.ToUpper()") && !has(cs.code, "s.toUpper()"),
               "P14b: bound string extension -> C# .ToUpper()");
-        EmitResult ts = compileStd(prog, Target::TypeScript);
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "s.toUpperCase()"), "P14b: bound string extension -> JS .toUpperCase()");
     }
 
@@ -1038,10 +1038,10 @@ int main() {
             "fn boom(): Error => Error(\"x\")\n"
             "fn msg(e: Error): string => e.message\n"
             "fn main() {}\n";
-        EmitResult cs = compile(prog, Target::CSharp);
+        EmitResult cs = compile(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "new global::System.Exception(\"x\")") && has(cs.code, "e.Message"),
               "core prelude: Error constructs + .message maps to C# (no import/lib)");
-        EmitResult ts = compile(prog, Target::TypeScript);
+        EmitResult ts = compile(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "new Error(\"x\")") && has(ts.code, "e.message"),
               "core prelude: Error maps to JS (no import/lib)");
     }
@@ -1053,7 +1053,7 @@ int main() {
 
     // A normal unknown type still gets the plain diagnostic (not a refusal).
     {
-        EmitResult r = compile("fn f(x: Widget) {}\n", Target::CSharp);
+        EmitResult r = compile("fn f(x: Widget) {}\n", findTarget("csharp"));
         bool plain = false;
         for (const auto& d : r.diagnostics) if (has(d.message, "unknown type")) plain = true;
         check(!r.ok && plain, "P6: a non-refused unknown type still says 'unknown type'");
@@ -1131,6 +1131,18 @@ int main() {
         bool ok = true;
         runRule(R"({"bogus":1})", ctx, &ok);
         check(!ok, "P18: unknown rule form is rejected");
+    }
+
+    // ---- P18: Target -> BackendHandle (a target is a name, validated at resolve) ----------------------
+    {
+        check(findTarget("csharp").ok() && findTarget("typescript").ok() && findTarget("python").ok(),
+              "P18: findTarget resolves the built-in targets");
+        BackendHandle bad = findTarget("rust");
+        check(!bad.ok() && has(bad.error(), "unknown target 'rust'") && has(bad.error(), "csharp"),
+              "P18: findTarget on an unknown name fails with the known-target list");
+        EmitResult r = compile("fn main() {}\n", bad);
+        check(!r.ok && !r.diagnostics.empty() && has(r.diagnostics[0].message, "unknown target 'rust'"),
+              "P18: compile with an invalid handle refuses with the resolution error");
     }
 
     if (g_failures == 0) {

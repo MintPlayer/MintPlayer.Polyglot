@@ -137,7 +137,7 @@ void reportDiagnostics(const fs::path& input, const EmitResult& result) {
 
 // Emit one target next to (or under --out of) the input, returning the written path or "" on failure.
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& outDir,
-             Target target, const char* ext, ModuleResolver* resolver, const LibConfig& lib) {
+             const BackendHandle& target, const char* ext, ModuleResolver* resolver, const LibConfig& lib) {
     EmitResult result = compile(source, target, resolver, lib);
     if (!result.ok) {
         reportDiagnostics(input, result);
@@ -206,13 +206,13 @@ int runBuild(const std::vector<std::string>& args) {
     LibConfig lib = parseLibList(libArg);
 
     bool ok = true;
-    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, Target::CSharp, ".cs", &resolver, lib);
-    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, Target::TypeScript, ".ts", &resolver, lib);
+    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, findTarget("csharp"), ".cs", &resolver, lib);
+    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, findTarget("typescript"), ".ts", &resolver, lib);
     // Python is opt-in (explicit --target python): it currently emits only the walking-skeleton subset, so it
     // must not join the default cs+ts emission, which would fail on any program beyond that subset.
-    if (target == "python") ok &= emitOne(source, input, outDir, Target::Python, ".py", &resolver, lib);
-    if (!target.empty() && target != "csharp" && target != "typescript" && target != "python") {
-        std::cerr << "polyglot: unknown target '" << target << "' (expected csharp|typescript|python)\n";
+    if (target == "python") ok &= emitOne(source, input, outDir, findTarget("python"), ".py", &resolver, lib);
+    if (!target.empty() && !findTarget(target).ok()) {
+        std::cerr << "polyglot: " << findTarget(target).error() << "\n";
         return 64;
     }
     return ok ? 0 : 1;
@@ -241,14 +241,6 @@ std::string jsonEscape(const std::string& s) {
         }
     }
     return out;
-}
-
-// A target name (`csharp`/`typescript`/`python`) -> the Target enum; nullopt for anything else.
-std::optional<Target> targetFromString(const std::string& t) {
-    if (t == "csharp")     return Target::CSharp;
-    if (t == "typescript") return Target::TypeScript;
-    if (t == "python")     return Target::Python;
-    return std::nullopt;
 }
 
 // Serialize diagnostics as a JSON array of {line,col,endLine,endCol,severity,message}. Shared by
@@ -311,7 +303,7 @@ int runCheck(const std::vector<std::string>& args) {
 
     LibConfig lib = parseLibList(libArg);
 
-    EmitResult result = compile(source, Target::CSharp, &resolver, lib);
+    EmitResult result = compile(source, findTarget("csharp"), &resolver, lib);
 
     if (json) {
         std::cout << diagnosticsToJson(result.diagnostics) << "\n";
@@ -597,12 +589,12 @@ struct LspServer {
             return "{\"target\":" + json::quote(targetName) + ",\"code\":\"\",\"ok\":false,\"diagnostics\":[]}";
         };
         if (!text_.count(uri)) return empty();          // doc not open — never insert an empty text_[uri]
-        auto tgt = targetFromString(targetName);
-        if (!tgt) return empty();
+        BackendHandle tgt = findTarget(targetName);
+        if (!tgt.ok()) return empty();
         DocContext ctx = contextFor(uri);
         FileModuleResolver disk(ctx.root, ctx.entryDir);
         BufferResolver resolver(disk, text_); // preview reflects unsaved edits in open imported modules
-        EmitResult r = compile(text_[uri], *tgt, &resolver, parseLibList(ctx.libStr));
+        EmitResult r = compile(text_[uri], tgt, &resolver, parseLibList(ctx.libStr));
         return "{\"target\":" + json::quote(targetName) + ",\"code\":" + json::quote(r.code) +
                ",\"ok\":" + (r.ok ? "true" : "false") +
                ",\"diagnostics\":" + diagnosticsToJson(r.diagnostics) + "}";

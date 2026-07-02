@@ -25,9 +25,32 @@ public:
     static std::string version();
 };
 
-// A transpilation target. More targets become downloadable declarative backend plugins post-P8
-// (see docs/design/plugins-and-targets.md); C# and TS are first-party native backends through P5.
-enum class Target { CSharp, TypeScript, Python };
+class Backend; // internal emit interface (backend.hpp); opaque on the public surface
+
+// A validated, immutable reference to a loaded backend — what compile() emits with (P18, PRD §4.10).
+// The compiled-in `Target` enum is gone: a target is a *name*, resolved once via findTarget() for the
+// built-in backends today, and by a future loadBackend(specBytes) for installed data plugins — both
+// yield this same handle type, so compile()'s signature never changes again. Validation happens at
+// resolve time, not at emit: an unknown name yields a !ok() handle carrying the error, and compile()
+// with it refuses with that diagnostic (never crashes, never guesses a default).
+class BackendHandle {
+public:
+    BackendHandle() = default;
+    bool ok() const { return backend_ != nullptr; }
+    const std::string& name() const { return name_; }     // the requested target name (set even when !ok)
+    const std::string& error() const { return error_; }   // why resolution failed ("" when ok)
+    const Backend* backend() const { return backend_; }
+
+private:
+    friend BackendHandle findTarget(const std::string&);
+    const Backend* backend_ = nullptr;
+    std::string name_;
+    std::string error_;
+};
+
+// Resolve a target name ("csharp" / "typescript" / "python") to its registered backend. An unknown
+// name returns a !ok() handle whose error() lists the known targets.
+BackendHandle findTarget(const std::string& name);
 
 // Result of compiling one source to one target. On success `ok` is true and `code` holds the emitted
 // source; on failure `ok` is false and `diagnostics` explains why (positions are 1-based).
@@ -66,9 +89,10 @@ struct LibConfig {
 
 // Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->
 // check -> emit, stopping at the first pass that reports errors (no partial/garbage output on failure).
+// A !ok() handle (unknown target) refuses immediately with its resolution error as the diagnostic.
 // `resolver` loads non-std (`import … from "./x"` / `"a.b"`) modules; nullptr = std modules only.
 // `lib` auto-imports the named std modules (the prelude); empty = none.
-EmitResult compile(const std::string& source, Target target, ModuleResolver* resolver = nullptr,
+EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver = nullptr,
                    const LibConfig& lib = {});
 
 // Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the

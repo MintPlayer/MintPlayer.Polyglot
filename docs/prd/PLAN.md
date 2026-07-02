@@ -1052,6 +1052,19 @@ Lambda/Match — the genuinely per-target-shape or stateful kinds. Byte-identica
 37/37, unit tests pass). Next: `Target`→`BackendHandle`, then port the C# rule set + interpreter seam to
 TS/Python.
 
+**Slice-11 (`Target`→`BackendHandle`) ✅:** the compiled-in `enum class Target` is **gone** — a target is a
+*name*. `BackendHandle` (polyglot.hpp) is a validated, immutable reference to a loaded backend: built-ins
+resolve via **`findTarget(name)`** today; a future `loadBackend(specBytes)` for installed data plugins returns
+the *same handle type*, so `compile()`'s signature never changes again. Validation at resolve, not emit: an
+unknown name yields a `!ok()` handle carrying `error()` ("unknown target 'rust' (known targets: csharp,
+typescript, python)"), and `compile()` with it refuses with that diagnostic. `compile(source, const
+BackendHandle&, …)`; `analyze()` unchanged (as designed). CLI: `emitOne` takes the handle, the unknown-target
+message now comes from `findTarget`, the LSP `polyglot/emit` handler resolves per-request, `targetFromString`
+deleted. Tests: ~60 call sites mechanically `Target::X`→`findTarget("x")`, +3 new tests (resolve, unknown-name
+error, compile-with-invalid-handle refusal). All gates green (unit, run-diff 38/38, run-python 37/37, samples
+10/10; CLI smoke: unknown target exit 64 with the registry-derived list). Next: port the C# rule set +
+interpreter seam to TS/Python.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
