@@ -1041,6 +1041,17 @@ the genuinely-structural kinds (Interp/Char/Unary/Await/Cast/Extern/MethodCall/W
 building, operator-method dispatch, pattern spelling). Byte-identical (run-diff 38/38, run-python 37/37, unit
 tests pass). Next: `Target`→`BackendHandle`, then port the C# rule set + interpreter seam to TS/Python.
 
+**Slice-10 (easy structural leftovers) ✅:** C# `Var`/`Extern`/`Cast`/`Unary` migrated. `Var` = `ident(name)`;
+`Extern` = `get node.code` (raw verbatim); `Cast` = `(castType)(emit operand)` via a `castType` builtin (the
+target type); `Unary` = `op` + `emitChild operand side:"unary"` — a new `"unary"` precedence side that wraps
+**only** a binary operand (`-(a+b)`, but `-x`/`-(-x)` stay bare), distinct from `"recv"` which also wraps
+unary/cast. `CsExprCtx` grew `node.name`/`node.code` reads, `node.op` now serves Unary too, `node.operand`
+childExpr for Cast/Unary. Dead C++ cases removed; **only `This`** (stateful — an operator body rebinds `this`
+to `lhs`) stays as a one-line leaf hook. Remaining imperative: Interp/Char/This/Await/MethodCall/With/Bound/
+Lambda/Match — the genuinely per-target-shape or stateful kinds. Byte-identical (run-diff 38/38, run-python
+37/37, unit tests pass). Next: `Target`→`BackendHandle`, then port the C# rule set + interpreter seam to
+TS/Python.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

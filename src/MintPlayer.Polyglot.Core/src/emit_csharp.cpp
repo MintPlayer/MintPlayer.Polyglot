@@ -49,19 +49,21 @@ const BackendSpec& csharpSpec() {
     return spec;
 }
 
-// P18 slices 4-9: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
+// P18 slices 4-10: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
 // rule for the node kind and interprets it; kinds without a rule still run the C++ switch. Byte-identical (the
-// differential + golden gates are the oracle). Covered so far: the leaf literals (Int/Float/Bool/Null/Str),
-// Binary (child recursion + precedence via `emitChild`), Call (arg lists via the `map` primitive), the
-// scalar-child family Member/Index/Cond, and the delimited-list family Tuple/ListLit/New/MakeCase (`map` +
-// affixes). A free function lives in `static class Program`, so a free call is qualified `Program.f(...)`; a
-// function-valued local (closure param) is called bare — the `case` on `node.isFree` picks between them.
-// Builtins: `ident` (escape a C#-keyword name -> `@base`), `elemType` (a ListLit's element type),
-// `typeArgsSuffix` ("" or `<T, U>` — New's own type args, or a MakeCase's result-type args, since a generic
-// union's case record is itself generic: `Option<i32>` -> `new Some<int>(…)`). Tuple's brackets read from the
-// spec's `delimited` table; ListLit's container is the inherent BCL `List<T>` (list literals are built-in
-// syntax like TS `[…]`, container fixed regardless of imports). NOTE: an extern class with a bound ctor (List,
-// Error, …) routes through `ir::Bound` in lower, so a plain `ir::New` is always a user record/class here.
+// differential + golden gates are the oracle). Covered: the leaf literals (Int/Float/Bool/Null/Str/Var/Extern),
+// Binary + Unary + Cast (child recursion + precedence via `emitChild`), Call (arg lists via the `map`
+// primitive), the scalar-child family Member/Index/Cond, and the delimited-list family Tuple/ListLit/New/
+// MakeCase (`map` + affixes). A free function lives in `static class Program`, so a free call is qualified
+// `Program.f(...)`; a function-valued local (closure param) is called bare — the `case` on `node.isFree` picks
+// between them. Builtins: `ident` (escape a C#-keyword name -> `@base`), `elemType` (a ListLit's element type),
+// `castType` (a Cast's target type), `typeArgsSuffix` ("" or `<T, U>` — New's own type args, or a MakeCase's
+// result-type args, since a generic union's case record is itself generic: `Option<i32>` -> `new Some<int>(…)`).
+// Tuple's brackets read from the spec's `delimited` table; ListLit's container is the inherent BCL `List<T>`
+// (list literals are built-in syntax like TS `[…]`, container fixed regardless of imports). NOTE: an extern
+// class with a bound ctor (List, Error, …) routes through `ir::Bound` in lower, so a plain `ir::New` is always a
+// user record/class here. Still imperative (genuinely per-target shape or stateful): Interp/Char (string
+// building), This (operator rebinds `this`), Await, MethodCall, With, Bound, Lambda, Match.
 const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
   "Float": { "get": "node.text" },
@@ -93,7 +95,11 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"fn":"typeArgsSuffix"},
                      "(", {"map":"node.args","sep":", "}, ")" ] },
   "MakeCase": { "tmpl": [ "new ", {"get":"node.caseName"}, {"fn":"typeArgsSuffix"},
-                          "(", {"map":"node.fields","sep":", "}, ")" ] }
+                          "(", {"map":"node.fields","sep":", "}, ")" ] },
+  "Var":    { "fn": "ident", "args": [ {"get":"node.name"} ] },
+  "Extern": { "get": "node.code" },
+  "Cast":   { "tmpl": [ "(", {"fn":"castType"}, ")(", {"emit":"node.operand"}, ")" ] },
+  "Unary":  { "tmpl": [ {"get":"node.op"}, {"emitChild":"node.operand","side":"unary"} ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -129,6 +135,10 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::ListLit:  return "ListLit";
         case ir::ExprKind::New:      return "New";
         case ir::ExprKind::MakeCase: return "MakeCase";
+        case ir::ExprKind::Var:      return "Var";
+        case ir::ExprKind::Extern:   return "Extern";
+        case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::Unary:    return "Unary";
         default:                     return "";
     }
 }
@@ -148,7 +158,13 @@ public:
 
     std::string get(const std::string& path) const override {
         if (path == "node.type")     return e_.type.name;
-        if (path == "node.op")       return e_.kind == ir::ExprKind::Binary ? static_cast<const ir::Binary&>(e_).op : "";
+        if (path == "node.op") {
+            if (e_.kind == ir::ExprKind::Binary) return static_cast<const ir::Binary&>(e_).op;
+            if (e_.kind == ir::ExprKind::Unary)  return static_cast<const ir::Unary&>(e_).op;
+            return "";
+        }
+        if (path == "node.name" && e_.kind == ir::ExprKind::Var)    return static_cast<const ir::Var&>(e_).name;
+        if (path == "node.code" && e_.kind == ir::ExprKind::Extern) return static_cast<const ir::Extern&>(e_).code;
         if (e_.kind == ir::ExprKind::Call) {
             const auto& c = static_cast<const ir::Call&>(e_);
             if (path == "node.callee")     return c.callee;
@@ -221,6 +237,9 @@ public:
             if (c->kind == ir::ExprKind::Binary || c->kind == ir::ExprKind::Unary || c->kind == ir::ExprKind::Cast)
                 return "(" + inner + ")";
         }
+        if (side == "unary") { // a unary operand: wrap only a binary (so `-(a + b)`, but `-x`/`-(-x)` stay bare)
+            if (c->kind == ir::ExprKind::Binary) return "(" + inner + ")";
+        }
         return inner;
     }
 
@@ -232,6 +251,7 @@ public:
         if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
         if (name == "ident")        return csIdent(args.empty() ? std::string() : args[0]);
         if (name == "elemType")     return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
+        if (name == "castType")     return csType(e_.type); // the Cast's target type
         if (name == "typeArgsSuffix") { // "" or "<T, U>" — New's own type args / a MakeCase's result-type args
             const std::vector<TypeRef>* ta = e_.kind == ir::ExprKind::New ? &static_cast<const ir::New&>(e_).typeArgs
                                            : e_.kind == ir::ExprKind::MakeCase ? &e_.type.args : nullptr;
@@ -297,6 +317,10 @@ private:
                 const auto& t = static_cast<const ir::Tuple&>(e_);
                 if (i < t.elements.size()) return t.elements[i].get();
             }
+        }
+        if (path == "node.operand") {
+            if (e_.kind == ir::ExprKind::Cast)  return static_cast<const ir::Cast&>(e_).operand.get();
+            if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
         }
         return nullptr;
     }
@@ -702,8 +726,8 @@ private:
     }
 
     std::string emitExpr(const ir::Expr& e) override {
-        // Migrated leaf literals (Int/Float/Bool/Null/Str) are now JSON Rules interpreted here; every other
-        // kind still runs the C++ switch below. (P18 slice 4.)
+        // A migrated node kind (see csExprRuleKey / CSHARP_EXPR_RULES_JSON) is interpreted from its JSON Rule
+        // here; the C++ switch below handles only the kinds whose shape is still imperative (P18 slices 4-10).
         if (const char* key = csExprRuleKey(e.kind); key[0] != '\0') {
             const auto& rules = csharpExprRules();
             auto it = rules.find(key);
@@ -741,23 +765,11 @@ private:
                 }
                 return s + "'";
             }
-            case ir::ExprKind::Var:   return csIdent(static_cast<const ir::Var&>(e).name);
-            case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_;
-            case ir::ExprKind::Unary: {
-                const auto& u = static_cast<const ir::Unary&>(e);
-                std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
-                                                                              : emitExpr(*u.operand);
-                return u.op + operand;
-            }
+            case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_; // stateful (operator rebinds `this`)
             case ir::ExprKind::Await: {
                 const auto& a = static_cast<const ir::Await&>(e);
                 return "await " + atom(*a.operand);
             }
-            case ir::ExprKind::Cast: { // C# handles every numeric conversion natively
-                const auto& c = static_cast<const ir::Cast&>(e);
-                return "(" + csType(e.type) + ")(" + emitExpr(*c.operand) + ")";
-            }
-            case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw C# verbatim
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)
