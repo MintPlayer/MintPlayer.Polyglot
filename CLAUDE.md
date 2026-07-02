@@ -237,7 +237,12 @@ artifact (tri-state capabilities `native|emulated|false`, **std overlays** colla
 cs/ts/py fields, load-time anti-silent-drop validation: every IR node kind has a rule OR capability `false`),
 `polyglot install` + registry, proof = a downloaded 4th backend with zero Core change. **Slice 1 is two latent
 §3.B fixes found live in the Python backend** (block-lambda + `With` emit sentinels into "valid" output) + moving
-`i32.parse`/`f64.parse` to std `Bound` bindings. **Two user scope decisions (2026-07-02): no backward compat**
+`i32.parse`/`f64.parse` to std `Bound` bindings. **Added (2026-07-02, 2-agent investigation): reserved/forbidden
+identifiers** (`json-plugins.md` §7, PLAN §P19 slices 13–15) — plugin `identifiers` manifest block (keywords+escape
+/ reserved scaffolding / runtime globals) + pgconfig `forbiddenIdentifiers` (per-project, target-scoped) + a
+`checkReservedNames` pass; **identifiers only, never string/comment/extern text** (symbol-table-driven). The
+investigation found 7 shipping collision miscompiles (3 silent — match-arm `_m`, union field `tag`, Python user
+`_pg_idiv` which evades all gates) → hygiene slice 13 lands BEFORE the config feature. **Two user scope decisions (2026-07-02): no backward compat**
 (C++ deletes in the same slice its byte gate passes; no `--legacy-backend`) **and zero embedded target specs** —
 the CLI is a pure engine; C#/TS/Python are ordinary plugin packages (`plugins/<target>/` in this repo, published
 to npm), resolved via `pgconfig.json` `targets`/`dependencies` (local `file:` → cache → registry); std *skeletons*

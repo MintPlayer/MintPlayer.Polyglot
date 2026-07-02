@@ -260,6 +260,13 @@ shipped at P16 to the full form below at P10/P18 — additively, so today's file
 - **`environments`** *(map: target id → environment list)* — desktop/web/mobile/cli availability gating (§6). A
   plugin symbol is usable only when its plugin is installed **and** the active target matches **and** the active
   environment is among the plugin's declared ones — else a clean §3.B-style refusal.
+- **`forbiddenIdentifiers`** *(map: target id or `"*"` → identifier list; bare array = `"*"` sugar)* — added
+  2026-07-02 (`json-plugins.md` §7): **per-project** identifier bans on top of what each language plugin already
+  declares (its `identifiers` manifest block carries the target's keywords/escape strategy + reserved scaffolding
+  names + runtime globals). A declared identifier matching an entry refuses with a targeted diagnostic via the
+  per-target `checkReservedNames` pass. Applies to **identifiers only** — never to text inside string literals,
+  interpolation chunks, comments, or `extern("…")` templates (the check runs over sema's symbol tables, not source
+  text). Example: `{ "*": ["temp"], "csharp": ["Program"] }`.
 
 **Two-level resolution:** the **global registry** (`polyglot install`'s output, §6.1) = the machine-wide *installed*
 set; **`pgconfig.json` `dependencies`** = which of them (+ versions) *this* project uses; **`pgconfig.lock.json`**

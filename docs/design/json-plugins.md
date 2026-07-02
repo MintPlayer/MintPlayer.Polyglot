@@ -225,7 +225,78 @@ Also recommended: **`i32.parse`/`f64.parse` become std `Bound` bindings** (like 
 the per-target `parseNumber` special case from `MethodCall` — the same "std, not compiler" move P13 made
 for `print`/`Math` (module membership is unchanged; only the emission mechanism moves).
 
-## 7. Design B, revisited and re-rejected
+## 7. Reserved & forbidden identifiers (added 2026-07-02; 2-agent investigation)
+
+**The ask:** configurable "forbidden keywords" per target (`Program` on C#, `this` on TS, `$_SERVER` on a
+future PHP) — where do the lists live, and what does the compiler do on a hit?
+
+**What the empirical investigation found first (all verified by compiling/running emitted output):** sema's
+collision detection knows only *user-vs-user* and *user-vs-Polyglot-builtin* clashes — it has zero knowledge
+of target keywords, emitter scaffolding, or runtime globals. The live surface: **(K)** target keywords that
+aren't `.pg` keywords — C#/Python escape them at *value* sites only (decl names unescaped → `record object`
+breaks both C# and TS), TS escapes nothing; **(S)** scaffolding — `record Program` / `fn Main` / operator
+param `lhs` break the C# build; a local `_m` in a match arm, a union field named **`tag`**, a local `str`
+in Python interpolation, and a user `fn _pg_idiv` on Python all produce **silent wrong answers** (the
+`_pg_idiv` case evades every current gate — Python has no second oracle); a local `self` silently rebinds
+the Python receiver; **(R)** runtime globals — a top-level `fn console` breaks TS at runtime, a user type
+`System` breaks the C# SDK build despite `global::` (AssemblyInfo.cs is outside our emission).
+
+**Layering (no Core data, per the scope decisions):**
+- **Plugin manifest** — the target's own facts, ONE `identifiers` block so the escape table and forbidden
+  lists can't drift (this *extends* the §4 `ident` catalog entry):
+  ```jsonc
+  "identifiers": {
+    "keywords": ["class","this","for", …],              // the ESCAPE set (lexer keywords)
+    "escape":   { "strategy": "prefix", "with": "@" },   // C#; Python {"strategy":"suffix","with":"_"}; null = unescapable
+    "reserved": ["Main","Program","Extensions"],         // fixed generated-scaffolding names -> REFUSE
+    "globals":  ["console","String","Math","BigInt","Number"] // runtime names emitted code relies on -> REFUSE at top level
+  }
+  ```
+  Scaffolding names are **declared, not inferred** (they live inside template strings and raw prelude
+  fragments — scraping them out would be brittle; declaration is auditable and load-validated; a warn-only
+  lint can flag a declared name that appears in no rule).
+- **pgconfig.json** — per-project additions, target-scoped with `"*"` wildcard (bare array = all targets):
+  `"forbiddenIdentifiers": { "*": ["temp"], "csharp": ["Program"] }`.
+- **Core** — mechanism only: the `ident` escape primitive + a **`checkReservedNames`** pass beside
+  `checkCapabilities` (same per-target, refuse-out-loud pattern), + collision-aware `fresh`.
+
+**Policy matrix.** *Escape silently* only for keywords with a declared total, reference-preserving
+transform (today's `csIdent`/`pyId`, becoming data — and extended to **declaration-name sites**, which
+today's code misses). *Refuse with a targeted diagnostic* for: unescapable keywords (`escape: null` — all
+of TS), scaffolding `reserved` names, runtime `globals` (matched against the *emitted* spelling), and
+project-forbidden names ("'Main' is reserved on target 'csharp' (generated entry point); rename it or drop
+that target"). *Never auto-rename user identifiers* — no reference-preservation guarantee, and a silent
+rename is the §3.B sin wearing a helpful face. **Exception worth recording:** for `Program`/`Extensions`
+the *wrapper* owns the name, so the alternative to refusing is renaming/namespacing the wrapper itself —
+deferred (it churns every emitted file); v1 refuses via `reserved` data, and un-reserving later stays open.
+
+**Fresh-name & data-shape hygiene (the silent cases are NOT config — they're emitter bugs):** the `fresh`
+primitive becomes a **collision-aware gensym** (consults the scope's used names; lowering reserves the temp
+prefixes), covering `_m`/`lhs`/`self`/`__*` temps; the union discriminant `tag` and TS's structural
+`equals` slot are *data-shape* collisions — v1 refuses a union field named `tag` (TS/Python) and a record
+method named `equals` (TS) via the same `reserved`-style plugin data, keyed to member positions.
+
+**Invariant — identifiers only, never text (user requirement).** `checkReservedNames` operates exclusively
+on the checked AST/symbol tables — declaration names and `Name` reference nodes — never as a text/regex
+scan over source or output. Consequences, all structural: a string literal containing `"Program"` is never
+flagged; in interpolation the *hole* is a real `Name` node (checked naturally) while the surrounding chunk
+text is an opaque payload (never seen); `extern("…")` raw FFI templates are the author's explicit escape
+hatch — out of scope even though they land in output; comments are lexer trivia and never reach the AST
+(verified), so the property is free there. The false-positive class is excluded by construction, not by a
+maintained exclusion list.
+
+**LSP:** squiggles before build, per *configured* target — the LSP layer parses pgconfig `targets` (it
+needs them for `polyglot/targets` anyway) + `forbiddenIdentifiers`, and runs `checkReservedNames` once per
+resolved backend over the already-analyzed unit; no client change.
+
+**Slices (folded into PLAN §P19):** (i) *hygiene first* — collision-aware `fresh` + the `tag`/`equals`/
+`self`/`_pg_idiv` guards (silent wrong output, one case invisible to all gates); (ii) `checkReservedNames`
++ the C# `Main`/`Program`/`System` refusals + pgconfig `forbiddenIdentifiers` (CLI+LSP); (iii) the
+`identifiers` manifest block rides the existing builtin-catalog slice (`ident` gains decl-name coverage and
+TS gets `escape: null` semantics); (iv) refusal unit tests via a StubBackend-style reserved set — these are
+compile errors, so they live in the diagnostics suite, not the byte-diff gate.
+
+## 8. Design B, revisited and re-rejected
 
 The expr front stress-tested the rejected "strategy vocabulary" specifically for `Match` (the hardest
 node). Finding: all three match shapes — C# switch-expression, TS IIFE if-chain, Python lambda ternary-fold

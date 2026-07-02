@@ -1200,6 +1200,30 @@ consumes the same wrong fact); refusals loud, never sentinels.
     lists it with no client change (closes `extension.js`'s `FIXME(P10)`); off-intersection features refuse
     with distinct §3.B-vs-§3.E diagnostics.
 
+**Added 2026-07-02 — reserved/forbidden identifiers** (user request; 2-agent investigation, design
+`json-plugins.md` §7; PRD §4.11). The investigation found **7 verified collision miscompiles shipping
+today** (record `Program`/fn `Main`/operator param `lhs`/`record object` break target builds with
+inscrutable errors; a match-arm local `_m`, a union field `tag`, and a Python user `fn _pg_idiv` produce
+**silent wrong answers** — `_pg_idiv` invisible to every gate; a local `self` silently rebinds the Python
+receiver; TS escapes no keywords at all; C#/Python escape keywords only at value sites, not decl names).
+New slices, in priority order:
+13. **Identifier hygiene (do before the config feature — these are silent-output bugs):** collision-aware
+    `fresh` (gensym consults the scope's used names; lowering reserves temp prefixes — covers
+    `_m`/`lhs`/`self`/`__*`); data-shape guards for the union `tag` discriminant + TS structural `equals`
+    (v1: refuse via reserved member data); Python `str`-in-interp + `_pg_idiv`/`asyncio` top-level guards.
+14. **`checkReservedNames`** beside the capability gate: plugin `identifiers` block
+    (`keywords`+`escape` / `reserved` / `globals` — one source of truth with the `ident` builtin);
+    pgconfig **`forbiddenIdentifiers`** (target-scoped, `"*"` wildcard, threaded via the config carrier —
+    Core stays IO-free); C# `Main`/`Program`/`Extensions`/`System` refusals; LSP runs the check per
+    configured target over the analyzed unit (parses pgconfig `targets`+`forbiddenIdentifiers`).
+    **Invariant: identifiers only** — symbol-table-driven, never a text scan; string literals, interp
+    chunks, comments (lexer trivia — verified dropped), and `extern("…")` templates can never trigger it.
+    Refusal tests are compile errors → the diagnostics suite, not the byte-diff gate.
+15. **`ident` completion (rides slice 6, the builtin catalog):** escape coverage extends to
+    declaration-name sites (today value-sites only); TS gets honest `escape: null` semantics (its
+    unescapable words become refusals). Wrapper-rename (un-reserving `Program`/`Extensions` by renaming
+    the generated wrapper) recorded as a future alternative — deferred, it churns every emitted file.
+
 **Slice-1 ✅ (2026-07-02):** the two latent §3.B silent-broken-output bugs are now **capability refusals**:
 `Feature::BlockLambdas` + `Feature::WithExpressions` added (capability.cpp detects a Lambda with `flag`
 set / a `With` expr; `PythonBackend::supports` returns false for both; C#/TS unaffected) — a Python compile
