@@ -160,6 +160,14 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
   "Interp": { "interleave": { "lits":"node.chunks", "holes":"node.holes",
               "lit": {"fn":"escapeString","args":[{"get":"item"}]},
               "hole": {"tmpl":[" + str(",{"emit":"item"},") + "]} } },
+  "MethodCall": { "case": { "when": [ [ {"eq":["node.isExtension","true"]},
+      {"tmpl":[{"get":"node.method"},"(",{"emit":"node.object"},
+        {"case":{"when":[[{"eq":["node.args.count","0"]},""]],
+                 "else":{"tmpl":[", ",{"map":"node.args","sep":", "}]}}},")"]} ] ],
+    "else": {"tmpl":[
+      { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
+                  "else": {"emitChild":"node.object","side":"recv"} } },
+      ".",{"get":"node.method"},"(",{"map":"node.args","sep":", "},")"]} } },
   "Binary": { "case": { "when": [
       [ {"eq":["node.op","??"]}, {"fn":"nullCoalesce"} ],
       [ {"and":[{"eq":["node.typeIsInt","true"]},
@@ -213,10 +221,11 @@ const char* pyExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::MakeCase: return "MakeCase";
         case ir::ExprKind::Unary:    return "Unary";
         case ir::ExprKind::Cast:     return "Cast";
-        case ir::ExprKind::With:     return "With";
-        case ir::ExprKind::Interp:   return "Interp";
-        case ir::ExprKind::Binary:   return "Binary";
-        default:                     return "";
+        case ir::ExprKind::With:       return "With";
+        case ir::ExprKind::Interp:     return "Interp";
+        case ir::ExprKind::MethodCall: return "MethodCall";
+        case ir::ExprKind::Binary:     return "Binary";
+        default:                       return "";
     }
 }
 
@@ -621,20 +630,6 @@ private:
             }
         }
         switch (e.kind) {
-            case ir::ExprKind::MethodCall: {
-                const auto& mc = static_cast<const ir::MethodCall&>(e);
-                // (i32.parse/f64.parse are std.core Bound bindings now — no parse special case here.)
-                if (mc.isExtension) { // free-function form `name(obj, args)` — `x.m()` cannot stay method syntax
-                    std::vector<std::string> args;
-                    args.push_back(emitExpr(*mc.object));
-                    for (const auto& a : mc.args) args.push_back(emitExpr(*a));
-                    return mc.method + renderArgs(args);
-                }
-                std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
-                std::vector<std::string> args;
-                for (const auto& a : mc.args) args.push_back(emitExpr(*a));
-                return recv + "." + mc.method + renderArgs(args);
-            }
             case ir::ExprKind::Lambda: {
                 const auto& l = static_cast<const ir::Lambda&>(e);
                 std::string params;

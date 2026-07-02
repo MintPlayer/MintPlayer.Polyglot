@@ -109,7 +109,11 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
                 "lit":{"fn":"interpEscape","args":[{"get":"item"}]},
                 "hole":{"tmpl":["{",{"emit":"item"},"}"]}}}, "\"" ] },
   "Char": { "fn": "charLit", "args": [ {"get":"node.value"} ] },
-  "This": { "case": { "when": [ [ {"has":"ctx.thisAlias"}, {"get":"ctx.thisAlias"} ] ], "else": "this" } }
+  "This": { "case": { "when": [ [ {"has":"ctx.thisAlias"}, {"get":"ctx.thisAlias"} ] ], "else": "this" } },
+  "MethodCall": { "tmpl": [
+      { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
+                  "else": {"emitChild":"node.object","side":"recv"} } },
+      ".", {"get":"node.method"}, "(", {"map":"node.args","sep":", "}, ")" ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -151,10 +155,11 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::With:     return "With";
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::Unary:    return "Unary";
-        case ir::ExprKind::Interp:   return "Interp";
-        case ir::ExprKind::Char:     return "Char";
-        case ir::ExprKind::This:     return "This";
-        default:                     return "";
+        case ir::ExprKind::Interp:     return "Interp";
+        case ir::ExprKind::Char:       return "Char";
+        case ir::ExprKind::This:       return "This";
+        case ir::ExprKind::MethodCall: return "MethodCall";
+        default:                       return "";
     }
 }
 
@@ -635,14 +640,6 @@ private:
             }
         }
         switch (e.kind) {
-            case ir::ExprKind::MethodCall: {
-                const auto& mc = static_cast<const ir::MethodCall&>(e);
-                // (i32.parse/f64.parse are std.core Bound bindings now — no parse special case here.)
-                std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
-                std::vector<std::string> args;
-                for (const auto& a : mc.args) args.push_back(emitExpr(*a));
-                return recv + "." + mc.method + renderArgs(args);
-            }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
             case ir::ExprKind::Lambda: {

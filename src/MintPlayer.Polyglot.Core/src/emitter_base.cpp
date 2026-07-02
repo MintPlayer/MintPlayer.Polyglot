@@ -46,6 +46,13 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.field")      return m.field;
         if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
     }
+    if (e_.kind == ir::ExprKind::MethodCall) {
+        const auto& mc = static_cast<const ir::MethodCall&>(e_);
+        if (path == "node.method")      return mc.method;
+        if (path == "node.staticType")  return mc.staticType;
+        if (path == "node.isExtension") return mc.isExtension ? "true" : "false";
+        if (path == "node.args.count")  return std::to_string(mc.args.size());
+    }
     if (e_.kind == ir::ExprKind::New) {
         const auto& n = static_cast<const ir::New&>(e_);
         if (path == "node.typeName")   return n.typeName;
@@ -118,7 +125,13 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
             const auto& n = static_cast<const ir::New&>(e_);
             if (i < n.args.size()) return n.args[i].get();
         }
+        if (e_.kind == ir::ExprKind::MethodCall) {
+            const auto& mc = static_cast<const ir::MethodCall&>(e_);
+            if (i < mc.args.size()) return mc.args[i].get();
+        }
     }
+    if (e_.kind == ir::ExprKind::MethodCall && path == "node.object")
+        return static_cast<const ir::MethodCall&>(e_).object.get();
     if (e_.kind == ir::ExprKind::MakeCase && path.rfind("node.fields.", 0) == 0) {
         // `node.fields.<i>` and `node.fields.<i>.value` both name the field's value expression.
         const auto& mc = static_cast<const ir::MakeCase&>(e_);

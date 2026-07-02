@@ -1245,6 +1245,15 @@ declaration-shape consequence — but the *rule* is data; `CsExprCtx` takes the 
 cases deleted: C# Interp/Char/This, TS Interp, Python Interp. **Expression residue everywhere is now just
 MethodCall/Bound/Lambda/Match.** Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-3b ✅ (2026-07-02) — `MethodCall` is data on all three targets, no new primitive.** Shared
+`IrExprCtx` gained the MethodCall reads (`node.method`/`node.staticType`/`node.isExtension`/
+`node.args.count`, childExpr `node.object` + indexed `node.args.<i>`). C# = one shape
+(`recv-or-staticType . method (args)` — C# keeps extension call syntax); TS/Python add the extension arm
+(`method(obj[, args])` — `x.m()` can't stay method syntax there), expressed as a `case` on
+`node.isExtension` with an inner `case` on `node.args.count`=="0" for the comma. Three dead C++ cases
+deleted. **Residue everywhere: Bound (already data via FFI templates) + Lambda (waits on the `type`
+primitive, slice 4) + Match (the `fold` slice).** Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
