@@ -225,11 +225,21 @@ the prerequisite the user set before publishing the editor extensions.** 🚧 **
 PLAN §P18): specs + expression rules are JSON for **all three backends over one interpreter** (`backend_engine` —
 primitives incl. `map`+item template; shared `IrExprCtx` seam + per-target ctx subclasses; stateful/faithfulness
 machinery = fixed builtins); `Target`→`BackendHandle` ✅ (`findTarget(name)`, validated at resolve). Every slice
-proven **byte-identical** (old-vs-new emitted-source diff across 38 programs × 3 targets). Remaining: expression
-residue (Interp/MethodCall/With/Bound/Lambda/Match), declarations, loader validation, extract-to-file + delete C++,
-std de-hardcoding, distribution.
-**Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
-(build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P18** (data-driven backends, above).
+proven **byte-identical** (old-vs-new emitted-source diff across 38 programs × 3 targets). **P18's remaining tail is
+superseded by P19.**
+**P19 🚧 designed — 100% JSON plugins, the complete artifact** (PRD §4.11; design `docs/design/json-plugins.md`;
+slice plan PLAN §P19; from a second 4-agent investigation, 2026-07-02). Close everything still imperative so a
+language plugin is *entirely* JSON, steady-state **zero Core changes** for new languages: declaration rule tables +
+`program` scaffold (`line`/`block`/`mapDecl`), type-rule tables (`type`), expr residue (`interleave`/`fold`/
+`emitBlock`/`fresh`/`require`), **lowering absorbs module facts + temps** (each absorption its own byte-gated
+slice), a **~10-entry generic builtin catalog** (pioneer-pays-once via `requiresCore`), the `polyglot-plugin.json`
+artifact (tri-state capabilities `native|emulated|false`, **std overlays** collapsing `ir::Bound`/`ExternType`'s
+cs/ts/py fields, load-time anti-silent-drop validation: every IR node kind has a rule OR capability `false`),
+`polyglot install` + registry, proof = a downloaded 4th backend with zero Core change. **Slice 1 is two latent
+§3.B fixes found live in the Python backend** (block-lambda + `With` emit sentinels into "valid" output) + moving
+`i32.parse`/`f64.parse` to std `Bound` bindings. Not yet built.
+**Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
+(build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P19** (100% JSON plugins, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

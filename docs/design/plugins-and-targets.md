@@ -222,6 +222,15 @@ preserved), registry-visible + pinnable like any plugin ("bundled but still pinn
 plugins omit the `backend` block and carry only `stdModules`/`externTypes`/`buildDeps` — already fully
 expressible today (P7/P8/P10 mechanisms interpret exactly this data).
 
+**§6.2 extended (2026-07-02):** the P19 investigation finalized this format in `json-plugins.md` §5 —
+additions, not contradictions: `requiresCore` (semver of the interpreter contract, enforced at load), split
+rule files (`backend/expr.json`/`stmt.json`/`decl.json` + `precedence.json`), **tri-state capabilities**
+(`native|emulated|false` in `capabilities.json`), **std overlays** (`std/*.overlay.json` — member-keyed
+`{module → member → template}` arms replacing whole bound `.pg` modules, so `ir::Bound`/`ExternType`'s fixed
+cs/ts/py fields collapse to single templates selected at link time), a `preludes/` section for `require`d
+target-code fragments, and the full load-time validation catalog. Read `json-plugins.md` first for anything
+plugin-format related; this section stays as the distribution/registry context.
+
 ### 6.3 The `pgconfig.json` schema (resolved 2026-07-01)
 
 The project manifest, parsed in the CLI/LSP layer (Core stays IO-free). It evolves from the minimal `{root, lib}`

@@ -1124,6 +1124,76 @@ loader-validation slice (every claimed feature has a rule; "no rule"→hard erro
 delete-the-C++-switch residue per family as the remaining kinds migrate, then std de-hardcoding /
 distribution.
 
+**→ P18's remaining tail (expression residue, declarations, loader, std arms, distribution) is superseded
+by §P19 below** (2026-07-02, from the second 4-agent investigation). P18 stands as ✅ slices 1–15: the
+interpreter + all three backends' specs/expression rules over one shared seam + `Target`→`BackendHandle`.
+
+## P19 — 100% JSON plugins: the complete artifact (designed 2026-07-02; PRD §4.11, design note
+`docs/design/json-plugins.md`; from a 4-agent investigation: declarations / hard exprs + types / builtin
+catalog / artifact + loader)
+
+**Goal.** Close everything P18 left imperative so a language plugin is *entirely* JSON (npm-wrapped, no
+plugin code, steady-state zero Core changes for new languages), ending with a downloaded 4th backend
+emitting with no Core change. Verdicts: declarations ~90→98% data (<2% = §3.E refusals); expr residue +
+type renderers ~95%; builtins collapse to a ~10-entry generic catalog (pioneer-pays-once via
+`requiresCore`); the artifact = manifest + rules + tri-state capabilities + std overlays, validated
+fail-loud at load ("every IR node kind has a rule OR its capability is `false`").
+
+**Discipline (unchanged):** extract from working backends, never guess; every slice byte-identical
+(emitted-source diff across all conformance programs × 3 targets — the harness built in P18 slices 13–15);
+**each lowering absorption is its own gated slice** (a lowering bug is invisible to a two-backend diff that
+consumes the same wrong fact); refusals loud, never sentinels.
+
+**Slices:**
+1. **Latent-miscompile fixes (independent, do first):** Python statement-bodied lambda emits
+   `__py_unsupported_block_lambda__` and Python `With` emits `__py_unsupported_expr__` into "valid" output
+   (the P9-V failure mode, live today) → real refusals (or, for `With`, slice 2's lowering rebuild). Plus
+   `i32.parse`/`f64.parse` → std `Bound` bindings (deletes `MethodCall`'s per-target parse special case —
+   the P13 "std, not compiler" move).
+2. **Lowering absorption** (one fact per sub-slice, each byte-gated): `lhsIsRecord`/`hasOpMethod`/
+   `receiverHasIndexer`/`base.isInterface` bits; `With`→ordered `ctorArgs`+`baseIsSimple`+lowered
+   `tempName` (also gives Python `With` for free); `This`→`Var("lhs")` in operator bodies; match
+   `hasCatchAll`/`genArgs`/binder accessors; walrus temp names.
+3. **Expression residue → rules**, per family across all three targets: `Interp` (**`interleave`**
+   primitive + `interpEscape` builtins), `MethodCall` (post-slice-1 it's a 2-arm case + `map`), `Lambda`
+   (**`emitBlock`** primitive for statement bodies), `Char` (a `charLit` builtin) + `This` (a literal after
+   slice 2), `With` (a `New`-shaped template after slice 2), `Match` last (**`fold`** primitive + arm/
+   binder/pattern paths — the largest rules in the DSL).
+4. **Type-rule tables:** the **`type`** primitive + `TypeEvalContext` (`type.kind/.nullable/.isValueType/
+   .scalar/.externType/.args.<i>/.ret`); per-target tables replacing `csType`/`tsType`/`pyTypeName`;
+   `substTypeTmpl` becomes one shared fixed builtin. Generic bounds move to the decl tables (slice 5).
+5. **Declaration rules:** the emitter-rule flavor (**`line`/`block`/`mapDecl`** reusing `EmitterBase`'s
+   block machinery) + per-target decl tables (enum/interface/union/record/class/method/function/extension/
+   global, incl. synthesized members as templates + `any`/`all` Tests) + the **`program`** scaffold rule +
+   **`require`** preamble buckets (replaces `needsAsyncio_`/`needsIdiv_`). Largest volume; per-decl-kind
+   sub-slices, each byte-gated.
+6. **Generic builtin catalog:** parameterize `escapeString`'s escape set (spec data — PHP's `$`); add
+   `typeIs`/`isKind` Tests; consolidate per-target builtins into catalog entries (`table`, `ident`
+   w/ keyword-set+strategy, `mangle`, `wrap` w/ `intRepr` enum, `convert` as a per-plugin
+   (fromClass,toClass)→Rule matrix, `wrapAtom` kind-sets as spec data). Byte-identical consolidation, no
+   behavior change.
+7. **Flip default + delete:** `loadBackend(bytes)`→`BackendHandle` (built-ins constructed through the same
+   loader over embedded JSON); one `InterpretedBackend`; delete `emit_csharp/typescript/python.cpp` +
+   `kRegistry[]`.
+8. **Loader validation + tri-state capabilities:** the full fail-loud obligation catalog (node-kind
+   coverage OR capability `false`; builtin/path references against a Core-published catalog; `requiresCore`
+   + `schema` axes; depth caps; unknown-primitive refusal / unknown-manifest-key warn) +
+   `native|emulated|false` capabilities (StubBackend gating still bites; `emulated` warns).
+9. **Std skeleton/overlay split:** extract the ~97 `actual(...)` arms into in-box overlay JSONs; collapse
+   `ir::Bound{cs/ts/py}`→`{template}` + `ExternType` 6→2 fields; per-target selection moves into linking;
+   missing-arm call-site refusal rides `checkCapabilities`. **Highest-risk gate** (every conformance
+   program uses List/Math).
+10. **Package format + config:** `polyglot-plugin.json` (+ sibling files per `json-plugins.md` §5);
+    `pgconfig.json` gains `dependencies`/`targets` additively; `--target` resolution in-box → dependencies
+    → registry → "run `polyglot install`".
+11. **`polyglot install` + registry:** npm HTTP data-only fetch, SHA-512 verify, zip-slip-safe extract, no
+    lifecycle scripts, install-time `loadBackend` validation, `registry.json` + `pgconfig.lock.json`,
+    warn-only sink lint.
+12. **The proof (P10's gate):** a **downloaded 4th backend** (candidate: Kotlin or PHP — PHP also exercises
+    the parameterized escape set) emits a working program with **zero Core change**; LSP `polyglot/targets`
+    lists it with no client change (closes `extension.js`'s `FIXME(P10)`); off-intersection features refuse
+    with distinct §3.B-vs-§3.E diagnostics.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

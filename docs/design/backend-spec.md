@@ -267,3 +267,13 @@ machinery is reused verbatim). `Target` enum → a string name + a schema-valida
 then TS then Python one node-family at a time, each byte-identical across all 38+37 programs → flip default →
 delete `emit_csharp/typescript/python.cpp` + `kRegistry[]`. Only then is "a downloaded backend = JSON in an npm
 package" earned. Full slice plan: `../prd/PLAN.md` §P18; distribution/packaging: `plugins-and-targets.md` §6.1.
+
+**§6 status (2026-07-02).** The core of this design is **built** (PLAN §P18 slices 1–15): the interpreter
+(`backend_engine.hpp/.cpp` — `tmpl`/`get`/`emit`/`emitChild`/`case`+`Test`/`fn`/`map`+`sep`+`item`), all three
+backends' specs + expression rule tables over one shared `IrExprCtx` seam, and `Target`→`BackendHandle`. The
+reserved primitives above (`type`/`fold`/`interleave`/`call`/`let`+`fresh`/`require`, the `any`/`all`/`typeIs`
+Tests) were **confirmed and given their concrete shapes by a second 4-agent investigation** — plus an
+emitter-rule flavor for declarations (`line`/`block`/`mapDecl` + per-target decl tables + a `program` scaffold
+rule) and a ~10-entry generic builtin catalog making steady-state new languages zero-Core-change. That
+completion design (incl. the full plugin artifact, std overlays, and loader validation) lives in
+**`json-plugins.md`** (PRD §4.11, PLAN §P19), which supersedes §P18's remaining tail.

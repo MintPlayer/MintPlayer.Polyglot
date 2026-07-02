@@ -631,6 +631,20 @@ work. Until then the hardcoded list is a knowing stopgap, flagged at the code si
 
 **Migration discipline (keep the gate byte-identical).** This is P9's "extract the DSL from the *working* native backends, dual-run byte-for-byte, then delete the C++" taken to completion: (1) build the interpreter alongside the C++ backends + a dual-run harness; (2) re-express C# (the differential *oracle*) then TS then Python as JSON specs, one node-family at a time, each proven a no-op across all 38+37 conformance programs before it counts as migrated; (3) push the two module-semantic queries into lowering; (4) flip the default to interpreted (C++ backends stay one release behind a `--legacy-backend` fallback); (5) delete `emit_csharp/typescript/python.cpp` + `kRegistry[]`. Only after all three are pure JSON is "a downloaded backend is JSON in an npm package" *earned* rather than guessed. Slice plan: PLAN §P18.
 
+### 4.11 100% JSON plugins — the complete artifact (design — 2026-07-02; investigated by a 4-agent team)
+
+**The question P18 left open, answered.** P18 proved the *expression walks* flatten to JSON rules over one fixed interpreter (built: all three backends, byte-identical). This section closes the rest: **the entire plugin — declarations, type rendering, the hard expression residue, the std arms, capabilities — is data**, so a new language is an npm-installable JSON artifact with zero C++ in the plugin and, in the steady state, **zero Core changes**. Full detail: `docs/design/json-plugins.md`; slice plan: PLAN §P19 (which supersedes P18's remaining tail — P18 slices 1–15 are ✅ built).
+
+**Findings (per front).** *Declarations* flatten **further than expressions did** (~90% with the base decl primitives, ~98% with the fixed Core additions, <2% genuine target limits → §3.E): every emitter is "head template + map over members + per-member templates"; cross-target *shape* divergence (C# positional record vs TS class+ctor+equals vs Python `__init__`+`__eq__`) is one rule table per target — the model the expression layer already uses. Synthesized members (TS `equals`, Python `__eq__`, C#'s exhaustive-match default) are plugin templates over field loops. *Hard expressions + types*: ~95% flattens; `Match` — the hardest — works in Design A via `fold` (extracted from Python's working `matchChain`), **re-vindicating the Design-B rejection with evidence**; type rendering becomes per-target **type-rule tables** evaluated by a `type` primitive. *Builtins*: today's ~15 per-target builtins + 3 paren policies collapse into a **~10-entry generic catalog + spec parameters** (keyword sets, escape sets, an `intRepr` wrap-strategy enum `arbitrary|nativeFixed|f64+bigint`, a `(fromClass,toClass)→Rule` conversion matrix, `wrapAtom` kind-sets as data) — so **"every new language needs a Core PR" is false**: only the *pioneer* of a new representational class pays a one-time additive Core bump (PHP's `$`-escape set; Rust's `wrapping_add`), governed by **`requiresCore`** semver the loader enforces. *Artifact*: a multi-file npm payload (`polyglot-plugin.json` manifest + spec/expr/stmt/decl/precedence rules + externTypes + **tri-state capabilities `native|emulated|false`** + std **overlays** + preludes + builddeps), validated exhaustively at load.
+
+**The primitive set is now closed.** §4.10's reserved primitives are confirmed and shaped by extraction: `interleave` (Interp), `fold` (Match), `emitBlock` (statement-bodied lambdas), `type` (TypeRef recursion), `fresh`/`let` (single-eval temps), `require` (dedup'd preamble buckets placed by the `program` rule) — plus the **emitter-rule flavor** for declarations (`line`, `block`, `mapDecl`, per-target decl tables + a `program` scaffold rule, reusing `EmitterBase`'s existing block machinery) and `Test` additions (`any`/`all`, `typeIs`/`isKind`). **Lowering absorbs all module facts and temp allocation** (record/interface/indexer bits, `With`→ordered ctorArgs + tempName, `This`→`Var("lhs")`, match `hasCatchAll`/binder accessors, walrus temps) so the interpreter context stays node-local and stateless — with the discipline that **each lowering absorption gets its own byte-identity gate** (a lowering bug is invisible to a diff of two backends consuming the same wrong fact).
+
+**Std de-hardcoding.** Each std module splits into a **target-neutral skeleton** (signatures, stays embedded) + per-plugin **overlay files** (`{module → member → template}`, the unchanged `$this`/`$0`/`$T` grammar). Link-time merge selects the active target's arm, collapsing the last hardcoded-target IR surface (`ir::Bound{cs/ts/py}` → one `template`; `ExternType`'s six fields → two). A *used* member with no arm refuses at the call site (the existing mechanism); the first-party three become in-box overlays extracted from the ~97 `actual(...)` arms under a byte-identity gate.
+
+**Loader + trust.** `loadBackend(bytes) → BackendHandle` (same handle as `findTarget`; `compile()` unchanged; built-ins constructed through the same loader over embedded JSON). Load-time obligations include the **anti-silent-drop coverage rule**: *every IR node kind has a rule OR its capability is declared `false`* — "no rule" is never "emit nothing" (the P9-V lesson made structural). Two version axes: `schema` (manifest layout) + `requiresCore` (interpreter contract). The LSP gains `polyglot/targets` (closes the editor's hardcoded target list). Trust stance unchanged: data-only kills transpile-time RCE; std overlays/preludes are raw target-code *templates* that land in output — add an install-time **warn-only** sink lint as a review prompt; signing stays the deferred real mitigation.
+
+**Immediate fixes surfaced (independent of P19):** two latent §3.B silent-broken-output bugs in the shipping Python backend — statement-bodied lambda emits the sentinel `__py_unsupported_block_lambda__` and `With` falls to `__py_unsupported_expr__` into "valid" output; both must become refusals (or, for `With`, the ctor-rebuild lowering). Also: `i32.parse`/`f64.parse` should become std `Bound` bindings (the P13 "std, not compiler" move), deleting `MethodCall`'s per-target parse special case.
+
 ---
 
 ## 5. Testing strategy
@@ -732,14 +746,23 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   valid). "Show Generated Output" opens **all three targets** beside the source (one tab each, following the active
   `.pg`); an Explorer "Polyglot Outputs" tree opens a single target on demand. A follow of `P16`'s virtual-doc +
   custom-request plumbing. Full design + slice plan: §4.9 / PLAN §P17.
-- **P18 — Data-driven backends (languages as pure-JSON plugins).** 🚧 Designed (2026-07-01; §4.10, from a 4-agent
-  investigation). Replace the compiled-in C#/TS/Python `Backend` classes + `Target` enum with a **bounded JSON
-  emission DSL** (Design A — ~10 fixed interpreter primitives, non-Turing-complete, no plugin code → RCE-safe) that
-  `EmitterBase` interprets, so a language becomes an **installable npm-wrapped data plugin** with no Core change.
-  Reframes P9's "irreducible 30%": ≈85% flattens to data with the base interpreter, ≈95%+ with a few added *fixed*
-  Core primitives, the <5% remainder being target limits the capability gate already refuses. Migration = P9's
-  extract-from-working-backends + byte-identical dual-run + delete-the-C++ discipline. The completion of §4.4 and the
-  prerequisite the user set before publishing the editor extensions. Full design + slice plan: §4.10 / PLAN §P18.
+- **P18 — Data-driven backends (languages as pure-JSON plugins).** 🚧 Slices 1–15 ✅ built (2026-07-02; §4.10, from
+  a 4-agent investigation). Replace the compiled-in C#/TS/Python `Backend` classes + `Target` enum with a **bounded
+  JSON emission DSL** (Design A — fixed interpreter primitives, non-Turing-complete, no plugin code → RCE-safe) that
+  `EmitterBase` interprets. **Built so far:** the interpreter (`backend_engine`, incl. `map`+item), all three
+  backends' specs + expression rule tables over one shared `IrExprCtx` seam, `Target`→`BackendHandle`
+  (`findTarget(name)`, validated at resolve) — every slice proven byte-identical (old-vs-new emitted-source diff,
+  38 programs × 3 targets). The remaining tail (expression residue, declarations, loader, std arms, distribution)
+  is superseded by **P19**. Full design: §4.10; as-built log: PLAN §P18.
+- **P19 — 100% JSON plugins (the complete artifact).** 🚧 Designed (2026-07-02; §4.11, from a 4-agent
+  investigation). Close everything P18 left imperative so a language plugin is **entirely JSON**: declaration rule
+  tables + a `program` scaffold rule (`line`/`block`/`mapDecl`), type-rule tables (`type` primitive), the hard
+  expression residue (`interleave`/`fold`/`emitBlock`/`fresh`/`require`), a **~10-entry generic builtin catalog**
+  (steady-state new language = zero Core changes; pioneers pay one additive bump, gated by `requiresCore`),
+  lowering-absorbed module facts, the `polyglot-plugin.json` artifact (tri-state capabilities, std **overlays**
+  collapsing the last hardcoded cs/ts/py IR fields, load-time anti-silent-drop validation), `polyglot install` +
+  registry, and the **proof: a downloaded 4th backend emitting with zero Core change**. Full design + slice plan:
+  §4.11 / `docs/design/json-plugins.md` / PLAN §P19.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
