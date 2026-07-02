@@ -1065,6 +1065,16 @@ error, compile-with-invalid-handle refusal). All gates green (unit, run-diff 38/
 10/10; CLI smoke: unknown target exit 64 with the registry-derived list). Next: port the C# rule set +
 interpreter seam to TS/Python.
 
+**Slice-12 (hoist the shared seam — `IrExprCtx`) ✅:** pure refactor, zero behavior change, prep for the
+TS/Python ports. `CsExprCtx`'s target-INDEPENDENT plumbing moved into a shared **`IrExprCtx`**
+(emitter_base.hpp/.cpp): the whole path→IR mapping (`node.lhs`, indexed `node.args.<i>`, `node.fields.<i>.name`,
+`spec.delimited.…`), the `side:"l"/"r"` precedence policy, and the spec-driven builtins
+(intSuffix/escapeString/opSpelling). A backend subclass supplies only: `targetGet` (extra scalar reads its
+rules test), `targetBuiltin` (keyword escaping / type rendering / numeric faithfulness), and `wrapAtom` (its
+`recv`/`unary` paren policy). `CsExprCtx` shrank from ~180 lines to ~35 (the C# builtins + policy). Also
+pre-added the shared reads TS needs (`node.mangledCallee`, `node.fields.<i>.name/.value`, Char's
+`node.value`) — inert for C#. Byte-identical (unit, run-diff 38/38, run-python 37/37).
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

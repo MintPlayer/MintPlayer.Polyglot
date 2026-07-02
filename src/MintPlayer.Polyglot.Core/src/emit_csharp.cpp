@@ -146,112 +146,24 @@ const char* csExprRuleKey(ir::ExprKind k) {
 std::string csIdent(const std::string& n); // defined below; the `ident` builtin escapes C# keyword fields
 std::string csType(const TypeRef& t);      // defined below; the `elemType` builtin renders a list element type
 
-// EvalContext over an ir::Expr + the backend spec — the seam that plugs the interpreter into the real IR.
-// Exposes leaf fields (`node.text`/`node.value`/`node.type`), spec literals (`spec.*`), and the fixed builtins
-// the rules invoke (intSuffix lookup, string escaping). Recursive child access is added when the recursive
-// families migrate.
-class CsExprCtx : public engine::EvalContext {
+// The C# rule-interpreter seam: only what differs from the shared IrExprCtx — the C# builtins (keyword
+// escaping, C# type rendering, sub-word wrap-back) and the C# atom-wrapping policy.
+class CsExprCtx : public IrExprCtx {
 public:
-    using EmitFn = std::function<std::string(const ir::Expr&)>;
-    CsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit)
-        : e_(e), spec_(spec), emit_(std::move(emit)) {}
+    using IrExprCtx::IrExprCtx;
 
-    std::string get(const std::string& path) const override {
-        if (path == "node.type")     return e_.type.name;
-        if (path == "node.op") {
-            if (e_.kind == ir::ExprKind::Binary) return static_cast<const ir::Binary&>(e_).op;
-            if (e_.kind == ir::ExprKind::Unary)  return static_cast<const ir::Unary&>(e_).op;
-            return "";
-        }
-        if (path == "node.name" && e_.kind == ir::ExprKind::Var)    return static_cast<const ir::Var&>(e_).name;
-        if (path == "node.code" && e_.kind == ir::ExprKind::Extern) return static_cast<const ir::Extern&>(e_).code;
-        if (e_.kind == ir::ExprKind::Call) {
-            const auto& c = static_cast<const ir::Call&>(e_);
-            if (path == "node.callee")     return c.callee;
-            if (path == "node.isFree")     return c.isFree ? "true" : "false";
-            if (path == "node.args.count") return std::to_string(c.args.size());
-        }
-        if (e_.kind == ir::ExprKind::Member) {
-            const auto& m = static_cast<const ir::Member&>(e_);
-            if (path == "node.staticType") return m.staticType;
-            if (path == "node.field")      return m.field;
-            if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
-        }
-        if (e_.kind == ir::ExprKind::New) {
-            const auto& n = static_cast<const ir::New&>(e_);
-            if (path == "node.typeName")   return n.typeName;
-            if (path == "node.args.count") return std::to_string(n.args.size());
-        }
-        if (e_.kind == ir::ExprKind::MakeCase) {
-            const auto& mc = static_cast<const ir::MakeCase&>(e_);
-            if (path == "node.caseName")     return mc.caseName;
-            if (path == "node.fields.count") return std::to_string(mc.fields.size());
-        }
-        if (path == "node.elements.count") {
-            if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
-            if (e_.kind == ir::ExprKind::Tuple)   return std::to_string(static_cast<const ir::Tuple&>(e_).elements.size());
-        }
-        if (path.rfind("spec.delimited.", 0) == 0) { // spec.delimited.<key>.<open|sep|close>
-            const std::string rest = path.substr(15);
-            const std::size_t dot = rest.rfind('.');
-            if (dot != std::string::npos) {
-                auto it = spec_.delimited.find(rest.substr(0, dot));
-                if (it != spec_.delimited.end()) {
-                    const std::string field = rest.substr(dot + 1);
-                    if (field == "open")  return it->second.open;
-                    if (field == "sep")   return it->second.sep;
-                    if (field == "close") return it->second.close;
-                }
-            }
-            return "";
-        }
-        if (path == "spec.nullLit")  return spec_.nullLit;
-        if (path == "spec.trueLit")  return spec_.trueLit;
-        if (path == "spec.falseLit") return spec_.falseLit;
-        if (path == "node.text") {
-            if (e_.kind == ir::ExprKind::Int)   return static_cast<const ir::IntLit&>(e_).text;
-            if (e_.kind == ir::ExprKind::Float) return static_cast<const ir::FloatLit&>(e_).text;
-        }
-        if (path == "node.value") {
-            if (e_.kind == ir::ExprKind::Bool) return static_cast<const ir::BoolLit&>(e_).value ? "true" : "false";
-            if (e_.kind == ir::ExprKind::Str)  return static_cast<const ir::StrLit&>(e_).value;
-        }
-        return "";
-    }
-    bool has(const std::string& path) const override { return !get(path).empty(); }
-
-    // Recurse into a child expr, applying the fixed C# parenthesization rules the emitter's child()/atom() used.
-    std::string emitChild(const std::string& path, const std::string& side) const override {
-        const ir::Expr* c = childExpr(path);
-        if (!c) return "";
-        std::string inner = emit_(*c);
-        if (side == "l" || side == "r") { // binary operand: wrap by precedence + associativity
-            if (e_.kind == ir::ExprKind::Binary && c->kind == ir::ExprKind::Binary) {
-                int pp = operatorPrecedence(static_cast<const ir::Binary&>(e_).op);
-                int cp = operatorPrecedence(static_cast<const ir::Binary&>(*c).op);
-                if (side == "r" ? cp <= pp : cp < pp) return "(" + inner + ")";
-            }
-            return inner;
-        }
-        if (side == "recv") { // atom(): wrap a binary/unary/cast receiver
-            if (c->kind == ir::ExprKind::Binary || c->kind == ir::ExprKind::Unary || c->kind == ir::ExprKind::Cast)
-                return "(" + inner + ")";
-        }
-        if (side == "unary") { // a unary operand: wrap only a binary (so `-(a + b)`, but `-x`/`-(-x)` stay bare)
-            if (c->kind == ir::ExprKind::Binary) return "(" + inner + ")";
-        }
-        return inner;
+protected:
+    bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
+        if (side == "recv") // atom(): wrap a binary/unary/cast receiver
+            return c.kind == ir::ExprKind::Binary || c.kind == ir::ExprKind::Unary || c.kind == ir::ExprKind::Cast;
+        // "unary": wrap only a binary operand (so `-(a + b)`, but `-x`/`-(-x)` stay bare)
+        return c.kind == ir::ExprKind::Binary;
     }
 
-    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "intSuffix") {
-            auto it = spec_.intSuffix.find(args.empty() ? std::string() : args[0]);
-            return it == spec_.intSuffix.end() ? std::string() : it->second;
-        }
-        if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
-        if (name == "ident")        return csIdent(args.empty() ? std::string() : args[0]);
-        if (name == "elemType")     return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
-        if (name == "castType")     return csType(e_.type); // the Cast's target type
+    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
+        if (name == "ident")    return csIdent(args.empty() ? std::string() : args[0]);
+        if (name == "elemType") return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
+        if (name == "castType") return csType(e_.type); // the Cast's target type
         if (name == "typeArgsSuffix") { // "" or "<T, U>" — New's own type args / a MakeCase's result-type args
             const std::vector<TypeRef>* ta = e_.kind == ir::ExprKind::New ? &static_cast<const ir::New&>(e_).typeArgs
                                            : e_.kind == ir::ExprKind::MakeCase ? &e_.type.args : nullptr;
@@ -260,7 +172,6 @@ public:
             for (std::size_t i = 0; i < ta->size(); ++i) { if (i) s += ", "; s += csType((*ta)[i]); }
             return s + ">";
         }
-        if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
         if (name == "subWordWrap") { // C# sub-32 arithmetic promotes to int; cast back to wrap at 8/16 bits
             const std::string& tn = args.size() > 0 ? args[0] : std::string();
             const std::string& inner = args.size() > 1 ? args[1] : std::string();
@@ -270,64 +181,6 @@ public:
         }
         return "";
     }
-
-private:
-    const ir::Expr* childExpr(const std::string& path) const {
-        if (e_.kind == ir::ExprKind::Binary) {
-            const auto& b = static_cast<const ir::Binary&>(e_);
-            if (path == "node.lhs") return b.lhs.get();
-            if (path == "node.rhs") return b.rhs.get();
-        }
-        if (path.rfind("node.args.", 0) == 0) { // indexed arg path `node.args.<i>` (from a `map` rule)
-            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
-            if (e_.kind == ir::ExprKind::Call) {
-                const auto& c = static_cast<const ir::Call&>(e_);
-                if (i < c.args.size()) return c.args[i].get();
-            }
-            if (e_.kind == ir::ExprKind::New) {
-                const auto& n = static_cast<const ir::New&>(e_);
-                if (i < n.args.size()) return n.args[i].get();
-            }
-        }
-        if (e_.kind == ir::ExprKind::MakeCase && path.rfind("node.fields.", 0) == 0) {
-            const auto& mc = static_cast<const ir::MakeCase&>(e_);
-            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
-            if (i < mc.fields.size()) return mc.fields[i].value.get();
-        }
-        if (e_.kind == ir::ExprKind::Member && path == "node.object")
-            return static_cast<const ir::Member&>(e_).object.get();
-        if (e_.kind == ir::ExprKind::Index) {
-            const auto& ix = static_cast<const ir::Index&>(e_);
-            if (path == "node.receiver") return ix.receiver.get();
-            if (path == "node.index")    return ix.index.get();
-        }
-        if (e_.kind == ir::ExprKind::Cond) {
-            const auto& c = static_cast<const ir::Cond&>(e_);
-            if (path == "node.cond") return c.cond.get();
-            if (path == "node.then") return c.then.get();
-            if (path == "node.els")  return c.els.get();
-        }
-        if (path.rfind("node.elements.", 0) == 0) { // indexed element path `node.elements.<i>` (from a `map` rule)
-            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(14)));
-            if (e_.kind == ir::ExprKind::ListLit) {
-                const auto& l = static_cast<const ir::ListLit&>(e_);
-                if (i < l.elements.size()) return l.elements[i].get();
-            }
-            if (e_.kind == ir::ExprKind::Tuple) {
-                const auto& t = static_cast<const ir::Tuple&>(e_);
-                if (i < t.elements.size()) return t.elements[i].get();
-            }
-        }
-        if (path == "node.operand") {
-            if (e_.kind == ir::ExprKind::Cast)  return static_cast<const ir::Cast&>(e_).operand.get();
-            if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
-        }
-        return nullptr;
-    }
-
-    const ir::Expr& e_;
-    const BackendSpec& spec_;
-    EmitFn emit_;
 };
 
 // The current module's `extern class` type map (name -> spelling/ctor templates), set at the top of each

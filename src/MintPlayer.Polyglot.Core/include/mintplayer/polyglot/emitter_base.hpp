@@ -1,8 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
+#include "mintplayer/polyglot/backend_engine.hpp"
 #include "mintplayer/polyglot/backend_spec.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 
@@ -17,6 +19,38 @@
 namespace mintplayer::polyglot {
 
 // BlockStyle now lives in backend_spec.hpp — it is per-target Spec data (see BackendSpec::blockStyle).
+
+// The shared EvalContext over an ir::Expr + a BackendSpec — the seam that plugs the P18 rule interpreter
+// into the real IR. Everything target-INDEPENDENT lives here: the path->IR mapping (`node.lhs`,
+// `node.args.<i>`, `node.fields.<i>.name`, `spec.delimited.…`, …), the binary-operand precedence policy
+// for `side:"l"/"r"`, and the spec-driven builtins (intSuffix / escapeString / opSpelling). A concrete
+// backend subclasses with only what genuinely differs per target: extra scalar reads (semantic predicates
+// its rules test), its own builtins (keyword escaping, type rendering, numeric faithfulness), and its
+// atom-wrapping policy (which `recv`/`unary` children need parens).
+class IrExprCtx : public engine::EvalContext {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    IrExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit)
+        : e_(e), spec_(spec), emit_(std::move(emit)) {}
+
+    std::string get(const std::string& path) const override;
+    bool has(const std::string& path) const override { return !get(path).empty(); }
+    std::string emitChild(const std::string& path, const std::string& side) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+
+protected:
+    virtual std::string targetGet(const std::string& /*path*/) const { return ""; } // per-target scalar reads
+    virtual std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const = 0;
+    virtual bool wrapAtom(const ir::Expr& child, const std::string& side) const = 0; // "recv"/"unary" parens
+
+    // The child ir::Expr a rule path names (`node.lhs`, indexed `node.args.<i>`, …); nullptr when the
+    // path doesn't name a child of this node kind.
+    const ir::Expr* childExpr(const std::string& path) const;
+
+    const ir::Expr& e_;
+    const BackendSpec& spec_;
+    EmitFn emit_;
+};
 
 class EmitterBase {
 protected:
