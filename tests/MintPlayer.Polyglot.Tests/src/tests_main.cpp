@@ -1126,6 +1126,13 @@ int main() {
         ctx.fields["node.args.count"] = "0";
         check(runRule(R"J({"tmpl":["(",{"map":"node.args","sep":", "},")"]})J", ctx) == "()",
               "P18: interpreter map over an empty child list");
+        // map with an item template: `item.…` paths resolve against each element's indexed path.
+        ctx.fields["node.fields.count"] = "2";
+        ctx.fields["node.fields.0.name"] = "x";
+        ctx.fields["node.fields.1.name"] = "y";
+        check(runRule(R"J({"map":"node.fields","sep":", ","item":{"tmpl":[{"get":"item.name"},": ",{"emit":"item.value"}]}})J", ctx) ==
+              "x: <node.fields.0.value>, y: <node.fields.1.value>",
+              "P18: interpreter map with an item template (scoped item.* paths)");
 
         // Malformed rules fail loudly (never silently misparse).
         bool ok = true;

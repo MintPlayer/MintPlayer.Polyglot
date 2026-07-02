@@ -80,6 +80,10 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.s = v["map"].asString();
         r.sep = v.has("sep") ? v["sep"].asString() : std::string();
         r.side = v.has("side") ? v["side"].asString() : std::string();
+        // Optional per-element template: rendered once per element with `item.…` paths resolving against
+        // that element (e.g. `{"tmpl":[{"get":"item.name"},": ",{"emit":"item.value"}]}`). Without it, each
+        // element is emitted directly (the plain child-expr case).
+        if (v.has("item")) r.parts.push_back(parseRule(v["item"], ok, error));
         return r;
     }
     if (v.has("fn")) {
@@ -106,6 +110,37 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
     error = "unknown rule (expected string/tmpl/get/fn/case/emit/emitChild/map)";
     return r;
 }
+
+namespace {
+
+// Scopes a `map` item template to one list element: `item`/`item.…` paths are rewritten onto the element's
+// indexed path (`node.fields.<i>…`) before delegating, so the underlying context needs no new methods —
+// an indexed child path is already first-class.
+class ItemCtx : public EvalContext {
+public:
+    ItemCtx(const EvalContext& base, std::string prefix) : base_(base), prefix_(std::move(prefix)) {}
+
+    std::string get(const std::string& p) const override { return base_.get(redirect(p)); }
+    bool has(const std::string& p) const override { return base_.has(redirect(p)); }
+    std::string emitChild(const std::string& p, const std::string& side) const override {
+        return base_.emitChild(redirect(p), side);
+    }
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
+        return base_.builtin(name, args);
+    }
+
+private:
+    std::string redirect(const std::string& p) const {
+        if (p == "item") return prefix_;
+        if (p.rfind("item.", 0) == 0) return prefix_ + p.substr(4); // "item.value" -> "<prefix>.value"
+        return p;
+    }
+
+    const EvalContext& base_;
+    std::string prefix_;
+};
+
+} // namespace
 
 bool evalTest(const Test& t, const EvalContext& ctx) {
     switch (t.kind) {
@@ -150,7 +185,9 @@ std::string evalRule(const Rule& r, const EvalContext& ctx) {
             std::string out;
             for (int i = 0; i < n; ++i) {
                 if (i) out += r.sep;
-                out += ctx.emitChild(r.s + "." + std::to_string(i), r.side);
+                const std::string elem = r.s + "." + std::to_string(i);
+                if (r.parts.empty()) out += ctx.emitChild(elem, r.side);           // plain: emit the element
+                else out += evalRule(r.parts[0], ItemCtx(ctx, elem));              // item template per element
             }
             return out;
         }

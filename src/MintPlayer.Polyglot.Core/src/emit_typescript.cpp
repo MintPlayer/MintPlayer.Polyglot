@@ -80,7 +80,38 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
   "ListLit": { "tmpl": [ {"get":"spec.delimited.list.open"}, {"map":"node.elements","sep":", "},
                          {"get":"spec.delimited.list.close"} ] },
   "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"fn":"typeArgsSuffix"},
-                     "(", {"map":"node.args","sep":", "}, ")" ] }
+                     "(", {"map":"node.args","sep":", "}, ")" ] },
+  "MakeCase": { "tmpl": [ "{ tag: ", {"fn":"escapeString","args":[{"get":"node.caseName"}]},
+                          {"map":"node.fields","sep":"",
+                           "item":{"tmpl":[", ",{"get":"item.name"},": ",{"emit":"item.value"}]}}, " }" ] },
+  "Unary": { "case": { "when": [
+               [ {"and":[{"eq":["node.typeIsSmallInt","true"]},{"eq":["node.op","-"]}]},
+                 {"fn":"narrowWrap","args":[{"get":"node.type"},
+                   {"tmpl":["-",{"emitChild":"node.operand","side":"unary"}]}]} ] ],
+             "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
+  "Cast": { "fn": "convert", "args": [ {"emit":"node.operand"} ] },
+  "Binary": { "case": { "when": [
+      [ {"and":[{"or":[{"eq":["node.op","=="]},{"eq":["node.op","!="]}]},{"eq":["node.lhsIsRecord","true"]}]},
+        { "case": { "when": [ [ {"eq":["node.op","=="]},
+            {"tmpl":[{"emitChild":"node.lhs","side":"recv"},".equals(",{"emit":"node.rhs"},")"]} ] ],
+          "else": {"tmpl":["!",{"emitChild":"node.lhs","side":"recv"},".equals(",{"emit":"node.rhs"},")"]} } } ],
+      [ {"or":[{"eq":["node.op","=="]},{"eq":["node.op","!="]}]},
+        {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"fn":"opSpelling","args":[{"get":"node.op"}]}," ",
+                 {"emitChild":"node.rhs","side":"r"}]} ],
+      [ {"eq":["node.hasOpMethod","true"]},
+        {"tmpl":[{"emitChild":"node.lhs","side":"recv"},".",{"fn":"opMethod","args":[{"get":"node.op"}]},
+                 "(",{"emit":"node.rhs"},")"]} ],
+      [ {"or":[{"eq":["node.type","i64"]},{"eq":["node.type","u64"]}]},
+        {"fn":"i64Wrap","args":[{"get":"node.type"},
+          {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"get":"node.op"}," ",{"emitChild":"node.rhs","side":"r"}]}]} ],
+      [ {"and":[{"eq":["node.typeIsSmallInt","true"]},{"eq":["node.op","*"]}]},
+        {"fn":"imul","args":[{"get":"node.type"},{"emit":"node.lhs"},{"emit":"node.rhs"}]} ],
+      [ {"and":[{"eq":["node.typeIsSmallInt","true"]},
+                {"or":[{"eq":["node.op","+"]},{"eq":["node.op","-"]},{"eq":["node.op","/"]},{"eq":["node.op","%"]}]}]},
+        {"fn":"narrowWrap","args":[{"get":"node.type"},
+          {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"get":"node.op"}," ",{"emitChild":"node.rhs","side":"r"}]}]} ] ],
+    "else": {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"fn":"opSpelling","args":[{"get":"node.op"}]}," ",
+                     {"emitChild":"node.rhs","side":"r"}]} } }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& tsExprRules() {
@@ -116,10 +147,14 @@ const char* tsExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Member:  return "Member";
         case ir::ExprKind::Index:   return "Index";
         case ir::ExprKind::Cond:    return "Cond";
-        case ir::ExprKind::Tuple:   return "Tuple";
-        case ir::ExprKind::ListLit: return "ListLit";
-        case ir::ExprKind::New:     return "New";
-        default:                    return "";
+        case ir::ExprKind::Tuple:    return "Tuple";
+        case ir::ExprKind::ListLit:  return "ListLit";
+        case ir::ExprKind::New:      return "New";
+        case ir::ExprKind::MakeCase: return "MakeCase";
+        case ir::ExprKind::Unary:    return "Unary";
+        case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::Binary:   return "Binary";
+        default:                     return "";
     }
 }
 
@@ -258,12 +293,14 @@ std::string tsConvert(const TypeRef& from, const TypeRef& to, const std::string&
 
 // The TS rule-interpreter seam: only what differs from the shared IrExprCtx — the TS builtins, the TS
 // atom-wrapping policy, and the semantic predicates the TS rules test. `indexerTypes` is the emitter's
-// per-module set of types whose `operator get` becomes a `.get(i)` method (no `[]` overload in TS).
+// per-module set of types whose `operator get` becomes a `.get(i)` method (no `[]` overload in TS);
+// `recordNames` its per-module record set (record `==` is structural -> `.equals`).
 class TsExprCtx : public IrExprCtx {
 public:
     TsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit,
-              const std::unordered_set<std::string>& indexerTypes)
-        : IrExprCtx(e, spec, std::move(emit)), indexerTypes_(indexerTypes) {}
+              const std::unordered_set<std::string>& indexerTypes,
+              const std::unordered_set<std::string>& recordNames)
+        : IrExprCtx(e, spec, std::move(emit)), indexerTypes_(indexerTypes), recordNames_(recordNames) {}
 
 protected:
     bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
@@ -282,10 +319,18 @@ protected:
             bool has = ix.receiver->type.kind == TypeRef::Kind::Named && indexerTypes_.count(ix.receiver->type.name);
             return has ? "true" : "false";
         }
+        if (path == "node.typeIsSmallInt") return isSmallInt(e_.type) ? "true" : "false";
+        if (e_.kind == ir::ExprKind::Binary) {
+            const auto& b = static_cast<const ir::Binary&>(e_);
+            if (path == "node.lhsIsRecord")
+                return (b.lhs->type.kind == TypeRef::Kind::Named && recordNames_.count(b.lhs->type.name)) ? "true" : "false";
+            if (path == "node.hasOpMethod") // operator overload -> method call (TS has no operators)
+                return (isUserType(b.lhs->type) && !opMethod(b.op).empty()) ? "true" : "false";
+        }
         return "";
     }
 
-    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& /*args*/) const override {
+    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
         if (name == "typeArgsSuffix") { // "" or "<T, U>" — a New's construction type args
             if (e_.kind != ir::ExprKind::New) return "";
             const auto& ta = static_cast<const ir::New&>(e_).typeArgs;
@@ -294,11 +339,32 @@ protected:
             for (std::size_t i = 0; i < ta.size(); ++i) { if (i) s += ", "; s += tsType(ta[i]); }
             return s + ">";
         }
+        // §3.C numeric faithfulness — fixed Core primitives the rules select among, never author.
+        if (name == "narrowWrap") // re-narrow a 32-bit-or-narrower int result to its value range
+            return narrowTs(args.size() > 0 ? args[0] : std::string(), args.size() > 1 ? args[1] : std::string());
+        if (name == "i64Wrap") {  // wrap BigInt arithmetic to 64 bits so it overflows like .NET long/ulong
+            const std::string& tn = args.size() > 0 ? args[0] : std::string();
+            const std::string& inner = args.size() > 1 ? args[1] : std::string();
+            return std::string(tn == "u64" ? "BigInt.asUintN(64, " : "BigInt.asIntN(64, ") + inner + ")";
+        }
+        if (name == "imul") {     // small-int `*`: a plain product can exceed 2^53 and lose low bits first
+            const std::string& tn = args.size() > 0 ? args[0] : std::string();
+            std::string prod = "Math.imul(" + (args.size() > 1 ? args[1] : std::string()) + ", " +
+                               (args.size() > 2 ? args[2] : std::string()) + ")";
+            return tn == "i32" ? prod : narrowTs(tn, prod); // Math.imul already yields i32
+        }
+        if (name == "opMethod") return opMethod(args.empty() ? std::string() : args[0]);
+        if (name == "convert") { // the numeric-conversion algorithm (BigInt boundaries etc.) stays fixed C++
+            if (e_.kind != ir::ExprKind::Cast) return "";
+            return tsConvert(static_cast<const ir::Cast&>(e_).operand->type, e_.type,
+                             args.empty() ? std::string() : args[0]);
+        }
         return "";
     }
 
 private:
     const std::unordered_set<std::string>& indexerTypes_;
+    const std::unordered_set<std::string>& recordNames_;
 };
 
 class TypeScriptEmitter : public EmitterBase {
@@ -644,15 +710,6 @@ private:
         }
     }
 
-    std::string child(const ir::Expr& c, int parentPrec, bool isRight) {
-        std::string inner = emitExpr(c);
-        if (c.kind == ir::ExprKind::Binary) {
-            int cp = operatorPrecedence(static_cast<const ir::Binary&>(c).op);
-            if (isRight ? (cp <= parentPrec) : (cp < parentPrec)) return "(" + inner + ")";
-        }
-        return inner;
-    }
-
     std::string emitExpr(const ir::Expr& e) override {
         // A migrated node kind (see tsExprRuleKey / TS_EXPR_RULES_JSON) is interpreted from its JSON Rule
         // here; the C++ switch below handles only the kinds whose shape is still imperative.
@@ -660,7 +717,8 @@ private:
             const auto& rules = tsExprRules();
             auto it = rules.find(key);
             if (it != rules.end()) {
-                TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, indexerTypes_);
+                TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
+                              indexerTypes_, recordNames_);
                 return engine::evalRule(it->second, ctx);
             }
         }
@@ -678,54 +736,6 @@ private:
                     if (i < in.holes.size()) s += "${" + emitExpr(*in.holes[i]) + "}";
                 }
                 return s + "`";
-            }
-            case ir::ExprKind::Unary: {
-                const auto& u = static_cast<const ir::Unary&>(e);
-                std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
-                                                                              : emitExpr(*u.operand);
-                if (isSmallInt(e.type) && u.op == "-") return narrowTs(e.type.name, "-" + operand); // wrap negate
-                return u.op + operand;
-            }
-            case ir::ExprKind::Cast: {
-                const auto& c = static_cast<const ir::Cast&>(e);
-                return tsConvert(c.operand->type, e.type, emitExpr(*c.operand));
-            }
-            case ir::ExprKind::Binary: {
-                const auto& b = static_cast<const ir::Binary&>(e);
-                if (b.op == "==" || b.op == "!=") {
-                    // §3.C: record equality is structural (.equals); otherwise strict ===/!== (never JS loose ==).
-                    if (isRecordType(b.lhs->type)) {
-                        std::string call = atom(*b.lhs) + ".equals(" + emitExpr(*b.rhs) + ")";
-                        return b.op == "==" ? call : "!" + call;
-                    }
-                    int pe = operatorPrecedence(b.op);
-                    return child(*b.lhs, pe, false) + " " + typescriptSpec().binOp(b.op) + " " + child(*b.rhs, pe, true);
-                }
-                if (isUserType(b.lhs->type)) { // operator overload -> method call (TS has no operators)
-                    std::string method = opMethod(b.op);
-                    if (!method.empty()) return atom(*b.lhs) + "." + method + "(" + emitExpr(*b.rhs) + ")";
-                }
-                int p = operatorPrecedence(b.op);
-                std::string lhs = child(*b.lhs, p, false), rhs = child(*b.rhs, p, true);
-                // §3.C: 64-bit ints are BigInt; wrap to 64 bits at each boundary so they overflow like .NET
-                // `long`/`ulong` (BigInt is otherwise arbitrary-precision). BigInt `/` already truncates.
-                if (isI64(e.type)) {
-                    const char* w = e.type.name == "u64" ? "BigInt.asUintN(64, " : "BigInt.asIntN(64, ";
-                    return std::string(w) + lhs + " " + b.op + " " + rhs + ")";
-                }
-                // §3.C: 32-bit-or-narrower int arithmetic must wrap on overflow and truncate on division
-                // like .NET — JS numbers are f64. Each operation boundary is re-narrowed to the type's
-                // range; `*` needs Math.imul (a plain product can exceed 2^53 and lose the low bits first).
-                if (isSmallInt(e.type)) {
-                    const std::string& n = e.type.name;
-                    if (b.op == "*") {
-                        std::string prod = "Math.imul(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")";
-                        return n == "i32" ? prod : narrowTs(n, prod); // Math.imul already yields i32
-                    }
-                    if (b.op == "+" || b.op == "-" || b.op == "/" || b.op == "%")
-                        return narrowTs(n, lhs + " " + b.op + " " + rhs);
-                }
-                return lhs + " " + typescriptSpec().binOp(b.op) + " " + rhs;
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
@@ -769,12 +779,6 @@ private:
             }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::MakeCase: {
-                const auto& mc = static_cast<const ir::MakeCase&>(e);
-                std::string s = "{ tag: \"" + mc.caseName + "\"";
-                for (const auto& f : mc.fields) s += ", " + f.name + ": " + emitExpr(*f.value);
-                return s + " }";
-            }
             case ir::ExprKind::Lambda: {
                 const auto& l = static_cast<const ir::Lambda&>(e);
                 std::string s = "(";

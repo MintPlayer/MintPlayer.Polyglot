@@ -1089,6 +1089,23 @@ all 38 programs × 3 targets — 114 files, zero differences** (plus unit/run-di
 imperative in TS: Unary/Cast/Binary (numeric faithfulness — next slice), MakeCase (needs the `map` item
 template), Interp/MethodCall/With/Bound/Lambda/Match.
 
+**Slice-14 (TS hard families + the `map` item template) ✅:** TS `Binary`/`Unary`/`Cast`/`MakeCase`
+migrated — the numeric-faithfulness heart of the TS backend is now rule-selected data over fixed Core
+builtins. **`map` grew an optional `item` template**: `{"map":path,"sep":…,"item":rule}` renders the rule
+once per element with `item.…` paths rewritten onto the element's indexed path by an interpreter-internal
+`ItemCtx` wrapper (no new EvalContext method — indexed child paths were already first-class); TS `MakeCase`
+= `{ tag: "Name", f: v, … }` via `{"get":"item.name"}: {"emit":"item.value"}`. **`Binary`** is a 6-arm
+ordered `case` mirroring the old C++ branch order exactly (record `==`→`.equals`; `==`/`!=`→strict `===`;
+user-type op→`opMethod` call; i64→`i64Wrap` BigInt masking; small-int `*`→`imul`; small-int `+−/%`→
+`narrowWrap`) — op-set tests are `or`-of-`eq` data, type-set tests are ctx predicates
+(`node.typeIsSmallInt`/`node.lhsIsRecord`/`node.hasOpMethod`). **`Cast`** = one `convert` builtin (the
+BigInt-boundary conversion algorithm stays fixed C++, like all §3.C machinery). `TsExprCtx` gained
+`recordNames` (by ref) + the faithfulness builtins (`narrowWrap`/`i64Wrap`/`imul`/`opMethod`/`convert`);
+dead C++ `child()` deleted. **TS expression residue now equals C#'s**: Interp/MethodCall/With/Bound/
+Lambda/Match (+ per-target This/Char asymmetries already data). Verified byte-identical against the
+slice-13 baseline (114 emitted files, zero diffs — transitively equal to pre-port) + unit (+1 item-template
+test)/run-diff 38/38/run-python 37/37.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
