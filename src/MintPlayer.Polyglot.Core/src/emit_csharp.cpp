@@ -141,6 +141,9 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
       ") => ",
       {"case":{"when":[[{"eq":["node.exprBodied","true"]},{"emit":"node.body"}]],
         "else":{"tmpl":["{ ",{"fn":"inlineBlock"},"}"]}}} ] },
+  "EnumDecl": { "line": { "tmpl": [ "enum ", {"get":"decl.name"}, " { ",
+      {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"}," = ",{"get":"item.value"}]}},
+      " }" ] } },
   "Type": { "case": { "when": [
       [ {"eq":["type.kind","function"]},
         { "case": { "when": [
@@ -380,7 +383,10 @@ public:
         externMap_.clear();
         for (const auto& et : m.externTypes) externMap_[et.name] = &et;
         g_externTypes = &externMap_;
-        for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& e : m.enums) { // P19: declarations migrate to decl rules, one kind at a time
+            EnumDeclCtx ctx(e);
+            runDeclRule(csharpExprRules().at("EnumDecl"), ctx, ctx, &csharpExprRules());
+        }
         for (const auto& i : m.interfaces) emitInterface(i);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
@@ -420,12 +426,6 @@ public:
 private:
     std::string thisAlias_; // non-empty inside a static operator body: `this` is emitted as this name
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
-
-    void emitEnum(const ir::Enum& e) {
-        std::string s = "enum " + e.name + " { ";
-        for (std::size_t i = 0; i < e.cases.size(); ++i) { if (i) s += ", "; s += e.cases[i].name + " = " + std::to_string(e.cases[i].value); }
-        line(s + " }");
-    }
 
     void emitInterface(const ir::Interface& it) {
         std::string head = "interface " + it.name + csGenerics(it.generics);

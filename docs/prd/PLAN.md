@@ -1290,6 +1290,21 @@ every backend is now **only the `Bound` template substitution**. Byte-identical 
 39/39 + 38/38, samples + fidelity 10/10. Next: slice 5 — declaration rules (`line`/`block`/`mapDecl` +
 per-target decl tables + the `program` scaffold + `require`).
 
+**Slice-5a ✅ (2026-07-02) — the DECLARATION-rule engine + the first migrated decl kind (Enum ×3).** The
+decl flavor is five new Rule kinds interpreted by **`EmitterBase::runDeclRule`** (a member — it writes
+through the emitter's own `line`/`openBlock`/`closeBlock`/indent machinery, so brace-vs-colon styling stays
+spec data): `{"line":<stringRule>}`, `{"block":{"head":…,"body":[declRules]}}` (open/indent/body/close),
+`{"mapDecl":path,"each":declRule}` (element-scoped via the now-public `ItemCtx`), `{"stmts":path}` (renders
+an ir statement list through the shared statement walk — paths resolve through item scoping via a new
+`EvalContext::resolvePath` chain), and `{"seq":[…]}`; `case`/`call`/bare-string-as-line also work at decl
+position. **`IrDeclCtx`** is the decl-scoped context base (path reads + `stmtList`); **`EnumDeclCtx`** is
+shared (enum data is target-neutral). Enum proved the pattern on all three shapes: C# one-line
+`enum N { A = 0 }`, TS two-line `seq` (type alias + const object), Python colon+indent `block` with the
+empty-case `pass` as explicit rule data (`case` on `decl.cases.count`=="0" — no engine magic). Three
+`emitEnum`s deleted. Byte-identical (117 files), unit green, 39/39 + 38/38. Next: Union (C# records / TS
+alias / Python comment), then Interface, then the big Record/Class/Method/Function family, then the
+`program` scaffold + `require`.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

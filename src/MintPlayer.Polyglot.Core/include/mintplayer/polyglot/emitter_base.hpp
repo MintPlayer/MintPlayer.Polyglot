@@ -60,6 +60,29 @@ protected:
     InlineFn inline_;
 };
 
+// The decl-scoped context a DECLARATION rule evaluates against: path reads over one IR declaration
+// (`decl.name`, `decl.cases.<i>.value`, …) plus the statement lists a `{"stmts":path}` rule renders.
+// Backends subclass per declaration kind; target-independent decls (Enum) share one context.
+class IrDeclCtx : public engine::EvalContext {
+public:
+    std::string get(const std::string&) const override { return ""; }
+    bool has(const std::string& path) const override { return !get(path).empty(); }
+    std::string emitChild(const std::string&, const std::string&) const override { return ""; }
+    std::string builtin(const std::string&, const std::vector<std::string>&) const override { return ""; }
+    // The ir statement list a `{"stmts":path}` decl rule renders; nullptr when the path names none.
+    virtual const std::vector<ir::StmtPtr>* stmtList(const std::string&) const { return nullptr; }
+};
+
+// Shared decl context for enums — pure name/value data, identical for every target.
+class EnumDeclCtx : public IrDeclCtx {
+public:
+    explicit EnumDeclCtx(const ir::Enum& e) : e_(e) {}
+    std::string get(const std::string& path) const override;
+
+private:
+    const ir::Enum& e_;
+};
+
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
 // `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
 // `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern
@@ -106,6 +129,14 @@ protected:
 
     // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
     std::string inlineBlock(const std::vector<ir::StmtPtr>& body);
+
+    // Interpret a DECLARATION rule (P19): the decl-flavor kinds (`line`/`block`/`mapDecl`/`stmts`/`seq` +
+    // `case`/`call`/bare string rules as lines) write indented lines through this emitter's own
+    // line/openBlock machinery; string-flavor payloads (heads, line content) evaluate via evalRule against
+    // `ctx`. `root` resolves `{"stmts":path}` statement lists (through any `mapDecl` item scoping, via
+    // resolvePath).
+    void runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
+                     const engine::RuleTable* helpers);
 
     // Statement dispatch. The statements whose spelling is identical across targets are rendered here;
     // every other kind (declarations, and the target-specific Let/Yield/Throw/Use/Try) routes to the

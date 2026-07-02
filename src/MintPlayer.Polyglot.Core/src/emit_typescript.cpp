@@ -135,6 +135,11 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
       ") => ",
       {"case":{"when":[[{"eq":["node.exprBodied","true"]},{"emit":"node.body"}]],
         "else":{"tmpl":["{ ",{"fn":"inlineBlock"},"}"]}}} ] },
+  "EnumDecl": { "seq": [
+      { "line": { "tmpl": [ "type ", {"get":"decl.name"}, " = number;" ] } },
+      { "line": { "tmpl": [ "const ", {"get":"decl.name"}, " = { ",
+          {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"},": ",{"get":"item.value"}]}},
+          " };" ] } } ] },
   "Type": { "case": { "when": [
       [ {"eq":["type.kind","function"]},
         {"tmpl":["(",{"map":"type.args","sep":", ","item":{"tmpl":["arg",{"get":"item.#"},": ",{"type":"item"}]}},
@@ -413,7 +418,10 @@ public:
         // records compare structurally (§3.C); a TS record is a class (the set backs emitRecordEquals —
         // expression-level record/indexer facts are lowering-precomputed IR bits now)
         for (const auto& r : m.records) recordNames_.insert(r.name);
-        for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& e : m.enums) { // P19: declarations migrate to decl rules, one kind at a time
+            EnumDeclCtx ctx(e);
+            runDeclRule(tsExprRules().at("EnumDecl"), ctx, ctx, &tsExprRules());
+        }
         for (const auto& i : m.interfaces) emitInterface(i);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
@@ -438,14 +446,6 @@ private:
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
-    }
-
-    // Enum -> a type alias (stripped) + a const value object, both type-strippable (TS `enum` is not).
-    void emitEnum(const ir::Enum& e) {
-        line("type " + e.name + " = number;");
-        std::string s = "const " + e.name + " = { ";
-        for (std::size_t i = 0; i < e.cases.size(); ++i) { if (i) s += ", "; s += e.cases[i].name + ": " + std::to_string(e.cases[i].value); }
-        line(s + " };");
     }
 
     void emitInterface(const ir::Interface& it) {

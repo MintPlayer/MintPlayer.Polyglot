@@ -119,6 +119,35 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.s = v["type"].asString();
         return r;
     }
+    // ---- decl flavor (interpreted by EmitterBase::runDeclRule — writes lines, returns nothing) ----------
+    if (v.has("line")) { // one indented line; the payload is a string-flavor rule
+        r.kind = Rule::Kind::Line;
+        r.parts.push_back(parseRule(v["line"], ok, error));
+        return r;
+    }
+    if (v.has("block")) { // open a block with `head` (string rule), body = decl rules, close per blockStyle
+        const json::Value& bv = v["block"];
+        r.kind = Rule::Kind::Block;
+        r.parts.push_back(parseRule(bv["head"], ok, error));
+        for (const json::Value& b : bv["body"].items()) r.parts.push_back(parseRule(b, ok, error));
+        return r;
+    }
+    if (v.has("mapDecl")) { // run the `each` decl rule once per element of the list at `mapDecl`
+        r.kind = Rule::Kind::MapDecl;
+        r.s = v["mapDecl"].asString();
+        r.parts.push_back(parseRule(v["each"], ok, error));
+        return r;
+    }
+    if (v.has("stmts")) { // emit the ir statement list at `path` through the shared statement walk
+        r.kind = Rule::Kind::Stmts;
+        r.s = v["stmts"].asString();
+        return r;
+    }
+    if (v.has("seq")) { // run decl rules in order
+        r.kind = Rule::Kind::Seq;
+        for (const json::Value& p : v["seq"].items()) r.parts.push_back(parseRule(p, ok, error));
+        return r;
+    }
     if (v.has("case")) {
         r.kind = Rule::Kind::Case;
         for (const json::Value& arm : v["case"]["when"].items()) {
@@ -140,39 +169,7 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
 
 namespace {
 
-// Scopes a `map` item template to one list element: `item`/`item.…` paths are rewritten onto the element's
-// indexed path (`node.fields.<i>…`) before delegating, so the underlying context needs no new methods —
-// an indexed child path is already first-class. `item.#` answers the element's index (e.g. TS function-type
-// params `arg0: T0, arg1: T1`).
-class ItemCtx : public EvalContext {
-public:
-    ItemCtx(const EvalContext& base, std::string prefix, int index = 0)
-        : base_(base), prefix_(std::move(prefix)), index_(index) {}
-
-    std::string get(const std::string& p) const override {
-        if (p == "item.#") return std::to_string(index_);
-        return base_.get(redirect(p));
-    }
-    bool has(const std::string& p) const override { return base_.has(redirect(p)); }
-    std::string emitChild(const std::string& p, const std::string& side) const override {
-        return base_.emitChild(redirect(p), side);
-    }
-    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
-        return base_.builtin(name, args);
-    }
-    std::string renderType(const std::string& p) const override { return base_.renderType(redirect(p)); }
-
-private:
-    std::string redirect(const std::string& p) const {
-        if (p == "item") return prefix_;
-        if (p.rfind("item.", 0) == 0) return prefix_ + p.substr(4); // "item.value" -> "<prefix>.value"
-        return p;
-    }
-
-    const EvalContext& base_;
-    std::string prefix_;
-    int index_;
-};
+// (ItemCtx moved to the header — the decl-rule interpreter in emitter_base reuses it.)
 
 // Exposes a fold's accumulated tail as the scalar `acc`; everything else delegates.
 class AccCtx : public EvalContext {

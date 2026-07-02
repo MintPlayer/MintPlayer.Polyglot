@@ -147,6 +147,10 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
       ": ", {"emit":"node.body"} ] },
   "Type": { "case": { "when": [ [ {"has":"type.externTemplate"}, {"fn":"substExtern"} ] ],
             "else": {"get":"type.name"} } },
+  "EnumDecl": { "block": { "head": { "tmpl": [ "class ", {"get":"decl.name"} ] }, "body": [
+      { "case": { "when": [ [ {"eq":["decl.cases.count","0"]}, {"line":"pass"} ] ] } },
+      { "mapDecl": "decl.cases",
+        "each": { "line": { "tmpl": [ {"get":"item.name"}, " = ", {"get":"item.value"} ] } } } ] } },
   "MakeCase": { "tmpl": [ "{\"tag\": ", {"fn":"escapeString","args":[{"get":"node.caseName"}]},
                           {"map":"node.fields","sep":"",
                            "item":{"tmpl":[", ",{"fn":"escapeString","args":[{"get":"item.name"}]},": ",
@@ -367,7 +371,10 @@ public:
         externTypes_.clear();
         for (const auto& et : m.externTypes) externTypes_[et.name] = &et; // for Error->Exception etc. spellings
         g_externTypes = &externTypes_;
-        for (const auto& e : m.enums) emitEnum(e);
+        for (const auto& e : m.enums) { // P19: declarations migrate to decl rules, one kind at a time
+            EnumDeclCtx ctx(e);
+            runDeclRule(pyExprRules().at("EnumDecl"), ctx, ctx, &pyExprRules());
+        }
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
@@ -430,15 +437,6 @@ private:
         }
     }
 
-    // An enum -> a class of int class-attributes, so `Color.Green` reads as the int (matching C#/TS, where
-    // enums are ints). `match c { Green => … }` then compares `_m == Color.Green`.
-    void emitEnum(const ir::Enum& e) {
-        openBlock("class " + e.name);
-        ++indent_;
-        if (e.cases.empty()) line("pass");
-        for (const auto& c : e.cases) line(c.name + " = " + std::to_string(c.value));
-        --indent_;
-    }
 
     // A discriminated union needs NO runtime declaration: each case is built as a tagged dict at the use site
     // (`{"tag": "Circle", "r": …}`) and matched on `_m["tag"]` — mirroring TS's erased type alias. The comment

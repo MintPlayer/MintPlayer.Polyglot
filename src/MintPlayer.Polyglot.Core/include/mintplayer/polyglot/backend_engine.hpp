@@ -32,6 +32,9 @@ public:
     // {"type":path} — render the TypeRef at `path` through the plugin's type rules (the "Type" table
     // entry, evaluated against a type-scoped context). "" when the path names no type.
     virtual std::string renderType(const std::string& /*path*/) const { return ""; }
+    // Resolve a rule path through any item-scoping wrappers to its absolute form (`item.body` inside a
+    // `mapDecl` element -> `decl.methods.3.body`) — the decl interpreter's `stmts` resolves lists this way.
+    virtual std::string resolvePath(const std::string& p) const { return p; }
     // Recurse into a child IR node at `path`, emitting it. `side` selects precedence parenthesization computed
     // by the CONTEXT (not the plugin): "" = plain, "l"/"r" = a binary operand (wrap by precedence+associativity),
     // "recv" = an atom receiver (wrap a binary/unary/cast). Keeping the paren algorithm in the context (fixed
@@ -50,16 +53,54 @@ struct Test {
     std::vector<Test> subs;   // And / Or (n) / Not (1)
 };
 
-// A parsed emission Rule (the scalar spine + child recursion — see the header note).
+// A parsed emission Rule. String-flavor kinds evaluate to a string (expressions/heads); DECL-flavor kinds
+// (Line/Block/MapDecl/Stmts/Seq) write indented lines into the emitter and are interpreted by
+// EmitterBase::runDeclRule (declaration shapes need block structure, not a return string).
 struct Rule {
-    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type } kind = Kind::Lit;
-    std::string s;          // Lit: text | Get/Emit/Map/Fold/Type: path | Fn/Call: name | Interleave: lits path
+    enum class Kind {
+        Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type, // string flavor
+        Line, Block, MapDecl, Stmts, Seq,                                  // decl flavor
+    } kind = Kind::Lit;
+    std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts: path | Fn/Call: name | Interleave: lits
     std::string s2;                             // Interleave: holes path
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children
-    std::vector<Rule> parts;                    // Tmpl: parts | Fn: args | Map: item | Interleave/Fold: 2 rules
+    std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule
+};
+
+// Scopes a `map`/`mapDecl` item template to one list element: `item`/`item.…` paths are rewritten onto the
+// element's indexed path before delegating; `item.#` answers the element index. Public so the decl-rule
+// interpreter (emitter_base) can reuse it.
+class ItemCtx : public EvalContext {
+public:
+    ItemCtx(const EvalContext& base, std::string prefix, int index = 0)
+        : base_(base), prefix_(std::move(prefix)), index_(index) {}
+
+    std::string get(const std::string& p) const override {
+        if (p == "item.#") return std::to_string(index_);
+        return base_.get(redirect(p));
+    }
+    bool has(const std::string& p) const override { return base_.has(redirect(p)); }
+    std::string emitChild(const std::string& p, const std::string& side) const override {
+        return base_.emitChild(redirect(p), side);
+    }
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
+        return base_.builtin(name, args);
+    }
+    std::string renderType(const std::string& p) const override { return base_.renderType(redirect(p)); }
+    std::string resolvePath(const std::string& p) const override { return base_.resolvePath(redirect(p)); }
+    std::string redirect(const std::string& p) const {
+        if (p == "item") return prefix_;
+        if (p.rfind("item.", 0) == 0) return prefix_ + p.substr(4); // "item.value" -> "<prefix>.value"
+        return p;
+    }
+
+private:
+    const EvalContext& base_;
+    std::string prefix_;
+    int index_;
 };
 
 using RuleTable = std::unordered_map<std::string, Rule>;

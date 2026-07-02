@@ -352,6 +352,70 @@ std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::
     return "";
 }
 
+std::string EnumDeclCtx::get(const std::string& path) const {
+    if (path == "decl.name")        return e_.name;
+    if (path == "decl.cases.count") return std::to_string(e_.cases.size());
+    if (path.rfind("decl.cases.", 0) == 0) { // decl.cases.<i>.{name|value}
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+        const std::size_t dot = path.find('.', 11);
+        if (i < e_.cases.size() && dot != std::string::npos) {
+            const std::string rest = path.substr(dot + 1);
+            if (rest == "name")  return e_.cases[i].name;
+            if (rest == "value") return std::to_string(e_.cases[i].value);
+        }
+    }
+    return "";
+}
+
+void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
+                              const engine::RuleTable* helpers) {
+    using K = engine::Rule::Kind;
+    switch (r.kind) {
+        case K::Line:
+            line(engine::evalRule(r.parts[0], ctx, helpers));
+            return;
+        case K::Block: {
+            openBlock(engine::evalRule(r.parts[0], ctx, helpers));
+            ++indent_;
+            for (std::size_t i = 1; i < r.parts.size(); ++i) runDeclRule(r.parts[i], ctx, root, helpers);
+            --indent_;
+            closeBlock();
+            return;
+        }
+        case K::MapDecl: {
+            int n = 0;
+            for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
+            for (int i = 0; i < n; ++i) {
+                engine::ItemCtx item(ctx, ctx.resolvePath(r.s) + "." + std::to_string(i), i);
+                runDeclRule(r.parts[0], item, root, helpers);
+            }
+            return;
+        }
+        case K::Stmts: {
+            if (const std::vector<ir::StmtPtr>* body = root.stmtList(ctx.resolvePath(r.s)))
+                for (const auto& s : *body) emitStmt(*s);
+            return;
+        }
+        case K::Seq:
+            for (const auto& p : r.parts) runDeclRule(p, ctx, root, helpers);
+            return;
+        case K::Case:
+            for (const auto& arm : r.arms)
+                if (engine::evalTest(arm.first, ctx)) { runDeclRule(arm.second, ctx, root, helpers); return; }
+            if (!r.elseBody.empty()) runDeclRule(r.elseBody[0], ctx, root, helpers);
+            return;
+        case K::Call: {
+            if (!helpers) return;
+            auto it = helpers->find(r.s);
+            if (it != helpers->end()) runDeclRule(it->second, ctx, root, helpers);
+            return;
+        }
+        default: // a string-flavor rule at declaration position renders as one line
+            line(engine::evalRule(r, ctx, helpers));
+            return;
+    }
+}
+
 void EmitterBase::line(const std::string& s) {
     out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
     out_ += s;
