@@ -614,13 +614,7 @@ private:
         switch (e.kind) {
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                const std::string& st = mc.staticType;
-                bool prim = st == "i8" || st == "i16" || st == "i32" || st == "i64" || st == "u8" ||
-                            st == "u16" || st == "u32" || st == "u64" || st == "f32" || st == "f64";
-                if (prim && mc.method == "parse") { // i32.parse(s)/f64.parse(s) -> int(s)/float(s)
-                    std::string arg = emitExpr(*mc.args[0]);
-                    return (st == "f32" || st == "f64" ? "float(" : "int(") + arg + ")";
-                }
+                // (i32.parse/f64.parse are std.core Bound bindings now — no parse special case here.)
                 if (mc.isExtension) { // free-function form `name(obj, args)` — `x.m()` cannot stay method syntax
                     std::vector<std::string> args;
                     args.push_back(emitExpr(*mc.object));

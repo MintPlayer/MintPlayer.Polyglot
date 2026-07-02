@@ -1200,6 +1200,21 @@ consumes the same wrong fact); refusals loud, never sentinels.
     lists it with no client change (closes `extension.js`'s `FIXME(P10)`); off-intersection features refuse
     with distinct §3.B-vs-§3.E diagnostics.
 
+**Slice-1 ✅ (2026-07-02):** the two latent §3.B silent-broken-output bugs are now **capability refusals**:
+`Feature::BlockLambdas` + `Feature::WithExpressions` added (capability.cpp detects a Lambda with `flag`
+set / a `With` expr; `PythonBackend::supports` returns false for both; C#/TS unaffected) — a Python compile
+of either now refuses with a named diagnostic instead of emitting `__py_unsupported_block_lambda__`/
+`__py_unsupported_expr__` sentinels into "valid" output. (P19 slice 2's `With` ctor-rebuild lowering flips
+`WithExpressions` back on for Python.) **`i32.parse`…`f64.parse` are std bindings now**: ten
+`extern class <scalar> { static fn parse(s: string): <scalar> { actual(…) extern("…") } }` declarations
+appended to std.core; lower's existing static-binding path (`bindings_["i32.parse"]`) produces `ir::Bound`,
+so all three backends' `MethodCall` parse special cases (+ both `isPrimNumeric` helpers) are **deleted** —
+sema still types the call intrinsically. One sema change: `declareType` treats an *extern* class naming a
+builtin scalar as a **member carrier**, not a shadow (the scalar type stays authoritative; the name is not
+registered) — non-extern user types still get "'i32' shadows a builtin type". Gates: byte-identical vs the
+P18-final baseline (114 files, zero diffs), unit +4 (refusal tests), run-diff 38/38, run-python 37/37,
+samples 10/10, fidelity 10/10.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

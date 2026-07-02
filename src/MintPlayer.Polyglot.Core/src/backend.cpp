@@ -20,6 +20,8 @@ const char* featureName(Feature f) {
         case Feature::Disposal:            return "disposal";
         case Feature::Inheritance:         return "inheritance";
         case Feature::Async:               return "async";
+        case Feature::BlockLambdas:        return "blockLambdas";
+        case Feature::WithExpressions:     return "withExpressions";
     }
     return "?";
 }
@@ -45,13 +47,17 @@ public:
 // The third backend (P9 validation). Python is colon+indent — a non-brace target that stresses the shared
 // engine. The P9-V spike grew it from the walking skeleton to the FULL §3.A surface feature-by-feature
 // (closures, iterators, operators->dunders, properties, enum/union/match, extensions, exceptions,
-// inheritance, disposal), each validated against the C# oracle (run-python.ps1, 36/36). It now declares the
-// whole feature set, so nothing gates — same as C#/TS. (The StubBackend test still proves gating bites.)
+// inheritance, disposal), each validated against the C# oracle (run-python.ps1, 36/36). Two genuine target
+// limits gate (P19 slice 1 — these used to emit silent sentinel strings into "valid" output, the §3.B
+// failure mode): a Python lambda is expression-only (no statement body), and record `with`-update has no
+// emission until the ctor-rebuild lowering lands (P19 slice 2 flips WithExpressions back on).
 class PythonBackend : public Backend {
 public:
     std::string name() const override { return "python"; }
     std::string emit(const ir::Module& m) const override { return emitPython(m); }
-    bool supports(Feature) const override { return true; }
+    bool supports(Feature f) const override {
+        return f != Feature::BlockLambdas && f != Feature::WithExpressions;
+    }
 };
 
 const CSharpBackend kCSharp;

@@ -82,7 +82,11 @@ private:
     void expr(const Expr* e) {
         if (!e) return;
         if (e->kind == ExprKind::Match)  mark(Feature::PatternMatching, e->pos);
-        if (e->kind == ExprKind::Lambda) mark(Feature::Closures, e->pos);
+        if (e->kind == ExprKind::Lambda) {
+            mark(Feature::Closures, e->pos);
+            if (e->flag) mark(Feature::BlockLambdas, e->pos); // flag = Lambda has a block (statement) body
+        }
+        if (e->kind == ExprKind::With)   mark(Feature::WithExpressions, e->pos);
         if (e->kind == ExprKind::Await)  mark(Feature::Async, e->pos);
         if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name)
             calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`

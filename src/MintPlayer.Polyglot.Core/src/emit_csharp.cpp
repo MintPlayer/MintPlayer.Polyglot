@@ -286,11 +286,6 @@ std::string csWhere(const std::vector<ir::GenericParam>& gs) {
     return s;
 }
 
-bool isPrimNumeric(const std::string& n) {
-    return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
-           n == "u32" || n == "u64" || n == "f32" || n == "f64";
-}
-
 
 class CSharpEmitter : public EmitterBase {
 public:
@@ -623,11 +618,7 @@ private:
             case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_; // stateful (operator rebinds `this`)
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)
-                    bool flt = mc.staticType == "f32" || mc.staticType == "f64";
-                    return csType(namedType(mc.staticType)) + ".Parse(" + emitExpr(*mc.args[0]) +
-                           (flt ? ", global::System.Globalization.CultureInfo.InvariantCulture" : "") + ")";
-                }
+                // (i32.parse/f64.parse are std.core Bound bindings now — no parse special case here.)
                 std::string recv = mc.staticType.empty() ? atom(*mc.object) : mc.staticType;
                 std::vector<std::string> args;
                 for (const auto& a : mc.args) args.push_back(emitExpr(*a));

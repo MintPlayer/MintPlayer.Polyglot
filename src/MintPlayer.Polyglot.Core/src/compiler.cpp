@@ -205,6 +205,11 @@ extension fn string.toI32(): i32 {
 // `catch`/`Error`/`yield`/`Iterable` are core language surface, not std). They declare their per-target
 // type spelling (and, for Error, construction + the `message` property) via the binding mechanism, so the
 // emitters carry no hardcoded Error/Iterable mapping — they're data here, dogfooding the P10 plugin path.
+// The scalar `parse` classes (P19 slice 1, the P13 "std, not compiler" move): sema still types
+// `i32.parse(s)` intrinsically, but the EMISSION comes from these binding arms via the general `ir::Bound`
+// path — deleting the per-target parse special case each backend carried. Scalar names are plain
+// identifiers, so `extern class i32` parses; the classes declare no `type` block, so the scalar spelling
+// tables stay authoritative.
 const char* STD_CORE = R"PG(
 extern class Error {
   type {
@@ -241,6 +246,26 @@ union Option<T> {
   Some(value: T)
   None
 }
+extern class i8 { static fn parse(s: string): i8 {
+  actual(csharp) extern("sbyte.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) << 24 >> 24)") actual(python) extern("int($0)") } }
+extern class i16 { static fn parse(s: string): i16 {
+  actual(csharp) extern("short.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) << 16 >> 16)") actual(python) extern("int($0)") } }
+extern class i32 { static fn parse(s: string): i32 {
+  actual(csharp) extern("int.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) | 0)") actual(python) extern("int($0)") } }
+extern class i64 { static fn parse(s: string): i64 {
+  actual(csharp) extern("long.Parse($0)") actual(typescript) extern("BigInt($0)") actual(python) extern("int($0)") } }
+extern class u8 { static fn parse(s: string): u8 {
+  actual(csharp) extern("byte.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) & 0xff)") actual(python) extern("int($0)") } }
+extern class u16 { static fn parse(s: string): u16 {
+  actual(csharp) extern("ushort.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) & 0xffff)") actual(python) extern("int($0)") } }
+extern class u32 { static fn parse(s: string): u32 {
+  actual(csharp) extern("uint.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) >>> 0)") actual(python) extern("int($0)") } }
+extern class u64 { static fn parse(s: string): u64 {
+  actual(csharp) extern("ulong.Parse($0)") actual(typescript) extern("BigInt($0)") actual(python) extern("int($0)") } }
+extern class f32 { static fn parse(s: string): f32 {
+  actual(csharp) extern("float.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)") actual(typescript) extern("Number($0)") actual(python) extern("float($0)") } }
+extern class f64 { static fn parse(s: string): f64 {
+  actual(csharp) extern("double.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)") actual(typescript) extern("Number($0)") actual(python) extern("float($0)") } }
 )PG";
 
 // The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,

@@ -216,10 +216,6 @@ bool isUserType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && !t.name.empty() && !isScalarName(t.name);
 }
 bool isI64(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && (t.name == "i64" || t.name == "u64"); }
-bool isPrimNumeric(const std::string& n) {
-    return n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
-           n == "u32" || n == "u64" || n == "f32" || n == "f64";
-}
 // A 32-bit-or-narrower integer type, normalized with JS bitwise ops at each operation boundary.
 bool isSmallInt(const TypeRef& t) {
     if (t.kind != TypeRef::Kind::Named) return false;
@@ -739,12 +735,7 @@ private:
             }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
-                if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) per-target idiom
-                    std::string arg = emitExpr(*mc.args[0]);
-                    if (mc.staticType == "i64" || mc.staticType == "u64") return "BigInt(" + arg + ")";
-                    if (mc.staticType == "f32" || mc.staticType == "f64") return "Number(" + arg + ")";
-                    return narrowTs(mc.staticType, "Number.parseInt(" + arg + ", 10)"); // i8..u32
-                }
+                // (i32.parse/f64.parse are std.core Bound bindings now — no parse special case here.)
                 if (mc.isExtension) { // free-function form: name(obj, args)
                     std::vector<std::string> args;
                     args.push_back(emitExpr(*mc.object));

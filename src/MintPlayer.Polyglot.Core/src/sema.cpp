@@ -404,13 +404,19 @@ private:
     }
 
     // ---- declaration tables ----
-    void declareType(const std::string& name, SourcePos pos) {
-        if (isBuiltinType(name)) diags_.error(pos, "'" + name + "' shadows a builtin type");
-        else if (!typeNames_.insert(name).second) diags_.error(pos, "duplicate type '" + name + "'");
+    // `externOnBuiltin`: an `extern class` naming a builtin scalar (std.core's `extern class i32 { static
+    // fn parse … }`) is a MEMBER CARRIER, not a shadow — the scalar type stays authoritative, so the name
+    // is not registered as a declared type; only its binding members matter (lower reads them by name).
+    void declareType(const std::string& name, SourcePos pos, bool externOnBuiltin = false) {
+        if (isBuiltinType(name)) {
+            if (!externOnBuiltin) diags_.error(pos, "'" + name + "' shadows a builtin type");
+            return;
+        }
+        if (!typeNames_.insert(name).second) diags_.error(pos, "duplicate type '" + name + "'");
     }
     void collectTypeNames(const CompilationUnit& u) {
         for (const auto& d : u.records)    declareType(d.name, d.pos);
-        for (const auto& d : u.classes)    declareType(d.name, d.pos);
+        for (const auto& d : u.classes)    declareType(d.name, d.pos, d.isExtern);
         for (const auto& d : u.interfaces) declareType(d.name, d.pos);
         for (const auto& d : u.enums)      { declareType(d.name, d.pos); enumNames_.insert(d.name); }
         for (const auto& d : u.unions)     declareType(d.name, d.pos);

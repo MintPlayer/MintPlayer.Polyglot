@@ -31,13 +31,15 @@ enum class Feature {
     Disposal,            // `use` deterministic disposal
     Inheritance,         // class `: Base` + `super`
     Async,               // `async fn` + `await` (single-threaded coroutines); a future PHP-like target may lack it
+    BlockLambdas,        // statement-bodied lambdas `x => { … }` (Python lambdas are expression-only)
+    WithExpressions,     // record update `expr with { f = v }` (until a target has a ctor-rebuild emission)
 };
 const char* featureName(Feature f); // stable lowerCamel id for diagnostics, e.g. "extensionMethods"
 
 inline constexpr Feature kAllFeatures[] = {
     Feature::ExtensionMethods, Feature::OperatorOverloading, Feature::Properties, Feature::Iterators,
     Feature::PatternMatching, Feature::Closures, Feature::Exceptions, Feature::Disposal, Feature::Inheritance,
-    Feature::Async,
+    Feature::Async, Feature::BlockLambdas, Feature::WithExpressions,
 };
 
 class Backend {

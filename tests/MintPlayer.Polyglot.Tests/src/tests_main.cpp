@@ -401,6 +401,27 @@ int main() {
                          findTarget("python")).ok,
               "P9-V: an unused portable fn missing this target's actual is not refused");
     }
+    // P19 (1) — Python's two genuine target limits refuse out loud. Both previously emitted a silent
+    // sentinel string (`__py_unsupported_block_lambda__` / `__py_unsupported_expr__`) into "valid" output —
+    // the exact §3.B silent-broken-output failure mode P9-V caught for break/continue.
+    {
+        const char* blockLambda = "fn main() { var total: i32 = 0\n  let add = (n: i32) => { total += n }\n  add(2)\n  print(total) }\n";
+        EmitResult py = compileStd(blockLambda, findTarget("python"));
+        bool named = false;
+        for (const auto& d : py.diagnostics) if (has(d.message, "blockLambdas")) named = true;
+        check(!py.ok && named, "P19: python refuses a statement-bodied lambda (expression-only lambdas)");
+        check(compileStd(blockLambda, findTarget("csharp")).ok && compileStd(blockLambda, findTarget("typescript")).ok,
+              "P19: C#/TS still compile a statement-bodied lambda");
+
+        const char* withExpr = "record P(x: i32, y: i32)\n"
+                               "fn main() { let a = P(1, 2)\n  let b = a with { x = 3 }\n  print(b.x) }\n";
+        EmitResult pyW = compileStd(withExpr, findTarget("python"));
+        bool namedW = false;
+        for (const auto& d : pyW.diagnostics) if (has(d.message, "withExpressions")) namedW = true;
+        check(!pyW.ok && namedW, "P19: python refuses a with-expression (until the ctor-rebuild lowering)");
+        check(compileStd(withExpr, findTarget("csharp")).ok && compileStd(withExpr, findTarget("typescript")).ok,
+              "P19: C#/TS still compile a with-expression");
+    }
     // P9-V audit — a tuple pattern in `match` binds + type-checks but has no lowering, so it must refuse
     // (never miscompile) rather than emit a call against undefined binders. (for-in destructuring is fine.)
     {
