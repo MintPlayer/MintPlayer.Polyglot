@@ -1031,6 +1031,16 @@ affix is a literal splicing an **`elemType` builtin** (renders the element type 
 (run-diff 38/38, run-python 37/37, unit tests pass). Next: `New`/`MakeCase` (delimited args + a type-arg-suffix
 builtin), then `Target`→`BackendHandle`, then TS/Python.
 
+**Slice-9 (delimited-list family, part 2) ✅:** C# `New`/`MakeCase` migrated — `new Name<T,U>(args)`. Both reuse
+`map` for the args (New over `node.args`, MakeCase over `node.fields`→each field's value) + a new
+`typeArgsSuffix` builtin ("" or `<T, U>`: New's own `typeArgs`, or a MakeCase's *result-type* args, since a
+generic union's case record is itself generic). `CsExprCtx` grew New/MakeCase scalar+childExpr arms (the
+`node.args.<i>` handler now serves both Call and New). Two dead C++ switch cases removed. With this, **the whole
+expression walk that has a stable per-node shape is data**; the residue still in the C++ `emitExpr` switch is
+the genuinely-structural kinds (Interp/Char/Unary/Await/Cast/Extern/MethodCall/With/Bound/Lambda/Match — string
+building, operator-method dispatch, pattern spelling). Byte-identical (run-diff 38/38, run-python 37/37, unit
+tests pass). Next: `Target`→`BackendHandle`, then port the C# rule set + interpreter seam to TS/Python.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

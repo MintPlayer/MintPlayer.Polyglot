@@ -49,16 +49,19 @@ const BackendSpec& csharpSpec() {
     return spec;
 }
 
-// P18 slices 4-8: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
+// P18 slices 4-9: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
 // rule for the node kind and interprets it; kinds without a rule still run the C++ switch. Byte-identical (the
 // differential + golden gates are the oracle). Covered so far: the leaf literals (Int/Float/Bool/Null/Str),
 // Binary (child recursion + precedence via `emitChild`), Call (arg lists via the `map` primitive), the
-// scalar-child family Member/Index/Cond, and the delimited-list family Tuple/ListLit (`map` + affixes). A free
-// function lives in `static class Program`, so a free call is qualified `Program.f(...)`; a function-valued
-// local (closure param) is called bare — the `case` on `node.isFree` picks between them. Builtins: `ident`
-// (escape a C#-keyword name -> `@base`), `elemType` (render a ListLit's element type). Tuple's brackets read
-// from the spec's `delimited` table; ListLit's container is the inherent BCL `List<T>` (list literals are
-// built-in syntax like TS `[…]`, so the container is fixed, independent of whether std.collections is imported).
+// scalar-child family Member/Index/Cond, and the delimited-list family Tuple/ListLit/New/MakeCase (`map` +
+// affixes). A free function lives in `static class Program`, so a free call is qualified `Program.f(...)`; a
+// function-valued local (closure param) is called bare — the `case` on `node.isFree` picks between them.
+// Builtins: `ident` (escape a C#-keyword name -> `@base`), `elemType` (a ListLit's element type),
+// `typeArgsSuffix` ("" or `<T, U>` — New's own type args, or a MakeCase's result-type args, since a generic
+// union's case record is itself generic: `Option<i32>` -> `new Some<int>(…)`). Tuple's brackets read from the
+// spec's `delimited` table; ListLit's container is the inherent BCL `List<T>` (list literals are built-in
+// syntax like TS `[…]`, container fixed regardless of imports). NOTE: an extern class with a bound ctor (List,
+// Error, …) routes through `ir::Bound` in lower, so a plain `ir::New` is always a user record/class here.
 const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
   "Float": { "get": "node.text" },
@@ -86,7 +89,11 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Tuple": { "tmpl": [ {"get":"spec.delimited.tuple.open"}, {"map":"node.elements","sep":", "},
                        {"get":"spec.delimited.tuple.close"} ] },
   "ListLit": { "tmpl": [ "new global::System.Collections.Generic.List<", {"fn":"elemType"}, "> { ",
-                         {"map":"node.elements","sep":", "}, " }" ] }
+                         {"map":"node.elements","sep":", "}, " }" ] },
+  "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"fn":"typeArgsSuffix"},
+                     "(", {"map":"node.args","sep":", "}, ")" ] },
+  "MakeCase": { "tmpl": [ "new ", {"get":"node.caseName"}, {"fn":"typeArgsSuffix"},
+                          "(", {"map":"node.fields","sep":", "}, ")" ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -118,9 +125,11 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Member:  return "Member";
         case ir::ExprKind::Index:   return "Index";
         case ir::ExprKind::Cond:    return "Cond";
-        case ir::ExprKind::Tuple:   return "Tuple";
-        case ir::ExprKind::ListLit: return "ListLit";
-        default:                    return "";
+        case ir::ExprKind::Tuple:    return "Tuple";
+        case ir::ExprKind::ListLit:  return "ListLit";
+        case ir::ExprKind::New:      return "New";
+        case ir::ExprKind::MakeCase: return "MakeCase";
+        default:                     return "";
     }
 }
 
@@ -151,6 +160,16 @@ public:
             if (path == "node.staticType") return m.staticType;
             if (path == "node.field")      return m.field;
             if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
+        }
+        if (e_.kind == ir::ExprKind::New) {
+            const auto& n = static_cast<const ir::New&>(e_);
+            if (path == "node.typeName")   return n.typeName;
+            if (path == "node.args.count") return std::to_string(n.args.size());
+        }
+        if (e_.kind == ir::ExprKind::MakeCase) {
+            const auto& mc = static_cast<const ir::MakeCase&>(e_);
+            if (path == "node.caseName")     return mc.caseName;
+            if (path == "node.fields.count") return std::to_string(mc.fields.size());
         }
         if (path == "node.elements.count") {
             if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
@@ -213,6 +232,14 @@ public:
         if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
         if (name == "ident")        return csIdent(args.empty() ? std::string() : args[0]);
         if (name == "elemType")     return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
+        if (name == "typeArgsSuffix") { // "" or "<T, U>" — New's own type args / a MakeCase's result-type args
+            const std::vector<TypeRef>* ta = e_.kind == ir::ExprKind::New ? &static_cast<const ir::New&>(e_).typeArgs
+                                           : e_.kind == ir::ExprKind::MakeCase ? &e_.type.args : nullptr;
+            if (!ta || ta->empty()) return "";
+            std::string s = "<";
+            for (std::size_t i = 0; i < ta->size(); ++i) { if (i) s += ", "; s += csType((*ta)[i]); }
+            return s + ">";
+        }
         if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
         if (name == "subWordWrap") { // C# sub-32 arithmetic promotes to int; cast back to wrap at 8/16 bits
             const std::string& tn = args.size() > 0 ? args[0] : std::string();
@@ -231,12 +258,21 @@ private:
             if (path == "node.lhs") return b.lhs.get();
             if (path == "node.rhs") return b.rhs.get();
         }
-        if (e_.kind == ir::ExprKind::Call) { // indexed arg path `node.args.<i>` (from a `map` rule)
-            const auto& c = static_cast<const ir::Call&>(e_);
-            if (path.rfind("node.args.", 0) == 0) {
-                std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+        if (path.rfind("node.args.", 0) == 0) { // indexed arg path `node.args.<i>` (from a `map` rule)
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+            if (e_.kind == ir::ExprKind::Call) {
+                const auto& c = static_cast<const ir::Call&>(e_);
                 if (i < c.args.size()) return c.args[i].get();
             }
+            if (e_.kind == ir::ExprKind::New) {
+                const auto& n = static_cast<const ir::New&>(e_);
+                if (i < n.args.size()) return n.args[i].get();
+            }
+        }
+        if (e_.kind == ir::ExprKind::MakeCase && path.rfind("node.fields.", 0) == 0) {
+            const auto& mc = static_cast<const ir::MakeCase&>(e_);
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
+            if (i < mc.fields.size()) return mc.fields[i].value.get();
         }
         if (e_.kind == ir::ExprKind::Member && path == "node.object")
             return static_cast<const ir::Member&>(e_).object.get();
@@ -742,34 +778,6 @@ private:
             }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::New: {
-                const auto& n = static_cast<const ir::New&>(e);
-                // Any extern class with a bound ctor (List, Error, …) routes through ir::Bound in lower; a
-                // plain ir::New is always a user record/class, emitted as `new Name(args)`.
-                std::string ctor = n.typeName;
-                if (!n.typeArgs.empty()) {
-                    ctor += "<";
-                    for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += csType(n.typeArgs[i]); }
-                    ctor += ">";
-                }
-                std::vector<std::string> args;
-                for (const auto& a : n.args) args.push_back(emitExpr(*a));
-                return "new " + ctor + renderArgs(args);
-            }
-            case ir::ExprKind::MakeCase: {
-                const auto& mc = static_cast<const ir::MakeCase&>(e);
-                std::string s = "new " + mc.caseName;
-                // A generic union's case record is itself generic (`Some<T>`): supply the type args from the
-                // construction's result type (`Option<i32>` -> `new Some<int>(…)`). Non-generic: no `<…>`.
-                if (!e.type.args.empty()) {
-                    s += "<";
-                    for (std::size_t i = 0; i < e.type.args.size(); ++i) { if (i) s += ", "; s += csType(e.type.args[i]); }
-                    s += ">";
-                }
-                std::vector<std::string> vals;
-                for (const auto& f : mc.fields) vals.push_back(emitExpr(*f.value));
-                return s + renderArgs(vals);
-            }
             case ir::ExprKind::Lambda: {
                 const auto& l = static_cast<const ir::Lambda&>(e);
                 std::string s = "(";
