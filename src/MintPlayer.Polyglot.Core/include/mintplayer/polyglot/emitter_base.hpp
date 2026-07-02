@@ -30,26 +30,61 @@ namespace mintplayer::polyglot {
 class IrExprCtx : public engine::EvalContext {
 public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
-    IrExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit)
-        : e_(e), spec_(spec), emit_(std::move(emit)) {}
+    using InlineFn = std::function<std::string(const std::vector<ir::StmtPtr>&)>;
+    IrExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, InlineFn inlineBlock = {})
+        : e_(e), spec_(spec), emit_(std::move(emit)), inline_(std::move(inlineBlock)) {}
 
     std::string get(const std::string& path) const override;
     bool has(const std::string& path) const override { return !get(path).empty(); }
     std::string emitChild(const std::string& path, const std::string& side) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    // {"type":path}: resolve the TypeRef the path names, render it via the backend's (rule-driven) type
+    // renderer. The shared part is path->TypeRef; the rendering is the per-target renderTypeRef.
+    std::string renderType(const std::string& path) const override;
 
 protected:
     virtual std::string targetGet(const std::string& /*path*/) const { return ""; } // per-target scalar reads
     virtual std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const = 0;
     virtual bool wrapAtom(const ir::Expr& child, const std::string& side) const = 0; // "recv"/"unary" parens
+    virtual std::string renderTypeRef(const TypeRef& t) const = 0;                   // the target's type renderer
 
     // The child ir::Expr a rule path names (`node.lhs`, indexed `node.args.<i>`, …); nullptr when the
     // path doesn't name a child of this node kind.
     const ir::Expr* childExpr(const std::string& path) const;
+    // The TypeRef a rule path names (`node.type`, `node.params.<i>.type`); nullptr when it names none.
+    const TypeRef* typeRefAt(const std::string& path) const;
 
     const ir::Expr& e_;
     const BackendSpec& spec_;
     EmitFn emit_;
+    InlineFn inline_;
+};
+
+// The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
+// `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
+// `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern
+// type-template selection, and the recursion target. `substExtern` (the `$0`/`$1` substitution into an
+// `extern class`'s declared spelling) is a fixed builtin implemented here over the virtuals.
+class TypeRefCtx : public engine::EvalContext {
+public:
+    TypeRefCtx(const TypeRef& t, const BackendSpec& spec) : t_(t), spec_(spec) {
+        if (t_.nullable) { base_ = t_; base_.nullable = false; }
+    }
+
+    std::string get(const std::string& path) const override;
+    bool has(const std::string& path) const override { return !get(path).empty(); }
+    std::string emitChild(const std::string&, const std::string&) const override { return ""; } // no expr children
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+
+protected:
+    virtual std::string targetGet(const std::string& /*path*/) const { return ""; }
+    virtual std::string externTemplate() const { return ""; }        // the extern-class spelling, "" if none
+    virtual std::string renderTypeRef(const TypeRef& t) const = 0;   // recursion -> the target's renderer
+
+    const TypeRef& t_;
+    const BackendSpec& spec_;
+    TypeRef base_; // the nullable-stripped copy `type.base` recurses into (valid only when t_.nullable)
 };
 
 class EmitterBase {

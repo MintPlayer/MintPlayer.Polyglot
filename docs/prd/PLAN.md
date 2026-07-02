@@ -1272,6 +1272,24 @@ Match+matchChain/armBinders/wrapBinders/armCond+atom. **The only expression C++ 
 `Bound` (substTemplate — already data-driven) and `Lambda` (slice 4).** Byte-identical (117 files), unit
 green, 39/39 + 38/38, samples 10/10.
 
+**Slice-4 ✅ (2026-07-02) — type rendering is data (`type` primitive + per-target "Type" rule tables);
+`Lambda` migrated. The expression layer is 100% rules.** New Rule kind **`type`** (`{"type":path}` →
+`ctx.renderType`), a **`TypeRefCtx`** type-scoped context in the shared engine (reads `type.kind/.name/
+.nullable/.scalar/.args.count/.returnsUnit/.externTemplate`; child recursion `type.args.<i>`/`type.base`/
+`type.ret`; the fixed **`substExtern`** builtin does the `$0`/`$1` extern-spelling substitution), and
+`ItemCtx` learned **`item.#`** (the element index — TS function types need `arg0: T0`). Each backend's
+"Type" rule reproduces its old renderer exactly (C#: `Action`/`Func` split + `T?`-for-value-types via a
+`type.isValueType` predicate + value tuples + extern + generic suffix; TS: arrow types + `| null` + `[A,B]`;
+Python: extern-or-bare-name), and **`csType`/`tsType`/`pyTypeName` are now thin wrappers evaluating that
+rule** — so the still-imperative declaration emitters render types through the same data (single source of
+truth, byte-gated by every declaration in the suite). Python's renderer moved from a member to the shared
+free-fn + `g_externTypes` pattern. **`Lambda`** is a rule on all three targets (typed params via
+`{"type":"item.type"}`; statement bodies via a fixed **`inlineBlock`** builtin wired through a new
+`IrExprCtx` inline callback; Python expr-only — block-bodied still gated). The C++ `emitExpr` switch in
+every backend is now **only the `Bound` template substitution**. Byte-identical (117 files), unit green,
+39/39 + 38/38, samples + fidelity 10/10. Next: slice 5 — declaration rules (`line`/`block`/`mapDecl` +
+per-target decl tables + the `program` scaffold + `require`).
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

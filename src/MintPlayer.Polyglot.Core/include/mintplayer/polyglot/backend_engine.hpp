@@ -29,6 +29,9 @@ public:
     virtual std::string get(const std::string& path) const = 0;   // {"get":"node.op"} — "" when absent
     virtual bool has(const std::string& path) const = 0;          // Test {"has":"node.guard"}
     virtual std::string builtin(const std::string& name, const std::vector<std::string>& args) const = 0;
+    // {"type":path} — render the TypeRef at `path` through the plugin's type rules (the "Type" table
+    // entry, evaluated against a type-scoped context). "" when the path names no type.
+    virtual std::string renderType(const std::string& /*path*/) const { return ""; }
     // Recurse into a child IR node at `path`, emitting it. `side` selects precedence parenthesization computed
     // by the CONTEXT (not the plugin): "" = plain, "l"/"r" = a binary operand (wrap by precedence+associativity),
     // "recv" = an atom receiver (wrap a binary/unary/cast). Keeping the paren algorithm in the context (fixed
@@ -49,8 +52,8 @@ struct Test {
 
 // A parsed emission Rule (the scalar spine + child recursion — see the header note).
 struct Rule {
-    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call } kind = Kind::Lit;
-    std::string s;          // Lit: text | Get/Emit/Map/Fold: path | Fn/Call: name | Interleave: lits path
+    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type } kind = Kind::Lit;
+    std::string s;          // Lit: text | Get/Emit/Map/Fold/Type: path | Fn/Call: name | Interleave: lits path
     std::string s2;                             // Interleave: holes path
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children

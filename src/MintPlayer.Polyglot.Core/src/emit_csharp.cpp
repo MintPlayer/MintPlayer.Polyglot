@@ -134,7 +134,31 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
         " => ", {"emit":"item.body"} ]}},
       { "case": { "when": [ [ {"eq":["node.hasCatchAll","true"]}, "" ] ],
         "else": ", _ => throw new global::System.InvalidOperationException()" } },
-      " }" ] }
+      " }" ] },
+  "Lambda": { "tmpl": [ "(",
+      {"map":"node.params","sep":", ","item":{"case":{"when":[[{"eq":["item.hasType","true"]},
+        {"tmpl":[{"type":"item.type"}," ",{"get":"item.name"}]}]],"else":{"get":"item.name"}}}},
+      ") => ",
+      {"case":{"when":[[{"eq":["node.exprBodied","true"]},{"emit":"node.body"}]],
+        "else":{"tmpl":["{ ",{"fn":"inlineBlock"},"}"]}}} ] },
+  "Type": { "case": { "when": [
+      [ {"eq":["type.kind","function"]},
+        { "case": { "when": [
+            [ {"and":[{"eq":["type.returnsUnit","true"]},{"eq":["type.args.count","0"]}]}, "global::System.Action" ],
+            [ {"eq":["type.returnsUnit","true"]},
+              {"tmpl":["global::System.Action<",{"map":"type.args","sep":", ","item":{"type":"item"}},">"]} ] ],
+          "else": {"tmpl":["global::System.Func<",
+            {"map":"type.args","sep":"","item":{"tmpl":[{"type":"item"},", "]}},{"type":"type.ret"},">"]} } } ],
+      [ {"eq":["type.kind","tuple"]}, {"tmpl":["(",{"map":"type.args","sep":", ","item":{"type":"item"}},")"]} ],
+      [ {"and":[{"eq":["type.nullable","true"]},{"eq":["type.isValueType","true"]}]},
+        {"tmpl":[{"type":"type.base"},"?"]} ],
+      [ {"eq":["type.nullable","true"]}, {"type":"type.base"} ],
+      [ {"has":"type.scalar"}, {"get":"type.scalar"} ],
+      [ {"eq":["type.nameEmpty","true"]}, "object" ],
+      [ {"has":"type.externTemplate"}, {"fn":"substExtern"} ] ],
+    "else": {"tmpl":[{"get":"type.name"},
+      {"case":{"when":[[{"eq":["type.args.count","0"]},""]],
+        "else":{"tmpl":["<",{"map":"type.args","sep":", ","item":{"type":"item"}},">"]}}}]} } }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -181,6 +205,7 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::This:       return "This";
         case ir::ExprKind::MethodCall: return "MethodCall";
         case ir::ExprKind::Match:      return "Match";
+        case ir::ExprKind::Lambda:     return "Lambda";
         default:                       return "";
     }
 }
@@ -194,14 +219,17 @@ std::string csType(const TypeRef& t);      // defined below; the `elemType` buil
 // consequence (a C# operator is a static method), so it stays a C#-only context scalar the This rule reads.
 class CsExprCtx : public IrExprCtx {
 public:
-    CsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, const std::string& thisAlias)
-        : IrExprCtx(e, spec, std::move(emit)), thisAlias_(thisAlias) {}
+    CsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, InlineFn inlineBlock,
+              const std::string& thisAlias)
+        : IrExprCtx(e, spec, std::move(emit), std::move(inlineBlock)), thisAlias_(thisAlias) {}
 
 protected:
     std::string targetGet(const std::string& path) const override {
         if (path == "ctx.thisAlias") return thisAlias_;
         return "";
     }
+
+    std::string renderTypeRef(const TypeRef& t) const override { return csType(t); }
 
     bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
         if (side == "recv") // atom(): wrap a binary/unary/cast receiver
@@ -273,64 +301,36 @@ private:
 // site. Single-threaded compile; this emitter is the only writer; rebuilt and re-pointed each emit().
 const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nullptr;
 
-// Substitute a type-spelling template's `$0,$1,…` with the rendered type args (e.g. List's
-// "…List<$0>" with [i32] -> "…List<int>").
-std::string substTypeTmpl(const std::string& tmpl, const std::vector<TypeRef>& args) {
-    std::string out;
-    for (std::size_t i = 0; i < tmpl.size();) {
-        if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
-            std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-            if (idx < args.size()) out += csType(args[idx]);
-            i += 2;
-        } else out += tmpl[i++];
-    }
-    return out;
-}
+// The C# type-scoped rule context: the `isValueType` predicate (C# `T?` is Nullable<T> for value types
+// only) + the extern-class C# spelling + recursion back into csType. The rendering LOGIC lives in the
+// "Type" rule (data); this supplies only the reads.
+class CsTypeCtx : public TypeRefCtx {
+public:
+    using TypeRefCtx::TypeRefCtx;
 
+protected:
+    std::string targetGet(const std::string& path) const override {
+        if (path == "type.isValueType") {
+            const std::string& n = t_.name;
+            bool v = n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
+                     n == "u32" || n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char";
+            return v ? "true" : "false";
+        }
+        return "";
+    }
+    std::string externTemplate() const override {
+        if (t_.kind != TypeRef::Kind::Named || !g_externTypes) return "";
+        auto it = g_externTypes->find(t_.name);
+        return it != g_externTypes->end() ? it->second->csType : "";
+    }
+    std::string renderTypeRef(const TypeRef& t) const override { return csType(t); }
+};
+
+// The C# type renderer — a thin wrapper evaluating the "Type" rule, so every caller (expressions via the
+// `type` primitive AND the still-imperative declaration emitters) goes through the same data.
 std::string csType(const TypeRef& t) {
-    if (t.kind == TypeRef::Kind::Named) {
-        // A nullable value type needs C# `T?` (Nullable<T>); a nullable reference type accepts null as-is
-        // (the generated project disables nullable reference annotations), so it renders without the `?`.
-        if (t.nullable) {
-            TypeRef base = t; base.nullable = false;
-            const std::string& n = t.name;
-            bool valueType = n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
-                             n == "u32" || n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char";
-            return valueType ? csType(base) + "?" : csType(base);
-        }
-        if (auto it = csharpSpec().scalarType.find(t.name); it != csharpSpec().scalarType.end()) return it->second;
-        if (t.name.empty())     return "object";
-        // A native-backed `extern class` (e.g. List) declares its spelling via a `type { … }` block.
-        if (g_externTypes) {
-            if (auto it = g_externTypes->find(t.name); it != g_externTypes->end() && !it->second->csType.empty())
-                return substTypeTmpl(it->second->csType, t.args);
-        }
-        std::string name = t.name; // Error/Iterable now spell via the core-prelude extern-class mapping above
-        if (!t.args.empty()) {
-            name += "<";
-            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += csType(t.args[i]); }
-            name += ">";
-        }
-        return name;
-    }
-    if (t.kind == TypeRef::Kind::Function) { // C# delegate: Action for unit return, else Func<args, ret>
-        bool returnsUnit = t.ret.empty() || (t.ret[0].kind == TypeRef::Kind::Named && t.ret[0].name == "unit");
-        if (returnsUnit) {
-            if (t.args.empty()) return "global::System.Action";
-            std::string s = "global::System.Action<";
-            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += csType(t.args[i]); }
-            return s + ">";
-        }
-        std::string s = "global::System.Func<";
-        for (const auto& a : t.args) s += csType(a) + ", ";
-        return s + csType(t.ret[0]) + ">";
-    }
-    if (t.kind == TypeRef::Kind::Tuple) { // C# value tuple `(A, B)`
-        std::string s = "(";
-        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += csType(t.args[i]); }
-        return s + ")";
-    }
-    return "object";
+    CsTypeCtx ctx(t, csharpSpec());
+    return engine::evalRule(csharpExprRules().at("Type"), ctx, &csharpExprRules());
 }
 
 // A `.pg` identifier that collides with a C# reserved keyword (field/param/local/member named `base`,
@@ -640,26 +640,14 @@ private:
             const auto& rules = csharpExprRules();
             auto it = rules.find(key);
             if (it != rules.end()) {
-                CsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, thisAlias_);
+                CsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
+                              [this](const std::vector<ir::StmtPtr>& b) { return inlineBlock(b); }, thisAlias_);
                 return engine::evalRule(it->second, ctx, &rules);
             }
         }
         switch (e.kind) {
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::Lambda: {
-                const auto& l = static_cast<const ir::Lambda&>(e);
-                std::string s = "(";
-                // A typed param emits its type; an untyped (bare) param relies on the target type.
-                for (std::size_t i = 0; i < l.params.size(); ++i) {
-                    if (i) s += ", ";
-                    if (!l.params[i].type.absent()) s += csType(l.params[i].type) + " ";
-                    s += l.params[i].name;
-                }
-                s += ") => ";
-                if (l.exprBodied) return s + emitExpr(*l.body);
-                return s + "{ " + inlineBlock(l.block) + "}"; // statement-bodied lambda
-            }
         }
         return "";
     }

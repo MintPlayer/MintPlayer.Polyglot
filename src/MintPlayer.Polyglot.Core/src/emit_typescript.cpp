@@ -129,6 +129,24 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
         {"case":{"when":[[{"eq":["item.hasGuard","true"]},{"tmpl":[" && (",{"emit":"item.guard"},")"]}]],"else":""}},
         ") return ",{"emit":"item.body"},"; "]} } }},
     "})()" ] },
+  "Lambda": { "tmpl": [ "(",
+      {"map":"node.params","sep":", ","item":{"tmpl":[{"get":"item.name"},
+        {"case":{"when":[[{"eq":["item.hasType","true"]},{"tmpl":[": ",{"type":"item.type"}]}]],"else":""}}]}},
+      ") => ",
+      {"case":{"when":[[{"eq":["node.exprBodied","true"]},{"emit":"node.body"}]],
+        "else":{"tmpl":["{ ",{"fn":"inlineBlock"},"}"]}}} ] },
+  "Type": { "case": { "when": [
+      [ {"eq":["type.kind","function"]},
+        {"tmpl":["(",{"map":"type.args","sep":", ","item":{"tmpl":["arg",{"get":"item.#"},": ",{"type":"item"}]}},
+          ") => ",{"case":{"when":[[{"eq":["type.hasRet","true"]},{"type":"type.ret"}]],"else":"void"}}]} ],
+      [ {"eq":["type.kind","tuple"]}, {"tmpl":["[",{"map":"type.args","sep":", ","item":{"type":"item"}},"]"]} ],
+      [ {"eq":["type.nullable","true"]}, {"tmpl":[{"type":"type.base"}," | null"]} ],
+      [ {"has":"type.scalar"}, {"get":"type.scalar"} ],
+      [ {"eq":["type.nameEmpty","true"]}, "unknown" ],
+      [ {"has":"type.externTemplate"}, {"fn":"substExtern"} ] ],
+    "else": {"tmpl":[{"get":"type.name"},
+      {"case":{"when":[[{"eq":["type.args.count","0"]},""]],
+        "else":{"tmpl":["<",{"map":"type.args","sep":", ","item":{"type":"item"}},">"]}}}]} } },
   "Binary": { "case": { "when": [
       [ {"and":[{"or":[{"eq":["node.op","=="]},{"eq":["node.op","!="]}]},{"eq":["node.lhsIsRecord","true"]}]},
         { "case": { "when": [ [ {"eq":["node.op","=="]},
@@ -196,6 +214,7 @@ const char* tsExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";
         case ir::ExprKind::Match:      return "Match";
+        case ir::ExprKind::Lambda:     return "Lambda";
         case ir::ExprKind::Binary:     return "Binary";
         default:                       return "";
     }
@@ -206,49 +225,26 @@ const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nu
 
 std::string tsType(const TypeRef& t);
 
-// Substitute a type-spelling template's `$0,$1,…` with the rendered type args (List's "$0[]" with [i32]
-// -> "number[]").
-std::string substTypeTmpl(const std::string& tmpl, const std::vector<TypeRef>& args) {
-    std::string out;
-    for (std::size_t i = 0; i < tmpl.size();) {
-        if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
-            std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-            if (idx < args.size()) out += tsType(args[idx]);
-            i += 2;
-        } else out += tmpl[i++];
-    }
-    return out;
-}
+// The TS type-scoped rule context: the extern-class TS spelling + recursion back into tsType. The
+// rendering LOGIC lives in the "Type" rule (data); this supplies only the reads.
+class TsTypeCtx : public TypeRefCtx {
+public:
+    using TypeRefCtx::TypeRefCtx;
 
+protected:
+    std::string externTemplate() const override {
+        if (t_.kind != TypeRef::Kind::Named || !g_externTypes) return "";
+        auto it = g_externTypes->find(t_.name);
+        return it != g_externTypes->end() ? it->second->tsType : "";
+    }
+    std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
+};
+
+// The TS type renderer — a thin wrapper evaluating the "Type" rule, so every caller (expressions via the
+// `type` primitive AND the still-imperative declaration emitters) goes through the same data.
 std::string tsType(const TypeRef& t) {
-    if (t.kind == TypeRef::Kind::Named) {
-        if (t.nullable) { TypeRef base = t; base.nullable = false; return tsType(base) + " | null"; }
-        if (auto it = typescriptSpec().scalarType.find(t.name); it != typescriptSpec().scalarType.end()) return it->second;
-        if (t.name.empty()) return "unknown";
-        // A native-backed `extern class` (e.g. List -> `$0[]`) declares its spelling via a `type { … }` block.
-        if (g_externTypes) {
-            if (auto it = g_externTypes->find(t.name); it != g_externTypes->end() && !it->second->tsType.empty())
-                return substTypeTmpl(it->second->tsType, t.args);
-        }
-        std::string name = t.name; // user nominal types; Error/Iterable spell via the core-prelude mapping above
-        if (!t.args.empty()) {
-            name += "<";
-            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) name += ", "; name += tsType(t.args[i]); }
-            name += ">";
-        }
-        return name;
-    }
-    if (t.kind == TypeRef::Kind::Function) { // arrow-function type: (arg0: T0, …) => Ret
-        std::string s = "(";
-        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += "arg" + std::to_string(i) + ": " + tsType(t.args[i]); }
-        return s + ") => " + (t.ret.empty() ? "void" : tsType(t.ret[0]));
-    }
-    if (t.kind == TypeRef::Kind::Tuple) { // tuple type `[A, B]`
-        std::string s = "[";
-        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += tsType(t.args[i]); }
-        return s + "]";
-    }
-    return "unknown";
+    TsTypeCtx ctx(t, typescriptSpec());
+    return engine::evalRule(tsExprRules().at("Type"), ctx, &tsExprRules());
 }
 
 bool isScalarName(const std::string& n) {
@@ -356,6 +352,8 @@ protected:
         }
         return "";
     }
+
+    std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
         if (name == "typeArgsSuffix") { // "" or "<T, U>" — a New's construction type args
@@ -708,25 +706,14 @@ private:
             const auto& rules = tsExprRules();
             auto it = rules.find(key);
             if (it != rules.end()) {
-                TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); });
+                TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
+                              [this](const std::vector<ir::StmtPtr>& b) { return inlineBlock(b); });
                 return engine::evalRule(it->second, ctx, &rules);
             }
         }
         switch (e.kind) {
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::Lambda: {
-                const auto& l = static_cast<const ir::Lambda&>(e);
-                std::string s = "(";
-                for (std::size_t i = 0; i < l.params.size(); ++i) {
-                    if (i) s += ", ";
-                    s += l.params[i].name;
-                    if (!l.params[i].type.absent()) s += ": " + tsType(l.params[i].type);
-                }
-                s += ") => ";
-                if (l.exprBodied) return s + emitExpr(*l.body);
-                return s + "{ " + inlineBlock(l.block) + "}"; // statement-bodied lambda
-            }
         }
         return "";
     }

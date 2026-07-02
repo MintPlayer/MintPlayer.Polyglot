@@ -53,6 +53,20 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.isExtension") return mc.isExtension ? "true" : "false";
         if (path == "node.args.count")  return std::to_string(mc.args.size());
     }
+    if (e_.kind == ir::ExprKind::Lambda) {
+        const auto& l = static_cast<const ir::Lambda&>(e_);
+        if (path == "node.exprBodied")   return l.exprBodied ? "true" : "false";
+        if (path == "node.params.count") return std::to_string(l.params.size());
+        if (path.rfind("node.params.", 0) == 0) { // node.params.<i>.{name|hasType}
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
+            const std::size_t dot = path.find('.', 12);
+            if (i < l.params.size() && dot != std::string::npos) {
+                const std::string rest = path.substr(dot + 1);
+                if (rest == "name")    return l.params[i].name;
+                if (rest == "hasType") return l.params[i].type.absent() ? "false" : "true";
+            }
+        }
+    }
     if (e_.kind == ir::ExprKind::New) {
         const auto& n = static_cast<const ir::New&>(e_);
         if (path == "node.typeName")   return n.typeName;
@@ -205,6 +219,8 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
     }
+    if (e_.kind == ir::ExprKind::Lambda && path == "node.body")
+        return static_cast<const ir::Lambda&>(e_).body.get();
     if (e_.kind == ir::ExprKind::Interp && path.rfind("node.holes.", 0) == 0) {
         const auto& in = static_cast<const ir::Interp&>(e_);
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
@@ -263,7 +279,77 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     }
     if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
     if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
+    if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
+        return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);
+}
+
+std::string IrExprCtx::renderType(const std::string& path) const {
+    const TypeRef* t = typeRefAt(path);
+    return t ? renderTypeRef(*t) : "";
+}
+
+const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
+    if (path == "node.type") return &e_.type;
+    if (e_.kind == ir::ExprKind::Lambda && path.rfind("node.params.", 0) == 0 &&
+        path.size() > 5 && path.rfind(".type") == path.size() - 5) {
+        const auto& l = static_cast<const ir::Lambda&>(e_);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
+        if (i < l.params.size()) return &l.params[i].type;
+    }
+    return nullptr;
+}
+
+// ---- TypeRefCtx ------------------------------------------------------------------------------------------
+
+std::string TypeRefCtx::get(const std::string& path) const {
+    if (path == "type.kind") {
+        switch (t_.kind) {
+            case TypeRef::Kind::Named:    return "named";
+            case TypeRef::Kind::Function: return "function";
+            case TypeRef::Kind::Tuple:    return "tuple";
+        }
+    }
+    if (path == "type.name")       return t_.name;
+    if (path == "type.nameEmpty")  return t_.name.empty() ? "true" : "false";
+    if (path == "type.nullable")   return t_.nullable ? "true" : "false";
+    if (path == "type.args.count") return std::to_string(t_.args.size());
+    if (path == "type.hasRet")     return t_.ret.empty() ? "false" : "true";
+    if (path == "type.returnsUnit")
+        return (t_.ret.empty() || (t_.ret[0].kind == TypeRef::Kind::Named && t_.ret[0].name == "unit"))
+                   ? "true" : "false";
+    if (path == "type.scalar") {
+        auto it = spec_.scalarType.find(t_.name);
+        return it == spec_.scalarType.end() ? std::string() : it->second;
+    }
+    if (path == "type.externTemplate") return externTemplate();
+    return targetGet(path);
+}
+
+std::string TypeRefCtx::renderType(const std::string& path) const {
+    if (path == "type.base" && t_.nullable) return renderTypeRef(base_);
+    if (path == "type.ret" && !t_.ret.empty()) return renderTypeRef(t_.ret[0]);
+    if (path.rfind("type.args.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+        if (i < t_.args.size()) return renderTypeRef(t_.args[i]);
+    }
+    return "";
+}
+
+std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::string>& /*args*/) const {
+    if (name == "substExtern") { // substitute `$0,$1,…` in the extern-class spelling with rendered type args
+        const std::string tmpl = externTemplate();
+        std::string out;
+        for (std::size_t i = 0; i < tmpl.size();) {
+            if (tmpl[i] == '$' && i + 1 < tmpl.size() && tmpl[i + 1] >= '0' && tmpl[i + 1] <= '9') {
+                const std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+                if (idx < t_.args.size()) out += renderTypeRef(t_.args[idx]);
+                i += 2;
+            } else out += tmpl[i++];
+        }
+        return out;
+    }
+    return "";
 }
 
 void EmitterBase::line(const std::string& s) {

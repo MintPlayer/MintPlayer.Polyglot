@@ -142,6 +142,11 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
                {"tmpl":["(",{"emit":"node.elements.0"},",)"]} ] ],
              "else": {"tmpl":["(",{"map":"node.elements","sep":", "},")"]} } },
   "New": { "tmpl": [ {"get":"node.typeName"}, "(", {"map":"node.args","sep":", "}, ")" ] },
+  "Lambda": { "tmpl": [ "lambda ",
+      {"map":"node.params","sep":", ","item":{"fn":"ident","args":[{"get":"item.name"}]}},
+      ": ", {"emit":"node.body"} ] },
+  "Type": { "case": { "when": [ [ {"has":"type.externTemplate"}, {"fn":"substExtern"} ] ],
+            "else": {"get":"type.name"} } },
   "MakeCase": { "tmpl": [ "{\"tag\": ", {"fn":"escapeString","args":[{"get":"node.caseName"}]},
                           {"map":"node.fields","sep":"",
                            "item":{"tmpl":[", ",{"fn":"escapeString","args":[{"get":"item.name"}]},": ",
@@ -257,9 +262,37 @@ const char* pyExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";
         case ir::ExprKind::Match:      return "Match";
+        case ir::ExprKind::Lambda:     return "Lambda";
         case ir::ExprKind::Binary:     return "Binary";
         default:                       return "";
     }
+}
+
+// The current module's `extern class` type map, set per emit() (same pattern as C#/TS).
+const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nullptr;
+
+std::string pyTypeName(const TypeRef& t);
+
+// The Python type-scoped rule context: the extern-class Python spelling + recursion. Python's "Type" rule
+// is the smallest of the three — extern template or bare name (no annotations are emitted).
+class PyTypeCtx : public TypeRefCtx {
+public:
+    using TypeRefCtx::TypeRefCtx;
+
+protected:
+    std::string externTemplate() const override {
+        if (t_.kind != TypeRef::Kind::Named || !g_externTypes) return "";
+        auto it = g_externTypes->find(t_.name);
+        return it != g_externTypes->end() ? it->second->pyType : "";
+    }
+    std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
+};
+
+// The Python spelling of a named type (class bases, catch types, ctor `$T`) — a thin wrapper evaluating
+// the "Type" rule.
+std::string pyTypeName(const TypeRef& t) {
+    PyTypeCtx ctx(t, pythonSpec());
+    return engine::evalRule(pyExprRules().at("Type"), ctx, &pyExprRules());
 }
 
 // The Python rule-interpreter seam. `tmp`/`needsIdiv` are the EMITTER's counters, reached by reference:
@@ -284,6 +317,8 @@ protected:
         if (path == "node.typeIsInt") return isIntType(e_.type) ? "true" : "false";
         return "";
     }
+
+    std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
         if (name == "ident")      return pyId(args.empty() ? std::string() : args[0]);
@@ -329,7 +364,9 @@ public:
     std::string emit(const ir::Module& m) {
         out_.clear();
         indent_ = 0;
+        externTypes_.clear();
         for (const auto& et : m.externTypes) externTypes_[et.name] = &et; // for Error->Exception etc. spellings
+        g_externTypes = &externTypes_;
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& u : m.unions) emitUnion(u);
         for (const auto& r : m.records) emitRecord(r);
@@ -368,33 +405,8 @@ private:
     std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
     std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
 
-    std::unordered_map<std::string, const ir::ExternType*> externTypes_;
+    std::unordered_map<std::string, const ir::ExternType*> externTypes_; // backs g_externTypes for this emit
     int tmp_ = 0; // fresh-name counter for the walrus temporaries that keep `?.`/`??` single-evaluated
-
-    // The Python spelling of a named type: an `extern class`'s pyType template (Error -> "Exception") if one
-    // is registered, else the bare name (user types, which Python needs no annotation for). Used for class
-    // bases, catch types, and ctor `$T` — the spots where a native-backed type must read as its target name.
-    std::string pyTypeName(const TypeRef& t) {
-        if (t.kind == TypeRef::Kind::Named) {
-            if (auto it = externTypes_.find(t.name); it != externTypes_.end() && !it->second->pyType.empty())
-                return substTypeTmpl(it->second->pyType, t.args);
-        }
-        return t.name;
-    }
-
-    // Substitute `$0,$1,…` in a type-spelling template with the rendered type args (none needed for Python's
-    // erased generics today, but kept symmetric with the C#/TS type templates).
-    std::string substTypeTmpl(const std::string& tmpl, const std::vector<TypeRef>& args) {
-        std::string out;
-        for (std::size_t i = 0; i < tmpl.size();) {
-            if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
-                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-                if (idx < args.size()) out += pyTypeName(args[idx]);
-                i += 2;
-            } else out += tmpl[i++];
-        }
-        return out;
-    }
 
     // A parameter: escaped name + optional `= default` (Python supports default args natively).
     std::string param(const ir::Param& p) {
@@ -603,14 +615,6 @@ private:
             }
         }
         switch (e.kind) {
-            case ir::ExprKind::Lambda: {
-                const auto& l = static_cast<const ir::Lambda&>(e);
-                std::string params;
-                for (std::size_t i = 0; i < l.params.size(); ++i) { if (i) params += ", "; params += pyId(l.params[i].name); }
-                // Python lambdas are single-expression; a statement-bodied lambda needs a nested def (later).
-                if (l.exprBodied) return "lambda " + params + ": " + emitExpr(*l.body);
-                return "__py_unsupported_block_lambda__";
-            }
             case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
                 return substTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
             default:

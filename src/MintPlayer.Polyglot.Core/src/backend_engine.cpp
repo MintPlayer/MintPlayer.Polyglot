@@ -114,6 +114,11 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.s = v["call"].asString();
         return r;
     }
+    if (v.has("type")) { // render the TypeRef at `path` through the plugin's type rules
+        r.kind = Rule::Kind::Type;
+        r.s = v["type"].asString();
+        return r;
+    }
     if (v.has("case")) {
         r.kind = Rule::Kind::Case;
         for (const json::Value& arm : v["case"]["when"].items()) {
@@ -137,12 +142,17 @@ namespace {
 
 // Scopes a `map` item template to one list element: `item`/`item.…` paths are rewritten onto the element's
 // indexed path (`node.fields.<i>…`) before delegating, so the underlying context needs no new methods —
-// an indexed child path is already first-class.
+// an indexed child path is already first-class. `item.#` answers the element's index (e.g. TS function-type
+// params `arg0: T0, arg1: T1`).
 class ItemCtx : public EvalContext {
 public:
-    ItemCtx(const EvalContext& base, std::string prefix) : base_(base), prefix_(std::move(prefix)) {}
+    ItemCtx(const EvalContext& base, std::string prefix, int index = 0)
+        : base_(base), prefix_(std::move(prefix)), index_(index) {}
 
-    std::string get(const std::string& p) const override { return base_.get(redirect(p)); }
+    std::string get(const std::string& p) const override {
+        if (p == "item.#") return std::to_string(index_);
+        return base_.get(redirect(p));
+    }
     bool has(const std::string& p) const override { return base_.has(redirect(p)); }
     std::string emitChild(const std::string& p, const std::string& side) const override {
         return base_.emitChild(redirect(p), side);
@@ -150,6 +160,7 @@ public:
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
         return base_.builtin(name, args);
     }
+    std::string renderType(const std::string& p) const override { return base_.renderType(redirect(p)); }
 
 private:
     std::string redirect(const std::string& p) const {
@@ -160,6 +171,7 @@ private:
 
     const EvalContext& base_;
     std::string prefix_;
+    int index_;
 };
 
 // Exposes a fold's accumulated tail as the scalar `acc`; everything else delegates.
@@ -175,6 +187,7 @@ public:
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
         return base_.builtin(name, args);
     }
+    std::string renderType(const std::string& p) const override { return base_.renderType(p); }
 
 private:
     const EvalContext& base_;
@@ -228,7 +241,7 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
                 if (i) out += r.sep;
                 const std::string elem = r.s + "." + std::to_string(i);
                 if (r.parts.empty()) out += ctx.emitChild(elem, r.side);           // plain: emit the element
-                else out += evalRule(r.parts[0], ItemCtx(ctx, elem), helpers, depth);              // item template per element
+                else out += evalRule(r.parts[0], ItemCtx(ctx, elem, i), helpers, depth);           // item template per element
             }
             return out;
         }
@@ -238,9 +251,9 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
             int n = 0;
             for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
             if (n == 0) return "";
-            std::string acc = evalRule(r.parts[1], ItemCtx(ctx, r.s + "." + std::to_string(n - 1)), helpers, depth);
+            std::string acc = evalRule(r.parts[1], ItemCtx(ctx, r.s + "." + std::to_string(n - 1), n - 1), helpers, depth);
             for (int i = n - 2; i >= 0; --i) {
-                ItemCtx item(ctx, r.s + "." + std::to_string(i));
+                ItemCtx item(ctx, r.s + "." + std::to_string(i), i);
                 acc = evalRule(r.parts[0], AccCtx(item, acc), helpers, depth);
             }
             return acc;
@@ -256,11 +269,12 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
             const int nLits = count(r.s), nHoles = count(r.s2);
             std::string out;
             for (int i = 0; i < nLits; ++i) {
-                out += evalRule(r.parts[0], ItemCtx(ctx, r.s + "." + std::to_string(i)), helpers, depth);
-                if (i < nHoles) out += evalRule(r.parts[1], ItemCtx(ctx, r.s2 + "." + std::to_string(i)), helpers, depth);
+                out += evalRule(r.parts[0], ItemCtx(ctx, r.s + "." + std::to_string(i), i), helpers, depth);
+                if (i < nHoles) out += evalRule(r.parts[1], ItemCtx(ctx, r.s2 + "." + std::to_string(i), i), helpers, depth);
             }
             return out;
         }
+        case Rule::Kind::Type: return ctx.renderType(r.s);
         case Rule::Kind::Call: {
             // A named helper sub-rule from the plugin's own table. Depth-capped so a helper cycle bottoms
             // out loudly instead of looping — the DSL stays non-Turing-complete. (Load-time validation
