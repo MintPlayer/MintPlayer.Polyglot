@@ -1,0 +1,14 @@
+record P(x: i32, y: i32)
+
+fn makeP(): P => P(7, 8)
+
+fn main() {
+  let a = P(1, 2)
+  let b = a with { x = 3 }
+  print(b.x)
+  print(b.y)
+  print(a.x)
+  let c = makeP() with { y = 5 }
+  print(c.x)
+  print(c.y)
+}

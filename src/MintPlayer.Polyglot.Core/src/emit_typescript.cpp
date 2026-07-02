@@ -90,6 +90,10 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                    {"tmpl":["-",{"emitChild":"node.operand","side":"unary"}]}]} ] ],
              "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
   "Cast": { "fn": "convert", "args": [ {"emit":"node.operand"} ] },
+  "With": { "case": { "when": [ [ {"eq":["node.baseIsSimple","true"]},
+              {"tmpl":["new ",{"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},")"]} ] ],
+            "else": {"tmpl":["(() => { const ",{"get":"node.tempName"}," = ",{"emit":"node.base"},"; return new ",
+                             {"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},"); })()"]} } },
   "Binary": { "case": { "when": [
       [ {"and":[{"or":[{"eq":["node.op","=="]},{"eq":["node.op","!="]}]},{"eq":["node.lhsIsRecord","true"]}]},
         { "case": { "when": [ [ {"eq":["node.op","=="]},
@@ -153,6 +157,7 @@ const char* tsExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::MakeCase: return "MakeCase";
         case ir::ExprKind::Unary:    return "Unary";
         case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::With:     return "With";
         case ir::ExprKind::Binary:   return "Binary";
         default:                     return "";
     }
@@ -288,40 +293,28 @@ std::string tsConvert(const TypeRef& from, const TypeRef& to, const std::string&
 }
 
 // The TS rule-interpreter seam: only what differs from the shared IrExprCtx — the TS builtins, the TS
-// atom-wrapping policy, and the semantic predicates the TS rules test. `indexerTypes` is the emitter's
-// per-module set of types whose `operator get` becomes a `.get(i)` method (no `[]` overload in TS);
-// `recordNames` its per-module record set (record `==` is structural -> `.equals`).
+// atom-wrapping policy, and the TS-specific predicates (the module facts themselves — lhsIsRecord,
+// receiverHasIndexer — are lowering-precomputed IR bits the shared IrExprCtx reads).
 class TsExprCtx : public IrExprCtx {
 public:
-    TsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit,
-              const std::unordered_set<std::string>& indexerTypes,
-              const std::unordered_set<std::string>& recordNames)
-        : IrExprCtx(e, spec, std::move(emit)), indexerTypes_(indexerTypes), recordNames_(recordNames) {}
+    using IrExprCtx::IrExprCtx;
 
 protected:
     bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
         if (side == "recv") { // TS atom(): wrap a unary; wrap a binary only when it stays an operator
             if (c.kind == ir::ExprKind::Unary) return true;
             // a scalar binary needs parens as a receiver; a user-type binary emits a (high-binding) method call
-            return c.kind == ir::ExprKind::Binary && !isUserType(static_cast<const ir::Binary&>(c).lhs->type);
+            return c.kind == ir::ExprKind::Binary && !static_cast<const ir::Binary&>(c).lhsIsUserType;
         }
         // "unary": wrap only a binary operand
         return c.kind == ir::ExprKind::Binary;
     }
 
     std::string targetGet(const std::string& path) const override {
-        if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index) {
-            const auto& ix = static_cast<const ir::Index&>(e_);
-            bool has = ix.receiver->type.kind == TypeRef::Kind::Named && indexerTypes_.count(ix.receiver->type.name);
-            return has ? "true" : "false";
-        }
         if (path == "node.typeIsSmallInt") return isSmallInt(e_.type) ? "true" : "false";
-        if (e_.kind == ir::ExprKind::Binary) {
-            const auto& b = static_cast<const ir::Binary&>(e_);
-            if (path == "node.lhsIsRecord")
-                return (b.lhs->type.kind == TypeRef::Kind::Named && recordNames_.count(b.lhs->type.name)) ? "true" : "false";
-            if (path == "node.hasOpMethod") // operator overload -> method call (TS has no operators)
-                return (isUserType(b.lhs->type) && !opMethod(b.op).empty()) ? "true" : "false";
+        if (path == "node.hasOpMethod" && e_.kind == ir::ExprKind::Binary) {
+            const auto& b = static_cast<const ir::Binary&>(e_); // operator overload -> method call (no TS operators)
+            return (b.lhsIsUserType && !opMethod(b.op).empty()) ? "true" : "false";
         }
         return "";
     }
@@ -357,10 +350,6 @@ protected:
         }
         return "";
     }
-
-private:
-    const std::unordered_set<std::string>& indexerTypes_;
-    const std::unordered_set<std::string>& recordNames_;
 };
 
 class TypeScriptEmitter : public EmitterBase {
@@ -369,23 +358,14 @@ public:
         out_.clear();
         indent_ = 0;
         recordNames_.clear();
-        recordFields_.clear();
-        indexerTypes_.clear();
         interfaceNames_.clear();
         for (const auto& i : m.interfaces) interfaceNames_.insert(i.name); // a class `implements` these, `extends` a class
         externMap_.clear();
-        // Types with an `operator fn get` indexer: TS has no `[]` overload, so `recv[i]` becomes `recv.get(i)`.
-        auto noteIndexer = [&](const std::string& name, const std::vector<ir::Method>& ms) {
-            for (const auto& m : ms) if (m.kind == ir::MethodKind::Operator && m.name == "get") indexerTypes_.insert(name);
-        };
-        for (const auto& c : m.classes) noteIndexer(c.name, c.methods);
-        for (const auto& r : m.records) noteIndexer(r.name, r.methods);
         for (const auto& et : m.externTypes) externMap_[et.name] = &et;
         g_externTypes = &externMap_;
-        for (const auto& r : m.records) { // records compare structurally (§3.C); a TS record is a class
-            recordNames_.insert(r.name);
-            for (const auto& f : r.fields) recordFields_[r.name].push_back(f.name); // ctor arg order, for `with`
-        }
+        // records compare structurally (§3.C); a TS record is a class (the set backs emitRecordEquals —
+        // expression-level record/indexer facts are lowering-precomputed IR bits now)
+        for (const auto& r : m.records) recordNames_.insert(r.name);
         for (const auto& e : m.enums) emitEnum(e);
         for (const auto& i : m.interfaces) emitInterface(i);
         for (const auto& u : m.unions) emitUnion(u);
@@ -405,12 +385,9 @@ public:
     }
 
 private:
-    std::unordered_set<std::string> recordNames_;
-    std::unordered_map<std::string, std::vector<std::string>> recordFields_; // record name -> ctor field order
-    std::unordered_set<std::string> indexerTypes_; // types with an `operator get` -> `recv[i]` is `recv.get(i)`
+    std::unordered_set<std::string> recordNames_;    // backs emitRecordEquals' structural-== dispatch
     std::unordered_set<std::string> interfaceNames_; // names declared as interfaces (class implements vs extends)
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
-    int tmp_ = 0; // fresh-name counter (e.g. the `with`-copy IIFE binder)
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
@@ -713,8 +690,7 @@ private:
             const auto& rules = tsExprRules();
             auto it = rules.find(key);
             if (it != rules.end()) {
-                TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
-                              indexerTypes_, recordNames_);
+                TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); });
                 return engine::evalRule(it->second, ctx);
             }
         }
@@ -746,27 +722,6 @@ private:
                 std::vector<std::string> args;
                 for (const auto& a : mc.args) args.push_back(emitExpr(*a));
                 return recv + "." + mc.method + renderArgs(args);
-            }
-            case ir::ExprKind::With: {
-                // A TS record is a class, so rebuild via its ctor (preserving the prototype/methods): each
-                // field is the override or copied from the base. Bind the base to a temp (IIFE) unless it's a
-                // simple var, so it's evaluated once — matching C#'s `expr with { … }`.
-                const auto& w = static_cast<const ir::With&>(e);
-                const auto fit = recordFields_.find(e.type.name);
-                std::unordered_map<std::string, std::string> overrides;
-                for (const auto& f : w.fields) overrides[f.name] = emitExpr(*f.value);
-                bool simple = w.base->kind == ir::ExprKind::Var;
-                std::string baseRef = simple ? emitExpr(*w.base) : "__w" + std::to_string(tmp_++);
-                std::string ctor = "new " + e.type.name + "(";
-                if (fit != recordFields_.end())
-                    for (std::size_t i = 0; i < fit->second.size(); ++i) {
-                        if (i) ctor += ", ";
-                        auto o = overrides.find(fit->second[i]);
-                        ctor += o != overrides.end() ? o->second : baseRef + "." + fit->second[i];
-                    }
-                ctor += ")";
-                if (simple) return ctor;
-                return "(() => { const " + baseRef + " = " + emitExpr(*w.base) + "; return " + ctor + "; })()";
             }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));

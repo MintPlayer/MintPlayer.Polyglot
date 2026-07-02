@@ -1215,6 +1215,23 @@ registered) — non-extern user types still get "'i32' shadows a builtin type". 
 P18-final baseline (114 files, zero diffs), unit +4 (refusal tests), run-diff 38/38, run-python 37/37,
 samples 10/10, fidelity 10/10.
 
+**Slice-2 ✅ (2026-07-02) — lowering absorbs the expression-layer module facts; `With` is data on all three
+targets.** IR gains lowering-precomputed facts: `Binary.lhsIsRecord`/`lhsIsUserType`, `Index.
+receiverHasIndexer`, and **`With.ctorArgs`/`tempName`/`baseIsSimple`** (the record's fields in decl order,
+each the override or a `<base>.field` read; non-simple bases get a `__w<n>` temp for single eval —
+`Lowerer` grew `recordNames_`/`records_`/`indexerTypes_` tables). The shared `IrExprCtx` reads them, so:
+`TsExprCtx` lost its `indexerTypes`/`recordNames` by-ref params (its `targetGet` keeps only
+`typeIsSmallInt` + `hasOpMethod` = the lhsIsUserType bit × the TS opMethod table; `wrapAtom` reads the
+bit); the TS emitter dropped `recordFields_`/`indexerTypes_`/`tmp_` + its `noteIndexer` scan. **`With` is
+now a rule in all three tables**: C# native (`base with { f = v }` via a `map` item over `node.fields`),
+TS/Python ctor rebuild (`case` on `baseIsSimple`; TS IIFE / Python lambda for the non-simple temp) —
+**`WithExpressions` flips back on for Python** (only `BlockLambdas` still gates). Deviations from the
+plan, both principled: `This`→`Var("lhs")` was NOT moved to lowering — the rebind is a *C# declaration
+shape* consequence (TS keeps `this`, Python `self`), so it stays a C#-ctx concern for slice 3; Match/walrus
+facts land in slice 3 *with their consumers* (a fact nobody reads can't be meaningfully byte-gated). New
+conformance program **with_update.pg** (simple + non-simple bases, all targets) — gates now **39/39 C#-TS,
+38/38 Python**; pre-existing 114 emitted files byte-identical; unit tests updated (+With-rebuild goldens).
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

@@ -413,14 +413,15 @@ int main() {
         check(compileStd(blockLambda, findTarget("csharp")).ok && compileStd(blockLambda, findTarget("typescript")).ok,
               "P19: C#/TS still compile a statement-bodied lambda");
 
+        // P19 (2): `with` emits everywhere via the lowering-precomputed ctor rebuild (Python included).
         const char* withExpr = "record P(x: i32, y: i32)\n"
                                "fn main() { let a = P(1, 2)\n  let b = a with { x = 3 }\n  print(b.x) }\n";
         EmitResult pyW = compileStd(withExpr, findTarget("python"));
-        bool namedW = false;
-        for (const auto& d : pyW.diagnostics) if (has(d.message, "withExpressions")) namedW = true;
-        check(!pyW.ok && namedW, "P19: python refuses a with-expression (until the ctor-rebuild lowering)");
-        check(compileStd(withExpr, findTarget("csharp")).ok && compileStd(withExpr, findTarget("typescript")).ok,
-              "P19: C#/TS still compile a with-expression");
+        check(pyW.ok && has(pyW.code, "P(3, a.y)"), "P19: python with-expression -> ctor rebuild");
+        EmitResult tsW = compileStd(withExpr, findTarget("typescript"));
+        check(tsW.ok && has(tsW.code, "new P(3, a.y)"), "P19: TS with-expression -> ctor rebuild (simple base)");
+        EmitResult csW = compileStd(withExpr, findTarget("csharp"));
+        check(csW.ok && has(csW.code, "a with { x = 3 }"), "P19: C# with-expression stays native");
     }
     // P9-V audit — a tuple pattern in `match` binds + type-checks but has no lowering, so it must refuse
     // (never miscompile) rather than emit a call against undefined binders. (for-in destructuring is fine.)

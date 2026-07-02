@@ -99,6 +99,10 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Var":    { "fn": "ident", "args": [ {"get":"node.name"} ] },
   "Extern": { "get": "node.code" },
   "Await":  { "tmpl": [ "await ", {"emitChild":"node.operand","side":"recv"} ] },
+  "With": { "tmpl": [ {"emitChild":"node.base","side":"recv"}, " with { ",
+              {"map":"node.fields","sep":", ",
+               "item":{"tmpl":[{"fn":"ident","args":[{"get":"item.name"}]}," = ",{"emit":"item.value"}]}},
+              " }" ] },
   "Cast":   { "tmpl": [ "(", {"fn":"castType"}, ")(", {"emit":"node.operand"}, ")" ] },
   "Unary":  { "tmpl": [ {"get":"node.op"}, {"emitChild":"node.operand","side":"unary"} ] }
 })JSON";
@@ -139,6 +143,7 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Var:      return "Var";
         case ir::ExprKind::Extern:   return "Extern";
         case ir::ExprKind::Await:    return "Await";
+        case ir::ExprKind::With:     return "With";
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::Unary:    return "Unary";
         default:                     return "";
@@ -623,12 +628,6 @@ private:
                 std::vector<std::string> args;
                 for (const auto& a : mc.args) args.push_back(emitExpr(*a));
                 return recv + "." + mc.method + renderArgs(args);
-            }
-            case ir::ExprKind::With: { // C# records support `with` natively
-                const auto& w = static_cast<const ir::With&>(e);
-                std::string s = atom(*w.base) + " with { ";
-                for (std::size_t i = 0; i < w.fields.size(); ++i) { if (i) s += ", "; s += csIdent(w.fields[i].name) + " = " + emitExpr(*w.fields[i].value); }
-                return s + " }";
             }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));

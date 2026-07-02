@@ -15,6 +15,24 @@ std::string IrExprCtx::get(const std::string& path) const {
     }
     if (path == "node.name" && e_.kind == ir::ExprKind::Var)    return static_cast<const ir::Var&>(e_).name;
     if (path == "node.code" && e_.kind == ir::ExprKind::Extern) return static_cast<const ir::Extern&>(e_).code;
+    if (e_.kind == ir::ExprKind::Binary) { // module facts precomputed in lowering (P19)
+        const auto& b = static_cast<const ir::Binary&>(e_);
+        if (path == "node.lhsIsRecord")   return b.lhsIsRecord ? "true" : "false";
+        if (path == "node.lhsIsUserType") return b.lhsIsUserType ? "true" : "false";
+    }
+    if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index)
+        return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
+    if (e_.kind == ir::ExprKind::With) {
+        const auto& w = static_cast<const ir::With&>(e_);
+        if (path == "node.baseIsSimple")   return w.baseIsSimple ? "true" : "false";
+        if (path == "node.tempName")       return w.tempName;
+        if (path == "node.ctorArgs.count") return std::to_string(w.ctorArgs.size());
+        if (path == "node.fields.count")   return std::to_string(w.fields.size());
+        if (path.rfind("node.fields.", 0) == 0 && path.size() > 5 && path.rfind(".name") == path.size() - 5) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
+            if (i < w.fields.size()) return w.fields[i].name;
+        }
+    }
     if (e_.kind == ir::ExprKind::Call) {
         const auto& c = static_cast<const ir::Call&>(e_);
         if (path == "node.callee")        return c.callee;
@@ -126,6 +144,18 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Cast)  return static_cast<const ir::Cast&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
+    }
+    if (e_.kind == ir::ExprKind::With) {
+        const auto& w = static_cast<const ir::With&>(e_);
+        if (path == "node.base") return w.base.get();
+        if (path.rfind("node.ctorArgs.", 0) == 0) { // indexed ctor-rebuild arg (from a `map` rule)
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(14)));
+            if (i < w.ctorArgs.size()) return w.ctorArgs[i].get();
+        }
+        if (path.rfind("node.fields.", 0) == 0) { // `node.fields.<i>` / `.value`: the override's value expr
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
+            if (i < w.fields.size()) return w.fields[i].value.get();
+        }
     }
     return nullptr;
 }

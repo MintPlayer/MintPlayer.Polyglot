@@ -60,6 +60,16 @@ public:
         // (e.g. `Error.message`, declared on the core-prelude `extern class Error`, on a `: Error` subclass).
         for (const auto& c : unit.classes) for (const auto& b : c.bases) if (!b.name.empty()) bases_[c.name].push_back(b.name);
         for (const auto& r : unit.records) for (const auto& b : r.bases) if (!b.name.empty()) bases_[r.name].push_back(b.name);
+        // Module facts precomputed onto IR nodes (P19), so the emit layer never scans the module: record
+        // names (structural `==`), record decls (the `with` ctor-rebuild reads field order), and the types
+        // declaring an `operator fn get` (a target without `[]` overloading calls `.get(i)`).
+        for (const auto& r : unit.records) { recordNames_.insert(r.name); records_[r.name] = &r; }
+        auto noteIndexer = [&](const std::string& name, const std::vector<Member>& ms) {
+            for (const auto& mem : ms)
+                if (mem.kind == MemberKind::Operator && mem.name == "get") indexerTypes_.insert(name);
+        };
+        for (const auto& r : unit.records) noteIndexer(r.name, r.members);
+        for (const auto& c : unit.classes) noteIndexer(c.name, c.members);
     }
 
     // Build an ir::Bound from a receiver, args and a "Type.member" binding (picks the per-target arms).
@@ -188,6 +198,9 @@ private:
     std::unordered_map<std::string, const std::vector<TargetBinding>*> ctorBindings_; // "Type" -> ctor FFI arms
     std::unordered_set<std::string> freeFns_;                                     // top-level function names
     std::unordered_set<std::string> typeNames_;
+    std::unordered_set<std::string> recordNames_;                    // user records (structural `==`)
+    std::unordered_map<std::string, const RecordDecl*> records_;     // record name -> decl (field order for `with`)
+    std::unordered_set<std::string> indexerTypes_;                   // types declaring `operator fn get`
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
     std::unordered_map<std::string, std::vector<std::string>> caseFields_;         // case -> field names
@@ -400,12 +413,19 @@ private:
             // value type via `(int)x`; for reference types it's an identity cast — TS strips both).
             case ExprKind::NullAssert: return std::make_unique<ir::Cast>(e.pos, e.type, expr(*e.lhs));
             case ExprKind::Extern:    return std::make_unique<ir::Extern>(e.pos, e.type, e.text);
-            case ExprKind::Binary:
+            case ExprKind::Binary: {
                 // `opt ?? rhs` on an optional generic desugars to `match opt { Some(v) => v, None => rhs }`,
                 // reusing the existing match machinery (no special-case in either emitter).
                 if (e.text == "??" && e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name == "Option")
                     return coalesceOption(e);
-                return std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
+                auto b = std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
+                if (e.lhs->type.kind == TypeRef::Kind::Named && !e.lhs->type.name.empty()) {
+                    const std::string& ln = e.lhs->type.name;
+                    b->lhsIsRecord = recordNames_.count(ln) != 0;
+                    b->lhsIsUserType = !isPrimitiveTypeName(ln) && ln != "unit";
+                }
+                return b;
+            }
             case ExprKind::Member: {
                 // Static const binding `Type.FIELD` (e.g. Math.PI as a bound `extern class` const):
                 // the LHS is a type name, the binding template uses no receiver.
@@ -486,11 +506,14 @@ private:
                 return call;
             }
             case ExprKind::Index: {
-                // List element access `recv[i]` — both targets use `recv[i]`. The result type is the
-                // element type sema resolved onto the node.
-                if (!e.args.empty())
-                    return std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), expr(*e.args[0]));
-                return std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), std::make_unique<ir::IntLit>(e.pos, namedType("i32"), "0"));
+                // List element access `recv[i]`. The result type is the element type sema resolved onto
+                // the node; `receiverHasIndexer` marks a user `operator fn get` receiver (TS -> `.get(i)`).
+                auto ix = !e.args.empty()
+                    ? std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), expr(*e.args[0]))
+                    : std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), std::make_unique<ir::IntLit>(e.pos, namedType("i32"), "0"));
+                ix->receiverHasIndexer = e.lhs->type.kind == TypeRef::Kind::Named &&
+                                         indexerTypes_.count(e.lhs->type.name) != 0;
+                return ix;
             }
             case ExprKind::ListLit: {
                 TypeRef elem = e.type.kind == TypeRef::Kind::Named && !e.type.args.empty() ? e.type.args[0] : TypeRef{};
@@ -506,6 +529,23 @@ private:
             case ExprKind::With: { // record copy `base with { f = v, … }`
                 auto w = std::make_unique<ir::With>(e.pos, e.type, expr(*e.lhs));
                 for (const auto& f : e.fields) w->fields.push_back({f.name, expr(*f.value)});
+                // Precompute the ctor-rebuild (P19): the record's fields in declaration order, each the
+                // override or a `<base>.field` read. A non-simple base gets a fresh temp for single eval;
+                // a simple Var base is read directly (its name re-lowered per field).
+                w->baseIsSimple = w->base->kind == ir::ExprKind::Var;
+                std::string baseName = w->baseIsSimple ? static_cast<const ir::Var&>(*w->base).name
+                                                       : "__w" + std::to_string(tmpCounter_++);
+                if (!w->baseIsSimple) w->tempName = baseName;
+                if (auto rit = records_.find(e.type.name); rit != records_.end()) {
+                    for (const auto& fld : rit->second->fields) {
+                        const Expr* over = nullptr;
+                        for (const auto& f : e.fields) if (f.name == fld.name) { over = f.value.get(); break; }
+                        if (over) w->ctorArgs.push_back(expr(*over));
+                        else w->ctorArgs.push_back(std::make_unique<ir::Member>(
+                            e.pos, fld.type,
+                            std::make_unique<ir::Var>(e.pos, e.lhs->type, baseName), fld.name, false));
+                    }
+                }
                 return w;
             }
             // A surface form with no lowering rule must FAIL LOUDLY, not silently emit a placeholder: a

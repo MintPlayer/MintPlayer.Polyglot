@@ -153,6 +153,10 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
                [ {"eq":["node.op","!"]}, {"tmpl":["not ",{"emitChild":"node.operand","side":"unary"}]} ] ],
              "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
   "Cast": { "fn": "convert", "args": [ {"emit":"node.operand"} ] },
+  "With": { "case": { "when": [ [ {"eq":["node.baseIsSimple","true"]},
+              {"tmpl":[{"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},")"]} ] ],
+            "else": {"tmpl":["(lambda ",{"get":"node.tempName"},": ",{"get":"node.type"},
+                             "(",{"map":"node.ctorArgs","sep":", "},"))(",{"emit":"node.base"},")"]} } },
   "Binary": { "case": { "when": [
       [ {"eq":["node.op","??"]}, {"fn":"nullCoalesce"} ],
       [ {"and":[{"eq":["node.typeIsInt","true"]},
@@ -206,6 +210,7 @@ const char* pyExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::MakeCase: return "MakeCase";
         case ir::ExprKind::Unary:    return "Unary";
         case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::With:     return "With";
         case ir::ExprKind::Binary:   return "Binary";
         default:                     return "";
     }

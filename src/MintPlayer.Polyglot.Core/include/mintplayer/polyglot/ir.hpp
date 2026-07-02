@@ -86,6 +86,11 @@ struct Await : Expr { // `await e` — only inside an async fn; `type` is the un
 struct Binary : Expr {
     std::string op;
     ExprPtr lhs, rhs;
+    // Module facts precomputed in lowering (P19), keeping the emit layer node-local: the lhs type is a
+    // user record (structural `==` -> `.equals` on TS) / any named non-scalar type (operator-overload
+    // dispatch on targets without native operators).
+    bool lhsIsRecord = false;
+    bool lhsIsUserType = false;
     Binary(SourcePos p, Type t, std::string o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::Binary, p, std::move(t)), op(std::move(o)), lhs(std::move(l)), rhs(std::move(r)) {}
 };
@@ -132,6 +137,9 @@ struct New : Expr { // construction `Type(args)` or `Type<TypeArgs>(args)`
 struct Index : Expr { // element access `receiver[index]`
     ExprPtr receiver;
     ExprPtr index;
+    // Precomputed in lowering (P19): the receiver's type declares an `operator fn get` — a target without
+    // `[]` overloading (TS) emits `recv.get(i)` instead of a subscription.
+    bool receiverHasIndexer = false;
     Index(SourcePos p, Type t, ExprPtr r, ExprPtr i)
         : Expr(ExprKind::Index, p, std::move(t)), receiver(std::move(r)), index(std::move(i)) {}
 };
@@ -145,9 +153,16 @@ struct Tuple : Expr { // tuple literal `(a, b)`: C# ValueTuple, TS array `[a, b]
     Tuple(SourcePos p, Type t) : Expr(ExprKind::Tuple, p, std::move(t)) {}
 };
 struct WithField { std::string name; ExprPtr value; }; // one `name = value` override of a `with`-copy
-struct With : Expr { // record copy `base with { f = v, … }`: C# native `with`; TS rebuilds via the ctor
+struct With : Expr { // record copy `base with { f = v, … }`: C# native `with`; TS/Python rebuild via the ctor
     ExprPtr base;
-    std::vector<WithField> fields; // the overridden fields (others copied from base)
+    std::vector<WithField> fields; // the overridden fields (others copied from base) — C#'s native form
+    // The ctor-rebuild, precomputed in lowering (P19): the record's fields in declaration (ctor) order,
+    // each the override expression or a `<base>.field` read. A non-simple base is bound once to `tempName`
+    // for single evaluation (TS IIFE / Python lambda) and the reads reference it; a simple (Var) base is
+    // read directly and `tempName` is empty.
+    std::vector<ExprPtr> ctorArgs;
+    std::string tempName;
+    bool baseIsSimple = false;
     With(SourcePos p, Type t, ExprPtr b) : Expr(ExprKind::With, p, std::move(t)), base(std::move(b)) {}
 };
 // A bound call/access: a portable std method/property resolved to a per-target FFI template. Each backend

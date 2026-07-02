@@ -47,17 +47,15 @@ public:
 // The third backend (P9 validation). Python is colon+indent — a non-brace target that stresses the shared
 // engine. The P9-V spike grew it from the walking skeleton to the FULL §3.A surface feature-by-feature
 // (closures, iterators, operators->dunders, properties, enum/union/match, extensions, exceptions,
-// inheritance, disposal), each validated against the C# oracle (run-python.ps1, 36/36). Two genuine target
-// limits gate (P19 slice 1 — these used to emit silent sentinel strings into "valid" output, the §3.B
-// failure mode): a Python lambda is expression-only (no statement body), and record `with`-update has no
-// emission until the ctor-rebuild lowering lands (P19 slice 2 flips WithExpressions back on).
+// inheritance, disposal), each validated against the C# oracle (run-python.ps1, 36/36). One genuine target
+// limit gates (P19 slice 1 — it used to emit a silent sentinel string into "valid" output, the §3.B
+// failure mode): a Python lambda is expression-only, so statement-bodied lambdas refuse. (`with`-update
+// emits via the P19 slice-2 ctor-rebuild lowering.)
 class PythonBackend : public Backend {
 public:
     std::string name() const override { return "python"; }
     std::string emit(const ir::Module& m) const override { return emitPython(m); }
-    bool supports(Feature f) const override {
-        return f != Feature::BlockLambdas && f != Feature::WithExpressions;
-    }
+    bool supports(Feature f) const override { return f != Feature::BlockLambdas; }
 };
 
 const CSharpBackend kCSharp;
