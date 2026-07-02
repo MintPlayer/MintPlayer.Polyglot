@@ -64,6 +64,17 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.s = v["get"].asString();
         return r;
     }
+    if (v.has("emit")) {
+        r.kind = Rule::Kind::Emit;
+        r.s = v["emit"].asString(); // plain recurse (no precedence wrapping)
+        return r;
+    }
+    if (v.has("emitChild")) {
+        r.kind = Rule::Kind::Emit;
+        r.s = v["emitChild"].asString();
+        r.side = v["side"].asString(); // "l"/"r"/"recv" — the context computes the parenthesization
+        return r;
+    }
     if (v.has("fn")) {
         r.kind = Rule::Kind::Fn;
         r.s = v["fn"].asString();
@@ -106,8 +117,9 @@ bool evalTest(const Test& t, const EvalContext& ctx) {
 
 std::string evalRule(const Rule& r, const EvalContext& ctx) {
     switch (r.kind) {
-        case Rule::Kind::Lit: return r.s;
-        case Rule::Kind::Get: return ctx.get(r.s);
+        case Rule::Kind::Lit:  return r.s;
+        case Rule::Kind::Get:  return ctx.get(r.s);
+        case Rule::Kind::Emit: return ctx.emitChild(r.s, r.side);
         case Rule::Kind::Tmpl: {
             std::string out;
             for (const Rule& p : r.parts) out += evalRule(p, ctx);

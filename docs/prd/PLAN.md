@@ -993,8 +993,14 @@ plug into `ir::Expr` where their shape is grounded.
 builtins). `emitExpr` looks up the rule for the node kind (via `csExprRuleKey`) and interprets it; unmigrated kinds
 still run the C++ switch. **Byte-identical** — the existing differential (run-diff 38/38, run-python 37/37) + golden
 unit tests are the byte-identity oracle, so a separate toggle-harness is redundant for an in-place migration (noted
-as an engineering call). First real proof the imperative ~30% flattens to data. Next: the recursive families —
-`emit`/`emitChild`/`map` primitives grounded here — then `Target`→`BackendHandle`, then TS/Python + the rest.
+as an engineering call). First real proof the imperative ~30% flattens to data.
+**Slice-5 (first recursive family) ✅:** `Binary` migrated to a JSON Rule — introduces the child-recursion
+primitives grounded in the real IR: `{"emit":path}` / `{"emitChild":path,"side":"l|r|recv"}`, where the **context
+computes parenthesization** from the precedence table (plugins never author paren logic — the `child()`/`atom()`
+algorithms moved into `CsExprCtx::emitChild` as fixed C++). Numeric faithfulness = a `subWordWrap(type, inner)`
+builtin (C# sub-32 cast-back), operator spelling = an `opSpelling` builtin. The dead C++ `child()`/`subWordCast`
+were removed. Byte-identical incl. the FruitCake north-star's arithmetic (run-diff 38/38, unit tests +1). Next:
+more recursive families (Call/Member/Cond) via a `map` primitive, then `Target`→`BackendHandle`, then TS/Python.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

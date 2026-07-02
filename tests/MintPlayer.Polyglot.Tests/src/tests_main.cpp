@@ -65,6 +65,9 @@ public:
         return it == fields.end() ? std::string() : it->second;
     }
     bool has(const std::string& path) const override { return fields.count(path) != 0; }
+    std::string emitChild(const std::string& path, const std::string& side) const override {
+        return "<" + path + (side.empty() ? "" : ":" + side) + ">"; // marker (no real IR in the mock)
+    }
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
         if (name == "upper") {
             std::string s = args.empty() ? "" : args[0];
@@ -1113,6 +1116,10 @@ int main() {
               "P18: interpreter Test not+has");
         check(runRule(R"({"case":{"when":[[{"and":[{"has":"node.op"},{"eq":["node.op","+"]}]},"plus"]],"else":"x"}})", ctx) == "plus",
               "P18: interpreter Test and");
+        // emit / emitChild route to the context's child-recursion (marker output in the mock).
+        check(runRule(R"({"tmpl":[{"emitChild":"node.lhs","side":"l"}," + ",{"emit":"node.rhs"}]})", ctx) ==
+              "<node.lhs:l> + <node.rhs>", "P18: interpreter emit / emitChild");
+
         // Malformed rules fail loudly (never silently misparse).
         bool ok = true;
         runRule(R"({"bogus":1})", ctx, &ok);

@@ -28,6 +28,11 @@ public:
     virtual std::string get(const std::string& path) const = 0;   // {"get":"node.op"} — "" when absent
     virtual bool has(const std::string& path) const = 0;          // Test {"has":"node.guard"}
     virtual std::string builtin(const std::string& name, const std::vector<std::string>& args) const = 0;
+    // Recurse into a child IR node at `path`, emitting it. `side` selects precedence parenthesization computed
+    // by the CONTEXT (not the plugin): "" = plain, "l"/"r" = a binary operand (wrap by precedence+associativity),
+    // "recv" = an atom receiver (wrap a binary/unary/cast). Keeping the paren algorithm in the context (fixed
+    // C++) means plugins declare only the precedence table, never author paren logic.
+    virtual std::string emitChild(const std::string& path, const std::string& side) const = 0;
 };
 
 // A boolean test over context values — deliberately weak (equality / presence / combinators; no arithmetic,
@@ -41,8 +46,9 @@ struct Test {
 
 // A parsed emission Rule (the scalar spine — see the header note for the deferred recursive forms).
 struct Rule {
-    enum class Kind { Lit, Tmpl, Get, Fn, Case } kind = Kind::Lit;
-    std::string s;                              // Lit: text | Get: path | Fn: builtin name
+    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit } kind = Kind::Lit;
+    std::string s;                              // Lit: text | Get/Emit: path | Fn: builtin name
+    std::string side;                           // Emit: precedence side ("" / "l" / "r" / "recv")
     std::vector<Rule> parts;                    // Tmpl: parts | Fn: args
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule

@@ -10,6 +10,7 @@
 #include "mintplayer/polyglot/emitter_base.hpp"
 
 #include <cassert>
+#include <functional>
 #include <unordered_map>
 
 // Hand-written IR -> C# pretty-printer. Walks the typed IR; wraps the program's free functions in a
@@ -58,7 +59,11 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Bool":  { "case": { "when": [ [ {"eq":["node.value","true"]}, {"get":"spec.trueLit"} ] ],
                        "else": {"get":"spec.falseLit"} } },
   "Null":  { "get": "spec.nullLit" },
-  "Str":   { "fn": "escapeString", "args": [ {"get":"node.value"} ] }
+  "Str":   { "fn": "escapeString", "args": [ {"get":"node.value"} ] },
+  "Binary": { "fn": "subWordWrap", "args": [ {"get":"node.type"},
+                { "tmpl": [ {"emitChild":"node.lhs","side":"l"}, " ",
+                            {"fn":"opSpelling","args":[{"get":"node.op"}]}, " ",
+                            {"emitChild":"node.rhs","side":"r"} ] } ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -83,9 +88,10 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Int:   return "Int";
         case ir::ExprKind::Float: return "Float";
         case ir::ExprKind::Bool:  return "Bool";
-        case ir::ExprKind::Null:  return "Null";
-        case ir::ExprKind::Str:   return "Str";
-        default:                  return "";
+        case ir::ExprKind::Null:   return "Null";
+        case ir::ExprKind::Str:    return "Str";
+        case ir::ExprKind::Binary: return "Binary";
+        default:                   return "";
     }
 }
 
@@ -95,10 +101,13 @@ const char* csExprRuleKey(ir::ExprKind k) {
 // families migrate.
 class CsExprCtx : public engine::EvalContext {
 public:
-    CsExprCtx(const ir::Expr& e, const BackendSpec& spec) : e_(e), spec_(spec) {}
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    CsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit)
+        : e_(e), spec_(spec), emit_(std::move(emit)) {}
 
     std::string get(const std::string& path) const override {
         if (path == "node.type")     return e_.type.name;
+        if (path == "node.op")       return e_.kind == ir::ExprKind::Binary ? static_cast<const ir::Binary&>(e_).op : "";
         if (path == "spec.nullLit")  return spec_.nullLit;
         if (path == "spec.trueLit")  return spec_.trueLit;
         if (path == "spec.falseLit") return spec_.falseLit;
@@ -113,18 +122,57 @@ public:
         return "";
     }
     bool has(const std::string& path) const override { return !get(path).empty(); }
+
+    // Recurse into a child expr, applying the fixed C# parenthesization rules the emitter's child()/atom() used.
+    std::string emitChild(const std::string& path, const std::string& side) const override {
+        const ir::Expr* c = childExpr(path);
+        if (!c) return "";
+        std::string inner = emit_(*c);
+        if (side == "l" || side == "r") { // binary operand: wrap by precedence + associativity
+            if (e_.kind == ir::ExprKind::Binary && c->kind == ir::ExprKind::Binary) {
+                int pp = operatorPrecedence(static_cast<const ir::Binary&>(e_).op);
+                int cp = operatorPrecedence(static_cast<const ir::Binary&>(*c).op);
+                if (side == "r" ? cp <= pp : cp < pp) return "(" + inner + ")";
+            }
+            return inner;
+        }
+        if (side == "recv") { // atom(): wrap a binary/unary/cast receiver
+            if (c->kind == ir::ExprKind::Binary || c->kind == ir::ExprKind::Unary || c->kind == ir::ExprKind::Cast)
+                return "(" + inner + ")";
+        }
+        return inner;
+    }
+
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
         if (name == "intSuffix") {
             auto it = spec_.intSuffix.find(args.empty() ? std::string() : args[0]);
             return it == spec_.intSuffix.end() ? std::string() : it->second;
         }
         if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
+        if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
+        if (name == "subWordWrap") { // C# sub-32 arithmetic promotes to int; cast back to wrap at 8/16 bits
+            const std::string& tn = args.size() > 0 ? args[0] : std::string();
+            const std::string& inner = args.size() > 1 ? args[1] : std::string();
+            const char* cast = tn == "i8" ? "sbyte" : tn == "i16" ? "short"
+                             : tn == "u8" ? "byte"  : tn == "u16" ? "ushort" : nullptr;
+            return cast ? "(" + std::string(cast) + ")(" + inner + ")" : inner;
+        }
         return "";
     }
 
 private:
+    const ir::Expr* childExpr(const std::string& path) const {
+        if (e_.kind == ir::ExprKind::Binary) {
+            const auto& b = static_cast<const ir::Binary&>(e_);
+            if (path == "node.lhs") return b.lhs.get();
+            if (path == "node.rhs") return b.rhs.get();
+        }
+        return nullptr;
+    }
+
     const ir::Expr& e_;
     const BackendSpec& spec_;
+    EmitFn emit_;
 };
 
 // The current module's `extern class` type map (name -> spelling/ctor templates), set at the top of each
@@ -228,17 +276,6 @@ std::string csWhere(const std::vector<ir::GenericParam>& gs) {
         for (std::size_t i = 0; i < bounds.size(); ++i) { if (i) s += ", "; s += csType(*bounds[i]); }
     }
     return s;
-}
-
-// The C# cast that wraps a sub-32 integer result back into its type's range, or nullptr for types that
-// already wrap natively (int/uint/long/ulong). C# widens byte/sbyte/short/ushort arithmetic to int.
-const char* subWordCast(const TypeRef& t) {
-    if (t.kind != TypeRef::Kind::Named) return nullptr;
-    if (t.name == "i8")  return "sbyte";
-    if (t.name == "i16") return "short";
-    if (t.name == "u8")  return "byte";
-    if (t.name == "u16") return "ushort";
-    return nullptr;
 }
 
 bool isPrimNumeric(const std::string& n) {
@@ -535,15 +572,6 @@ private:
         }
     }
 
-    std::string child(const ir::Expr& c, int parentPrec, bool isRight) {
-        std::string inner = emitExpr(c);
-        if (c.kind == ir::ExprKind::Binary) {
-            int cp = operatorPrecedence(static_cast<const ir::Binary&>(c).op);
-            if (isRight ? (cp <= parentPrec) : (cp < parentPrec)) return "(" + inner + ")";
-        }
-        return inner;
-    }
-
     std::string emitExpr(const ir::Expr& e) override {
         // Migrated leaf literals (Int/Float/Bool/Null/Str) are now JSON Rules interpreted here; every other
         // kind still runs the C++ switch below. (P18 slice 4.)
@@ -551,7 +579,7 @@ private:
             const auto& rules = csharpExprRules();
             auto it = rules.find(key);
             if (it != rules.end()) {
-                CsExprCtx ctx(e, spec());
+                CsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); });
                 return engine::evalRule(it->second, ctx);
             }
         }
@@ -601,15 +629,6 @@ private:
                 return "(" + csType(e.type) + ")(" + emitExpr(*c.operand) + ")";
             }
             case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw C# verbatim
-            case ir::ExprKind::Binary: {
-                const auto& b = static_cast<const ir::Binary&>(e);
-                int p = operatorPrecedence(b.op);
-                std::string expr = child(*b.lhs, p, false) + " " + csharpSpec().binOp(b.op) + " " + child(*b.rhs, p, true);
-                // C# promotes sub-32 integer arithmetic to `int`, so it doesn't wrap at 8/16 bits — cast
-                // back to wrap like the source type. (int/uint/long/ulong already wrap unchecked.)
-                if (const char* c = subWordCast(e.type)) return "(" + std::string(c) + ")(" + expr + ")";
-                return expr;
-            }
             case ir::ExprKind::Call: {
                 const auto& c = static_cast<const ir::Call&>(e);
                 // Free functions live in `static class Program`; qualify them so calls from emitted classes
