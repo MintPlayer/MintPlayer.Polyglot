@@ -49,13 +49,16 @@ const BackendSpec& csharpSpec() {
     return spec;
 }
 
-// P18 slices 4-7: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
+// P18 slices 4-8: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
 // rule for the node kind and interprets it; kinds without a rule still run the C++ switch. Byte-identical (the
 // differential + golden gates are the oracle). Covered so far: the leaf literals (Int/Float/Bool/Null/Str),
-// Binary (child recursion + precedence via `emitChild`), Call (arg lists via the `map` primitive), and the
-// scalar-child recursion family Member/Index/Cond. A free function lives in `static class Program`, so a free
-// call is qualified `Program.f(...)`; a function-valued local (closure param) is called bare — the `case` on
-// `node.isFree` picks between them. `ident` is a builtin escaping a C#-keyword field name (`@base`).
+// Binary (child recursion + precedence via `emitChild`), Call (arg lists via the `map` primitive), the
+// scalar-child family Member/Index/Cond, and the delimited-list family Tuple/ListLit (`map` + affixes). A free
+// function lives in `static class Program`, so a free call is qualified `Program.f(...)`; a function-valued
+// local (closure param) is called bare — the `case` on `node.isFree` picks between them. Builtins: `ident`
+// (escape a C#-keyword name -> `@base`), `elemType` (render a ListLit's element type). Tuple's brackets read
+// from the spec's `delimited` table; ListLit's container is the inherent BCL `List<T>` (list literals are
+// built-in syntax like TS `[…]`, so the container is fixed, independent of whether std.collections is imported).
 const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
   "Float": { "get": "node.text" },
@@ -79,7 +82,11 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
                 { "fn": "ident", "args": [ {"get":"node.field"} ] } ] },
   "Index": { "tmpl": [ {"emitChild":"node.receiver","side":"recv"}, "[", {"emit":"node.index"}, "]" ] },
   "Cond":  { "tmpl": [ "(", {"emit":"node.cond"}, " ? ", {"emit":"node.then"},
-                       " : ", {"emit":"node.els"}, ")" ] }
+                       " : ", {"emit":"node.els"}, ")" ] },
+  "Tuple": { "tmpl": [ {"get":"spec.delimited.tuple.open"}, {"map":"node.elements","sep":", "},
+                       {"get":"spec.delimited.tuple.close"} ] },
+  "ListLit": { "tmpl": [ "new global::System.Collections.Generic.List<", {"fn":"elemType"}, "> { ",
+                         {"map":"node.elements","sep":", "}, " }" ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -108,14 +115,17 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Str:    return "Str";
         case ir::ExprKind::Binary: return "Binary";
         case ir::ExprKind::Call:   return "Call";
-        case ir::ExprKind::Member: return "Member";
-        case ir::ExprKind::Index:  return "Index";
-        case ir::ExprKind::Cond:   return "Cond";
-        default:                   return "";
+        case ir::ExprKind::Member:  return "Member";
+        case ir::ExprKind::Index:   return "Index";
+        case ir::ExprKind::Cond:    return "Cond";
+        case ir::ExprKind::Tuple:   return "Tuple";
+        case ir::ExprKind::ListLit: return "ListLit";
+        default:                    return "";
     }
 }
 
 std::string csIdent(const std::string& n); // defined below; the `ident` builtin escapes C# keyword fields
+std::string csType(const TypeRef& t);      // defined below; the `elemType` builtin renders a list element type
 
 // EvalContext over an ir::Expr + the backend spec — the seam that plugs the interpreter into the real IR.
 // Exposes leaf fields (`node.text`/`node.value`/`node.type`), spec literals (`spec.*`), and the fixed builtins
@@ -141,6 +151,24 @@ public:
             if (path == "node.staticType") return m.staticType;
             if (path == "node.field")      return m.field;
             if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
+        }
+        if (path == "node.elements.count") {
+            if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
+            if (e_.kind == ir::ExprKind::Tuple)   return std::to_string(static_cast<const ir::Tuple&>(e_).elements.size());
+        }
+        if (path.rfind("spec.delimited.", 0) == 0) { // spec.delimited.<key>.<open|sep|close>
+            const std::string rest = path.substr(15);
+            const std::size_t dot = rest.rfind('.');
+            if (dot != std::string::npos) {
+                auto it = spec_.delimited.find(rest.substr(0, dot));
+                if (it != spec_.delimited.end()) {
+                    const std::string field = rest.substr(dot + 1);
+                    if (field == "open")  return it->second.open;
+                    if (field == "sep")   return it->second.sep;
+                    if (field == "close") return it->second.close;
+                }
+            }
+            return "";
         }
         if (path == "spec.nullLit")  return spec_.nullLit;
         if (path == "spec.trueLit")  return spec_.trueLit;
@@ -184,6 +212,7 @@ public:
         }
         if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
         if (name == "ident")        return csIdent(args.empty() ? std::string() : args[0]);
+        if (name == "elemType")     return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
         if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
         if (name == "subWordWrap") { // C# sub-32 arithmetic promotes to int; cast back to wrap at 8/16 bits
             const std::string& tn = args.size() > 0 ? args[0] : std::string();
@@ -222,6 +251,17 @@ private:
             if (path == "node.then") return c.then.get();
             if (path == "node.els")  return c.els.get();
         }
+        if (path.rfind("node.elements.", 0) == 0) { // indexed element path `node.elements.<i>` (from a `map` rule)
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(14)));
+            if (e_.kind == ir::ExprKind::ListLit) {
+                const auto& l = static_cast<const ir::ListLit&>(e_);
+                if (i < l.elements.size()) return l.elements[i].get();
+            }
+            if (e_.kind == ir::ExprKind::Tuple) {
+                const auto& t = static_cast<const ir::Tuple&>(e_);
+                if (i < t.elements.size()) return t.elements[i].get();
+            }
+        }
         return nullptr;
     }
 
@@ -234,8 +274,6 @@ private:
 // emit() so the free `csType` can consult declared spellings without threading the map through every call
 // site. Single-threaded compile; this emitter is the only writer; rebuilt and re-pointed each emit().
 const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nullptr;
-
-std::string csType(const TypeRef& t);
 
 // Substitute a type-spelling template's `$0,$1,…` with the rendered type args (e.g. List's
 // "…List<$0>" with [i32] -> "…List<int>").
@@ -695,23 +733,6 @@ private:
                 std::vector<std::string> args;
                 for (const auto& a : mc.args) args.push_back(emitExpr(*a));
                 return recv + "." + mc.method + renderArgs(args);
-            }
-            case ir::ExprKind::ListLit: {
-                const auto& l = static_cast<const ir::ListLit&>(e);
-                // A list literal is built-in syntax (like TS `[…]`), so its container is inherent — the BCL
-                // List — independent of whether std.collections is imported. (The `List<T>` *type* spelling
-                // is still registry-driven; only methods like `.add` need the import.)
-                std::vector<std::string> parts;
-                for (const auto& el : l.elements) parts.push_back(emitExpr(*el));
-                // Dynamic open affix: the BCL List<…> spelling carries the rendered element type.
-                return renderDelimited({"new global::System.Collections.Generic.List<" + csType(l.elem) + "> { ",
-                                        ", ", " }"}, parts);
-            }
-            case ir::ExprKind::Tuple: {
-                const auto& t = static_cast<const ir::Tuple&>(e);
-                std::vector<std::string> parts;
-                for (const auto& el : t.elements) parts.push_back(emitExpr(*el));
-                return renderDelimited(csharpSpec().delimited.at("tuple"), parts);
             }
             case ir::ExprKind::With: { // C# records support `with` natively
                 const auto& w = static_cast<const ir::With&>(e);

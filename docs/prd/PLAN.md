@@ -1021,6 +1021,16 @@ arms; the three dead C++ switch cases were removed. Byte-identical (run-diff 38/
 unchanged — the conformance programs exercise all three). Next: the delimited-list family (ListLit/Tuple/New/
 MakeCase — reuses `map`) or `Target`→`BackendHandle`, then TS/Python.
 
+**Slice-8 (delimited-list family, part 1) ✅:** C# `Tuple`/`ListLit` migrated — both are "delimited list of
+child exprs", so they **reuse `map`** (no new primitive). `Tuple` reads its brackets from the spec's `delimited`
+table (`{"get":"spec.delimited.tuple.open"}` — the affix stays *data*), joined by `map`. `ListLit`'s container
+is the inherent BCL `List<T>` (list literals are built-in syntax, container fixed regardless of imports), so its
+affix is a literal splicing an **`elemType` builtin** (renders the element type via `csType`). `CsExprCtx` grew
+`spec.delimited.<key>.<field>` + `node.elements.count` reads, indexed `node.elements.<i>` `childExpr`, and the
+`elemType` builtin; `csType` was forward-declared for it. Two dead C++ switch cases removed. Byte-identical
+(run-diff 38/38, run-python 37/37, unit tests pass). Next: `New`/`MakeCase` (delimited args + a type-arg-suffix
+builtin), then `Target`→`BackendHandle`, then TS/Python.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
