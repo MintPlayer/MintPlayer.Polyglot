@@ -31,7 +31,9 @@ public:
     // Recurse into a child IR node at `path`, emitting it. `side` selects precedence parenthesization computed
     // by the CONTEXT (not the plugin): "" = plain, "l"/"r" = a binary operand (wrap by precedence+associativity),
     // "recv" = an atom receiver (wrap a binary/unary/cast). Keeping the paren algorithm in the context (fixed
-    // C++) means plugins declare only the precedence table, never author paren logic.
+    // C++) means plugins declare only the precedence table, never author paren logic. A `map` rule walks a
+    // child *list* by asking `get("<path>.count")` for its length, then `emitChild("<path>.<i>", side)` for each
+    // element — so an indexed path (`node.args.0`) is a first-class child path, no new context method needed.
     virtual std::string emitChild(const std::string& path, const std::string& side) const = 0;
 };
 
@@ -44,11 +46,12 @@ struct Test {
     std::vector<Test> subs;   // And / Or (n) / Not (1)
 };
 
-// A parsed emission Rule (the scalar spine — see the header note for the deferred recursive forms).
+// A parsed emission Rule (the scalar spine + child recursion — see the header note).
 struct Rule {
-    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit } kind = Kind::Lit;
-    std::string s;                              // Lit: text | Get/Emit: path | Fn: builtin name
-    std::string side;                           // Emit: precedence side ("" / "l" / "r" / "recv")
+    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map } kind = Kind::Lit;
+    std::string s;                              // Lit: text | Get/Emit/Map: path | Fn: builtin name
+    std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
+    std::string sep;                            // Map: separator between rendered children
     std::vector<Rule> parts;                    // Tmpl: parts | Fn: args
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule

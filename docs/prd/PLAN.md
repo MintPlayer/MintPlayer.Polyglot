@@ -1002,6 +1002,16 @@ builtin (C# sub-32 cast-back), operator spelling = an `opSpelling` builtin. The 
 were removed. Byte-identical incl. the FruitCake north-star's arithmetic (run-diff 38/38, unit tests +1). Next:
 more recursive families (Call/Member/Cond) via a `map` primitive, then `Target`→`BackendHandle`, then TS/Python.
 
+**Slice-6 (child lists — the `map` primitive) ✅:** C# `Call` migrated to a JSON Rule, introducing the
+`{"map":path,"sep":...,"side":...}` primitive for child *lists*. `map` stays pure interpreter logic (loop +
+join) and reuses `emitChild`: it reads the list length from `get("<path>.count")`, then emits each element via
+`emitChild("<path>.<i>", side)` — so an **indexed child path** (`node.args.0`) is first-class, needing *no* new
+`EvalContext` method. The free-vs-bare callee split (`Program.f(...)` vs bare closure call) is a `case` on
+`node.isFree`. `CsExprCtx` grew `node.callee`/`node.isFree`/`node.args.count` reads + indexed-arg `childExpr`;
+the dead C++ `Call` switch case was removed. Byte-identical (run-diff 38/38, run-python 37/37, unit tests +2).
+Next: `Member`/`Cond`/`Index` (scalar-ish child recursion, no new primitive), then `Target`→`BackendHandle`,
+then TS/Python.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

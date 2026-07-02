@@ -75,6 +75,13 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.side = v["side"].asString(); // "l"/"r"/"recv" — the context computes the parenthesization
         return r;
     }
+    if (v.has("map")) { // emit each child in the list at `map`, joined by `sep` (optional `side` per element)
+        r.kind = Rule::Kind::Map;
+        r.s = v["map"].asString();
+        r.sep = v.has("sep") ? v["sep"].asString() : std::string();
+        r.side = v.has("side") ? v["side"].asString() : std::string();
+        return r;
+    }
     if (v.has("fn")) {
         r.kind = Rule::Kind::Fn;
         r.s = v["fn"].asString();
@@ -96,7 +103,7 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         return r;
     }
     ok = false;
-    error = "unknown rule (expected string/tmpl/get/fn/case)";
+    error = "unknown rule (expected string/tmpl/get/fn/case/emit/emitChild/map)";
     return r;
 }
 
@@ -135,6 +142,18 @@ std::string evalRule(const Rule& r, const EvalContext& ctx) {
             for (const auto& arm : r.arms)
                 if (evalTest(arm.first, ctx)) return evalRule(arm.second, ctx);
             return r.elseBody.empty() ? std::string() : evalRule(r.elseBody[0], ctx);
+        case Rule::Kind::Map: {
+            // The list length is a context scalar (`<path>.count`); each element is an indexed child path.
+            int n = 0;
+            const std::string count = ctx.get(r.s + ".count");
+            for (char c : count) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
+            std::string out;
+            for (int i = 0; i < n; ++i) {
+                if (i) out += r.sep;
+                out += ctx.emitChild(r.s + "." + std::to_string(i), r.side);
+            }
+            return out;
+        }
     }
     return {};
 }

@@ -49,10 +49,12 @@ const BackendSpec& csharpSpec() {
     return spec;
 }
 
-// P18 slice 4: the first emitter HOOKS migrated from imperative C++ to declarative JSON Rules — the leaf
-// literals (no child recursion). emitExpr looks up the rule for the node kind and interprets it; kinds without
-// a rule still run the C++ switch. Byte-identical (the differential + golden gates are the oracle). The
-// recursive families (binary/call/…) migrate next, once the child-emission primitives land.
+// P18 slices 4-6: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
+// rule for the node kind and interprets it; kinds without a rule still run the C++ switch. Byte-identical (the
+// differential + golden gates are the oracle). Covered so far: the leaf literals (Int/Float/Bool/Null/Str),
+// Binary (child recursion + precedence via `emitChild`), and Call (arg lists via the `map` primitive). A free
+// function lives in `static class Program`, so a free call is qualified `Program.f(...)`; a function-valued
+// local (closure param) is called bare — the `case` on `node.isFree` picks between them.
 const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
   "Float": { "get": "node.text" },
@@ -63,7 +65,12 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Binary": { "fn": "subWordWrap", "args": [ {"get":"node.type"},
                 { "tmpl": [ {"emitChild":"node.lhs","side":"l"}, " ",
                             {"fn":"opSpelling","args":[{"get":"node.op"}]}, " ",
-                            {"emitChild":"node.rhs","side":"r"} ] } ] }
+                            {"emitChild":"node.rhs","side":"r"} ] } ] },
+  "Call": { "tmpl": [
+              { "case": { "when": [ [ {"eq":["node.isFree","true"]},
+                                      {"tmpl":["Program.", {"get":"node.callee"}]} ] ],
+                          "else": {"get":"node.callee"} } },
+              "(", { "map": "node.args", "sep": ", " }, ")" ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -91,6 +98,7 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Null:   return "Null";
         case ir::ExprKind::Str:    return "Str";
         case ir::ExprKind::Binary: return "Binary";
+        case ir::ExprKind::Call:   return "Call";
         default:                   return "";
     }
 }
@@ -108,6 +116,12 @@ public:
     std::string get(const std::string& path) const override {
         if (path == "node.type")     return e_.type.name;
         if (path == "node.op")       return e_.kind == ir::ExprKind::Binary ? static_cast<const ir::Binary&>(e_).op : "";
+        if (e_.kind == ir::ExprKind::Call) {
+            const auto& c = static_cast<const ir::Call&>(e_);
+            if (path == "node.callee")     return c.callee;
+            if (path == "node.isFree")     return c.isFree ? "true" : "false";
+            if (path == "node.args.count") return std::to_string(c.args.size());
+        }
         if (path == "spec.nullLit")  return spec_.nullLit;
         if (path == "spec.trueLit")  return spec_.trueLit;
         if (path == "spec.falseLit") return spec_.falseLit;
@@ -166,6 +180,13 @@ private:
             const auto& b = static_cast<const ir::Binary&>(e_);
             if (path == "node.lhs") return b.lhs.get();
             if (path == "node.rhs") return b.rhs.get();
+        }
+        if (e_.kind == ir::ExprKind::Call) { // indexed arg path `node.args.<i>` (from a `map` rule)
+            const auto& c = static_cast<const ir::Call&>(e_);
+            if (path.rfind("node.args.", 0) == 0) {
+                std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+                if (i < c.args.size()) return c.args[i].get();
+            }
         }
         return nullptr;
     }
@@ -629,15 +650,6 @@ private:
                 return "(" + csType(e.type) + ")(" + emitExpr(*c.operand) + ")";
             }
             case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw C# verbatim
-            case ir::ExprKind::Call: {
-                const auto& c = static_cast<const ir::Call&>(e);
-                // Free functions live in `static class Program`; qualify them so calls from emitted classes
-                // resolve. A function-valued local (closure param) is called bare.
-                std::string callee = c.isFree ? "Program." + c.callee : c.callee;
-                std::vector<std::string> args;
-                for (const auto& a : c.args) args.push_back(emitExpr(*a));
-                return callee + renderArgs(args);
-            }
             case ir::ExprKind::Member: {
                 const auto& m = static_cast<const ir::Member&>(e);
                 std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;

@@ -1119,6 +1119,13 @@ int main() {
         // emit / emitChild route to the context's child-recursion (marker output in the mock).
         check(runRule(R"({"tmpl":[{"emitChild":"node.lhs","side":"l"}," + ",{"emit":"node.rhs"}]})", ctx) ==
               "<node.lhs:l> + <node.rhs>", "P18: interpreter emit / emitChild");
+        // map: walk a child list by `<path>.count`, emit each indexed child, join with sep. Wrap to get `(a, b)`.
+        ctx.fields["node.args.count"] = "3";
+        check(runRule(R"J({"tmpl":["(",{"map":"node.args","sep":", "},")"]})J", ctx) ==
+              "(<node.args.0>, <node.args.1>, <node.args.2>)", "P18: interpreter map over a child list");
+        ctx.fields["node.args.count"] = "0";
+        check(runRule(R"J({"tmpl":["(",{"map":"node.args","sep":", "},")"]})J", ctx) == "()",
+              "P18: interpreter map over an empty child list");
 
         // Malformed rules fail loudly (never silently misparse).
         bool ok = true;
