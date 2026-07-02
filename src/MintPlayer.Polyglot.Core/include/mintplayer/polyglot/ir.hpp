@@ -211,6 +211,10 @@ struct MatchArm {
 struct Match : Expr {
     ExprPtr scrutinee;
     std::vector<MatchArm> arms;
+    // Precomputed in lowering (P19): some arm is an unguarded wildcard/binding. Sema guarantees
+    // exhaustiveness, but C# can't prove it for enums — without a catch-all, the C# rule appends an
+    // unreachable `_ => throw` default so the switch expression compiles without CS8524.
+    bool hasCatchAll = false;
     Match(SourcePos p, Type t, ExprPtr s) : Expr(ExprKind::Match, p, std::move(t)), scrutinee(std::move(s)) {}
 };
 

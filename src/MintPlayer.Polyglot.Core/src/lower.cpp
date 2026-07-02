@@ -247,6 +247,14 @@ private:
         return ip;
     }
 
+    // An unguarded wildcard/binding arm catches everything — precomputed so the C# rule knows whether to
+    // append its unreachable `_ => throw` default (P19).
+    static void setHasCatchAll(ir::Match& m) {
+        for (const auto& a : m.arms)
+            if (!a.guard && (a.pattern.kind == ir::PatternKind::Wildcard || a.pattern.kind == ir::PatternKind::Binding))
+                m.hasCatchAll = true;
+    }
+
     ir::ExprPtr matchExpr(const Expr& e) {
         auto m = std::make_unique<ir::Match>(e.pos, e.type, expr(*e.lhs));
         std::string scrutEnum, scrutUnion;
@@ -262,6 +270,7 @@ private:
                                                      : std::make_unique<ir::IntLit>(e.pos, e.type, "0"); // block arms: P5-4b
             m->arms.push_back(std::move(ia));
         }
+        setHasCatchAll(*m);
         return m;
     }
 
@@ -281,6 +290,7 @@ private:
         none.pattern.ctorCase = "None";
         none.body = expr(*e.rhs);
         m->arms.push_back(std::move(none));
+        setHasCatchAll(*m);
         return m;
     }
 

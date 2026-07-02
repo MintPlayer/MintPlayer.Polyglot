@@ -105,6 +105,30 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
       { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
                   "else": {"emitChild":"node.object","side":"recv"} } },
       ".",{"get":"node.method"},"(",{"map":"node.args","sep":", "},")"]} } },
+  "Match": { "tmpl": [ "(() => { const _m = ", {"emit":"node.scrutinee"}, "; ",
+    {"map":"node.arms","sep":"","item":{ "case": { "when": [
+      [ {"eq":["item.pattern.kind","ctor"]},
+        {"tmpl":["if (_m.tag === ",{"fn":"escapeString","args":[{"get":"item.pattern.ctorCase"}]},
+          {"case":{"when":[[{"eq":["item.hasGuard","true"]},{"tmpl":[" && (",{"emit":"item.guard"},")"]}]],"else":""}},
+          ") { ",
+          {"map":"item.pattern.binders","sep":"",
+           "item":{"tmpl":["const ",{"get":"item.binding"}," = _m.",{"get":"item.field"},"; "]}},
+          "return ",{"emit":"item.body"},"; } "]} ],
+      [ {"eq":["item.pattern.kind","binding"]},
+        {"tmpl":["{ const ",{"get":"item.pattern.binding"}," = _m; ",
+          {"case":{"when":[[{"eq":["item.hasGuard","true"]},
+             {"tmpl":["if (",{"emit":"item.guard"},") return ",{"emit":"item.body"},"; }"]}]],
+            "else":{"tmpl":["return ",{"emit":"item.body"},"; }"]}}}," "]} ],
+      [ {"eq":["item.pattern.kind","wildcard"]},
+        {"case":{"when":[[{"eq":["item.hasGuard","true"]},
+           {"tmpl":["if (",{"emit":"item.guard"},") return ",{"emit":"item.body"},"; "]}]],
+          "else":{"tmpl":["return ",{"emit":"item.body"},"; "]}}} ] ],
+    "else": {"tmpl":["if (_m === ",
+        {"case":{"when":[[{"eq":["item.pattern.kind","literal"]},{"emit":"item.pattern.literal"}]],
+          "else":{"tmpl":[{"get":"item.pattern.enumType"},".",{"get":"item.pattern.enumCase"}]}}},
+        {"case":{"when":[[{"eq":["item.hasGuard","true"]},{"tmpl":[" && (",{"emit":"item.guard"},")"]}]],"else":""}},
+        ") return ",{"emit":"item.body"},"; "]} } }},
+    "})()" ] },
   "Binary": { "case": { "when": [
       [ {"and":[{"or":[{"eq":["node.op","=="]},{"eq":["node.op","!="]}]},{"eq":["node.lhsIsRecord","true"]}]},
         { "case": { "when": [ [ {"eq":["node.op","=="]},
@@ -171,6 +195,7 @@ const char* tsExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::With:       return "With";
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";
+        case ir::ExprKind::Match:      return "Match";
         case ir::ExprKind::Binary:     return "Binary";
         default:                       return "";
     }
@@ -454,29 +479,6 @@ private:
         line(s + ";");
     }
 
-    // One arm of a match, lowered into the IIFE if-chain.
-    std::string matchArm(const ir::MatchArm& a) {
-        const ir::Pattern& p = a.pattern;
-        std::string body = emitExpr(*a.body);
-        if (p.kind == ir::PatternKind::Ctor) {
-            std::string s = "if (_m.tag === \"" + p.ctorCase + "\"";
-            if (a.guard) s += " && (" + emitExpr(*a.guard) + ")";
-            s += ") { ";
-            for (const auto& b : p.binders) s += "const " + b.binding + " = _m." + b.field + "; ";
-            return s + "return " + body + "; } ";
-        }
-        if (p.kind == ir::PatternKind::Binding) {
-            std::string s = "{ const " + p.binding + " = _m; ";
-            s += a.guard ? "if (" + emitExpr(*a.guard) + ") return " + body + "; }" : "return " + body + "; }";
-            return s + " ";
-        }
-        if (p.kind == ir::PatternKind::Wildcard)
-            return (a.guard ? "if (" + emitExpr(*a.guard) + ") return " + body + "; " : "return " + body + "; ");
-        std::string cond = "_m === " + (p.kind == ir::PatternKind::Literal ? emitExpr(*p.literal) : p.enumType + "." + p.enumCase);
-        if (a.guard) cond += " && (" + emitExpr(*a.guard) + ")";
-        return "if (" + cond + ") return " + body + "; ";
-    }
-
     // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).
     void emitRecord(const ir::Record& r) {
         std::string head = "class " + r.name + tsGenerics(r.generics);
@@ -586,14 +588,6 @@ private:
         else for (const auto& s : m.body) emitStmt(*s);
         --indent_;
         line("}");
-    }
-
-    std::string atom(const ir::Expr& e) {
-        std::string s = emitExpr(e);
-        if (e.kind == ir::ExprKind::Unary) return "(" + s + ")";
-        // a scalar binary needs parens as a receiver; a user-type binary emits a (high-binding) method call
-        if (e.kind == ir::ExprKind::Binary && !isUserType(static_cast<const ir::Binary&>(e).lhs->type)) return "(" + s + ")";
-        return s;
     }
 
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as TS.
@@ -715,7 +709,7 @@ private:
             auto it = rules.find(key);
             if (it != rules.end()) {
                 TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); });
-                return engine::evalRule(it->second, ctx);
+                return engine::evalRule(it->second, ctx, &rules);
             }
         }
         switch (e.kind) {
@@ -732,12 +726,6 @@ private:
                 s += ") => ";
                 if (l.exprBodied) return s + emitExpr(*l.body);
                 return s + "{ " + inlineBlock(l.block) + "}"; // statement-bodied lambda
-            }
-            case ir::ExprKind::Match: {
-                const auto& m = static_cast<const ir::Match&>(e);
-                std::string s = "(() => { const _m = " + emitExpr(*m.scrutinee) + "; ";
-                for (const auto& arm : m.arms) s += matchArm(arm);
-                return s + "})()";
             }
         }
         return "";

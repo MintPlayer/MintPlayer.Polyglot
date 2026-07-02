@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -48,23 +49,27 @@ struct Test {
 
 // A parsed emission Rule (the scalar spine + child recursion — see the header note).
 struct Rule {
-    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave } kind = Kind::Lit;
-    std::string s;                              // Lit: text | Get/Emit/Map: path | Fn: name | Interleave: lits path
+    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call } kind = Kind::Lit;
+    std::string s;          // Lit: text | Get/Emit/Map/Fold: path | Fn/Call: name | Interleave: lits path
     std::string s2;                             // Interleave: holes path
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children
-    std::vector<Rule> parts;                    // Tmpl: parts | Fn: args | Map: item | Interleave: [lit, hole]
+    std::vector<Rule> parts;                    // Tmpl: parts | Fn: args | Map: item | Interleave/Fold: 2 rules
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule
 };
+
+using RuleTable = std::unordered_map<std::string, Rule>;
 
 // Parse a JSON value into a Rule / Test. On a malformed rule, sets ok=false + a message in `error` and
 // returns a benign empty Rule — a spec never silently misparses (the anti-silent-drop rule).
 Rule parseRule(const json::Value& v, bool& ok, std::string& error);
 Test parseTest(const json::Value& v, bool& ok, std::string& error);
 
-// Evaluate a Rule / Test against a context.
-std::string evalRule(const Rule& r, const EvalContext& ctx);
+// Evaluate a Rule / Test against a context. `helpers` resolves {"call":"name"} sub-rules (a plugin's own
+// named helpers in the same table, keyed by non-node names); recursion is depth-capped — the DSL stays
+// non-Turing-complete (a helper cycle bottoms out instead of looping).
+std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* helpers = nullptr, int depth = 0);
 bool evalTest(const Test& t, const EvalContext& ctx);
 
 } // namespace mintplayer::polyglot::engine

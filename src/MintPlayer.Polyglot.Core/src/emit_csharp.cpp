@@ -113,7 +113,28 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "MethodCall": { "tmpl": [
       { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
                   "else": {"emitChild":"node.object","side":"recv"} } },
-      ".", {"get":"node.method"}, "(", {"map":"node.args","sep":", "}, ")" ] }
+      ".", {"get":"node.method"}, "(", {"map":"node.args","sep":", "}, ")" ] },
+  "Match": { "tmpl": [
+      {"emitChild":"node.scrutinee","side":"recv"}, " switch { ",
+      {"map":"node.arms","sep":", ","item":{"tmpl":[
+        { "case": { "when": [
+            [ {"eq":["item.pattern.kind","wildcard"]}, "_" ],
+            [ {"eq":["item.pattern.kind","literal"]}, {"emit":"item.pattern.literal"} ],
+            [ {"eq":["item.pattern.kind","binding"]},
+              {"tmpl":["var ",{"fn":"ident","args":[{"get":"item.pattern.binding"}]}]} ],
+            [ {"eq":["item.pattern.kind","enumCase"]},
+              {"tmpl":[{"get":"item.pattern.enumType"},".",{"get":"item.pattern.enumCase"}]} ],
+            [ {"eq":["item.pattern.binders.count","0"]},
+              {"tmpl":[{"get":"item.pattern.ctorCase"},{"fn":"genArgs"}," _"]} ] ],
+          "else": {"tmpl":[{"get":"item.pattern.ctorCase"},{"fn":"genArgs"},"(",
+            {"map":"item.pattern.binders","sep":", ",
+             "item":{"tmpl":["var ",{"fn":"ident","args":[{"get":"item.binding"}]}]}},")"]} } },
+        { "case": { "when": [ [ {"eq":["item.hasGuard","true"]},
+            {"tmpl":[" when ",{"emit":"item.guard"}]} ] ], "else": "" } },
+        " => ", {"emit":"item.body"} ]}},
+      { "case": { "when": [ [ {"eq":["node.hasCatchAll","true"]}, "" ] ],
+        "else": ", _ => throw new global::System.InvalidOperationException()" } },
+      " }" ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -159,6 +180,7 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Char:       return "Char";
         case ir::ExprKind::This:       return "This";
         case ir::ExprKind::MethodCall: return "MethodCall";
+        case ir::ExprKind::Match:      return "Match";
         default:                       return "";
     }
 }
@@ -192,6 +214,14 @@ protected:
         if (name == "ident")    return csIdent(args.empty() ? std::string() : args[0]);
         if (name == "elemType") return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
         if (name == "castType") return csType(e_.type); // the Cast's target type
+        if (name == "genArgs") { // a generic union scrutinee's case patterns need `Full<int>`, not `Full`
+            if (e_.kind != ir::ExprKind::Match) return "";
+            const auto& ta = static_cast<const ir::Match&>(e_).scrutinee->type.args;
+            if (ta.empty()) return "";
+            std::string s = "<";
+            for (std::size_t i = 0; i < ta.size(); ++i) { if (i) s += ", "; s += csType(ta[i]); }
+            return s + ">";
+        }
         if (name == "typeArgsSuffix") { // "" or "<T, U>" — New's own type args / a MakeCase's result-type args
             const std::vector<TypeRef>* ta = e_.kind == ir::ExprKind::New ? &static_cast<const ir::New&>(e_).typeArgs
                                            : e_.kind == ir::ExprKind::MakeCase ? &e_.type.args : nullptr;
@@ -425,24 +455,6 @@ private:
         }
     }
 
-    // `genArgs` is the scrutinee union's type-arg suffix ("" or "<int>"): a generic union's case records are
-    // generic, so the C# pattern must name `Full<int>` / `Empty<int>`, not the open `Full`/`Empty`.
-    std::string patternCs(const ir::Pattern& p, const std::string& genArgs = "") {
-        switch (p.kind) {
-            case ir::PatternKind::Wildcard: return "_";
-            case ir::PatternKind::Literal:  return emitExpr(*p.literal);
-            case ir::PatternKind::Binding:  return "var " + csIdent(p.binding);
-            case ir::PatternKind::EnumCase: return p.enumType + "." + p.enumCase;
-            case ir::PatternKind::Ctor: {
-                if (p.binders.empty()) return p.ctorCase + genArgs + " _"; // type pattern (payload-free)
-                std::string s = p.ctorCase + genArgs + "(";
-                for (std::size_t i = 0; i < p.binders.size(); ++i) { if (i) s += ", "; s += "var " + csIdent(p.binders[i].binding); }
-                return s + ")";
-            }
-        }
-        return "_";
-    }
-
     void emitRecord(const ir::Record& r) {
         std::string head = "record " + r.name + csGenerics(r.generics) + "(";
         for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) head += ", "; head += csType(r.fields[i].type) + " " + csIdent(r.fields[i].name); }
@@ -533,13 +545,6 @@ private:
         sig += ")" + csWhere(m.generics);
         if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
         else headBlock(sig, m.body);
-    }
-
-    // Parenthesize a receiver that would otherwise mis-bind against `.`/call.
-    std::string atom(const ir::Expr& e) {
-        std::string s = emitExpr(e);
-        return (e.kind == ir::ExprKind::Binary || e.kind == ir::ExprKind::Unary ||
-                e.kind == ir::ExprKind::Cast) ? "(" + s + ")" : s;
     }
 
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as C#.
@@ -636,7 +641,7 @@ private:
             auto it = rules.find(key);
             if (it != rules.end()) {
                 CsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, thisAlias_);
-                return engine::evalRule(it->second, ctx);
+                return engine::evalRule(it->second, ctx, &rules);
             }
         }
         switch (e.kind) {
@@ -654,30 +659,6 @@ private:
                 s += ") => ";
                 if (l.exprBodied) return s + emitExpr(*l.body);
                 return s + "{ " + inlineBlock(l.block) + "}"; // statement-bodied lambda
-            }
-            case ir::ExprKind::Match: {
-                const auto& m = static_cast<const ir::Match&>(e);
-                std::string s = atom(*m.scrutinee) + " switch { ";
-                // A generic union scrutinee (`Box<int>`) needs its case patterns spelled `Full<int>` etc.
-                std::string genArgs;
-                if (!m.scrutinee->type.args.empty()) {
-                    genArgs = "<";
-                    for (std::size_t i = 0; i < m.scrutinee->type.args.size(); ++i) { if (i) genArgs += ", "; genArgs += csType(m.scrutinee->type.args[i]); }
-                    genArgs += ">";
-                }
-                bool hasCatchAll = false;
-                for (std::size_t i = 0; i < m.arms.size(); ++i) {
-                    if (i) s += ", ";
-                    const ir::Pattern& p = m.arms[i].pattern;
-                    if (!m.arms[i].guard && (p.kind == ir::PatternKind::Wildcard || p.kind == ir::PatternKind::Binding)) hasCatchAll = true;
-                    s += patternCs(p, genArgs);
-                    if (m.arms[i].guard) s += " when " + emitExpr(*m.arms[i].guard);
-                    s += " => " + emitExpr(*m.arms[i].body);
-                }
-                // Sema guarantees exhaustiveness, but C# can't prove it for enums — add an unreachable
-                // default so the switch expression compiles without CS8524.
-                if (!hasCatchAll) s += ", _ => throw new global::System.InvalidOperationException()";
-                return s + " }";
             }
         }
         return "";

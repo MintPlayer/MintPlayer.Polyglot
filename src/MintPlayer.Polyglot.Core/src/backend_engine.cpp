@@ -95,10 +95,23 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.parts.push_back(parseRule(iv["hole"], ok, error));  // per-hole template (`item` = the hole expr)
         return r;
     }
+    if (v.has("fold")) { // right-fold over a child list (Python's match ternary chain): the LAST element
+        const json::Value& fv = v["fold"]; // renders via `seed`; earlier ones via `each`, which reads the
+        r.kind = Rule::Kind::Fold;         // accumulated tail as {"get":"acc"}. Depth = list length (bounded).
+        r.s = fv["list"].asString();
+        r.parts.push_back(parseRule(fv["each"], ok, error));
+        r.parts.push_back(parseRule(fv["seed"], ok, error));
+        return r;
+    }
     if (v.has("fn")) {
         r.kind = Rule::Kind::Fn;
         r.s = v["fn"].asString();
         for (const json::Value& a : v["args"].items()) r.parts.push_back(parseRule(a, ok, error));
+        return r;
+    }
+    if (v.has("call")) { // a named helper sub-rule in the same table (depth-capped at eval)
+        r.kind = Rule::Kind::Call;
+        r.s = v["call"].asString();
         return r;
     }
     if (v.has("case")) {
@@ -149,6 +162,25 @@ private:
     std::string prefix_;
 };
 
+// Exposes a fold's accumulated tail as the scalar `acc`; everything else delegates.
+class AccCtx : public EvalContext {
+public:
+    AccCtx(const EvalContext& base, const std::string& acc) : base_(base), acc_(acc) {}
+
+    std::string get(const std::string& p) const override { return p == "acc" ? acc_ : base_.get(p); }
+    bool has(const std::string& p) const override { return p == "acc" ? !acc_.empty() : base_.has(p); }
+    std::string emitChild(const std::string& p, const std::string& side) const override {
+        return base_.emitChild(p, side);
+    }
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
+        return base_.builtin(name, args);
+    }
+
+private:
+    const EvalContext& base_;
+    const std::string& acc_;
+};
+
 } // namespace
 
 bool evalTest(const Test& t, const EvalContext& ctx) {
@@ -166,26 +198,26 @@ bool evalTest(const Test& t, const EvalContext& ctx) {
     return false;
 }
 
-std::string evalRule(const Rule& r, const EvalContext& ctx) {
+std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* helpers, int depth) {
     switch (r.kind) {
         case Rule::Kind::Lit:  return r.s;
         case Rule::Kind::Get:  return ctx.get(r.s);
         case Rule::Kind::Emit: return ctx.emitChild(r.s, r.side);
         case Rule::Kind::Tmpl: {
             std::string out;
-            for (const Rule& p : r.parts) out += evalRule(p, ctx);
+            for (const Rule& p : r.parts) out += evalRule(p, ctx, helpers, depth);
             return out;
         }
         case Rule::Kind::Fn: {
             std::vector<std::string> args;
             args.reserve(r.parts.size());
-            for (const Rule& a : r.parts) args.push_back(evalRule(a, ctx));
+            for (const Rule& a : r.parts) args.push_back(evalRule(a, ctx, helpers, depth));
             return ctx.builtin(r.s, args);
         }
         case Rule::Kind::Case:
             for (const auto& arm : r.arms)
-                if (evalTest(arm.first, ctx)) return evalRule(arm.second, ctx);
-            return r.elseBody.empty() ? std::string() : evalRule(r.elseBody[0], ctx);
+                if (evalTest(arm.first, ctx)) return evalRule(arm.second, ctx, helpers, depth);
+            return r.elseBody.empty() ? std::string() : evalRule(r.elseBody[0], ctx, helpers, depth);
         case Rule::Kind::Map: {
             // The list length is a context scalar (`<path>.count`); each element is an indexed child path.
             int n = 0;
@@ -196,9 +228,22 @@ std::string evalRule(const Rule& r, const EvalContext& ctx) {
                 if (i) out += r.sep;
                 const std::string elem = r.s + "." + std::to_string(i);
                 if (r.parts.empty()) out += ctx.emitChild(elem, r.side);           // plain: emit the element
-                else out += evalRule(r.parts[0], ItemCtx(ctx, elem));              // item template per element
+                else out += evalRule(r.parts[0], ItemCtx(ctx, elem), helpers, depth);              // item template per element
             }
             return out;
+        }
+        case Rule::Kind::Fold: {
+            // Right-fold: the last element is the seed; earlier elements render via `each` with `acc` bound
+            // to the already-rendered tail (Python's match `v0 if c0 else (v1 if c1 else vLast)`).
+            int n = 0;
+            for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
+            if (n == 0) return "";
+            std::string acc = evalRule(r.parts[1], ItemCtx(ctx, r.s + "." + std::to_string(n - 1)), helpers, depth);
+            for (int i = n - 2; i >= 0; --i) {
+                ItemCtx item(ctx, r.s + "." + std::to_string(i));
+                acc = evalRule(r.parts[0], AccCtx(item, acc), helpers, depth);
+            }
+            return acc;
         }
         case Rule::Kind::Interleave: {
             // lit0 hole0 lit1 hole1 … litN — string interpolation's chunks/holes zip. Counts come from the
@@ -211,10 +256,19 @@ std::string evalRule(const Rule& r, const EvalContext& ctx) {
             const int nLits = count(r.s), nHoles = count(r.s2);
             std::string out;
             for (int i = 0; i < nLits; ++i) {
-                out += evalRule(r.parts[0], ItemCtx(ctx, r.s + "." + std::to_string(i)));
-                if (i < nHoles) out += evalRule(r.parts[1], ItemCtx(ctx, r.s2 + "." + std::to_string(i)));
+                out += evalRule(r.parts[0], ItemCtx(ctx, r.s + "." + std::to_string(i)), helpers, depth);
+                if (i < nHoles) out += evalRule(r.parts[1], ItemCtx(ctx, r.s2 + "." + std::to_string(i)), helpers, depth);
             }
             return out;
+        }
+        case Rule::Kind::Call: {
+            // A named helper sub-rule from the plugin's own table. Depth-capped so a helper cycle bottoms
+            // out loudly instead of looping — the DSL stays non-Turing-complete. (Load-time validation
+            // rejects unknown call targets; the poison strings are the belt-and-braces runtime guard.)
+            if (!helpers || depth > 64) return "<call-depth-exceeded:" + r.s + ">";
+            auto it = helpers->find(r.s);
+            if (it == helpers->end()) return "<unknown-helper:" + r.s + ">";
+            return evalRule(it->second, ctx, helpers, depth + 1);
         }
     }
     return {};

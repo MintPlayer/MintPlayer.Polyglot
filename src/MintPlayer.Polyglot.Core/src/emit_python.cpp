@@ -168,6 +168,38 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
       { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
                   "else": {"emitChild":"node.object","side":"recv"} } },
       ".",{"get":"node.method"},"(",{"map":"node.args","sep":", "},")"]} } },
+  "Match": { "tmpl": [ "(lambda _m: ",
+    {"fold":{"list":"node.arms",
+      "seed": {"call":"pyArmValue"},
+      "each": {"tmpl":[ {"call":"pyArmValue"}, " if ", {"call":"pyArmCond"}, " else ", {"get":"acc"} ]}}},
+    ")(", {"emit":"node.scrutinee"}, ")" ] },
+  "pyArmValue": { "case": { "when": [
+      [ {"eq":["item.pattern.kind","binding"]},
+        {"tmpl":["(lambda ",{"get":"item.pattern.binding"},": ",{"emit":"item.body"},")(_m)"]} ],
+      [ {"and":[{"eq":["item.pattern.kind","ctor"]},{"not":{"eq":["item.pattern.binders.count","0"]}}]},
+        {"tmpl":["(lambda ",
+          {"map":"item.pattern.binders","sep":", ","item":{"get":"item.binding"}},": ",{"emit":"item.body"},")(",
+          {"map":"item.pattern.binders","sep":", ","item":{"tmpl":["_m[\"",{"get":"item.field"},"\"]"]}},")"]} ] ],
+    "else": {"emit":"item.body"} } },
+  "pyArmGuard": { "case": { "when": [
+      [ {"eq":["item.pattern.kind","binding"]},
+        {"tmpl":["(lambda ",{"get":"item.pattern.binding"},": ",{"emit":"item.guard"},")(_m)"]} ],
+      [ {"and":[{"eq":["item.pattern.kind","ctor"]},{"not":{"eq":["item.pattern.binders.count","0"]}}]},
+        {"tmpl":["(lambda ",
+          {"map":"item.pattern.binders","sep":", ","item":{"get":"item.binding"}},": ",{"emit":"item.guard"},")(",
+          {"map":"item.pattern.binders","sep":", ","item":{"tmpl":["_m[\"",{"get":"item.field"},"\"]"]}},")"]} ] ],
+    "else": {"emit":"item.guard"} } },
+  "pyArmBase": { "case": { "when": [
+      [ {"eq":["item.pattern.kind","literal"]},  {"tmpl":["_m == ",{"emit":"item.pattern.literal"}]} ],
+      [ {"eq":["item.pattern.kind","enumCase"]}, {"tmpl":["_m == ",{"get":"item.pattern.enumType"},".",{"get":"item.pattern.enumCase"}]} ],
+      [ {"eq":["item.pattern.kind","ctor"]},
+        {"tmpl":["_m[\"tag\"] == ",{"fn":"escapeString","args":[{"get":"item.pattern.ctorCase"}]}]} ] ],
+    "else": "True" } },
+  "pyArmCond": { "case": { "when": [
+      [ {"eq":["item.hasGuard","false"]}, {"call":"pyArmBase"} ],
+      [ {"or":[{"eq":["item.pattern.kind","wildcard"]},{"eq":["item.pattern.kind","binding"]}]},
+        {"call":"pyArmGuard"} ] ],
+    "else": {"tmpl":[{"call":"pyArmBase"}," and ",{"call":"pyArmGuard"}]} } },
   "Binary": { "case": { "when": [
       [ {"eq":["node.op","??"]}, {"fn":"nullCoalesce"} ],
       [ {"and":[{"eq":["node.typeIsInt","true"]},
@@ -224,6 +256,7 @@ const char* pyExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::With:       return "With";
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";
+        case ir::ExprKind::Match:      return "Match";
         case ir::ExprKind::Binary:     return "Binary";
         default:                       return "";
     }
@@ -500,13 +533,6 @@ private:
         }
     }
 
-    // Parenthesize a receiver that would otherwise mis-bind against `.`/call.
-    std::string atom(const ir::Expr& e) {
-        std::string s = emitExpr(e);
-        return (e.kind == ir::ExprKind::Binary || e.kind == ir::ExprKind::Unary ||
-                e.kind == ir::ExprKind::Cond || e.kind == ir::ExprKind::Cast) ? "(" + s + ")" : s;
-    }
-
     void emitStmtTarget(const ir::Stmt& s) override {
         // For and Try are the non-shared statements: their shape (not just spelling) diverges per target.
         if (s.kind == ir::StmtKind::For) {
@@ -549,59 +575,6 @@ private:
     bool needsIdiv_ = false; // set when a fixed-width int `/`/`%` is emitted -> prepend the trunc helpers
     bool needsAsyncio_ = false; // set when an `async fn main` entry is emitted -> prepend `import asyncio`
 
-    // ---- match -> a lambda-bound ternary chain --------------------------------------------------------
-    // Python has no match expression (3.10's is a statement), so a match lowers to
-    //   (lambda _m: <v0> if <c0> else (<v1> if <c1> else <v_last>))(scrutinee)
-    // The scrutinee is bound once as `_m`; the LAST arm is unconditional (sema guarantees exhaustiveness),
-    // supplying the ternary's required else. Pattern bindings come into scope via an inner lambda per arm
-    // (`(lambda r: <body>)(_m["r"])`) — no statement-level binding needed.
-
-    // (name, access-on-`_m`) pairs a pattern binds: Ctor fields, or the whole scrutinee for a bare binding.
-    std::vector<std::pair<std::string, std::string>> armBinders(const ir::Pattern& p) {
-        std::vector<std::pair<std::string, std::string>> bs;
-        if (p.kind == ir::PatternKind::Ctor)
-            for (const auto& b : p.binders) bs.push_back({b.binding, "_m[\"" + b.field + "\"]"});
-        else if (p.kind == ir::PatternKind::Binding)
-            bs.push_back({p.binding, "_m"});
-        return bs;
-    }
-
-    // Wrap `inner` so the binders are in scope: `(lambda a, b: inner)(_m["x"], _m["y"])`; identity if none.
-    std::string wrapBinders(const std::vector<std::pair<std::string, std::string>>& bs, const std::string& inner) {
-        if (bs.empty()) return inner;
-        std::string params, args;
-        for (std::size_t i = 0; i < bs.size(); ++i) {
-            if (i) { params += ", "; args += ", "; }
-            params += bs[i].first;
-            args += bs[i].second;
-        }
-        return "(lambda " + params + ": " + inner + ")(" + args + ")";
-    }
-
-    // The boolean test that selects this arm (binders already bound for a guard that references them).
-    std::string armCond(const ir::MatchArm& a, const std::vector<std::pair<std::string, std::string>>& bs) {
-        const ir::Pattern& p = a.pattern;
-        std::string base;
-        switch (p.kind) {
-            case ir::PatternKind::Wildcard:
-            case ir::PatternKind::Binding: base = "True"; break;
-            case ir::PatternKind::Literal:  base = "_m == " + emitExpr(*p.literal); break;
-            case ir::PatternKind::EnumCase: base = "_m == " + p.enumType + "." + p.enumCase; break;
-            case ir::PatternKind::Ctor:     base = "_m[\"tag\"] == \"" + p.ctorCase + "\""; break;
-        }
-        if (!a.guard) return base;
-        std::string g = wrapBinders(bs, emitExpr(*a.guard));
-        return base == "True" ? g : base + " and " + g;
-    }
-
-    std::string matchChain(const std::vector<ir::MatchArm>& arms, std::size_t i) {
-        const ir::MatchArm& a = arms[i];
-        auto bs = armBinders(a.pattern);
-        std::string value = wrapBinders(bs, emitExpr(*a.body));
-        if (i + 1 == arms.size()) return value; // exhaustive: final arm is the unconditional else
-        return value + " if " + armCond(a, bs) + " else " + matchChain(arms, i + 1);
-    }
-
     // Substitute a bound FFI template's placeholders: `$this`->receiver, `$T`->the type name (ctor templates),
     // `$0`,`$1`,…->args. Mirrors the C#/TS backends so a std/plugin binding's python arm renders the same way.
     std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
@@ -626,7 +599,7 @@ private:
             auto it = rules.find(key);
             if (it != rules.end()) {
                 PyExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, tmp_, needsIdiv_);
-                return engine::evalRule(it->second, ctx);
+                return engine::evalRule(it->second, ctx, &rules);
             }
         }
         switch (e.kind) {
@@ -640,10 +613,6 @@ private:
             }
             case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
                 return substTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::Match: {
-                const auto& m = static_cast<const ir::Match&>(e);
-                return "(lambda _m: " + matchChain(m.arms, 0) + ")(" + emitExpr(*m.scrutinee) + ")";
-            }
             default:
                 return "__py_unsupported_expr__"; // fails loudly at runtime if a non-skeleton node reaches here
         }

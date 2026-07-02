@@ -1254,6 +1254,24 @@ MethodCall/Bound/Lambda/Match.** Byte-identical (117 files), unit green, 39/39 +
 deleted. **Residue everywhere: Bound (already data via FFI templates) + Lambda (waits on the `type`
 primitive, slice 4) + Match (the `fold` slice).** Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-3c ✅ (2026-07-02) — `Match` is data on all three targets; `fold` + `call` primitives land.**
+Two new Rule kinds: **`fold`** (`{"fold":{"list":path,"each":rule,"seed":rule}}` — right-fold, last element
+= seed, earlier via `each` reading the tail as `{"get":"acc"}` through an `AccCtx` wrapper; depth = list
+length, still non-Turing-complete) and **`call`** (`{"call":"helper"}` — a named sub-rule in the plugin's
+own table, depth-capped at 64 with loud poison strings as the runtime guard; load-time validation will
+reject unknown targets). `evalRule` now threads `(helpers, depth)`. Lowering precomputes
+**`Match.hasCatchAll`** (set in both `matchExpr` and the `??`-Option desugar); shared `IrExprCtx` exposes
+the full arm/pattern path surface (`node.arms.<i>.{hasGuard,body,guard}`,
+`…pattern.{kind,binding,enumType,enumCase,ctorCase,literal}`, `…pattern.binders.<j>.{binding,field}`,
+`node.scrutinee`). The three Match shapes are pure data: C# switch-expression (pattern `case` per arm +
+`genArgs` builtin for generic-union patterns + the `hasCatchAll`-guarded unreachable default), TS IIFE
+if-chain (per-kind arm templates, binders as `const b = _m.f;`), Python lambda ternary-fold (the `fold`
+consumer, with `pyArmValue`/`pyArmGuard`/`pyArmBase`/`pyArmCond` as named `call` helpers — binder-wrapping
+lambdas via nested maps). Dead C++ deleted: C# Match+patternCs+atom, TS Match+matchArm+atom, Python
+Match+matchChain/armBinders/wrapBinders/armCond+atom. **The only expression C++ left in any backend:
+`Bound` (substTemplate — already data-driven) and `Lambda` (slice 4).** Byte-identical (117 files), unit
+green, 39/39 + 38/38, samples 10/10.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

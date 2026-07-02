@@ -71,6 +71,44 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
         if (e_.kind == ir::ExprKind::Tuple)   return std::to_string(static_cast<const ir::Tuple&>(e_).elements.size());
     }
+    if (e_.kind == ir::ExprKind::Match) {
+        const auto& m = static_cast<const ir::Match&>(e_);
+        if (path == "node.arms.count")  return std::to_string(m.arms.size());
+        if (path == "node.hasCatchAll") return m.hasCatchAll ? "true" : "false";
+        if (path.rfind("node.arms.", 0) == 0) { // node.arms.<i>.<rest>
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+            const std::size_t dot = path.find('.', 10);
+            if (i < m.arms.size() && dot != std::string::npos) {
+                const ir::MatchArm& a = m.arms[i];
+                const std::string rest = path.substr(dot + 1);
+                if (rest == "hasGuard") return a.guard ? "true" : "false";
+                if (rest == "pattern.kind") {
+                    switch (a.pattern.kind) {
+                        case ir::PatternKind::Wildcard: return "wildcard";
+                        case ir::PatternKind::Literal:  return "literal";
+                        case ir::PatternKind::Binding:  return "binding";
+                        case ir::PatternKind::EnumCase: return "enumCase";
+                        case ir::PatternKind::Ctor:     return "ctor";
+                    }
+                }
+                if (rest == "pattern.binding")       return a.pattern.binding;
+                if (rest == "pattern.enumType")      return a.pattern.enumType;
+                if (rest == "pattern.enumCase")      return a.pattern.enumCase;
+                if (rest == "pattern.ctorCase")      return a.pattern.ctorCase;
+                if (rest == "pattern.binders.count") return std::to_string(a.pattern.binders.size());
+                if (rest.rfind("pattern.binders.", 0) == 0) { // pattern.binders.<j>.<field>
+                    const std::string sub = rest.substr(16);
+                    const std::size_t j = static_cast<std::size_t>(std::stoul(sub));
+                    const std::size_t jdot = sub.find('.');
+                    if (j < a.pattern.binders.size() && jdot != std::string::npos) {
+                        const std::string bf = sub.substr(jdot + 1);
+                        if (bf == "binding") return a.pattern.binders[j].binding;
+                        if (bf == "field")   return a.pattern.binders[j].field;
+                    }
+                }
+            }
+        }
+    }
     if (e_.kind == ir::ExprKind::Interp) { // chunks are scalar text; holes are child exprs (childExpr below)
         const auto& in = static_cast<const ir::Interp&>(e_);
         if (path == "node.chunks.count") return std::to_string(in.chunks.size());
@@ -171,6 +209,21 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         const auto& in = static_cast<const ir::Interp&>(e_);
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
         if (i < in.holes.size()) return in.holes[i].get();
+    }
+    if (e_.kind == ir::ExprKind::Match) {
+        const auto& m = static_cast<const ir::Match&>(e_);
+        if (path == "node.scrutinee") return m.scrutinee.get();
+        if (path.rfind("node.arms.", 0) == 0) { // node.arms.<i>.{body|guard|pattern.literal}
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+            const std::size_t dot = path.find('.', 10);
+            if (i < m.arms.size() && dot != std::string::npos) {
+                const ir::MatchArm& a = m.arms[i];
+                const std::string rest = path.substr(dot + 1);
+                if (rest == "body")            return a.body.get();
+                if (rest == "guard")           return a.guard.get();
+                if (rest == "pattern.literal") return a.pattern.literal.get();
+            }
+        }
     }
     if (e_.kind == ir::ExprKind::With) {
         const auto& w = static_cast<const ir::With&>(e_);
