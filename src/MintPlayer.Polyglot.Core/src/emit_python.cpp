@@ -151,6 +151,8 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
       { "case": { "when": [ [ {"eq":["decl.cases.count","0"]}, {"line":"pass"} ] ] } },
       { "mapDecl": "decl.cases",
         "each": { "line": { "tmpl": [ {"get":"item.name"}, " = ", {"get":"item.value"} ] } } } ] } },
+  "UnionDecl": { "line": { "tmpl": [ "# union ", {"get":"decl.name"},
+      " -> tagged dicts: {\"tag\": <case>, <field>: <value>, ...}" ] } },
   "MakeCase": { "tmpl": [ "{\"tag\": ", {"fn":"escapeString","args":[{"get":"node.caseName"}]},
                           {"map":"node.fields","sep":"",
                            "item":{"tmpl":[", ",{"fn":"escapeString","args":[{"get":"item.name"}]},": ",
@@ -299,6 +301,14 @@ std::string pyTypeName(const TypeRef& t) {
     return engine::evalRule(pyExprRules().at("Type"), ctx, &pyExprRules());
 }
 
+// The Python declaration hooks — the one per-backend object every decl context reads through.
+class PyDeclHooks : public DeclHooks {
+public:
+    std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
+    std::string ident(const std::string& n) const override { return pyId(n); }
+};
+const PyDeclHooks kPyDeclHooks;
+
 // The Python rule-interpreter seam. `tmp`/`needsIdiv` are the EMITTER's counters, reached by reference:
 // the walrus builtins (`?.`/`??` single-evaluation temporaries) mint fresh names, and `idiv`/`irem` flag
 // that the `_pg_idiv` prelude must be prepended. The stateful machinery stays fixed C++; the rules only
@@ -375,7 +385,10 @@ public:
             EnumDeclCtx ctx(e);
             runDeclRule(pyExprRules().at("EnumDecl"), ctx, ctx, &pyExprRules());
         }
-        for (const auto& u : m.unions) emitUnion(u);
+        for (const auto& u : m.unions) {
+            UnionDeclCtx ctx(u, kPyDeclHooks);
+            runDeclRule(pyExprRules().at("UnionDecl"), ctx, ctx, &pyExprRules());
+        }
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
         for (const auto& g : m.globals)
@@ -437,13 +450,6 @@ private:
         }
     }
 
-
-    // A discriminated union needs NO runtime declaration: each case is built as a tagged dict at the use site
-    // (`{"tag": "Circle", "r": …}`) and matched on `_m["tag"]` — mirroring TS's erased type alias. The comment
-    // documents the representation for a reader of the .py.
-    void emitUnion(const ir::Union& u) {
-        line("# union " + u.name + " -> tagged dicts: {\"tag\": <case>, <field>: <value>, ...}");
-    }
 
     // A record -> a Python class with an __init__ (positional fields) and a structural __eq__. Python `==`
     // dispatches to __eq__, so equality is just field-wise `==` joined by `and` (nested records recurse via

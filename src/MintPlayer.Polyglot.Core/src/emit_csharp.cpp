@@ -144,6 +144,13 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "EnumDecl": { "line": { "tmpl": [ "enum ", {"get":"decl.name"}, " { ",
       {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"}," = ",{"get":"item.value"}]}},
       " }" ] } },
+  "UnionDecl": { "seq": [
+      { "line": { "tmpl": [ "abstract record ", {"get":"decl.name"}, {"fn":"generics"}, ";" ] } },
+      { "mapDecl": "decl.cases", "each": { "line": { "tmpl": [
+          "sealed record ", {"get":"item.name"}, {"fn":"generics"}, "(",
+          {"map":"item.fields","sep":", ",
+           "item":{"tmpl":[{"type":"item.type"}," ",{"fn":"ident","args":[{"get":"item.name"}]}]}},
+          ") : ", {"get":"decl.name"}, {"fn":"generics"}, ";" ] } } } ] },
   "Type": { "case": { "when": [
       [ {"eq":["type.kind","function"]},
         { "case": { "when": [
@@ -372,6 +379,15 @@ std::string csWhere(const std::vector<ir::GenericParam>& gs) {
     return s;
 }
 
+// The C# declaration hooks — the one per-backend object every decl context reads through.
+class CsDeclHooks : public DeclHooks {
+public:
+    std::string renderTypeRef(const TypeRef& t) const override { return csType(t); }
+    std::string ident(const std::string& n) const override { return csIdent(n); }
+    std::string generics(const std::vector<ir::GenericParam>& gs) const override { return csGenerics(gs); }
+    std::string where(const std::vector<ir::GenericParam>& gs) const override { return csWhere(gs); }
+};
+const CsDeclHooks kCsDeclHooks;
 
 class CSharpEmitter : public EmitterBase {
 public:
@@ -388,7 +404,10 @@ public:
             runDeclRule(csharpExprRules().at("EnumDecl"), ctx, ctx, &csharpExprRules());
         }
         for (const auto& i : m.interfaces) emitInterface(i);
-        for (const auto& u : m.unions) emitUnion(u);
+        for (const auto& u : m.unions) {
+            UnionDeclCtx ctx(u, kCsDeclHooks);
+            runDeclRule(csharpExprRules().at("UnionDecl"), ctx, ctx, &csharpExprRules());
+        }
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
         if (!m.extensions.empty()) { // extension methods live in a top-level static class (global namespace)
@@ -443,16 +462,6 @@ private:
         }
         --indent_;
         line("}");
-    }
-
-    void emitUnion(const ir::Union& u) {
-        std::string g = csGenerics(u.generics); // "" or "<T>"; the base reference reuses the same param names
-        line("abstract record " + u.name + g + ";");
-        for (const auto& c : u.cases) {
-            std::string s = "sealed record " + c.name + g + "(";
-            for (std::size_t i = 0; i < c.fields.size(); ++i) { if (i) s += ", "; s += csType(c.fields[i].type) + " " + csIdent(c.fields[i].name); }
-            line(s + ") : " + u.name + g + ";");
-        }
     }
 
     void emitRecord(const ir::Record& r) {

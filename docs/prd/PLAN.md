@@ -1305,6 +1305,19 @@ empty-case `pass` as explicit rule data (`case` on `decl.cases.count`=="0" — n
 alias / Python comment), then Interface, then the big Record/Class/Method/Function family, then the
 `program` scaffold + `require`.
 
+**Slice-5b ✅ (2026-07-02) — Union is data ×3; the `DeclHooks` seam lands.** **`DeclHooks`** is the one
+per-backend object every decl context reads through (`renderTypeRef` + `ident` + `generics` + `where` — the
+declaration layer's fixed builtins; the shapes around them are rule data): `CsDeclHooks`
+(csType/csIdent/csGenerics/csWhere), `TsDeclHooks` (tsType/tsGenerics), `PyDeclHooks` (pyTypeName/pyId).
+Shared **`UnionDeclCtx`** (name/case/field paths + field-type rendering through the hooks). The three Union
+shapes as rules: C# `abstract record N<G>;` + per-case `sealed record C<G>(fields) : N<G>;` (a `mapDecl`
+whose line nests a string `map` over fields — `{"type":"item.type"}` renders field types), TS one-line
+tagged-union alias (nested maps, `; f: T` per field), Python the one-comment line. Three `emitUnion`s
+deleted. Generics/bounds spelling deliberately stays a fixed hooks builtin for now (the INumber-erasure
+filter inside a data `map` needs a filtered-map primitive — revisit when the decl tables are otherwise
+complete). Byte-identical (117 files), unit green, 39/39 + 38/38. Next: Interface, then
+Record/Class/Method/Function, then `program` + `require`.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

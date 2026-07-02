@@ -367,6 +367,51 @@ std::string EnumDeclCtx::get(const std::string& path) const {
     return "";
 }
 
+std::string UnionDeclCtx::get(const std::string& path) const {
+    if (path == "decl.name")        return u_.name;
+    if (path == "decl.cases.count") return std::to_string(u_.cases.size());
+    if (path.rfind("decl.cases.", 0) == 0) { // decl.cases.<i>.{name | fields.count | fields.<j>.name}
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+        const std::size_t dot = path.find('.', 11);
+        if (i < u_.cases.size() && dot != std::string::npos) {
+            const auto& c = u_.cases[i];
+            const std::string rest = path.substr(dot + 1);
+            if (rest == "name")         return c.name;
+            if (rest == "fields.count") return std::to_string(c.fields.size());
+            if (rest.rfind("fields.", 0) == 0) {
+                const std::string sub = rest.substr(7);
+                const std::size_t j = static_cast<std::size_t>(std::stoul(sub));
+                if (j < c.fields.size() && sub.find('.') != std::string::npos &&
+                    sub.substr(sub.find('.') + 1) == "name")
+                    return c.fields[j].name;
+            }
+        }
+    }
+    return "";
+}
+
+std::string UnionDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "generics") return hooks_.generics(u_.generics);
+    if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    return "";
+}
+
+std::string UnionDeclCtx::renderType(const std::string& path) const {
+    // decl.cases.<i>.fields.<j>.type — the only TypeRef a union rule renders.
+    if (path.rfind("decl.cases.", 0) != 0) return "";
+    const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+    const std::size_t dot = path.find('.', 11);
+    if (i >= u_.cases.size() || dot == std::string::npos) return "";
+    const std::string rest = path.substr(dot + 1);
+    if (rest.rfind("fields.", 0) != 0) return "";
+    const std::string sub = rest.substr(7);
+    const std::size_t j = static_cast<std::size_t>(std::stoul(sub));
+    if (j >= u_.cases[i].fields.size() || sub.find('.') == std::string::npos ||
+        sub.substr(sub.find('.') + 1) != "type")
+        return "";
+    return hooks_.renderTypeRef(u_.cases[i].fields[j].type);
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;

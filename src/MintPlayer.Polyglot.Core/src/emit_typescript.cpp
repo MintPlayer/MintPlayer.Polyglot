@@ -140,6 +140,11 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
       { "line": { "tmpl": [ "const ", {"get":"decl.name"}, " = { ",
           {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"},": ",{"get":"item.value"}]}},
           " };" ] } } ] },
+  "UnionDecl": { "line": { "tmpl": [ "type ", {"get":"decl.name"}, {"fn":"generics"}, " = ",
+      {"map":"decl.cases","sep":" | ","item":{"tmpl":["{ tag: \"",{"get":"item.name"},"\"",
+        {"map":"item.fields","sep":"","item":{"tmpl":["; ",{"get":"item.name"},": ",{"type":"item.type"}]}},
+        " }"]}},
+      ";" ] } },
   "Type": { "case": { "when": [
       [ {"eq":["type.kind","function"]},
         {"tmpl":["(",{"map":"type.args","sep":", ","item":{"tmpl":["arg",{"get":"item.#"},": ",{"type":"item"}]}},
@@ -308,6 +313,14 @@ std::string tsGenerics(const std::vector<ir::GenericParam>& gs) {
     return s + ">";
 }
 
+// The TS declaration hooks — the one per-backend object every decl context reads through.
+class TsDeclHooks : public DeclHooks {
+public:
+    std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
+    std::string generics(const std::vector<ir::GenericParam>& gs) const override { return tsGenerics(gs); }
+};
+const TsDeclHooks kTsDeclHooks;
+
 // A numeric conversion, lowered per source/target representation. The hard boundary is BigInt (i64/u64):
 // crossing into it needs BigInt(); crossing out needs a width-exact BigInt.asIntN/asUintN before Number()
 // (a plain Number() of a >2^53 BigInt would lose the low bits a C# `(int)long` keeps).
@@ -423,7 +436,10 @@ public:
             runDeclRule(tsExprRules().at("EnumDecl"), ctx, ctx, &tsExprRules());
         }
         for (const auto& i : m.interfaces) emitInterface(i);
-        for (const auto& u : m.unions) emitUnion(u);
+        for (const auto& u : m.unions) {
+            UnionDeclCtx ctx(u, kTsDeclHooks);
+            runDeclRule(tsExprRules().at("UnionDecl"), ctx, ctx, &tsExprRules());
+        }
         for (const auto& r : m.records) emitRecord(r);
         for (const auto& c : m.classes) emitClass(c);
         for (const auto& g : m.globals) // top-level const/let
@@ -463,18 +479,6 @@ private:
         }
         --indent_;
         line("}");
-    }
-
-    // Union -> a discriminated-union type alias (stripped at runtime; construction makes {tag,...} objects).
-    void emitUnion(const ir::Union& u) {
-        std::string s = "type " + u.name + tsGenerics(u.generics) + " = "; // `type Option<T> = …`
-        for (std::size_t i = 0; i < u.cases.size(); ++i) {
-            if (i) s += " | ";
-            s += "{ tag: \"" + u.cases[i].name + "\"";
-            for (const auto& f : u.cases[i].fields) s += "; " + f.name + ": " + tsType(f.type);
-            s += " }";
-        }
-        line(s + ";");
     }
 
     // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).

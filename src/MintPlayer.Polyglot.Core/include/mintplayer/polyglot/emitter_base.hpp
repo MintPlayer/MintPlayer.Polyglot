@@ -83,6 +83,33 @@ private:
     const ir::Enum& e_;
 };
 
+// The per-target hooks a declaration context reads through — ONE instance per backend serves every decl
+// kind (type rendering, keyword escaping, the generics/bounds spellings). These are the declaration
+// layer's fixed builtins; the shapes around them are rule data.
+class DeclHooks {
+public:
+    virtual ~DeclHooks() = default;
+    virtual std::string renderTypeRef(const TypeRef& t) const = 0;
+    virtual std::string ident(const std::string& n) const { return n; }
+    virtual std::string generics(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
+    virtual std::string where(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
+};
+
+// Shared decl context for unions: name/case/field reads; `generics`/`ident` builtins + field types go
+// through the hooks. (A union's case records reuse the union's generic params, so `{"fn":"generics"}` is
+// scope-independent — it always spells the union's list.)
+class UnionDeclCtx : public IrDeclCtx {
+public:
+    UnionDeclCtx(const ir::Union& u, const DeclHooks& hooks) : u_(u), hooks_(hooks) {}
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+
+private:
+    const ir::Union& u_;
+    const DeclHooks& hooks_;
+};
+
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
 // `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
 // `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern
