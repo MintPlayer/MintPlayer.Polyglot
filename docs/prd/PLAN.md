@@ -1106,6 +1106,24 @@ Lambda/Match (+ per-target This/Char asymmetries already data). Verified byte-id
 slice-13 baseline (114 emitted files, zero diffs — transitively equal to pre-port) + unit (+1 item-template
 test)/run-diff 38/38/run-python 37/37.
 
+**Slice-15 (Python port — the non-sibling stress test) ✅. All three backends now share one interpreter.**
+`PY_EXPR_RULES_JSON` + `PyExprCtx`: 20 kinds migrated in one slice (the shapes were all proven on C#/TS).
+Python's per-target shape is pure DATA: `This`=`self`, `Cond`=`then if cond else els`, a 1-`Tuple` gets the
+trailing comma (a `case` on `node.elements.count`=="1" + the indexed path `node.elements.0`), `MakeCase` is
+a tagged dict with *quoted* keys (`escapeString(item.name)`), `New` has no keyword/type-args, `!`→`not `,
+`&&`/`||`→`and`/`or` **moved into the spec's `binaryOp` table** (pyOp() deleted). The stateful machinery
+became fixed builtins reaching the emitter's counters **by reference**: `nullSafeMember`/`nullCoalesce`
+(walrus single-eval temporaries, `tmp_`), `idiv`/`irem` (set `needsIdiv_` so the `_pg_idiv` prelude
+prepends), plus `wrapInt` (§3.C width masking), `ident` (keyword suffix `_`), `mangleName` (`$`→`_`),
+`convert`. `Binary` nests `case` inside `wrapInt`'s arg (`/`→idiv, `%`→irem, else spelled infix) — rule
+composition working as designed. pyId/pyName/wrapInt hoisted to free fns; dead `child()`/`pyOp()` deleted.
+Python's residue: MethodCall/Lambda/Bound/Interp/Match (matches C#/TS modulo Python's lambda-chain Match).
+Byte-identical vs the slice-14 baseline (114 files, zero diffs); unit/run-diff 38/38/run-python 37/37/
+samples 10/10 green. **The TS/Python port milestone the P18 plan called for is complete** — next: the
+loader-validation slice (every claimed feature has a rule; "no rule"→hard error), then flip-default +
+delete-the-C++-switch residue per family as the remaining kinds migrate, then std de-hardcoding /
+distribution.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

@@ -29,12 +29,12 @@ namespace mintplayer::polyglot {
 namespace {
 
 // Python's declarative Spec, now a JSON spec (P18 — PRD §4.10). The engine consults it for block style,
-// statement terminator, and throw keyword. The type/operator/bracket tables stay empty: Python emits no type
-// annotations, spells operators through pyOp(), and brackets list/tuple literals inline — those are its
-// imperative Hook tier, not data. Only the Spec's source moved; output is byte-identical.
+// statement terminator, throw keyword, and operator spellings (`&&`/`||` -> `and`/`or`). The type table
+// stays empty: Python emits no type annotations. Only the Spec's source moved; output is byte-identical.
 const char* PY_SPEC_JSON = R"JSON({
   "name": "python",
-  "scalarType": {}, "intSuffix": {}, "binaryOp": {}, "delimited": {},
+  "scalarType": {}, "intSuffix": {}, "delimited": {},
+  "binaryOp": { "&&": "and", "||": "or" },
   "blockStyle": "colonIndent",
   "stmtEnd": "",
   "throwKeyword": "raise",
@@ -76,6 +76,202 @@ const char* opDunder(const std::string& sym) {
     if (sym == ">=") return "__ge__";
     return nullptr;
 }
+
+// An overloaded function's mangled name (`area$i32`) carries a `$` that's invalid in a Python identifier;
+// map it to `_` consistently at every def and call site so the overloads stay distinct and callable.
+std::string pyName(const std::string& s) {
+    std::string out = s;
+    for (char& c : out) if (c == '$') c = '_';
+    return out;
+}
+
+// Escape a source identifier that collides with a Python keyword (e.g. a local `def`/`class`/`in`) by
+// suffixing `_`. Applied uniformly to every binding site and reference so the renaming stays consistent.
+std::string pyId(const std::string& s) {
+    static const std::unordered_set<std::string> kw = {
+        "False","None","True","and","as","assert","async","await","break","class","continue","def","del",
+        "elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal",
+        "not","or","pass","raise","return","try","while","with","yield","match","case"};
+    return kw.count(s) ? s + "_" : s;
+}
+
+// §3.C integer faithfulness: wrap an int result to its width so it overflows like .NET (Python ints are
+// arbitrary-precision). Unsigned masks; signed masks then sign-extends via the (m ^ SIGN) - SIGN trick —
+// `x` appears once, so it's safe to inline without a temporary.
+std::string wrapInt(const std::string& n, const std::string& x) {
+    if (n == "u8")  return "((" + x + ") & 0xff)";
+    if (n == "u16") return "((" + x + ") & 0xffff)";
+    if (n == "u32") return "((" + x + ") & 0xffffffff)";
+    if (n == "u64") return "((" + x + ") & 0xffffffffffffffff)";
+    if (n == "i8")  return "((((" + x + ") & 0xff) ^ 0x80) - 0x80)";
+    if (n == "i16") return "((((" + x + ") & 0xffff) ^ 0x8000) - 0x8000)";
+    if (n == "i32") return "((((" + x + ") & 0xffffffff) ^ 0x80000000) - 0x80000000)";
+    if (n == "i64") return "((((" + x + ") & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)";
+    return x;
+}
+
+// P18: the Python expression walk as declarative JSON Rules — the third consumer of the same interpreter,
+// and the non-sibling stress test (colon+indent, `not`/`and`/`or`, walrus null-safety, no `new`). Per-target
+// shape lives in the DATA: `This` is the literal `self`, `Cond` is `then if cond else els`, a 1-`Tuple`
+// needs the trailing comma, `MakeCase` is a tagged dict with QUOTED field keys, `New` has no keyword and no
+// type args. The stateful pieces (walrus temporaries for `?.`/`??`, the `_pg_idiv` prelude flag) are fixed
+// builtins that reach the emitter's counters by reference — a plugin selects them, never authors them.
+const char* PY_EXPR_RULES_JSON = R"JSON({
+  "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
+  "Float": { "get": "node.text" },
+  "Bool":  { "case": { "when": [ [ {"eq":["node.value","true"]}, {"get":"spec.trueLit"} ] ],
+                       "else": {"get":"spec.falseLit"} } },
+  "Null":  { "get": "spec.nullLit" },
+  "Str":   { "fn": "escapeString", "args": [ {"get":"node.value"} ] },
+  "Var":    { "fn": "ident", "args": [ {"get":"node.name"} ] },
+  "This":   "self",
+  "Extern": { "get": "node.code" },
+  "Await":  { "tmpl": [ "await ", {"emitChild":"node.operand","side":"recv"} ] },
+  "Call": { "tmpl": [ {"fn":"mangleName","args":[{"get":"node.mangledCallee"}]},
+                      "(", {"map":"node.args","sep":", "}, ")" ] },
+  "Member": { "case": { "when": [ [ {"eq":["node.nullSafe","true"]}, {"fn":"nullSafeMember"} ] ],
+              "else": { "tmpl": [
+                { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
+                            "else": {"emitChild":"node.object","side":"recv"} } },
+                ".", {"get":"node.field"} ] } } },
+  "Index": { "tmpl": [ {"emitChild":"node.receiver","side":"recv"}, "[", {"emit":"node.index"}, "]" ] },
+  "Cond":  { "tmpl": [ "(", {"emit":"node.then"}, " if ", {"emit":"node.cond"},
+                       " else ", {"emit":"node.els"}, ")" ] },
+  "ListLit": { "tmpl": [ "[", {"map":"node.elements","sep":", "}, "]" ] },
+  "Tuple": { "case": { "when": [ [ {"eq":["node.elements.count","1"]},
+               {"tmpl":["(",{"emit":"node.elements.0"},",)"]} ] ],
+             "else": {"tmpl":["(",{"map":"node.elements","sep":", "},")"]} } },
+  "New": { "tmpl": [ {"get":"node.typeName"}, "(", {"map":"node.args","sep":", "}, ")" ] },
+  "MakeCase": { "tmpl": [ "{\"tag\": ", {"fn":"escapeString","args":[{"get":"node.caseName"}]},
+                          {"map":"node.fields","sep":"",
+                           "item":{"tmpl":[", ",{"fn":"escapeString","args":[{"get":"item.name"}]},": ",
+                                           {"emit":"item.value"}]}}, "}" ] },
+  "Unary": { "case": { "when": [
+               [ {"and":[{"eq":["node.op","-"]},{"eq":["node.typeIsInt","true"]}]},
+                 {"fn":"wrapInt","args":[{"get":"node.type"},
+                   {"tmpl":["-",{"emitChild":"node.operand","side":"unary"}]}]} ],
+               [ {"eq":["node.op","!"]}, {"tmpl":["not ",{"emitChild":"node.operand","side":"unary"}]} ] ],
+             "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
+  "Cast": { "fn": "convert", "args": [ {"emit":"node.operand"} ] },
+  "Binary": { "case": { "when": [
+      [ {"eq":["node.op","??"]}, {"fn":"nullCoalesce"} ],
+      [ {"and":[{"eq":["node.typeIsInt","true"]},
+                {"or":[{"eq":["node.op","+"]},{"eq":["node.op","-"]},{"eq":["node.op","*"]},
+                       {"eq":["node.op","/"]},{"eq":["node.op","%"]}]}]},
+        {"fn":"wrapInt","args":[{"get":"node.type"},
+          { "case": { "when": [
+              [ {"eq":["node.op","/"]}, {"fn":"idiv","args":[{"emit":"node.lhs"},{"emit":"node.rhs"}]} ],
+              [ {"eq":["node.op","%"]}, {"fn":"irem","args":[{"emit":"node.lhs"},{"emit":"node.rhs"}]} ] ],
+            "else": {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"get":"node.op"}," ",
+                             {"emitChild":"node.rhs","side":"r"}]} } } ]} ] ],
+    "else": {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"fn":"opSpelling","args":[{"get":"node.op"}]}," ",
+                     {"emitChild":"node.rhs","side":"r"}]} } }
+})JSON";
+
+const std::unordered_map<std::string, engine::Rule>& pyExprRules() {
+    static const std::unordered_map<std::string, engine::Rule> rules = [] {
+        std::unordered_map<std::string, engine::Rule> m;
+        json::Value doc = json::parse(PY_EXPR_RULES_JSON);
+        for (const auto& kv : doc.members) {
+            bool ok = true;
+            std::string err;
+            engine::Rule r = engine::parseRule(kv.second, ok, err);
+            assert(ok && "embedded Python expr rule must parse");
+            m.emplace(kv.first, std::move(r));
+        }
+        return m;
+    }();
+    return rules;
+}
+
+// The ExprKind name keying the Python rule table ("" routes to the C++ switch).
+const char* pyExprRuleKey(ir::ExprKind k) {
+    switch (k) {
+        case ir::ExprKind::Int:      return "Int";
+        case ir::ExprKind::Float:    return "Float";
+        case ir::ExprKind::Bool:     return "Bool";
+        case ir::ExprKind::Null:     return "Null";
+        case ir::ExprKind::Str:      return "Str";
+        case ir::ExprKind::Var:      return "Var";
+        case ir::ExprKind::This:     return "This";
+        case ir::ExprKind::Extern:   return "Extern";
+        case ir::ExprKind::Await:    return "Await";
+        case ir::ExprKind::Call:     return "Call";
+        case ir::ExprKind::Member:   return "Member";
+        case ir::ExprKind::Index:    return "Index";
+        case ir::ExprKind::Cond:     return "Cond";
+        case ir::ExprKind::ListLit:  return "ListLit";
+        case ir::ExprKind::Tuple:    return "Tuple";
+        case ir::ExprKind::New:      return "New";
+        case ir::ExprKind::MakeCase: return "MakeCase";
+        case ir::ExprKind::Unary:    return "Unary";
+        case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::Binary:   return "Binary";
+        default:                     return "";
+    }
+}
+
+// The Python rule-interpreter seam. `tmp`/`needsIdiv` are the EMITTER's counters, reached by reference:
+// the walrus builtins (`?.`/`??` single-evaluation temporaries) mint fresh names, and `idiv`/`irem` flag
+// that the `_pg_idiv` prelude must be prepended. The stateful machinery stays fixed C++; the rules only
+// select it.
+class PyExprCtx : public IrExprCtx {
+public:
+    PyExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, int& tmp, bool& needsIdiv)
+        : IrExprCtx(e, spec, std::move(emit)), tmp_(tmp), needsIdiv_(needsIdiv) {}
+
+protected:
+    bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
+        if (side == "recv") // Python atom(): wrap anything that would mis-bind against `.`/call/subscription
+            return c.kind == ir::ExprKind::Binary || c.kind == ir::ExprKind::Unary ||
+                   c.kind == ir::ExprKind::Cond || c.kind == ir::ExprKind::Cast;
+        // "unary": wrap only a binary operand
+        return c.kind == ir::ExprKind::Binary;
+    }
+
+    std::string targetGet(const std::string& path) const override {
+        if (path == "node.typeIsInt") return isIntType(e_.type) ? "true" : "false";
+        return "";
+    }
+
+    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
+        if (name == "ident")      return pyId(args.empty() ? std::string() : args[0]);
+        if (name == "mangleName") return pyName(args.empty() ? std::string() : args[0]);
+        if (name == "wrapInt")
+            return wrapInt(args.size() > 0 ? args[0] : std::string(), args.size() > 1 ? args[1] : std::string());
+        if (name == "idiv" || name == "irem") { // truncating int / and % need the _pg_idiv prelude
+            needsIdiv_ = true;
+            return std::string(name == "idiv" ? "_pg_idiv(" : "_pg_irem(") +
+                   (args.size() > 0 ? args[0] : std::string()) + ", " +
+                   (args.size() > 1 ? args[1] : std::string()) + ")";
+        }
+        if (name == "nullCoalesce" && e_.kind == ir::ExprKind::Binary) {
+            // `a ?? d` -> `(t if (t := a) is not None else d)` (single eval of a)
+            const auto& b = static_cast<const ir::Binary&>(e_);
+            std::string t = "__c" + std::to_string(tmp_++);
+            return "(" + t + " if (" + t + " := " + emit_(*b.lhs) + ") is not None else " + emit_(*b.rhs) + ")";
+        }
+        if (name == "nullSafeMember" && e_.kind == ir::ExprKind::Member) {
+            // `obj?.field` -> `(t.field if (t := obj) is not None else None)` (single eval)
+            const auto& m = static_cast<const ir::Member&>(e_);
+            std::string t = "__o" + std::to_string(tmp_++);
+            return "(" + t + "." + m.field + " if (" + t + " := " + emit_(*m.object) + ") is not None else None)";
+        }
+        if (name == "convert") { // numeric casts: int->float / float->int truncation; int<->int passes through
+            if (e_.kind != ir::ExprKind::Cast) return "";
+            const auto& c = static_cast<const ir::Cast&>(e_);
+            const std::string& x = args.empty() ? std::string() : args[0];
+            if (isFloatType(e_.type)) return isIntType(c.operand->type) ? "float(" + x + ")" : x;
+            if (isIntType(e_.type) && isFloatType(c.operand->type)) return "int(" + x + ")"; // truncates toward zero (matches C#)
+            return x; // int<->int: Python ints are arbitrary-precision (overflow masking is a later slice)
+        }
+        return "";
+    }
+
+private:
+    int& tmp_;
+    bool& needsIdiv_;
+};
 
 class PythonEmitter : public EmitterBase {
 public:
@@ -147,24 +343,6 @@ private:
             } else out += tmpl[i++];
         }
         return out;
-    }
-
-    // An overloaded function's mangled name (`area$i32`) carries a `$` that's invalid in a Python identifier;
-    // map it to `_` consistently at every def and call site so the overloads stay distinct and callable.
-    static std::string pyName(const std::string& s) {
-        std::string out = s;
-        for (char& c : out) if (c == '$') c = '_';
-        return out;
-    }
-
-    // Escape a source identifier that collides with a Python keyword (e.g. a local `def`/`class`/`in`) by
-    // suffixing `_`. Applied uniformly to every binding site and reference so the renaming stays consistent.
-    static std::string pyId(const std::string& s) {
-        static const std::unordered_set<std::string> kw = {
-            "False","None","True","and","as","assert","async","await","break","class","continue","def","del",
-            "elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal",
-            "not","or","pass","raise","return","try","while","with","yield","match","case"};
-        return kw.count(s) ? s + "_" : s;
     }
 
     // A parameter: escaped name + optional `= default` (Python supports default args natively).
@@ -350,42 +528,8 @@ private:
         if (t.hasFinally) { openBlock("finally"); blockBody(t.finallyBody); }
     }
 
-    // Parenthesize a binary child that binds looser than its parent (Python precedence matches C/JS here).
-    std::string child(const ir::Expr& c, int parentPrec, bool isRight) {
-        std::string inner = emitExpr(c);
-        if (c.kind == ir::ExprKind::Binary) {
-            int cp = operatorPrecedence(static_cast<const ir::Binary&>(c).op);
-            if (isRight ? (cp <= parentPrec) : (cp < parentPrec)) return "(" + inner + ")";
-        }
-        return inner;
-    }
-
-    // Python operator spelling: `and`/`or` for `&&`/`||`. (Fixed-width int arithmetic — wrap, trunc-div,
-    // trunc-rem — is handled in the Binary case below, not here; non-int `/` stays float division.)
-    std::string pyOp(const std::string& op) {
-        if (op == "&&") return "and";
-        if (op == "||") return "or";
-        return op;
-    }
-
     bool needsIdiv_ = false; // set when a fixed-width int `/`/`%` is emitted -> prepend the trunc helpers
     bool needsAsyncio_ = false; // set when an `async fn main` entry is emitted -> prepend `import asyncio`
-
-    // §3.C integer faithfulness: wrap an int result to its width so it overflows like .NET (Python ints are
-    // arbitrary-precision). Unsigned masks; signed masks then sign-extends via the (m ^ SIGN) - SIGN trick —
-    // `x` appears once, so it's safe to inline without a temporary.
-    std::string wrapInt(const TypeRef& t, const std::string& x) {
-        const std::string& n = t.name;
-        if (n == "u8")  return "((" + x + ") & 0xff)";
-        if (n == "u16") return "((" + x + ") & 0xffff)";
-        if (n == "u32") return "((" + x + ") & 0xffffffff)";
-        if (n == "u64") return "((" + x + ") & 0xffffffffffffffff)";
-        if (n == "i8")  return "((((" + x + ") & 0xff) ^ 0x80) - 0x80)";
-        if (n == "i16") return "((((" + x + ") & 0xffff) ^ 0x8000) - 0x8000)";
-        if (n == "i32") return "((((" + x + ") & 0xffffffff) ^ 0x80000000) - 0x80000000)";
-        if (n == "i64") return "((((" + x + ") & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)";
-        return x;
-    }
 
     // ---- match -> a lambda-bound ternary chain --------------------------------------------------------
     // Python has no match expression (3.10's is a statement), so a match lowers to
@@ -457,65 +601,17 @@ private:
     }
 
     std::string emitExpr(const ir::Expr& e) override {
+        // A migrated node kind (see pyExprRuleKey / PY_EXPR_RULES_JSON) is interpreted from its JSON Rule
+        // here; the C++ switch below handles only the kinds whose shape is still imperative.
+        if (const char* key = pyExprRuleKey(e.kind); key[0] != '\0') {
+            const auto& rules = pyExprRules();
+            auto it = rules.find(key);
+            if (it != rules.end()) {
+                PyExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, tmp_, needsIdiv_);
+                return engine::evalRule(it->second, ctx);
+            }
+        }
         switch (e.kind) {
-            case ir::ExprKind::Int:    return static_cast<const ir::IntLit&>(e).text;
-            case ir::ExprKind::Float:  return static_cast<const ir::FloatLit&>(e).text;
-            case ir::ExprKind::Bool:   return static_cast<const ir::BoolLit&>(e).value ? spec().trueLit : spec().falseLit;
-            case ir::ExprKind::Null:   return spec().nullLit;
-            case ir::ExprKind::Str:    return renderString(static_cast<const ir::StrLit&>(e).value);
-            case ir::ExprKind::Var:    return pyId(static_cast<const ir::Var&>(e).name);
-            case ir::ExprKind::This:   return "self";
-            case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw Python verbatim
-            case ir::ExprKind::Unary: {
-                const auto& u = static_cast<const ir::Unary&>(e);
-                std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
-                                                                              : emitExpr(*u.operand);
-                if (u.op == "-" && isIntType(e.type)) return wrapInt(e.type, "-" + operand); // negate can overflow (i8 min)
-                return (u.op == "!" ? "not " : u.op) + operand;
-            }
-            case ir::ExprKind::Await: {
-                const auto& a = static_cast<const ir::Await&>(e);
-                return "await " + atom(*a.operand);
-            }
-            case ir::ExprKind::Binary: {
-                const auto& b = static_cast<const ir::Binary&>(e);
-                if (b.op == "??") { // `a ?? d` -> `(t if (t := a) is not None else d)` (single eval of a)
-                    std::string t = "__c" + std::to_string(tmp_++);
-                    return "(" + t + " if (" + t + " := " + emitExpr(*b.lhs) + ") is not None else " + emitExpr(*b.rhs) + ")";
-                }
-                int p = operatorPrecedence(b.op);
-                // §3.C: fixed-width int arithmetic wraps at each boundary; `/`/`%` truncate toward zero like
-                // .NET (Python `//`/`%` floor), via the prelude helpers. Comparisons/logic (bool result) and
-                // non-int `/` (float) fall through to the plain spelling.
-                if (isIntType(e.type) && (b.op == "+" || b.op == "-" || b.op == "*" || b.op == "/" || b.op == "%")) {
-                    std::string inner;
-                    if (b.op == "/") { needsIdiv_ = true; inner = "_pg_idiv(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")"; }
-                    else if (b.op == "%") { needsIdiv_ = true; inner = "_pg_irem(" + emitExpr(*b.lhs) + ", " + emitExpr(*b.rhs) + ")"; }
-                    else inner = child(*b.lhs, p, false) + " " + b.op + " " + child(*b.rhs, p, true);
-                    return wrapInt(e.type, inner);
-                }
-                return child(*b.lhs, p, false) + " " + pyOp(b.op) + " " + child(*b.rhs, p, true);
-            }
-            case ir::ExprKind::Cond: { // Python ternary: `then if cond else els`
-                const auto& c = static_cast<const ir::Cond&>(e);
-                std::string cc = emitExpr(*c.cond), ct = emitExpr(*c.then), ce = emitExpr(*c.els);
-                return "(" + ct + " if " + cc + " else " + ce + ")";
-            }
-            case ir::ExprKind::Call: {
-                const auto& c = static_cast<const ir::Call&>(e);
-                std::vector<std::string> args;
-                for (const auto& a : c.args) args.push_back(emitExpr(*a));
-                return pyName(c.mangledCallee) + renderArgs(args);
-            }
-            case ir::ExprKind::Member: {
-                const auto& m = static_cast<const ir::Member&>(e);
-                if (m.nullSafe) { // `obj?.field` -> `(t.field if (t := obj) is not None else None)` (single eval)
-                    std::string t = "__o" + std::to_string(tmp_++);
-                    return "(" + t + "." + m.field + " if (" + t + " := " + emitExpr(*m.object) + ") is not None else None)";
-                }
-                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
-                return base + "." + m.field; // `this.f` -> `self.f` (This emits "self")
-            }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 const std::string& st = mc.staticType;
@@ -546,23 +642,6 @@ private:
             }
             case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
                 return substTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::ListLit: { // `[a, b, c]` -> a Python list (List<T> maps to the native list)
-                const auto& l = static_cast<const ir::ListLit&>(e);
-                std::vector<std::string> els;
-                for (const auto& el : l.elements) els.push_back(emitExpr(*el));
-                return renderDelimited({"[", ", ", "]"}, els);
-            }
-            case ir::ExprKind::Index: { // `recv[i]` -> Python subscription (lists index directly)
-                const auto& ix = static_cast<const ir::Index&>(e);
-                return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
-            }
-            case ir::ExprKind::Tuple: { // `(a, b)` -> a Python tuple
-                const auto& t = static_cast<const ir::Tuple&>(e);
-                std::vector<std::string> els;
-                for (const auto& el : t.elements) els.push_back(emitExpr(*el));
-                std::string s = renderDelimited({"(", ", ", ")"}, els);
-                return els.size() == 1 ? "(" + els[0] + ",)" : s; // 1-tuples need a trailing comma in Python
-            }
             case ir::ExprKind::Interp: { // string interpolation -> `"lit" + str(hole) + …` (str() like C# ToString)
                 const auto& in = static_cast<const ir::Interp&>(e);
                 std::string s = renderString(in.chunks[0]);
@@ -570,30 +649,9 @@ private:
                     s += " + str(" + emitExpr(*in.holes[i]) + ") + " + renderString(in.chunks[i + 1]);
                 return s;
             }
-            case ir::ExprKind::MakeCase: { // union-case construction -> a tagged dict
-                const auto& mc = static_cast<const ir::MakeCase&>(e);
-                std::string s = "{\"tag\": \"" + mc.caseName + "\"";
-                for (const auto& f : mc.fields) s += ", \"" + f.name + "\": " + emitExpr(*f.value);
-                return s + "}";
-            }
             case ir::ExprKind::Match: {
                 const auto& m = static_cast<const ir::Match&>(e);
                 return "(lambda _m: " + matchChain(m.arms, 0) + ")(" + emitExpr(*m.scrutinee) + ")";
-            }
-            case ir::ExprKind::New: { // user record/class construction — Python has no `new`, no type args
-                const auto& n = static_cast<const ir::New&>(e);
-                std::vector<std::string> args;
-                for (const auto& a : n.args) args.push_back(emitExpr(*a));
-                return n.typeName + renderArgs(args);
-            }
-            case ir::ExprKind::Cast: {
-                const auto& c = static_cast<const ir::Cast&>(e);
-                std::string x = emitExpr(*c.operand);
-                const TypeRef& to = e.type;
-                bool fromFloat = isFloatType(c.operand->type);
-                if (isFloatType(to)) return isIntType(c.operand->type) ? "float(" + x + ")" : x; // int->float
-                if (isIntType(to) && fromFloat) return "int(" + x + ")"; // float->int truncates toward zero (matches C#)
-                return x; // int<->int: Python ints are arbitrary-precision (overflow masking is a later slice)
             }
             default:
                 return "__py_unsupported_expr__"; // fails loudly at runtime if a non-skeleton node reaches here
