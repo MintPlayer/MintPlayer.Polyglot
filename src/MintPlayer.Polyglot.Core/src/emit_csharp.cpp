@@ -98,6 +98,7 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
                           "(", {"map":"node.fields","sep":", "}, ")" ] },
   "Var":    { "fn": "ident", "args": [ {"get":"node.name"} ] },
   "Extern": { "get": "node.code" },
+  "Await":  { "tmpl": [ "await ", {"emitChild":"node.operand","side":"recv"} ] },
   "Cast":   { "tmpl": [ "(", {"fn":"castType"}, ")(", {"emit":"node.operand"}, ")" ] },
   "Unary":  { "tmpl": [ {"get":"node.op"}, {"emitChild":"node.operand","side":"unary"} ] }
 })JSON";
@@ -137,6 +138,7 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::MakeCase: return "MakeCase";
         case ir::ExprKind::Var:      return "Var";
         case ir::ExprKind::Extern:   return "Extern";
+        case ir::ExprKind::Await:    return "Await";
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::Unary:    return "Unary";
         default:                     return "";
@@ -619,10 +621,6 @@ private:
                 return s + "'";
             }
             case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_; // stateful (operator rebinds `this`)
-            case ir::ExprKind::Await: {
-                const auto& a = static_cast<const ir::Await&>(e);
-                return "await " + atom(*a.operand);
-            }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)

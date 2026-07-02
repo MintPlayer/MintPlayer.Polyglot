@@ -125,6 +125,7 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
     if (path == "node.operand") {
         if (e_.kind == ir::ExprKind::Cast)  return static_cast<const ir::Cast&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
+        if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
     }
     return nullptr;
 }

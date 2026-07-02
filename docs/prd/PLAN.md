@@ -1075,6 +1075,20 @@ rules test), `targetBuiltin` (keyword escaping / type rendering / numeric faithf
 pre-added the shared reads TS needs (`node.mangledCallee`, `node.fields.<i>.name/.value`, Char's
 `node.value`) — inert for C#. Byte-identical (unit, run-diff 38/38, run-python 37/37).
 
+**Slice-13 (TS port, simple families) ✅ — the DSL's first non-C# consumer.** `TS_EXPR_RULES_JSON` +
+`TsExprCtx` land in emit_typescript.cpp; 17 kinds route through the *same interpreter/primitives* as C#:
+Int/Float/Bool/Null/Str/**Char** (a string — TS has no char), **Var** (verbatim — no keyword escaping),
+**This** (a plain literal — only C# rebinds `this`), Extern, **Await**, **Call** (the overload-mangled
+callee), Member, **Index** (a `case` on the new `node.receiverHasIndexer` predicate — TS has no `[]`
+overload, `operator get` → `.get(i)`), Cond, Tuple/ListLit (spec `delimited` brackets), New. `TsExprCtx`
+supplies the TS `wrapAtom` policy (recv wraps Unary + *scalar* Binary only — a user-type binary becomes a
+high-binding method call), `node.receiverHasIndexer` (over the emitter's per-module indexer set, passed by
+ref), and a tsType-based `typeArgsSuffix`. C# gains the identical `Await` rule for parity (its `atom()` ==
+its recv policy). Proven with the strongest gate so far: **an old-vs-new emitted-source byte-diff across
+all 38 programs × 3 targets — 114 files, zero differences** (plus unit/run-diff/run-python green). Still
+imperative in TS: Unary/Cast/Binary (numeric faithfulness — next slice), MakeCase (needs the `map` item
+template), Interp/MethodCall/With/Bound/Lambda/Match.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

@@ -46,6 +46,83 @@ const BackendSpec& typescriptSpec() {
     return spec;
 }
 
+// P18: the TS expression walk as declarative JSON Rules — the same interpreter + primitives that drive the
+// C# rules, proving the DSL isn't shaped around C#. Per-target differences live in the DATA: `Char` is a
+// string (TS has no char), `Var` emits verbatim (no keyword escaping), `Call` uses the overload-mangled
+// callee, `Index` dispatches on `node.receiverHasIndexer` (TS has no `[]` overload -> `.get(i)`), `This`
+// is a plain literal (only C# rebinds `this` in operator bodies), Tuple/ListLit brackets come from the
+// spec's `delimited` table.
+const char* TS_EXPR_RULES_JSON = R"JSON({
+  "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
+  "Float": { "get": "node.text" },
+  "Bool":  { "case": { "when": [ [ {"eq":["node.value","true"]}, {"get":"spec.trueLit"} ] ],
+                       "else": {"get":"spec.falseLit"} } },
+  "Null":  { "get": "spec.nullLit" },
+  "Str":   { "fn": "escapeString", "args": [ {"get":"node.value"} ] },
+  "Char":  { "fn": "escapeString", "args": [ {"get":"node.value"} ] },
+  "Var":    { "get": "node.name" },
+  "This":   "this",
+  "Extern": { "get": "node.code" },
+  "Await":  { "tmpl": [ "await ", {"emitChild":"node.operand","side":"recv"} ] },
+  "Call": { "tmpl": [ {"get":"node.mangledCallee"}, "(", {"map":"node.args","sep":", "}, ")" ] },
+  "Member": { "tmpl": [
+                { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
+                            "else": {"emitChild":"node.object","side":"recv"} } },
+                { "case": { "when": [ [ {"eq":["node.nullSafe","true"]}, "?." ] ], "else": "." } },
+                {"get":"node.field"} ] },
+  "Index": { "case": { "when": [ [ {"eq":["node.receiverHasIndexer","true"]},
+                { "tmpl": [ {"emitChild":"node.receiver","side":"recv"}, ".get(", {"emit":"node.index"}, ")" ] } ] ],
+              "else": { "tmpl": [ {"emitChild":"node.receiver","side":"recv"}, "[", {"emit":"node.index"}, "]" ] } } },
+  "Cond":  { "tmpl": [ "(", {"emit":"node.cond"}, " ? ", {"emit":"node.then"},
+                       " : ", {"emit":"node.els"}, ")" ] },
+  "Tuple": { "tmpl": [ {"get":"spec.delimited.tuple.open"}, {"map":"node.elements","sep":", "},
+                       {"get":"spec.delimited.tuple.close"} ] },
+  "ListLit": { "tmpl": [ {"get":"spec.delimited.list.open"}, {"map":"node.elements","sep":", "},
+                         {"get":"spec.delimited.list.close"} ] },
+  "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"fn":"typeArgsSuffix"},
+                     "(", {"map":"node.args","sep":", "}, ")" ] }
+})JSON";
+
+const std::unordered_map<std::string, engine::Rule>& tsExprRules() {
+    static const std::unordered_map<std::string, engine::Rule> rules = [] {
+        std::unordered_map<std::string, engine::Rule> m;
+        json::Value doc = json::parse(TS_EXPR_RULES_JSON);
+        for (const auto& kv : doc.members) {
+            bool ok = true;
+            std::string err;
+            engine::Rule r = engine::parseRule(kv.second, ok, err);
+            assert(ok && "embedded TS expr rule must parse");
+            m.emplace(kv.first, std::move(r));
+        }
+        return m;
+    }();
+    return rules;
+}
+
+// The ExprKind name keying the TS rule table ("" routes to the C++ switch).
+const char* tsExprRuleKey(ir::ExprKind k) {
+    switch (k) {
+        case ir::ExprKind::Int:     return "Int";
+        case ir::ExprKind::Float:   return "Float";
+        case ir::ExprKind::Bool:    return "Bool";
+        case ir::ExprKind::Null:    return "Null";
+        case ir::ExprKind::Str:     return "Str";
+        case ir::ExprKind::Char:    return "Char";
+        case ir::ExprKind::Var:     return "Var";
+        case ir::ExprKind::This:    return "This";
+        case ir::ExprKind::Extern:  return "Extern";
+        case ir::ExprKind::Await:   return "Await";
+        case ir::ExprKind::Call:    return "Call";
+        case ir::ExprKind::Member:  return "Member";
+        case ir::ExprKind::Index:   return "Index";
+        case ir::ExprKind::Cond:    return "Cond";
+        case ir::ExprKind::Tuple:   return "Tuple";
+        case ir::ExprKind::ListLit: return "ListLit";
+        case ir::ExprKind::New:     return "New";
+        default:                    return "";
+    }
+}
+
 // The current module's `extern class` type map; see the identical note in emit_csharp.cpp. Set per emit().
 const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nullptr;
 
@@ -178,6 +255,51 @@ std::string tsConvert(const TypeRef& from, const TypeRef& to, const std::string&
     if (fromFloat) return narrowTs(to.name, "Math.trunc(" + x + ")");
     return narrowTs(to.name, x);
 }
+
+// The TS rule-interpreter seam: only what differs from the shared IrExprCtx — the TS builtins, the TS
+// atom-wrapping policy, and the semantic predicates the TS rules test. `indexerTypes` is the emitter's
+// per-module set of types whose `operator get` becomes a `.get(i)` method (no `[]` overload in TS).
+class TsExprCtx : public IrExprCtx {
+public:
+    TsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit,
+              const std::unordered_set<std::string>& indexerTypes)
+        : IrExprCtx(e, spec, std::move(emit)), indexerTypes_(indexerTypes) {}
+
+protected:
+    bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
+        if (side == "recv") { // TS atom(): wrap a unary; wrap a binary only when it stays an operator
+            if (c.kind == ir::ExprKind::Unary) return true;
+            // a scalar binary needs parens as a receiver; a user-type binary emits a (high-binding) method call
+            return c.kind == ir::ExprKind::Binary && !isUserType(static_cast<const ir::Binary&>(c).lhs->type);
+        }
+        // "unary": wrap only a binary operand
+        return c.kind == ir::ExprKind::Binary;
+    }
+
+    std::string targetGet(const std::string& path) const override {
+        if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index) {
+            const auto& ix = static_cast<const ir::Index&>(e_);
+            bool has = ix.receiver->type.kind == TypeRef::Kind::Named && indexerTypes_.count(ix.receiver->type.name);
+            return has ? "true" : "false";
+        }
+        return "";
+    }
+
+    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& /*args*/) const override {
+        if (name == "typeArgsSuffix") { // "" or "<T, U>" — a New's construction type args
+            if (e_.kind != ir::ExprKind::New) return "";
+            const auto& ta = static_cast<const ir::New&>(e_).typeArgs;
+            if (ta.empty()) return "";
+            std::string s = "<";
+            for (std::size_t i = 0; i < ta.size(); ++i) { if (i) s += ", "; s += tsType(ta[i]); }
+            return s + ">";
+        }
+        return "";
+    }
+
+private:
+    const std::unordered_set<std::string>& indexerTypes_;
+};
 
 class TypeScriptEmitter : public EmitterBase {
 public:
@@ -532,15 +654,17 @@ private:
     }
 
     std::string emitExpr(const ir::Expr& e) override {
-        switch (e.kind) {
-            case ir::ExprKind::Int: {
-                const std::string& text = static_cast<const ir::IntLit&>(e).text;
-                auto it = typescriptSpec().intSuffix.find(e.type.name);
-                return it == typescriptSpec().intSuffix.end() ? text : text + it->second;
+        // A migrated node kind (see tsExprRuleKey / TS_EXPR_RULES_JSON) is interpreted from its JSON Rule
+        // here; the C++ switch below handles only the kinds whose shape is still imperative.
+        if (const char* key = tsExprRuleKey(e.kind); key[0] != '\0') {
+            const auto& rules = tsExprRules();
+            auto it = rules.find(key);
+            if (it != rules.end()) {
+                TsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, indexerTypes_);
+                return engine::evalRule(it->second, ctx);
             }
-            case ir::ExprKind::Float: return static_cast<const ir::FloatLit&>(e).text;
-            case ir::ExprKind::Bool:  return static_cast<const ir::BoolLit&>(e).value ? spec().trueLit : spec().falseLit;
-            case ir::ExprKind::Null:  return spec().nullLit;
+        }
+        switch (e.kind) {
             case ir::ExprKind::Interp: { // TS template literal `` `…${expr}…` ``
                 const auto& in = static_cast<const ir::Interp&>(e);
                 std::string s = "`";
@@ -555,10 +679,6 @@ private:
                 }
                 return s + "`";
             }
-            case ir::ExprKind::Str:   return renderString(static_cast<const ir::StrLit&>(e).value);
-            case ir::ExprKind::Char:  return renderString(static_cast<const ir::CharLit&>(e).value); // TS has no char -> string
-            case ir::ExprKind::Var:   return static_cast<const ir::Var&>(e).name;
-            case ir::ExprKind::This:  return "this";
             case ir::ExprKind::Unary: {
                 const auto& u = static_cast<const ir::Unary&>(e);
                 std::string operand = u.operand->kind == ir::ExprKind::Binary ? "(" + emitExpr(*u.operand) + ")"
@@ -566,15 +686,10 @@ private:
                 if (isSmallInt(e.type) && u.op == "-") return narrowTs(e.type.name, "-" + operand); // wrap negate
                 return u.op + operand;
             }
-            case ir::ExprKind::Await: {
-                const auto& a = static_cast<const ir::Await&>(e);
-                return "await " + atom(*a.operand);
-            }
             case ir::ExprKind::Cast: {
                 const auto& c = static_cast<const ir::Cast&>(e);
                 return tsConvert(c.operand->type, e.type, emitExpr(*c.operand));
             }
-            case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw TS verbatim
             case ir::ExprKind::Binary: {
                 const auto& b = static_cast<const ir::Binary&>(e);
                 if (b.op == "==" || b.op == "!=") {
@@ -612,17 +727,6 @@ private:
                 }
                 return lhs + " " + typescriptSpec().binOp(b.op) + " " + rhs;
             }
-            case ir::ExprKind::Call: {
-                const auto& c = static_cast<const ir::Call&>(e);
-                std::vector<std::string> args;
-                for (const auto& a : c.args) args.push_back(emitExpr(*a));
-                return c.mangledCallee + renderArgs(args);
-            }
-            case ir::ExprKind::Member: {
-                const auto& m = static_cast<const ir::Member&>(e);
-                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
-                return base + (m.nullSafe ? "?." : ".") + m.field;
-            }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) per-target idiom
@@ -641,30 +745,6 @@ private:
                 std::vector<std::string> args;
                 for (const auto& a : mc.args) args.push_back(emitExpr(*a));
                 return recv + "." + mc.method + renderArgs(args);
-            }
-            case ir::ExprKind::Cond: {
-                const auto& c = static_cast<const ir::Cond&>(e);
-                std::string cc = emitExpr(*c.cond), ct = emitExpr(*c.then), ce = emitExpr(*c.els);
-                return renderCond(cc, ct, ce);
-            }
-            case ir::ExprKind::Index: {
-                const auto& ix = static_cast<const ir::Index&>(e);
-                // A user type's `operator get` is a `get(i)` method in TS (no `[]` overload); arrays index directly.
-                if (ix.receiver->type.kind == TypeRef::Kind::Named && indexerTypes_.count(ix.receiver->type.name))
-                    return atom(*ix.receiver) + ".get(" + emitExpr(*ix.index) + ")";
-                return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
-            }
-            case ir::ExprKind::ListLit: {
-                const auto& l = static_cast<const ir::ListLit&>(e);
-                std::vector<std::string> parts;
-                for (const auto& el : l.elements) parts.push_back(emitExpr(*el));
-                return renderDelimited(typescriptSpec().delimited.at("list"), parts);
-            }
-            case ir::ExprKind::Tuple: {
-                const auto& t = static_cast<const ir::Tuple&>(e);
-                std::vector<std::string> parts;
-                for (const auto& el : t.elements) parts.push_back(emitExpr(*el));
-                return renderDelimited(typescriptSpec().delimited.at("tuple"), parts);
             }
             case ir::ExprKind::With: {
                 // A TS record is a class, so rebuild via its ctor (preserving the prototype/methods): each
@@ -689,20 +769,6 @@ private:
             }
             case ir::ExprKind::Bound:
                 return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::New: {
-                const auto& n = static_cast<const ir::New&>(e);
-                // List (and any extern class with a bound ctor) routes through ir::Bound in lower; a plain
-                // ir::New here is a user record/class (or Error, the last hardcoded core type).
-                std::string ctor = n.typeName;
-                if (!n.typeArgs.empty()) {
-                    ctor += "<";
-                    for (std::size_t i = 0; i < n.typeArgs.size(); ++i) { if (i) ctor += ", "; ctor += tsType(n.typeArgs[i]); }
-                    ctor += ">";
-                }
-                std::vector<std::string> args;
-                for (const auto& a : n.args) args.push_back(emitExpr(*a));
-                return "new " + ctor + renderArgs(args);
-            }
             case ir::ExprKind::MakeCase: {
                 const auto& mc = static_cast<const ir::MakeCase&>(e);
                 std::string s = "{ tag: \"" + mc.caseName + "\"";
