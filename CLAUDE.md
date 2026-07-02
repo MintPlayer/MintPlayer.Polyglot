@@ -221,7 +221,13 @@ RCE-safe JSON emission DSL** (Design A — ~10 fixed interpreter primitives, non
 "irreducible 30%": ≈85% data with the base interpreter, ≈95%+ with a few *fixed* added Core primitives, <5% remainder
 = target limits the §3.E gate refuses. Migration = P9's extract-from-working-backends + byte-identical dual-run +
 delete-the-C++ discipline; `Target` enum → string name + validated `BackendHandle`; `analyze()` unchanged. **This is
-the prerequisite the user set before publishing the editor extensions.** Not yet built.
+the prerequisite the user set before publishing the editor extensions.** 🚧 **Slices 1–15 built** (as-built log:
+PLAN §P18): specs + expression rules are JSON for **all three backends over one interpreter** (`backend_engine` —
+primitives incl. `map`+item template; shared `IrExprCtx` seam + per-target ctx subclasses; stateful/faithfulness
+machinery = fixed builtins); `Target`→`BackendHandle` ✅ (`findTarget(name)`, validated at resolve). Every slice
+proven **byte-identical** (old-vs-new emitted-source diff across 38 programs × 3 targets). Remaining: expression
+residue (Interp/MethodCall/With/Bound/Lambda/Match), declarations, loader validation, extract-to-file + delete C++,
+std de-hardcoding, distribution.
 **Roadmap: P10** (plugin *distribution* — package/registry — still pending; needs P9), **P11**
 (build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P18** (data-driven backends, above).
 
