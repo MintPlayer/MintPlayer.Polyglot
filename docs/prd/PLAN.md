@@ -980,7 +980,15 @@ loudly otherwise. The **C# backend's Spec now loads from an embedded JSON docume
 source moved to JSON; output is byte-identical (run-diff 38/38 + unit tests green, incl. 4 new P18 tests).
 **Slice-2 ✅ (all three):** the TypeScript (`TS_SPEC_JSON`) and Python (`PY_SPEC_JSON`) Specs also load from
 embedded JSON now — all three backends' tabular data is data-from-JSON, byte-identical (run-diff 38/38, run-python
-37/37, unit tests green). Next: the interpreter engine + dual-run harness (slice 1 proper) + `Target`→`BackendHandle`.
+37/37, unit tests green).
+**Slice-1 (interpreter spine) ✅:** `backend_engine.hpp/.cpp` — the JSON emission-DSL interpreter's scalar core
+(`Rule`: literal/`tmpl`/`get`/`case`+`Test`/`fn`; `Test`: eq/has/and/or/not) parsed from JSON and evaluated against
+an `EvalContext` seam (`get`/`has`/`builtin`). Non-Turing-complete, no plugin code (RCE-safe by construction);
+malformed rules fail loudly. 11 new unit tests over a mock context. **Deliberately deferred to the IR-wiring slice**
+(don't guess the shape): the recursive child-emission primitives `emit`/`emitChild`/`map`/`fold`/`interleave` — they
+plug into `ir::Expr` where their shape is grounded. Next: wire the interpreter to a real `ir::Expr` family via an
+`EvalContext`-over-IR + the dual-run harness (emit via C++ hook vs interpreted, assert byte-equal), then
+`Target`→`BackendHandle`.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

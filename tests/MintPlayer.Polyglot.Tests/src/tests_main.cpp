@@ -1,9 +1,12 @@
+#include <cctype>
 #include <iostream>
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "mintplayer/polyglot/backend.hpp"
+#include "mintplayer/polyglot/backend_engine.hpp"
 #include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/ir.hpp"
@@ -51,6 +54,40 @@ public:
 private:
     Feature missing_;
 };
+
+// A stand-in EvalContext for the P18 emission-DSL interpreter: field values + present-keys from maps, and a
+// couple of demo builtins. (The real backend implements EvalContext over ir::Expr in a later slice.)
+class MockEval : public engine::EvalContext {
+public:
+    std::map<std::string, std::string> fields;
+    std::string get(const std::string& path) const override {
+        auto it = fields.find(path);
+        return it == fields.end() ? std::string() : it->second;
+    }
+    bool has(const std::string& path) const override { return fields.count(path) != 0; }
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
+        if (name == "upper") {
+            std::string s = args.empty() ? "" : args[0];
+            for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            return s;
+        }
+        if (name == "join") { // join(sep, a, b, …)
+            std::string out;
+            for (std::size_t i = 1; i < args.size(); ++i) { if (i > 1) out += args[0]; out += args[i]; }
+            return out;
+        }
+        return "";
+    }
+};
+
+// Parse + evaluate a Rule from JSON text against a context (test helper).
+std::string runRule(const std::string& json, const engine::EvalContext& ctx, bool* okOut = nullptr) {
+    bool ok = true;
+    std::string err;
+    engine::Rule r = engine::parseRule(json::parse(json), ok, err);
+    if (okOut) *okOut = ok;
+    return ok ? engine::evalRule(r, ctx) : std::string("<parse-error:" + err + ">");
+}
 
 // An in-memory module resolver (the tests' filesystem-free stand-in for the CLI's FileModuleResolver):
 // module specifier -> source text. Proves cross-`.pg` resolution works without touching disk.
@@ -1047,6 +1084,39 @@ int main() {
               back.spec.nullLit == r.spec.nullLit &&
               back.spec.delimited.at("tuple").open == r.spec.delimited.at("tuple").open,
               "P18: BackendSpec round-trips through JSON");
+    }
+
+    // P18 slice 3 — the emission-DSL interpreter spine (Design A, PRD §4.10): literal / tmpl / get / case+Test / fn.
+    {
+        MockEval ctx;
+        ctx.fields["node.op"] = "+";
+        ctx.fields["node.name"] = "widget";
+        ctx.fields["node.kind"] = "Binary";
+        // node.guard is absent -> Test has:false
+
+        check(runRule(R"("hello")", ctx) == "hello", "P18: interpreter literal");
+        check(runRule(R"({"get":"node.op"})", ctx) == "+", "P18: interpreter get");
+        check(runRule(R"({"tmpl":["a ",{"get":"node.op"}," b"]})", ctx) == "a + b", "P18: interpreter tmpl concat");
+        check(runRule(R"({"fn":"upper","args":[{"get":"node.name"}]})", ctx) == "WIDGET", "P18: interpreter fn builtin");
+        check(runRule(R"({"fn":"join","args":[", ",{"get":"node.name"},{"get":"node.op"}]})", ctx) == "widget, +",
+              "P18: interpreter fn with multiple args");
+        // case: first matching arm wins; else fallback.
+        const char* caseRule =
+            R"({"case":{"when":[[{"eq":["node.kind","Unary"]},"U"],[{"eq":["node.kind","Binary"]},"B"]],"else":"?"}})";
+        check(runRule(caseRule, ctx) == "B", "P18: interpreter case picks matching arm");
+        ctx.fields["node.kind"] = "Call";
+        check(runRule(caseRule, ctx) == "?", "P18: interpreter case falls to else");
+        // Test combinators: has + not + and.
+        check(runRule(R"({"case":{"when":[[{"has":"node.op"},"has-op"]],"else":"no"}})", ctx) == "has-op",
+              "P18: interpreter Test has");
+        check(runRule(R"({"case":{"when":[[{"not":{"has":"node.guard"}},"unguarded"]],"else":"g"}})", ctx) == "unguarded",
+              "P18: interpreter Test not+has");
+        check(runRule(R"({"case":{"when":[[{"and":[{"has":"node.op"},{"eq":["node.op","+"]}]},"plus"]],"else":"x"}})", ctx) == "plus",
+              "P18: interpreter Test and");
+        // Malformed rules fail loudly (never silently misparse).
+        bool ok = true;
+        runRule(R"({"bogus":1})", ctx, &ok);
+        check(!ok, "P18: unknown rule form is rejected");
     }
 
     if (g_failures == 0) {
