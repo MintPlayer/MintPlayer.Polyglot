@@ -1012,6 +1012,15 @@ the dead C++ `Call` switch case was removed. Byte-identical (run-diff 38/38, run
 Next: `Member`/`Cond`/`Index` (scalar-ish child recursion, no new primitive), then `Target`→`BackendHandle`,
 then TS/Python.
 
+**Slice-7 (scalar-child family) ✅:** C# `Member`/`Index`/`Cond` migrated to JSON Rules — **no new primitive**,
+just `emit`/`emitChild`/`get`/`case` over the IR: `Member` = receiver (`emitChild recv` or the `node.staticType`
+qualifier) + `.`/`?.` + `ident(field)`; `Index` = `emitChild recv` + `[` + `emit index` + `]`; `Cond` =
+`(cond ? then : els)` (plain `emit`). Added an **`ident` builtin** (per-target keyword escaping — C# `@base`),
+forward-declared so `CsExprCtx` can reach it. `CsExprCtx` grew the Member/Index/Cond scalar reads + `childExpr`
+arms; the three dead C++ switch cases were removed. Byte-identical (run-diff 38/38, run-python 37/37, unit tests
+unchanged — the conformance programs exercise all three). Next: the delimited-list family (ListLit/Tuple/New/
+MakeCase — reuses `map`) or `Target`→`BackendHandle`, then TS/Python.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

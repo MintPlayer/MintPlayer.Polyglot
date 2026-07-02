@@ -49,12 +49,13 @@ const BackendSpec& csharpSpec() {
     return spec;
 }
 
-// P18 slices 4-6: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
+// P18 slices 4-7: emitter HOOKS migrated from imperative C++ to declarative JSON Rules. emitExpr looks up the
 // rule for the node kind and interprets it; kinds without a rule still run the C++ switch. Byte-identical (the
 // differential + golden gates are the oracle). Covered so far: the leaf literals (Int/Float/Bool/Null/Str),
-// Binary (child recursion + precedence via `emitChild`), and Call (arg lists via the `map` primitive). A free
-// function lives in `static class Program`, so a free call is qualified `Program.f(...)`; a function-valued
-// local (closure param) is called bare — the `case` on `node.isFree` picks between them.
+// Binary (child recursion + precedence via `emitChild`), Call (arg lists via the `map` primitive), and the
+// scalar-child recursion family Member/Index/Cond. A free function lives in `static class Program`, so a free
+// call is qualified `Program.f(...)`; a function-valued local (closure param) is called bare — the `case` on
+// `node.isFree` picks between them. `ident` is a builtin escaping a C#-keyword field name (`@base`).
 const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Int":   { "tmpl": [ {"get":"node.text"}, {"fn":"intSuffix","args":[{"get":"node.type"}]} ] },
   "Float": { "get": "node.text" },
@@ -70,7 +71,15 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
               { "case": { "when": [ [ {"eq":["node.isFree","true"]},
                                       {"tmpl":["Program.", {"get":"node.callee"}]} ] ],
                           "else": {"get":"node.callee"} } },
-              "(", { "map": "node.args", "sep": ", " }, ")" ] }
+              "(", { "map": "node.args", "sep": ", " }, ")" ] },
+  "Member": { "tmpl": [
+                { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
+                            "else": {"emitChild":"node.object","side":"recv"} } },
+                { "case": { "when": [ [ {"eq":["node.nullSafe","true"]}, "?." ] ], "else": "." } },
+                { "fn": "ident", "args": [ {"get":"node.field"} ] } ] },
+  "Index": { "tmpl": [ {"emitChild":"node.receiver","side":"recv"}, "[", {"emit":"node.index"}, "]" ] },
+  "Cond":  { "tmpl": [ "(", {"emit":"node.cond"}, " ? ", {"emit":"node.then"},
+                       " : ", {"emit":"node.els"}, ")" ] }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -99,9 +108,14 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Str:    return "Str";
         case ir::ExprKind::Binary: return "Binary";
         case ir::ExprKind::Call:   return "Call";
+        case ir::ExprKind::Member: return "Member";
+        case ir::ExprKind::Index:  return "Index";
+        case ir::ExprKind::Cond:   return "Cond";
         default:                   return "";
     }
 }
+
+std::string csIdent(const std::string& n); // defined below; the `ident` builtin escapes C# keyword fields
 
 // EvalContext over an ir::Expr + the backend spec — the seam that plugs the interpreter into the real IR.
 // Exposes leaf fields (`node.text`/`node.value`/`node.type`), spec literals (`spec.*`), and the fixed builtins
@@ -121,6 +135,12 @@ public:
             if (path == "node.callee")     return c.callee;
             if (path == "node.isFree")     return c.isFree ? "true" : "false";
             if (path == "node.args.count") return std::to_string(c.args.size());
+        }
+        if (e_.kind == ir::ExprKind::Member) {
+            const auto& m = static_cast<const ir::Member&>(e_);
+            if (path == "node.staticType") return m.staticType;
+            if (path == "node.field")      return m.field;
+            if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
         }
         if (path == "spec.nullLit")  return spec_.nullLit;
         if (path == "spec.trueLit")  return spec_.trueLit;
@@ -163,6 +183,7 @@ public:
             return it == spec_.intSuffix.end() ? std::string() : it->second;
         }
         if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
+        if (name == "ident")        return csIdent(args.empty() ? std::string() : args[0]);
         if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
         if (name == "subWordWrap") { // C# sub-32 arithmetic promotes to int; cast back to wrap at 8/16 bits
             const std::string& tn = args.size() > 0 ? args[0] : std::string();
@@ -187,6 +208,19 @@ private:
                 std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
                 if (i < c.args.size()) return c.args[i].get();
             }
+        }
+        if (e_.kind == ir::ExprKind::Member && path == "node.object")
+            return static_cast<const ir::Member&>(e_).object.get();
+        if (e_.kind == ir::ExprKind::Index) {
+            const auto& ix = static_cast<const ir::Index&>(e_);
+            if (path == "node.receiver") return ix.receiver.get();
+            if (path == "node.index")    return ix.index.get();
+        }
+        if (e_.kind == ir::ExprKind::Cond) {
+            const auto& c = static_cast<const ir::Cond&>(e_);
+            if (path == "node.cond") return c.cond.get();
+            if (path == "node.then") return c.then.get();
+            if (path == "node.els")  return c.els.get();
         }
         return nullptr;
     }
@@ -650,11 +684,6 @@ private:
                 return "(" + csType(e.type) + ")(" + emitExpr(*c.operand) + ")";
             }
             case ir::ExprKind::Extern: return static_cast<const ir::Extern&>(e).code; // raw C# verbatim
-            case ir::ExprKind::Member: {
-                const auto& m = static_cast<const ir::Member&>(e);
-                std::string base = m.staticType.empty() ? atom(*m.object) : m.staticType;
-                return base + (m.nullSafe ? "?." : ".") + csIdent(m.field);
-            }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 if (isPrimNumeric(mc.staticType) && mc.method == "parse") { // i32.parse(s) -> int.Parse(s)
@@ -666,15 +695,6 @@ private:
                 std::vector<std::string> args;
                 for (const auto& a : mc.args) args.push_back(emitExpr(*a));
                 return recv + "." + mc.method + renderArgs(args);
-            }
-            case ir::ExprKind::Cond: {
-                const auto& c = static_cast<const ir::Cond&>(e);
-                std::string cc = emitExpr(*c.cond), ct = emitExpr(*c.then), ce = emitExpr(*c.els);
-                return renderCond(cc, ct, ce);
-            }
-            case ir::ExprKind::Index: {
-                const auto& ix = static_cast<const ir::Index&>(e);
-                return atom(*ix.receiver) + "[" + emitExpr(*ix.index) + "]";
             }
             case ir::ExprKind::ListLit: {
                 const auto& l = static_cast<const ir::ListLit&>(e);
