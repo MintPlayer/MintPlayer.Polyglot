@@ -48,11 +48,12 @@ struct Test {
 
 // A parsed emission Rule (the scalar spine + child recursion — see the header note).
 struct Rule {
-    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map } kind = Kind::Lit;
-    std::string s;                              // Lit: text | Get/Emit/Map: path | Fn: builtin name
+    enum class Kind { Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave } kind = Kind::Lit;
+    std::string s;                              // Lit: text | Get/Emit/Map: path | Fn: name | Interleave: lits path
+    std::string s2;                             // Interleave: holes path
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children
-    std::vector<Rule> parts;                    // Tmpl: parts | Fn: args
+    std::vector<Rule> parts;                    // Tmpl: parts | Fn: args | Map: item | Interleave: [lit, hole]
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule
 };

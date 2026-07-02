@@ -157,6 +157,9 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
               {"tmpl":[{"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},")"]} ] ],
             "else": {"tmpl":["(lambda ",{"get":"node.tempName"},": ",{"get":"node.type"},
                              "(",{"map":"node.ctorArgs","sep":", "},"))(",{"emit":"node.base"},")"]} } },
+  "Interp": { "interleave": { "lits":"node.chunks", "holes":"node.holes",
+              "lit": {"fn":"escapeString","args":[{"get":"item"}]},
+              "hole": {"tmpl":[" + str(",{"emit":"item"},") + "]} } },
   "Binary": { "case": { "when": [
       [ {"eq":["node.op","??"]}, {"fn":"nullCoalesce"} ],
       [ {"and":[{"eq":["node.typeIsInt","true"]},
@@ -211,6 +214,7 @@ const char* pyExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Unary:    return "Unary";
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::With:     return "With";
+        case ir::ExprKind::Interp:   return "Interp";
         case ir::ExprKind::Binary:   return "Binary";
         default:                     return "";
     }
@@ -641,13 +645,6 @@ private:
             }
             case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
                 return substTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
-            case ir::ExprKind::Interp: { // string interpolation -> `"lit" + str(hole) + …` (str() like C# ToString)
-                const auto& in = static_cast<const ir::Interp&>(e);
-                std::string s = renderString(in.chunks[0]);
-                for (std::size_t i = 0; i < in.holes.size(); ++i)
-                    s += " + str(" + emitExpr(*in.holes[i]) + ") + " + renderString(in.chunks[i + 1]);
-                return s;
-            }
             case ir::ExprKind::Match: {
                 const auto& m = static_cast<const ir::Match&>(e);
                 return "(lambda _m: " + matchChain(m.arms, 0) + ")(" + emitExpr(*m.scrutinee) + ")";

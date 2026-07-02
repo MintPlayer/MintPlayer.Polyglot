@@ -104,7 +104,12 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
                "item":{"tmpl":[{"fn":"ident","args":[{"get":"item.name"}]}," = ",{"emit":"item.value"}]}},
               " }" ] },
   "Cast":   { "tmpl": [ "(", {"fn":"castType"}, ")(", {"emit":"node.operand"}, ")" ] },
-  "Unary":  { "tmpl": [ {"get":"node.op"}, {"emitChild":"node.operand","side":"unary"} ] }
+  "Unary":  { "tmpl": [ {"get":"node.op"}, {"emitChild":"node.operand","side":"unary"} ] },
+  "Interp": { "tmpl": [ "$\"", {"interleave":{"lits":"node.chunks","holes":"node.holes",
+                "lit":{"fn":"interpEscape","args":[{"get":"item"}]},
+                "hole":{"tmpl":["{",{"emit":"item"},"}"]}}}, "\"" ] },
+  "Char": { "fn": "charLit", "args": [ {"get":"node.value"} ] },
+  "This": { "case": { "when": [ [ {"has":"ctx.thisAlias"}, {"get":"ctx.thisAlias"} ] ], "else": "this" } }
 })JSON";
 
 const std::unordered_map<std::string, engine::Rule>& csharpExprRules() {
@@ -146,6 +151,9 @@ const char* csExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::With:     return "With";
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::Unary:    return "Unary";
+        case ir::ExprKind::Interp:   return "Interp";
+        case ir::ExprKind::Char:     return "Char";
+        case ir::ExprKind::This:     return "This";
         default:                     return "";
     }
 }
@@ -154,12 +162,20 @@ std::string csIdent(const std::string& n); // defined below; the `ident` builtin
 std::string csType(const TypeRef& t);      // defined below; the `elemType` builtin renders a list element type
 
 // The C# rule-interpreter seam: only what differs from the shared IrExprCtx — the C# builtins (keyword
-// escaping, C# type rendering, sub-word wrap-back) and the C# atom-wrapping policy.
+// escaping, C# type rendering, sub-word wrap-back, interpolation/char escaping) and the C# atom-wrapping
+// policy. `thisAlias` is the emitter's operator-body rebind (`this` -> `lhs`) — a C# declaration-shape
+// consequence (a C# operator is a static method), so it stays a C#-only context scalar the This rule reads.
 class CsExprCtx : public IrExprCtx {
 public:
-    using IrExprCtx::IrExprCtx;
+    CsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, const std::string& thisAlias)
+        : IrExprCtx(e, spec, std::move(emit)), thisAlias_(thisAlias) {}
 
 protected:
+    std::string targetGet(const std::string& path) const override {
+        if (path == "ctx.thisAlias") return thisAlias_;
+        return "";
+    }
+
     bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
         if (side == "recv") // atom(): wrap a binary/unary/cast receiver
             return c.kind == ir::ExprKind::Binary || c.kind == ir::ExprKind::Unary || c.kind == ir::ExprKind::Cast;
@@ -186,8 +202,35 @@ protected:
                              : tn == "u8" ? "byte"  : tn == "u16" ? "ushort" : nullptr;
             return cast ? "(" + std::string(cast) + ")(" + inner + ")" : inner;
         }
+        if (name == "interpEscape") { // escape a chunk for a C# interpolated-string literal `$"…"`
+            std::string s;
+            for (char c : args.empty() ? std::string() : args[0]) {
+                if (c == '"' || c == '\\') { s += '\\'; s += c; }
+                else if (c == '\n') s += "\\n"; // a raw newline/tab/CR would break the `$"…"` literal
+                else if (c == '\t') s += "\\t";
+                else if (c == '\r') s += "\\r";
+                else if (c == '{') s += "{{";
+                else if (c == '}') s += "}}";
+                else s += c;
+            }
+            return s;
+        }
+        if (name == "charLit") { // C# char literal `'x'` (escape `'`, `\`, control chars)
+            std::string s = "'";
+            for (char c : args.empty() ? std::string() : args[0]) {
+                if (c == '\'' || c == '\\') { s += '\\'; s += c; }
+                else if (c == '\n') s += "\\n";
+                else if (c == '\t') s += "\\t";
+                else if (c == '\r') s += "\\r";
+                else s += c;
+            }
+            return s + "'";
+        }
         return "";
     }
+
+private:
+    const std::string& thisAlias_;
 };
 
 // The current module's `extern class` type map (name -> spelling/ctor templates), set at the top of each
@@ -587,40 +630,11 @@ private:
             const auto& rules = csharpExprRules();
             auto it = rules.find(key);
             if (it != rules.end()) {
-                CsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); });
+                CsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, thisAlias_);
                 return engine::evalRule(it->second, ctx);
             }
         }
         switch (e.kind) {
-            case ir::ExprKind::Interp: { // C# interpolated string `$"…{expr}…"`
-                const auto& in = static_cast<const ir::Interp&>(e);
-                std::string s = "$\"";
-                for (std::size_t i = 0; i < in.chunks.size(); ++i) {
-                    for (char c : in.chunks[i]) { // escape for an interpolated-string literal
-                        if (c == '"' || c == '\\') { s += '\\'; s += c; }
-                        else if (c == '\n') s += "\\n"; // a raw newline/tab/CR would break the `$"…"` literal
-                        else if (c == '\t') s += "\\t";
-                        else if (c == '\r') s += "\\r";
-                        else if (c == '{') s += "{{";
-                        else if (c == '}') s += "}}";
-                        else s += c;
-                    }
-                    if (i < in.holes.size()) s += "{" + emitExpr(*in.holes[i]) + "}";
-                }
-                return s + "\"";
-            }
-            case ir::ExprKind::Char: { // C# char literal `'x'` (escape `'`, `\`, control chars)
-                std::string s = "'";
-                for (char c : static_cast<const ir::CharLit&>(e).value) {
-                    if (c == '\'' || c == '\\') { s += '\\'; s += c; }
-                    else if (c == '\n') s += "\\n";
-                    else if (c == '\t') s += "\\t";
-                    else if (c == '\r') s += "\\r";
-                    else s += c;
-                }
-                return s + "'";
-            }
-            case ir::ExprKind::This:  return thisAlias_.empty() ? "this" : thisAlias_; // stateful (operator rebinds `this`)
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 // (i32.parse/f64.parse are std.core Bound bindings now — no parse special case here.)

@@ -64,6 +64,15 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
         if (e_.kind == ir::ExprKind::Tuple)   return std::to_string(static_cast<const ir::Tuple&>(e_).elements.size());
     }
+    if (e_.kind == ir::ExprKind::Interp) { // chunks are scalar text; holes are child exprs (childExpr below)
+        const auto& in = static_cast<const ir::Interp&>(e_);
+        if (path == "node.chunks.count") return std::to_string(in.chunks.size());
+        if (path == "node.holes.count")  return std::to_string(in.holes.size());
+        if (path.rfind("node.chunks.", 0) == 0) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
+            if (i < in.chunks.size()) return in.chunks[i];
+        }
+    }
     if (path.rfind("spec.delimited.", 0) == 0) { // spec.delimited.<key>.<open|sep|close>
         const std::string rest = path.substr(15);
         const std::size_t dot = rest.rfind('.');
@@ -144,6 +153,11 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Cast)  return static_cast<const ir::Cast&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
+    }
+    if (e_.kind == ir::ExprKind::Interp && path.rfind("node.holes.", 0) == 0) {
+        const auto& in = static_cast<const ir::Interp&>(e_);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+        if (i < in.holes.size()) return in.holes[i].get();
     }
     if (e_.kind == ir::ExprKind::With) {
         const auto& w = static_cast<const ir::With&>(e_);

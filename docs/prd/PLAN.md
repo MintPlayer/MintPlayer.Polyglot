@@ -1232,6 +1232,19 @@ facts land in slice 3 *with their consumers* (a fact nobody reads can't be meani
 conformance program **with_update.pg** (simple + non-simple bases, all targets) — gates now **39/39 C#-TS,
 38/38 Python**; pre-existing 114 emitted files byte-identical; unit tests updated (+With-rebuild goldens).
 
+**Slice-3a ✅ (2026-07-02) — `Interp` is data on all three targets via the `interleave` primitive; C#
+`Char`/`This` migrated.** New Rule kind **`interleave`** (`{"interleave":{"lits":path,"holes":path,
+"lit":rule,"hole":rule}}`): zips the chunk list with the hole list (`lit0 hole0 lit1 … litN`), each element
+scoped through the existing `ItemCtx` (`item` = the chunk text via `get` / the hole expr via `emit`).
+Shared `IrExprCtx` gained `node.chunks.count`/`node.chunks.<i>` (scalar text) + `node.holes.count`/
+`node.holes.<i>` (child). Per-target Interp DATA: C# `$"…"` + `interpEscape` builtin (brace doubling), TS
+backtick + its `interpEscape` (`` ` ``/`\`/`\$`-before-`{`), Python `escapeString` chunks joined by
+`" + str(hole) + "` — no outer delimiter. C# **`Char`** = a `charLit` builtin; C# **`This`** = a `case` on
+the new `ctx.thisAlias` context scalar (the operator-body `this`→`lhs` rebind stays emitter state — a C#
+declaration-shape consequence — but the *rule* is data; `CsExprCtx` takes the alias by ref). Dead C++
+cases deleted: C# Interp/Char/This, TS Interp, Python Interp. **Expression residue everywhere is now just
+MethodCall/Bound/Lambda/Match.** Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

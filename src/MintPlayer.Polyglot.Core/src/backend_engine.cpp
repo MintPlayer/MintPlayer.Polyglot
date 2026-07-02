@@ -86,6 +86,15 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         if (v.has("item")) r.parts.push_back(parseRule(v["item"], ok, error));
         return r;
     }
+    if (v.has("interleave")) { // zip a literal list with a hole list: lit0 hole0 lit1 … litN (interpolation)
+        const json::Value& iv = v["interleave"];
+        r.kind = Rule::Kind::Interleave;
+        r.s = iv["lits"].asString();
+        r.s2 = iv["holes"].asString();
+        r.parts.push_back(parseRule(iv["lit"], ok, error));   // per-literal template (`item` = the chunk)
+        r.parts.push_back(parseRule(iv["hole"], ok, error));  // per-hole template (`item` = the hole expr)
+        return r;
+    }
     if (v.has("fn")) {
         r.kind = Rule::Kind::Fn;
         r.s = v["fn"].asString();
@@ -188,6 +197,22 @@ std::string evalRule(const Rule& r, const EvalContext& ctx) {
                 const std::string elem = r.s + "." + std::to_string(i);
                 if (r.parts.empty()) out += ctx.emitChild(elem, r.side);           // plain: emit the element
                 else out += evalRule(r.parts[0], ItemCtx(ctx, elem));              // item template per element
+            }
+            return out;
+        }
+        case Rule::Kind::Interleave: {
+            // lit0 hole0 lit1 hole1 … litN — string interpolation's chunks/holes zip. Counts come from the
+            // context (`<path>.count`); each element renders through its template with `item` scoped to it.
+            auto count = [&](const std::string& path) {
+                int n = 0;
+                for (char c : ctx.get(path + ".count")) { if (c < '0' || c > '9') return 0; n = n * 10 + (c - '0'); }
+                return n;
+            };
+            const int nLits = count(r.s), nHoles = count(r.s2);
+            std::string out;
+            for (int i = 0; i < nLits; ++i) {
+                out += evalRule(r.parts[0], ItemCtx(ctx, r.s + "." + std::to_string(i)));
+                if (i < nHoles) out += evalRule(r.parts[1], ItemCtx(ctx, r.s2 + "." + std::to_string(i)));
             }
             return out;
         }

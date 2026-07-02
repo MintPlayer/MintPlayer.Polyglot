@@ -94,6 +94,9 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
               {"tmpl":["new ",{"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},")"]} ] ],
             "else": {"tmpl":["(() => { const ",{"get":"node.tempName"}," = ",{"emit":"node.base"},"; return new ",
                              {"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},"); })()"]} } },
+  "Interp": { "tmpl": [ "`", {"interleave":{"lits":"node.chunks","holes":"node.holes",
+                "lit":{"fn":"interpEscape","args":[{"get":"item"}]},
+                "hole":{"tmpl":["${",{"emit":"item"},"}"]}}}, "`" ] },
   "Binary": { "case": { "when": [
       [ {"and":[{"or":[{"eq":["node.op","=="]},{"eq":["node.op","!="]}]},{"eq":["node.lhsIsRecord","true"]}]},
         { "case": { "when": [ [ {"eq":["node.op","=="]},
@@ -158,6 +161,7 @@ const char* tsExprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Unary:    return "Unary";
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::With:     return "With";
+        case ir::ExprKind::Interp:   return "Interp";
         case ir::ExprKind::Binary:   return "Binary";
         default:                     return "";
     }
@@ -347,6 +351,17 @@ protected:
             if (e_.kind != ir::ExprKind::Cast) return "";
             return tsConvert(static_cast<const ir::Cast&>(e_).operand->type, e_.type,
                              args.empty() ? std::string() : args[0]);
+        }
+        if (name == "interpEscape") { // escape a chunk for a TS template literal `` `…` ``
+            const std::string& chunk = args.empty() ? std::string() : args[0];
+            std::string s;
+            for (std::size_t j = 0; j < chunk.size(); ++j) {
+                char c = chunk[j];
+                if (c == '`' || c == '\\') { s += '\\'; s += c; }
+                else if (c == '$' && j + 1 < chunk.size() && chunk[j + 1] == '{') s += "\\$";
+                else s += c;
+            }
+            return s;
         }
         return "";
     }
@@ -695,20 +710,6 @@ private:
             }
         }
         switch (e.kind) {
-            case ir::ExprKind::Interp: { // TS template literal `` `…${expr}…` ``
-                const auto& in = static_cast<const ir::Interp&>(e);
-                std::string s = "`";
-                for (std::size_t i = 0; i < in.chunks.size(); ++i) {
-                    for (std::size_t j = 0; j < in.chunks[i].size(); ++j) {
-                        char c = in.chunks[i][j];
-                        if (c == '`' || c == '\\') { s += '\\'; s += c; }
-                        else if (c == '$' && j + 1 < in.chunks[i].size() && in.chunks[i][j + 1] == '{') s += "\\$";
-                        else s += c;
-                    }
-                    if (i < in.holes.size()) s += "${" + emitExpr(*in.holes[i]) + "}";
-                }
-                return s + "`";
-            }
             case ir::ExprKind::MethodCall: {
                 const auto& mc = static_cast<const ir::MethodCall&>(e);
                 // (i32.parse/f64.parse are std.core Bound bindings now — no parse special case here.)
