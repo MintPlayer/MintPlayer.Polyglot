@@ -247,8 +247,23 @@ investigation found 7 shipping collision miscompiles (3 silent — match-arm `_m
 the CLI is a pure engine; C#/TS/Python are ordinary plugin packages (`plugins/<target>/` in this repo, published
 to npm), resolved via `pgconfig.json` `targets`/`dependencies` (local `file:` → cache → registry); std *skeletons*
 stay in Core, every per-target arm ships in its target's plugin. Not yet built.
+**P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
+design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
+author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".
+Verdicts: **TS skin refused permanently** (surface *inverts* `.pg` semantics where faithfulness lives — one
+`number` can't express widths, `as` erases vs `(T)x` truncates, `let` mutability inverted, `for..in` iterates
+keys); **C# skin defensible but demand-gated** (widths/casts map 1:1 `int↔i32`; must invent `union`/selective
+imports/range-`for`); **front-ends are compiled-in C++, never data plugins** (parsing = disambiguation + recovery
++ crisp diagnostics; grammar-as-data rejected — precedent unanimous, Reason/ReScript hand-write; the P19 manifest
+may *declare* a frontend by name — symmetric packaging, asymmetric implementation); the seam is the unchecked AST
+via `Frontend`/`FrontendHandle` mirroring `BackendHandle` (~1–2 days plumbing; LSP transfers free; `fmt` needs a
+per-skin printer; convert = parse-A→print-B, so skin→`.pg` needs only the existing printer). Staged: Rosetta docs
+(ungated slice 0) → seam (post-P19) → one-way `polyglot convert` (observed demand only) → `.pgcs` authoring skin
+(double-gated). Gate to open the phase: P19 shipped + extensions published + real external demand + frozen
+grammar. Nothing built yet; only docs may land early.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
-(build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P19** (100% JSON plugins, above).
+(build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P19** (100% JSON plugins, above),
+**P20** (input skins, gated, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

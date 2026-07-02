@@ -1342,6 +1342,54 @@ filter inside a data `map` needs a filtered-map primitive — revisit when the d
 complete). Byte-identical (117 files), unit green, 39/39 + 38/38. Next: Interface, then
 Record/Class/Method/Function, then `program` + `require`.
 
+## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
+
+**The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
+skin over the *same* §3.A semantics (Reason-over-OCaml), never "compile arbitrary C#". The
+investigation's verdict: the seam is cheap, the TS skin is **refused permanently** (surface semantics
+*inverted* vs `.pg` exactly where faithfulness lives: widths, casts, `let`, `for..in`, unions), the C#
+skin is defensible-but-gated ("C#-flavored", must invent `union`/imports/range-`for`), front-ends are
+**compiled-in C++, never data plugins** (parsing = disambiguation + recovery + diagnostics; a
+declarative AST-action language would be a second, harder, non-boundable interpreter — precedent
+unanimous), and prior art (Reason's 3-way fork, CoffeeScript's fade) says don't build authoring skins
+speculatively. Kotlin/Swift prove syntax familiarity is not the adoption lever; tooling is — and P17's
+live preview already shows a dev "their" language beside `.pg` as they type.
+
+**Gate to open this phase at all:** P19 shipped + editor extensions published + *observed* external
+demand (real users, not speculation) + `.pg` grammar frozen. Until then only slice 0 (docs) may land.
+
+- **Slice 0 — Rosetta docs (ungated, near-free, do anytime):** `docs/lang/for-csharp-devs.md` +
+  `for-typescript-devs.md` — construct-by-construct side-by-side tables (the skin agent's mapping
+  tables are the raw material); explicitly flag the `let` false-friend (immutable in `.pg`, mutable in
+  TS) and lean on the P17 preview as the "see it in your language" answer.
+  *Gate:* both docs exist, linked from README/SPEC.
+- **Slice 1 — the `Frontend` seam (cheap plumbing, post-P19):** `Frontend` interface
+  (`parse`/`print`/`keywords`) + `FrontendHandle`/`findFrontend` cloning the `BackendHandle` pattern;
+  wrap existing lexer+parser+`printSource` as `PgFrontend`; thread a `FrontendHandle` (default pg)
+  through `compile`/`analyze`/`format` (~5 call sites incl. the linker); CLI extension→front-end
+  dispatch; `ResolvedModule` front-end tag for mixed-syntax projects (std stays `.pg`). No AST change,
+  no behavior change. *Gate:* all suites byte-identical; a stub second front-end registers + dispatches
+  in a unit test.
+- **Slice 2 — `polyglot convert` (demand-gated):** one-way C#-*subset* → `.pg` import aid = the C#-skin
+  parser (hand-written RD over the shared AST, `.pgcs`-grammar) + the **existing** `.pg` printer. Loud
+  refusals on anything unsupported (LINQ/threads/etc. get skin-scoped §3.B messages: "this looks like
+  C#, but…"); comments dropped (lexer drops trivia — pre-existing `fmt` caveat); framed migration-only,
+  no round-trip promise. Doubles as the cheapest honest test of skin demand.
+  *Gate:* converted samples compile + pass conformance; unsupported-construct corpus all refuse loudly.
+- **Slice 3 — the C# authoring skin `.pgcs` (double-gated: slice 2 demand proven):** promote the
+  convert parser to a first-class front-end: full `.pgcs` authoring (parse-only first — no printer, so
+  no `fmt`), TextMate grammar, `Frontend::keywords()` for LSP completion, dialect banner in docs +
+  hover. Invented syntax where C# has none: `union`, TS-style selective imports, `for i in 0..n`;
+  pg's unwrapped async `T` kept (documented). *Gate:* the conformance suite authored in `.pgcs`
+  emits byte-identical output to its `.pg` twins; LSP works on `.pgcs` (positions/def/hover).
+- **Slice 4 (optional) — skin printer:** `.pgcs` pretty-printer → `fmt` for skins + two-way convert.
+  ≈ another parser's worth of work; only if the skin sees real use.
+- **Refused, recorded:** the TypeScript skin (net-negative — see PRD §3.F); grammar-as-data front-end
+  plugins (rejected with rationale in `frontend-skins.md` §3 — revisit only for a structurally
+  isomorphic *reskin* via surface tables inside a compiled-in parser, honestly named, never sold as
+  "TS/C# input"). The P19 manifest may *declare* `"frontend": {"parserId": …}` naming a Core-registered
+  parser — symmetric packaging, asymmetric implementation.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
