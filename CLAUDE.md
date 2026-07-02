@@ -237,7 +237,11 @@ artifact (tri-state capabilities `native|emulated|false`, **std overlays** colla
 cs/ts/py fields, load-time anti-silent-drop validation: every IR node kind has a rule OR capability `false`),
 `polyglot install` + registry, proof = a downloaded 4th backend with zero Core change. **Slice 1 is two latent
 §3.B fixes found live in the Python backend** (block-lambda + `With` emit sentinels into "valid" output) + moving
-`i32.parse`/`f64.parse` to std `Bound` bindings. Not yet built.
+`i32.parse`/`f64.parse` to std `Bound` bindings. **Two user scope decisions (2026-07-02): no backward compat**
+(C++ deletes in the same slice its byte gate passes; no `--legacy-backend`) **and zero embedded target specs** —
+the CLI is a pure engine; C#/TS/Python are ordinary plugin packages (`plugins/<target>/` in this repo, published
+to npm), resolved via `pgconfig.json` `targets`/`dependencies` (local `file:` → cache → registry); std *skeletons*
+stay in Core, every per-target arm ships in its target's plugin. Not yet built.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P19** (100% JSON plugins, above).
 

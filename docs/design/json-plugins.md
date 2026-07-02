@@ -24,6 +24,25 @@ The honest floor is unchanged in *kind* from P18 §4.10: completeness comes from
 "expressible as selection-among + substitution-into plugin templates"**, plus the §3.E gate for genuine
 target limits. Nothing found in any front requires plugin-shipped code.
 
+**Two scope decisions (user, 2026-07-02) — supersede the corresponding P18 §4.10 lines:**
+1. **No backward compatibility.** No `--legacy-backend` fallback, no keeping the C++ backends a release
+   behind: when a family/layer migrates (and its byte-identity gate passes), the C++ is deleted in the
+   same slice. The byte gates remain — they verify the *extraction*, not a compat contract.
+2. **The CLI is a pure engine — no embedded target specs.** The binary ships **zero** language backends.
+   C#/TypeScript/Python are **ordinary plugin packages**, exactly like a future `@polyglot/kotlin`: the
+   tool reads `pgconfig.json` in the cwd, sees the requested `targets`, resolves their npm packages (via
+   `dependencies` → lockfile → cache/registry; `polyglot install` fetches what's missing), and interprets
+   the JSON inside — which must therefore carry **all** transpiling instructions. That is the point of the
+   tool. Consequences: the three first-party plugins are developed **in this repo as real package sources**
+   (`plugins/csharp/`, `plugins/typescript/`, `plugins/python/`) and published to npm like any plugin;
+   `pgconfig.json` supports **local path dependencies** (npm `file:`-style) so the repo's own conformance
+   gates and plugin developers load plugins from disk without a registry; with no pgconfig/targets, the CLI
+   errors with actionable guidance ("no targets configured — add pgconfig.json + run `polyglot install`"),
+   it does not fall back to anything. "Zero-dep single binary" still holds for the *executable* (no runtime
+   library deps); the language *data* simply isn't welded into it. The **std skeletons** (`std.io` etc. —
+   the target-neutral `.pg` API surface) remain in Core: they are the *source* language, not a target; every
+   per-target arm lives in the target's plugin (§5.2).
+
 ---
 
 ## 1. The complete primitive set (closing §6's reserved list)
@@ -162,13 +181,14 @@ changing" language has no home in a bool.
 member, which collapses the last hardcoded-target IR surface: `ir::Bound{cs/ts/pyTemplate}` →
 `{template}`, `ir::ExternType`'s six fields → `{typeTemplate, ctorTemplate}`. A *used* member with no arm
 refuses **at the call site** (the existing call-site-keyed `checkCapabilities` mechanism — unused gaps are
-harmless). The three first-party targets migrate onto the same mechanism as in-box overlays ("bundled but
-still pinned"), mechanically extracted from the ~97 `actual(...)` arms with a byte-identity gate.
+harmless). The three first-party targets' overlays are mechanically extracted from the ~97 `actual(...)`
+arms into **their plugin packages** (`plugins/<target>/std/*.overlay.json` in this repo) with a
+byte-identity gate — after which `compiler.cpp` carries only the target-neutral skeletons.
 
 **5.3 Loader + validation.** `loadBackend(manifestBytes, {file→bytes}) → BackendHandle` (Core stays
-IO-free; the CLI/LSP read files; `compile()` unchanged — same handle type as `findTarget`). Built-ins are
-constructed **through `loadBackend` over their embedded JSON**, so built-in and downloaded plugins traverse
-identical code. Validation obligations, all fail-loud at load: schema shape; every rule parses; **every IR
+IO-free; the CLI/LSP read files; `compile()` unchanged — same handle type). There are **no built-ins**:
+first-party and third-party plugins traverse the identical load path — the strongest possible guarantee the
+plugin path is first-class. Validation obligations, all fail-loud at load: schema shape; every rule parses; **every IR
 node kind has a rule OR its capability is declared `false`** (the anti-silent-drop rule — "no rule" is
 never "emit nothing"; completes the P9-V `break`/`continue` lesson); referenced builtins exist in the Core
 catalog; `get`/`emit` paths validate against a Core-published per-node field catalog; `require` keys exist
@@ -177,12 +197,14 @@ in `preludes` and land in the `program` rule; externTypes/std arms reference dec
 (forward-compat), unknown *rule primitives* refuse. Emit-time residue is only the program-dependent §3.E
 gate (used feature/member lacking support) — still a clean refusal before lowering.
 
-**5.4 CLI/LSP.** `--target <name>` resolves in-box → pgconfig `dependencies` + global registry → miss says
-"run `polyglot install @polyglot/<name>`". The LSP gains **`polyglot/targets`** (returns installed
-`{id, displayName, fileExtension}`), closing `extension.js`'s hardcoded `TARGETS` (`FIXME(P10)`) with no
-client change. `polyglot install` stays the single trusted registry writer: npm HTTP API data-only,
-SHA-512 `dist.integrity` verify, zip-slip-safe extract, never runs lifecycle scripts, **validates via
-`loadBackend` at install time**, records into `registry.json` + `pgconfig.lock.json`.
+**5.4 CLI/LSP.** `--target <name>` (and the default = pgconfig `targets`) resolves through pgconfig
+`dependencies` — local `file:` path → lockfile-pinned cache → registry; a miss says "run
+`polyglot install @polyglot/<name>`". No compiled-in tier. The LSP gains **`polyglot/targets`** (returns
+the workspace's resolved `{id, displayName, fileExtension}` set), closing `extension.js`'s hardcoded
+`TARGETS` (`FIXME(P10)`) with no client change. `polyglot install` stays the single trusted registry
+writer: npm HTTP API data-only, SHA-512 `dist.integrity` verify, zip-slip-safe extract, never runs
+lifecycle scripts, **validates via `loadBackend` at install time**, records into `registry.json` +
+`pgconfig.lock.json`.
 
 **5.5 Trust.** The data-only stance covers every new section. The honest residual is unchanged and now
 concentrated: **std overlays + preludes contain raw target-code templates** — zero transpile-time

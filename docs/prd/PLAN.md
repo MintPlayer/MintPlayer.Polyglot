@@ -1172,20 +1172,26 @@ consumes the same wrong fact); refusals loud, never sentinels.
    w/ keyword-set+strategy, `mangle`, `wrap` w/ `intRepr` enum, `convert` as a per-plugin
    (fromClass,toClass)→Rule matrix, `wrapAtom` kind-sets as spec data). Byte-identical consolidation, no
    behavior change.
-7. **Flip default + delete:** `loadBackend(bytes)`→`BackendHandle` (built-ins constructed through the same
-   loader over embedded JSON); one `InterpretedBackend`; delete `emit_csharp/typescript/python.cpp` +
-   `kRegistry[]`.
+7. **Delete the C++ backends — the CLI becomes a pure engine (user decision 2026-07-02: no compat
+   fallback, no embedded specs):** `loadBackend(bytes)`→`BackendHandle`; one `InterpretedBackend`; the
+   three first-party backends move to **real plugin packages in this repo** (`plugins/csharp|typescript|
+   python/` — manifest + spec/rules files on disk), loaded via pgconfig local `file:` dependencies; delete
+   `emit_csharp/typescript/python.cpp` + `kRegistry[]` + every embedded spec/rule string. Conformance/test
+   harnesses point at the repo's `plugins/` (no registry needed in CI). No pgconfig/targets → actionable
+   error, never a fallback.
 8. **Loader validation + tri-state capabilities:** the full fail-loud obligation catalog (node-kind
    coverage OR capability `false`; builtin/path references against a Core-published catalog; `requiresCore`
    + `schema` axes; depth caps; unknown-primitive refusal / unknown-manifest-key warn) +
    `native|emulated|false` capabilities (StubBackend gating still bites; `emulated` warns).
-9. **Std skeleton/overlay split:** extract the ~97 `actual(...)` arms into in-box overlay JSONs; collapse
+9. **Std skeleton/overlay split:** extract the ~97 `actual(...)` arms into **each first-party plugin's**
+   `std/*.overlay.json`; `compiler.cpp` keeps only the target-neutral skeletons; collapse
    `ir::Bound{cs/ts/py}`→`{template}` + `ExternType` 6→2 fields; per-target selection moves into linking;
    missing-arm call-site refusal rides `checkCapabilities`. **Highest-risk gate** (every conformance
    program uses List/Math).
 10. **Package format + config:** `polyglot-plugin.json` (+ sibling files per `json-plugins.md` §5);
-    `pgconfig.json` gains `dependencies`/`targets` additively; `--target` resolution in-box → dependencies
-    → registry → "run `polyglot install`".
+    `pgconfig.json` gains `dependencies` (incl. local `file:` paths for in-repo/plugin-dev use) +
+    `targets`; resolution = dependencies → lockfile-pinned cache → registry → "run `polyglot install`"
+    (no compiled-in tier).
 11. **`polyglot install` + registry:** npm HTTP data-only fetch, SHA-512 verify, zip-slip-safe extract, no
     lifecycle scripts, install-time `loadBackend` validation, `registry.json` + `pgconfig.lock.json`,
     warn-only sink lint.

@@ -217,8 +217,11 @@ consulted — see the trust model above). It contains a `polyglot-plugin.json` m
 The registry entry (§6.1) for a backend carries `targets: [{id, displayName, fileExtension}]` + the capability
 set + cache path + integrity hash — so `--target <name>` resolves name→registry→cache→spec bytes→`BackendHandle`
 (Core interprets; the CLI does the IO), and the editor `polyglot/targets` (§6.1 tie-in) needs no extra source.
-The built-in C#/TS/Python migrate to this exact shape as **in-box specs embedded in the binary** (zero-dep
-preserved), registry-visible + pinnable like any plugin ("bundled but still pinned"). `kind: "binding"|"std"`
+~~The built-in C#/TS/Python migrate to this exact shape as **in-box specs embedded in the binary**~~ —
+**superseded 2026-07-02 (user decision, `json-plugins.md` scope note): the CLI embeds no target specs at
+all.** The first-party three are **ordinary plugin packages** developed in this repo (`plugins/<target>/`)
+and published to npm; every consumer resolves them through `pgconfig.json` `dependencies` (local `file:`
+path → lockfile-pinned cache → registry) exactly like a third-party target. `kind: "binding"|"std"`
 plugins omit the `backend` block and carry only `stdModules`/`externTypes`/`buildDeps` — already fully
 expressible today (P7/P8/P10 mechanisms interpret exactly this data).
 
