@@ -490,6 +490,75 @@ std::string InterfaceDeclCtx::emitChild(const std::string& path, const std::stri
     return m.params[j].defaultValue ? emit_(*m.params[j].defaultValue) : "";
 }
 
+std::string MethodDeclCtx::get(const std::string& path) const {
+    if (path == "decl.kind") {
+        switch (m_.kind) {
+            case ir::MethodKind::Property: return "property";
+            case ir::MethodKind::Operator: return "operator";
+            case ir::MethodKind::Method:   return "method";
+        }
+    }
+    if (path == "decl.name")       return m_.name;
+    if (path == "decl.opSymbol")   return m_.opSymbol;
+    if (path == "decl.owner")      return owner_;
+    if (path == "decl.isStatic")   return m_.isStatic ? "true" : "false";
+    if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";
+    if (path == "decl.exprBodied") return m_.exprBodied ? "true" : "false";
+    if (path == "decl.body.count") return std::to_string(m_.body.size());
+    if (path == "decl.retName")    return m_.returnType.kind == TypeRef::Kind::Named ? m_.returnType.name : "";
+    if (path == "decl.returnsUnit")
+        return m_.returnType.kind == TypeRef::Kind::Named &&
+                       (m_.returnType.name == "unit" || m_.returnType.name.empty())
+                   ? "true" : "false";
+    if (path == "decl.params.count") return std::to_string(m_.params.size());
+    if (path.rfind("decl.params.", 0) == 0) { // decl.params.<i>.{name|hasDefault}
+        const std::string sub = path.substr(12);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+        const std::size_t dot = sub.find('.');
+        if (i < m_.params.size() && dot != std::string::npos) {
+            const std::string rest = sub.substr(dot + 1);
+            if (rest == "name")       return m_.params[i].name;
+            if (rest == "hasDefault") return m_.params[i].defaultValue ? "true" : "false";
+        }
+    }
+    return "";
+}
+
+std::string MethodDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "generics") return hooks_.generics(m_.generics);
+    if (name == "where")    return hooks_.where(m_.generics);
+    if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    return "";
+}
+
+std::string MethodDeclCtx::renderType(const std::string& path) const {
+    if (path == "decl.returnType") return hooks_.renderTypeRef(m_.returnType);
+    if (path.rfind("decl.params.", 0) == 0) { // decl.params.<i>.type
+        const std::string sub = path.substr(12);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+        if (i < m_.params.size() && sub.find('.') != std::string::npos && sub.substr(sub.find('.') + 1) == "type")
+            return hooks_.renderTypeRef(m_.params[i].type);
+    }
+    return "";
+}
+
+std::string MethodDeclCtx::emitChild(const std::string& path, const std::string&) const {
+    if (!emit_) return "";
+    if (path == "decl.exprBody") return m_.exprBody ? emit_(*m_.exprBody) : "";
+    if (path.rfind("decl.params.", 0) == 0) { // decl.params.<i>.default
+        const std::string sub = path.substr(12);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+        if (i < m_.params.size() && sub.find('.') != std::string::npos &&
+            sub.substr(sub.find('.') + 1) == "default")
+            return m_.params[i].defaultValue ? emit_(*m_.params[i].defaultValue) : "";
+    }
+    return "";
+}
+
+const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path) const {
+    return path == "decl.body" ? &m_.body : nullptr;
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;

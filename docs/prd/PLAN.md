@@ -1353,6 +1353,22 @@ C# Allman `interface N<G> : B1, B2 where…` + per-method `ret Name<MG>(type nam
 Two `emitInterface`s deleted. Byte-identical (117 files), unit green, 39/39 + 38/38. Next:
 Record/Class/Method/Function, then `program` + `require`.
 
+**Slice-5d ✅ (2026-07-03) — Method is data ×3 (the biggest per-member shape).** Shared **`MethodDeclCtx`**
+(kind/name/opSymbol/owner/flags/params + `retName`/`returnsUnit`/`body.count` scalars; return/param types via
+hooks; `generics`/`where` spell the METHOD's own list; `exprBody`/param defaults re-enter the expression walk;
+`stmtList("decl.body")` feeds `{"stmts"}`). All four C# member shapes are rules: expr-bodied property, indexer
+(incl. the `sig { get` + nested-brace block as `block`+trailing-`line("}")` seq), **real static operator**
+(raw param names, `(Owner lhs, …)` via `decl.owner`), and plain method with `csAsyncRet` as a `case` rule
+(strict `retName=="unit"` ↔ `Task`/`Task<T>`). TS: getter property + one method shape (async → `Promise<T>`
+in rule data). Python: decorator lines as `case` rules (`@property`/`@staticmethod`), **the operator→dunder
+table is now pure rule data** (`pyDunder` case; C++ `opDunder` deleted), self/params joining, unit-vs-`return`
+expr bodies, and the empty-body `pass` as explicit rule data (`decl.body.count=="0"` — the shared `stmts` decl
+kind deliberately doesn't pass-pad). The C# operator `this`→`lhs` alias stays a ctx scalar scoped by the C++
+wiring (`runMethodRule`) around the rule run — the recorded P19 deviation (a declaration-shape consequence,
+not shared lowering). Three `emitMethod`s deleted. Byte-identical (117 files), unit green, 39/39 + 38/38.
+Next: Record/Class shapes (their heads/fields/ctors; method loops already rule-driven), then
+Function/Extension, then `program` + `require`.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

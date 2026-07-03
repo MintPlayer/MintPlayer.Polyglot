@@ -140,6 +140,23 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
       { "line": { "tmpl": [ "const ", {"get":"decl.name"}, " = { ",
           {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"},": ",{"get":"item.value"}]}},
           " };" ] } } ] },
+  "tsParam": {"tmpl":[{"get":"item.name"},": ",{"type":"item.type"},
+      {"case":{"when":[[{"eq":["item.hasDefault","true"]},{"tmpl":[" = ",{"emit":"item.default"}]}]]}}]},
+  "tsMethodSig": {"tmpl":[
+      {"case":{"when":[[{"eq":["decl.isStatic","true"]},"static "]]}},
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async "]]}},
+      {"get":"decl.name"},{"fn":"generics"},"(",
+      {"map":"decl.params","sep":", ","item":{"call":"tsParam"}},"): ",
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},{"tmpl":["Promise<",{"type":"decl.returnType"},">"]}]],
+        "else":{"type":"decl.returnType"}}}]},
+  "MethodDecl": {"case":{"when":[
+      [ {"eq":["decl.kind","property"]},
+        {"block":{"head":{"tmpl":["get ",{"get":"decl.name"},"(): ",{"type":"decl.returnType"}]},
+          "body":[{"line":{"tmpl":["return ",{"emit":"decl.exprBody"},";"]}}]}} ]],
+      "else":{"block":{"head":{"call":"tsMethodSig"},"body":[
+          {"case":{"when":[[{"eq":["decl.exprBodied","true"]},
+              {"line":{"tmpl":["return ",{"emit":"decl.exprBody"},";"]}}]],
+            "else":{"stmts":"decl.body"}}} ]}} }},
   "InterfaceDecl": { "block": {
       "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
         {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
@@ -497,7 +514,7 @@ private:
         --indent_;
         line("}");
         emitRecordEquals(r);
-        for (const auto& m : r.methods) emitMethod(m);
+        for (const auto& m : r.methods) runMethodRule(m);
         --indent_;
         line("}");
     }
@@ -556,7 +573,7 @@ private:
             --indent_;
             line("}");
         }
-        for (const auto& m : c.methods) emitMethod(m);
+        for (const auto& m : c.methods) runMethodRule(m);
         --indent_;
         line("}");
     }
@@ -568,26 +585,9 @@ private:
         return s;
     }
 
-    void emitMethod(const ir::Method& m) {
-        if (m.kind == ir::MethodKind::Property) { // read-only computed property -> getter
-            line("get " + m.name + "(): " + tsType(m.returnType) + " {");
-            ++indent_;
-            line("return " + emitExpr(*m.exprBody) + ";");
-            --indent_;
-            line("}");
-            return;
-        }
-        // method and operator both become regular methods (a + b calls a.plus(b) at the use site)
-        std::string sig = std::string(m.isStatic ? "static " : "") + (m.isAsync ? "async " : "") +
-                          m.name + tsGenerics(m.generics) + "(";
-        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(m.params[i]); }
-        sig += "): " + (m.isAsync ? tsAsyncReturn(m.returnType) : tsType(m.returnType)) + " {";
-        line(sig);
-        ++indent_;
-        if (m.exprBodied) line("return " + emitExpr(*m.exprBody) + ";");
-        else for (const auto& s : m.body) emitStmt(*s);
-        --indent_;
-        line("}");
+    void runMethodRule(const ir::Method& m) {
+        MethodDeclCtx ctx(m, "", kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+        runDeclRule(tsExprRules().at("MethodDecl"), ctx, ctx, &tsExprRules());
     }
 
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as TS.

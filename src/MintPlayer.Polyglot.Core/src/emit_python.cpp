@@ -63,20 +63,6 @@ bool isFloatType(const TypeRef& t) {
 
 // Operator symbol -> Python dunder. Python HAS operator overloading, so an `operator fn plus` emits a real
 // `__add__` and `a + b` dispatches to it at the use site (no method-call rewrite as C#-less TS needs).
-const char* opDunder(const std::string& sym) {
-    if (sym == "+")  return "__add__";
-    if (sym == "-")  return "__sub__";
-    if (sym == "*")  return "__mul__";
-    if (sym == "/")  return "__truediv__";
-    if (sym == "%")  return "__mod__";
-    if (sym == "==") return "__eq__";
-    if (sym == "<")  return "__lt__";
-    if (sym == "<=") return "__le__";
-    if (sym == ">")  return "__gt__";
-    if (sym == ">=") return "__ge__";
-    return nullptr;
-}
-
 // An overloaded function's mangled name (`area$i32`) carries a `$` that's invalid in a Python identifier;
 // map it to `_` consistently at every def and call site so the overloads stay distinct and callable.
 std::string pyName(const std::string& s) {
@@ -153,6 +139,38 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
         "each": { "line": { "tmpl": [ {"get":"item.name"}, " = ", {"get":"item.value"} ] } } } ] } },
   "UnionDecl": { "line": { "tmpl": [ "# union ", {"get":"decl.name"},
       " -> tagged dicts: {\"tag\": <case>, <field>: <value>, ...}" ] } },
+  "pyParam": {"tmpl":[{"fn":"ident","args":[{"get":"item.name"}]},
+      {"case":{"when":[[{"eq":["item.hasDefault","true"]},{"tmpl":[" = ",{"emit":"item.default"}]}]]}}]},
+  "pyDunder": {"case":{"when":[
+      [{"eq":["decl.opSymbol","+"]},"__add__"],
+      [{"eq":["decl.opSymbol","-"]},"__sub__"],
+      [{"eq":["decl.opSymbol","*"]},"__mul__"],
+      [{"eq":["decl.opSymbol","/"]},"__truediv__"],
+      [{"eq":["decl.opSymbol","%"]},"__mod__"],
+      [{"eq":["decl.opSymbol","=="]},"__eq__"],
+      [{"eq":["decl.opSymbol","<"]},"__lt__"],
+      [{"eq":["decl.opSymbol","<="]},"__le__"],
+      [{"eq":["decl.opSymbol",">"]},"__gt__"],
+      [{"eq":["decl.opSymbol",">="]},"__ge__"]],
+      "else":{"get":"decl.name"}}},
+  "pyMethodSig": {"tmpl":[
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async def "]],"else":"def "}},
+      {"case":{"when":[[{"eq":["decl.kind","operator"]},{"call":"pyDunder"}]],"else":{"get":"decl.name"}}},
+      "(",
+      {"case":{"when":[[{"eq":["decl.isStatic","true"]},""]],
+        "else":{"tmpl":["self",{"case":{"when":[[{"eq":["decl.params.count","0"]},""]],"else":", "}}]}}},
+      {"map":"decl.params","sep":", ","item":{"call":"pyParam"}},")"]},
+  "MethodDecl": {"seq":[
+      {"case":{"when":[[{"eq":["decl.kind","property"]},{"line":"@property"}]]}},
+      {"case":{"when":[[{"eq":["decl.isStatic","true"]},{"line":"@staticmethod"}]]}},
+      {"case":{"when":[
+        [{"eq":["decl.exprBodied","true"]},
+          {"block":{"head":{"call":"pyMethodSig"},"body":[
+            {"case":{"when":[[{"eq":["decl.returnsUnit","true"]},{"line":{"emit":"decl.exprBody"}}]],
+              "else":{"line":{"tmpl":["return ",{"emit":"decl.exprBody"}]}}}} ]}}]],
+        "else":{"block":{"head":{"call":"pyMethodSig"},"body":[
+            {"case":{"when":[[{"eq":["decl.body.count","0"]},{"line":"pass"}]],
+              "else":{"stmts":"decl.body"}}} ]}}}} ]},
   "MakeCase": { "tmpl": [ "{\"tag\": ", {"fn":"escapeString","args":[{"get":"node.caseName"}]},
                           {"map":"node.fields","sep":"",
                            "item":{"tmpl":[", ",{"fn":"escapeString","args":[{"get":"item.name"}]},": ",
@@ -476,7 +494,7 @@ private:
             line("return " + cond);
         }
         --indent_;
-        for (const auto& m : r.methods) emitMethod(m);
+        for (const auto& m : r.methods) runMethodRule(m);
         --indent_;
     }
 
@@ -515,7 +533,7 @@ private:
             --indent_;
             any = true;
         }
-        for (const auto& m : c.methods) { emitMethod(m); any = true; }
+        for (const auto& m : c.methods) { runMethodRule(m); any = true; }
         if (!any) line("pass");
         --indent_;
     }
@@ -525,28 +543,9 @@ private:
     //   static fn  -> `@staticmethod` + `def name(...)` (no self; called `Type.name(...)`)
     //   Operator   -> `def __add__(self, ...)` (Python dispatches `a + b` to the dunder natively)
     //   Property   -> `@property` + `def name(self)` (accessed as `a.prop`, no call)
-    void emitMethod(const ir::Method& m) {
-        std::string name = m.name;
-        if (m.kind == ir::MethodKind::Operator) {
-            if (const char* d = opDunder(m.opSymbol)) name = d;
-        } else if (m.kind == ir::MethodKind::Property) {
-            line("@property");
-        }
-        if (m.isStatic) line("@staticmethod");
-        std::string sig = std::string(m.isAsync ? "async def " : "def ") + name + "(";
-        bool first = true;
-        if (!m.isStatic) { sig += "self"; first = false; } // static members take no receiver
-        for (const auto& p : m.params) { if (!first) sig += ", "; first = false; sig += param(p); }
-        sig += ")";
-        if (m.exprBodied) {
-            openBlock(sig);
-            ++indent_;
-            bool unit = m.returnType.kind == TypeRef::Kind::Named && (m.returnType.name == "unit" || m.returnType.name.empty());
-            line(unit ? emitExpr(*m.exprBody) : "return " + emitExpr(*m.exprBody));
-            --indent_;
-        } else {
-            headBlock(sig, m.body);
-        }
+    void runMethodRule(const ir::Method& m) {
+        MethodDeclCtx ctx(m, "", kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+        runDeclRule(pyExprRules().at("MethodDecl"), ctx, ctx, &pyExprRules());
     }
 
     void emitStmtTarget(const ir::Stmt& s) override {

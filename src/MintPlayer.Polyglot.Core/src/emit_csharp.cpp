@@ -144,6 +144,40 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "EnumDecl": { "line": { "tmpl": [ "enum ", {"get":"decl.name"}, " { ",
       {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"}," = ",{"get":"item.value"}]}},
       " }" ] } },
+  "csParam": {"tmpl":[{"type":"item.type"}," ",{"fn":"ident","args":[{"get":"item.name"}]},
+      {"case":{"when":[[{"eq":["item.hasDefault","true"]},{"tmpl":[" = ",{"emit":"item.default"}]}]]}}]},
+  "csIndexerSig": {"tmpl":["public ",{"type":"decl.returnType"}," this[",
+      {"map":"decl.params","sep":", ","item":{"call":"csParam"}},"]"]},
+  "csOperatorSig": {"tmpl":["public static ",{"type":"decl.returnType"}," operator ",{"get":"decl.opSymbol"},
+      "(",{"get":"decl.owner"}," lhs",
+      {"map":"decl.params","sep":"","item":{"tmpl":[", ",{"type":"item.type"}," ",{"get":"item.name"}]}},")"]},
+  "csAsyncRet": {"case":{"when":[[{"eq":["decl.retName","unit"]},"global::System.Threading.Tasks.Task"]],
+      "else":{"tmpl":["global::System.Threading.Tasks.Task<",{"type":"decl.returnType"},">"]}}},
+  "csMethodSig": {"tmpl":["public ",
+      {"case":{"when":[[{"eq":["decl.isStatic","true"]},"static "]]}},
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async "]]}},
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},{"call":"csAsyncRet"}]],"else":{"type":"decl.returnType"}}},
+      " ",{"get":"decl.name"},{"fn":"generics"},"(",
+      {"map":"decl.params","sep":", ","item":{"call":"csParam"}},")",{"fn":"where"}]},
+  "MethodDecl": {"case":{"when":[
+      [ {"eq":["decl.kind","property"]},
+        {"line":{"tmpl":["public ",{"type":"decl.returnType"}," ",{"get":"decl.name"}," => ",{"emit":"decl.exprBody"},";"]}} ],
+      [ {"and":[{"eq":["decl.kind","operator"]},{"eq":["decl.opSymbol","get"]}]},
+        {"case":{"when":[
+          [ {"eq":["decl.exprBodied","true"]},
+            {"line":{"tmpl":[{"call":"csIndexerSig"}," => ",{"emit":"decl.exprBody"},";"]}} ]],
+          "else":{"seq":[
+            {"block":{"head":{"tmpl":[{"call":"csIndexerSig"}," { get"]},"body":[{"stmts":"decl.body"}]}},
+            {"line":"}"} ]} }} ],
+      [ {"eq":["decl.kind","operator"]},
+        {"case":{"when":[
+          [ {"eq":["decl.exprBodied","true"]},
+            {"line":{"tmpl":[{"call":"csOperatorSig"}," => ",{"emit":"decl.exprBody"},";"]}} ]],
+          "else":{"block":{"head":{"call":"csOperatorSig"},"body":[{"stmts":"decl.body"}]}} }} ]],
+      "else":{"case":{"when":[
+          [ {"eq":["decl.exprBodied","true"]},
+            {"line":{"tmpl":[{"call":"csMethodSig"}," => ",{"emit":"decl.exprBody"},";"]}} ]],
+          "else":{"block":{"head":{"call":"csMethodSig"},"body":[{"stmts":"decl.body"}]}} }} }},
   "InterfaceDecl": { "block": {
       "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
         {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
@@ -476,7 +510,7 @@ private:
         line(head);
         line("{");
         ++indent_;
-        for (const auto& m : r.methods) emitMethod(r.name, m);
+        for (const auto& m : r.methods) runMethodRule(r.name, m);
         --indent_;
         line("}");
     }
@@ -511,7 +545,7 @@ private:
             }
             headBlock(sig, c.initBody);
         }
-        for (const auto& m : c.methods) emitMethod(c.name, m);
+        for (const auto& m : c.methods) runMethodRule(c.name, m);
         --indent_;
         line("}");
     }
@@ -523,36 +557,14 @@ private:
         return s;
     }
 
-    void emitMethod(const std::string& recordName, const ir::Method& m) {
-        if (m.kind == ir::MethodKind::Property) { // expression-bodied property
-            line("public " + csType(m.returnType) + " " + m.name + " => " + emitExpr(*m.exprBody) + ";");
-            return;
-        }
-        if (m.kind == ir::MethodKind::Operator && m.opSymbol == "get") { // `operator fn get` -> a C# indexer
-            std::string sig = "public " + csType(m.returnType) + " this[";
-            for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
-            sig += "]";
-            if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
-            else { line(sig + " { get"); line("{"); blockBody(m.body); line("}"); line("}"); }
-            return;
-        }
-        if (m.kind == ir::MethodKind::Operator) { // real C# static operator; `this` -> the first operand
-            std::string sig = "public static " + csType(m.returnType) + " operator " + m.opSymbol + "(" + recordName + " lhs";
-            for (const auto& p : m.params) sig += ", " + csType(p.type) + " " + p.name;
-            sig += ")";
-            thisAlias_ = "lhs";
-            if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
-            else headBlock(sig, m.body);
-            thisAlias_.clear();
-            return;
-        }
-        std::string ret = m.isAsync ? csAsyncReturn(m.returnType) : csType(m.returnType);
-        std::string sig = std::string("public ") + (m.isStatic ? "static " : "") + (m.isAsync ? "async " : "") +
-                          ret + " " + m.name + csGenerics(m.generics) + "(";
-        for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
-        sig += ")" + csWhere(m.generics);
-        if (m.exprBodied) line(sig + " => " + emitExpr(*m.exprBody) + ";");
-        else headBlock(sig, m.body);
+    // Run the MethodDecl rule for one member. The real-static-operator `this`->`lhs` rebind is a C#
+    // declaration-shape consequence, so the alias scopes around the rule run (not shared lowering).
+    void runMethodRule(const std::string& owner, const ir::Method& m) {
+        const bool opAlias = m.kind == ir::MethodKind::Operator && m.opSymbol != "get";
+        if (opAlias) thisAlias_ = "lhs";
+        MethodDeclCtx ctx(m, owner, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+        runDeclRule(csharpExprRules().at("MethodDecl"), ctx, ctx, &csharpExprRules());
+        if (opAlias) thisAlias_.clear();
     }
 
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as C#.

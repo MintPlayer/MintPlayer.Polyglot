@@ -130,6 +130,28 @@ private:
     EmitFn emit_;
 };
 
+// Shared decl context for one record/class member: kind/name/flag/param reads; return/param types render
+// through the hooks; `generics`/`where` spell the METHOD's own list; the expression body and param
+// defaults re-enter the expression walk; `{"stmts":"decl.body"}` renders the block body. `decl.owner` is
+// the containing type's name (the C# operator shape needs it for its `(Owner lhs, …)` first operand).
+class MethodDeclCtx : public IrDeclCtx {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    MethodDeclCtx(const ir::Method& m, std::string owner, const DeclHooks& hooks, EmitFn emit)
+        : m_(m), owner_(std::move(owner)), hooks_(hooks), emit_(std::move(emit)) {}
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+    std::string emitChild(const std::string& path, const std::string& side) const override;
+    const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
+
+private:
+    const ir::Method& m_;
+    std::string owner_;
+    const DeclHooks& hooks_;
+    EmitFn emit_;
+};
+
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
 // `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
 // `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern
