@@ -94,12 +94,22 @@ private:
 // layer's fixed builtins; the shapes around them are rule data.
 class DeclHooks {
 public:
+    // Takes the spec ACCESSOR, not the spec: hooks are constructed as globals at static init, and loading
+    // the spec then would race other TUs' dynamic init (the block-style name strings) — a real CLI abort.
+    // The accessor's function-local static loads lazily on the first ident/mangle call instead.
+    using SpecFn = const BackendSpec& (*)();
+    explicit DeclHooks(SpecFn spec) : specFn_(spec) {}
     virtual ~DeclHooks() = default;
     virtual std::string renderTypeRef(const TypeRef& t) const = 0;
-    virtual std::string ident(const std::string& n) const { return n; }
-    virtual std::string mangle(const std::string& n) const { return n; } // emitted-name repair (Python `$`->`_`)
+    // Identifier repair reads the spec's `identifiers` block (keyword escape / emitted-name mangle) —
+    // generic catalog entries, not per-backend code (P19 slice 6).
+    std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
+    std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
     virtual std::string generics(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
     virtual std::string where(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
+
+protected:
+    SpecFn specFn_;
 };
 
 // Shared decl context for unions: name/case/field reads; `generics`/`ident` builtins + field types go

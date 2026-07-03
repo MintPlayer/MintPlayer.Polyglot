@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Declarative, per-target emission data — the "70% tabular" half of a backend, extracted from the
@@ -69,7 +70,33 @@ struct BackendSpec {
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
+
+    // Identifier repair (the spec half of P19 §7's `identifiers` manifest block): the target's reserved
+    // words and how a colliding `.pg` identifier escapes — "prefix" (C# `@name`) / "suffix" (Python
+    // `name_`) / "" = emit verbatim (TS escapes nothing). `mangle` repairs emitted names whose characters
+    // the target forbids (Python: the overload marker `$` -> `_`, applied at every def and call site).
+    std::unordered_set<std::string> keywords;
+    std::string escapeStrategy; // "prefix" | "suffix" | "" (none)
+    std::string escapeWith;
+    std::string mangleFrom, mangleTo; // single-char emitted-name replacement ("" = none)
 };
+
+// A `.pg` identifier spelled for the target: keyword collisions escape per the spec's declared strategy.
+inline std::string specIdent(const BackendSpec& s, const std::string& n) {
+    if (s.keywords.count(n) == 0) return n;
+    if (s.escapeStrategy == "prefix") return s.escapeWith + n;
+    if (s.escapeStrategy == "suffix") return n + s.escapeWith;
+    return n;
+}
+
+// An emitted name with the spec's forbidden-character replacement applied (identity when none declared).
+inline std::string specMangle(const BackendSpec& s, const std::string& n) {
+    if (s.mangleFrom.empty() || s.mangleTo.empty()) return n;
+    std::string out = n;
+    for (char& c : out)
+        if (c == s.mangleFrom[0]) c = s.mangleTo[0];
+    return out;
+}
 
 // --- Shared emit-engine primitives (the seed of the P9 SpecEmitter) -------------------------------------
 // These render a node from already-emitted child strings. Identical-across-targets shapes live here as

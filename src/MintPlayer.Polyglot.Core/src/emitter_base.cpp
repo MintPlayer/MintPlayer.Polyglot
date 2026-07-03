@@ -281,6 +281,9 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     }
     if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
     if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
+    // Identifier repair — generic catalog entries parameterized by the spec's `identifiers` block (P19).
+    if (name == "ident")      return specIdent(spec_, args.empty() ? std::string() : args[0]);
+    if (name == "mangleName") return specMangle(spec_, args.empty() ? std::string() : args[0]);
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);

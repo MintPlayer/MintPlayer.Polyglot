@@ -38,7 +38,14 @@ const char* PY_SPEC_JSON = R"JSON({
   "blockStyle": "colonIndent",
   "stmtEnd": "",
   "throwKeyword": "raise",
-  "trueLit": "True", "falseLit": "False", "nullLit": "None"
+  "trueLit": "True", "falseLit": "False", "nullLit": "None",
+  "identifiers": {
+    "keywords": ["False","None","True","and","as","assert","async","await","break","class","continue","def",
+      "del","elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal",
+      "not","or","pass","raise","return","try","while","with","yield","match","case"],
+    "escape": { "strategy": "suffix", "with": "_" },
+    "mangle": { "replace": "$", "with": "_" }
+  }
 })JSON";
 
 const BackendSpec& pythonSpec() {
@@ -61,25 +68,8 @@ bool isFloatType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && (t.name == "f32" || t.name == "f64");
 }
 
-// Operator symbol -> Python dunder. Python HAS operator overloading, so an `operator fn plus` emits a real
-// `__add__` and `a + b` dispatches to it at the use site (no method-call rewrite as C#-less TS needs).
-// An overloaded function's mangled name (`area$i32`) carries a `$` that's invalid in a Python identifier;
-// map it to `_` consistently at every def and call site so the overloads stay distinct and callable.
-std::string pyName(const std::string& s) {
-    std::string out = s;
-    for (char& c : out) if (c == '$') c = '_';
-    return out;
-}
-
-// Escape a source identifier that collides with a Python keyword (e.g. a local `def`/`class`/`in`) by
-// suffixing `_`. Applied uniformly to every binding site and reference so the renaming stays consistent.
-std::string pyId(const std::string& s) {
-    static const std::unordered_set<std::string> kw = {
-        "False","None","True","and","as","assert","async","await","break","class","continue","def","del",
-        "elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal",
-        "not","or","pass","raise","return","try","while","with","yield","match","case"};
-    return kw.count(s) ? s + "_" : s;
-}
+// (Keyword suffixing `name_` and the overload-mangle `$`->`_` are the spec's `identifiers` block now; the
+// generic specIdent/specMangle catalog entries serve every read — def sites, call sites, decl hooks.)
 
 // §3.C integer faithfulness: wrap an int result to its width so it overflows like .NET (Python ints are
 // arbitrary-precision). Unsigned masks; signed masks then sign-extends via the (m ^ SIGN) - SIGN trick —
@@ -378,9 +368,8 @@ std::string pyTypeName(const TypeRef& t) {
 // The Python declaration hooks — the one per-backend object every decl context reads through.
 class PyDeclHooks : public DeclHooks {
 public:
+    PyDeclHooks() : DeclHooks(&pythonSpec) {}
     std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
-    std::string ident(const std::string& n) const override { return pyId(n); }
-    std::string mangle(const std::string& n) const override { return pyName(n); } // overload `$` -> `_`
 };
 const PyDeclHooks kPyDeclHooks;
 
@@ -410,8 +399,6 @@ protected:
     std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "ident")      return pyId(args.empty() ? std::string() : args[0]);
-        if (name == "mangleName") return pyName(args.empty() ? std::string() : args[0]);
         if (name == "wrapInt")
             return wrapInt(args.size() > 0 ? args[0] : std::string(), args.size() > 1 ? args[1] : std::string());
         if (name == "idiv" || name == "irem") { // truncating int / and % need the _pg_idiv prelude
@@ -480,7 +467,7 @@ public:
 
 private:
     const BackendSpec& spec() const override { return pythonSpec(); }
-    std::string localDecl(const std::string& name, bool) override { return pyId(name); }  // bare `name = ...`
+    std::string localDecl(const std::string& name, bool) override { return specIdent(spec(), name); } // bare `name = ...`
     std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
     std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
 
@@ -499,13 +486,13 @@ private:
             const auto& f = static_cast<const ir::For&>(s);
             if (f.isRange) {
                 std::string hi = f.inclusive ? "(" + emitExpr(*f.rangeEnd) + ") + 1" : emitExpr(*f.rangeEnd);
-                headBlock("for " + pyId(f.binding) + " in range(" + emitExpr(*f.rangeStart) + ", " + hi + ")", f.body);
+                headBlock("for " + specIdent(spec(), f.binding) + " in range(" + emitExpr(*f.rangeStart) + ", " + hi + ")", f.body);
             } else if (!f.tupleBindings.empty()) {
                 std::string names;
-                for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += pyId(f.tupleBindings[i]); }
+                for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += specIdent(spec(), f.tupleBindings[i]); }
                 headBlock("for " + names + " in " + emitExpr(*f.iterable), f.body);
             } else {
-                headBlock("for " + pyId(f.binding) + " in " + emitExpr(*f.iterable), f.body);
+                headBlock("for " + specIdent(spec(), f.binding) + " in " + emitExpr(*f.iterable), f.body);
             }
             return;
         }

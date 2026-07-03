@@ -408,9 +408,11 @@ std::string tsGenerics(const std::vector<ir::GenericParam>& gs) {
     return s + ">";
 }
 
-// The TS declaration hooks — the one per-backend object every decl context reads through.
+// The TS declaration hooks — the one per-backend object every decl context reads through. (TS declares no
+// keywords in its spec `identifiers` block — pg names that collide with C#/Python keywords are legal TS.)
 class TsDeclHooks : public DeclHooks {
 public:
+    TsDeclHooks() : DeclHooks(&typescriptSpec) {}
     std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
     std::string generics(const std::vector<ir::GenericParam>& gs) const override { return tsGenerics(gs); }
 };

@@ -1457,6 +1457,26 @@ Enum, Union, Interface, Method, Record, Class, Function, Extension, Program — 
 target is rule data.** Next: slice 6 (generic builtin catalog), then 7 (delete emit_*.cpp →
 InterpretedBackend + plugins/<target>/ packages).
 
+**Slice-6a ✅ (2026-07-03) — `ident`/`mangle` are generic catalog entries over spec data (catalog rows 3+4).**
+`BackendSpec` gained the **`identifiers` block** — the spec half of §7's manifest design, same shape:
+`keywords` + `escape{strategy: prefix|suffix, with}` + `mangle{replace, with}` — parsed/serialized by
+`backend_spec_json` (keywords sorted on write for determinism). Two generic implementations serve every
+read: `specIdent` (keyword collision → declared escape) and `specMangle` (forbidden-char replacement), used
+by the shared `IrExprCtx::builtin` (`ident`/`mangleName` — no longer per-target), the `DeclHooks` base
+(`ident`/`mangle` are now NON-virtual — spec-driven, not per-backend behavior), C#'s `localDecl` and
+Python's `localDecl` + For-head bindings. Deleted: `csIdent` (the ~80-keyword set + `@`-prefix is C# spec
+JSON), `pyId` (35 keywords + `_`-suffix) and `pyName` (`$`→`_` overload mangle) are Python spec JSON; TS
+declares no keywords (escapes nothing — unchanged). **Live bug caught mid-slice: a static-init-order abort**
+— the hooks globals' ctors called `csharpSpec()` at static init, whose `loadBackendSpec` compared against
+`std::string` block-style globals in another TU (uninitialized in the CLI's link order → "unknown
+blockStyle" → Debug-CRT abort dialogs on every CLI spawn; the tests exe's TU order masked it). Fix at both
+ends: `DeclHooks` takes the spec *accessor* (`SpecFn`, loads lazily on first use — never during static
+init) and the block-style names became `constexpr const char*` (zero dynamic init). Byte-identical
+(117 files), unit green, 39/39 + 38/38. Next: 6b (escape transforms — interpEscape ×2/charLit as
+parameterized escape maps), 6c (type-list suffix reads — typeArgsSuffix/genArgs/elemType/castType as shared
+paths + rules), 6d (numeric wrap catalog + intRepr strategy), 6e (convert matrix), 6f (fresh + walrus
+rules), 6g (wrapAtom kind-sets as spec data), 6h (generics/where spelling strategies).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

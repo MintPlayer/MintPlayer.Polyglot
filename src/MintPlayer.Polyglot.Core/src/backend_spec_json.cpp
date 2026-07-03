@@ -1,13 +1,17 @@
 #include "mintplayer/polyglot/backend_spec_json.hpp"
 
+#include <algorithm>
+
 #include "mintplayer/polyglot/json.hpp"
 
 namespace mintplayer::polyglot {
 
 namespace {
-const std::string kBlockAllman = "bracesAllman";
-const std::string kBlockKnR    = "bracesKnR";
-const std::string kBlockColon  = "colonIndent";
+// constexpr char arrays: zero dynamic init, so loadBackendSpec is safe to call from any TU's static
+// initialization (std::string globals here once made a static-init-order abort in the CLI).
+constexpr const char* kBlockAllman = "bracesAllman";
+constexpr const char* kBlockKnR    = "bracesKnR";
+constexpr const char* kBlockColon  = "colonIndent";
 
 void loadStringMap(const json::Value& obj, std::unordered_map<std::string, std::string>& out) {
     for (const auto& kv : obj.members)
@@ -57,6 +61,22 @@ SpecLoadResult loadBackendSpec(const std::string& json) {
     r.spec.falseLit     = strOr("falseLit", "false");
     r.spec.nullLit      = strOr("nullLit", "null");
 
+    const json::Value& ids = doc["identifiers"];
+    if (ids.kind == json::Value::Kind::Object) {
+        for (const json::Value& k : ids["keywords"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
+        const json::Value& esc = ids["escape"];
+        if (esc.kind == json::Value::Kind::Object) {
+            r.spec.escapeStrategy = esc["strategy"].asString();
+            r.spec.escapeWith     = esc["with"].asString();
+        }
+        const json::Value& man = ids["mangle"];
+        if (man.kind == json::Value::Kind::Object) {
+            r.spec.mangleFrom = man["replace"].asString();
+            r.spec.mangleTo   = man["with"].asString();
+        }
+    }
+
     r.ok = true;
     return r;
 }
@@ -87,6 +107,22 @@ std::string backendSpecToJson(const BackendSpec& spec) {
                          : spec.blockStyle == BlockStyle::ColonIndent  ? kBlockColon
                                                                        : kBlockKnR;
 
+    std::string ids;
+    if (!spec.keywords.empty() || !spec.escapeStrategy.empty() || !spec.mangleFrom.empty()) {
+        std::vector<std::string> kws(spec.keywords.begin(), spec.keywords.end());
+        std::sort(kws.begin(), kws.end()); // deterministic serialization
+        ids = ",\"identifiers\":{\"keywords\":[";
+        for (std::size_t i = 0; i < kws.size(); ++i) { if (i) ids += ","; ids += json::quote(kws[i]); }
+        ids += "]";
+        if (!spec.escapeStrategy.empty())
+            ids += ",\"escape\":{\"strategy\":" + json::quote(spec.escapeStrategy) +
+                   ",\"with\":" + json::quote(spec.escapeWith) + "}";
+        if (!spec.mangleFrom.empty())
+            ids += ",\"mangle\":{\"replace\":" + json::quote(spec.mangleFrom) +
+                   ",\"with\":" + json::quote(spec.mangleTo) + "}";
+        ids += "}";
+    }
+
     return "{\"name\":" + json::quote(spec.name) +
            ",\"scalarType\":" + mapJson(spec.scalarType) +
            ",\"intSuffix\":" + mapJson(spec.intSuffix) +
@@ -97,7 +133,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"throwKeyword\":" + json::quote(spec.throwKeyword) +
            ",\"trueLit\":" + json::quote(spec.trueLit) +
            ",\"falseLit\":" + json::quote(spec.falseLit) +
-           ",\"nullLit\":" + json::quote(spec.nullLit) + "}";
+           ",\"nullLit\":" + json::quote(spec.nullLit) + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

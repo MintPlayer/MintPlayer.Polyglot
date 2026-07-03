@@ -37,7 +37,17 @@ const char* CSHARP_SPEC_JSON = R"JSON({
   "blockStyle": "bracesAllman",
   "stmtEnd": ";",
   "throwKeyword": "throw",
-  "trueLit": "true", "falseLit": "false", "nullLit": "null"
+  "trueLit": "true", "falseLit": "false", "nullLit": "null",
+  "identifiers": {
+    "keywords": ["abstract","as","base","bool","break","byte","case","catch","char","checked","class","const",
+      "continue","decimal","default","delegate","do","double","else","enum","event","explicit","extern","false",
+      "finally","fixed","float","for","foreach","goto","if","implicit","in","int","interface","internal","is",
+      "lock","long","namespace","new","null","object","operator","out","override","params","private","protected",
+      "public","readonly","ref","return","sbyte","sealed","short","sizeof","stackalloc","static","string","struct",
+      "switch","this","throw","true","try","typeof","uint","ulong","unchecked","unsafe","ushort","using","virtual",
+      "void","volatile","while"],
+    "escape": { "strategy": "prefix", "with": "@" }
+  }
 })JSON";
 
 const BackendSpec& csharpSpec() {
@@ -338,7 +348,6 @@ const char* csExprRuleKey(ir::ExprKind k) {
     }
 }
 
-std::string csIdent(const std::string& n); // defined below; the `ident` builtin escapes C# keyword fields
 std::string csType(const TypeRef& t);      // defined below; the `elemType` builtin renders a list element type
 
 // The C# rule-interpreter seam: only what differs from the shared IrExprCtx — the C# builtins (keyword
@@ -360,7 +369,6 @@ protected:
     }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "ident")    return csIdent(args.empty() ? std::string() : args[0]);
         if (name == "elemType") return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
         if (name == "castType") return csType(e_.type); // the Cast's target type
         if (name == "genArgs") { // a generic union scrutinee's case patterns need `Full<int>`, not `Full`
@@ -451,21 +459,8 @@ std::string csType(const TypeRef& t) {
     return engine::evalRule(csharpExprRules().at("Type"), ctx, &csharpExprRules());
 }
 
-// A `.pg` identifier that collides with a C# reserved keyword (field/param/local/member named `base`,
-// `default`, `class`, …) is emitted as a `@`-verbatim identifier so the C# compiles. (TS has no such escape,
-// but the colliding set differs and `base` etc. are legal TS identifiers, so TS names emit verbatim.)
-std::string csIdent(const std::string& n) {
-    static const std::unordered_set<std::string> kw = {
-        "abstract","as","base","bool","break","byte","case","catch","char","checked","class","const","continue",
-        "decimal","default","delegate","do","double","else","enum","event","explicit","extern","false","finally",
-        "fixed","float","for","foreach","goto","if","implicit","in","int","interface","internal","is","lock","long",
-        "namespace","new","null","object","operator","out","override","params","private","protected","public",
-        "readonly","ref","return","sbyte","sealed","short","sizeof","stackalloc","static","string","struct","switch",
-        "this","throw","true","try","typeof","uint","ulong","unchecked","unsafe","ushort","using","virtual","void",
-        "volatile","while",
-    };
-    return kw.count(n) ? "@" + n : n;
-}
+// (Keyword escaping — `@`-verbatim identifiers — is the spec's `identifiers` block now; the generic
+// specIdent catalog entry serves every read. TS escapes nothing: its spec declares no keywords.)
 
 std::string csGenerics(const std::vector<ir::GenericParam>& gs) {
     if (gs.empty()) return "";
@@ -490,8 +485,8 @@ std::string csWhere(const std::vector<ir::GenericParam>& gs) {
 // The C# declaration hooks — the one per-backend object every decl context reads through.
 class CsDeclHooks : public DeclHooks {
 public:
+    CsDeclHooks() : DeclHooks(&csharpSpec) {}
     std::string renderTypeRef(const TypeRef& t) const override { return csType(t); }
-    std::string ident(const std::string& n) const override { return csIdent(n); }
     std::string generics(const std::vector<ir::GenericParam>& gs) const override { return csGenerics(gs); }
     std::string where(const std::vector<ir::GenericParam>& gs) const override { return csWhere(gs); }
 };
@@ -535,7 +530,7 @@ private:
 
     const BackendSpec& spec() const override { return csharpSpec(); }
 
-    std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + csIdent(name); }
+    std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + specIdent(spec(), name); }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }
     std::string rethrowStmt() override { return "throw;"; }
 
