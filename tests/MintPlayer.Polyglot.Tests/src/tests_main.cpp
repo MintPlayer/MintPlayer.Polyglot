@@ -1208,6 +1208,27 @@ int main() {
               "P18: compile with an invalid handle refuses with the resolution error");
     }
 
+    // ---- P19 slice 8: loadBackend validation (anti-silent-drop + reference checks) ----------------------
+    {
+        std::string err;
+        check(!loadBackend("not json", err) && has(err, "JSON object"),
+              "P19: loadBackend rejects a non-object artifact");
+        check(!loadBackend(R"({"name":"csharp"})", err) && has(err, "already loaded"),
+              "P19: loadBackend rejects a duplicate name");
+        // A minimal artifact missing nearly every rule: the coverage contract must name the first gap
+        // (a construct with no rule and no declared stance).
+        check(!loadBackend(R"({"name":"stubby","irTemplates":"cs",
+                              "spec":{"name":"stubby"},"rules":{"Program":"x","Type":"x"}})", err) &&
+                  has(err, "anti-silent-drop"),
+              "P19: loadBackend refuses a plugin with undeclared coverage gaps");
+        // A "native" capability claim with no rule behind it is also a lie the loader catches.
+        check(!loadBackend(R"({"name":"stubby2","irTemplates":"cs","spec":{"name":"stubby2"},
+                              "capabilities":{"patternMatching":"native"},
+                              "rules":{"Program":"x","Type":"x"}})", err) &&
+                  has(err, "no rule"),
+              "P19: loadBackend refuses coverage gaps regardless of claims");
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;

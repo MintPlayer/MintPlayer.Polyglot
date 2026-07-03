@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/emitter_base.hpp"
@@ -39,7 +41,7 @@ namespace {
 class LoadedBackend : public Backend {
 public:
     LoadedBackend(std::string name, BackendSpec spec, engine::RuleTable rules,
-                  std::unordered_map<std::string, bool> capabilities,
+                  std::unordered_map<std::string, std::string> capabilities,
                   std::string ir::ExternType::* externField, std::string ir::Bound::* boundField)
         : name_(std::move(name)), spec_(std::move(spec)), rules_(std::move(rules)),
           capabilities_(std::move(capabilities)), externField_(externField), boundField_(boundField) {}
@@ -52,20 +54,69 @@ public:
         return emitter.emit(m);
     }
 
-    // A feature absent from the capability map is supported; a `false` entry gates it (§3.E). Python's
-    // artifact declares `"blockLambdas": false` — a Python lambda is expression-only.
+    // Tri-state capabilities (PRD §4.11): a feature absent from the map is supported; `"false"` gates it
+    // at compile time (§3.E — Python's `"blockLambdas": false`); `"native"`/`"emulated"` document HOW a
+    // covered feature emits (validation reads them; the gate only refuses on `"false"`).
     bool supports(Feature f) const override {
         auto it = capabilities_.find(featureName(f));
-        return it == capabilities_.end() ? true : it->second;
+        return it == capabilities_.end() || it->second != "false";
     }
 
 private:
     std::string name_;
     BackendSpec spec_;
     engine::RuleTable rules_;
-    std::unordered_map<std::string, bool> capabilities_;
+    std::unordered_map<std::string, std::string> capabilities_;
     std::string ir::ExternType::* externField_;
     std::string ir::Bound::* boundField_;
+};
+
+// ---- Load-time validation (P19 slice 8) ------------------------------------------------------------------
+
+// The fixed builtin catalog — every `{"fn":…}` a rule may name. A name outside this set evaluated to ""
+// SILENTLY before this check existed (the slice-6d gate caught exactly that); now it fails the load.
+const std::unordered_set<std::string>& fnCatalog() {
+    static const std::unordered_set<std::string> names = {
+        "intSuffix", "escapeString", "opSpelling", "ident", "mangleName", "escape", "wrap", "table",
+        "subst", "require", "inlineBlock", // shared expression catalog
+        "generics", "where", "mangle",     // declaration-context catalog
+        "substExtern",                     // type-context catalog (extern-class template substitution)
+    };
+    return names;
+}
+
+// Recursively collect every fn name, call target, and mapMembers rule reference in a Rule tree.
+void collectRefs(const engine::Rule& r, std::vector<std::string>& fns, std::vector<std::string>& calls) {
+    using K = engine::Rule::Kind;
+    if (r.kind == K::Fn) fns.push_back(r.s);
+    if (r.kind == K::Call) calls.push_back(r.s);
+    if (r.kind == K::MapMembers) calls.push_back(r.s2);
+    for (const auto& p : r.parts) collectRefs(p, fns, calls);
+    for (const auto& arm : r.arms) collectRefs(arm.second, fns, calls);
+    for (const auto& e : r.elseBody) collectRefs(e, fns, calls);
+}
+
+// The anti-silent-drop coverage contract: every IR construct the compiler can produce must have a rule,
+// or the plugin must DECLARE its stance via the named capability — "false" (refused at compile time) or
+// "emulated" (handled by other rules — Python's duck-typed interfaces). A missing rule with no declared
+// stance — or a "native" claim with no rule — is a load error, because at emit time it would silently
+// drop output (the P9-V lesson made structural).
+struct Coverage {
+    const char* rule;
+    const char* capability; // nullptr = core, no capability can excuse a missing rule
+};
+constexpr Coverage kCoverage[] = {
+    {"Int", nullptr},      {"Float", nullptr},    {"Bool", nullptr},   {"Null", nullptr},
+    {"Str", nullptr},      {"Char", nullptr},     {"Var", nullptr},    {"This", nullptr},
+    {"Extern", nullptr},   {"Call", nullptr},     {"Member", nullptr}, {"Index", nullptr},
+    {"Cond", nullptr},     {"ListLit", nullptr},  {"Tuple", nullptr},  {"New", nullptr},
+    {"MakeCase", nullptr}, {"Unary", nullptr},    {"Cast", nullptr},   {"Interp", nullptr},
+    {"MethodCall", nullptr}, {"Binary", nullptr},
+    {"Match", "patternMatching"}, {"With", "withExpressions"}, {"Await", "async"}, {"Lambda", "closures"},
+    {"ForStmt", nullptr}, {"TryStmt", "exceptions"},
+    {"Program", nullptr}, {"Type", nullptr}, {"EnumDecl", nullptr}, {"RecordDecl", nullptr},
+    {"ClassDecl", nullptr}, {"MethodDecl", nullptr}, {"FunctionDecl", nullptr},
+    {"UnionDecl", "patternMatching"}, {"InterfaceDecl", "interfaces"},
 };
 
 // The registry: populated exclusively by loadBackend(); entries are stable for the process lifetime
@@ -121,9 +172,46 @@ bool loadBackend(const std::string& artifactJson, std::string& error) {
             return false;
         }
 
-    std::unordered_map<std::string, bool> caps;
-    for (const auto& kv : doc["capabilities"].members)
-        if (kv.second.kind == json::Value::Kind::Bool) caps[kv.first] = kv.second.boolean;
+    std::unordered_map<std::string, std::string> caps;
+    for (const auto& kv : doc["capabilities"].members) {
+        if (kv.second.kind == json::Value::Kind::Bool) caps[kv.first] = kv.second.boolean ? "native" : "false";
+        else if (kv.second.kind == json::Value::Kind::String) caps[kv.first] = kv.second.asString();
+    }
+
+    // Anti-silent-drop coverage: every construct has a rule, or a declared "false"/"emulated" stance.
+    for (const Coverage& c : kCoverage) {
+        if (rules.find(c.rule) != rules.end()) continue;
+        const char* cap = c.capability;
+        auto it = cap ? caps.find(cap) : caps.end();
+        if (!cap || it == caps.end()) {
+            error = "plugin '" + name + "': no rule for '" + c.rule + "'" +
+                    (cap ? std::string(" and no '") + cap + "' capability entry" : std::string()) +
+                    " — a construct with no rule must declare its stance (anti-silent-drop)";
+            return false;
+        }
+        if (it->second != "false" && it->second != "emulated") {
+            error = "plugin '" + name + "': capability '" + std::string(cap) + "' claims '" + it->second +
+                    "' but no '" + c.rule + "' rule exists";
+            return false;
+        }
+    }
+
+    // Reference validation: every {"fn":…} names a catalog builtin; every {"call":…}/mapMembers target
+    // exists in the table. An unknown fn evaluated to "" SILENTLY before this check (the 6d gate catch).
+    {
+        std::vector<std::string> fns, calls;
+        for (const auto& kv : rules) collectRefs(kv.second, fns, calls);
+        for (const auto& f : fns)
+            if (fnCatalog().count(f) == 0) {
+                error = "plugin '" + name + "': unknown builtin '" + f + "' (not in the fixed catalog)";
+                return false;
+            }
+        for (const auto& c : calls)
+            if (rules.find(c) == rules.end()) {
+                error = "plugin '" + name + "': rule reference '" + c + "' does not exist";
+                return false;
+            }
+    }
 
     // The per-target IR template fields — slice-9 death row (std overlays collapse them to one field).
     const std::string ir = doc["irTemplates"].asString();

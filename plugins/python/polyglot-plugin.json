@@ -3,7 +3,8 @@
   "name": "python",
   "irTemplates": "py",
   "capabilities": {
-    "blockLambdas": false
+    "blockLambdas": false,
+    "interfaces": "emulated"
   },
   "spec": {
     "name": "python",
@@ -2512,6 +2513,14 @@
           ]
         }
       }
+    },
+    "Char": {
+      "fn": "escapeString",
+      "args": [
+        {
+          "get": "node.value"
+        }
+      ]
     }
   }
 }

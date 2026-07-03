@@ -1681,6 +1681,26 @@ they no longer exist.** Remaining in slice 8+: full load-time validation (anti-s
 rule-or-capability-false — Python `Char` is the first customer; `fn`-name catalog check), overlays (9),
 pgconfig resolution + install (10–11), 4th-backend proof (12).
 
+**Slice-8 ✅ (2026-07-03) — load-time validation: the anti-silent-drop contract is enforced; capabilities
+are tri-state.** `loadBackend` now validates three ways before registering ANYTHING: (1) **coverage** — a
+37-row table pairing every construct the compiler can produce (all expr kinds, ForStmt/TryStmt, every decl
+rule incl. Program/Type) with the capability that may excuse it (`nullptr` = core, inexcusable); a missing
+rule requires a declared stance — **`"false"`** (compile-time §3.E refusal) or **`"emulated"`** (covered by
+other rules) — and a `"native"`/`true` claim with no rule behind it is a load error, so "no rule" can never
+again mean "emit nothing" (the P9-V lesson, structural at last); (2) **the fn catalog** — every `{"fn":…}`
+must name one of the 16 fixed builtins (the slice-6d silent-empty class now fails the LOAD, not the byte
+gate); (3) **references** — every `{"call":…}`/`mapMembers` target must exist. Capabilities are tri-state
+(`native|emulated|false`; booleans normalize; `supports()` gates only `"false"`). **Both recorded
+first-customers are settled:** Python gained a `Char` rule (a `.pg` char rides a 1-char string — the same
+faithful treatment TS uses; the old path emitted a silent sentinel/empty) and declares
+`"interfaces": "emulated"` (duck typing — the deliberate drop is now a declaration, not an omission).
+Mid-slice: the catalog audit found `substExtern` used by every Type rule but missing from my list — the
+validator would have refused its own first-party plugins, which is precisely the check working. Four new
+negative unit tests (non-object artifact, duplicate name, undeclared coverage gap, unbacked native claim).
+Gates: artifacts strict-parse, byte-identical (117), unit green (+4), 39/39 + 38/38. Next: 9 (std
+overlays — collapse `irTemplates`/`ir::Bound`/`ExternType` per-target fields), 10–11 (pgconfig resolution
++ `polyglot install`), 12 (4th-backend proof).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
