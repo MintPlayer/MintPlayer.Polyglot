@@ -1867,7 +1867,11 @@ demand (real users, not speculation) + `.pg` grammar frozen. Until then only sli
   `for-typescript-devs.md` — construct-by-construct side-by-side tables (the skin agent's mapping
   tables are the raw material); explicitly flag the `let` false-friend (immutable in `.pg`, mutable in
   TS) and lean on the P17 preview as the "see it in your language" answer.
-  *Gate:* both docs exist, linked from README/SPEC.
+  *Gate:* both docs exist, linked from README/SPEC. **✅ done (2026-07-03):** both docs written (~200
+  lines each, every snippet verified against SPEC/samples/conformance programs), linked from the README
+  intro and the SPEC header; the TS doc leads with the `let`≈`const` / `var`≈`let` false friend and both
+  end with a false-friends section + the §3.B scope-by-design note. (The README status line was also
+  brought up to date — it still claimed "no compiler yet".)
 - **Slice 1 — the `Frontend` seam (cheap plumbing, post-P19):** `Frontend` interface
   (`parse`/`print`/`keywords`) + `FrontendHandle`/`findFrontend` cloning the `BackendHandle` pattern;
   wrap existing lexer+parser+`printSource` as `PgFrontend`; thread a `FrontendHandle` (default pg)

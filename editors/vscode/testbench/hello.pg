@@ -16,4 +16,6 @@ async fn main() {
     print("distance squared = ${d2}")
     let v = Vec2(3.0, 4.0)
     print("length = ${length(v)}")
+
+    let global = "Pieterjan"
 }

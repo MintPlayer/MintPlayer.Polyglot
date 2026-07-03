@@ -12,9 +12,15 @@ relaxations**, and it **refuses** the features that make transpilers balloon (th
 reflection, finalizers, `decimal`, `unsafe`, bit-exact cross-target floats).
 
 - **Why the name:** a *polyglot* writes in many languages — exactly what the emitter does.
-- **Status:** v0 skeleton. The compiler pipeline is not implemented yet.
+- **Status:** the full pipeline (lexer → parser → sema → typed IR → backends) works end-to-end; C#,
+  TypeScript, Python, and PHP are runtime-loaded **JSON plugin** backends, and a differential
+  conformance suite keeps every target's runtime output identical. See
+  [`docs/prd/PLAN.md`](docs/prd/PLAN.md) for the milestone log.
 - **Read first:** [`docs/prd/POLYGLOT_PRD.md`](docs/prd/POLYGLOT_PRD.md) (vision, scope, architecture,
   feature spec) and [`docs/prd/PLAN.md`](docs/prd/PLAN.md) (milestone roadmap).
+- **Coming from C# or TypeScript?** Side-by-side construct maps:
+  [`docs/lang/for-csharp-devs.md`](docs/lang/for-csharp-devs.md) ·
+  [`docs/lang/for-typescript-devs.md`](docs/lang/for-typescript-devs.md).
 
 ## Layout
 

@@ -2,7 +2,8 @@
 
 > **Status:** Draft v0.1 · 2026-06-28 · P1 deliverable (design-on-paper, no compiler yet).
 > Companion to the formal grammar in [`grammar.ebnf`](grammar.ebnf) and the sample programs in
-> [`samples/`](samples/). The PRD's §3 support/refuse contract ([`../prd/POLYGLOT_PRD.md`](../prd/POLYGLOT_PRD.md))
+> [`samples/`](samples/). Coming from another language? Side-by-side construct maps:
+> [`for-csharp-devs.md`](for-csharp-devs.md) · [`for-typescript-devs.md`](for-typescript-devs.md). The PRD's §3 support/refuse contract ([`../prd/POLYGLOT_PRD.md`](../prd/POLYGLOT_PRD.md))
 > is the law this language is shaped to; every feature below names how it lowers to **both** C# and
 > TypeScript, and every §3.B refusal is *absent from the grammar entirely* rather than parsed-then-rejected.
 
