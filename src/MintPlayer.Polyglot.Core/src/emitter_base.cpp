@@ -74,6 +74,9 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.typeName")   return n.typeName;
         if (path == "node.args.count") return std::to_string(n.args.size());
     }
+    if (path == "node.typeArgs.count") { // the node's construction/result/scrutinee type args, per kind
+        if (const std::vector<TypeRef>* ta = nodeTypeArgs()) return std::to_string(ta->size());
+    }
     if (e_.kind == ir::ExprKind::MakeCase) {
         const auto& mc = static_cast<const ir::MakeCase&>(e_);
         if (path == "node.caseName")     return mc.caseName;
@@ -298,12 +301,29 @@ std::string IrExprCtx::renderType(const std::string& path) const {
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
     if (path == "node.type") return &e_.type;
+    if (path == "node.elem" && e_.kind == ir::ExprKind::ListLit)
+        return &static_cast<const ir::ListLit&>(e_).elem;
+    if (path.rfind("node.typeArgs.", 0) == 0) { // indexed into the node's kind-dispatched type-arg list
+        if (const std::vector<TypeRef>* ta = nodeTypeArgs()) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(14)));
+            if (i < ta->size()) return &(*ta)[i];
+        }
+    }
     if (e_.kind == ir::ExprKind::Lambda && path.rfind("node.params.", 0) == 0 &&
         path.size() > 5 && path.rfind(".type") == path.size() - 5) {
         const auto& l = static_cast<const ir::Lambda&>(e_);
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
         if (i < l.params.size()) return &l.params[i].type;
     }
+    return nullptr;
+}
+
+// The TypeRef list `node.typeArgs` names for this node kind: a New's construction type args, a MakeCase's
+// result-type args, a Match's scrutinee type args (generic union case patterns need `Full<int>`).
+const std::vector<TypeRef>* IrExprCtx::nodeTypeArgs() const {
+    if (e_.kind == ir::ExprKind::New)      return &static_cast<const ir::New&>(e_).typeArgs;
+    if (e_.kind == ir::ExprKind::MakeCase) return &e_.type.args;
+    if (e_.kind == ir::ExprKind::Match)    return &static_cast<const ir::Match&>(e_).scrutinee->type.args;
     return nullptr;
 }
 

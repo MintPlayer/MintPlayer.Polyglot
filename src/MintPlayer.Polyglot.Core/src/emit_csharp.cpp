@@ -104,11 +104,13 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
                        " : ", {"emit":"node.els"}, ")" ] },
   "Tuple": { "tmpl": [ {"get":"spec.delimited.tuple.open"}, {"map":"node.elements","sep":", "},
                        {"get":"spec.delimited.tuple.close"} ] },
-  "ListLit": { "tmpl": [ "new global::System.Collections.Generic.List<", {"fn":"elemType"}, "> { ",
+  "typeArgsSuffix": {"case":{"when":[[{"eq":["node.typeArgs.count","0"]},""]],
+      "else":{"tmpl":["<",{"map":"node.typeArgs","sep":", ","item":{"type":"item"}},">"]}}},
+  "ListLit": { "tmpl": [ "new global::System.Collections.Generic.List<", {"type":"node.elem"}, "> { ",
                          {"map":"node.elements","sep":", "}, " }" ] },
-  "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"fn":"typeArgsSuffix"},
+  "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"call":"typeArgsSuffix"},
                      "(", {"map":"node.args","sep":", "}, ")" ] },
-  "MakeCase": { "tmpl": [ "new ", {"get":"node.caseName"}, {"fn":"typeArgsSuffix"},
+  "MakeCase": { "tmpl": [ "new ", {"get":"node.caseName"}, {"call":"typeArgsSuffix"},
                           "(", {"map":"node.fields","sep":", "}, ")" ] },
   "Var":    { "fn": "ident", "args": [ {"get":"node.name"} ] },
   "Extern": { "get": "node.code" },
@@ -117,7 +119,7 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
               {"map":"node.fields","sep":", ",
                "item":{"tmpl":[{"fn":"ident","args":[{"get":"item.name"}]}," = ",{"emit":"item.value"}]}},
               " }" ] },
-  "Cast":   { "tmpl": [ "(", {"fn":"castType"}, ")(", {"emit":"node.operand"}, ")" ] },
+  "Cast":   { "tmpl": [ "(", {"type":"node.type"}, ")(", {"emit":"node.operand"}, ")" ] },
   "Unary":  { "tmpl": [ {"get":"node.op"}, {"emitChild":"node.operand","side":"unary"} ] },
   "Interp": { "tmpl": [ "$\"", {"interleave":{"lits":"node.chunks","holes":"node.holes",
                 "lit":{"fn":"escape","args":["interp",{"get":"item"}]},
@@ -139,8 +141,8 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
             [ {"eq":["item.pattern.kind","enumCase"]},
               {"tmpl":[{"get":"item.pattern.enumType"},".",{"get":"item.pattern.enumCase"}]} ],
             [ {"eq":["item.pattern.binders.count","0"]},
-              {"tmpl":[{"get":"item.pattern.ctorCase"},{"fn":"genArgs"}," _"]} ] ],
-          "else": {"tmpl":[{"get":"item.pattern.ctorCase"},{"fn":"genArgs"},"(",
+              {"tmpl":[{"get":"item.pattern.ctorCase"},{"call":"typeArgsSuffix"}," _"]} ] ],
+          "else": {"tmpl":[{"get":"item.pattern.ctorCase"},{"call":"typeArgsSuffix"},"(",
             {"map":"item.pattern.binders","sep":", ",
              "item":{"tmpl":["var ",{"fn":"ident","args":[{"get":"item.binding"}]}]}},")"]} } },
         { "case": { "when": [ [ {"eq":["item.hasGuard","true"]},
@@ -373,24 +375,6 @@ protected:
     }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "elemType") return e_.kind == ir::ExprKind::ListLit ? csType(static_cast<const ir::ListLit&>(e_).elem) : "";
-        if (name == "castType") return csType(e_.type); // the Cast's target type
-        if (name == "genArgs") { // a generic union scrutinee's case patterns need `Full<int>`, not `Full`
-            if (e_.kind != ir::ExprKind::Match) return "";
-            const auto& ta = static_cast<const ir::Match&>(e_).scrutinee->type.args;
-            if (ta.empty()) return "";
-            std::string s = "<";
-            for (std::size_t i = 0; i < ta.size(); ++i) { if (i) s += ", "; s += csType(ta[i]); }
-            return s + ">";
-        }
-        if (name == "typeArgsSuffix") { // "" or "<T, U>" — New's own type args / a MakeCase's result-type args
-            const std::vector<TypeRef>* ta = e_.kind == ir::ExprKind::New ? &static_cast<const ir::New&>(e_).typeArgs
-                                           : e_.kind == ir::ExprKind::MakeCase ? &e_.type.args : nullptr;
-            if (!ta || ta->empty()) return "";
-            std::string s = "<";
-            for (std::size_t i = 0; i < ta->size(); ++i) { if (i) s += ", "; s += csType((*ta)[i]); }
-            return s + ">";
-        }
         if (name == "subWordWrap") { // C# sub-32 arithmetic promotes to int; cast back to wrap at 8/16 bits
             const std::string& tn = args.size() > 0 ? args[0] : std::string();
             const std::string& inner = args.size() > 1 ? args[1] : std::string();

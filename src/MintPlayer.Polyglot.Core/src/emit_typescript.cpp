@@ -80,7 +80,9 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                        {"get":"spec.delimited.tuple.close"} ] },
   "ListLit": { "tmpl": [ {"get":"spec.delimited.list.open"}, {"map":"node.elements","sep":", "},
                          {"get":"spec.delimited.list.close"} ] },
-  "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"fn":"typeArgsSuffix"},
+  "typeArgsSuffix": {"case":{"when":[[{"eq":["node.typeArgs.count","0"]},""]],
+      "else":{"tmpl":["<",{"map":"node.typeArgs","sep":", ","item":{"type":"item"}},">"]}}},
+  "New": { "tmpl": [ "new ", {"get":"node.typeName"}, {"call":"typeArgsSuffix"},
                      "(", {"map":"node.args","sep":", "}, ")" ] },
   "MakeCase": { "tmpl": [ "{ tag: ", {"fn":"escapeString","args":[{"get":"node.caseName"}]},
                           {"map":"node.fields","sep":"",
@@ -472,14 +474,6 @@ protected:
     std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "typeArgsSuffix") { // "" or "<T, U>" — a New's construction type args
-            if (e_.kind != ir::ExprKind::New) return "";
-            const auto& ta = static_cast<const ir::New&>(e_).typeArgs;
-            if (ta.empty()) return "";
-            std::string s = "<";
-            for (std::size_t i = 0; i < ta.size(); ++i) { if (i) s += ", "; s += tsType(ta[i]); }
-            return s + ">";
-        }
         // §3.C numeric faithfulness — fixed Core primitives the rules select among, never author.
         if (name == "narrowWrap") // re-narrow a 32-bit-or-narrower int result to its value range
             return narrowTs(args.size() > 0 ? args[0] : std::string(), args.size() > 1 ? args[1] : std::string());

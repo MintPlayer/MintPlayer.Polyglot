@@ -1489,6 +1489,19 @@ targetBuiltin now handles ONLY typeArgsSuffix/narrowWrap/i64Wrap/imul/opMethod/c
 elemType/castType/genArgs/typeArgsSuffix/subWordWrap. (Python's chunks use the shared `escapeString` —
 unchanged.) Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-6c ✅ (2026-07-03) — the type-list builtins are shared paths + rule data.** The shared `IrExprCtx`
+gained the **kind-dispatched `node.typeArgs` list** (`nodeTypeArgs()`: a New's construction args / a
+MakeCase's result-type args / a Match's scrutinee args) readable as `node.typeArgs.count` + renderable
+per-index, plus `node.elem` (a ListLit's element type) as a `typeRefAt` path. Four per-target builtins died
+into rule data: `typeArgsSuffix` (C# + TS) and `genArgs` (C# — the *same* helper rule now serves both, since
+the path dispatch already picks the right list per node kind) are a per-table **`typeArgsSuffix` helper
+rule** (`case` count==0 → "" else `<`+map+`>`), invoked via `{"call":…}` from New/MakeCase and the Match
+arm patterns; `elemType` → `{"type":"node.elem"}`; `castType` → `{"type":"node.type"}` (the path always
+existed — the builtin was residue). **Per-target builtin residue is now purely numeric faithfulness:**
+C# = `subWordWrap` alone; TS = `narrowWrap`/`i64Wrap`/`imul`/`opMethod`/`convert`; Python =
+`wrapInt`/`idiv`/`irem`/`nullCoalesce`/`nullSafeMember`/`convert` — exactly slices 6d–6f's targets.
+Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

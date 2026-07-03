@@ -54,6 +54,8 @@ protected:
     const ir::Expr* childExpr(const std::string& path) const;
     // The TypeRef a rule path names (`node.type`, `node.params.<i>.type`); nullptr when it names none.
     const TypeRef* typeRefAt(const std::string& path) const;
+    // The kind-dispatched `node.typeArgs` list (New construction / MakeCase result / Match scrutinee args).
+    const std::vector<TypeRef>* nodeTypeArgs() const;
 
     const ir::Expr& e_;
     const BackendSpec& spec_;
