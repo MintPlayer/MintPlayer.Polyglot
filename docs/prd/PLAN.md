@@ -1518,6 +1518,20 @@ against the fixed catalog at load time** — unknown builtins must be load error
 TS residue: `opMethod` + `convert`; Python residue: `idiv`/`irem`/`nullCoalesce`/`nullSafeMember`/`convert`.
 Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-6e ✅ (2026-07-03) — named tables (catalog row 1) + the type-class predicates go shared.**
+`BackendSpec` gained **`tables`** (name → string map) behind the generic
+`{"fn":"table","args":[<table>,<key>]}` entry; first occupant is TS's **`opMethod`** operator-overload
+method names (`"+"`→`"plus"` …), so the last non-numeric TS builtin died. The three predicates moved into
+the SHARED `IrExprCtx::get` with the right ownership split: `node.typeIsInt` and `node.typeIsSmallInt` are
+**language facts** (which `.pg` names are the int family / the 32-bit-or-narrower subfamily — never
+per-target; only *which predicate a rule consults* is per-target), and `node.hasOpMethod` is
+**spec-driven** (`lhsIsUserType` AND the spec's `opMethod` table has a row — a target with no table answers
+false, so C#/Python rules can't accidentally trip it). Deleted: TS `targetGet` entirely, TS `opMethod` free
+fn + `isSmallInt`, Python's `targetGet` (`typeIsInt` now shared). `narrowTs` survives only as `tsConvert`'s
+helper until 6f. TS residue: `convert` alone; Python residue: `idiv`/`irem`/`nullCoalesce`/
+`nullSafeMember`/`convert` — all stateful-or-matrix, the 6f target. Byte-identical (117 files), unit green,
+39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

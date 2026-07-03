@@ -6,6 +6,16 @@ namespace mintplayer::polyglot {
 
 // ---- IrExprCtx: the target-independent rule-interpreter seam over the IR ---------------------------------
 
+namespace {
+// An integer-width `.pg` type name (i8..u64) — the language's int family, target-independent.
+bool isIntTypeName(const TypeRef& t) {
+    if (t.kind != TypeRef::Kind::Named) return false;
+    const std::string& n = t.name;
+    return n == "i8" || n == "i16" || n == "i32" || n == "i64" ||
+           n == "u8" || n == "u16" || n == "u32" || n == "u64";
+}
+} // namespace
+
 std::string IrExprCtx::get(const std::string& path) const {
     if (path == "node.type") return e_.type.name;
     if (path == "node.op") {
@@ -24,6 +34,16 @@ std::string IrExprCtx::get(const std::string& path) const {
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
     if (path == "node.insideOperator" && e_.kind == ir::ExprKind::This)
         return static_cast<const ir::This&>(e_).insideOperator ? "true" : "false";
+    // Type-class predicates — which `.pg` types are ints is a LANGUAGE fact, not a target fact; the
+    // per-target part is only which predicate a rule consults.
+    if (path == "node.typeIsInt")      return isIntTypeName(e_.type) ? "true" : "false";
+    if (path == "node.typeIsSmallInt") // 32-bit-or-narrower (i64/u64 ride BigInt on JS, not bitwise ops)
+        return isIntTypeName(e_.type) && e_.type.name != "i64" && e_.type.name != "u64" ? "true" : "false";
+    if (path == "node.hasOpMethod" && e_.kind == ir::ExprKind::Binary) {
+        // operator overload -> method call, on targets whose spec declares an opMethod table row
+        const auto& b = static_cast<const ir::Binary&>(e_);
+        return b.lhsIsUserType && !specTable(spec_, "opMethod", b.op).empty() ? "true" : "false";
+    }
     if (e_.kind == ir::ExprKind::With) {
         const auto& w = static_cast<const ir::With&>(e_);
         if (path == "node.baseIsSimple")   return w.baseIsSimple ? "true" : "false";
@@ -291,6 +311,8 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "escape" && args.size() >= 2) return specEscape(spec_, args[0], args[1]);
     // §3.C integer wrap — {"fn":"wrap","args":[<width>, <expr>]} over the spec's `wrapInt` templates (P19).
     if (name == "wrap" && args.size() >= 2) return specWrapInt(spec_, args[0], args[1]);
+    // Named table lookup — {"fn":"table","args":[<table>, <key>]} over the spec's `tables` data (P19).
+    if (name == "table" && args.size() >= 2) return specTable(spec_, args[0], args[1]);
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);

@@ -71,6 +71,11 @@ struct BackendSpec {
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
 
+    // Named lookup tables — the generic `{"fn":"table","args":[name, key]}` catalog entry (a missing key
+    // answers ""). First occupant: TS's operator-overload method names (`"+"` -> `"plus"` — no TS operator
+    // overloading, so `a + b` on a user type calls the method). The `hasOpMethod` node read consults it.
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> tables;
+
     // §3.C integer-overflow faithfulness: per-width wrap templates (`$x` = the expression). Masks on an
     // arbitrary-precision target (Python), bitwise re-narrowing + BigInt.asIntN/asUintN on JS, a cast-back
     // on C# (whose sub-32 arithmetic promotes to int). A width with no row emits unwrapped.
@@ -97,6 +102,14 @@ inline std::string specIdent(const BackendSpec& s, const std::string& n) {
     if (s.escapeStrategy == "prefix") return s.escapeWith + n;
     if (s.escapeStrategy == "suffix") return n + s.escapeWith;
     return n;
+}
+
+// Look up `key` in the spec's named table ("" when the table or key is absent).
+inline std::string specTable(const BackendSpec& s, const std::string& table, const std::string& key) {
+    auto t = s.tables.find(table);
+    if (t == s.tables.end()) return "";
+    auto it = t->second.find(key);
+    return it == t->second.end() ? std::string() : it->second;
 }
 
 // Wrap an int-typed expression to its declared width via the spec's template (`$x` = the expression);

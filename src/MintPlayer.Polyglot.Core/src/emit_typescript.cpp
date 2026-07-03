@@ -35,6 +35,8 @@ const char* TS_SPEC_JSON = R"JSON({
   "stmtEnd": ";",
   "throwKeyword": "throw",
   "trueLit": "true", "falseLit": "false", "nullLit": "null",
+  "tables": { "opMethod": { "+": "plus", "-": "minus", "*": "times", "/": "div", "%": "rem",
+                            "==": "eq", "<": "lt", "<=": "le", ">": "gt", ">=": "ge" } },
   "escapes": { "interp": { "`": "\\`", "\\": "\\\\", "${": "\\${" } },
   "wrapInt": { "i8": "($x << 24 >> 24)", "i16": "($x << 16 >> 16)",
                "u8": "($x & 0xff)", "u16": "($x & 0xffff)", "u32": "($x >>> 0)", "i32": "($x | 0)",
@@ -267,7 +269,7 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
         {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"fn":"opSpelling","args":[{"get":"node.op"}]}," ",
                  {"emitChild":"node.rhs","side":"r"}]} ],
       [ {"eq":["node.hasOpMethod","true"]},
-        {"tmpl":[{"emitChild":"node.lhs","side":"recv"},".",{"fn":"opMethod","args":[{"get":"node.op"}]},
+        {"tmpl":[{"emitChild":"node.lhs","side":"recv"},".",{"fn":"table","args":["opMethod",{"get":"node.op"}]},
                  "(",{"emit":"node.rhs"},")"]} ],
       [ {"or":[{"eq":["node.type","i64"]},{"eq":["node.type","u64"]}]},
         {"fn":"wrap","args":[{"get":"node.type"},
@@ -369,13 +371,9 @@ bool isUserType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && !t.name.empty() && !isScalarName(t.name);
 }
 bool isI64(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && (t.name == "i64" || t.name == "u64"); }
-// A 32-bit-or-narrower integer type, normalized with JS bitwise ops at each operation boundary.
-bool isSmallInt(const TypeRef& t) {
-    if (t.kind != TypeRef::Kind::Named) return false;
-    const std::string& n = t.name;
-    return n == "i8" || n == "i16" || n == "i32" || n == "u8" || n == "u16" || n == "u32";
-}
 // Coerce a JS number back into the value range of a 32-bit-or-narrower int type (§3.C overflow masking).
+// (The expression-walk copy is the spec's wrapInt table now; this remains only for tsConvert until the
+// conversion matrix migrates.)
 std::string narrowTs(const std::string& n, const std::string& inner) {
     if (n == "i8")  return "(" + inner + " << 24 >> 24)";
     if (n == "i16") return "(" + inner + " << 16 >> 16)";
@@ -384,20 +382,8 @@ std::string narrowTs(const std::string& n, const std::string& inner) {
     if (n == "u32") return "(" + inner + " >>> 0)";
     return "(" + inner + " | 0)"; // i32
 }
-// Operator symbol -> overload method name (TS has no operator overloading; call the method instead).
-std::string opMethod(const std::string& op) {
-    if (op == "+") return "plus";
-    if (op == "-") return "minus";
-    if (op == "*") return "times";
-    if (op == "/") return "div";
-    if (op == "%") return "rem";
-    if (op == "==") return "eq";
-    if (op == "<") return "lt";
-    if (op == "<=") return "le";
-    if (op == ">") return "gt";
-    if (op == ">=") return "ge";
-    return "";
-}
+// (The operator-overload method names are the spec's `opMethod` table now; the shared `node.hasOpMethod`
+// read and the `{"fn":"table"}` catalog entry consult it.)
 
 // TS carries bounds inline on each parameter: `<T extends A & B, U>`. The `INumber` marker is a Polyglot
 // compile-time-only numeric constraint (no TS equivalent), so it is erased here.
@@ -468,21 +454,9 @@ protected:
         return c.kind == ir::ExprKind::Binary;
     }
 
-    std::string targetGet(const std::string& path) const override {
-        if (path == "node.typeIsSmallInt") return isSmallInt(e_.type) ? "true" : "false";
-        if (path == "node.hasOpMethod" && e_.kind == ir::ExprKind::Binary) {
-            const auto& b = static_cast<const ir::Binary&>(e_); // operator overload -> method call (no TS operators)
-            return (b.lhsIsUserType && !opMethod(b.op).empty()) ? "true" : "false";
-        }
-        return "";
-    }
-
     std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        // (§3.C wrap machinery is the generic `wrap` catalog entry over the spec's wrapInt templates now;
-        // the residue below is the operator-overload method table + the numeric-conversion algorithm.)
-        if (name == "opMethod") return opMethod(args.empty() ? std::string() : args[0]);
         if (name == "convert") { // the numeric-conversion algorithm (BigInt boundaries etc.) stays fixed C++
             if (e_.kind != ir::ExprKind::Cast) return "";
             return tsConvert(static_cast<const ir::Cast&>(e_).operand->type, e_.type,

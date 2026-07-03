@@ -384,11 +384,6 @@ protected:
         return c.kind == ir::ExprKind::Binary;
     }
 
-    std::string targetGet(const std::string& path) const override {
-        if (path == "node.typeIsInt") return isIntType(e_.type) ? "true" : "false";
-        return "";
-    }
-
     std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
