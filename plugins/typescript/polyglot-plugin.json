@@ -3044,5 +3044,6 @@
       "f32.parse": "Number($0)",
       "f64.parse": "Number($0)"
     }
-  }
+  },
+  "fileExtension": ".ts"
 }

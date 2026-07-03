@@ -40,11 +40,11 @@ namespace {
 // ExternType/Bound members carry this target's templates.
 class LoadedBackend : public Backend {
 public:
-    LoadedBackend(std::string name, BackendSpec spec, engine::RuleTable rules,
+    LoadedBackend(std::string name, std::string fileExtension, BackendSpec spec, engine::RuleTable rules,
                   std::unordered_map<std::string, std::string> capabilities,
                   std::unordered_map<std::string, std::string> overlays)
-        : name_(std::move(name)), spec_(std::move(spec)), rules_(std::move(rules)),
-          capabilities_(std::move(capabilities)), overlays_(std::move(overlays)) {}
+        : name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
+          rules_(std::move(rules)), capabilities_(std::move(capabilities)), overlays_(std::move(overlays)) {}
 
     std::string name() const override { return name_; }
 
@@ -62,9 +62,11 @@ public:
     }
 
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
+    std::string fileExtension() const override { return ext_; }
 
 private:
     std::string name_;
+    std::string ext_;
     BackendSpec spec_;
     engine::RuleTable rules_;
     std::unordered_map<std::string, std::string> capabilities_;
@@ -110,8 +112,9 @@ constexpr Coverage kCoverage[] = {
     {"Str", nullptr},      {"Char", nullptr},     {"Var", nullptr},    {"This", nullptr},
     {"Extern", nullptr},   {"Call", nullptr},     {"Member", nullptr}, {"Index", nullptr},
     {"Cond", nullptr},     {"ListLit", nullptr},  {"Tuple", nullptr},  {"New", nullptr},
-    {"MakeCase", nullptr}, {"Unary", nullptr},    {"Cast", nullptr},   {"Interp", nullptr},
+    {"Unary", nullptr},    {"Cast", nullptr},     {"Interp", nullptr},
     {"MethodCall", nullptr}, {"Binary", nullptr},
+    {"MakeCase", "patternMatching"}, // a union-constructor node — only reachable when unions/match are
     {"Match", "patternMatching"}, {"With", "withExpressions"}, {"Await", "async"}, {"Lambda", "closures"},
     {"ForStmt", nullptr}, {"TryStmt", "exceptions"},
     {"Program", nullptr}, {"Type", nullptr}, {"EnumDecl", nullptr}, {"RecordDecl", nullptr},
@@ -220,8 +223,12 @@ bool loadBackend(const std::string& artifactJson, std::string& error) {
         for (const auto& kv : mod.second.members)
             if (kv.second.kind == json::Value::Kind::String) overlays[kv.first] = kv.second.asString();
 
-    registry().push_back(std::make_unique<LoadedBackend>(name, std::move(spec.spec), std::move(rules),
-                                                         std::move(caps), std::move(overlays)));
+    std::string ext = doc["fileExtension"].asString();
+    if (ext.empty()) ext = "." + name; // a reasonable default; first-party plugins declare theirs
+
+    registry().push_back(std::make_unique<LoadedBackend>(name, std::move(ext), std::move(spec.spec),
+                                                         std::move(rules), std::move(caps),
+                                                         std::move(overlays)));
     return true;
 }
 

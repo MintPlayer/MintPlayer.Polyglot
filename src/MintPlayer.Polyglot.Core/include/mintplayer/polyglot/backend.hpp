@@ -50,6 +50,9 @@ public:
     virtual std::string emit(const ir::Module& module) const = 0;
     // Whether this backend can emit the given §3.A feature on its target (PRD §3.E capability flag).
     virtual bool supports(Feature f) const = 0;
+    // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
+    // target-agnostic; what a target's output is CALLED is its plugin's business.
+    virtual std::string fileExtension() const { return ".txt"; }
     // The target's std overlay arms (P19 slice 9b): the FFI templates its plugin ships for the std
     // SKELETONS embedded in Core — keyed "<Class>.<member>" / "<Class>.type" / "<Class>.init" /
     // "<receiver>.<extension>" / "<expectFnName>", flattened across std modules. The compiler injects

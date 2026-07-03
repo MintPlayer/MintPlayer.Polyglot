@@ -2618,5 +2618,6 @@
       "f32.parse": "float.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)",
       "f64.parse": "double.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)"
     }
-  }
+  },
+  "fileExtension": ".cs"
 }

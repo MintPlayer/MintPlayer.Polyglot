@@ -1,0 +1,1393 @@
+{
+  "schema": 1,
+  "name": "php",
+  "capabilities": {
+    "patternMatching": false,
+    "withExpressions": false,
+    "async": false,
+    "closures": false,
+    "exceptions": false,
+    "interfaces": false,
+    "blockLambdas": false,
+    "extensionMethods": false,
+    "operatorOverloading": false
+  },
+  "spec": {
+    "name": "php",
+    "scalarType": {},
+    "intSuffix": {},
+    "binaryOp": {},
+    "delimited": {
+      "tuple": {
+        "open": "[",
+        "sep": ", ",
+        "close": "]"
+      }
+    },
+    "blockStyle": "bracesKnR",
+    "stmtEnd": ";",
+    "throwKeyword": "throw",
+    "rethrow": "throw $__e;",
+    "trueLit": "true",
+    "falseLit": "false",
+    "nullLit": "null",
+    "wrapInt": {
+      "u8": "(($x) & 0xff)",
+      "u16": "(($x) & 0xffff)",
+      "u32": "(($x) & 0xffffffff)",
+      "i8": "(((($x) & 0xff) ^ 0x80) - 0x80)",
+      "i16": "(((($x) & 0xffff) ^ 0x8000) - 0x8000)",
+      "i32": "(((($x) & 0xffffffff) ^ 0x80000000) - 0x80000000)"
+    },
+    "wrapAtom": {
+      "recv": [
+        "binary",
+        "unary",
+        "cond",
+        "cast"
+      ],
+      "unary": [
+        "binary"
+      ]
+    },
+    "generics": {
+      "style": "",
+      "boundsIntro": "",
+      "boundsSep": "",
+      "erase": [
+        "INumber"
+      ]
+    },
+    "tables": {
+      "localDecl": {
+        "mutable": "$$x",
+        "const": "$$x"
+      },
+      "yield": {
+        "value": "yield $x;",
+        "empty": "return;"
+      }
+    },
+    "identifiers": {
+      "keywords": [
+        "abstract",
+        "and",
+        "array",
+        "as",
+        "break",
+        "callable",
+        "case",
+        "catch",
+        "class",
+        "clone",
+        "const",
+        "continue",
+        "declare",
+        "default",
+        "do",
+        "echo",
+        "else",
+        "elseif",
+        "empty",
+        "enddeclare",
+        "endfor",
+        "endforeach",
+        "endif",
+        "endswitch",
+        "endwhile",
+        "enum",
+        "extends",
+        "final",
+        "finally",
+        "fn",
+        "for",
+        "foreach",
+        "function",
+        "global",
+        "goto",
+        "if",
+        "implements",
+        "include",
+        "instanceof",
+        "insteadof",
+        "interface",
+        "isset",
+        "list",
+        "match",
+        "namespace",
+        "new",
+        "or",
+        "print",
+        "private",
+        "protected",
+        "public",
+        "readonly",
+        "require",
+        "return",
+        "static",
+        "switch",
+        "throw",
+        "trait",
+        "try",
+        "unset",
+        "use",
+        "var",
+        "while",
+        "xor",
+        "yield"
+      ],
+      "escape": {
+        "strategy": "suffix",
+        "with": "_"
+      }
+    },
+    "preludes": {}
+  },
+  "std": {
+    "std.io": {
+      "print": "echo is_bool($x) ? ($x ? \"true\" : \"false\") : $x, \"\\n\""
+    },
+    "std.core": {
+      "i32.parse": "(intval($0) & 0xffffffff)",
+      "f64.parse": "floatval($0)"
+    }
+  },
+  "rules": {
+    "Int": {
+      "get": "node.text"
+    },
+    "Float": {
+      "get": "node.text"
+    },
+    "Bool": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.value",
+                "true"
+              ]
+            },
+            "true"
+          ]
+        ],
+        "else": "false"
+      }
+    },
+    "Null": "null",
+    "Str": {
+      "fn": "escapeString",
+      "args": [
+        {
+          "get": "node.value"
+        }
+      ]
+    },
+    "Char": {
+      "fn": "escapeString",
+      "args": [
+        {
+          "get": "node.value"
+        }
+      ]
+    },
+    "Var": {
+      "tmpl": [
+        "$",
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.name"
+            }
+          ]
+        }
+      ]
+    },
+    "This": "$this",
+    "Extern": {
+      "get": "node.code"
+    },
+    "Call": {
+      "tmpl": [
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.mangledCallee"
+            }
+          ]
+        },
+        "(",
+        {
+          "map": "node.args",
+          "sep": ", "
+        },
+        ")"
+      ]
+    },
+    "Member": {
+      "tmpl": [
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "has": "node.staticType"
+                },
+                {
+                  "tmpl": [
+                    {
+                      "get": "node.staticType"
+                    },
+                    "::"
+                  ]
+                }
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                {
+                  "emitChild": "node.object",
+                  "side": "recv"
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.nullSafe",
+                            "true"
+                          ]
+                        },
+                        "?->"
+                      ]
+                    ],
+                    "else": "->"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "get": "node.field"
+        }
+      ]
+    },
+    "MethodCall": {
+      "case": {
+        "when": [
+          [
+            {
+              "has": "node.staticType"
+            },
+            {
+              "tmpl": [
+                {
+                  "get": "node.staticType"
+                },
+                "::",
+                {
+                  "get": "node.method"
+                },
+                "(",
+                {
+                  "map": "node.args",
+                  "sep": ", "
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "emitChild": "node.object",
+              "side": "recv"
+            },
+            "->",
+            {
+              "get": "node.method"
+            },
+            "(",
+            {
+              "map": "node.args",
+              "sep": ", "
+            },
+            ")"
+          ]
+        }
+      }
+    },
+    "Index": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.receiverHasIndexer",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "emitChild": "node.receiver",
+                  "side": "recv"
+                },
+                "->get(",
+                {
+                  "emit": "node.index"
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "emitChild": "node.receiver",
+              "side": "recv"
+            },
+            "[",
+            {
+              "emit": "node.index"
+            },
+            "]"
+          ]
+        }
+      }
+    },
+    "Cond": {
+      "tmpl": [
+        "(",
+        {
+          "emit": "node.cond"
+        },
+        " ? ",
+        {
+          "emit": "node.then"
+        },
+        " : ",
+        {
+          "emit": "node.els"
+        },
+        ")"
+      ]
+    },
+    "ListLit": {
+      "tmpl": [
+        "[",
+        {
+          "map": "node.elements",
+          "sep": ", "
+        },
+        "]"
+      ]
+    },
+    "Tuple": {
+      "tmpl": [
+        "[",
+        {
+          "map": "node.elements",
+          "sep": ", "
+        },
+        "]"
+      ]
+    },
+    "New": {
+      "tmpl": [
+        "new ",
+        {
+          "get": "node.typeName"
+        },
+        "(",
+        {
+          "map": "node.args",
+          "sep": ", "
+        },
+        ")"
+      ]
+    },
+    "Unary": {
+      "case": {
+        "when": [
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.op",
+                    "-"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.typeIsInt",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "tmpl": [
+                    "-",
+                    {
+                      "emitChild": "node.operand",
+                      "side": "unary"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "get": "node.op"
+            },
+            {
+              "emitChild": "node.operand",
+              "side": "unary"
+            }
+          ]
+        }
+      }
+    },
+    "Cast": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.castSame",
+                "true"
+              ]
+            },
+            {
+              "emit": "node.operand"
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsFloat",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsInt",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "(float)(",
+                {
+                  "emit": "node.operand"
+                },
+                ")"
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "node.typeIsFloat",
+                "true"
+              ]
+            },
+            {
+              "emit": "node.operand"
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsInt",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsFloat",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "tmpl": [
+                    "(int)(",
+                    {
+                      "emit": "node.operand"
+                    },
+                    ")"
+                  ]
+                }
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "fn": "wrap",
+          "args": [
+            {
+              "get": "node.type"
+            },
+            {
+              "emit": "node.operand"
+            }
+          ]
+        }
+      }
+    },
+    "Interp": {
+      "tmpl": [
+        "(",
+        {
+          "interleave": {
+            "lits": "node.chunks",
+            "holes": "node.holes",
+            "lit": {
+              "fn": "escapeString",
+              "args": [
+                {
+                  "get": "item"
+                }
+              ]
+            },
+            "hole": {
+              "tmpl": [
+                " . (",
+                {
+                  "emit": "item"
+                },
+                ") . "
+              ]
+            }
+          }
+        },
+        ")"
+      ]
+    },
+    "Binary": {
+      "case": {
+        "when": [
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.op",
+                    "+"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.type",
+                    "string"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "emitChild": "node.lhs",
+                  "side": "l"
+                },
+                " . ",
+                {
+                  "emitChild": "node.rhs",
+                  "side": "r"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsInt",
+                    "true"
+                  ]
+                },
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "+"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "-"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "*"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "/"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "%"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            "/"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "intdiv(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            ", ",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            ")"
+                          ]
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "l"
+                        },
+                        " ",
+                        {
+                          "get": "node.op"
+                        },
+                        " ",
+                        {
+                          "emitChild": "node.rhs",
+                          "side": "r"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "emitChild": "node.lhs",
+              "side": "l"
+            },
+            " ",
+            {
+              "fn": "opSpelling",
+              "args": [
+                {
+                  "get": "node.op"
+                }
+              ]
+            },
+            " ",
+            {
+              "emitChild": "node.rhs",
+              "side": "r"
+            }
+          ]
+        }
+      }
+    },
+    "Type": {
+      "case": {
+        "when": [
+          [
+            {
+              "has": "type.externTemplate"
+            },
+            {
+              "fn": "substExtern"
+            }
+          ]
+        ],
+        "else": {
+          "get": "type.name"
+        }
+      }
+    },
+    "ForStmt": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "stmt.isRange",
+                "true"
+              ]
+            },
+            {
+              "block": {
+                "head": {
+                  "tmpl": [
+                    "for ($",
+                    {
+                      "get": "stmt.binding"
+                    },
+                    " = ",
+                    {
+                      "emit": "stmt.rangeStart"
+                    },
+                    "; $",
+                    {
+                      "get": "stmt.binding"
+                    },
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "stmt.inclusive",
+                                "true"
+                              ]
+                            },
+                            " <= "
+                          ]
+                        ],
+                        "else": " < "
+                      }
+                    },
+                    {
+                      "emit": "stmt.rangeEnd"
+                    },
+                    "; $",
+                    {
+                      "get": "stmt.binding"
+                    },
+                    "++)"
+                  ]
+                },
+                "body": [
+                  {
+                    "stmts": "stmt.body"
+                  }
+                ]
+              }
+            }
+          ],
+          [
+            {
+              "not": {
+                "eq": [
+                  "stmt.tupleBindings.count",
+                  "0"
+                ]
+              }
+            },
+            {
+              "block": {
+                "head": {
+                  "tmpl": [
+                    "foreach (",
+                    {
+                      "emit": "stmt.iterable"
+                    },
+                    " as [",
+                    {
+                      "map": "stmt.tupleBindings",
+                      "sep": ", ",
+                      "item": {
+                        "tmpl": [
+                          "$",
+                          {
+                            "get": "item"
+                          }
+                        ]
+                      }
+                    },
+                    "])"
+                  ]
+                },
+                "body": [
+                  {
+                    "stmts": "stmt.body"
+                  }
+                ]
+              }
+            }
+          ]
+        ],
+        "else": {
+          "block": {
+            "head": {
+              "tmpl": [
+                "foreach (",
+                {
+                  "emit": "stmt.iterable"
+                },
+                " as $",
+                {
+                  "get": "stmt.binding"
+                },
+                ")"
+              ]
+            },
+            "body": [
+              {
+                "stmts": "stmt.body"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "phpParam": {
+      "tmpl": [
+        "$",
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "item.name"
+            }
+          ]
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "item.hasDefault",
+                    "true"
+                  ]
+                },
+                {
+                  "tmpl": [
+                    " = ",
+                    {
+                      "emit": "item.default"
+                    }
+                  ]
+                }
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "phpFnSig": {
+      "tmpl": [
+        "function ",
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.emitName"
+            }
+          ]
+        },
+        "(",
+        {
+          "map": "decl.params",
+          "sep": ", ",
+          "item": {
+            "call": "phpParam"
+          }
+        },
+        ")"
+      ]
+    },
+    "FunctionDecl": {
+      "block": {
+        "head": {
+          "call": "phpFnSig"
+        },
+        "body": [
+          {
+            "stmts": "decl.body"
+          }
+        ]
+      }
+    },
+    "phpMethodSig": {
+      "tmpl": [
+        "public ",
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.isStatic",
+                    "true"
+                  ]
+                },
+                "static "
+              ]
+            ]
+          }
+        },
+        "function ",
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
+        },
+        "(",
+        {
+          "map": "decl.params",
+          "sep": ", ",
+          "item": {
+            "call": "phpParam"
+          }
+        },
+        ")"
+      ]
+    },
+    "MethodDecl": {
+      "block": {
+        "head": {
+          "call": "phpMethodSig"
+        },
+        "body": [
+          {
+            "case": {
+              "when": [
+                [
+                  {
+                    "eq": [
+                      "decl.exprBodied",
+                      "true"
+                    ]
+                  },
+                  {
+                    "line": {
+                      "tmpl": [
+                        "return ",
+                        {
+                          "emit": "decl.exprBody"
+                        },
+                        ";"
+                      ]
+                    }
+                  }
+                ]
+              ],
+              "else": {
+                "stmts": "decl.body"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "EnumDecl": {
+      "block": {
+        "head": {
+          "tmpl": [
+            "class ",
+            {
+              "get": "decl.name"
+            }
+          ]
+        },
+        "body": [
+          {
+            "mapDecl": "decl.cases",
+            "each": {
+              "line": {
+                "tmpl": [
+                  "const ",
+                  {
+                    "get": "item.name"
+                  },
+                  " = ",
+                  {
+                    "get": "item.value"
+                  },
+                  ";"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "RecordDecl": {
+      "block": {
+        "head": {
+          "tmpl": [
+            "class ",
+            {
+              "get": "decl.name"
+            }
+          ]
+        },
+        "body": [
+          {
+            "mapDecl": "decl.fields",
+            "each": {
+              "line": {
+                "tmpl": [
+                  "public $",
+                  {
+                    "get": "item.name"
+                  },
+                  ";"
+                ]
+              }
+            }
+          },
+          {
+            "block": {
+              "head": {
+                "tmpl": [
+                  "public function __construct(",
+                  {
+                    "map": "decl.fields",
+                    "sep": ", ",
+                    "item": {
+                      "tmpl": [
+                        "$",
+                        {
+                          "get": "item.name"
+                        }
+                      ]
+                    }
+                  },
+                  ")"
+                ]
+              },
+              "body": [
+                {
+                  "mapDecl": "decl.fields",
+                  "each": {
+                    "line": {
+                      "tmpl": [
+                        "$this->",
+                        {
+                          "get": "item.name"
+                        },
+                        " = $",
+                        {
+                          "get": "item.name"
+                        },
+                        ";"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "mapMembers": "decl.methods",
+            "rule": "MethodDecl"
+          }
+        ]
+      }
+    },
+    "ClassDecl": {
+      "block": {
+        "head": {
+          "tmpl": [
+            "class ",
+            {
+              "get": "decl.name"
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "decl.hasExtBase",
+                        "true"
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        " extends ",
+                        {
+                          "type": "decl.extBase"
+                        }
+                      ]
+                    }
+                  ]
+                ]
+              }
+            }
+          ]
+        },
+        "body": [
+          {
+            "mapDecl": "decl.fields",
+            "each": {
+              "line": {
+                "tmpl": [
+                  "public ",
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.isStatic",
+                              "true"
+                            ]
+                          },
+                          "static "
+                        ]
+                      ]
+                    }
+                  },
+                  "$",
+                  {
+                    "get": "item.name"
+                  },
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.hasInit",
+                              "true"
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              " = ",
+                              {
+                                "emit": "item.init"
+                              }
+                            ]
+                          }
+                        ]
+                      ]
+                    }
+                  },
+                  ";"
+                ]
+              }
+            }
+          },
+          {
+            "case": {
+              "when": [
+                [
+                  {
+                    "eq": [
+                      "decl.hasInit",
+                      "true"
+                    ]
+                  },
+                  {
+                    "block": {
+                      "head": {
+                        "tmpl": [
+                          "public function __construct(",
+                          {
+                            "map": "decl.initParams",
+                            "sep": ", ",
+                            "item": {
+                              "call": "phpParam"
+                            }
+                          },
+                          ")"
+                        ]
+                      },
+                      "body": [
+                        {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "eq": [
+                                    "decl.hasSuper",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "line": {
+                                    "tmpl": [
+                                      "parent::__construct(",
+                                      {
+                                        "map": "decl.superArgs",
+                                        "sep": ", ",
+                                        "item": {
+                                          "emit": "item"
+                                        }
+                                      },
+                                      ");"
+                                    ]
+                                  }
+                                }
+                              ]
+                            ]
+                          }
+                        },
+                        {
+                          "stmts": "decl.initBody"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              ]
+            }
+          },
+          {
+            "mapMembers": "decl.methods",
+            "rule": "MethodDecl"
+          }
+        ]
+      }
+    },
+    "Program": {
+      "seq": [
+        {
+          "line": "<?php"
+        },
+        {
+          "mapMembers": "module.enums",
+          "rule": "EnumDecl"
+        },
+        {
+          "mapMembers": "module.records",
+          "rule": "RecordDecl"
+        },
+        {
+          "mapMembers": "module.classes",
+          "rule": "ClassDecl"
+        },
+        {
+          "mapDecl": "module.globals",
+          "each": {
+            "line": {
+              "tmpl": [
+                "$",
+                {
+                  "get": "item.name"
+                },
+                " = ",
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "item.hasInit",
+                            "true"
+                          ]
+                        },
+                        {
+                          "emit": "item.init"
+                        }
+                      ]
+                    ],
+                    "else": "null"
+                  }
+                },
+                ";"
+              ]
+            }
+          }
+        },
+        {
+          "mapMembers": "module.functions",
+          "rule": "FunctionDecl"
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "module.hasEntry",
+                    "true"
+                  ]
+                },
+                {
+                  "line": {
+                    "tmpl": [
+                      {
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "module.entry.mangledName"
+                          }
+                        ]
+                      },
+                      "();"
+                    ]
+                  }
+                }
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "fileExtension": ".php"
+}

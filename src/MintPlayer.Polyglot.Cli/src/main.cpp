@@ -212,14 +212,16 @@ int runBuild(const std::vector<std::string>& args) {
     LibConfig lib = parseLibList(libArg);
 
     bool ok = true;
-    if (target.empty() || target == "csharp") ok &= emitOne(source, input, outDir, findTarget("csharp"), ".cs", &resolver, lib);
-    if (target.empty() || target == "typescript") ok &= emitOne(source, input, outDir, findTarget("typescript"), ".ts", &resolver, lib);
-    // Python is opt-in (explicit --target python): it currently emits only the walking-skeleton subset, so it
-    // must not join the default cs+ts emission, which would fail on any program beyond that subset.
-    if (target == "python") ok &= emitOne(source, input, outDir, findTarget("python"), ".py", &resolver, lib);
-    if (!target.empty() && !findTarget(target).ok()) {
-        std::cerr << "polyglot: " << findTarget(target).error() << "\n";
-        return 64;
+    if (target.empty()) { // the default pair; other targets (python, any installed plugin) are opt-in
+        ok &= emitOne(source, input, outDir, findTarget("csharp"), ".cs", &resolver, lib);
+        ok &= emitOne(source, input, outDir, findTarget("typescript"), ".ts", &resolver, lib);
+    } else { // ANY loaded plugin is a valid --target; its manifest names the output extension (P19)
+        BackendHandle h = findTarget(target);
+        if (!h.ok()) {
+            std::cerr << "polyglot: " << h.error() << "\n";
+            return 64;
+        }
+        ok &= emitOne(source, input, outDir, h, h.backend()->fileExtension().c_str(), &resolver, lib);
     }
     return ok ? 0 : 1;
 }

@@ -1740,6 +1740,28 @@ Gates: artifacts strict-parse, byte-identical (117), unit green, 39/39 + 38/38 +
 fmt round-trip 10/10 (the parser change). **A new target can now ship spec + rules + capabilities + std
 arms as ONE JSON file, zero Core changes.**
 
+**Slice-12 ✅ (2026-07-03) — THE FOURTH-BACKEND PROOF: `plugins/php/polyglot-plugin.json`, a PHP target
+from ONE JSON file.** PHP — the PRD's canonical capability-poor example — emits `fn`/`let`/`for`/`if`/
+`print`/records/classes/enums with `$`-prefixed variables (rule data: `"$"` + ident — no new primitive),
+`->`/`::` member access, `intdiv` + the i32 mask formula (§3.C faithful within PHP's 64-bit int),
+`.`-concatenation for string `+` AND interpolation (the `interleave` hole rule carries the `.` joins),
+keyword suffix-escape (the emitted `print_` — PHP reserves `print` — is the identifier machinery visibly
+working), the `<?php` header as the Program rule's first line, and `foreach (... as [$a, $b])` tuple
+destructuring. The hard §3.A features it lacks are DECLARED (`patternMatching`/`closures`/`exceptions`/
+`async`/`with`/`interfaces`… `false`) — the anti-silent-drop validator accepts the plugin because every
+gap has a stance, and §3.E refuses those features at compile time with PHP configured. Std arms via
+overlay (`print`, scalar `parse`); the five file-io fns are simply un-overlaid (call ⇒ refusal — 9b's
+mechanism). **Two genuinely-generic Core touches surfaced by the bring-up, neither PHP-specific:** the
+coverage table wrongly marked `MakeCase` core (it only arises from union constructors — now excusable by
+`patternMatching`), and the CLI build driver hardcoded three targets (now: any loaded plugin is a valid
+`--target`, its output extension from the new manifest `fileExtension` field — the slice-10 CLI
+generalization arriving early). Verified: `polyglot build proof.pg --target php` emits inspectably-correct
+PHP (`128/28/hello…` — matches the C# oracle by hand-eval; no php.exe on this machine, so runtime
+differential validation awaits a toolchain — an honest TODO, not a claim). All existing gates unaffected:
+byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10. **P19's core thesis is demonstrated: a
+language is a JSON file.** Remaining: 10–11 (pgconfig `targets`/`dependencies` resolution beyond the
+exe-relative dir + `polyglot install`), the 9b member-arm refusal gap, 13–15 (identifier hygiene).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

@@ -2572,5 +2572,6 @@
       "f32.parse": "float($0)",
       "f64.parse": "float($0)"
     }
-  }
+  },
+  "fileExtension": ".py"
 }
