@@ -246,7 +246,16 @@ investigation found 7 shipping collision miscompiles (3 silent — match-arm `_m
 (C++ deletes in the same slice its byte gate passes; no `--legacy-backend`) **and zero embedded target specs** —
 the CLI is a pure engine; C#/TS/Python are ordinary plugin packages (`plugins/<target>/` in this repo, published
 to npm), resolved via `pgconfig.json` `targets`/`dependencies` (local `file:` → cache → registry); std *skeletons*
-stay in Core, every per-target arm ships in its target's plugin. Not yet built.
+stay in Core, every per-target arm ships in its target's plugin. 🚧 **Slices 1–5 built (2026-07-03):** the
+ENTIRE declaration layer is rule data on all three targets — Enum/Union/Interface/Method/Record/Class/
+Function/Extension + the per-target `Program` module scaffold (globals, entry synthesis, C# Program/Extensions
+wrappers, target-filtered `actual` fns) all evaluate through `runDeclRule` over shared decl contexts
+(`ModuleDeclCtx`→`memberCtx`→per-kind ctxs; new `mapMembers` decl primitive; `DeclHooks` = the fixed builtin
+residue: type/ident/mangle/generics/where). Each emit() is now: build maps/predicates → one
+`runDeclRule(Program)`. The operator `this`→`lhs` rebind became a lowering fact (`ir::This.insideOperator`);
+`CsExprCtx` is stateless. Every slice byte-gated (117 emitted files identical) + strict-JSON-parse checked.
+Remaining: slice 6 (builtin catalog), 7 (delete emit_*.cpp → InterpretedBackend + `plugins/<target>/`),
+8–12 (loader/overlays/install/4th-backend proof), 13–15 (identifier hygiene + reserved names).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".

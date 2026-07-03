@@ -1437,6 +1437,26 @@ Byte-identical (117 files), unit green, 39/39 + 38/38. **Remaining imperative de
 emit() driver bodies** (decl-loop order, C# `Program`/`Extensions` wrappers + `Main`, TS entry call, Python
 entry + asyncio/idiv preludes, globals lines) — exactly the `program` scaffold + `require` slice.
 
+**Slice-5i ✅ (2026-07-03) — the `Program` scaffold is data ×3; SLICE 5 COMPLETE (the whole declaration
+layer is rules).** Shared **`ModuleDeclCtx`** — the module-scoped root the per-target `"Program"` rule runs
+against: decl-list counts + `memberCtx` fan-out into every declaration ctx (enums/unions/interfaces/records/
+classes/extensions/functions), the globals list (name/isConst/type/init), and the entry facts (`hasEntry`/
+`entry.isAsync`/`entry.mangledName`); **`module.functions` is the target-filtered view** (`actual(other)`
+fns invisible — the filter is ctx data, the target name a ctor arg), entry scan unfiltered (as the old
+drivers). The three scaffolds as rules: C# decl order + `static class Extensions` wrapper (`case` on count)
++ **the blank-line separator as a pure `or/not` test over five counts** (interfaces excluded — the shipped
+behavior, preserved exactly) + `static class Program` block with `static readonly` globals + the synthesized
+`Main` (invariant-culture pin + async `GetAwaiter().GetResult()` as `case` data); TS decl order + `const/let`
+globals + the floating `mangledName();` entry call; Python decl order (no interfaces — dropped, unchanged) +
+`name = init|None` globals + `asyncio.run(main())`-vs-`main()` entry. The two Python **prepended preludes
+stay fixed builtin machinery** (`import asyncio` keys off the entry fact, `_pg_idiv` off the expr walk's
+`needsIdiv_` — the general `require` bucket mechanism lands with the plugin loader, where placement becomes
+manifest data). Each emit() is now: build extern/name maps + predicates → construct `ModuleDeclCtx` → ONE
+`runDeclRule(Program)`. Byte-identical (117 files), unit green, 39/39 + 38/38. **Slice 5 done end-to-end:
+Enum, Union, Interface, Method, Record, Class, Function, Extension, Program — every declaration on every
+target is rule data.** Next: slice 6 (generic builtin catalog), then 7 (delete emit_*.cpp →
+InterpretedBackend + plugins/<target>/ packages).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

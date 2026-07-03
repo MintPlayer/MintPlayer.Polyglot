@@ -174,6 +174,20 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                   "else":{"tmpl":["this.",{"get":"item.name"}," === other.",{"get":"item.name"}]}}}},
               ";"]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "Program": {"seq":[
+      {"mapMembers":"module.enums","rule":"EnumDecl"},
+      {"mapMembers":"module.interfaces","rule":"InterfaceDecl"},
+      {"mapMembers":"module.unions","rule":"UnionDecl"},
+      {"mapMembers":"module.records","rule":"RecordDecl"},
+      {"mapMembers":"module.classes","rule":"ClassDecl"},
+      {"mapDecl":"module.globals","each":{"line":{"tmpl":[
+          {"case":{"when":[[{"eq":["item.isConst","true"]},"const "]],"else":"let "}},
+          {"get":"item.name"},": ",{"type":"item.type"},
+          {"case":{"when":[[{"eq":["item.hasInit","true"]},{"tmpl":[" = ",{"emit":"item.init"}]}]]}},";"]}}},
+      {"mapMembers":"module.extensions","rule":"ExtensionDecl"},
+      {"mapMembers":"module.functions","rule":"FunctionDecl"},
+      {"case":{"when":[[{"eq":["module.hasEntry","true"]},
+        {"line":{"tmpl":[{"get":"module.entry.mangledName"},"();"]}}]]}}]},
   "tsFnSig": {"tmpl":[
       {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async function "],
                        [{"eq":["decl.isIterator","true"]},"function* "]],"else":"function "}},
@@ -512,42 +526,12 @@ public:
         // records compare structurally (§3.C); a TS record is a class (the set backs emitRecordEquals —
         // expression-level record/indexer facts are lowering-precomputed IR bits now)
         for (const auto& r : m.records) recordNames_.insert(r.name);
-        for (const auto& e : m.enums) { // P19: declarations migrate to decl rules, one kind at a time
-            EnumDeclCtx ctx(e);
-            runDeclRule(tsExprRules().at("EnumDecl"), ctx, ctx, &tsExprRules());
-        }
-        for (const auto& i : m.interfaces) {
-            InterfaceDeclCtx ctx(i, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(tsExprRules().at("InterfaceDecl"), ctx, ctx, &tsExprRules());
-        }
-        for (const auto& u : m.unions) {
-            UnionDeclCtx ctx(u, kTsDeclHooks);
-            runDeclRule(tsExprRules().at("UnionDecl"), ctx, ctx, &tsExprRules());
-        }
-        for (const auto& r : m.records) {
-            RecordDeclCtx ctx(r, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); },
-                              [this](const TypeRef& t) { return isRecordType(t); });
-            runDeclRule(tsExprRules().at("RecordDecl"), ctx, ctx, &tsExprRules());
-        }
-        for (const auto& c : m.classes) {
-            ClassDeclCtx ctx(c, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); },
-                             [this](const TypeRef& t) { return t.kind == TypeRef::Kind::Named && interfaceNames_.count(t.name) != 0; });
-            runDeclRule(tsExprRules().at("ClassDecl"), ctx, ctx, &tsExprRules());
-        }
-        for (const auto& g : m.globals) // top-level const/let
-            line(std::string(g.isConst ? "const " : "let ") + g.name + ": " + tsType(g.type) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
-        for (const auto& f : m.extensions) {
-            FnDeclCtx ctx(f, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(tsExprRules().at("ExtensionDecl"), ctx, ctx, &tsExprRules());
-        }
-        for (const auto& fn : m.functions) {
-            if (!fn.actualTarget.empty() && fn.actualTarget != "typescript") continue; // other target's `actual`
-            FnDeclCtx ctx(fn, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(tsExprRules().at("FunctionDecl"), ctx, ctx, &tsExprRules());
-        }
-        for (const auto& fn : m.functions) {
-            if (fn.isEntry) { line(fn.mangledName + "();"); break; }
-        }
+        // The whole module shape (decl order, globals, extensions-as-free-fns, the floating entry call) is
+        // the "Program" scaffold rule — data, not code. The two module facts thread in as predicates.
+        ModuleDeclCtx ctx(m, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); }, "typescript",
+                          [this](const TypeRef& t) { return isRecordType(t); },
+                          [this](const TypeRef& t) { return t.kind == TypeRef::Kind::Named && interfaceNames_.count(t.name) != 0; });
+        runDeclRule(tsExprRules().at("Program"), ctx, ctx, &tsExprRules());
         return out_;
     }
 

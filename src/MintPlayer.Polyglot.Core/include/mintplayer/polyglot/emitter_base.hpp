@@ -231,6 +231,32 @@ private:
     EmitFn emit_;
 };
 
+// The module-scoped ROOT context the per-target "Program" scaffold rule runs against: list counts +
+// `mapMembers` fan-out into every declaration kind's ctx, the globals list, and the entry-point facts.
+// `module.functions` is the TARGET-FILTERED view (an `actual(other)` fn is invisible); the entry scan is
+// unfiltered (matches the old drivers). The two module-fact predicates thread through to the record/class
+// member contexts.
+class ModuleDeclCtx : public IrDeclCtx {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    using TypePred = std::function<bool(const TypeRef&)>;
+    ModuleDeclCtx(const ir::Module& m, const DeclHooks& hooks, EmitFn emit, const std::string& target,
+                  TypePred isRecordType = {}, TypePred isInterface = {});
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+    std::string emitChild(const std::string& path, const std::string& side) const override;
+    std::unique_ptr<IrDeclCtx> memberCtx(const std::string& path, std::size_t index) const override;
+
+private:
+    const ir::Module& m_;
+    const DeclHooks& hooks_;
+    EmitFn emit_;
+    TypePred isRecord_, isInterface_;
+    std::vector<std::size_t> fns_; // actualTarget-filtered function indices
+    int entry_ = -1;               // first isEntry function (unfiltered), -1 = none
+};
+
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
 // `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
 // `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern

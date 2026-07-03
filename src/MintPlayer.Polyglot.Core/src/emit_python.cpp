@@ -152,6 +152,19 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
               {"map":"decl.fields","sep":" and ","item":
                 {"tmpl":["self.",{"get":"item.name"}," == other.",{"get":"item.name"}]}}]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "Program": {"seq":[
+      {"mapMembers":"module.enums","rule":"EnumDecl"},
+      {"mapMembers":"module.unions","rule":"UnionDecl"},
+      {"mapMembers":"module.records","rule":"RecordDecl"},
+      {"mapMembers":"module.classes","rule":"ClassDecl"},
+      {"mapDecl":"module.globals","each":{"line":{"tmpl":[{"get":"item.name"}," = ",
+          {"case":{"when":[[{"eq":["item.hasInit","true"]},{"emit":"item.init"}]],"else":"None"}}]}}},
+      {"mapMembers":"module.functions","rule":"FunctionDecl"},
+      {"mapMembers":"module.extensions","rule":"FunctionDecl"},
+      {"case":{"when":[[{"eq":["module.hasEntry","true"]},
+        {"case":{"when":[[{"eq":["module.entry.isAsync","true"]},
+          {"line":{"tmpl":["asyncio.run(",{"fn":"mangle","args":[{"get":"module.entry.mangledName"}]},"())"]}}]],
+          "else":{"line":{"tmpl":[{"fn":"mangle","args":[{"get":"module.entry.mangledName"}]},"()"]}}}}]]}}]},
   "pyFnSig": {"tmpl":[
       {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async def "]],"else":"def "}},
       {"fn":"mangle","args":[{"get":"decl.emitName"}]},"(",
@@ -443,40 +456,14 @@ public:
         externTypes_.clear();
         for (const auto& et : m.externTypes) externTypes_[et.name] = &et; // for Error->Exception etc. spellings
         g_externTypes = &externTypes_;
-        for (const auto& e : m.enums) { // P19: declarations migrate to decl rules, one kind at a time
-            EnumDeclCtx ctx(e);
-            runDeclRule(pyExprRules().at("EnumDecl"), ctx, ctx, &pyExprRules());
-        }
-        for (const auto& u : m.unions) {
-            UnionDeclCtx ctx(u, kPyDeclHooks);
-            runDeclRule(pyExprRules().at("UnionDecl"), ctx, ctx, &pyExprRules());
-        }
-        for (const auto& r : m.records) {
-            RecordDeclCtx ctx(r, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(pyExprRules().at("RecordDecl"), ctx, ctx, &pyExprRules());
-        }
-        for (const auto& c : m.classes) {
-            ClassDeclCtx ctx(c, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(pyExprRules().at("ClassDecl"), ctx, ctx, &pyExprRules());
-        }
-        for (const auto& g : m.globals)
-            line(g.name + " = " + (g.init ? emitExpr(*g.init) : "None"));
-        for (const auto& fn : m.functions) {
-            if (!fn.actualTarget.empty() && fn.actualTarget != "python") continue; // other target's `actual`
-            FnDeclCtx ctx(fn, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(pyExprRules().at("FunctionDecl"), ctx, ctx, &pyExprRules());
-        }
-        for (const auto& fn : m.extensions) { // extensions -> free fns; `x.m()` calls `m(x)`
-            FnDeclCtx ctx(fn, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(pyExprRules().at("FunctionDecl"), ctx, ctx, &pyExprRules());
-        }
+        // The whole module shape (decl order, globals, extensions-as-free-fns, the asyncio.run/plain entry)
+        // is the "Program" scaffold rule — data, not code. The two prepended preludes stay fixed builtin
+        // machinery: `import asyncio` keys off the entry fact, `_pg_idiv` off the expression walk's flag.
+        ModuleDeclCtx ctx(m, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); }, "python");
+        runDeclRule(pyExprRules().at("Program"), ctx, ctx, &pyExprRules());
         for (const auto& fn : m.functions)
-            if (fn.isEntry) { // an `async fn main` must be driven by the event loop; else a plain call
-                line(fn.isAsync ? "asyncio.run(" + pyName(fn.mangledName) + "())" : pyName(fn.mangledName) + "()");
-                if (fn.isAsync) needsAsyncio_ = true;
-                break;
-            }
-        if (needsAsyncio_) out_ = "import asyncio\n" + out_; // `asyncio.run(main())` needs the module
+            if (fn.isEntry) { needsAsyncio_ = fn.isAsync; break; } // `asyncio.run(main())` needs the module
+        if (needsAsyncio_) out_ = "import asyncio\n" + out_;
         if (needsIdiv_) out_ = idivPrelude() + out_; // C#-faithful truncating int `/` and `%`
         return out_;
     }

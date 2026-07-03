@@ -188,6 +188,31 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
       [{"eq":["decl.methods.count","0"]},{"line":{"tmpl":[{"call":"csRecordHead"},";"]}}]],
       "else":{"block":{"head":{"call":"csRecordHead"},
         "body":[{"mapMembers":"decl.methods","rule":"MethodDecl"}]}}}},
+  "Program": {"seq":[
+      {"mapMembers":"module.enums","rule":"EnumDecl"},
+      {"mapMembers":"module.interfaces","rule":"InterfaceDecl"},
+      {"mapMembers":"module.unions","rule":"UnionDecl"},
+      {"mapMembers":"module.records","rule":"RecordDecl"},
+      {"mapMembers":"module.classes","rule":"ClassDecl"},
+      {"case":{"when":[[{"not":{"eq":["module.extensions.count","0"]}},
+        {"block":{"head":"static class Extensions","body":[
+          {"mapMembers":"module.extensions","rule":"ExtensionDecl"}]}}]]}},
+      {"case":{"when":[[{"or":[{"not":{"eq":["module.enums.count","0"]}},
+                               {"not":{"eq":["module.unions.count","0"]}},
+                               {"not":{"eq":["module.records.count","0"]}},
+                               {"not":{"eq":["module.classes.count","0"]}},
+                               {"not":{"eq":["module.extensions.count","0"]}}]},
+        {"line":""}]]}},
+      {"block":{"head":"static class Program","body":[
+        {"mapDecl":"module.globals","each":{"line":{"tmpl":["static readonly ",
+            {"type":"item.type"}," ",{"fn":"ident","args":[{"get":"item.name"}]},
+            {"case":{"when":[[{"eq":["item.hasInit","true"]},{"tmpl":[" = ",{"emit":"item.init"}]}]]}},";"]}}},
+        {"mapMembers":"module.functions","rule":"FunctionDecl"},
+        {"case":{"when":[[{"eq":["module.hasEntry","true"]},{"seq":[
+          {"line":""},
+          {"case":{"when":[[{"eq":["module.entry.isAsync","true"]},
+            {"line":"static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main().GetAwaiter().GetResult(); }"}]],
+            "else":{"line":"static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main(); }"}}}]}]]}}]}}]},
   "csFnSig": {"tmpl":["public static ",
       {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async "]]}},
       {"case":{"when":[[{"eq":["decl.isAsync","true"]},{"call":"csAsyncRet"}]],"else":{"type":"decl.returnType"}}},
@@ -482,59 +507,10 @@ public:
         externMap_.clear();
         for (const auto& et : m.externTypes) externMap_[et.name] = &et;
         g_externTypes = &externMap_;
-        for (const auto& e : m.enums) { // P19: declarations migrate to decl rules, one kind at a time
-            EnumDeclCtx ctx(e);
-            runDeclRule(csharpExprRules().at("EnumDecl"), ctx, ctx, &csharpExprRules());
-        }
-        for (const auto& i : m.interfaces) {
-            InterfaceDeclCtx ctx(i, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(csharpExprRules().at("InterfaceDecl"), ctx, ctx, &csharpExprRules());
-        }
-        for (const auto& u : m.unions) {
-            UnionDeclCtx ctx(u, kCsDeclHooks);
-            runDeclRule(csharpExprRules().at("UnionDecl"), ctx, ctx, &csharpExprRules());
-        }
-        for (const auto& r : m.records) {
-            RecordDeclCtx ctx(r, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(csharpExprRules().at("RecordDecl"), ctx, ctx, &csharpExprRules());
-        }
-        for (const auto& c : m.classes) {
-            ClassDeclCtx ctx(c, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(csharpExprRules().at("ClassDecl"), ctx, ctx, &csharpExprRules());
-        }
-        if (!m.extensions.empty()) { // extension methods live in a top-level static class (global namespace)
-            line("static class Extensions");
-            line("{");
-            ++indent_;
-            for (const auto& f : m.extensions) {
-                FnDeclCtx ctx(f, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-                runDeclRule(csharpExprRules().at("ExtensionDecl"), ctx, ctx, &csharpExprRules());
-            }
-            --indent_;
-            line("}");
-        }
-        if (!m.enums.empty() || !m.unions.empty() || !m.records.empty() || !m.classes.empty() || !m.extensions.empty()) out_ += "\n";
-        out_ += "static class Program\n{\n";
-        indent_ = 1;
-        for (const auto& g : m.globals) // top-level const/let -> static readonly field
-            line("static readonly " + csType(g.type) + " " + csIdent(g.name) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
-        for (const auto& fn : m.functions) {
-            if (!fn.actualTarget.empty() && fn.actualTarget != "csharp") continue; // other target's `actual`
-            FnDeclCtx ctx(fn, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-            runDeclRule(csharpExprRules().at("FunctionDecl"), ctx, ctx, &csharpExprRules());
-        }
-        for (const auto& fn : m.functions) {
-            if (fn.isEntry) {
-                line("");
-                // Pin the invariant culture so number formatting (WriteLine/interpolation) matches JS — C#
-                // is culture-dependent (e.g. "12,5" on a comma-locale machine), JS always uses '.'. §3.
-                // An `async fn main` returns a Task; block on it synchronously so `Main` stays `void`. §4.7
-                std::string call = fn.isAsync ? "main().GetAwaiter().GetResult();" : "main();";
-                line("static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; " + call + " }");
-                break;
-            }
-        }
-        out_ += "}\n";
+        // The whole module shape (decl order, the Extensions/Program wrappers, globals, Main synthesis with
+        // its invariant-culture pin + async blocking) is the "Program" scaffold rule — data, not code.
+        ModuleDeclCtx ctx(m, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); }, "csharp");
+        runDeclRule(csharpExprRules().at("Program"), ctx, ctx, &csharpExprRules());
         return out_;
     }
 

@@ -779,6 +779,84 @@ const std::vector<ir::StmtPtr>* FnDeclCtx::stmtList(const std::string& path) con
     return path == "decl.body" ? &f_.body : nullptr;
 }
 
+ModuleDeclCtx::ModuleDeclCtx(const ir::Module& m, const DeclHooks& hooks, EmitFn emit,
+                             const std::string& target, TypePred isRecordType, TypePred isInterface)
+    : m_(m), hooks_(hooks), emit_(std::move(emit)),
+      isRecord_(std::move(isRecordType)), isInterface_(std::move(isInterface)) {
+    for (std::size_t i = 0; i < m_.functions.size(); ++i) {
+        const ir::Function& f = m_.functions[i];
+        if (f.actualTarget.empty() || f.actualTarget == target) fns_.push_back(i);
+        if (entry_ < 0 && f.isEntry) entry_ = static_cast<int>(i);
+    }
+}
+
+std::string ModuleDeclCtx::get(const std::string& path) const {
+    if (path == "module.enums.count")      return std::to_string(m_.enums.size());
+    if (path == "module.unions.count")     return std::to_string(m_.unions.size());
+    if (path == "module.interfaces.count") return std::to_string(m_.interfaces.size());
+    if (path == "module.records.count")    return std::to_string(m_.records.size());
+    if (path == "module.classes.count")    return std::to_string(m_.classes.size());
+    if (path == "module.extensions.count") return std::to_string(m_.extensions.size());
+    if (path == "module.functions.count")  return std::to_string(fns_.size());
+    if (path == "module.globals.count")    return std::to_string(m_.globals.size());
+    if (path == "module.hasEntry")         return entry_ >= 0 ? "true" : "false";
+    if (entry_ >= 0) {
+        const ir::Function& e = m_.functions[static_cast<std::size_t>(entry_)];
+        if (path == "module.entry.isAsync")     return e.isAsync ? "true" : "false";
+        if (path == "module.entry.mangledName") return e.mangledName;
+        if (path == "module.entry.name")        return e.name;
+    }
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("module.globals.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.globals.size()) {
+        if (f == "name")    return m_.globals[i].name;
+        if (f == "isConst") return m_.globals[i].isConst ? "true" : "false";
+        if (f == "hasInit") return m_.globals[i].init ? "true" : "false";
+    }
+    return "";
+}
+
+std::string ModuleDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
+    return "";
+}
+
+std::string ModuleDeclCtx::renderType(const std::string& path) const {
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("module.globals.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.globals.size() && f == "type")
+        return hooks_.renderTypeRef(m_.globals[i].type);
+    return "";
+}
+
+std::string ModuleDeclCtx::emitChild(const std::string& path, const std::string&) const {
+    if (!emit_) return "";
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("module.globals.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.globals.size() && f == "init")
+        return m_.globals[i].init ? emit_(*m_.globals[i].init) : "";
+    return "";
+}
+
+std::unique_ptr<IrDeclCtx> ModuleDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
+    if (path == "module.enums" && index < m_.enums.size())
+        return std::make_unique<EnumDeclCtx>(m_.enums[index]);
+    if (path == "module.unions" && index < m_.unions.size())
+        return std::make_unique<UnionDeclCtx>(m_.unions[index], hooks_);
+    if (path == "module.interfaces" && index < m_.interfaces.size())
+        return std::make_unique<InterfaceDeclCtx>(m_.interfaces[index], hooks_, emit_);
+    if (path == "module.records" && index < m_.records.size())
+        return std::make_unique<RecordDeclCtx>(m_.records[index], hooks_, emit_, isRecord_);
+    if (path == "module.classes" && index < m_.classes.size())
+        return std::make_unique<ClassDeclCtx>(m_.classes[index], hooks_, emit_, isInterface_);
+    if (path == "module.extensions" && index < m_.extensions.size())
+        return std::make_unique<FnDeclCtx>(m_.extensions[index], hooks_, emit_);
+    if (path == "module.functions" && index < fns_.size())
+        return std::make_unique<FnDeclCtx>(m_.functions[fns_[index]], hooks_, emit_);
+    return nullptr;
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;
