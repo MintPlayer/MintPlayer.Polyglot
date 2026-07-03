@@ -57,4 +57,11 @@ const Backend* findBackend(const std::string& name);
 // Names of all registered backends (for diagnostics / a future `--list-targets`).
 std::vector<std::string> backendNames();
 
+// Load a backend from its plugin artifact (`polyglot-plugin.json` bytes — Core stays IO-free, the host
+// reads the file) and register it so findTarget()/findBackend() resolve it. The ENTIRE backend is data:
+// the spec + rule tables interpreted by the shared emitter, plus the capability map `supports` answers
+// from (a feature absent from the map is supported; `"blockLambdas": false` gates). Returns false and
+// fills `error` on a malformed artifact — a plugin that fails validation is never partially registered.
+bool loadBackend(const std::string& artifactJson, std::string& error);
+
 } // namespace mintplayer::polyglot

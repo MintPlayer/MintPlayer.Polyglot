@@ -13,10 +13,16 @@
 #include <vector>
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#undef Yield // winbase.h macro; ir::StmtKind::Yield must survive
+
 #include <fcntl.h>
 #include <io.h>
 #endif
 
+#include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
@@ -967,6 +973,33 @@ int runLsp(const std::vector<std::string>&) {
     return 0;
 }
 
+// Load every target plugin found next to the executable (`plugins/<target>/polyglot-plugin.json`). The
+// CLI is a pure engine — no target is compiled in (PRD §4.11); pgconfig-driven resolution (local paths /
+// cache / registry) layers on top at P19 slice 10. A missing plugins dir just leaves the registry empty
+// (findTarget then explains what was expected); a MALFORMED artifact is reported and skipped.
+void loadPluginsNextToExe(const char* argv0) {
+    fs::path exe;
+#ifdef _WIN32
+    char buf[4096];
+    const unsigned long n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
+    exe = n > 0 ? fs::path(std::string(buf, n)) : fs::path(argv0);
+#else
+    exe = fs::path(argv0);
+#endif
+    std::error_code ec;
+    const fs::path dir = exe.parent_path() / "plugins";
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        const fs::path manifest = entry.path() / "polyglot-plugin.json";
+        if (!fs::exists(manifest, ec)) continue;
+        std::ifstream in(manifest, std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        std::string err;
+        if (!loadBackend(ss.str(), err))
+            std::cerr << "polyglot: " << manifest.string() << ": " << err << "\n";
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -980,6 +1013,7 @@ int main(int argc, char** argv) {
         std::cout << Compiler::version() << "\n";
         return 0;
     }
+    loadPluginsNextToExe(argv[0]);
     if (args[0] == "build") {
         return runBuild(args);
     }

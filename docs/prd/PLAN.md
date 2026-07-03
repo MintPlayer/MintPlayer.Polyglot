@@ -1659,6 +1659,28 @@ for every target (unread ⇒ unaffected — C#/Python rules never consult them).
 moves out of the C++ into `plugins/<target>/` files (the physical artifact), loaded by slice 8's
 `loadBackend` with validation.
 
+**Slice-7e ✅ (2026-07-03) — `emit_csharp.cpp`, `emit_typescript.cpp`, `emit_python.cpp` are DELETED; the
+backends are runtime-loaded plugin files.** The physical artifact exists: **`plugins/<target>/
+polyglot-plugin.json`** (`{schema, name, irTemplates, capabilities, spec, rules}` — generated verbatim
+from the embedded blobs by an extraction script, so content equivalence is mechanical; `irTemplates:
+cs|ts|py` names the per-target IR fields — slice-9 death row). Core gained
+**`loadBackend(artifactJson, error)`** (IO-free — the host reads the bytes): parses the manifest, loads
+the spec (via a new `json::Value` overload of `loadBackendSpec`), parses every rule STRICTLY (a rule
+parse failure now fails the load — no more assert-and-hope), requires `Program` + `Type`, reads the
+**capability map** (absent ⇒ supported; Python's artifact declares `"blockLambdas": false`) — and
+registers a `LoadedBackend` on the now-mutable registry. **`kRegistry` and the three compiled-in Backend
+classes are deleted; `emit.hpp`/`emitCSharp`/`emitTypeScript`/`emitPython` are deleted; zero backends are
+compiled in.** The CLI loads `plugins/*/polyglot-plugin.json` next to the exe at startup (a post-build
+step copies `plugins/` to the output dir; missing dir ⇒ empty registry ⇒ findTarget explains what was
+expected); the tests exe loads the same three and fails hard if any is missing; `DeclHooks::SpecFn`
+generalized to `std::function` so a loaded instance's accessor closes over its own spec. Mid-slice fix:
+`windows.h`'s `Yield()` macro poisoned `ir::StmtKind::Yield` (`#undef` after include). Gates: the plugin
+artifacts strict-parse, byte-identical (117 files), unit green, 39/39 + 38/38 + samples 10/10. **The
+user's founding P19 question — "will we be able to get rid of all the emit_*.cpp files?" — is answered:
+they no longer exist.** Remaining in slice 8+: full load-time validation (anti-silent-drop: every IR kind
+rule-or-capability-false — Python `Char` is the first customer; `fn`-name catalog check), overlays (9),
+pgconfig resolution + install (10–11), 4th-backend proof (12).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

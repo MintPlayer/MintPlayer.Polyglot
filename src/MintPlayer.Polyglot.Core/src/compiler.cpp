@@ -5,7 +5,6 @@
 #include <unordered_set>
 
 #include "mintplayer/polyglot/ast.hpp"
-#include "mintplayer/polyglot/emit.hpp"
 #include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
@@ -460,7 +459,10 @@ BackendHandle findTarget(const std::string& name) {
     if (!h.backend_) {
         std::string known;
         for (const auto& n : backendNames()) { if (!known.empty()) known += ", "; known += n; }
-        h.error_ = "unknown target '" + name + "' (known targets: " + known + ")";
+        h.error_ = known.empty()
+                       ? "unknown target '" + name + "' (no target plugins are loaded — expected "
+                             "plugins/<target>/polyglot-plugin.json next to the executable)"
+                       : "unknown target '" + name + "' (known targets: " + known + ")";
     }
     return h;
 }

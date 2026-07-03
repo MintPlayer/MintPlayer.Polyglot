@@ -20,8 +20,11 @@ void loadStringMap(const json::Value& obj, std::unordered_map<std::string, std::
 } // namespace
 
 SpecLoadResult loadBackendSpec(const std::string& json) {
+    return loadBackendSpec(json::parse(json));
+}
+
+SpecLoadResult loadBackendSpec(const json::Value& doc) {
     SpecLoadResult r;
-    json::Value doc = json::parse(json);
     if (doc.kind != json::Value::Kind::Object) {
         r.errors.push_back("backend spec must be a JSON object");
         return r;

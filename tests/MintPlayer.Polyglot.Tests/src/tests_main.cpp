@@ -1,9 +1,19 @@
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#undef Yield // winbase.h macro; ir::StmtKind::Yield must survive
+#endif
 
 #include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/backend_engine.hpp"
@@ -126,6 +136,30 @@ const char* kProgram =
 } // namespace
 
 int main() {
+    // Zero backends are compiled in (P19 slice 7e): load the target plugins copied next to this exe by the
+    // post-build step. The suite depends on all three — fail hard, not test-by-test, if any is missing.
+    {
+        namespace fs = std::filesystem;
+        fs::path exe;
+#ifdef _WIN32
+        char buf[4096];
+        const unsigned long n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
+        exe = fs::path(std::string(buf, n));
+#endif
+        for (const char* t : {"csharp", "typescript", "python"}) {
+            const fs::path manifest = exe.parent_path() / "plugins" / t / "polyglot-plugin.json";
+            std::ifstream in(manifest, std::ios::binary);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            std::string err;
+            if (!in || !loadBackend(ss.str(), err)) {
+                std::cerr << "FATAL: cannot load target plugin " << manifest.string() << ": "
+                          << (in ? err : "file not readable") << "\n";
+                return 1;
+            }
+        }
+    }
+
     check(!Compiler::version().empty(), "version is non-empty");
     check(Compiler::version() == std::string(kVersion), "version matches the kVersion constant");
 

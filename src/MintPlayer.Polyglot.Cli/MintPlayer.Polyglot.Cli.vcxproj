@@ -73,5 +73,11 @@
       <Project>{A1A1A1A1-1111-4111-8111-111111111111}</Project>
     </ProjectReference>
   </ItemGroup>
+  <ItemDefinitionGroup>
+    <PostBuildEvent>
+      <Command>xcopy /Y /I /E /Q "$(SolutionDir)plugins" "$(OutDir)plugins\"</Command>
+      <Message>Copying target plugins next to the executable (P19: no compiled-in backends)</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

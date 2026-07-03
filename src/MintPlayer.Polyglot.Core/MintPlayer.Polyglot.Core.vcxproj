@@ -63,7 +63,6 @@
     <ClInclude Include="include\mintplayer\polyglot\lexer.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\parser.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\sema.hpp" />
-    <ClInclude Include="include\mintplayer\polyglot\emit.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\pg_printer.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\ir.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\lower.hpp" />
@@ -79,9 +78,6 @@
     <ClCompile Include="src\lexer.cpp" />
     <ClCompile Include="src\parser.cpp" />
     <ClCompile Include="src\sema.cpp" />
-    <ClCompile Include="src\emit_csharp.cpp" />
-    <ClCompile Include="src\emit_typescript.cpp" />
-    <ClCompile Include="src\emit_python.cpp" />
     <ClCompile Include="src\emitter_base.cpp" />
     <ClCompile Include="src\compiler.cpp" />
     <ClCompile Include="src\pg_printer.cpp" />

@@ -110,10 +110,10 @@ private:
 // layer's fixed builtins; the shapes around them are rule data.
 class DeclHooks {
 public:
-    // Takes the spec ACCESSOR, not the spec: hooks are constructed as globals at static init, and loading
-    // the spec then would race other TUs' dynamic init (the block-style name strings) — a real CLI abort.
-    // The accessor's function-local static loads lazily on the first ident/mangle call instead.
-    using SpecFn = const BackendSpec& (*)();
+    // Takes the spec ACCESSOR, not the spec: hooks constructed as globals at static init must not load
+    // the spec eagerly (a real CLI abort once raced other TUs' dynamic init); a runtime-loaded plugin's
+    // accessor instead closes over its own instance data.
+    using SpecFn = std::function<const BackendSpec&()>;
     explicit DeclHooks(SpecFn spec) : specFn_(spec) {}
     virtual ~DeclHooks() = default;
     virtual std::string renderTypeRef(const TypeRef& t) const = 0;
