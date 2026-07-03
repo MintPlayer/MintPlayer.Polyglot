@@ -1627,6 +1627,17 @@ guard. Mid-slice: a helper defined after its users (C3861) — MSBuild exit 0 ma
 binaries gated green; caught by reading the error lines, not the exit code. Byte-identical (117 files),
 unit green, 39/39 + 38/38.
 
+**Slice-7c ✅ (2026-07-03) — the last three spelling hooks are spec data; ZERO virtual spelling hooks
+remain.** `localDecl` and the yield forms are **`tables` rows** (`localDecl`: mutable/const — C#
+`var $x`/`var $x`, TS `let $x`/`const $x`, Python `$x`/`$x`; `yield`: value/empty — `yield return
+$x;`/`yield break;`, `yield $x;`/`return;`, `yield $x`/`return`) applied by the now NON-virtual
+`EmitterBase` methods over `specSubst` (+ `specIdent` on the declared name — TS declares no keywords so
+its names pass verbatim, preserving the old raw spelling); the value-less rethrow is the **`rethrow` spec
+scalar** (`throw;`/`throw __e;`/`raise`). Nine overrides deleted. The per-backend classes are now: spec()
++ renderType() + ruleTable() + declHooks() one-liners, the rule-key switch, the Bound field pick, and the
+emit() setup — pure wiring, zero behavior. Byte-identical (117 files), unit green, 39/39 + 38/38. Next:
+7d — the wiring dissolves into ONE interpreted emitter parameterized by {spec, rules, hooks}.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

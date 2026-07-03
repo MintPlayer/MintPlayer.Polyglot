@@ -395,11 +395,15 @@ protected:
     //       data belongs in the Spec.
     virtual const BackendSpec& spec() const = 0;
     //
-    //   (c) Fine-grained spelling hooks with real per-target logic (not constants): the local-declaration
-    //       keyword, the yield form, and the value-less rethrow.
-    virtual std::string localDecl(const std::string& name, bool isMutable) = 0; // `var x`/`let|const x`/`x` (Let, Use)
-    virtual std::string yieldStmt(const std::string& value, bool hasValue) = 0; // `yield return v;`/`yield v;` …
-    virtual std::string rethrowStmt() = 0;                                      // value-less `throw;`/`throw __e;`
+    //   (c) The last statement spellings, driven by spec data (P19 slice 7): the local-declaration keyword
+    //       and the yield forms are `tables` rows; the value-less rethrow is a spec scalar.
+    std::string localDecl(const std::string& name, bool isMutable) {
+        return specSubst(spec(), "localDecl", isMutable ? "mutable" : "const", specIdent(spec(), name));
+    }
+    std::string yieldStmt(const std::string& value, bool hasValue) {
+        return specSubst(spec(), "yield", hasValue ? "value" : "empty", value);
+    }
+    std::string rethrowStmt() { return spec().rethrow; }
 
 public:
     virtual ~EmitterBase() = default;

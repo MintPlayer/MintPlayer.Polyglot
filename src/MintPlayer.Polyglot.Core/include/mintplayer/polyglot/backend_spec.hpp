@@ -59,6 +59,10 @@ struct BackendSpec {
     BlockStyle blockStyle = BlockStyle::BracesKnR;
     std::string stmtEnd = ";";
     std::string throwKeyword = "throw";
+    // The value-less rethrow statement, terminator included (`throw;` / `throw __e;` / `raise`). The other
+    // two statement spellings — the local-declaration keyword and the yield forms — are `tables` rows
+    // (`localDecl`: mutable/const, `yield`: value/empty) applied by the shared statement walk.
+    std::string rethrow = "throw;";
 
     // Boolean / null literal spellings (C#/TS `true`/`false`/`null`; Python `True`/`False`/`None`). Read by
     // each backend's expression walk. (`this`/`self` is NOT here — C# rebinds it in a `with`-copy IIFE, so it

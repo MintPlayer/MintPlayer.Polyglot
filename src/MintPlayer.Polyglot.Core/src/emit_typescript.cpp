@@ -35,8 +35,11 @@ const char* TS_SPEC_JSON = R"JSON({
   "stmtEnd": ";",
   "throwKeyword": "throw",
   "trueLit": "true", "falseLit": "false", "nullLit": "null",
+  "rethrow": "throw __e;",
   "tables": { "opMethod": { "+": "plus", "-": "minus", "*": "times", "/": "div", "%": "rem",
                             "==": "eq", "<": "lt", "<=": "le", ">": "gt", ">=": "ge" },
+              "localDecl": { "mutable": "let $x", "const": "const $x" },
+              "yield": { "value": "yield $x;", "empty": "return;" },
               "bigNarrow": { "i8": "BigInt.asIntN(8, $x)", "i16": "BigInt.asIntN(16, $x)",
                              "i32": "BigInt.asIntN(32, $x)", "u8": "BigInt.asUintN(8, $x)",
                              "u16": "BigInt.asUintN(16, $x)", "u32": "BigInt.asUintN(32, $x)" } },
@@ -493,10 +496,6 @@ private:
     std::string renderType(const TypeRef& t) override { return tsType(t); }
     const engine::RuleTable* ruleTable() const override { return &tsExprRules(); }
     const DeclHooks* declHooks() const override { return &kTsDeclHooks; }
-
-    std::string localDecl(const std::string& name, bool isMutable) override { return std::string(isMutable ? "let " : "const ") + name; }
-    std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield " + v + ";" : "return;"; }
-    std::string rethrowStmt() override { return "throw __e;"; }
 
     std::string emitExpr(const ir::Expr& e) override {
         // A migrated node kind (see tsExprRuleKey / TS_EXPR_RULES_JSON) is interpreted from its JSON Rule

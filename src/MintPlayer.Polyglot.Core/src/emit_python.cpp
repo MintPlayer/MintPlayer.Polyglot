@@ -41,6 +41,9 @@ const char* PY_SPEC_JSON = R"JSON({
                "i32": "(((($x) & 0xffffffff) ^ 0x80000000) - 0x80000000)",
                "i64": "(((($x) & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)" },
   "wrapAtom": { "recv": ["binary", "unary", "cond", "cast"], "unary": ["binary"] },
+  "rethrow": "raise",
+  "tables": { "localDecl": { "mutable": "$x", "const": "$x" },
+              "yield": { "value": "yield $x", "empty": "return" } },
   "blockStyle": "colonIndent",
   "stmtEnd": "",
   "throwKeyword": "raise",
@@ -446,10 +449,6 @@ private:
     std::string renderType(const TypeRef& t) override { return pyTypeName(t); }
     const engine::RuleTable* ruleTable() const override { return &pyExprRules(); }
     const DeclHooks* declHooks() const override { return &kPyDeclHooks; }
-    std::string localDecl(const std::string& name, bool) override { return specIdent(spec(), name); } // bare `name = ...`
-    std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
-    std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
-
     std::unordered_map<std::string, const ir::ExternType*> externTypes_; // backs g_externTypes for this emit
     int tmp_ = 0; // fresh-name counter for the walrus temporaries that keep `?.`/`??` single-evaluated
 

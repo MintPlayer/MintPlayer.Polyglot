@@ -35,6 +35,9 @@ const char* CSHARP_SPEC_JSON = R"JSON({
   "binaryOp": {},
   "wrapInt": { "i8": "(sbyte)($x)", "i16": "(short)($x)", "u8": "(byte)($x)", "u16": "(ushort)($x)" },
   "wrapAtom": { "recv": ["binary", "unary", "cast"], "unary": ["binary"] },
+  "rethrow": "throw;",
+  "tables": { "localDecl": { "mutable": "var $x", "const": "var $x" },
+              "yield": { "value": "yield return $x;", "empty": "yield break;" } },
   "generics": { "style": "whereClauses", "boundsIntro": " : ", "boundsSep": ", ", "erase": ["INumber"] },
   "delimited": { "tuple": { "open": "(", "sep": ", ", "close": ")" } },
   "blockStyle": "bracesAllman",
@@ -470,10 +473,6 @@ private:
     std::string renderType(const TypeRef& t) override { return csType(t); }
     const engine::RuleTable* ruleTable() const override { return &csharpExprRules(); }
     const DeclHooks* declHooks() const override { return &kCsDeclHooks; }
-
-    std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + specIdent(spec(), name); }
-    std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }
-    std::string rethrowStmt() override { return "throw;"; }
 
     std::string emitExpr(const ir::Expr& e) override {
         // A migrated node kind (see csExprRuleKey / CSHARP_EXPR_RULES_JSON) is interpreted from its JSON Rule
