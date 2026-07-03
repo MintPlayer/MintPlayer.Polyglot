@@ -283,9 +283,14 @@ proof — **`plugins/php/polyglot-plugin.json`**, a PHP backend from ONE JSON fi
 `->`/`::`, intdiv+i32 masks, `.`-concat interpolation, keyword-escaped `print_`, `<?php` as Program data;
 unsupported features declared `false` → §3.E refusals); the CLI build driver is target-agnostic (any loaded
 plugin is a `--target`; manifest `fileExtension`). Emitted PHP verified by inspection (no php.exe here —
-runtime differential TODO). Remaining: 10–11 (pgconfig `targets`/`dependencies` resolution + `polyglot
-install` — the exe-relative `plugins/` dir is the only channel today), the 9b member-arm refusal gap,
-13–15 (identifier hygiene + reserved names).
+runtime differential TODO). **Slices 10–11 built (2026-07-03): distribution.** `pgconfig.json` `targets` (a bare `polyglot build` emits
+the project's whole target set; no config = the historical cs+ts) + `dependencies` (`file:<dir>`).
+Resolution: in-box `plugins/` → pgconfig `file:` → user cache (`%LOCALAPPDATA%\polyglot\plugins\`) → clean
+refusal. **`polyglot install <dir|npm-name>`** validates via the new Core `validateBackend` (full slice-8
+pipeline, no registration) and copies to the cache; bare names shell to `npm pack`+`tar` (wired; end-to-end
+awaits published packages). All three channels verified locally with the PHP plugin. Remaining: the 9b
+member-arm refusal gap, npm publishing of the four first-party packages, 13–15 (identifier hygiene +
+reserved names).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".

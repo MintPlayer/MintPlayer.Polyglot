@@ -142,37 +142,41 @@ std::vector<std::string> backendNames() {
     return names;
 }
 
-bool loadBackend(const std::string& artifactJson, std::string& error) {
+namespace {
+
+// Parse + validate an artifact into a ready-to-register backend (nullptr + error on any problem). The
+// duplicate-name check is the caller's (registration) concern — `polyglot install` validates a manifest
+// for a target that may well already be loaded in this process.
+std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std::string& error) {
     json::Value doc = json::parse(artifactJson);
-    if (doc.kind != json::Value::Kind::Object) { error = "plugin artifact must be a JSON object"; return false; }
+    if (doc.kind != json::Value::Kind::Object) { error = "plugin artifact must be a JSON object"; return nullptr; }
     const std::string name = doc["name"].asString();
-    if (name.empty()) { error = "plugin artifact: missing 'name'"; return false; }
-    if (findBackend(name)) { error = "plugin '" + name + "' is already loaded"; return false; }
+    if (name.empty()) { error = "plugin artifact: missing 'name'"; return nullptr; }
 
     SpecLoadResult spec = loadBackendSpec(doc["spec"]);
     if (!spec.ok) {
         error = "plugin '" + name + "': " + (spec.errors.empty() ? "invalid spec" : spec.errors.front());
-        return false;
+        return nullptr;
     }
     if (spec.spec.name != name) {
         error = "plugin '" + name + "': spec name '" + spec.spec.name + "' does not match";
-        return false;
+        return nullptr;
     }
 
     const json::Value& rulesDoc = doc["rules"];
-    if (rulesDoc.kind != json::Value::Kind::Object) { error = "plugin '" + name + "': missing 'rules'"; return false; }
+    if (rulesDoc.kind != json::Value::Kind::Object) { error = "plugin '" + name + "': missing 'rules'"; return nullptr; }
     engine::RuleTable rules;
     for (const auto& kv : rulesDoc.members) {
         bool ok = true;
         std::string err;
         engine::Rule r = engine::parseRule(kv.second, ok, err);
-        if (!ok) { error = "plugin '" + name + "': rule '" + kv.first + "': " + err; return false; }
+        if (!ok) { error = "plugin '" + name + "': rule '" + kv.first + "': " + err; return nullptr; }
         rules.emplace(kv.first, std::move(r));
     }
     for (const char* required : {"Program", "Type"})
         if (rules.find(required) == rules.end()) {
             error = "plugin '" + name + "': missing required rule '" + std::string(required) + "'";
-            return false;
+            return nullptr;
         }
 
     std::unordered_map<std::string, std::string> caps;
@@ -190,12 +194,12 @@ bool loadBackend(const std::string& artifactJson, std::string& error) {
             error = "plugin '" + name + "': no rule for '" + c.rule + "'" +
                     (cap ? std::string(" and no '") + cap + "' capability entry" : std::string()) +
                     " — a construct with no rule must declare its stance (anti-silent-drop)";
-            return false;
+            return nullptr;
         }
         if (it->second != "false" && it->second != "emulated") {
             error = "plugin '" + name + "': capability '" + std::string(cap) + "' claims '" + it->second +
                     "' but no '" + c.rule + "' rule exists";
-            return false;
+            return nullptr;
         }
     }
 
@@ -207,12 +211,12 @@ bool loadBackend(const std::string& artifactJson, std::string& error) {
         for (const auto& f : fns)
             if (fnCatalog().count(f) == 0) {
                 error = "plugin '" + name + "': unknown builtin '" + f + "' (not in the fixed catalog)";
-                return false;
+                return nullptr;
             }
         for (const auto& c : calls)
             if (rules.find(c) == rules.end()) {
                 error = "plugin '" + name + "': rule reference '" + c + "' does not exist";
-                return false;
+                return nullptr;
             }
     }
 
@@ -226,10 +230,26 @@ bool loadBackend(const std::string& artifactJson, std::string& error) {
     std::string ext = doc["fileExtension"].asString();
     if (ext.empty()) ext = "." + name; // a reasonable default; first-party plugins declare theirs
 
-    registry().push_back(std::make_unique<LoadedBackend>(name, std::move(ext), std::move(spec.spec),
-                                                         std::move(rules), std::move(caps),
-                                                         std::move(overlays)));
+    return std::make_unique<LoadedBackend>(name, std::move(ext), std::move(spec.spec), std::move(rules),
+                                           std::move(caps), std::move(overlays));
+}
+
+} // namespace
+
+bool loadBackend(const std::string& artifactJson, std::string& error) {
+    const std::string name = json::parse(artifactJson)["name"].asString();
+    if (!name.empty() && findBackend(name)) { // checked first: the clearer error for a re-load
+        error = "plugin '" + name + "' is already loaded";
+        return false;
+    }
+    std::unique_ptr<LoadedBackend> b = buildBackend(artifactJson, error);
+    if (!b) return false;
+    registry().push_back(std::move(b));
     return true;
+}
+
+bool validateBackend(const std::string& artifactJson, std::string& error) {
+    return buildBackend(artifactJson, error) != nullptr;
 }
 
 } // namespace mintplayer::polyglot

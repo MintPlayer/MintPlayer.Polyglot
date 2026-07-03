@@ -1762,6 +1762,25 @@ byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10. **P19's core th
 language is a JSON file.** Remaining: 10–11 (pgconfig `targets`/`dependencies` resolution beyond the
 exe-relative dir + `polyglot install`), the 9b member-arm refusal gap, 13–15 (identifier hygiene).
 
+**Slices 10–11 ✅ (2026-07-03) — distribution: pgconfig target resolution + `polyglot install`.**
+`pgconfig.json` gained **`targets`** (the project's target set — a bare `polyglot build` now emits ALL of
+them, each with its manifest's `fileExtension`; no config keeps the historical cs+ts default, so every
+existing script is untouched) and **`dependencies`** (`{name: "file:<dir>"}`, resolved against the
+config's directory). **Resolution order per the scope decision:** already-loaded (the exe-relative
+in-box `plugins/`) → pgconfig `file:` dependency → the user cache (`%LOCALAPPDATA%\polyglot\plugins\
+<name>\`) → a clean refusal naming the known targets. **`polyglot install <dir-or-npm-name>`** validates
+an artifact through the NEW Core `validateBackend` (the full slice-8 pipeline WITHOUT registration —
+`loadBackend` refactored into `buildBackend` + two wrappers; the duplicate-name check stays first for the
+clearer re-load error, which the unit test caught when the refactor reordered it) and copies it into the
+cache; a bare name shells out to `npm pack` + the system `tar` and extracts `package/polyglot-plugin.json`
+(the npm channel is wired but end-to-end-untestable until packages are published — recorded, not claimed).
+**End-to-end verified locally:** `install plugins\php` → cache; a project with `targets: ["csharp","php"]`
+built BOTH from a bare `polyglot build` with the in-box php copy DELETED (cache channel), then again via a
+`file:` dependency with the cache cleared (dependency channel), then refused cleanly with neither.
+Gates: byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10. Remaining in P19: the 9b
+member-arm refusal gap, npm publishing of the four first-party packages (needs an npm account/decision),
+13–15 (identifier hygiene + reserved names — pgconfig `forbiddenIdentifiers` now has its config seam).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

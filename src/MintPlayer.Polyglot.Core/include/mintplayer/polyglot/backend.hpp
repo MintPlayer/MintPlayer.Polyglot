@@ -77,4 +77,8 @@ std::vector<std::string> backendNames();
 // fills `error` on a malformed artifact — a plugin that fails validation is never partially registered.
 bool loadBackend(const std::string& artifactJson, std::string& error);
 
+// Validate an artifact WITHOUT registering it (`polyglot install` checks a manifest before caching it —
+// possibly for a target already loaded in this process). Same checks as loadBackend minus the name clash.
+bool validateBackend(const std::string& artifactJson, std::string& error);
+
 } // namespace mintplayer::polyglot

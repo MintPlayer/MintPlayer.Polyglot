@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -38,10 +39,11 @@ void printUsage() {
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
-        << "  polyglot build <input.pg> [--target <csharp|typescript|python>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
+        << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>]\n"
         << "  polyglot lsp\n"
+        << "  polyglot install <plugin-dir | npm-package>\n"
         << "\n"
         << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
@@ -89,6 +91,9 @@ struct PgConfig {
     bool found = false;
     std::string root; // absolute, resolved against the config's directory
     std::string lib;  // comma-joined lib names
+    std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
+    std::vector<std::pair<std::string, std::string>> dependencies; // target -> source spec ("file:<dir>")
+    fs::path dir; // where the config was found (file: deps resolve against it)
 };
 PgConfig loadPgConfig(const fs::path& startDir) {
     for (fs::path d = startDir;; d = d.parent_path()) {
@@ -97,13 +102,56 @@ PgConfig loadPgConfig(const fs::path& startDir) {
             json::Value v = json::parse(src);
             PgConfig pc;
             pc.found = true;
+            pc.dir = d;
             std::string r = v["root"].asString();
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
+            for (const auto& e : v["targets"].items())
+                if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
+            for (const auto& kv : v["dependencies"].members)
+                if (kv.second.kind == json::Value::Kind::String) pc.dependencies.push_back({kv.first, kv.second.asString()});
             return pc;
         }
         if (!d.has_parent_path() || d.parent_path() == d) return {};
     }
+}
+
+// The user-level plugin cache `polyglot install` populates (%LOCALAPPDATA%\polyglot\plugins\<name>\).
+fs::path pluginCacheDir() {
+#ifdef _WIN32
+    char buf[4096];
+    const unsigned long n = GetEnvironmentVariableA("LOCALAPPDATA", buf, sizeof(buf));
+    if (n > 0 && n < sizeof(buf)) return fs::path(std::string(buf, n)) / "polyglot" / "plugins";
+#endif
+    return fs::temp_directory_path() / "polyglot" / "plugins";
+}
+
+// Load one plugin manifest file into the registry; reports (but does not throw on) failures.
+bool loadPluginFile(const fs::path& manifest) {
+    std::string src;
+    if (!readFile(manifest, src)) return false;
+    std::string err;
+    if (!loadBackend(src, err)) {
+        std::cerr << "polyglot: " << manifest.string() << ": " << err << "\n";
+        return false;
+    }
+    return true;
+}
+
+// Resolve a target that is not yet registered (P19 slices 10-11): pgconfig `dependencies` `file:` paths
+// (relative to the config's directory), then the user cache. The in-box `plugins/` dir next to the exe was
+// loaded at startup; an unresolved name ends up at findTarget's error, which names the channels.
+void resolveConfiguredTargets(const PgConfig& pc) {
+    for (const auto& [name, spec] : pc.dependencies) {
+        if (findTarget(name).ok()) continue;
+        if (spec.rfind("file:", 0) == 0)
+            loadPluginFile((pc.dir / spec.substr(5) / "polyglot-plugin.json").lexically_normal());
+        else
+            std::cerr << "polyglot: dependency '" << name << "': unsupported spec '" << spec
+                      << "' (only file:<dir> resolves in-place; use `polyglot install " << name << "`)\n";
+    }
+    for (const auto& t : pc.targets)
+        if (!findTarget(t).ok()) loadPluginFile(pluginCacheDir() / t / "polyglot-plugin.json");
 }
 
 // Resolves a cross-`.pg` import to a file. A bare specifier ("a.b.c") is a logical module name resolved
@@ -211,11 +259,24 @@ int runBuild(const std::vector<std::string>& args) {
 
     LibConfig lib = parseLibList(libArg);
 
+    resolveConfiguredTargets(pc); // pgconfig `dependencies` (file:) + the install cache (P19 slices 10-11)
+
     bool ok = true;
-    if (target.empty()) { // the default pair; other targets (python, any installed plugin) are opt-in
+    if (target.empty() && !pc.targets.empty()) { // the project declares its target set — build all of it
+        for (const auto& t : pc.targets) {
+            BackendHandle h = findTarget(t);
+            if (!h.ok()) {
+                std::cerr << "polyglot: " << h.error() << "\n";
+                ok = false;
+                continue;
+            }
+            ok &= emitOne(source, input, outDir, h, h.backend()->fileExtension().c_str(), &resolver, lib);
+        }
+    } else if (target.empty()) { // no config: the historical default pair
         ok &= emitOne(source, input, outDir, findTarget("csharp"), ".cs", &resolver, lib);
         ok &= emitOne(source, input, outDir, findTarget("typescript"), ".ts", &resolver, lib);
     } else { // ANY loaded plugin is a valid --target; its manifest names the output extension (P19)
+        if (!findTarget(target).ok()) loadPluginFile(pluginCacheDir() / target / "polyglot-plugin.json");
         BackendHandle h = findTarget(target);
         if (!h.ok()) {
             std::cerr << "polyglot: " << h.error() << "\n";
@@ -975,6 +1036,61 @@ int runLsp(const std::vector<std::string>&) {
     return 0;
 }
 
+// `polyglot install <dir-or-npm-name>` (P19 slice 11): validate a plugin artifact and place it in the
+// user cache, where target resolution finds it. A DIRECTORY containing polyglot-plugin.json installs
+// locally; a bare name shells out to `npm pack` (targets publish as npm packages wrapping the manifest)
+// and extracts `package/polyglot-plugin.json` with the system tar.
+int runInstall(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        std::cerr << "polyglot: install needs a plugin directory or npm package name\n";
+        return 64;
+    }
+    const std::string& spec = args[1];
+    fs::path manifestPath;
+    std::error_code ec;
+    if (fs::is_directory(spec, ec)) {
+        manifestPath = fs::path(spec) / "polyglot-plugin.json";
+    } else {
+        const fs::path tmp = fs::temp_directory_path() / "polyglot-install";
+        fs::remove_all(tmp, ec);
+        fs::create_directories(tmp, ec);
+        const std::string cmd = "npm pack \"" + spec + "\" --pack-destination \"" + tmp.string() + "\" >nul 2>nul";
+        if (std::system(cmd.c_str()) != 0) {
+            std::cerr << "polyglot: npm pack '" << spec << "' failed (is npm on PATH and the package published?)\n";
+            return 1;
+        }
+        fs::path tgz;
+        for (const auto& e : fs::directory_iterator(tmp, ec))
+            if (e.path().extension() == ".tgz") tgz = e.path();
+        if (tgz.empty() || std::system(("tar -xzf \"" + tgz.string() + "\" -C \"" + tmp.string() + "\"").c_str()) != 0) {
+            std::cerr << "polyglot: could not extract the npm package\n";
+            return 1;
+        }
+        manifestPath = tmp / "package" / "polyglot-plugin.json";
+    }
+
+    std::string manifest;
+    if (!readFile(manifestPath, manifest)) {
+        std::cerr << "polyglot: no polyglot-plugin.json at " << manifestPath.string() << "\n";
+        return 1;
+    }
+    std::string err;
+    if (!validateBackend(manifest, err)) { // a plugin that fails validation is never cached
+        std::cerr << "polyglot: invalid plugin: " << err << "\n";
+        return 1;
+    }
+    const std::string name = json::parse(manifest)["name"].asString();
+    const fs::path dest = pluginCacheDir() / name;
+    fs::create_directories(dest, ec);
+    fs::copy_file(manifestPath, dest / "polyglot-plugin.json", fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "polyglot: could not write " << (dest / "polyglot-plugin.json").string() << "\n";
+        return 1;
+    }
+    std::cout << "installed target '" << name << "' -> " << dest.string() << "\n";
+    return 0;
+}
+
 // Load every target plugin found next to the executable (`plugins/<target>/polyglot-plugin.json`). The
 // CLI is a pure engine — no target is compiled in (PRD §4.11); pgconfig-driven resolution (local paths /
 // cache / registry) layers on top at P19 slice 10. A missing plugins dir just leaves the registry empty
@@ -1027,6 +1143,9 @@ int main(int argc, char** argv) {
     }
     if (args[0] == "lsp") {
         return runLsp(args);
+    }
+    if (args[0] == "install") {
+        return runInstall(args);
     }
 
     std::cerr << "polyglot: unknown command '" << args[0] << "'\n\n";
