@@ -1,0 +1,23 @@
+{
+  "name": "@mintplayer/polyglot-target-python",
+  "version": "0.1.0",
+  "description": "MintPlayer Polyglot Python target — a pure-JSON language plugin (spec + emission rules + capabilities + std bindings) for the polyglot transpiler.",
+  "keywords": [
+    "polyglot",
+    "transpiler",
+    "plugin",
+    "python"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MintPlayer/MintPlayer.Polyglot.git",
+    "directory": "plugins/python"
+  },
+  "files": [
+    "polyglot-plugin.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

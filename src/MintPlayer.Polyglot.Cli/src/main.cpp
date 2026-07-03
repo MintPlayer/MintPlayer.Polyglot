@@ -1045,12 +1045,16 @@ int runInstall(const std::vector<std::string>& args) {
         std::cerr << "polyglot: install needs a plugin directory or npm package name\n";
         return 64;
     }
-    const std::string& spec = args[1];
+    std::string spec = args[1];
     fs::path manifestPath;
     std::error_code ec;
     if (fs::is_directory(spec, ec)) {
         manifestPath = fs::path(spec) / "polyglot-plugin.json";
     } else {
+        // A bare target name resolves to the first-party npm naming convention; full package
+        // specs (@scope/name, name@version) pass through untouched.
+        if (spec.find('@') == std::string::npos && spec.find('/') == std::string::npos)
+            spec = "@mintplayer/polyglot-target-" + spec;
         const fs::path tmp = fs::temp_directory_path() / "polyglot-install";
         fs::remove_all(tmp, ec);
         fs::create_directories(tmp, ec);

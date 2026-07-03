@@ -1,0 +1,23 @@
+{
+  "name": "@mintplayer/polyglot-target-php",
+  "version": "0.1.0",
+  "description": "MintPlayer Polyglot PHP target — a pure-JSON language plugin (spec + emission rules + capabilities + std bindings) for the polyglot transpiler.",
+  "keywords": [
+    "polyglot",
+    "transpiler",
+    "plugin",
+    "php"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MintPlayer/MintPlayer.Polyglot.git",
+    "directory": "plugins/php"
+  },
+  "files": [
+    "polyglot-plugin.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
