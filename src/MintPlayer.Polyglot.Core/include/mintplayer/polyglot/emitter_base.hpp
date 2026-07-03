@@ -54,8 +54,11 @@ public:
 
 protected:
     virtual std::string targetGet(const std::string& /*path*/) const { return ""; } // per-target scalar reads
-    virtual std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const = 0;
-    virtual bool wrapAtom(const ir::Expr& child, const std::string& side) const = 0; // "recv"/"unary" parens
+    virtual std::string targetBuiltin(const std::string& /*name*/,
+                                      const std::vector<std::string>& /*args*/) const { return ""; }
+    // "recv"/"unary" parenthesization, driven by the spec's wrapAtom kind-sets (P19 slice 6 — was a
+    // per-target virtual; the policy is data).
+    bool wrapAtom(const ir::Expr& child, const std::string& side) const;
     virtual std::string renderTypeRef(const TypeRef& t) const = 0;                   // the target's type renderer
 
     // The child ir::Expr a rule path names (`node.lhs`, indexed `node.args.<i>`, …); nullptr when the
@@ -327,6 +330,11 @@ protected:
     // Render statements onto a single line (for statement-bodied lambdas, which live mid-expression).
     std::string inlineBlock(const std::vector<ir::StmtPtr>& body);
 
+    // Substitute a bound FFI template's placeholders: `$this` -> the receiver, `$T` -> the mapped type
+    // (ctor templates), `$0`…`$9` -> the args — each rendered through this emitter's own walk. One shared
+    // implementation serves every backend (the three hand-written copies were byte-identical).
+    std::string substBoundTemplate(const std::string& tmpl, const ir::Bound& b);
+
     // Interpret a DECLARATION rule (P19): the decl-flavor kinds (`line`/`block`/`mapDecl`/`stmts`/`seq` +
     // `case`/`call`/bare string rules as lines) write indented lines through this emitter's own
     // line/openBlock machinery; string-flavor payloads (heads, line content) evaluate via evalRule against
@@ -351,6 +359,7 @@ protected:
     //       (enum/union/record/class/function/extension), which are likewise per-target by shape.
     virtual std::string emitExpr(const ir::Expr& e) = 0;     // the entire expression walk
     virtual void emitStmtTarget(const ir::Stmt& s) = 0;      // the statements emitStmt does not handle (For, Try)
+    virtual std::string renderType(const TypeRef& t) = 0;    // the target's type spelling (the Type rule)
     //
     //   (b) The Spec — all per-target *data* the engine consults (block style, statement terminator, throw
     //       keyword, plus the type/literal/operator/bracket tables the concrete emitters read). One accessor

@@ -71,6 +71,12 @@ struct BackendSpec {
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
 
+    // Atom-parenthesization policy: which child node kinds need parens as a member/call receiver ("recv")
+    // or a unary operand ("unary"). Vocabulary: "binary", "unary", "cast", "cond", and "binaryScalar" (a
+    // binary whose lhs is NOT a user type — TS rewrites user-type binaries to high-binding method calls,
+    // so only scalar binaries keep operator form and need receiver parens).
+    std::vector<std::string> wrapAtomRecv, wrapAtomUnary;
+
     // Named lookup tables — the generic `{"fn":"table","args":[name, key]}` catalog entry (a missing key
     // answers ""). First occupant: TS's operator-overload method names (`"+"` -> `"plus"` — no TS operator
     // overloading, so `a + b` on a user type calls the method). The `hasOpMethod` node read consults it.

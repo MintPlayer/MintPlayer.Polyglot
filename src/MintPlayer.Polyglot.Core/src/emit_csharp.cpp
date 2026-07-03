@@ -34,6 +34,7 @@ const char* CSHARP_SPEC_JSON = R"JSON({
   "intSuffix": { "i64": "L", "u64": "UL", "u32": "U" },
   "binaryOp": {},
   "wrapInt": { "i8": "(sbyte)($x)", "i16": "(short)($x)", "u8": "(byte)($x)", "u16": "(ushort)($x)" },
+  "wrapAtom": { "recv": ["binary", "unary", "cast"], "unary": ["binary"] },
   "delimited": { "tuple": { "open": "(", "sep": ", ", "close": ")" } },
   "blockStyle": "bracesAllman",
   "stmtEnd": ";",
@@ -367,17 +368,6 @@ public:
 
 protected:
     std::string renderTypeRef(const TypeRef& t) const override { return csType(t); }
-
-    bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
-        if (side == "recv") // atom(): wrap a binary/unary/cast receiver
-            return c.kind == ir::ExprKind::Binary || c.kind == ir::ExprKind::Unary || c.kind == ir::ExprKind::Cast;
-        // "unary": wrap only a binary operand (so `-(a + b)`, but `-x`/`-(-x)` stay bare)
-        return c.kind == ir::ExprKind::Binary;
-    }
-
-    std::string targetBuiltin(const std::string&, const std::vector<std::string>&) const override {
-        return ""; // every former C# builtin is a generic catalog entry or rule data now (P19 slice 6)
-    }
 };
 
 // The current module's `extern class` type map (name -> spelling/ctor templates), set at the top of each
@@ -470,23 +460,8 @@ public:
 private:
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
 
-    // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as C#.
-    std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
-        std::string out;
-        for (std::size_t i = 0; i < tmpl.size();) {
-            if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
-            else if (tmpl[i] == '$' && tmpl.compare(i, 2, "$T") == 0) { out += csType(b.type); i += 2; } // ctor: the mapped type
-            else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
-                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-                if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
-                i += 2;
-            } else out += tmpl[i++];
-        }
-        return out;
-    }
-
-
     const BackendSpec& spec() const override { return csharpSpec(); }
+    std::string renderType(const TypeRef& t) override { return csType(t); }
 
     std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + specIdent(spec(), name); }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }
@@ -544,7 +519,7 @@ private:
         }
         switch (e.kind) {
             case ir::ExprKind::Bound:
-                return substTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
+                return substBoundTemplate(static_cast<const ir::Bound&>(e).csTemplate, static_cast<const ir::Bound&>(e));
         }
         return "";
     }

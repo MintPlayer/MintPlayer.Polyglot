@@ -1,5 +1,7 @@
 #include "mintplayer/polyglot/emitter_base.hpp"
 
+#include <cctype>
+
 // The shared walk machinery for the hand-written backends — see emitter_base.hpp for the abstraction.
 
 namespace mintplayer::polyglot {
@@ -348,6 +350,20 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
 std::string IrExprCtx::renderType(const std::string& path) const {
     const TypeRef* t = typeRefAt(path);
     return t ? renderTypeRef(*t) : "";
+}
+
+bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
+    const std::vector<std::string>& set = side == "recv" ? spec_.wrapAtomRecv : spec_.wrapAtomUnary;
+    for (const std::string& k : set) {
+        if (k == "binary" && c.kind == ir::ExprKind::Binary) return true;
+        if (k == "binaryScalar" && c.kind == ir::ExprKind::Binary &&
+            !static_cast<const ir::Binary&>(c).lhsIsUserType)
+            return true;
+        if (k == "unary" && c.kind == ir::ExprKind::Unary) return true;
+        if (k == "cast" && c.kind == ir::ExprKind::Cast) return true;
+        if (k == "cond" && c.kind == ir::ExprKind::Cond) return true;
+    }
+    return false;
 }
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
@@ -1022,6 +1038,20 @@ void EmitterBase::headBlock(const std::string& head, const std::vector<ir::StmtP
     openBlock(head);
     blockBody(body);
     closeBlock();
+}
+
+std::string EmitterBase::substBoundTemplate(const std::string& tmpl, const ir::Bound& b) {
+    std::string out;
+    for (std::size_t i = 0; i < tmpl.size();) {
+        if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
+        else if (tmpl.compare(i, 2, "$T") == 0) { out += renderType(b.type); i += 2; } // ctor: the mapped type
+        else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
+            std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
+            if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
+            i += 2;
+        } else out += tmpl[i++];
+    }
+    return out;
 }
 
 std::string EmitterBase::inlineBlock(const std::vector<ir::StmtPtr>& body) {

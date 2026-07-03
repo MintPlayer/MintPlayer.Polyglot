@@ -1565,6 +1565,20 @@ the gate "green"; renamed and re-gated on fresh binaries. Remaining per-target e
 (shareable verbatim), and the statement hooks (For/Try/localDecl/yield/rethrow) + generics spelling — the
 6h/6i targets. Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-6h ✅ (2026-07-03) — the atom-paren policies are spec data; the Bound FFI template is one shared
+implementation.** `BackendSpec` gained **`wrapAtom` kind-sets** (`recv`/`unary` — vocabulary `binary`/
+`unary`/`cast`/`cond`/**`binaryScalar`** (a binary whose lhs is NOT a user type — TS's "only a binary that
+*stays* an operator needs receiver parens" wrinkle, encoded as one vocabulary entry rather than code));
+`IrExprCtx::wrapAtom` is now a NON-virtual base method over the sets, the three per-target overrides
+deleted. `targetBuiltin` gained a default empty body — the three identical stubs deleted. The three
+byte-identical **`substTemplate`** copies collapsed into `EmitterBase::substBoundTemplate` over the
+`emitExpr` hook + a new one-line **`renderType`** hook (csType/tsType/pyTypeName — each backend's whole
+"imperative" type story is now that single line delegating to its Type RULE). The per-target expression
+ctx classes are each ~5 lines: ONE renderTypeRef override. **Slice 6's expression-layer extraction is
+complete** — remaining per-target C++ = the statement hooks (For/Try heads, localDecl/yield/rethrow —
+statement RULES are the natural slice-7-prep), the generics/where spellings (6i), the extern-template
+pickers, and the emit() setup. Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

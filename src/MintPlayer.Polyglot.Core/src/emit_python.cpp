@@ -40,6 +40,7 @@ const char* PY_SPEC_JSON = R"JSON({
                "i8": "(((($x) & 0xff) ^ 0x80) - 0x80)", "i16": "(((($x) & 0xffff) ^ 0x8000) - 0x8000)",
                "i32": "(((($x) & 0xffffffff) ^ 0x80000000) - 0x80000000)",
                "i64": "(((($x) & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)" },
+  "wrapAtom": { "recv": ["binary", "unary", "cond", "cast"], "unary": ["binary"] },
   "blockStyle": "colonIndent",
   "stmtEnd": "",
   "throwKeyword": "raise",
@@ -369,27 +370,14 @@ public:
 };
 const PyDeclHooks kPyDeclHooks;
 
-// The Python rule-interpreter seam. The walrus single-eval temporaries and the `_pg_idiv` prelude flag are
-// the generic `fresh`/`require` machinery now (the emitter's counter + key set plug into the shared ctx);
-// only the atom-wrapping policy and the type renderer remain Python-specific.
+// The Python rule-interpreter seam. The walrus temps, the `_pg_idiv` flag, the builtins, AND the atom
+// policy are all generic machinery + spec data now; only the type renderer remains Python-specific.
 class PyExprCtx : public IrExprCtx {
 public:
     using IrExprCtx::IrExprCtx;
 
 protected:
-    bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
-        if (side == "recv") // Python atom(): wrap anything that would mis-bind against `.`/call/subscription
-            return c.kind == ir::ExprKind::Binary || c.kind == ir::ExprKind::Unary ||
-                   c.kind == ir::ExprKind::Cond || c.kind == ir::ExprKind::Cast;
-        // "unary": wrap only a binary operand
-        return c.kind == ir::ExprKind::Binary;
-    }
-
     std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
-
-    std::string targetBuiltin(const std::string&, const std::vector<std::string>&) const override {
-        return ""; // every former Python builtin is a generic catalog entry or rule data now (P19 slice 6)
-    }
 };
 
 class PythonEmitter : public EmitterBase {
@@ -424,6 +412,7 @@ public:
 
 private:
     const BackendSpec& spec() const override { return pythonSpec(); }
+    std::string renderType(const TypeRef& t) override { return pyTypeName(t); }
     std::string localDecl(const std::string& name, bool) override { return specIdent(spec(), name); } // bare `name = ...`
     std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
     std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
@@ -479,22 +468,6 @@ private:
     std::unordered_set<std::string> requires_; // prelude keys recorded by `{"fn":"require"}` reads ("idiv")
     bool needsAsyncio_ = false; // set when an `async fn main` entry is emitted -> prepend `import asyncio`
 
-    // Substitute a bound FFI template's placeholders: `$this`->receiver, `$T`->the type name (ctor templates),
-    // `$0`,`$1`,…->args. Mirrors the C#/TS backends so a std/plugin binding's python arm renders the same way.
-    std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
-        std::string out;
-        for (std::size_t i = 0; i < tmpl.size();) {
-            if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
-            else if (tmpl.compare(i, 2, "$T") == 0) { out += pyTypeName(b.type); i += 2; }
-            else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
-                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-                if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
-                i += 2;
-            } else out += tmpl[i++];
-        }
-        return out;
-    }
-
     std::string emitExpr(const ir::Expr& e) override {
         // A migrated node kind (see pyExprRuleKey / PY_EXPR_RULES_JSON) is interpreted from its JSON Rule
         // here; the C++ switch below handles only the kinds whose shape is still imperative.
@@ -509,7 +482,7 @@ private:
         }
         switch (e.kind) {
             case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
-                return substTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
+                return substBoundTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
             default:
                 return "__py_unsupported_expr__"; // fails loudly at runtime if a non-skeleton node reaches here
         }

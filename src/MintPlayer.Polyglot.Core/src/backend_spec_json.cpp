@@ -67,6 +67,14 @@ SpecLoadResult loadBackendSpec(const std::string& json) {
     for (const auto& kv : doc["tables"].members)
         if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.tables[kv.first]);
 
+    const json::Value& wa = doc["wrapAtom"];
+    if (wa.kind == json::Value::Kind::Object) {
+        for (const json::Value& k : wa["recv"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomRecv.push_back(k.asString());
+        for (const json::Value& k : wa["unary"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomUnary.push_back(k.asString());
+    }
+
     const json::Value& ids = doc["identifiers"];
     if (ids.kind == json::Value::Kind::Object) {
         for (const json::Value& k : ids["keywords"].items())
@@ -112,6 +120,16 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     const std::string bs = spec.blockStyle == BlockStyle::BracesAllman ? kBlockAllman
                          : spec.blockStyle == BlockStyle::ColonIndent  ? kBlockColon
                                                                        : kBlockKnR;
+
+    std::string wa;
+    if (!spec.wrapAtomRecv.empty() || !spec.wrapAtomUnary.empty()) {
+        auto arr = [](const std::vector<std::string>& v) {
+            std::string o = "[";
+            for (std::size_t i = 0; i < v.size(); ++i) { if (i) o += ","; o += json::quote(v[i]); }
+            return o + "]";
+        };
+        wa = ",\"wrapAtom\":{\"recv\":" + arr(spec.wrapAtomRecv) + ",\"unary\":" + arr(spec.wrapAtomUnary) + "}";
+    }
 
     std::string tbls;
     if (!spec.tables.empty()) {
@@ -164,7 +182,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"throwKeyword\":" + json::quote(spec.throwKeyword) +
            ",\"trueLit\":" + json::quote(spec.trueLit) +
            ",\"falseLit\":" + json::quote(spec.falseLit) +
-           ",\"nullLit\":" + json::quote(spec.nullLit) + tbls + escs + ids + "}";
+           ",\"nullLit\":" + json::quote(spec.nullLit) + wa + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

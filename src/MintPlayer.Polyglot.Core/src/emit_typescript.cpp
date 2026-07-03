@@ -43,7 +43,8 @@ const char* TS_SPEC_JSON = R"JSON({
   "escapes": { "interp": { "`": "\\`", "\\": "\\\\", "${": "\\${" } },
   "wrapInt": { "i8": "($x << 24 >> 24)", "i16": "($x << 16 >> 16)",
                "u8": "($x & 0xff)", "u16": "($x & 0xffff)", "u32": "($x >>> 0)", "i32": "($x | 0)",
-               "i64": "BigInt.asIntN(64, $x)", "u64": "BigInt.asUintN(64, $x)" }
+               "i64": "BigInt.asIntN(64, $x)", "u64": "BigInt.asUintN(64, $x)" },
+  "wrapAtom": { "recv": ["unary", "binaryScalar"], "unary": ["binary"] }
 })JSON";
 
 const BackendSpec& typescriptSpec() {
@@ -427,21 +428,7 @@ public:
     using IrExprCtx::IrExprCtx;
 
 protected:
-    bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
-        if (side == "recv") { // TS atom(): wrap a unary; wrap a binary only when it stays an operator
-            if (c.kind == ir::ExprKind::Unary) return true;
-            // a scalar binary needs parens as a receiver; a user-type binary emits a (high-binding) method call
-            return c.kind == ir::ExprKind::Binary && !static_cast<const ir::Binary&>(c).lhsIsUserType;
-        }
-        // "unary": wrap only a binary operand
-        return c.kind == ir::ExprKind::Binary;
-    }
-
     std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
-
-    std::string targetBuiltin(const std::string&, const std::vector<std::string>&) const override {
-        return ""; // every former TS builtin is a generic catalog entry or rule data now (P19 slice 6)
-    }
 };
 
 class TypeScriptEmitter : public EmitterBase {
@@ -474,22 +461,6 @@ private:
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
-    }
-
-    // `name: T` or `name: T = default` — a parameter declaration with its optional default value.
-    // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as TS.
-    std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
-        std::string out;
-        for (std::size_t i = 0; i < tmpl.size();) {
-            if (tmpl[i] == '$' && tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
-            else if (tmpl[i] == '$' && tmpl.compare(i, 2, "$T") == 0) { out += tsType(b.type); i += 2; } // ctor: the mapped type
-            else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
-                std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-                if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
-                i += 2;
-            } else out += tmpl[i++];
-        }
-        return out;
     }
 
     // TS has a single untyped `catch`, so a typed/guarded catch list becomes an instanceof/guard
@@ -533,6 +504,7 @@ private:
     }
 
     const BackendSpec& spec() const override { return typescriptSpec(); }
+    std::string renderType(const TypeRef& t) override { return tsType(t); }
 
     std::string localDecl(const std::string& name, bool isMutable) override { return std::string(isMutable ? "let " : "const ") + name; }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield " + v + ";" : "return;"; }
@@ -577,7 +549,7 @@ private:
         }
         switch (e.kind) {
             case ir::ExprKind::Bound:
-                return substTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
+                return substBoundTemplate(static_cast<const ir::Bound&>(e).tsTemplate, static_cast<const ir::Bound&>(e));
         }
         return "";
     }
