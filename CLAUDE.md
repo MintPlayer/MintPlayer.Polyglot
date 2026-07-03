@@ -264,15 +264,19 @@ line/indent/mapDecl); localDecl/yield/rethrow are spec data; Python's preludes a
 map + the entry fact). The three backend classes/ctxs/hooks/rule-key switches are DELETED — each
 `emit_*.cpp` is now two JSON blobs + a one-line factory (`InterpretedEmitter(&spec, rules,
 &ExternType::<field>, &Bound::<field>)`; the member picks are the last per-target parameter, collapsing at
-slice 9's overlays). **Slice 7e built (2026-07-03): `emit_*.cpp` NO LONGER EXIST.** The backends are runtime-loaded
-**`plugins/<target>/polyglot-plugin.json`** artifacts (`{schema, name, irTemplates, capabilities, spec,
-rules}`); Core's `loadBackend(bytes, error)` parses strictly (rule parse failure fails the load), requires
-`Program`+`Type`, reads the capability map (Python: `"blockLambdas": false`), registers on a mutable
-registry — zero backends compiled in. The CLI/tests load `plugins/` next to the exe (post-build copy from
-the repo's `plugins/`); missing dir ⇒ findTarget explains. Remaining: 8 (full load-time validation:
-anti-silent-drop rule-or-capability-false per IR kind — Python `Char` first customer; fn-name catalog
-check), 9 (std overlays collapse `irTemplates`/`ir::Bound` per-target fields), 10–11 (pgconfig
-resolution + `polyglot install`), 12 (4th-backend proof), 13–15 (identifier hygiene + reserved names).
+slice 9's overlays). **Slices 7e–9 built (2026-07-03): `emit_*.cpp` NO LONGER EXIST; the loader validates; lowering is
+per-target.** The backends are runtime-loaded **`plugins/<target>/polyglot-plugin.json`** artifacts
+(`{schema, name, capabilities, spec, rules}`); Core's `loadBackend(bytes, error)` parses rules STRICTLY and
+enforces (a) the **anti-silent-drop coverage contract** — a 37-row table pairs every emittable construct
+with the capability that may excuse a missing rule; gaps need a declared `"false"` (§3.E compile refusal)
+or `"emulated"` stance (Python: `blockLambdas:false`, `interfaces:emulated`; Python gained its `Char` rule);
+(b) the **16-builtin fn catalog** (unknown `{"fn":…}` fails the load, not the output); (c) call/mapMembers
+**reference existence**. Capabilities are tri-state. Zero backends compiled in — the CLI/tests load
+`plugins/` next to the exe (post-build copy). **`lower(unit, target)` picks binding/extern arms at lowering**
+— `ir::Bound`→one `tmpl`, `ir::ExternType`→one `typeTmpl`, `irTemplates` gone; `InterpretedEmitter` is
+parameterized by exactly {spec, rules}. Remaining: 9b (std `actual` arms out of the embedded `.pg` into
+plugin overlays — rides with 12), 10–11 (pgconfig resolution + `polyglot install`), 12 (4th-backend proof),
+13–15 (identifier hygiene + reserved names).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".
