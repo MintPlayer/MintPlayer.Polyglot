@@ -1,5 +1,6 @@
 {
-  "//": "Polyglot project manifest. The CLI (check/build) and the language server read this to resolve modules with no flags. `root` is relative to this file (the base for logical imports like \"geometry\"); `lib` is the ambient prelude auto-imported everywhere (so `print` and `Math` resolve).",
+  "//": "Polyglot project manifest. The CLI (check/build) and the language server read this to resolve modules with no flags. `root` is relative to this file (the base for logical imports like \"geometry\"); `lib` is the ambient prelude auto-imported everywhere (so `print` and `Math` resolve); `targets` is the project's target set — a bare `polyglot build` emits all of them, and the LSP squiggles reserved-identifier collisions per listed target.",
   "root": ".",
-  "lib": ["io", "math"]
+  "lib": ["io", "math"],
+  "targets": ["csharp", "typescript"]
 }
