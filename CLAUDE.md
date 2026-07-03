@@ -317,9 +317,16 @@ per-skin printer; convert = parse-A→print-B, so skin→`.pg` needs only the ex
 (ungated slice 0) → seam (post-P19) → one-way `polyglot convert` (observed demand only) → `.pgcs` authoring skin
 (double-gated). Gate to open the phase: P19 shipped + extensions published + real external demand + frozen
 grammar. Nothing built yet; only docs may land early.
+**P11 ✅ v1 built (2026-07-03, win-x64) — the `.pg`-aware NuGet:** `MintPlayer.Polyglot.MSBuild`
+(`src/MintPlayer.Polyglot.MSBuild/`, assets-only, `DevelopmentDependency`, non-transitive `build/`) ships the
+CLI + its `plugins/` under `tools/win-x64/` and transpiles `**/*.pg`→obj/ `BeforeTargets=CoreCompile`
+(incremental, clean-aware, loud missing-RID error, `PolyglotTool`/`PolyglotLib`/`PolyglotRoot` overrides).
+Gate: `tests/msbuild/run-nuget.ps1` (8 checks, all green). v1 limits recorded in PLAN §P11: `Program`-wrapper
+collision with top-level statements (bumps wrapper-rename), `internal` generated types, one-import-root per
+project. Remaining: per-RID CI packaging + NuGet publish, npm sibling.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
-(build-integration NuGet, independent), **P16d** (Visual Studio LSP client), **P19** (100% JSON plugins, above),
-**P20** (input skins, gated, above).
+(build-integration NuGet — ✅ v1 above; per-RID CI + publish remain), **P16d** (Visual Studio LSP client),
+**P19** (100% JSON plugins, above), **P20** (input skins, gated, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

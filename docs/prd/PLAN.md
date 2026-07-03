@@ -417,6 +417,27 @@ types are usable from C# in the same project, incl. the IDE); a second build wit
 transpilation; `dotnet clean` removes the generated files; and a project referencing the first project's
 output does **not** inherit the transpile behavior or the package dependency.
 
+**✅ v1 built (2026-07-03, win-x64) — the gate passes end-to-end** (`tests/msbuild/run-nuget.ps1`, 8
+checks: pack → build generates into `obj/…/polyglot/` → the `.pg` record+fn run from C# → incremental
+skip → touch-retranspiles → clean removes → a referencing project inherits neither transpile nor
+dependency). As designed: `src/MintPlayer.Polyglot.MSBuild/` is an assets-only SDK project
+(`IncludeBuildOutput=false`, `DevelopmentDependency=true`, assets under `build/` not `buildTransitive/`)
+shipping `tools/win-x64/polyglot.exe` **plus its runtime-loaded `plugins/`** (P19: no compiled-in
+backends); `.props` declares the `**/*.pg` glob + `PolyglotLib`/`PolyglotRoot` knobs; `.targets` owns the
+transpile (`BeforeTargets=CoreCompile`, `Inputs/Outputs` incl. the tool path, `Exec` per-file batching by
+`%(RecursiveDir)`, an always-run companion re-adding generated files + `FileWrites`, loud error naming
+the RID + the `PolyglotTool` override when no binary matches, unix `chmod +x`). Two integration lessons
+paid for: NuGet's XML comments can't contain `--` (a literal flag name in a comment broke every consumer
+import with MSB4024), and **RID resolution must live in `.targets`** — `NETCoreSdkPortableRuntimeIdentifier`
+is undefined at NuGet's top-of-project props import. **Recorded v1 limits:** (a) the generated `static
+class Program` wrapper collides with the implicit `Program` of top-level statements (CS0260) — v1
+consumption = class libraries / explicit-Main apps; this bumps the deferred **wrapper-rename** (P19
+slice-15 note) from cosmetic to adoption-relevant; (b) generated types are `internal` — same-assembly
+consumption only, a `public`-emission option is future work; (c) each emitted file carries the Option
+prelude, so multi-`.pg` projects need a single import root (or explicit `@(PolyglotFile)` pruning) until
+prelude dedup exists. **Remaining for “shipped”:** per-RID CI packaging (linux/osx × x64/arm64) + NuGet
+publish; the npm sibling story for TS projects.
+
 ## P12 — Modules, imports & name resolution — ✅ DONE (phase-1)
 Turn the P8 embedded-std foothold into a real module system (full design in PRD §4.5). Independently
 sequenceable — frontend-only, depends just on the current pipeline — and a natural companion to P10's
