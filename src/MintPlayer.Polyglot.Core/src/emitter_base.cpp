@@ -985,6 +985,47 @@ std::unique_ptr<IrDeclCtx> ModuleDeclCtx::memberCtx(const std::string& path, std
     return nullptr;
 }
 
+std::string StmtCtx::get(const std::string& path) const {
+    if (s_.kind == ir::StmtKind::For) {
+        const auto& f = static_cast<const ir::For&>(s_);
+        if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
+        if (path == "stmt.inclusive") return f.inclusive ? "true" : "false";
+        if (path == "stmt.binding")   return f.binding;
+        if (path == "stmt.body.count") return std::to_string(f.body.size());
+        if (path == "stmt.tupleBindings.count") return std::to_string(f.tupleBindings.size());
+        if (path.rfind("stmt.tupleBindings.", 0) == 0) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(19)));
+            if (i < f.tupleBindings.size()) return f.tupleBindings[i];
+        }
+    }
+    return "";
+}
+
+std::string StmtCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
+    return "";
+}
+
+std::string StmtCtx::renderType(const std::string&) const { return ""; }
+
+std::string StmtCtx::emitChild(const std::string& path, const std::string&) const {
+    if (!emit_) return "";
+    if (s_.kind == ir::StmtKind::For) {
+        const auto& f = static_cast<const ir::For&>(s_);
+        if (path == "stmt.rangeStart" && f.rangeStart) return emit_(*f.rangeStart);
+        if (path == "stmt.rangeEnd" && f.rangeEnd)     return emit_(*f.rangeEnd);
+        if (path == "stmt.iterable" && f.iterable)     return emit_(*f.iterable);
+    }
+    return "";
+}
+
+const std::vector<ir::StmtPtr>* StmtCtx::stmtList(const std::string& path) const {
+    if (s_.kind == ir::StmtKind::For && path == "stmt.body")
+        return &static_cast<const ir::For&>(s_).body;
+    return nullptr;
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;
@@ -1171,9 +1212,26 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             }
             return;
         }
-        default:
+        default: {
+            // A per-kind statement RULE, when the backend's table declares one (P19 slice 7): the shape
+            // is data; only a kind with no rule falls back to the imperative emitStmtTarget.
+            const char* key = s.kind == ir::StmtKind::For ? "ForStmt"
+                            : s.kind == ir::StmtKind::Try ? "TryStmt" : nullptr;
+            if (key) {
+                if (const engine::RuleTable* rules = ruleTable()) {
+                    if (const DeclHooks* hooks = declHooks()) {
+                        auto it = rules->find(key);
+                        if (it != rules->end()) {
+                            StmtCtx ctx(s, *hooks, [this](const ir::Expr& e) { return emitExpr(e); });
+                            runDeclRule(it->second, ctx, ctx, rules);
+                            return;
+                        }
+                    }
+                }
+            }
             emitStmtTarget(s);
             return;
+        }
     }
 }
 

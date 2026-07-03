@@ -128,6 +128,22 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
               {"map":"decl.fields","sep":" and ","item":
                 {"tmpl":["self.",{"get":"item.name"}," == other.",{"get":"item.name"}]}}]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "pyStmtBody": {"case":{"when":[[{"eq":["stmt.body.count","0"]},{"line":"pass"}]],"else":{"stmts":"stmt.body"}}},
+  "ForStmt": {"case":{"when":[
+      [{"eq":["stmt.isRange","true"]},
+        {"block":{"head":{"tmpl":["for ",{"fn":"ident","args":[{"get":"stmt.binding"}]}," in range(",
+            {"emit":"stmt.rangeStart"},", ",
+            {"case":{"when":[[{"eq":["stmt.inclusive","true"]},{"tmpl":["(",{"emit":"stmt.rangeEnd"},") + 1"]}]],
+              "else":{"emit":"stmt.rangeEnd"}}},")"]},
+          "body":[{"call":"pyStmtBody"}]}}],
+      [{"not":{"eq":["stmt.tupleBindings.count","0"]}},
+        {"block":{"head":{"tmpl":["for ",
+            {"map":"stmt.tupleBindings","sep":", ","item":{"fn":"ident","args":[{"get":"item"}]}}," in ",
+            {"emit":"stmt.iterable"}]},
+          "body":[{"call":"pyStmtBody"}]}}]],
+      "else":{"block":{"head":{"tmpl":["for ",{"fn":"ident","args":[{"get":"stmt.binding"}]}," in ",
+            {"emit":"stmt.iterable"}]},
+          "body":[{"call":"pyStmtBody"}]}}}},
   "Program": {"seq":[
       {"mapMembers":"module.enums","rule":"EnumDecl"},
       {"mapMembers":"module.unions","rule":"UnionDecl"},
@@ -413,6 +429,8 @@ public:
 private:
     const BackendSpec& spec() const override { return pythonSpec(); }
     std::string renderType(const TypeRef& t) override { return pyTypeName(t); }
+    const engine::RuleTable* ruleTable() const override { return &pyExprRules(); }
+    const DeclHooks* declHooks() const override { return &kPyDeclHooks; }
     std::string localDecl(const std::string& name, bool) override { return specIdent(spec(), name); } // bare `name = ...`
     std::string yieldStmt(const std::string& v, bool has) override { return has ? "yield " + v : "return"; }
     std::string rethrowStmt() override { return "raise"; }            // bare `raise` re-raises the active exception
@@ -427,21 +445,7 @@ private:
     //   Operator   -> `def __add__(self, ...)` (Python dispatches `a + b` to the dunder natively)
     //   Property   -> `@property` + `def name(self)` (accessed as `a.prop`, no call)
     void emitStmtTarget(const ir::Stmt& s) override {
-        // For and Try are the non-shared statements: their shape (not just spelling) diverges per target.
-        if (s.kind == ir::StmtKind::For) {
-            const auto& f = static_cast<const ir::For&>(s);
-            if (f.isRange) {
-                std::string hi = f.inclusive ? "(" + emitExpr(*f.rangeEnd) + ") + 1" : emitExpr(*f.rangeEnd);
-                headBlock("for " + specIdent(spec(), f.binding) + " in range(" + emitExpr(*f.rangeStart) + ", " + hi + ")", f.body);
-            } else if (!f.tupleBindings.empty()) {
-                std::string names;
-                for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += specIdent(spec(), f.tupleBindings[i]); }
-                headBlock("for " + names + " in " + emitExpr(*f.iterable), f.body);
-            } else {
-                headBlock("for " + specIdent(spec(), f.binding) + " in " + emitExpr(*f.iterable), f.body);
-            }
-            return;
-        }
+        // Try is the last imperative statement shape (For is the "ForStmt" rule now).
         if (s.kind == ir::StmtKind::Try) { emitTry(static_cast<const ir::Try&>(s)); return; }
         line("# polyglot: statement kind not yet supported for the python target");
     }

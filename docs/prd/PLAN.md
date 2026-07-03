@@ -1596,6 +1596,21 @@ localDecl/yield/rethrow spellings, the extern-template picker + Bound field sele
 the per-target fields), the emit() setup, and the rule-key switches. Byte-identical (117 files), unit
 green, 39/39 + 38/38.
 
+**Slice-7a ✅ (2026-07-03) — `For` is statement-rule data ×3; the statement-rule dispatch lands.** The
+shared `emitStmt`'s default case now consults the backend's rule table for a per-KIND statement rule
+(`"ForStmt"`/`"TryStmt"`) before falling back to `emitStmtTarget` — the mechanism mirrors the expression
+walk's table dispatch, via two new one-line backend hooks (`ruleTable()`/`declHooks()`) that 7d will reuse
+to collapse the backend classes entirely. New **`StmtCtx`** (stmt.* reads over one `ir::Stmt`: For's
+`isRange`/`inclusive`/`binding`/`tupleBindings`/`body.count`; `rangeStart`/`rangeEnd`/`iterable` re-enter
+the expression walk; `stmt.body` feeds `{"stmts"}`; `ident`/`mangle` through the hooks). The three For
+shapes as `case` rules: C# `for (var b = s; b <= e; b++)` / `foreach (var (a, b) in seq)` / `foreach (var
+b in seq)`; TS `for (let …)` / `for (const [a, b] of seq)` / `for (const b of seq)`; Python
+`range(s, (e) + 1)` inclusive + ident-escaped bindings + the empty-body `pass` (a shared `pyStmtBody`
+helper rule). Three imperative For blocks deleted — `emitStmtTarget` is now Try-only on all three targets.
+Byte-identical (117 files), unit green, 39/39 + 38/38. Next: 7b (Try ×3 — TS's `__handled` dispatch chain
+is the hard one), 7c (localDecl/yield/rethrow spellings as spec data), 7d (shared emitExpr/emit walk →
+the backend classes dissolve), 7e (physical `plugins/<target>/` split + loader).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

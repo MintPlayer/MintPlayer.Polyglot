@@ -201,6 +201,19 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                   "else":{"tmpl":["this.",{"get":"item.name"}," === other.",{"get":"item.name"}]}}}},
               ";"]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "ForStmt": {"case":{"when":[
+      [{"eq":["stmt.isRange","true"]},
+        {"block":{"head":{"tmpl":["for (let ",{"get":"stmt.binding"}," = ",{"emit":"stmt.rangeStart"},"; ",
+            {"get":"stmt.binding"},
+            {"case":{"when":[[{"eq":["stmt.inclusive","true"]}," <= "]],"else":" < "}},
+            {"emit":"stmt.rangeEnd"},"; ",{"get":"stmt.binding"},"++)"]},
+          "body":[{"stmts":"stmt.body"}]}}],
+      [{"not":{"eq":["stmt.tupleBindings.count","0"]}},
+        {"block":{"head":{"tmpl":["for (const [",
+            {"map":"stmt.tupleBindings","sep":", ","item":{"get":"item"}},"] of ",{"emit":"stmt.iterable"},")"]},
+          "body":[{"stmts":"stmt.body"}]}}]],
+      "else":{"block":{"head":{"tmpl":["for (const ",{"get":"stmt.binding"}," of ",{"emit":"stmt.iterable"},")"]},
+        "body":[{"stmts":"stmt.body"}]}}}},
   "Program": {"seq":[
       {"mapMembers":"module.enums","rule":"EnumDecl"},
       {"mapMembers":"module.interfaces","rule":"InterfaceDecl"},
@@ -489,6 +502,8 @@ private:
 
     const BackendSpec& spec() const override { return typescriptSpec(); }
     std::string renderType(const TypeRef& t) override { return tsType(t); }
+    const engine::RuleTable* ruleTable() const override { return &tsExprRules(); }
+    const DeclHooks* declHooks() const override { return &kTsDeclHooks; }
 
     std::string localDecl(const std::string& name, bool isMutable) override { return std::string(isMutable ? "let " : "const ") + name; }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield " + v + ";" : "return;"; }
@@ -499,23 +514,7 @@ private:
             case ir::StmtKind::Try:
                 emitTry(static_cast<const ir::Try&>(s));
                 break;
-            case ir::StmtKind::For: {
-                const auto& f = static_cast<const ir::For&>(s);
-                std::string head;
-                if (f.isRange) {
-                    std::string cmp = f.inclusive ? " <= " : " < ";
-                    head = "for (let " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
-                           f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++)";
-                } else if (!f.tupleBindings.empty()) { // `for (const [a, b] of seq)`
-                    std::string names;
-                    for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += f.tupleBindings[i]; }
-                    head = "for (const [" + names + "] of " + emitExpr(*f.iterable) + ")";
-                } else {
-                    head = "for (const " + f.binding + " of " + emitExpr(*f.iterable) + ")";
-                }
-                headBlock(head, f.body);
-                break;
-            }
+            default: break; // For is the "ForStmt" rule now (shared dispatch in emitStmt)
         }
     }
 

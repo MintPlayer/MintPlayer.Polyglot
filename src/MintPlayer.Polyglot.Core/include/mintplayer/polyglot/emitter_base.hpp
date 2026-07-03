@@ -285,6 +285,26 @@ private:
     int entry_ = -1;               // first isEntry function (unfiltered), -1 = none
 };
 
+// The statement-scoped context a per-kind STATEMENT rule evaluates against (`stmt.*` reads — the For
+// fields today; Try lands with its own reads). Child expressions re-enter the expression walk; the body
+// statement lists feed `{"stmts":…}`; bindings spell raw or through `ident` as the rule decides.
+class StmtCtx : public IrDeclCtx {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    StmtCtx(const ir::Stmt& s, const DeclHooks& hooks, EmitFn emit)
+        : s_(s), hooks_(hooks), emit_(std::move(emit)) {}
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+    std::string emitChild(const std::string& path, const std::string& side) const override;
+    const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
+
+private:
+    const ir::Stmt& s_;
+    const DeclHooks& hooks_;
+    EmitFn emit_;
+};
+
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
 // `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
 // `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern
@@ -362,6 +382,10 @@ protected:
     virtual std::string emitExpr(const ir::Expr& e) = 0;     // the entire expression walk
     virtual void emitStmtTarget(const ir::Stmt& s) = 0;      // the statements emitStmt does not handle (For, Try)
     virtual std::string renderType(const TypeRef& t) = 0;    // the target's type spelling (the Type rule)
+    // The backend's rule table + decl hooks, so the SHARED walk can dispatch per-kind statement rules
+    // ("ForStmt"/"TryStmt") before falling back to emitStmtTarget (P19 slice 7 — the last statement C++).
+    virtual const engine::RuleTable* ruleTable() const { return nullptr; }
+    virtual const DeclHooks* declHooks() const { return nullptr; }
     //
     //   (b) The Spec — all per-target *data* the engine consults (block style, statement terminator, throw
     //       keyword, plus the type/literal/operator/bracket tables the concrete emitters read). One accessor

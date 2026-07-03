@@ -207,6 +207,19 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
       [{"eq":["decl.methods.count","0"]},{"line":{"tmpl":[{"call":"csRecordHead"},";"]}}]],
       "else":{"block":{"head":{"call":"csRecordHead"},
         "body":[{"mapMembers":"decl.methods","rule":"MethodDecl"}]}}}},
+  "ForStmt": {"case":{"when":[
+      [{"eq":["stmt.isRange","true"]},
+        {"block":{"head":{"tmpl":["for (var ",{"get":"stmt.binding"}," = ",{"emit":"stmt.rangeStart"},"; ",
+            {"get":"stmt.binding"},
+            {"case":{"when":[[{"eq":["stmt.inclusive","true"]}," <= "]],"else":" < "}},
+            {"emit":"stmt.rangeEnd"},"; ",{"get":"stmt.binding"},"++)"]},
+          "body":[{"stmts":"stmt.body"}]}}],
+      [{"not":{"eq":["stmt.tupleBindings.count","0"]}},
+        {"block":{"head":{"tmpl":["foreach (var (",
+            {"map":"stmt.tupleBindings","sep":", ","item":{"get":"item"}},") in ",{"emit":"stmt.iterable"},")"]},
+          "body":[{"stmts":"stmt.body"}]}}]],
+      "else":{"block":{"head":{"tmpl":["foreach (var ",{"get":"stmt.binding"}," in ",{"emit":"stmt.iterable"},")"]},
+        "body":[{"stmts":"stmt.body"}]}}}},
   "Program": {"seq":[
       {"mapMembers":"module.enums","rule":"EnumDecl"},
       {"mapMembers":"module.interfaces","rule":"InterfaceDecl"},
@@ -443,6 +456,8 @@ private:
 
     const BackendSpec& spec() const override { return csharpSpec(); }
     std::string renderType(const TypeRef& t) override { return csType(t); }
+    const engine::RuleTable* ruleTable() const override { return &csharpExprRules(); }
+    const DeclHooks* declHooks() const override { return &kCsDeclHooks; }
 
     std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + specIdent(spec(), name); }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }
@@ -466,23 +481,7 @@ private:
                 if (t.hasFinally) headBlock("finally", t.finallyBody);
                 break;
             }
-            case ir::StmtKind::For: {
-                const auto& f = static_cast<const ir::For&>(s);
-                std::string head;
-                if (f.isRange) {
-                    std::string cmp = f.inclusive ? " <= " : " < ";
-                    head = "for (var " + f.binding + " = " + emitExpr(*f.rangeStart) + "; " +
-                           f.binding + cmp + emitExpr(*f.rangeEnd) + "; " + f.binding + "++)";
-                } else if (!f.tupleBindings.empty()) { // `foreach (var (a, b) in seq)`
-                    std::string names;
-                    for (std::size_t i = 0; i < f.tupleBindings.size(); ++i) { if (i) names += ", "; names += f.tupleBindings[i]; }
-                    head = "foreach (var (" + names + ") in " + emitExpr(*f.iterable) + ")";
-                } else {
-                    head = "foreach (var " + f.binding + " in " + emitExpr(*f.iterable) + ")";
-                }
-                headBlock(head, f.body);
-                break;
-            }
+            default: break; // For is the "ForStmt" rule now (shared dispatch in emitStmt)
         }
     }
 
