@@ -1,0 +1,39 @@
+name: Publish VS Code extension
+
+# Publishes editors/vscode to the Visual Studio Marketplace, mirroring the org's
+# mintplayer-ng-bootstrap snippets pipeline (HaaLeo/publish-vscode-extension + a
+# publisher PAT). PUBLISH_SNIPPETS is the org-wide marketplace PAT for the
+# `mintplayer` publisher; rename here if this repo gets its own secret.
+# skipDuplicate makes the job a no-op until the extension version is bumped.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'editors/vscode/**'
+      - '.github/workflows/publish-vscode.yml'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: npm ci
+
+      - name: Publish to Visual Studio Marketplace
+        uses: HaaLeo/publish-vscode-extension@v2
+        with:
+          packagePath: 'editors/vscode'
+          pat: ${{ secrets.PUBLISH_SNIPPETS }}
+          skipDuplicate: true
+          registryUrl: https://marketplace.visualstudio.com

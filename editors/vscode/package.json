@@ -4,7 +4,11 @@
   "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting).",
   "version": "0.0.1",
   "publisher": "mintplayer",
-  "license": "SEE LICENSE IN ../../LICENSE",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MintPlayer/MintPlayer.Polyglot"
+  },
   "engines": { "vscode": "^1.82.0" },
   "categories": ["Programming Languages", "Formatters", "Linters"],
   "main": "./extension.js",

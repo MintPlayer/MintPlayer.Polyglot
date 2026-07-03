@@ -17,5 +17,6 @@ async fn main() {
     let v = Vec2(3.0, 4.0)
     print("length = ${length(v)}")
 
-    let global = "Pieterjan"
+    let base = "Pieterjan"
+    // let super = "De Clippel"
 }

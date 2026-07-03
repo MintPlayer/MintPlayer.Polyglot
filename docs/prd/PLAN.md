@@ -850,6 +850,17 @@ features).
   the utf-16 column and go-to-def from a utf-16 cursor resolves correctly. **All P16 tail items are done; only
   P16d (the Visual Studio client) remains of P16.**
 
+**Marketplace publishing wired ✅ (2026-07-03) — the P19 gate is met, so the VS Code extension can ship.**
+`.github/workflows/publish-vscode.yml` mirrors the org's snippets pipeline (`HaaLeo/publish-vscode-extension@v2`
++ the org `PUBLISH_SNIPPETS` marketplace PAT, `skipDuplicate` so only a version bump republishes; fires on push
+to main touching `editors/vscode/**`). The manifest gained `license: MIT` (a real root `LICENSE` now exists —
+the old field pointed at a nonexistent file, which `vsce` can't package anyway) + a `repository` URL; a
+marketplace `README.md` documents features/requirements/`pgconfig.json`/settings. Validated locally:
+`vsce package` produces a clean 323-file VSIX (runtime `node_modules` in, `testbench/` excluded by
+`.vscodeignore`). **The published extension does NOT bundle the CLI** — everything beyond highlighting needs
+`polyglot` on PATH or `polyglot.cliPath` (the README says so); per-platform CLI bundling is future work gated
+on the same VS-2026-runner problem as P11's per-RID packaging.
+
 ## P17 — Live generated-output preview — ✅ done (2026-07-01; §4.9, 2-agent investigation)
 See a `.pg` file's emitted C#/TS/Python **live as you type**, produced in memory (never written to disk) and
 rendered into a **read-only virtual editor opened beside** the source — reusing P16's virtual-doc + custom-LSP-
