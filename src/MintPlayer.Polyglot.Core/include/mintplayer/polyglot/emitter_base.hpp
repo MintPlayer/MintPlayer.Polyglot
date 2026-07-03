@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "mintplayer/polyglot/backend_engine.hpp"
@@ -32,13 +33,21 @@ class IrExprCtx : public engine::EvalContext {
 public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
     using InlineFn = std::function<std::string(const std::vector<ir::StmtPtr>&)>;
-    IrExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, InlineFn inlineBlock = {})
-        : e_(e), spec_(spec), emit_(std::move(emit)), inline_(std::move(inlineBlock)) {}
+    // `fresh` / `requires` plug the emitter's per-run state in: the single-eval temp counter a
+    // `{"fresh":…}` rule mints from, and the prelude-key set a `{"fn":"require"}` read records into.
+    // Backends without the machinery pass nothing.
+    IrExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, InlineFn inlineBlock = {},
+              int* fresh = nullptr, std::unordered_set<std::string>* preludeKeys = nullptr)
+        : e_(e), spec_(spec), emit_(std::move(emit)), inline_(std::move(inlineBlock)),
+          fresh_(fresh), requires_(preludeKeys) {}
 
     std::string get(const std::string& path) const override;
     bool has(const std::string& path) const override { return !get(path).empty(); }
     std::string emitChild(const std::string& path, const std::string& side) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string freshName(const std::string& prefix) const override {
+        return fresh_ ? prefix + std::to_string((*fresh_)++) : std::string();
+    }
     // {"type":path}: resolve the TypeRef the path names, render it via the backend's (rule-driven) type
     // renderer. The shared part is path->TypeRef; the rendering is the per-target renderTypeRef.
     std::string renderType(const std::string& path) const override;
@@ -61,6 +70,8 @@ protected:
     const BackendSpec& spec_;
     EmitFn emit_;
     InlineFn inline_;
+    int* fresh_ = nullptr;                                 // the emitter's temp counter (may be null)
+    std::unordered_set<std::string>* requires_ = nullptr;  // the emitter's prelude keys (may be null)
 };
 
 // The decl-scoped context a DECLARATION rule evaluates against: path reads over one IR declaration

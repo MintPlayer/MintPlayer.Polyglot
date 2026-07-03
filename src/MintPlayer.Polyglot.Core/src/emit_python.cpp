@@ -87,7 +87,10 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
   "Await":  { "tmpl": [ "await ", {"emitChild":"node.operand","side":"recv"} ] },
   "Call": { "tmpl": [ {"fn":"mangleName","args":[{"get":"node.mangledCallee"}]},
                       "(", {"map":"node.args","sep":", "}, ")" ] },
-  "Member": { "case": { "when": [ [ {"eq":["node.nullSafe","true"]}, {"fn":"nullSafeMember"} ] ],
+  "Member": { "case": { "when": [ [ {"eq":["node.nullSafe","true"]},
+      {"fresh":{"prefix":"__o","as":"t","in":
+        {"tmpl":["(",{"get":"t"},".",{"get":"node.field"}," if (",{"get":"t"}," := ",{"emit":"node.object"},
+                 ") is not None else None)"]}}} ] ],
               "else": { "tmpl": [
                 { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
                             "else": {"emitChild":"node.object","side":"recv"} } },
@@ -264,14 +267,19 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
         {"call":"pyArmGuard"} ] ],
     "else": {"tmpl":[{"call":"pyArmBase"}," and ",{"call":"pyArmGuard"}]} } },
   "Binary": { "case": { "when": [
-      [ {"eq":["node.op","??"]}, {"fn":"nullCoalesce"} ],
+      [ {"eq":["node.op","??"]},
+        {"fresh":{"prefix":"__c","as":"t","in":
+          {"tmpl":["(",{"get":"t"}," if (",{"get":"t"}," := ",{"emit":"node.lhs"},") is not None else ",
+                   {"emit":"node.rhs"},")"]}}} ],
       [ {"and":[{"eq":["node.typeIsInt","true"]},
                 {"or":[{"eq":["node.op","+"]},{"eq":["node.op","-"]},{"eq":["node.op","*"]},
                        {"eq":["node.op","/"]},{"eq":["node.op","%"]}]}]},
         {"fn":"wrap","args":[{"get":"node.type"},
           { "case": { "when": [
-              [ {"eq":["node.op","/"]}, {"fn":"idiv","args":[{"emit":"node.lhs"},{"emit":"node.rhs"}]} ],
-              [ {"eq":["node.op","%"]}, {"fn":"irem","args":[{"emit":"node.lhs"},{"emit":"node.rhs"}]} ] ],
+              [ {"eq":["node.op","/"]}, {"tmpl":[{"fn":"require","args":["idiv"]},
+                  "_pg_idiv(",{"emit":"node.lhs"},", ",{"emit":"node.rhs"},")"]} ],
+              [ {"eq":["node.op","%"]}, {"tmpl":[{"fn":"require","args":["idiv"]},
+                  "_pg_irem(",{"emit":"node.lhs"},", ",{"emit":"node.rhs"},")"]} ] ],
             "else": {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"get":"node.op"}," ",
                              {"emitChild":"node.rhs","side":"r"}]} } } ]} ] ],
     "else": {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"fn":"opSpelling","args":[{"get":"node.op"}]}," ",
@@ -361,14 +369,12 @@ public:
 };
 const PyDeclHooks kPyDeclHooks;
 
-// The Python rule-interpreter seam. `tmp`/`needsIdiv` are the EMITTER's counters, reached by reference:
-// the walrus builtins (`?.`/`??` single-evaluation temporaries) mint fresh names, and `idiv`/`irem` flag
-// that the `_pg_idiv` prelude must be prepended. The stateful machinery stays fixed C++; the rules only
-// select it.
+// The Python rule-interpreter seam. The walrus single-eval temporaries and the `_pg_idiv` prelude flag are
+// the generic `fresh`/`require` machinery now (the emitter's counter + key set plug into the shared ctx);
+// only the atom-wrapping policy and the type renderer remain Python-specific.
 class PyExprCtx : public IrExprCtx {
 public:
-    PyExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, int& tmp, bool& needsIdiv)
-        : IrExprCtx(e, spec, std::move(emit)), tmp_(tmp), needsIdiv_(needsIdiv) {}
+    using IrExprCtx::IrExprCtx;
 
 protected:
     bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
@@ -381,31 +387,9 @@ protected:
 
     std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
 
-    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "idiv" || name == "irem") { // truncating int / and % need the _pg_idiv prelude
-            needsIdiv_ = true;
-            return std::string(name == "idiv" ? "_pg_idiv(" : "_pg_irem(") +
-                   (args.size() > 0 ? args[0] : std::string()) + ", " +
-                   (args.size() > 1 ? args[1] : std::string()) + ")";
-        }
-        if (name == "nullCoalesce" && e_.kind == ir::ExprKind::Binary) {
-            // `a ?? d` -> `(t if (t := a) is not None else d)` (single eval of a)
-            const auto& b = static_cast<const ir::Binary&>(e_);
-            std::string t = "__c" + std::to_string(tmp_++);
-            return "(" + t + " if (" + t + " := " + emit_(*b.lhs) + ") is not None else " + emit_(*b.rhs) + ")";
-        }
-        if (name == "nullSafeMember" && e_.kind == ir::ExprKind::Member) {
-            // `obj?.field` -> `(t.field if (t := obj) is not None else None)` (single eval)
-            const auto& m = static_cast<const ir::Member&>(e_);
-            std::string t = "__o" + std::to_string(tmp_++);
-            return "(" + t + "." + m.field + " if (" + t + " := " + emit_(*m.object) + ") is not None else None)";
-        }
-        return "";
+    std::string targetBuiltin(const std::string&, const std::vector<std::string>&) const override {
+        return ""; // every former Python builtin is a generic catalog entry or rule data now (P19 slice 6)
     }
-
-private:
-    int& tmp_;
-    bool& needsIdiv_;
 };
 
 class PythonEmitter : public EmitterBase {
@@ -424,7 +408,7 @@ public:
         for (const auto& fn : m.functions)
             if (fn.isEntry) { needsAsyncio_ = fn.isAsync; break; } // `asyncio.run(main())` needs the module
         if (needsAsyncio_) out_ = "import asyncio\n" + out_;
-        if (needsIdiv_) out_ = idivPrelude() + out_; // C#-faithful truncating int `/` and `%`
+        if (requires_.count("idiv")) out_ = idivPrelude() + out_; // C#-faithful truncating int `/` and `%`
         return out_;
     }
 
@@ -492,7 +476,7 @@ private:
         if (t.hasFinally) { openBlock("finally"); blockBody(t.finallyBody); }
     }
 
-    bool needsIdiv_ = false; // set when a fixed-width int `/`/`%` is emitted -> prepend the trunc helpers
+    std::unordered_set<std::string> requires_; // prelude keys recorded by `{"fn":"require"}` reads ("idiv")
     bool needsAsyncio_ = false; // set when an `async fn main` entry is emitted -> prepend `import asyncio`
 
     // Substitute a bound FFI template's placeholders: `$this`->receiver, `$T`->the type name (ctor templates),
@@ -518,7 +502,8 @@ private:
             const auto& rules = pyExprRules();
             auto it = rules.find(key);
             if (it != rules.end()) {
-                PyExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, tmp_, needsIdiv_);
+                PyExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, {},
+                              &tmp_, &requires_);
                 return engine::evalRule(it->second, ctx, &rules);
             }
         }

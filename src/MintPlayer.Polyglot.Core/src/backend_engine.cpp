@@ -138,6 +138,14 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.parts.push_back(parseRule(v["each"], ok, error));
         return r;
     }
+    if (v.has("fresh")) { // mint a single-eval temp: {"fresh":{"prefix":…,"as":…,"in":rule}}
+        const json::Value& fv = v["fresh"];
+        r.kind = Rule::Kind::Fresh;
+        r.s = fv["prefix"].asString();
+        r.s2 = fv["as"].asString();
+        r.parts.push_back(parseRule(fv["in"], ok, error));
+        return r;
+    }
     if (v.has("mapMembers")) { // run the named decl rule once per member of the list at `path`, each
         r.kind = Rule::Kind::MapMembers; // against its own member-scoped root context (a member is a decl)
         r.s = v["mapMembers"].asString();
@@ -191,10 +199,35 @@ public:
         return base_.builtin(name, args);
     }
     std::string renderType(const std::string& p) const override { return base_.renderType(p); }
+    std::string freshName(const std::string& p) const override { return base_.freshName(p); }
 
 private:
     const EvalContext& base_;
     const std::string& acc_;
+};
+
+// Exposes a `{"fresh":…}` rule's minted temporary under its declared alias; everything else delegates.
+class FreshCtx : public EvalContext {
+public:
+    FreshCtx(const EvalContext& base, const std::string& alias, std::string name)
+        : base_(base), alias_(alias), name_(std::move(name)) {}
+
+    std::string get(const std::string& p) const override { return p == alias_ ? name_ : base_.get(p); }
+    bool has(const std::string& p) const override { return p == alias_ ? !name_.empty() : base_.has(p); }
+    std::string emitChild(const std::string& p, const std::string& side) const override {
+        return base_.emitChild(p, side);
+    }
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override {
+        return base_.builtin(name, args);
+    }
+    std::string renderType(const std::string& p) const override { return base_.renderType(p); }
+    std::string resolvePath(const std::string& p) const override { return base_.resolvePath(p); }
+    std::string freshName(const std::string& p) const override { return base_.freshName(p); }
+
+private:
+    const EvalContext& base_;
+    const std::string& alias_;
+    std::string name_;
 };
 
 } // namespace
@@ -278,6 +311,10 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
             return out;
         }
         case Rule::Kind::Type: return ctx.renderType(r.s);
+        case Rule::Kind::Fresh: { // mint once, expose under the alias for every read in the body
+            FreshCtx f(ctx, r.s2, ctx.freshName(r.s));
+            return evalRule(r.parts[0], f, helpers, depth);
+        }
         case Rule::Kind::Call: {
             // A named helper sub-rule from the plugin's own table. Depth-capped so a helper cycle bottoms
             // out loudly instead of looping — the DSL stays non-Turing-complete. (Load-time validation

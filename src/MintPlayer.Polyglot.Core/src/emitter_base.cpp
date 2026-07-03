@@ -334,6 +334,12 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     // Table-template substitution — {"fn":"subst","args":[<table>, <key>, <expr>]}: look the template up,
     // fill its `$x` holes (identity when absent). The conversion rules' width-specific pieces live here.
     if (name == "subst" && args.size() >= 3) return specSubst(spec_, args[0], args[1], args[2]);
+    // Prelude requirement — {"fn":"require","args":[<key>]} records the key and emits nothing; the
+    // emitter prepends the matching prelude once after the walk (Python's `_pg_idiv` helpers).
+    if (name == "require") {
+        if (requires_ && !args.empty()) requires_->insert(args[0]);
+        return "";
+    }
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);

@@ -35,6 +35,9 @@ public:
     // Resolve a rule path through any item-scoping wrappers to its absolute form (`item.body` inside a
     // `mapDecl` element -> `decl.methods.3.body`) — the decl interpreter's `stmts` resolves lists this way.
     virtual std::string resolvePath(const std::string& p) const { return p; }
+    // Mint a fresh single-eval temporary name from the emitter's counter (a `{"fresh":…}` rule calls this
+    // once, then exposes the name to its body under the declared alias). "" when the context has no counter.
+    virtual std::string freshName(const std::string& /*prefix*/) const { return ""; }
     // Recurse into a child IR node at `path`, emitting it. `side` selects precedence parenthesization computed
     // by the CONTEXT (not the plugin): "" = plain, "l"/"r" = a binary operand (wrap by precedence+associativity),
     // "recv" = an atom receiver (wrap a binary/unary/cast). Keeping the paren algorithm in the context (fixed
@@ -58,11 +61,11 @@ struct Test {
 // EmitterBase::runDeclRule (declaration shapes need block structure, not a return string).
 struct Rule {
     enum class Kind {
-        Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type, // string flavor
-        Line, Block, MapDecl, Stmts, Seq, MapMembers,                      // decl flavor
+        Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type, Fresh, // string flavor
+        Line, Block, MapDecl, Stmts, Seq, MapMembers,                             // decl flavor
     } kind = Kind::Lit;
-    std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts/MapMembers: path | Fn/Call: name | Interleave: lits
-    std::string s2;                             // Interleave: holes path | MapMembers: the decl rule to run per member
+    std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts/MapMembers: path | Fn/Call: name | Interleave: lits | Fresh: prefix
+    std::string s2;                             // Interleave: holes path | MapMembers: decl rule per member | Fresh: alias
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children
     std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps
@@ -91,6 +94,7 @@ public:
     }
     std::string renderType(const std::string& p) const override { return base_.renderType(redirect(p)); }
     std::string resolvePath(const std::string& p) const override { return base_.resolvePath(redirect(p)); }
+    std::string freshName(const std::string& p) const override { return base_.freshName(p); }
     std::string redirect(const std::string& p) const {
         if (p == "item") return prefix_;
         if (p.rfind("item.", 0) == 0) return prefix_ + p.substr(4); // "item.value" -> "<prefix>.value"

@@ -1548,6 +1548,23 @@ width table; float→small `wrap(to, Math.trunc(x))`; small→small `wrap(to, x)
 `idiv`/`irem` (the `require`-bucket prelude flag) + `nullCoalesce`/`nullSafeMember` (the `fresh` walrus
 temps) — the stateful tail, next. Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-6g ✅ (2026-07-03) — `fresh` + `require` land (catalog rows 8+9); ZERO per-target expression
+builtins remain on any backend.** The **`{"fresh":{"prefix","as","in"}}`** rule kind mints one single-eval
+temp from the emitter's counter (`EvalContext::freshName`, plugged in as an `IrExprCtx` ctor param;
+`FreshCtx` exposes the name under the declared alias to every read in the body — the same name appears 3×
+in a walrus template, which is exactly why per-use minting couldn't work). The
+**`{"fn":"require","args":[<key>]}`** entry records a prelude key into the emitter's set and emits nothing;
+Python's emit prepends `_pg_idiv` when `"idiv"` was recorded (the key→prelude-text map becomes plugin data
+at the loader). As rule data: Python's `?.` walrus (`(t.field if (t := obj) is not None else None)`), `??`
+walrus, and the `/`/`%` `_pg_idiv`/`_pg_irem` calls (the require read rides in the same `tmpl`). Deleted:
+Python's `idiv`/`irem`/`nullCoalesce`/`nullSafeMember` builtins + the `tmp_`/`needsIdiv_` by-ref ctx
+plumbing — **`targetBuiltin` is now an empty stub on C#, TS, AND Python**. Mid-slice fix: named a ctor
+param `requires` — a C++20 keyword (MSVC C2143), and MSBuild's exit code masked it while stale binaries ran
+the gate "green"; renamed and re-gated on fresh binaries. Remaining per-target expression C++ = the
+`wrapAtom` paren policies, the thin `renderTypeRef` wrappers, three identical `substTemplate` copies
+(shareable verbatim), and the statement hooks (For/Try/localDecl/yield/rethrow) + generics spelling — the
+6h/6i targets. Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
