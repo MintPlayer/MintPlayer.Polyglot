@@ -1803,9 +1803,15 @@ match, and the same names compiling fine on non-reserving targets) + 9 unit test
 39/39 + 38/38 + samples 10/10. **Honest v1 limits (recorded, not hidden):** kind-blind matching (a field
 named `tag` refuses on TS even where the generated discriminant couldn't collide — safe direction;
 refinement = kind-aware reserved entries); decl-name *keyword* escaping (slice 15's `ident`-at-decl-sites
-tail — a fn named `checked` still emits unescaped into C#, a loud target-build error, not silent) and the
-LSP running the check per configured target both remain open; collision-aware `fresh` (auto-rename instead
-of refuse) stays the recorded future alternative.
+tail — a fn named `checked` still emits unescaped into C#, a loud target-build error, not silent — verified:
+the local-decl/value sites DO escape, `var @checked`; the gap is fn/type-level names + their reference
+sites, Call/`new`/type spelling, which must escape *consistently* — a cross-cutting slice of its own)
+remains open; collision-aware `fresh` (auto-rename instead of refuse) stays the recorded future
+alternative. **The LSP tail ✅ (same day):** `analyzeDoc` runs `checkReservedNames` per configured target
+(pgconfig `targets`, default cs+ts; `DocContext` carries `targets`+`forbidden`; `resolveConfiguredTargets`
+runs so plugin targets squiggle too) and appends to the published diagnostics — a name the build would
+refuse now squiggles live, labeled with the target that reserves it (spawn-tested: TS `tag` + a
+pgconfig-forbidden name squiggle on didOpen; C# correctly silent on `tag`).
 
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 

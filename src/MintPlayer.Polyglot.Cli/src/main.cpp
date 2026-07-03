@@ -24,6 +24,7 @@
 #endif
 
 #include "mintplayer/polyglot/backend.hpp"
+#include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
@@ -627,14 +628,22 @@ struct LspServer {
     // client's initializationOptions). Shared by analyzeDoc (diagnostics) and generatedSource (preview) so a
     // live preview resolves imports + lib exactly as the squiggles do. Re-read each call, so editing
     // pgconfig.json takes effect on the next analysis.
-    struct DocContext { fs::path root, entryDir; std::string libStr; };
+    struct DocContext {
+        fs::path root, entryDir;
+        std::string libStr;
+        std::vector<std::string> targets; // the project's target set (reserved-name squiggles run per target)
+        std::vector<std::pair<std::string, std::string>> forbidden; // pgconfig forbiddenIdentifiers
+    };
     DocContext contextFor(const std::string& uri) const {
         fs::path p(uriToPath(uri));
         fs::path entryDir = p.has_parent_path() ? p.parent_path() : fs::path(".");
         PgConfig pc = loadPgConfig(entryDir);
         fs::path root = pc.found && !pc.root.empty() ? fs::path(pc.root)
                       : (root_.empty() ? entryDir : fs::path(root_));
-        return { root, entryDir, pc.found ? pc.lib : lib_ };
+        resolveConfiguredTargets(pc); // plugin targets (file: deps / cache) resolve for squiggles too
+        std::vector<std::string> targets = pc.targets.empty()
+            ? std::vector<std::string>{"csharp", "typescript"} : pc.targets;
+        return { root, entryDir, pc.found ? pc.lib : lib_, std::move(targets), pc.forbiddenIdentifiers };
     }
 
     void analyzeDoc(const std::string& uri) {
@@ -642,6 +651,14 @@ struct LspServer {
         FileModuleResolver disk(ctx.root, ctx.entryDir);
         BufferResolver resolver(disk, text_); // see unsaved edits in open imported modules
         AnalysisResult a = analyze(text_[uri], &resolver, parseLibList(ctx.libStr), uriToPath(uri));
+        // Reserved/forbidden identifiers are per-target, which analyze() has no notion of — run the check
+        // here for each configured target so a name a build would refuse squiggles live (P19 slice 14).
+        DiagnosticBag reserved;
+        for (const auto& t : ctx.targets) {
+            BackendHandle h = findTarget(t);
+            if (h.ok()) checkReservedNames(a.unit, *h.backend(), ctx.forbidden, reserved);
+        }
+        for (const auto& d : reserved.items()) a.diagnostics.push_back(d);
         model_[uri] = std::move(a.model);
         sources_[uri] = std::move(a.sources);
         // Only real files get squiggles. A `polyglot:<std>` virtual doc is read-only embedded std source we

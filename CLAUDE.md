@@ -296,8 +296,9 @@ reserved/forbidden identifiers** — the 7 collision miscompiles are loud per-ta
 `identifiers.reserved` (trailing `*` = prefix family) + `identifiers.globals`; `checkReservedNames`
 (NameCollector over declaration sites ONLY — strings/comments/extern templates can never trip it);
 pgconfig `forbiddenIdentifiers` (`{target-or-"*": [names]}`) carried on `LibConfig`. Three diagnostics
-(reserved / shadows-global / pgconfig-forbidden). v1 is kind-blind + refuse-not-rename; open tail:
-decl-name keyword escaping, LSP per-target check.
+(reserved / shadows-global / pgconfig-forbidden). The LSP runs the check per configured pgconfig target so
+refusals squiggle live. v1 is kind-blind + refuse-not-rename; open tail: decl-name keyword escaping
+(fn/type-level names + reference sites; locals/params already escape).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".
