@@ -8,7 +8,7 @@ name: Publish VS Code extension
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'editors/vscode/**'
       - '.github/workflows/publish-vscode.yml'
