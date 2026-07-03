@@ -97,6 +97,7 @@ public:
     virtual ~DeclHooks() = default;
     virtual std::string renderTypeRef(const TypeRef& t) const = 0;
     virtual std::string ident(const std::string& n) const { return n; }
+    virtual std::string mangle(const std::string& n) const { return n; } // emitted-name repair (Python `$`->`_`)
     virtual std::string generics(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
     virtual std::string where(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
 };
@@ -207,6 +208,27 @@ private:
     std::vector<std::size_t> staticInit_, instanceInit_; // field indices with an initializer, by static-ness
     std::vector<std::size_t> ifaceBases_;                // base indices the predicate calls interfaces
     int extBase_ = -1;                                   // the last non-interface base index (-1 = none)
+};
+
+// Shared decl context for one top-level function or extension (both are ir::Function): name/flag/param
+// reads; types through the hooks; the expression body / param defaults re-enter the expression walk.
+// `decl.emitName` = mangledName-or-name (what Python defs); `decl.paramsTail` is the params-after-the-
+// receiver view the C# extension shape needs (`(this T self, <tail>)`).
+class FnDeclCtx : public IrDeclCtx {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    FnDeclCtx(const ir::Function& f, const DeclHooks& hooks, EmitFn emit)
+        : f_(f), hooks_(hooks), emit_(std::move(emit)) {}
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+    std::string emitChild(const std::string& path, const std::string& side) const override;
+    const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
+
+private:
+    const ir::Function& f_;
+    const DeclHooks& hooks_;
+    EmitFn emit_;
 };
 
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/

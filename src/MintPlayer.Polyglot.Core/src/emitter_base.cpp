@@ -716,6 +716,69 @@ std::unique_ptr<IrDeclCtx> ClassDeclCtx::memberCtx(const std::string& path, std:
     return nullptr;
 }
 
+std::string FnDeclCtx::get(const std::string& path) const {
+    if (path == "decl.name")        return f_.name;
+    if (path == "decl.mangledName") return f_.mangledName;
+    if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
+    if (path == "decl.isAsync")     return f_.isAsync ? "true" : "false";
+    if (path == "decl.isIterator")  return f_.isIterator ? "true" : "false";
+    if (path == "decl.exprBodied")  return f_.exprBodied ? "true" : "false";
+    if (path == "decl.body.count")  return std::to_string(f_.body.size());
+    if (path == "decl.retName")     return f_.returnType.kind == TypeRef::Kind::Named ? f_.returnType.name : "";
+    if (path == "decl.returnsUnit")
+        return f_.returnType.kind == TypeRef::Kind::Named &&
+                       (f_.returnType.name == "unit" || f_.returnType.name.empty())
+                   ? "true" : "false";
+    if (path == "decl.params.count")     return std::to_string(f_.params.size());
+    if (path == "decl.paramsTail.count") return std::to_string(f_.params.empty() ? 0 : f_.params.size() - 1);
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("decl.params.", 0) == 0 && splitIndexed(path, 12, i, f) && i < f_.params.size()) {
+        if (f == "name")       return f_.params[i].name;
+        if (f == "hasDefault") return f_.params[i].defaultValue ? "true" : "false";
+    }
+    if (path.rfind("decl.paramsTail.", 0) == 0 && splitIndexed(path, 16, i, f) && i + 1 < f_.params.size()) {
+        if (f == "name")       return f_.params[i + 1].name;
+        if (f == "hasDefault") return f_.params[i + 1].defaultValue ? "true" : "false";
+    }
+    return "";
+}
+
+std::string FnDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "generics") return hooks_.generics(f_.generics);
+    if (name == "where")    return hooks_.where(f_.generics);
+    if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "mangle")   return hooks_.mangle(args.empty() ? std::string() : args[0]);
+    return "";
+}
+
+std::string FnDeclCtx::renderType(const std::string& path) const {
+    if (path == "decl.returnType") return hooks_.renderTypeRef(f_.returnType);
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("decl.params.", 0) == 0 && splitIndexed(path, 12, i, f) && i < f_.params.size() && f == "type")
+        return hooks_.renderTypeRef(f_.params[i].type);
+    if (path.rfind("decl.paramsTail.", 0) == 0 && splitIndexed(path, 16, i, f) && i + 1 < f_.params.size() && f == "type")
+        return hooks_.renderTypeRef(f_.params[i + 1].type);
+    return "";
+}
+
+std::string FnDeclCtx::emitChild(const std::string& path, const std::string&) const {
+    if (!emit_) return "";
+    if (path == "decl.exprBody") return f_.exprBody ? emit_(*f_.exprBody) : "";
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("decl.params.", 0) == 0 && splitIndexed(path, 12, i, f) && i < f_.params.size() && f == "default")
+        return f_.params[i].defaultValue ? emit_(*f_.params[i].defaultValue) : "";
+    if (path.rfind("decl.paramsTail.", 0) == 0 && splitIndexed(path, 16, i, f) && i + 1 < f_.params.size() && f == "default")
+        return f_.params[i + 1].defaultValue ? emit_(*f_.params[i + 1].defaultValue) : "";
+    return "";
+}
+
+const std::vector<ir::StmtPtr>* FnDeclCtx::stmtList(const std::string& path) const {
+    return path == "decl.body" ? &f_.body : nullptr;
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;

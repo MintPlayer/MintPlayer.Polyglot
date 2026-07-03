@@ -188,6 +188,20 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
       [{"eq":["decl.methods.count","0"]},{"line":{"tmpl":[{"call":"csRecordHead"},";"]}}]],
       "else":{"block":{"head":{"call":"csRecordHead"},
         "body":[{"mapMembers":"decl.methods","rule":"MethodDecl"}]}}}},
+  "csFnSig": {"tmpl":["public static ",
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async "]]}},
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},{"call":"csAsyncRet"}]],"else":{"type":"decl.returnType"}}},
+      " ",{"get":"decl.name"},{"fn":"generics"},"(",
+      {"map":"decl.params","sep":", ","item":{"call":"csParam"}},")",{"fn":"where"}]},
+  "FunctionDecl": {"block":{"head":{"call":"csFnSig"},"body":[{"stmts":"decl.body"}]}},
+  "csExtSig": {"tmpl":["public static ",{"type":"decl.returnType"}," ",{"get":"decl.name"},{"fn":"generics"},
+      "(this ",{"type":"decl.params.0.type"}," ",{"get":"decl.params.0.name"},
+      {"map":"decl.paramsTail","sep":"","item":{"tmpl":[", ",{"type":"item.type"}," ",{"get":"item.name"}]}},
+      ")",{"fn":"where"}]},
+  "ExtensionDecl": {"case":{"when":[
+      [{"eq":["decl.exprBodied","true"]},
+        {"line":{"tmpl":[{"call":"csExtSig"}," => ",{"emit":"decl.exprBody"},";"]}}]],
+      "else":{"block":{"head":{"call":"csExtSig"},"body":[{"stmts":"decl.body"}]}}}},
   "csClassHead": {"tmpl":["class ",{"get":"decl.name"},{"fn":"generics"},
       {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
         "else":{"tmpl":[" : ",{"map":"decl.bases","sep":", ","item":{"type":"item"}}]}}},
@@ -492,7 +506,10 @@ public:
             line("static class Extensions");
             line("{");
             ++indent_;
-            for (const auto& f : m.extensions) emitExtension(f);
+            for (const auto& f : m.extensions) {
+                FnDeclCtx ctx(f, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+                runDeclRule(csharpExprRules().at("ExtensionDecl"), ctx, ctx, &csharpExprRules());
+            }
             --indent_;
             line("}");
         }
@@ -503,7 +520,8 @@ public:
             line("static readonly " + csType(g.type) + " " + csIdent(g.name) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
         for (const auto& fn : m.functions) {
             if (!fn.actualTarget.empty() && fn.actualTarget != "csharp") continue; // other target's `actual`
-            emitFunction(fn);
+            FnDeclCtx ctx(fn, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(csharpExprRules().at("FunctionDecl"), ctx, ctx, &csharpExprRules());
         }
         for (const auto& fn : m.functions) {
             if (fn.isEntry) {
@@ -523,13 +541,6 @@ public:
 private:
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
 
-    // `T name` or `T name = default` — a parameter declaration with its optional default value.
-    std::string csParam(const ir::Param& p) {
-        std::string s = csType(p.type) + " " + csIdent(p.name);
-        if (p.defaultValue) s += " = " + emitExpr(*p.defaultValue);
-        return s;
-    }
-
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as C#.
     std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
         std::string out;
@@ -545,32 +556,6 @@ private:
         return out;
     }
 
-    // `public static R name(this T self, …)` — the leading `self` param carries the C# `this` modifier.
-    void emitExtension(const ir::Function& f) {
-        std::string sig = "public static " + csType(f.returnType) + " " + f.name + csGenerics(f.generics) + "(this " +
-                          csType(f.params[0].type) + " " + f.params[0].name;
-        for (std::size_t i = 1; i < f.params.size(); ++i) sig += ", " + csType(f.params[i].type) + " " + f.params[i].name;
-        sig += ")" + csWhere(f.generics);
-        if (f.exprBodied) line(sig + " => " + emitExpr(*f.exprBody) + ";");
-        else headBlock(sig, f.body);
-    }
-
-    // `async fn`: the author writes the unwrapped `T`; C# needs `Task<T>` (or a bare `Task` for unit). §4.7
-    static bool isUnitType(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "unit"; }
-    std::string csAsyncReturn(const TypeRef& ret) {
-        return isUnitType(ret) ? "global::System.Threading.Tasks.Task"
-                               : "global::System.Threading.Tasks.Task<" + csType(ret) + ">";
-    }
-
-    void emitFunction(const ir::Function& fn) {
-        // `public` so calls qualified as `Program.fn(...)` from emitted classes resolve (free fns live here).
-        std::string ret = fn.isAsync ? csAsyncReturn(fn.returnType) : csType(fn.returnType);
-        std::string sig = std::string("public static ") + (fn.isAsync ? "async " : "") + ret + " " +
-                          fn.name + csGenerics(fn.generics) + "(";
-        for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += csParam(fn.params[i]); }
-        sig += ")" + csWhere(fn.generics);
-        headBlock(sig, fn.body);
-    }
 
     const BackendSpec& spec() const override { return csharpSpec(); }
 

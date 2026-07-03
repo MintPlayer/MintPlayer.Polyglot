@@ -1421,6 +1421,22 @@ wrappers with them — composites reach MethodDecl only through `mapMembers`. By
 unit green, 39/39 + 38/38. Next: Function/Extension (the last per-decl emitters), then `program` +
 `require` (the module scaffold — deletes each emit()'s driver body).
 
+**Slice-5h ✅ (2026-07-03) — Function + Extension are data ×3; every declaration kind is now rules.** Shared
+**`FnDeclCtx`** over `ir::Function` (serves FunctionDecl AND ExtensionDecl — same struct): name/`mangledName`/
+`emitName` (mangled-or-name), `isAsync`/`isIterator`/`exprBodied`/`returnsUnit`, params + the
+**`decl.paramsTail`** derived view (params after the receiver — the C# extension `(this T self, <tail>)`
+shape; tail params spell raw, no defaults, matching the old emitter exactly). `DeclHooks` gained **`mangle`**
+(default identity; `PyDeclHooks` → `pyName`'s `$`→`_` overload repair) so Python's def-name spelling is rule
+data (`{"fn":"mangle","args":[{"get":"decl.emitName"}]}`). Rules: C# `public static [async] ret name<G>(…)
+where` (+ `csAsyncRet` reused) and the `this`-receiver extension (expr-bodied `=>` vs block); TS
+`function`/`function*`/`async function` off `mangledName` (+ `Promise<T>`) and the free-function extension
+(`return expr;` for expr bodies); Python one rule serves both fns and extensions (Python's extensions ARE
+free fns), `async def`, empty-body `pass` as data. Deleted: C#/TS/Python `emitFunction`, C#/TS
+`emitExtension`, C# `csParam`+`csAsyncReturn`+`isUnitType`, TS `tsParam`+`tsAsyncReturn`, Python `param`.
+Byte-identical (117 files), unit green, 39/39 + 38/38. **Remaining imperative decl code = only the three
+emit() driver bodies** (decl-loop order, C# `Program`/`Extensions` wrappers + `Main`, TS entry call, Python
+entry + asyncio/idiv preludes, globals lines) — exactly the `program` scaffold + `require` slice.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

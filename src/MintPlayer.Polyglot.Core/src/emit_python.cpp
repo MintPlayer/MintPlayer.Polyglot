@@ -152,6 +152,18 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
               {"map":"decl.fields","sep":" and ","item":
                 {"tmpl":["self.",{"get":"item.name"}," == other.",{"get":"item.name"}]}}]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "pyFnSig": {"tmpl":[
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async def "]],"else":"def "}},
+      {"fn":"mangle","args":[{"get":"decl.emitName"}]},"(",
+      {"map":"decl.params","sep":", ","item":{"call":"pyParam"}},")"]},
+  "FunctionDecl": {"case":{"when":[
+      [{"eq":["decl.exprBodied","true"]},
+        {"block":{"head":{"call":"pyFnSig"},"body":[
+          {"case":{"when":[[{"eq":["decl.returnsUnit","true"]},{"line":{"emit":"decl.exprBody"}}]],
+            "else":{"line":{"tmpl":["return ",{"emit":"decl.exprBody"}]}}}}]}}]],
+      "else":{"block":{"head":{"call":"pyFnSig"},"body":[
+        {"case":{"when":[[{"eq":["decl.body.count","0"]},{"line":"pass"}]],
+          "else":{"stmts":"decl.body"}}}]}}}},
   "pyClassHead": {"tmpl":["class ",{"get":"decl.name"},
       {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
         "else":{"tmpl":["(",{"map":"decl.bases","sep":", ","item":{"type":"item"}},")"]}}}]},
@@ -355,6 +367,7 @@ class PyDeclHooks : public DeclHooks {
 public:
     std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
     std::string ident(const std::string& n) const override { return pyId(n); }
+    std::string mangle(const std::string& n) const override { return pyName(n); } // overload `$` -> `_`
 };
 const PyDeclHooks kPyDeclHooks;
 
@@ -450,9 +463,13 @@ public:
             line(g.name + " = " + (g.init ? emitExpr(*g.init) : "None"));
         for (const auto& fn : m.functions) {
             if (!fn.actualTarget.empty() && fn.actualTarget != "python") continue; // other target's `actual`
-            emitFunction(fn);
+            FnDeclCtx ctx(fn, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(pyExprRules().at("FunctionDecl"), ctx, ctx, &pyExprRules());
         }
-        for (const auto& fn : m.extensions) emitFunction(fn); // extensions -> free fns; `x.m()` calls `m(x)`
+        for (const auto& fn : m.extensions) { // extensions -> free fns; `x.m()` calls `m(x)`
+            FnDeclCtx ctx(fn, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(pyExprRules().at("FunctionDecl"), ctx, ctx, &pyExprRules());
+        }
         for (const auto& fn : m.functions)
             if (fn.isEntry) { // an `async fn main` must be driven by the event loop; else a plain call
                 line(fn.isAsync ? "asyncio.run(" + pyName(fn.mangledName) + "())" : pyName(fn.mangledName) + "()");
@@ -484,28 +501,6 @@ private:
     int tmp_ = 0; // fresh-name counter for the walrus temporaries that keep `?.`/`??` single-evaluated
 
     // A parameter: escaped name + optional `= default` (Python supports default args natively).
-    std::string param(const ir::Param& p) {
-        return pyId(p.name) + (p.defaultValue ? " = " + emitExpr(*p.defaultValue) : "");
-    }
-
-    void emitFunction(const ir::Function& fn) {
-        // Extensions lower to plain free functions (`self` is the receiver param) with no mangledName.
-        std::string sig = std::string(fn.isAsync ? "async def " : "def ") +
-                          pyName(fn.mangledName.empty() ? fn.name : fn.mangledName) + "(";
-        for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += param(fn.params[i]); }
-        sig += ")";
-        if (fn.exprBodied) {
-            openBlock(sig);
-            ++indent_;
-            bool unit = fn.returnType.kind == TypeRef::Kind::Named && (fn.returnType.name == "unit" || fn.returnType.name.empty());
-            line(unit ? emitExpr(*fn.exprBody) : "return " + emitExpr(*fn.exprBody));
-            --indent_;
-        } else {
-            headBlock(sig, fn.body);
-        }
-    }
-
-
     // A record/class member -> a `def`. Most members take a leading `self`; four shapes map idiomatically:
     //   Method     -> `def name(self, ...)`
     //   static fn  -> `@staticmethod` + `def name(...)` (no self; called `Type.name(...)`)

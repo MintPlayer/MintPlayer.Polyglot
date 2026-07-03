@@ -174,6 +174,20 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                   "else":{"tmpl":["this.",{"get":"item.name"}," === other.",{"get":"item.name"}]}}}},
               ";"]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "tsFnSig": {"tmpl":[
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},"async function "],
+                       [{"eq":["decl.isIterator","true"]},"function* "]],"else":"function "}},
+      {"get":"decl.mangledName"},{"fn":"generics"},"(",
+      {"map":"decl.params","sep":", ","item":{"call":"tsParam"}},"): ",
+      {"case":{"when":[[{"eq":["decl.isAsync","true"]},{"tmpl":["Promise<",{"type":"decl.returnType"},">"]}]],
+        "else":{"type":"decl.returnType"}}}]},
+  "FunctionDecl": {"block":{"head":{"call":"tsFnSig"},"body":[{"stmts":"decl.body"}]}},
+  "tsExtSig": {"tmpl":["function ",{"get":"decl.name"},{"fn":"generics"},"(",
+      {"map":"decl.params","sep":", ","item":{"call":"tsParam"}},"): ",{"type":"decl.returnType"}]},
+  "ExtensionDecl": {"block":{"head":{"call":"tsExtSig"},"body":[
+      {"case":{"when":[[{"eq":["decl.exprBodied","true"]},
+          {"line":{"tmpl":["return ",{"emit":"decl.exprBody"},";"]}}]],
+        "else":{"stmts":"decl.body"}}}]}},
   "tsClassHead": {"tmpl":["class ",{"get":"decl.name"},{"fn":"generics"},
       {"case":{"when":[[{"eq":["decl.hasExtBase","true"]},{"tmpl":[" extends ",{"type":"decl.extBase"}]}]]}},
       {"case":{"when":[[{"eq":["decl.ifaceBases.count","0"]},""]],
@@ -522,10 +536,14 @@ public:
         }
         for (const auto& g : m.globals) // top-level const/let
             line(std::string(g.isConst ? "const " : "let ") + g.name + ": " + tsType(g.type) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
-        for (const auto& f : m.extensions) emitExtension(f);
+        for (const auto& f : m.extensions) {
+            FnDeclCtx ctx(f, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(tsExprRules().at("ExtensionDecl"), ctx, ctx, &tsExprRules());
+        }
         for (const auto& fn : m.functions) {
             if (!fn.actualTarget.empty() && fn.actualTarget != "typescript") continue; // other target's `actual`
-            emitFunction(fn);
+            FnDeclCtx ctx(fn, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(tsExprRules().at("FunctionDecl"), ctx, ctx, &tsExprRules());
         }
         for (const auto& fn : m.functions) {
             if (fn.isEntry) { line(fn.mangledName + "();"); break; }
@@ -543,12 +561,6 @@ private:
     }
 
     // `name: T` or `name: T = default` — a parameter declaration with its optional default value.
-    std::string tsParam(const ir::Param& p) {
-        std::string s = p.name + ": " + tsType(p.type);
-        if (p.defaultValue) s += " = " + emitExpr(*p.defaultValue);
-        return s;
-    }
-
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as TS.
     std::string substTemplate(const std::string& tmpl, const ir::Bound& b) {
         std::string out;
@@ -562,31 +574,6 @@ private:
             } else out += tmpl[i++];
         }
         return out;
-    }
-
-    // An extension lowers to a plain free function whose first param is the receiver `self`; call sites
-    // emit `name(obj, …)` (TS has no extension-method call syntax — the `x.m()` reading cannot survive).
-    void emitExtension(const ir::Function& f) {
-        std::string sig = "function " + f.name + tsGenerics(f.generics) + "(";
-        for (std::size_t i = 0; i < f.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(f.params[i]); }
-        sig += "): " + tsType(f.returnType) + " {";
-        line(sig);
-        ++indent_;
-        if (f.exprBodied) line("return " + emitExpr(*f.exprBody) + ";");
-        else for (const auto& s : f.body) emitStmt(*s);
-        --indent_;
-        line("}");
-    }
-
-    // `async fn`: author writes the unwrapped `T`; TS needs `Promise<T>` (`Promise<void>` for unit). §4.7
-    std::string tsAsyncReturn(const TypeRef& ret) { return "Promise<" + tsType(ret) + ">"; }
-
-    void emitFunction(const ir::Function& fn) {
-        std::string kw = fn.isAsync ? "async function " : (fn.isIterator ? "function* " : "function ");
-        std::string sig = kw + fn.mangledName + tsGenerics(fn.generics) + "(";
-        for (std::size_t i = 0; i < fn.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(fn.params[i]); }
-        sig += "): " + (fn.isAsync ? tsAsyncReturn(fn.returnType) : tsType(fn.returnType));
-        headBlock(sig, fn.body);
     }
 
     // TS has a single untyped `catch`, so a typed/guarded catch list becomes an instanceof/guard
