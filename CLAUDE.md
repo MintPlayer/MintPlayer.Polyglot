@@ -274,8 +274,17 @@ or `"emulated"` stance (Python: `blockLambdas:false`, `interfaces:emulated`; Pyt
 **reference existence**. Capabilities are tri-state. Zero backends compiled in — the CLI/tests load
 `plugins/` next to the exe (post-build copy). **`lower(unit, target)` picks binding/extern arms at lowering**
 — `ir::Bound`→one `tmpl`, `ir::ExternType`→one `typeTmpl`, `irTemplates` gone; `InterpretedEmitter` is
-parameterized by exactly {spec, rules}. Remaining: 9b (std `actual` arms out of the embedded `.pg` into
-plugin overlays — rides with 12), 10–11 (pgconfig resolution + `polyglot install`), 12 (4th-backend proof),
+parameterized by exactly {spec, rules}. **Slices 9b + 12 built (2026-07-03): the P19 thesis is DEMONSTRATED — a language is a JSON file.**
+9b: the embedded std sources are pure SKELETONS (zero `actual` arms in Core); plugin manifests carry the
+**`std` overlay block** ({module → member → template}; 44 C#/TS, 39 Python); `injectStdOverlays` attaches the
+active target's arms post-sema/pre-capability-gate (expect fns synthesize single-`extern` actuals; the parser
+accepts empty binding blocks; a zero-actual expect counts as portable so un-overlaid calls refuse). 12: the
+proof — **`plugins/php/polyglot-plugin.json`**, a PHP backend from ONE JSON file (`$`-vars as rule data,
+`->`/`::`, intdiv+i32 masks, `.`-concat interpolation, keyword-escaped `print_`, `<?php` as Program data;
+unsupported features declared `false` → §3.E refusals); the CLI build driver is target-agnostic (any loaded
+plugin is a `--target`; manifest `fileExtension`). Emitted PHP verified by inspection (no php.exe here —
+runtime differential TODO). Remaining: 10–11 (pgconfig `targets`/`dependencies` resolution + `polyglot
+install` — the exe-relative `plugins/` dir is the only channel today), the 9b member-arm refusal gap,
 13–15 (identifier hygiene + reserved names).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
