@@ -1229,6 +1229,42 @@ int main() {
               "P19: loadBackend refuses coverage gaps regardless of claims");
     }
 
+    // ---- P19 slices 13-15: reserved/forbidden identifiers (identifier hygiene, json-plugins.md §7) -----
+    {
+        // A name a target's generated code uses is refused for that target only (kind-blind v1).
+        EmitResult ts = compile("fn main() {\n  let tag = 1\n  var y = tag\n}\n", findTarget("typescript"));
+        check(!ts.ok && has(ts.diagnostics[0].message, "'tag' is reserved by target 'typescript'"),
+              "P19: a TS-reserved local ('tag') refuses on typescript");
+        check(compile("fn main() {\n  let tag = 1\n  var y = tag\n}\n", findTarget("csharp")).ok,
+              "P19: the same name compiles fine on a target that doesn't reserve it");
+        EmitResult py = compile("fn _pg_idiv(a: i32, b: i32): i32 {\n  return a\n}\nfn main() {}\n",
+                                findTarget("python"));
+        check(!py.ok && has(py.diagnostics[0].message, "'_pg_idiv' is reserved by target 'python'"),
+              "P19: a python-runtime-helper fn name refuses on python");
+        EmitResult cs = compile("record Program(x: i32)\nfn main() {}\n", findTarget("csharp"));
+        check(!cs.ok && has(cs.diagnostics[0].message, "'Program' is reserved by target 'csharp'"),
+              "P19: a C#-scaffolding type name ('Program') refuses on csharp");
+        // Prefix families: `__w*` covers every lowering temp, not just one spelled-out name.
+        EmitResult w = compile("fn main() {\n  let __w1 = 1\n  var y = __w1\n}\n", findTarget("csharp"));
+        check(!w.ok && has(w.diagnostics[0].message, "'__w1' is reserved"),
+              "P19: a reserved prefix family ('__w*') matches '__w1'");
+        // Runtime globals get their own shadowing message.
+        EmitResult g = compile("fn main() {\n  let console = 1\n  var y = console\n}\n", findTarget("typescript"));
+        check(!g.ok && has(g.diagnostics[0].message, "'console' shadows a runtime global of target 'typescript'"),
+              "P19: shadowing a target runtime global refuses");
+        // pgconfig forbiddenIdentifiers: "*" bans everywhere; a target-keyed ban bites only that target.
+        LibConfig banAll;  banAll.forbiddenIdentifiers = {{"*", "temp"}};
+        LibConfig banPy;   banPy.forbiddenIdentifiers = {{"python", "data"}};
+        EmitResult f1 = compile("fn main() {\n  let temp = 1\n  var y = temp\n}\n", findTarget("csharp"), nullptr, banAll);
+        check(!f1.ok && has(f1.diagnostics[0].message, "'temp' is forbidden by pgconfig"),
+              "P19: a '*' pgconfig-forbidden identifier refuses on every target");
+        EmitResult f2 = compile("fn main() {\n  let data = 1\n  var y = data\n}\n", findTarget("python"), nullptr, banPy);
+        check(!f2.ok && has(f2.diagnostics[0].message, "'data' is forbidden by pgconfig"),
+              "P19: a target-keyed pgconfig ban bites on that target");
+        check(compile("fn main() {\n  let data = 1\n  var y = data\n}\n", findTarget("csharp"), nullptr, banPy).ok,
+              "P19: a target-keyed pgconfig ban is ignored by other targets");
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;

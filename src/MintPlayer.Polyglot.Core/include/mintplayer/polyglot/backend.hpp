@@ -53,6 +53,17 @@ public:
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }
+    // The names this target's GENERATED code claims (`identifiers.reserved` — scaffolding, synthesized
+    // temps; trailing `*` = prefix family) and its runtime globals (`identifiers.globals`). A user
+    // identifier colliding with either refuses at compile time (checkReservedNames, P19 §7).
+    virtual const std::vector<std::string>& reservedIdentifiers() const {
+        static const std::vector<std::string> kEmpty;
+        return kEmpty;
+    }
+    virtual const std::vector<std::string>& globalIdentifiers() const {
+        static const std::vector<std::string> kEmpty;
+        return kEmpty;
+    }
     // The target's std overlay arms (P19 slice 9b): the FFI templates its plugin ships for the std
     // SKELETONS embedded in Core — keyed "<Class>.<member>" / "<Class>.type" / "<Class>.init" /
     // "<receiver>.<extension>" / "<expectFnName>", flattened across std modules. The compiler injects

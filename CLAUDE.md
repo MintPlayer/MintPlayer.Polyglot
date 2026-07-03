@@ -288,9 +288,16 @@ the project's whole target set; no config = the historical cs+ts) + `dependencie
 Resolution: in-box `plugins/` → pgconfig `file:` → user cache (`%LOCALAPPDATA%\polyglot\plugins\`) → clean
 refusal. **`polyglot install <dir|npm-name>`** validates via the new Core `validateBackend` (full slice-8
 pipeline, no registration) and copies to the cache; bare names shell to `npm pack`+`tar` (wired; end-to-end
-awaits published packages). All three channels verified locally with the PHP plugin. Remaining: the 9b
-member-arm refusal gap, npm publishing of the four first-party packages, 13–15 (identifier hygiene +
-reserved names).
+awaits published packages). All three channels verified locally with the PHP plugin. **9b member-arm gap
+✅ closed** (bound members without this target's arm refuse at the use site). **npm packaging ✅ committed**
+(`plugins/*/package.json` as `@mintplayer/polyglot-target-*` + `.github/workflows/publish-plugins.yml` via
+the org's shared publish action; actual publish fires on push to main). **Slices 13–15 ✅ v1 (2026-07-03):
+reserved/forbidden identifiers** — the 7 collision miscompiles are loud per-target refusals: plugin
+`identifiers.reserved` (trailing `*` = prefix family) + `identifiers.globals`; `checkReservedNames`
+(NameCollector over declaration sites ONLY — strings/comments/extern templates can never trip it);
+pgconfig `forbiddenIdentifiers` (`{target-or-"*": [names]}`) carried on `LibConfig`. Three diagnostics
+(reserved / shadows-global / pgconfig-forbidden). v1 is kind-blind + refuse-not-rename; open tail:
+decl-name keyword escaping, LSP per-target check.
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".

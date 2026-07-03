@@ -103,6 +103,10 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
             r.spec.mangleFrom = man["replace"].asString();
             r.spec.mangleTo   = man["with"].asString();
         }
+        for (const json::Value& k : ids["reserved"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.reservedNames.push_back(k.asString());
+        for (const json::Value& k : ids["globals"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.globalNames.push_back(k.asString());
     }
 
     r.ok = true;
@@ -181,7 +185,8 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     }
 
     std::string ids;
-    if (!spec.keywords.empty() || !spec.escapeStrategy.empty() || !spec.mangleFrom.empty()) {
+    if (!spec.keywords.empty() || !spec.escapeStrategy.empty() || !spec.mangleFrom.empty() ||
+        !spec.reservedNames.empty() || !spec.globalNames.empty()) {
         std::vector<std::string> kws(spec.keywords.begin(), spec.keywords.end());
         std::sort(kws.begin(), kws.end()); // deterministic serialization
         ids = ",\"identifiers\":{\"keywords\":[";
@@ -193,6 +198,13 @@ std::string backendSpecToJson(const BackendSpec& spec) {
         if (!spec.mangleFrom.empty())
             ids += ",\"mangle\":{\"replace\":" + json::quote(spec.mangleFrom) +
                    ",\"with\":" + json::quote(spec.mangleTo) + "}";
+        auto arr = [](const std::vector<std::string>& v) {
+            std::string o = "[";
+            for (std::size_t i = 0; i < v.size(); ++i) { if (i) o += ","; o += json::quote(v[i]); }
+            return o + "]";
+        };
+        if (!spec.reservedNames.empty()) ids += ",\"reserved\":" + arr(spec.reservedNames);
+        if (!spec.globalNames.empty()) ids += ",\"globals\":" + arr(spec.globalNames);
         ids += "}";
     }
 

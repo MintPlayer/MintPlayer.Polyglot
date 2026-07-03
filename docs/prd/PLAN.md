@@ -1781,6 +1781,32 @@ Gates: byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10. Remainin
 member-arm refusal gap, npm publishing of the four first-party packages (needs an npm account/decision),
 13–15 (identifier hygiene + reserved names — pgconfig `forbiddenIdentifiers` now has its config seam).
 
+**Slices 13–15 ✅ v1 (2026-07-03) — reserved/forbidden identifiers: the 7 collision miscompiles are loud
+per-target refusals.** The v1 stance is **refuse, don't rename**: every generated-name collision the
+investigation found (record `Program`/fn `Main`/param `lhs` on C#; match-arm `_m`, union-discriminant
+`tag`, structural `equals` on TS; `self`/`_pg_idiv`/`_pg_irem`/prelude-helper prefixes on Python; the
+`__opt*`/`__w*` lowering temps everywhere) is now declared in its plugin's **`identifiers.reserved`**
+(trailing `*` = prefix family) / **`identifiers.globals`** (TS `console`, Python `str`) and refused by the
+new **`checkReservedNames`** pass (capability.cpp, runs beside the §3.E gate). The pass is a
+`NameCollector` over **declaration sites only** — fns/params, values, enum+union cases (+case params),
+record fields, non-extern classes, interfaces, extensions, `let`/`use` locals, `for` bindings, catch
+names, lambda params, match binders (recursive through `PatKind::Binding` subs) — so string literals,
+comments, and `extern("…")` templates can never trip it, the §7 hard invariant, by construction. Plumbing:
+`BackendSpec.reservedNames/globalNames` (+JSON parse/serialize), `Backend::reservedIdentifiers()/
+globalIdentifiers()` virtuals (LoadedBackend serves the spec's), and pgconfig **`forbiddenIdentifiers`**
+(`{target-or-"*": [names]}` or a bare array = every target) carried on `LibConfig` (Core stays IO-free;
+the CLI fills it for `build` + `check`). Three distinct diagnostics: reserved-by-target /
+shadows-runtime-global / forbidden-by-pgconfig, each naming the target. Verified end-to-end (TS `tag`,
+Python `_pg_idiv`, C# `Program`, `console` shadow, `*`-and-target-keyed pgconfig bans, `__w1` prefix
+match, and the same names compiling fine on non-reserving targets) + 9 unit tests. Gates: byte-identical
+(117 — the reserved lists refuse *new* programs, none of the 39 existing ones collide), unit green,
+39/39 + 38/38 + samples 10/10. **Honest v1 limits (recorded, not hidden):** kind-blind matching (a field
+named `tag` refuses on TS even where the generated discriminant couldn't collide — safe direction;
+refinement = kind-aware reserved entries); decl-name *keyword* escaping (slice 15's `ident`-at-decl-sites
+tail — a fn named `checked` still emits unescaped into C#, a loud target-build error, not silent) and the
+LSP running the check per configured target both remain open; collision-aware `fresh` (auto-rename instead
+of refuse) stays the recorded future alternative.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

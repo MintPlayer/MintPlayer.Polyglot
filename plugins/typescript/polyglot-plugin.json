@@ -46,6 +46,20 @@
     "trueLit": "true",
     "falseLit": "false",
     "nullLit": "null",
+    "identifiers": {
+      "reserved": [
+        "_m",
+        "__e",
+        "__handled",
+        "tag",
+        "equals",
+        "__opt*",
+        "__w*"
+      ],
+      "globals": [
+        "console"
+      ]
+    },
     "rethrow": "throw __e;",
     "tables": {
       "opMethod": {

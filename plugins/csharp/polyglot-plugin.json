@@ -174,7 +174,15 @@
       "escape": {
         "strategy": "prefix",
         "with": "@"
-      }
+      },
+      "reserved": [
+        "Program",
+        "Extensions",
+        "Main",
+        "lhs",
+        "__opt*",
+        "__w*"
+      ]
     }
   },
   "rules": {

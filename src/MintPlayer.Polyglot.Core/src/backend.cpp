@@ -63,6 +63,8 @@ public:
 
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
+    const std::vector<std::string>& reservedIdentifiers() const override { return spec_.reservedNames; }
+    const std::vector<std::string>& globalIdentifiers() const override { return spec_.globalNames; }
 
 private:
     std::string name_;

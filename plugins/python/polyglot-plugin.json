@@ -103,7 +103,22 @@
       "mangle": {
         "replace": "$",
         "with": "_"
-      }
+      },
+      "reserved": [
+        "_m",
+        "self",
+        "_pg_idiv",
+        "_pg_irem",
+        "__c*",
+        "__o*",
+        "__e",
+        "tag",
+        "__opt*",
+        "__w*"
+      ],
+      "globals": [
+        "str"
+      ]
     }
   },
   "rules": {

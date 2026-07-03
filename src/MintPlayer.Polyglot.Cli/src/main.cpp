@@ -93,6 +93,9 @@ struct PgConfig {
     std::string lib;  // comma-joined lib names
     std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
     std::vector<std::pair<std::string, std::string>> dependencies; // target -> source spec ("file:<dir>")
+    // project-policy identifier bans (P19 slices 13-15): (target-or-"*", name) fed to checkReservedNames.
+    // JSON shape: `"forbiddenIdentifiers": {"*": ["temp"], "python": ["data"]}` — or a bare array = all targets.
+    std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;
     fs::path dir; // where the config was found (file: deps resolve against it)
 };
 PgConfig loadPgConfig(const fs::path& startDir) {
@@ -110,6 +113,15 @@ PgConfig loadPgConfig(const fs::path& startDir) {
                 if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
             for (const auto& kv : v["dependencies"].members)
                 if (kv.second.kind == json::Value::Kind::String) pc.dependencies.push_back({kv.first, kv.second.asString()});
+            const json::Value& fi = v["forbiddenIdentifiers"];
+            if (fi.kind == json::Value::Kind::Array) { // bare array = every target
+                for (const auto& e : fi.items())
+                    if (e.kind == json::Value::Kind::String) pc.forbiddenIdentifiers.push_back({"*", e.asString()});
+            } else if (fi.kind == json::Value::Kind::Object) {
+                for (const auto& kv : fi.members)
+                    for (const auto& e : kv.second.items())
+                        if (e.kind == json::Value::Kind::String) pc.forbiddenIdentifiers.push_back({kv.first, e.asString()});
+            }
             return pc;
         }
         if (!d.has_parent_path() || d.parent_path() == d) return {};
@@ -258,6 +270,7 @@ int runBuild(const std::vector<std::string>& args) {
     FileModuleResolver resolver(root, entryDir);
 
     LibConfig lib = parseLibList(libArg);
+    lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
 
     resolveConfiguredTargets(pc); // pgconfig `dependencies` (file:) + the install cache (P19 slices 10-11)
 
@@ -371,6 +384,7 @@ int runCheck(const std::vector<std::string>& args) {
     FileModuleResolver resolver(root, entryDir);
 
     LibConfig lib = parseLibList(libArg);
+    lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
 
     EmitResult result = compile(source, findTarget("csharp"), &resolver, lib);
 

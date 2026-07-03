@@ -186,4 +186,134 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
     }
 }
 
+namespace {
+
+// Every identifier the USER declares (names only — string literals, comments, and extern("…") templates
+// are never visited, by construction: this walks declaration sites, P19 §7's hard invariant).
+class NameCollector {
+public:
+    std::vector<std::pair<std::string, SourcePos>> names;
+
+    void run(const CompilationUnit& u) {
+        for (const auto& f : u.functions) {
+            add(f.name, f.namePos);
+            params(f.params);
+            for (const auto& s : f.body) stmt(s.get());
+        }
+        for (const auto& v : u.values) add(v.name, v.namePos);
+        for (const auto& e : u.enums) {
+            add(e.name, e.pos);
+            for (const auto& c : e.cases) add(c.name, e.pos);
+        }
+        for (const auto& un : u.unions) {
+            add(un.name, un.pos);
+            for (const auto& c : un.cases) {
+                add(c.name, un.pos);
+                for (const auto& p : c.params) add(p.name, un.pos);
+            }
+        }
+        for (const auto& r : u.records) {
+            add(r.name, r.pos);
+            for (const auto& f : r.fields) add(f.name, r.pos);
+            members(r.members);
+        }
+        for (const auto& d : u.classes) {
+            if (d.isExtern) continue; // native-backed carrier — its names live on the target side
+            add(d.name, d.pos);
+            members(d.members);
+        }
+        for (const auto& d : u.interfaces) {
+            add(d.name, d.pos);
+            members(d.members);
+        }
+        for (const auto& e : u.extensions) {
+            add(e.name, e.pos);
+            params(e.params);
+            for (const auto& s : e.body) stmt(s.get());
+            expr(e.exprBody.get());
+        }
+    }
+
+private:
+    void add(const std::string& n, SourcePos pos) {
+        if (!n.empty()) names.push_back({n, pos});
+    }
+    void params(const std::vector<Param>& ps) {
+        for (const auto& p : ps) add(p.name, {});
+    }
+    void members(const std::vector<Member>& ms) {
+        for (const auto& m : ms) {
+            if (m.kind != MemberKind::Init) add(m.name, m.namePos);
+            params(m.params);
+            for (const auto& s : m.body) stmt(s.get());
+            expr(m.exprBody.get());
+            expr(m.init.get());
+        }
+    }
+    void pattern(const Pattern& p) {
+        if (p.kind == PatKind::Binding) add(p.name, p.pos);
+        for (const auto& s : p.sub) pattern(s);
+    }
+    void stmt(const Stmt* s) {
+        if (!s) return;
+        if (s->kind == StmtKind::Let || s->kind == StmtKind::Use) add(s->name, s->namePos);
+        if (s->kind == StmtKind::For) pattern(s->forBinding);
+        expr(s->value.get());
+        expr(s->target.get());
+        for (const auto& st : s->thenBody) stmt(st.get());
+        for (const auto& st : s->elseBody) stmt(st.get());
+        for (const auto& c : s->catches) {
+            add(c.name, c.pos);
+            expr(c.guard.get());
+            for (const auto& st : c.body) stmt(st.get());
+        }
+        for (const auto& st : s->finallyBody) stmt(st.get());
+    }
+    void expr(const Expr* e) {
+        if (!e) return;
+        for (const auto& p : e->params) add(p.name, e->pos); // lambda params
+        for (const auto& arm : e->arms) {                     // match binders
+            pattern(arm.pattern);
+            expr(arm.guard.get());
+            expr(arm.body.get());
+            for (const auto& st : arm.block) stmt(st.get());
+        }
+        expr(e->lhs.get());
+        expr(e->rhs.get());
+        expr(e->extra.get());
+        for (const auto& a : e->args) expr(a.get());
+        for (const auto& st : e->block) stmt(st.get());
+        for (const auto& f : e->fields) expr(f.value.get());
+    }
+};
+
+// A reserved entry matches exactly, or as a prefix family when it ends in `*` (the lowering temps `__w*`).
+bool matchesReserved(const std::string& entry, const std::string& name) {
+    if (!entry.empty() && entry.back() == '*') return name.rfind(entry.substr(0, entry.size() - 1), 0) == 0;
+    return entry == name;
+}
+
+} // namespace
+
+void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
+                        const std::vector<std::pair<std::string, std::string>>& forbidden,
+                        DiagnosticBag& diags) {
+    NameCollector nc;
+    nc.run(unit);
+    for (const auto& [name, pos] : nc.names) {
+        for (const auto& r : backend.reservedIdentifiers())
+            if (matchesReserved(r, name))
+                diags.error(pos, "identifier '" + name + "' is reserved by target '" + backend.name() +
+                                     "' (its generated code uses it); rename it or drop that target");
+        for (const auto& g : backend.globalIdentifiers())
+            if (g == name)
+                diags.error(pos, "identifier '" + name + "' shadows a runtime global of target '" +
+                                     backend.name() + "'; rename it or drop that target");
+        for (const auto& [tgt, fname] : forbidden)
+            if ((tgt == "*" || tgt == backend.name()) && fname == name)
+                diags.error(pos, "identifier '" + name + "' is forbidden by pgconfig for target '" +
+                                     backend.name() + "'");
+    }
+}
+
 } // namespace mintplayer::polyglot

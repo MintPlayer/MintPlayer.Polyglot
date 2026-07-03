@@ -464,6 +464,9 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
 
     // §3.E: refuse any used feature this target can't emit, before lowering/emitting (never miscompile).
     checkCapabilities(unit, *target.backend(), diags);
+    // P19 §7: user identifiers colliding with the target's generated names/globals (or pgconfig-forbidden
+    // names) refuse here — the silent-collision miscompiles, made loud.
+    checkReservedNames(unit, *target.backend(), lib.forbiddenIdentifiers, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     ir::Module module = lower(unit, target.name()); // per-target IR: binding/extern arms picked here (P19 s9)

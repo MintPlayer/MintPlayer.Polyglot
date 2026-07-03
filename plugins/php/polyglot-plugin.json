@@ -139,7 +139,12 @@
       "escape": {
         "strategy": "suffix",
         "with": "_"
-      }
+      },
+      "reserved": [
+        "__e",
+        "__opt*",
+        "__w*"
+      ]
     },
     "preludes": {}
   },

@@ -120,6 +120,13 @@ struct BackendSpec {
     std::string escapeStrategy; // "prefix" | "suffix" | "" (none)
     std::string escapeWith;
     std::string mangleFrom, mangleTo; // single-char emitted-name replacement ("" = none)
+    // Names the target's GENERATED code claims (scaffolding like C#'s `Program`/`Main`, synthesized temps
+    // like `__handled`, the union discriminant `tag`; a trailing `*` reserves a prefix family like the
+    // lowering temps `__w*`) and the runtime globals user code must not shadow (`console`, `str`). A user
+    // identifier colliding with either is REFUSED with a per-target diagnostic (`checkReservedNames`,
+    // P19 §7) — the silent-collision miscompiles the 2026-07-02 investigation found, made loud.
+    std::vector<std::string> reservedNames;
+    std::vector<std::string> globalNames;
 };
 
 // A `.pg` identifier spelled for the target: keyword collisions escape per the spec's declared strategy.

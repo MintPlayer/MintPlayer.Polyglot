@@ -26,4 +26,13 @@ std::vector<FeatureUse> collectFeatureUses(const CompilationUnit& unit);
 // C#/TS support all features today, so for them this is a no-op.
 void checkCapabilities(const CompilationUnit& unit, const Backend& backend, DiagnosticBag& diags);
 
+// Refuse user identifiers colliding with the target's declared reserved names / runtime globals (its
+// plugin's `identifiers.reserved` / `identifiers.globals`) or with pgconfig `forbiddenIdentifiers`
+// (`forbidden` pairs: target-or-"*" -> name). Identifiers ONLY — declaration sites are walked; string
+// literals, comments, and extern("…") templates can never trip it, by construction (P19 §7). This turns
+// the silent generated-name collision miscompiles into loud per-target refusals.
+void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
+                        const std::vector<std::pair<std::string, std::string>>& forbidden,
+                        DiagnosticBag& diags);
+
 } // namespace mintplayer::polyglot
