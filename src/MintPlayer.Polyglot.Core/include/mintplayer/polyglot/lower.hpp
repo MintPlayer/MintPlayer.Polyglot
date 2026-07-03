@@ -10,6 +10,8 @@
 
 namespace mintplayer::polyglot {
 
-ir::Module lower(const CompilationUnit& unit);
+// Lower a checked AST to the typed IR FOR ONE TARGET (P19 slice 9): std-binding and extern-class arms are
+// resolved to the active target's template here, so the IR carries exactly one template per site.
+ir::Module lower(const CompilationUnit& unit, const std::string& target);
 
 } // namespace mintplayer::polyglot

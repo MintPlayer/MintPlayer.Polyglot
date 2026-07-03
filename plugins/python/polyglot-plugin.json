@@ -1,7 +1,6 @@
 {
   "schema": 1,
   "name": "python",
-  "irTemplates": "py",
   "capabilities": {
     "blockLambdas": false,
     "interfaces": "emulated"

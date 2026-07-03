@@ -336,7 +336,7 @@ int main() {
         auto unit = parse(lex(src, d), d);
         mintplayer::polyglot::check(unit, d); // annotate resolved types
         check(!d.hasErrors(), "IR: program type-checks");
-        std::string ir = ir::dump(lower(unit));
+        std::string ir = ir::dump(lower(unit, "csharp"));
         check(has(ir, "fn add(a: i32, b: i32): i32 {"), "IR: function signature carries types");
         check(has(ir, "return (a:i32 + b:i32):i32"), "IR: binary expression is typed");
         check(has(ir, "fn main(): unit [entry] {"), "IR: main resolved as the entry point");
@@ -902,7 +902,7 @@ int main() {
             auto unit = parse(lex(src, d), d);
             mintplayer::polyglot::check(unit, d);
             if (d.hasErrors()) return "<type error>";
-            return ir::dump(lower(unit));
+            return ir::dump(lower(unit, "csharp"));
         };
         // single type-arg: pick<T>(T,T):T applied to i64 -> the call node is typed i64, not a bare T.
         std::string one = callIr("fn pick<T>(a: T, b: T): T => a\nfn use1(): i64 => pick(1i64, 2i64)\n");
@@ -1217,12 +1217,12 @@ int main() {
               "P19: loadBackend rejects a duplicate name");
         // A minimal artifact missing nearly every rule: the coverage contract must name the first gap
         // (a construct with no rule and no declared stance).
-        check(!loadBackend(R"({"name":"stubby","irTemplates":"cs",
+        check(!loadBackend(R"({"name":"stubby",
                               "spec":{"name":"stubby"},"rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "anti-silent-drop"),
               "P19: loadBackend refuses a plugin with undeclared coverage gaps");
         // A "native" capability claim with no rule behind it is also a lie the loader catches.
-        check(!loadBackend(R"({"name":"stubby2","irTemplates":"cs","spec":{"name":"stubby2"},
+        check(!loadBackend(R"({"name":"stubby2","spec":{"name":"stubby2"},
                               "capabilities":{"patternMatching":"native"},
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "no rule"),

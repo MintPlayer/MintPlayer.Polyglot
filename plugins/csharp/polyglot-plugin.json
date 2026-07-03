@@ -1,7 +1,6 @@
 {
   "schema": 1,
   "name": "csharp",
-  "irTemplates": "cs",
   "capabilities": {},
   "spec": {
     "name": "csharp",

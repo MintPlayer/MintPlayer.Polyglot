@@ -23,9 +23,9 @@ std::string stripNumericSuffix(const std::string& text) {
     return text;
 }
 
-class Lowerer {
+class Lowerer { // per-target since P19 slice 9: binding/extern-type arms are picked here, not at emit
 public:
-    explicit Lowerer(const CompilationUnit& unit) {
+    Lowerer(const CompilationUnit& unit, std::string target) : target_(std::move(target)) {
         // Names that denote a constructible type, so `Name(args)` lowers to a construction, not a call.
         // (Error/Iterable arrive as core-prelude `extern class`es in unit.classes — no special-case here.)
         for (const auto& r : unit.records) typeNames_.insert(r.name);
@@ -72,17 +72,15 @@ public:
         for (const auto& c : unit.classes) noteIndexer(c.name, c.members);
     }
 
-    // Build an ir::Bound from a receiver, args and a "Type.member" binding (picks the per-target arms).
+    // Build an ir::Bound from a receiver, args and a "Type.member" binding — the ACTIVE target's arm
+    // (lowering is per-target since P19 slice 9; a used member with no arm was refused before lowering).
     ir::ExprPtr makeBound(const TypeRef& type, SourcePos pos, const Expr* recv,
                           const std::vector<TargetBinding>& arms, const std::vector<ExprPtr>* args) {
         auto b = std::make_unique<ir::Bound>(pos, type);
         if (recv) b->receiver = expr(*recv); // null for a static member binding (template uses only $0,$1,…)
         if (args) for (const auto& a : *args) b->args.push_back(expr(*a));
-        for (const auto& arm : arms) {
-            if (arm.target == "csharp") b->csTemplate = arm.code;
-            else if (arm.target == "typescript") b->tsTemplate = arm.code;
-            else if (arm.target == "python") b->pyTemplate = arm.code;
-        }
+        for (const auto& arm : arms)
+            if (arm.target == target_) b->tmpl = arm.code;
         return b;
     }
 
@@ -133,18 +131,8 @@ public:
         for (const auto& c : unit.classes) {
             if (!c.isExtern) continue;
             ir::ExternType et; et.name = c.name;
-            for (const auto& b : c.typeBindings) {
-                if (b.target == "csharp") et.csType = b.code;
-                else if (b.target == "typescript") et.tsType = b.code;
-                else if (b.target == "python") et.pyType = b.code;
-            }
-            for (const auto& mem : c.members)
-                if (mem.kind == MemberKind::Init)
-                    for (const auto& b : mem.bindings) {
-                        if (b.target == "csharp") et.csCtor = b.code;
-                        else if (b.target == "typescript") et.tsCtor = b.code;
-                        else if (b.target == "python") et.pyCtor = b.code;
-                    }
+            for (const auto& b : c.typeBindings)
+                if (b.target == target_) et.typeTmpl = b.code;
             m.externTypes.push_back(std::move(et));
         }
         for (const auto& v : unit.values) { // top-level const/let
@@ -190,6 +178,7 @@ public:
     }
 
 private:
+    std::string target_;        // the active target name — binding/extern arms are picked for it
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
@@ -656,8 +645,8 @@ private:
 
 } // namespace
 
-ir::Module lower(const CompilationUnit& unit) {
-    Lowerer lowerer(unit);
+ir::Module lower(const CompilationUnit& unit, const std::string& target) {
+    Lowerer lowerer(unit, target);
     return lowerer.run(unit);
 }
 

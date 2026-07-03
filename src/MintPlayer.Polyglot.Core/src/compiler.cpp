@@ -489,7 +489,7 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     checkCapabilities(unit, *target.backend(), diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    ir::Module module = lower(unit);
+    ir::Module module = lower(unit, target.name()); // per-target IR: binding/extern arms picked here (P19 s9)
     result.code = target.backend()->emit(module);
     result.ok = true;
     return result;

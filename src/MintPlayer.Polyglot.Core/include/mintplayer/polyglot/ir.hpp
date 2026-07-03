@@ -168,15 +168,14 @@ struct With : Expr { // record copy `base with { f = v, … }`: C# native `with`
     bool baseIsSimple = false;
     With(SourcePos p, Type t, ExprPtr b) : Expr(ExprKind::With, p, std::move(t)), base(std::move(b)) {}
 };
-// A bound call/access: a portable std method/property resolved to a per-target FFI template. Each backend
-// substitutes `$this`->receiver and `$0`,`$1`,…->args into its own template. A `$this = …` template emits
-// a receiver assignment (e.g. List.clear -> TS `xxx = []`). See ast::TargetBinding.
+// A bound call/access: a portable std method/property resolved to THE ACTIVE TARGET's FFI template
+// (lowering knows the target and picks its arm — P19 slice 9; the per-target triple is gone). The backend
+// substitutes `$this`->receiver and `$0`,`$1`,…->args. A `$this = …` template emits a receiver assignment
+// (e.g. List.clear -> TS `xxx = []`). See ast::TargetBinding.
 struct Bound : Expr {
     ExprPtr receiver;
     std::vector<ExprPtr> args;
-    std::string csTemplate;
-    std::string tsTemplate;
-    std::string pyTemplate;
+    std::string tmpl; // the active target's template ("" only when the pre-lowering refusal was bypassed)
     Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 
@@ -426,14 +425,12 @@ struct Global { // a top-level `const`/`let` value
     Type type;
     ExprPtr init;
 };
-// A native-backed `extern class`: how its name spells per target (`$0,$1,…` = the rendered type args) and
-// (optionally) how `Type(args)` constructs (`$T` = the spelled type, `$0,…` = ctor args). This is the data
-// that replaced the emitters' hardcoded List/Iterable/Error mappings — a backend consults it from `csType`/
-// `tsType` (spelling) and at construction (ctor), so a user plugin class maps + constructs the same way.
+// A native-backed `extern class`: how its name spells on THE ACTIVE TARGET (`$0,$1,…` = the rendered type
+// args) — lowering picks the target's arm (P19 slice 9). Construction (`Type(args)` with `$T`/`$0…` ctor
+// templates) lowers through ir::Bound like any binding.
 struct ExternType {
     std::string name;
-    std::string csType, tsType, pyType;   // type-spelling templates; empty -> emitter falls back to the bare name
-    std::string csCtor, tsCtor, pyCtor;   // ctor templates; empty -> no bound constructor (use a plain `new Name(…)`)
+    std::string typeTmpl; // the active target's type-spelling template; empty -> the bare name
 };
 
 struct Module {

@@ -1199,38 +1199,35 @@ private:
     InterpretedEmitter& owner_;
 };
 
-// The type context: extern-template pick by the parameterized ExternType member; recursion routes back.
+// The type context: extern-template pick from the module's registry (already target-resolved by
+// lowering); recursion routes back to the owning emitter.
 class GenericTypeCtx : public TypeRefCtx {
 public:
     GenericTypeCtx(const TypeRef& t, const BackendSpec& spec,
                    const std::unordered_map<std::string, const ir::ExternType*>& externs,
-                   std::string ir::ExternType::* field, InterpretedEmitter& owner)
-        : TypeRefCtx(t, spec), externs_(externs), field_(field), owner_(owner) {}
+                   InterpretedEmitter& owner)
+        : TypeRefCtx(t, spec), externs_(externs), owner_(owner) {}
 
 protected:
     std::string externTemplate() const override {
         if (t_.kind != TypeRef::Kind::Named) return "";
         auto it = externs_.find(t_.name);
-        return it != externs_.end() ? it->second->*field_ : std::string();
+        return it != externs_.end() ? it->second->typeTmpl : std::string();
     }
     std::string renderTypeRef(const TypeRef& t) const override { return owner_.renderType(t); }
 
 private:
     const std::unordered_map<std::string, const ir::ExternType*>& externs_;
-    std::string ir::ExternType::* field_;
     InterpretedEmitter& owner_;
 };
 
 } // namespace
 
-InterpretedEmitter::InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules,
-                                       std::string ir::ExternType::* externField,
-                                       std::string ir::Bound::* boundField)
-    : specFn_(spec), rules_(rules), externField_(externField), boundField_(boundField),
-      hooks_(spec, *this) {}
+InterpretedEmitter::InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules)
+    : specFn_(spec), rules_(rules), hooks_(spec, *this) {}
 
 std::string InterpretedEmitter::renderType(const TypeRef& t) {
-    GenericTypeCtx ctx(t, spec(), externMap_, externField_, *this);
+    GenericTypeCtx ctx(t, spec(), externMap_, *this);
     return engine::evalRule(rules_.at("Type"), ctx, &rules_);
 }
 
@@ -1245,8 +1242,7 @@ std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
         }
     }
     if (e.kind == ir::ExprKind::Bound) // the FFI template substitution — fixed machinery over plugin data
-        return substBoundTemplate(static_cast<const ir::Bound&>(e).*boundField_,
-                                  static_cast<const ir::Bound&>(e));
+        return substBoundTemplate(static_cast<const ir::Bound&>(e).tmpl, static_cast<const ir::Bound&>(e));
     return "";
 }
 

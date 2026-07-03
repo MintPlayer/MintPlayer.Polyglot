@@ -41,16 +41,14 @@ namespace {
 class LoadedBackend : public Backend {
 public:
     LoadedBackend(std::string name, BackendSpec spec, engine::RuleTable rules,
-                  std::unordered_map<std::string, std::string> capabilities,
-                  std::string ir::ExternType::* externField, std::string ir::Bound::* boundField)
+                  std::unordered_map<std::string, std::string> capabilities)
         : name_(std::move(name)), spec_(std::move(spec)), rules_(std::move(rules)),
-          capabilities_(std::move(capabilities)), externField_(externField), boundField_(boundField) {}
+          capabilities_(std::move(capabilities)) {}
 
     std::string name() const override { return name_; }
 
     std::string emit(const ir::Module& m) const override {
-        InterpretedEmitter emitter([this]() -> const BackendSpec& { return spec_; }, rules_,
-                                   externField_, boundField_);
+        InterpretedEmitter emitter([this]() -> const BackendSpec& { return spec_; }, rules_);
         return emitter.emit(m);
     }
 
@@ -67,8 +65,6 @@ private:
     BackendSpec spec_;
     engine::RuleTable rules_;
     std::unordered_map<std::string, std::string> capabilities_;
-    std::string ir::ExternType::* externField_;
-    std::string ir::Bound::* boundField_;
 };
 
 // ---- Load-time validation (P19 slice 8) ------------------------------------------------------------------
@@ -213,20 +209,8 @@ bool loadBackend(const std::string& artifactJson, std::string& error) {
             }
     }
 
-    // The per-target IR template fields — slice-9 death row (std overlays collapse them to one field).
-    const std::string ir = doc["irTemplates"].asString();
-    std::string ir::ExternType::* extF;
-    std::string ir::Bound::* bndF;
-    if (ir == "cs") { extF = &ir::ExternType::csType; bndF = &ir::Bound::csTemplate; }
-    else if (ir == "ts") { extF = &ir::ExternType::tsType; bndF = &ir::Bound::tsTemplate; }
-    else if (ir == "py") { extF = &ir::ExternType::pyType; bndF = &ir::Bound::pyTemplate; }
-    else {
-        error = "plugin '" + name + "': 'irTemplates' must be cs|ts|py (until std overlays land)";
-        return false;
-    }
-
     registry().push_back(std::make_unique<LoadedBackend>(name, std::move(spec.spec), std::move(rules),
-                                                         std::move(caps), extF, bndF));
+                                                         std::move(caps)));
     return true;
 }
 

@@ -1701,6 +1701,23 @@ Gates: artifacts strict-parse, byte-identical (117), unit green (+4), 39/39 + 38
 overlays — collapse `irTemplates`/`ir::Bound`/`ExternType` per-target fields), 10–11 (pgconfig resolution
 + `polyglot install`), 12 (4th-backend proof).
 
+**Slice-9 ✅ (2026-07-03) — LOWERING IS PER-TARGET; the last per-target IR surface is gone.**
+`lower(unit, target)` now picks each std-binding and extern-class arm for the ACTIVE target at lowering
+time (`compile()` passes `target.name()`; the arm keys in the `.pg` sources — `actual(csharp)` etc. —
+match target names directly). Collapsed: **`ir::Bound.{cs,ts,py}Template` → one `tmpl`**;
+**`ir::ExternType`'s six fields → one `typeTmpl`** (the three `Ctor` fields turned out to be
+write-only dead code — construction always lowered through `ir::Bound` — deleted); the manifest's
+**`irTemplates: cs|ts|py` interim key is gone** (removed from the three artifacts + the loader), and with
+it the member-pointer parameters — `InterpretedEmitter` is now parameterized by **exactly {spec accessor,
+rule table}**, nothing else. A used member with no arm still refuses BEFORE lowering (the existing
+call-site-keyed capability check), so the single `tmpl` is `""` only on a path that was already refused.
+Analysis (`analyze()`/LSP) never lowers — unaffected; the IR-dump tests pass `"csharp"`. **What remains of
+the designed slice 9 is the SOURCE-side split (9b):** the per-target `actual(...)` arms still live inline
+in the embedded std `.pg` texts (compiler.cpp `STD_*`); moving them into plugin `overlays`
+(`{module → member → template}`, link-time merge) is what lets a NEW target ship std arms in its own
+package — deferred to ride with slice 12's 4th-backend proof, which needs it. Gates: artifacts
+strict-parse, byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

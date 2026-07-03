@@ -410,14 +410,12 @@ public:
 };
 
 // THE emitter (P19 slice 7d): every backend is this one class parameterized by pure data — its spec
-// accessor, its parsed rule table, and (until slice 9 collapses the per-target IR fields into overlays)
-// which `ir::ExternType`/`ir::Bound` member carries its templates. The old per-target emitter classes,
-// expression/type contexts, decl hooks, and rule-key switches were all instances of exactly this shape.
+// accessor and its parsed rule table. The IR arrives already target-resolved (lowering picks each
+// binding/extern-type arm — slice 9), so nothing per-target remains here at all.
 class InterpretedEmitter : public EmitterBase {
 public:
     using SpecFn = DeclHooks::SpecFn;
-    InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules,
-                       std::string ir::ExternType::* externField, std::string ir::Bound::* boundField);
+    InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules);
 
     std::string emit(const ir::Module& m);
 
@@ -443,8 +441,6 @@ private:
 
     SpecFn specFn_;
     const engine::RuleTable& rules_;
-    std::string ir::ExternType::* externField_;
-    std::string ir::Bound::* boundField_;
     Hooks hooks_;
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // the module's extern-class spellings
     int tmp_ = 0;                              // the `fresh` single-eval temp counter

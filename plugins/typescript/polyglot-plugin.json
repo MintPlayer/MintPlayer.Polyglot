@@ -1,7 +1,6 @@
 {
   "schema": 1,
   "name": "typescript",
-  "irTemplates": "ts",
   "capabilities": {},
   "spec": {
     "name": "typescript",
