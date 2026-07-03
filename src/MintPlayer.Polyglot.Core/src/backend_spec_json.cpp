@@ -67,6 +67,15 @@ SpecLoadResult loadBackendSpec(const std::string& json) {
     for (const auto& kv : doc["tables"].members)
         if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.tables[kv.first]);
 
+    const json::Value& gen = doc["generics"];
+    if (gen.kind == json::Value::Kind::Object) {
+        r.spec.genericsStyle       = gen["style"].asString();
+        r.spec.genericsBoundsIntro = gen["boundsIntro"].asString();
+        r.spec.genericsBoundsSep   = gen["boundsSep"].asString();
+        for (const json::Value& k : gen["erase"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.genericsErase.insert(k.asString());
+    }
+
     const json::Value& wa = doc["wrapAtom"];
     if (wa.kind == json::Value::Kind::Object) {
         for (const json::Value& k : wa["recv"].items())
@@ -120,6 +129,17 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     const std::string bs = spec.blockStyle == BlockStyle::BracesAllman ? kBlockAllman
                          : spec.blockStyle == BlockStyle::ColonIndent  ? kBlockColon
                                                                        : kBlockKnR;
+
+    std::string gen;
+    if (!spec.genericsStyle.empty()) {
+        std::vector<std::string> er(spec.genericsErase.begin(), spec.genericsErase.end());
+        std::sort(er.begin(), er.end()); // deterministic serialization
+        gen = ",\"generics\":{\"style\":" + json::quote(spec.genericsStyle) +
+              ",\"boundsIntro\":" + json::quote(spec.genericsBoundsIntro) +
+              ",\"boundsSep\":" + json::quote(spec.genericsBoundsSep) + ",\"erase\":[";
+        for (std::size_t i = 0; i < er.size(); ++i) { if (i) gen += ","; gen += json::quote(er[i]); }
+        gen += "]}";
+    }
 
     std::string wa;
     if (!spec.wrapAtomRecv.empty() || !spec.wrapAtomUnary.empty()) {
@@ -182,7 +202,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"throwKeyword\":" + json::quote(spec.throwKeyword) +
            ",\"trueLit\":" + json::quote(spec.trueLit) +
            ",\"falseLit\":" + json::quote(spec.falseLit) +
-           ",\"nullLit\":" + json::quote(spec.nullLit) + wa + tbls + escs + ids + "}";
+           ",\"nullLit\":" + json::quote(spec.nullLit) + gen + wa + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

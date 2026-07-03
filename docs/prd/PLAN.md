@@ -1579,6 +1579,23 @@ complete** — remaining per-target C++ = the statement hooks (For/Try heads, lo
 statement RULES are the natural slice-7-prep), the generics/where spellings (6i), the extern-template
 pickers, and the emit() setup. Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-6i ✅ (2026-07-03) — generics/bounds spelling is a spec strategy; SLICE 6 COMPLETE (the generic
+builtin catalog is real).** The long-deferred item (slice-5b: "needs a filtered-map primitive") resolved
+WITHOUT a new primitive: the erasure filter is a fixed algorithm knob, not rule data. `BackendSpec` gained
+the **`generics` strategy** — `style` (`inlineBounds` = TS `<T extends A & B, U>` / `whereClauses` = C#
+bare names + trailing ` where T : A, B` / `""` = Python nothing), `boundsIntro`/`boundsSep` spellings, and
+**`erase`** (the compile-time-only marker bounds — INumber — dropped everywhere; an all-erased param spells
+bare). `DeclHooks::generics`/`where` are now NON-virtual base methods over the strategy + `renderTypeRef`;
+`csGenerics`/`csWhere`/`tsGenerics` deleted, and **every DeclHooks subclass is now exactly one line** (the
+type renderer). Catalog scorecard vs the design's ~10 rows: table ✓(6e) escapeString/escape-maps ✓(6b)
+ident ✓(6a) mangle ✓(6a) renderType ✓(P18 type rules) wrap ✓(6d) convert ✓(6f, simpler — case rules)
+fresh ✓(6g) require ✓(6g) + subst (6f) + wrapAtom sets (6h) + generics strategy (6i). **All three
+backends: zero targetBuiltins, zero targetGets, spec-driven parens/idents/escapes/wraps/generics.**
+Remaining per-target C++ (slice 7's InterpretedBackend material): the For/Try statement shapes +
+localDecl/yield/rethrow spellings, the extern-template picker + Bound field selection (slice 9 collapses
+the per-target fields), the emit() setup, and the rule-key switches. Byte-identical (117 files), unit
+green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

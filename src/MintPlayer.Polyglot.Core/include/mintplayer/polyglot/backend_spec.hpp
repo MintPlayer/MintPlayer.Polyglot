@@ -71,6 +71,16 @@ struct BackendSpec {
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
 
+    // Generic-parameter spelling strategy. `genericsStyle`: "inlineBounds" carries bounds on each
+    // parameter (TS `<T extends A & B, U>`), "whereClauses" spells bare names and puts bounds in trailing
+    // clauses (C# `<T, U> where T : A, B`), "" emits nothing (Python). `genericsErase` lists compile-time-
+    // only marker bounds with no target spelling (INumber) — erased, and a param whose bounds all erase is
+    // spelled bare.
+    std::string genericsStyle;
+    std::string genericsBoundsIntro; // between the name and its bounds (TS " extends ", C# where " : ")
+    std::string genericsBoundsSep;   // between two bounds (TS " & ", C# ", ")
+    std::unordered_set<std::string> genericsErase;
+
     // Atom-parenthesization policy: which child node kinds need parens as a member/call receiver ("recv")
     // or a unary operand ("unary"). Vocabulary: "binary", "unary", "cast", "cond", and "binaryScalar" (a
     // binary whose lhs is NOT a user type — TS rewrites user-type binaries to high-binding method calls,

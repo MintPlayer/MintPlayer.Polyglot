@@ -506,6 +506,42 @@ std::string UnionDeclCtx::renderType(const std::string& path) const {
     return hooks_.renderTypeRef(u_.cases[i].fields[j].type);
 }
 
+std::string DeclHooks::generics(const std::vector<ir::GenericParam>& gs) const {
+    const BackendSpec& s = specFn_();
+    if (s.genericsStyle.empty() || gs.empty()) return "";
+    std::string out = "<";
+    for (std::size_t i = 0; i < gs.size(); ++i) {
+        if (i) out += ", ";
+        out += gs[i].name;
+        if (s.genericsStyle == "inlineBounds") {
+            bool first = true;
+            for (const auto& b : gs[i].bounds) {
+                if (s.genericsErase.count(b.name)) continue; // compile-time-only marker (INumber)
+                out += first ? s.genericsBoundsIntro : s.genericsBoundsSep;
+                first = false;
+                out += renderTypeRef(b);
+            }
+        }
+    }
+    return out + ">";
+}
+
+std::string DeclHooks::where(const std::vector<ir::GenericParam>& gs) const {
+    const BackendSpec& s = specFn_();
+    if (s.genericsStyle != "whereClauses") return "";
+    std::string out;
+    for (const auto& g : gs) {
+        bool first = true;
+        for (const auto& b : g.bounds) {
+            if (s.genericsErase.count(b.name)) continue; // compile-time-only marker (INumber)
+            out += first ? " where " + g.name + s.genericsBoundsIntro : s.genericsBoundsSep;
+            first = false;
+            out += renderTypeRef(b);
+        }
+    }
+    return out;
+}
+
 std::string InterfaceDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")          return it_.name;
     if (path == "decl.bases.count")   return std::to_string(it_.bases.size());

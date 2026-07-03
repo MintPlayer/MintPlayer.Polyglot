@@ -121,8 +121,10 @@ public:
     // generic catalog entries, not per-backend code (P19 slice 6).
     std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
-    virtual std::string generics(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
-    virtual std::string where(const std::vector<ir::GenericParam>& /*gs*/) const { return ""; }
+    // Generic-parameter spelling, driven by the spec's `generics` strategy (inline bounds / trailing
+    // where-clauses / none) with marker-bound erasure (INumber). Bound types render through renderTypeRef.
+    std::string generics(const std::vector<ir::GenericParam>& gs) const;
+    std::string where(const std::vector<ir::GenericParam>& gs) const;
 
 protected:
     SpecFn specFn_;

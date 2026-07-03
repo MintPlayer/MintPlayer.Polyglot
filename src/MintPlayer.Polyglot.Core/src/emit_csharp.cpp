@@ -35,6 +35,7 @@ const char* CSHARP_SPEC_JSON = R"JSON({
   "binaryOp": {},
   "wrapInt": { "i8": "(sbyte)($x)", "i16": "(short)($x)", "u8": "(byte)($x)", "u16": "(ushort)($x)" },
   "wrapAtom": { "recv": ["binary", "unary", "cast"], "unary": ["binary"] },
+  "generics": { "style": "whereClauses", "boundsIntro": " : ", "boundsSep": ", ", "erase": ["INumber"] },
   "delimited": { "tuple": { "open": "(", "sep": ", ", "close": ")" } },
   "blockStyle": "bracesAllman",
   "stmtEnd": ";",
@@ -410,33 +411,13 @@ std::string csType(const TypeRef& t) {
 // (Keyword escaping — `@`-verbatim identifiers — is the spec's `identifiers` block now; the generic
 // specIdent catalog entry serves every read. TS escapes nothing: its spec declares no keywords.)
 
-std::string csGenerics(const std::vector<ir::GenericParam>& gs) {
-    if (gs.empty()) return "";
-    std::string s = "<";
-    for (std::size_t i = 0; i < gs.size(); ++i) { if (i) s += ", "; s += gs[i].name; }
-    return s + ">";
-}
-// C# puts bounds in trailing `where T : A, B` clauses (one per bounded parameter). The `INumber` marker is
-// a Polyglot compile-time-only numeric constraint (no C# equivalent), so it is erased here.
-std::string csWhere(const std::vector<ir::GenericParam>& gs) {
-    std::string s;
-    for (const auto& g : gs) {
-        std::vector<const TypeRef*> bounds;
-        for (const auto& b : g.bounds) if (b.name != "INumber") bounds.push_back(&b);
-        if (bounds.empty()) continue;
-        s += " where " + g.name + " : ";
-        for (std::size_t i = 0; i < bounds.size(); ++i) { if (i) s += ", "; s += csType(*bounds[i]); }
-    }
-    return s;
-}
-
-// The C# declaration hooks — the one per-backend object every decl context reads through.
+// The C# declaration hooks — the one per-backend object every decl context reads through. (Generics/where
+// spelling — bare names + trailing `where T : A, B` clauses, INumber erased — is the spec's `generics`
+// strategy now, spelled by the DeclHooks base.)
 class CsDeclHooks : public DeclHooks {
 public:
     CsDeclHooks() : DeclHooks(&csharpSpec) {}
     std::string renderTypeRef(const TypeRef& t) const override { return csType(t); }
-    std::string generics(const std::vector<ir::GenericParam>& gs) const override { return csGenerics(gs); }
-    std::string where(const std::vector<ir::GenericParam>& gs) const override { return csWhere(gs); }
 };
 const CsDeclHooks kCsDeclHooks;
 

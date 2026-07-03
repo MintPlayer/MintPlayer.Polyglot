@@ -44,7 +44,8 @@ const char* TS_SPEC_JSON = R"JSON({
   "wrapInt": { "i8": "($x << 24 >> 24)", "i16": "($x << 16 >> 16)",
                "u8": "($x & 0xff)", "u16": "($x & 0xffff)", "u32": "($x >>> 0)", "i32": "($x | 0)",
                "i64": "BigInt.asIntN(64, $x)", "u64": "BigInt.asUintN(64, $x)" },
-  "wrapAtom": { "recv": ["unary", "binaryScalar"], "unary": ["binary"] }
+  "wrapAtom": { "recv": ["unary", "binaryScalar"], "unary": ["binary"] },
+  "generics": { "style": "inlineBounds", "boundsIntro": " extends ", "boundsSep": " & ", "erase": ["INumber"] }
 })JSON";
 
 const BackendSpec& typescriptSpec() {
@@ -392,31 +393,14 @@ bool isUserType(const TypeRef& t) {
 // data now — the wrapInt/opMethod/bigNarrow tables consulted by the Cast/Binary rules through the generic
 // wrap/table/subst catalog entries.)
 
-// TS carries bounds inline on each parameter: `<T extends A & B, U>`. The `INumber` marker is a Polyglot
-// compile-time-only numeric constraint (no TS equivalent), so it is erased here.
-std::string tsGenerics(const std::vector<ir::GenericParam>& gs) {
-    if (gs.empty()) return "";
-    std::string s = "<";
-    for (std::size_t i = 0; i < gs.size(); ++i) {
-        if (i) s += ", ";
-        s += gs[i].name;
-        std::vector<const TypeRef*> bounds;
-        for (const auto& b : gs[i].bounds) if (b.name != "INumber") bounds.push_back(&b);
-        if (!bounds.empty()) {
-            s += " extends ";
-            for (std::size_t j = 0; j < bounds.size(); ++j) { if (j) s += " & "; s += tsType(*bounds[j]); }
-        }
-    }
-    return s + ">";
-}
-
 // The TS declaration hooks — the one per-backend object every decl context reads through. (TS declares no
-// keywords in its spec `identifiers` block — pg names that collide with C#/Python keywords are legal TS.)
+// keywords in its spec `identifiers` block — pg names that collide with C#/Python keywords are legal TS.
+// Generics spelling — inline `<T extends A & B>` bounds, INumber erased — is the spec's `generics`
+// strategy now, spelled by the DeclHooks base.)
 class TsDeclHooks : public DeclHooks {
 public:
     TsDeclHooks() : DeclHooks(&typescriptSpec) {}
     std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
-    std::string generics(const std::vector<ir::GenericParam>& gs) const override { return tsGenerics(gs); }
 };
 const TsDeclHooks kTsDeclHooks;
 
