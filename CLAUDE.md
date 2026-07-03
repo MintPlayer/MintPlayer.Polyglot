@@ -258,8 +258,15 @@ maps, per-width int wraps (`wrapInt`), named tables (`opMethod`/`bigNarrow`), co
 over shared type-class facts), atom parens (`wrapAtom` kind-sets), and generics/bounds spelling (strategy +
 INumber erasure); `fresh` (walrus temps) + `require` (prelude keys) are engine primitives; every DeclHooks
 subclass is one line. Every slice byte-gated (117 emitted files identical) + strict-JSON-parse checked.
-Remaining: slice 7 (statement rules + delete emit_*.cpp → InterpretedBackend + `plugins/<target>/`),
-8–12 (loader/overlays/install/4th-backend proof), 13–15 (identifier hygiene + reserved names).
+**Slice 7a–d built (2026-07-03): ONE `InterpretedEmitter` serves every backend.** For/Try are per-kind
+STATEMENT rules (new `StmtCtx` + `{"indent":[…]}` primitive — TS's `__handled` catch chain composes from
+line/indent/mapDecl); localDecl/yield/rethrow are spec data; Python's preludes are spec data (`preludes`
+map + the entry fact). The three backend classes/ctxs/hooks/rule-key switches are DELETED — each
+`emit_*.cpp` is now two JSON blobs + a one-line factory (`InterpretedEmitter(&spec, rules,
+&ExternType::<field>, &Bound::<field>)`; the member picks are the last per-target parameter, collapsing at
+slice 9's overlays). Remaining: 7e (JSON → physical `plugins/<target>/` files + `loadBackend` validation —
+merges into slice 8), 8–12 (loader/overlays/install/4th-backend proof), 13–15 (identifier hygiene +
+reserved names).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".
