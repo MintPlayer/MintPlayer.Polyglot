@@ -34,7 +34,8 @@ const char* TS_SPEC_JSON = R"JSON({
   "blockStyle": "bracesKnR",
   "stmtEnd": ";",
   "throwKeyword": "throw",
-  "trueLit": "true", "falseLit": "false", "nullLit": "null"
+  "trueLit": "true", "falseLit": "false", "nullLit": "null",
+  "escapes": { "interp": { "`": "\\`", "\\": "\\\\", "${": "\\${" } }
 })JSON";
 
 const BackendSpec& typescriptSpec() {
@@ -95,7 +96,7 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
             "else": {"tmpl":["(() => { const ",{"get":"node.tempName"}," = ",{"emit":"node.base"},"; return new ",
                              {"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},"); })()"]} } },
   "Interp": { "tmpl": [ "`", {"interleave":{"lits":"node.chunks","holes":"node.holes",
-                "lit":{"fn":"interpEscape","args":[{"get":"item"}]},
+                "lit":{"fn":"escape","args":["interp",{"get":"item"}]},
                 "hole":{"tmpl":["${",{"emit":"item"},"}"]}}}, "`" ] },
   "MethodCall": { "case": { "when": [ [ {"eq":["node.isExtension","true"]},
       {"tmpl":[{"get":"node.method"},"(",{"emit":"node.object"},
@@ -498,17 +499,6 @@ protected:
             if (e_.kind != ir::ExprKind::Cast) return "";
             return tsConvert(static_cast<const ir::Cast&>(e_).operand->type, e_.type,
                              args.empty() ? std::string() : args[0]);
-        }
-        if (name == "interpEscape") { // escape a chunk for a TS template literal `` `…` ``
-            const std::string& chunk = args.empty() ? std::string() : args[0];
-            std::string s;
-            for (std::size_t j = 0; j < chunk.size(); ++j) {
-                char c = chunk[j];
-                if (c == '`' || c == '\\') { s += '\\'; s += c; }
-                else if (c == '$' && j + 1 < chunk.size() && chunk[j + 1] == '{') s += "\\$";
-                else s += c;
-            }
-            return s;
         }
         return "";
     }

@@ -61,6 +61,9 @@ SpecLoadResult loadBackendSpec(const std::string& json) {
     r.spec.falseLit     = strOr("falseLit", "false");
     r.spec.nullLit      = strOr("nullLit", "null");
 
+    for (const auto& kv : doc["escapes"].members)
+        if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.escapes[kv.first]);
+
     const json::Value& ids = doc["identifiers"];
     if (ids.kind == json::Value::Kind::Object) {
         for (const json::Value& k : ids["keywords"].items())
@@ -107,6 +110,18 @@ std::string backendSpecToJson(const BackendSpec& spec) {
                          : spec.blockStyle == BlockStyle::ColonIndent  ? kBlockColon
                                                                        : kBlockKnR;
 
+    std::string escs;
+    if (!spec.escapes.empty()) {
+        escs = ",\"escapes\":{";
+        bool firstMap = true;
+        for (const auto& kv : spec.escapes) {
+            if (!firstMap) escs += ",";
+            firstMap = false;
+            escs += json::quote(kv.first) + ":" + mapJson(kv.second);
+        }
+        escs += "}";
+    }
+
     std::string ids;
     if (!spec.keywords.empty() || !spec.escapeStrategy.empty() || !spec.mangleFrom.empty()) {
         std::vector<std::string> kws(spec.keywords.begin(), spec.keywords.end());
@@ -133,7 +148,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"throwKeyword\":" + json::quote(spec.throwKeyword) +
            ",\"trueLit\":" + json::quote(spec.trueLit) +
            ",\"falseLit\":" + json::quote(spec.falseLit) +
-           ",\"nullLit\":" + json::quote(spec.nullLit) + ids + "}";
+           ",\"nullLit\":" + json::quote(spec.nullLit) + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

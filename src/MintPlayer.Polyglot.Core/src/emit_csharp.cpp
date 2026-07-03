@@ -38,6 +38,10 @@ const char* CSHARP_SPEC_JSON = R"JSON({
   "stmtEnd": ";",
   "throwKeyword": "throw",
   "trueLit": "true", "falseLit": "false", "nullLit": "null",
+  "escapes": {
+    "interp": { "\"": "\\\"", "\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r", "{": "{{", "}": "}}" },
+    "char":   { "'": "\\'", "\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r" }
+  },
   "identifiers": {
     "keywords": ["abstract","as","base","bool","break","byte","case","catch","char","checked","class","const",
       "continue","decimal","default","delegate","do","double","else","enum","event","explicit","extern","false",
@@ -116,9 +120,9 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "Cast":   { "tmpl": [ "(", {"fn":"castType"}, ")(", {"emit":"node.operand"}, ")" ] },
   "Unary":  { "tmpl": [ {"get":"node.op"}, {"emitChild":"node.operand","side":"unary"} ] },
   "Interp": { "tmpl": [ "$\"", {"interleave":{"lits":"node.chunks","holes":"node.holes",
-                "lit":{"fn":"interpEscape","args":[{"get":"item"}]},
+                "lit":{"fn":"escape","args":["interp",{"get":"item"}]},
                 "hole":{"tmpl":["{",{"emit":"item"},"}"]}}}, "\"" ] },
-  "Char": { "fn": "charLit", "args": [ {"get":"node.value"} ] },
+  "Char": { "tmpl": [ "'", {"fn":"escape","args":["char",{"get":"node.value"}]}, "'" ] },
   "This": { "case": { "when": [ [ {"eq":["node.insideOperator","true"]}, "lhs" ] ], "else": "this" } },
   "MethodCall": { "tmpl": [
       { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
@@ -393,30 +397,6 @@ protected:
             const char* cast = tn == "i8" ? "sbyte" : tn == "i16" ? "short"
                              : tn == "u8" ? "byte"  : tn == "u16" ? "ushort" : nullptr;
             return cast ? "(" + std::string(cast) + ")(" + inner + ")" : inner;
-        }
-        if (name == "interpEscape") { // escape a chunk for a C# interpolated-string literal `$"…"`
-            std::string s;
-            for (char c : args.empty() ? std::string() : args[0]) {
-                if (c == '"' || c == '\\') { s += '\\'; s += c; }
-                else if (c == '\n') s += "\\n"; // a raw newline/tab/CR would break the `$"…"` literal
-                else if (c == '\t') s += "\\t";
-                else if (c == '\r') s += "\\r";
-                else if (c == '{') s += "{{";
-                else if (c == '}') s += "}}";
-                else s += c;
-            }
-            return s;
-        }
-        if (name == "charLit") { // C# char literal `'x'` (escape `'`, `\`, control chars)
-            std::string s = "'";
-            for (char c : args.empty() ? std::string() : args[0]) {
-                if (c == '\'' || c == '\\') { s += '\\'; s += c; }
-                else if (c == '\n') s += "\\n";
-                else if (c == '\t') s += "\\t";
-                else if (c == '\r') s += "\\r";
-                else s += c;
-            }
-            return s + "'";
         }
         return "";
     }

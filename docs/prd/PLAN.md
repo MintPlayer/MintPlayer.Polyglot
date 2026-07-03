@@ -1477,6 +1477,18 @@ parameterized escape maps), 6c (type-list suffix reads — typeArgsSuffix/genArg
 paths + rules), 6d (numeric wrap catalog + intRepr strategy), 6e (convert matrix), 6f (fresh + walrus
 rules), 6g (wrapAtom kind-sets as spec data), 6h (generics/where spelling strategies).
 
+**Slice-6b ✅ (2026-07-03) — escape transforms are spec data (catalog row 2 generalized).** `BackendSpec`
+gained **named escape maps** (`escapes: {name: {sourceSeq: replacement}}`) applied by one generic
+**`specEscape`** (longest-match-first, 2-char sequences before 1-char — which is exactly what TS's
+contextual `$`-before-`{` needs: the `"${" → "\\${"` entry replaces the old lookahead code byte-for-byte).
+The shared `{"fn":"escape","args":["<map>", <text>]}` builtin serves all reads. As data: C# `interp`
+(quote/backslash/control chars + `{{`/`}}` brace doubling) + `char` (the `'`-literal set — the `Char` rule
+is now a plain `tmpl` wrapping quotes around the escaped value, no dedicated builtin); TS `interp`
+(backtick/backslash/`${`). Deleted: C# `interpEscape`+`charLit`, TS `interpEscape` — the TS expression ctx's
+targetBuiltin now handles ONLY typeArgsSuffix/narrowWrap/i64Wrap/imul/opMethod/convert; C#'s only
+elemType/castType/genArgs/typeArgsSuffix/subWordWrap. (Python's chunks use the shared `escapeString` —
+unchanged.) Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

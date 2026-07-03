@@ -71,6 +71,11 @@ struct BackendSpec {
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
 
+    // Named escape maps for the target's string-ish literal contexts (source sequence -> replacement):
+    // C# `$"…"` interpolation chunks double braces, TS template literals escape backtick + `${`, C# char
+    // literals escape `'`. Applied by the generic specEscape catalog entry — per-target escape CODE is gone.
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> escapes;
+
     // Identifier repair (the spec half of P19 §7's `identifiers` manifest block): the target's reserved
     // words and how a colliding `.pg` identifier escapes — "prefix" (C# `@name`) / "suffix" (Python
     // `name_`) / "" = emit verbatim (TS escapes nothing). `mangle` repairs emitted names whose characters
@@ -87,6 +92,25 @@ inline std::string specIdent(const BackendSpec& s, const std::string& n) {
     if (s.escapeStrategy == "prefix") return s.escapeWith + n;
     if (s.escapeStrategy == "suffix") return n + s.escapeWith;
     return n;
+}
+
+// Apply the named escape map to `text`: at each position the longest declared source sequence wins
+// (2 chars, then 1); unmatched characters pass through. An unknown map name is the identity transform.
+inline std::string specEscape(const BackendSpec& s, const std::string& mapName, const std::string& text) {
+    auto mit = s.escapes.find(mapName);
+    if (mit == s.escapes.end()) return text;
+    const auto& m = mit->second;
+    std::string out;
+    for (std::size_t i = 0; i < text.size();) {
+        if (i + 1 < text.size()) {
+            auto it2 = m.find(text.substr(i, 2));
+            if (it2 != m.end()) { out += it2->second; i += 2; continue; }
+        }
+        auto it1 = m.find(std::string(1, text[i]));
+        if (it1 != m.end()) { out += it1->second; ++i; continue; }
+        out += text[i++];
+    }
+    return out;
 }
 
 // An emitted name with the spec's forbidden-character replacement applied (identity when none declared).
