@@ -1263,6 +1263,23 @@ int main() {
               "P19: a target-keyed pgconfig ban bites on that target");
         check(compile("fn main() {\n  let data = 1\n  var y = data\n}\n", findTarget("csharp"), nullptr, banPy).ok,
               "P19: a target-keyed pgconfig ban is ignored by other targets");
+
+        // Slice 15: target-keyword names escape CONSISTENTLY at decl + reference + type sites (ident is
+        // wired through every rule's name holes), and refuse on a target that declares no escape (TS).
+        EmitResult kcs = compile("record switch(delegate: i32)\nfn checked(a: i32): i32 {\n  return a\n}\n"
+                                 "fn main() {\n  let s = switch(5)\n  var y = checked(s.delegate)\n}\n",
+                                 findTarget("csharp"));
+        check(kcs.ok && has(kcs.code, "record @switch(int @delegate)") && has(kcs.code, "int @checked(int a)") &&
+                  has(kcs.code, "Program.@checked(s.@delegate)") && has(kcs.code, "new @switch(5)"),
+              "P19: C#-keyword names escape as @name at decl, call, member, and construction sites");
+        EmitResult kpy = compile("fn global(a: i32): i32 {\n  return a\n}\nfn main() {\n  var y = global(7)\n}\n",
+                                 findTarget("python"));
+        check(kpy.ok && has(kpy.code, "def global_(a)") && has(kpy.code, "global_(7)"),
+              "P19: python-keyword fn names escape with the suffix strategy, decl and call agreeing");
+        EmitResult kts = compile("fn function(a: i32): i32 {\n  return a\n}\nfn main() {}\n",
+                                 findTarget("typescript"));
+        check(!kts.ok && has(kts.diagnostics[0].message, "'function' is reserved by target 'typescript'"),
+              "P19: TS declares no escape, so its keywords are reserved names -> honest refusal");
     }
 
     if (g_failures == 0) {

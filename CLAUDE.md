@@ -297,8 +297,12 @@ reserved/forbidden identifiers** — the 7 collision miscompiles are loud per-ta
 (NameCollector over declaration sites ONLY — strings/comments/extern templates can never trip it);
 pgconfig `forbiddenIdentifiers` (`{target-or-"*": [names]}`) carried on `LibConfig`. Three diagnostics
 (reserved / shadows-global / pgconfig-forbidden). The LSP runs the check per configured pgconfig target so
-refusals squiggle live. v1 is kind-blind + refuse-not-rename; open tail: decl-name keyword escaping
-(fn/type-level names + reference sites; locals/params already escape).
+refusals squiggle live. v1 is kind-blind + refuse-not-rename. **Slice 15 ✅:** every bare name hole in the
+rule tables (116) wrapped in `{"fn":"ident"}` — keyword-named decls escape consistently at decl+reference+
+type sites (C# `@switch`, python `global_`); TS declares no escape so its JS-reserved-words are
+`identifiers.reserved` → honest refusals; `ident` dispatch added to `TypeRefCtx`/`EnumDeclCtx` (engine
+gaps the byte gate caught). **P19 is COMPLETE** except npm publish-on-push (workflow committed) and the
+PHP runtime differential (needs a php toolchain).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".

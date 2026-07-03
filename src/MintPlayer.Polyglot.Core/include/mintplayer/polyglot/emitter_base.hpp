@@ -95,14 +95,19 @@ public:
     }
 };
 
-// Shared decl context for enums — pure name/value data, identical for every target.
+class DeclHooks;
+
+// Shared decl context for enums — pure name/value data, identical for every target (hooks only for the
+// keyword-escaping `ident` builtin its name holes go through).
 class EnumDeclCtx : public IrDeclCtx {
 public:
-    explicit EnumDeclCtx(const ir::Enum& e) : e_(e) {}
+    EnumDeclCtx(const ir::Enum& e, const DeclHooks& hooks) : e_(e), hooks_(hooks) {}
     std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
 
 private:
     const ir::Enum& e_;
+    const DeclHooks& hooks_;
 };
 
 // The per-target hooks a declaration context reads through — ONE instance per backend serves every decl

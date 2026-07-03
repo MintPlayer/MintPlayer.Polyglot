@@ -1802,12 +1802,25 @@ match, and the same names compiling fine on non-reserving targets) + 9 unit test
 (117 — the reserved lists refuse *new* programs, none of the 39 existing ones collide), unit green,
 39/39 + 38/38 + samples 10/10. **Honest v1 limits (recorded, not hidden):** kind-blind matching (a field
 named `tag` refuses on TS even where the generated discriminant couldn't collide — safe direction;
-refinement = kind-aware reserved entries); decl-name *keyword* escaping (slice 15's `ident`-at-decl-sites
-tail — a fn named `checked` still emits unescaped into C#, a loud target-build error, not silent — verified:
-the local-decl/value sites DO escape, `var @checked`; the gap is fn/type-level names + their reference
-sites, Call/`new`/type spelling, which must escape *consistently* — a cross-cutting slice of its own)
-remains open; collision-aware `fresh` (auto-rename instead of refuse) stays the recorded future
-alternative. **The LSP tail ✅ (same day):** `analyzeDoc` runs `checkReservedNames` per configured target
+refinement = kind-aware reserved entries); collision-aware `fresh` (auto-rename instead of refuse) stays
+the recorded future alternative.
+**Slice 15 ✅ (same day) — decl-name keyword escaping, done as data:** every bare identifier hole in all
+four rule tables (116 across the manifests: decl names, Call callees, `New` type names, method/field
+refs, catch/for/lambda/match bindings, the `Type` rule's named-type spelling, python's
+`mangle(decl.emitName)` fn sig) is wrapped in the existing `{"fn":"ident"}` builtin by a scripted
+transform — `ident` is identity for non-keywords, so the byte gate proves the 117 emitted files
+unchanged. A fn/record/field named a target keyword now escapes CONSISTENTLY at declaration + every
+reference site (C# `record @switch(int @delegate)` … `new @switch(5)` … `Program.@checked(s.@delegate)`;
+python `def global_` / `global_(7)`, runs). **TS gets the designed honest `escape:null` semantics:** it
+declares no escape strategy, so its 16 JS-reserved-words that are legal `.pg` identifiers
+(`function`/`export`/`switch`/`typeof`/…) went into `identifiers.reserved` — keyword names REFUSE on TS
+instead of emitting broken output. Two generic engine gaps surfaced (the byte gate caught both as
+vanishing names): `TypeRefCtx::builtin` and the target-independent `EnumDeclCtx` didn't dispatch `ident`
+(every other decl ctx did) — fixed in the engine, the ctxs every backend shares. Excluded by design:
+python union values are string-keyed dicts (`escapeString(item.name)` / `_m["<field>"]` holes are string
+CONTENTS, never identifier-escaped — cross-target tag equality). v1 residue: keyword-named generic type
+params (`<checked>`) don't escape (vanishingly rare; the `generics` builtin would take specIdent).
+Gates: byte-identical (117), unit +3 (kw escape C#/py, TS refusal), 39/39 + 38/38 + samples 10/10. **The LSP tail ✅ (same day):** `analyzeDoc` runs `checkReservedNames` per configured target
 (pgconfig `targets`, default cs+ts; `DocContext` carries `targets`+`forbidden`; `resolveConfiguredTargets`
 runs so plugin targets squiggle too) and appends to the published diagnostics — a name the build would
 refuse now squiggles live, labeled with the target that reserves it (spawn-tested: TS `tag` + a

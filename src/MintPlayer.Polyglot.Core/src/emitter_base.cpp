@@ -437,7 +437,8 @@ std::string TypeRefCtx::renderType(const std::string& path) const {
     return "";
 }
 
-std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::string>& /*args*/) const {
+std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "ident") return specIdent(spec_, args.empty() ? std::string() : args[0]);
     if (name == "substExtern") { // substitute `$0,$1,…` in the extern-class spelling with rendered type args
         const std::string tmpl = externTemplate();
         std::string out;
@@ -465,6 +466,11 @@ std::string EnumDeclCtx::get(const std::string& path) const {
             if (rest == "value") return std::to_string(e_.cases[i].value);
         }
     }
+    return "";
+}
+
+std::string EnumDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -976,7 +982,7 @@ std::string ModuleDeclCtx::emitChild(const std::string& path, const std::string&
 
 std::unique_ptr<IrDeclCtx> ModuleDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
     if (path == "module.enums" && index < m_.enums.size())
-        return std::make_unique<EnumDeclCtx>(m_.enums[index]);
+        return std::make_unique<EnumDeclCtx>(m_.enums[index], hooks_);
     if (path == "module.unions" && index < m_.unions.size())
         return std::make_unique<UnionDeclCtx>(m_.unions[index], hooks_);
     if (path == "module.interfaces" && index < m_.interfaces.size())

@@ -278,7 +278,12 @@
           }
         },
         {
-          "get": "node.field"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.field"
+            }
+          ]
         }
       ]
     },
@@ -296,7 +301,12 @@
                 },
                 "::",
                 {
-                  "get": "node.method"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.method"
+                    }
+                  ]
                 },
                 "(",
                 {
@@ -316,7 +326,12 @@
             },
             "->",
             {
-              "get": "node.method"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.method"
+                }
+              ]
             },
             "(",
             {
@@ -409,7 +424,12 @@
       "tmpl": [
         "new ",
         {
-          "get": "node.typeName"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.typeName"
+            }
+          ]
         },
         "(",
         {
@@ -771,7 +791,12 @@
           ]
         ],
         "else": {
-          "get": "type.name"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "type.name"
+            }
+          ]
         }
       }
     },
@@ -791,7 +816,12 @@
                   "tmpl": [
                     "for ($",
                     {
-                      "get": "stmt.binding"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "stmt.binding"
+                        }
+                      ]
                     },
                     " = ",
                     {
@@ -799,7 +829,12 @@
                     },
                     "; $",
                     {
-                      "get": "stmt.binding"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "stmt.binding"
+                        }
+                      ]
                     },
                     {
                       "case": {
@@ -822,7 +857,12 @@
                     },
                     "; $",
                     {
-                      "get": "stmt.binding"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "stmt.binding"
+                        }
+                      ]
                     },
                     "++)"
                   ]
@@ -887,7 +927,12 @@
                 },
                 " as $",
                 {
-                  "get": "stmt.binding"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "stmt.binding"
+                    }
+                  ]
                 },
                 ")"
               ]
@@ -1051,7 +1096,12 @@
           "tmpl": [
             "class ",
             {
-              "get": "decl.name"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
             }
           ]
         },
@@ -1063,7 +1113,12 @@
                 "tmpl": [
                   "const ",
                   {
-                    "get": "item.name"
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
                   },
                   " = ",
                   {
@@ -1083,7 +1138,12 @@
           "tmpl": [
             "class ",
             {
-              "get": "decl.name"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
             }
           ]
         },
@@ -1095,7 +1155,12 @@
                 "tmpl": [
                   "public $",
                   {
-                    "get": "item.name"
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
                   },
                   ";"
                 ]
@@ -1114,7 +1179,12 @@
                       "tmpl": [
                         "$",
                         {
-                          "get": "item.name"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
                         }
                       ]
                     }
@@ -1130,11 +1200,21 @@
                       "tmpl": [
                         "$this->",
                         {
-                          "get": "item.name"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
                         },
                         " = $",
                         {
-                          "get": "item.name"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
                         },
                         ";"
                       ]
@@ -1157,7 +1237,12 @@
           "tmpl": [
             "class ",
             {
-              "get": "decl.name"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
             },
             {
               "case": {
@@ -1207,7 +1292,12 @@
                   },
                   "$",
                   {
-                    "get": "item.name"
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
                   },
                   {
                     "case": {
@@ -1332,7 +1422,12 @@
               "tmpl": [
                 "$",
                 {
-                  "get": "item.name"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.name"
+                    }
+                  ]
                 },
                 " = ",
                 {

@@ -54,7 +54,23 @@
         "tag",
         "equals",
         "__opt*",
-        "__w*"
+        "__w*",
+        "case",
+        "debugger",
+        "default",
+        "delete",
+        "export",
+        "extends",
+        "function",
+        "implements",
+        "instanceof",
+        "new",
+        "package",
+        "protected",
+        "public",
+        "switch",
+        "typeof",
+        "void"
       ],
       "globals": [
         "console"
@@ -185,7 +201,12 @@
       ]
     },
     "Var": {
-      "get": "node.name"
+      "fn": "ident",
+      "args": [
+        {
+          "get": "node.name"
+        }
+      ]
     },
     "This": "this",
     "Extern": {
@@ -203,7 +224,12 @@
     "Call": {
       "tmpl": [
         {
-          "get": "node.mangledCallee"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.mangledCallee"
+            }
+          ]
         },
         "(",
         {
@@ -250,7 +276,12 @@
           }
         },
         {
-          "get": "node.field"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.field"
+            }
+          ]
         }
       ]
     },
@@ -371,7 +402,12 @@
       "tmpl": [
         "new ",
         {
-          "get": "node.typeName"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.typeName"
+            }
+          ]
         },
         {
           "call": "typeArgsSuffix"
@@ -402,7 +438,12 @@
             "tmpl": [
               ", ",
               {
-                "get": "item.name"
+                "fn": "ident",
+                "args": [
+                  {
+                    "get": "item.name"
+                  }
+                ]
               },
               ": ",
               {
@@ -749,7 +790,12 @@
             {
               "tmpl": [
                 {
-                  "get": "node.method"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.method"
+                    }
+                  ]
                 },
                 "(",
                 {
@@ -806,7 +852,12 @@
             },
             ".",
             {
-              "get": "node.method"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.method"
+                }
+              ]
             },
             "(",
             {
@@ -881,11 +932,21 @@
                           "tmpl": [
                             "const ",
                             {
-                              "get": "item.binding"
+                              "fn": "ident",
+                              "args": [
+                                {
+                                  "get": "item.binding"
+                                }
+                              ]
                             },
                             " = _m.",
                             {
-                              "get": "item.field"
+                              "fn": "ident",
+                              "args": [
+                                {
+                                  "get": "item.field"
+                                }
+                              ]
                             },
                             "; "
                           ]
@@ -910,7 +971,12 @@
                     "tmpl": [
                       "{ const ",
                       {
-                        "get": "item.pattern.binding"
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "item.pattern.binding"
+                          }
+                        ]
                       },
                       " = _m; ",
                       {
@@ -1075,7 +1141,12 @@
           "item": {
             "tmpl": [
               {
-                "get": "item.name"
+                "fn": "ident",
+                "args": [
+                  {
+                    "get": "item.name"
+                  }
+                ]
               },
               {
                 "case": {
@@ -1139,7 +1210,12 @@
             "tmpl": [
               "type ",
               {
-                "get": "decl.name"
+                "fn": "ident",
+                "args": [
+                  {
+                    "get": "decl.name"
+                  }
+                ]
               },
               " = number;"
             ]
@@ -1150,7 +1226,12 @@
             "tmpl": [
               "const ",
               {
-                "get": "decl.name"
+                "fn": "ident",
+                "args": [
+                  {
+                    "get": "decl.name"
+                  }
+                ]
               },
               " = { ",
               {
@@ -1159,7 +1240,12 @@
                 "item": {
                   "tmpl": [
                     {
-                      "get": "item.name"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "item.name"
+                        }
+                      ]
                     },
                     ": ",
                     {
@@ -1177,7 +1263,12 @@
     "tsParam": {
       "tmpl": [
         {
-          "get": "item.name"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "item.name"
+            }
+          ]
         },
         ": ",
         {
@@ -1240,7 +1331,12 @@
           }
         },
         {
-          "get": "decl.name"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
         },
         {
           "fn": "generics"
@@ -1298,7 +1394,12 @@
                   "tmpl": [
                     "get ",
                     {
-                      "get": "decl.name"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "decl.name"
+                        }
+                      ]
                     },
                     "(): ",
                     {
@@ -1366,7 +1467,12 @@
       "tmpl": [
         "class ",
         {
-          "get": "decl.name"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
         },
         {
           "fn": "generics"
@@ -1412,7 +1518,12 @@
               "line": {
                 "tmpl": [
                   {
-                    "get": "item.name"
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
                   },
                   ": ",
                   {
@@ -1434,7 +1545,12 @@
                     "item": {
                       "tmpl": [
                         {
-                          "get": "item.name"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
                         },
                         ": ",
                         {
@@ -1454,11 +1570,21 @@
                       "tmpl": [
                         "this.",
                         {
-                          "get": "item.name"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
                         },
                         " = ",
                         {
-                          "get": "item.name"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
                         },
                         ";"
                       ]
@@ -1474,7 +1600,12 @@
                 "tmpl": [
                   "equals(other: ",
                   {
-                    "get": "decl.name"
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "decl.name"
+                      }
+                    ]
                   },
                   "): boolean"
                 ]
@@ -1516,11 +1647,21 @@
                                       "tmpl": [
                                         "this.",
                                         {
-                                          "get": "item.name"
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
                                         },
                                         ".equals(other.",
                                         {
-                                          "get": "item.name"
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
                                         },
                                         ")"
                                       ]
@@ -1531,11 +1672,21 @@
                                   "tmpl": [
                                     "this.",
                                     {
-                                      "get": "item.name"
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
                                     },
                                     " === other.",
                                     {
-                                      "get": "item.name"
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
                                     }
                                   ]
                                 }
@@ -1643,7 +1794,12 @@
                                               "tmpl": [
                                                 "const ",
                                                 {
-                                                  "get": "item.binding"
+                                                  "fn": "ident",
+                                                  "args": [
+                                                    {
+                                                      "get": "item.binding"
+                                                    }
+                                                  ]
                                                 },
                                                 " = __e;"
                                               ]
@@ -1787,7 +1943,12 @@
                   "tmpl": [
                     "for (let ",
                     {
-                      "get": "stmt.binding"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "stmt.binding"
+                        }
+                      ]
                     },
                     " = ",
                     {
@@ -1795,7 +1956,12 @@
                     },
                     "; ",
                     {
-                      "get": "stmt.binding"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "stmt.binding"
+                        }
+                      ]
                     },
                     {
                       "case": {
@@ -1818,7 +1984,12 @@
                     },
                     "; ",
                     {
-                      "get": "stmt.binding"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "stmt.binding"
+                        }
+                      ]
                     },
                     "++)"
                   ]
@@ -1874,7 +2045,12 @@
               "tmpl": [
                 "for (const ",
                 {
-                  "get": "stmt.binding"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "stmt.binding"
+                    }
+                  ]
                 },
                 " of ",
                 {
@@ -1936,7 +2112,12 @@
                   }
                 },
                 {
-                  "get": "item.name"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.name"
+                    }
+                  ]
                 },
                 ": ",
                 {
@@ -2089,7 +2270,12 @@
       "tmpl": [
         "function ",
         {
-          "get": "decl.name"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
         },
         {
           "fn": "generics"
@@ -2149,7 +2335,12 @@
       "tmpl": [
         "class ",
         {
-          "get": "decl.name"
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
         },
         {
           "fn": "generics"
@@ -2252,7 +2443,12 @@
                     }
                   },
                   {
-                    "get": "item.name"
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
                   },
                   ": ",
                   {
@@ -2363,7 +2559,12 @@
           "tmpl": [
             "interface ",
             {
-              "get": "decl.name"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
             },
             {
               "fn": "generics"
@@ -2404,7 +2605,12 @@
               "line": {
                 "tmpl": [
                   {
-                    "get": "item.name"
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
                   },
                   {
                     "fn": "generics",
@@ -2421,7 +2627,12 @@
                     "item": {
                       "tmpl": [
                         {
-                          "get": "item.name"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
                         },
                         ": ",
                         {
@@ -2469,7 +2680,12 @@
         "tmpl": [
           "type ",
           {
-            "get": "decl.name"
+            "fn": "ident",
+            "args": [
+              {
+                "get": "decl.name"
+              }
+            ]
           },
           {
             "fn": "generics"
@@ -2482,7 +2698,12 @@
               "tmpl": [
                 "{ tag: \"",
                 {
-                  "get": "item.name"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.name"
+                    }
+                  ]
                 },
                 "\"",
                 {
@@ -2492,7 +2713,12 @@
                     "tmpl": [
                       "; ",
                       {
-                        "get": "item.name"
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "item.name"
+                          }
+                        ]
                       },
                       ": ",
                       {
@@ -2626,7 +2852,12 @@
         "else": {
           "tmpl": [
             {
-              "get": "type.name"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "type.name"
+                }
+              ]
             },
             {
               "case": {
