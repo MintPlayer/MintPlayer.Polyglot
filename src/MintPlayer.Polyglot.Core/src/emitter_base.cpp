@@ -746,7 +746,7 @@ ClassDeclCtx::ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn em
 }
 
 namespace {
-// Split a `decl.<list>.<i>.<field>` path into its index + trailing field ("" when the path is bare).
+// Split a `<list>.<i>.<field>` path tail into its index + trailing field ("" when the path is bare).
 bool splitIndexed(const std::string& path, std::size_t prefixLen, std::size_t& idx, std::string& field) {
     const std::string sub = path.substr(prefixLen);
     if (sub.empty() || sub[0] < '0' || sub[0] > '9') return false;
@@ -998,6 +998,28 @@ std::string StmtCtx::get(const std::string& path) const {
             if (i < f.tupleBindings.size()) return f.tupleBindings[i];
         }
     }
+    if (s_.kind == ir::StmtKind::Try) {
+        const auto& t = static_cast<const ir::Try&>(s_);
+        if (path == "stmt.body.count")       return std::to_string(t.body.size());
+        if (path == "stmt.hasFinally")       return t.hasFinally ? "true" : "false";
+        if (path == "stmt.finallyBody.count") return std::to_string(t.finallyBody.size());
+        if (path == "stmt.catches.count")    return std::to_string(t.catches.size());
+        if (path == "stmt.hasCatchAll") { // an untyped, unguarded catch handles everything
+            for (const auto& c : t.catches)
+                if (c.type.name.empty() && !c.guard) return "true";
+            return "false";
+        }
+        std::size_t i = 0;
+        std::string f;
+        if (path.rfind("stmt.catches.", 0) == 0 && splitIndexed(path, 13, i, f) && i < t.catches.size()) {
+            const auto& c = t.catches[i];
+            if (f == "hasType")    return c.type.name.empty() ? "false" : "true";
+            if (f == "hasBinding") return c.binding.empty() ? "false" : "true";
+            if (f == "binding")    return c.binding;
+            if (f == "hasGuard")   return c.guard ? "true" : "false";
+            if (f == "body.count") return std::to_string(c.body.size());
+        }
+    }
     return "";
 }
 
@@ -1007,7 +1029,16 @@ std::string StmtCtx::builtin(const std::string& name, const std::vector<std::str
     return "";
 }
 
-std::string StmtCtx::renderType(const std::string&) const { return ""; }
+std::string StmtCtx::renderType(const std::string& path) const {
+    if (s_.kind == ir::StmtKind::Try && path.rfind("stmt.catches.", 0) == 0) { // stmt.catches.<i>.type
+        const auto& t = static_cast<const ir::Try&>(s_);
+        std::size_t i = 0;
+        std::string f;
+        if (splitIndexed(path, 13, i, f) && i < t.catches.size() && f == "type")
+            return hooks_.renderTypeRef(t.catches[i].type);
+    }
+    return "";
+}
 
 std::string StmtCtx::emitChild(const std::string& path, const std::string&) const {
     if (!emit_) return "";
@@ -1017,12 +1048,30 @@ std::string StmtCtx::emitChild(const std::string& path, const std::string&) cons
         if (path == "stmt.rangeEnd" && f.rangeEnd)     return emit_(*f.rangeEnd);
         if (path == "stmt.iterable" && f.iterable)     return emit_(*f.iterable);
     }
+    if (s_.kind == ir::StmtKind::Try && path.rfind("stmt.catches.", 0) == 0) { // stmt.catches.<i>.guard
+        const auto& t = static_cast<const ir::Try&>(s_);
+        std::size_t i = 0;
+        std::string f;
+        if (splitIndexed(path, 13, i, f) && i < t.catches.size() && f == "guard" && t.catches[i].guard)
+            return emit_(*t.catches[i].guard);
+    }
     return "";
 }
 
 const std::vector<ir::StmtPtr>* StmtCtx::stmtList(const std::string& path) const {
     if (s_.kind == ir::StmtKind::For && path == "stmt.body")
         return &static_cast<const ir::For&>(s_).body;
+    if (s_.kind == ir::StmtKind::Try) {
+        const auto& t = static_cast<const ir::Try&>(s_);
+        if (path == "stmt.body")        return &t.body;
+        if (path == "stmt.finallyBody") return &t.finallyBody;
+        if (path.rfind("stmt.catches.", 0) == 0) { // stmt.catches.<i>.body
+            std::size_t i = 0;
+            std::string f;
+            if (splitIndexed(path, 13, i, f) && i < t.catches.size() && f == "body")
+                return &t.catches[i].body;
+        }
+    }
     return nullptr;
 }
 
@@ -1057,6 +1106,11 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
         }
         case K::Seq:
             for (const auto& p : r.parts) runDeclRule(p, ctx, root, helpers);
+            return;
+        case K::Indent:
+            ++indent_;
+            for (const auto& p : r.parts) runDeclRule(p, ctx, root, helpers);
+            --indent_;
             return;
         case K::MapMembers: {
             if (!helpers) return;

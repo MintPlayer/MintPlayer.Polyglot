@@ -129,6 +129,21 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
                 {"tmpl":["self.",{"get":"item.name"}," == other.",{"get":"item.name"}]}}]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
   "pyStmtBody": {"case":{"when":[[{"eq":["stmt.body.count","0"]},{"line":"pass"}]],"else":{"stmts":"stmt.body"}}},
+  "pyItemBody": {"case":{"when":[[{"eq":["item.body.count","0"]},{"line":"pass"}]],"else":{"stmts":"item.body"}}},
+  "TryStmt": {"seq":[
+      {"block":{"head":"try","body":[{"call":"pyStmtBody"}]}},
+      {"mapDecl":"stmt.catches","each":
+        {"block":{"head":{"tmpl":["except ",
+            {"case":{"when":[[{"eq":["item.hasType","true"]},{"type":"item.type"}]],"else":"Exception"}},
+            {"case":{"when":[[{"eq":["item.hasBinding","true"]},{"tmpl":[" as ",{"get":"item.binding"}]}]]}}]},
+          "body":[
+            {"case":{"when":[[{"eq":["item.hasGuard","true"]},
+              {"line":{"tmpl":["if not (",{"emit":"item.guard"},"): raise"]}}]]}},
+            {"call":"pyItemBody"}]}}},
+      {"case":{"when":[[{"eq":["stmt.hasFinally","true"]},
+        {"block":{"head":"finally","body":[
+          {"case":{"when":[[{"eq":["stmt.finallyBody.count","0"]},{"line":"pass"}]],
+            "else":{"stmts":"stmt.finallyBody"}}}]}}]]}}]},
   "ForStmt": {"case":{"when":[
       [{"eq":["stmt.isRange","true"]},
         {"block":{"head":{"tmpl":["for ",{"fn":"ident","args":[{"get":"stmt.binding"}]}," in range(",
@@ -444,30 +459,8 @@ private:
     //   static fn  -> `@staticmethod` + `def name(...)` (no self; called `Type.name(...)`)
     //   Operator   -> `def __add__(self, ...)` (Python dispatches `a + b` to the dunder natively)
     //   Property   -> `@property` + `def name(self)` (accessed as `a.prop`, no call)
-    void emitStmtTarget(const ir::Stmt& s) override {
-        // Try is the last imperative statement shape (For is the "ForStmt" rule now).
-        if (s.kind == ir::StmtKind::Try) { emitTry(static_cast<const ir::Try&>(s)); return; }
-        line("# polyglot: statement kind not yet supported for the python target");
-    }
-
-    // try/except/finally. Python has native typed `except Type as e:`, so a typed catch list maps directly
-    // (C# needs the same; only TS lowers to a dispatch chain). An untyped catch-all -> `except Exception`;
-    // a `when` guard re-raises when it fails (`if not (guard): raise`) so a later clause can handle it.
-    void emitTry(const ir::Try& t) {
-        openBlock("try");
-        blockBody(t.body);
-        for (const auto& c : t.catches) {
-            std::string head = "except ";
-            head += c.type.name.empty() ? "Exception" : pyTypeName(c.type);
-            if (!c.binding.empty()) head += " as " + c.binding;
-            openBlock(head);
-            ++indent_;
-            if (c.guard) line("if not (" + emitExpr(*c.guard) + "): raise");
-            --indent_;
-            blockBody(c.body);
-        }
-        if (t.hasFinally) { openBlock("finally"); blockBody(t.finallyBody); }
-    }
+    // (try/except/finally — native typed `except T as e:` + the `when`-guard re-raise — is the "TryStmt"
+    // rule now; the empty-body `pass` padding is the pyStmtBody/pyItemBody helper rules.)
 
     std::unordered_set<std::string> requires_; // prelude keys recorded by `{"fn":"require"}` reads ("idiv")
     bool needsAsyncio_ = false; // set when an `async fn main` entry is emitted -> prepend `import asyncio`

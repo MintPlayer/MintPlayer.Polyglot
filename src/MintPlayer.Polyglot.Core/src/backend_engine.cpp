@@ -162,6 +162,11 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         for (const json::Value& p : v["seq"].items()) r.parts.push_back(parseRule(p, ok, error));
         return r;
     }
+    if (v.has("indent")) { // run decl rules one level deeper (Block minus the head/close — manual joins)
+        r.kind = Rule::Kind::Indent;
+        for (const json::Value& p : v["indent"].items()) r.parts.push_back(parseRule(p, ok, error));
+        return r;
+    }
     if (v.has("case")) {
         r.kind = Rule::Kind::Case;
         for (const json::Value& arm : v["case"]["when"].items()) {

@@ -380,7 +380,9 @@ protected:
     //       Match, Try, string interpolation, operator-method dispatch, and every declaration emitter
     //       (enum/union/record/class/function/extension), which are likewise per-target by shape.
     virtual std::string emitExpr(const ir::Expr& e) = 0;     // the entire expression walk
-    virtual void emitStmtTarget(const ir::Stmt& s) = 0;      // the statements emitStmt does not handle (For, Try)
+    // A statement kind with neither a shared spelling nor a statement rule. Every kind is rule-served on
+    // all three targets now — the hook remains only as the escape valve the anti-silent-drop loader guards.
+    virtual void emitStmtTarget(const ir::Stmt& /*s*/) {}
     virtual std::string renderType(const TypeRef& t) = 0;    // the target's type spelling (the Type rule)
     // The backend's rule table + decl hooks, so the SHARED walk can dispatch per-kind statement rules
     // ("ForStmt"/"TryStmt") before falling back to emitStmtTarget (P19 slice 7 — the last statement C++).

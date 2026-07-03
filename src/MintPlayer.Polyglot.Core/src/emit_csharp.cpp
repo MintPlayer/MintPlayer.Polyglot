@@ -207,6 +207,18 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
       [{"eq":["decl.methods.count","0"]},{"line":{"tmpl":[{"call":"csRecordHead"},";"]}}]],
       "else":{"block":{"head":{"call":"csRecordHead"},
         "body":[{"mapMembers":"decl.methods","rule":"MethodDecl"}]}}}},
+  "TryStmt": {"seq":[
+      {"block":{"head":"try","body":[{"stmts":"stmt.body"}]}},
+      {"mapDecl":"stmt.catches","each":
+        {"block":{"head":{"tmpl":["catch",
+            {"case":{"when":[[{"eq":["item.hasType","true"]},
+              {"tmpl":[" (",{"type":"item.type"},
+                {"case":{"when":[[{"eq":["item.hasBinding","true"]},{"tmpl":[" ",{"get":"item.binding"}]}]]}},
+                ")"]}]]}},
+            {"case":{"when":[[{"eq":["item.hasGuard","true"]},{"tmpl":[" when (",{"emit":"item.guard"},")"]}]]}}]},
+          "body":[{"stmts":"item.body"}]}}},
+      {"case":{"when":[[{"eq":["stmt.hasFinally","true"]},
+        {"block":{"head":"finally","body":[{"stmts":"stmt.finallyBody"}]}}]]}}]},
   "ForStmt": {"case":{"when":[
       [{"eq":["stmt.isRange","true"]},
         {"block":{"head":{"tmpl":["for (var ",{"get":"stmt.binding"}," = ",{"emit":"stmt.rangeStart"},"; ",
@@ -462,28 +474,6 @@ private:
     std::string localDecl(const std::string& name, bool /*isMutable*/) override { return "var " + specIdent(spec(), name); }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield return " + v + ";" : "yield break;"; }
     std::string rethrowStmt() override { return "throw;"; }
-
-    void emitStmtTarget(const ir::Stmt& s) override {
-        switch (s.kind) {
-            case ir::StmtKind::Try: {
-                const auto& t = static_cast<const ir::Try&>(s);
-                headBlock("try", t.body);
-                for (const auto& c : t.catches) {
-                    std::string head = "catch";
-                    if (!c.type.name.empty()) {
-                        head += " (" + csType(c.type);
-                        if (!c.binding.empty()) head += " " + c.binding;
-                        head += ")";
-                    }
-                    if (c.guard) head += " when (" + emitExpr(*c.guard) + ")";
-                    headBlock(head, c.body);
-                }
-                if (t.hasFinally) headBlock("finally", t.finallyBody);
-                break;
-            }
-            default: break; // For is the "ForStmt" rule now (shared dispatch in emitStmt)
-        }
-    }
 
     std::string emitExpr(const ir::Expr& e) override {
         // A migrated node kind (see csExprRuleKey / CSHARP_EXPR_RULES_JSON) is interpreted from its JSON Rule

@@ -201,6 +201,33 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                   "else":{"tmpl":["this.",{"get":"item.name"}," === other.",{"get":"item.name"}]}}}},
               ";"]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "TryStmt": {"seq":[
+      {"line":"try {"},
+      {"indent":[{"stmts":"stmt.body"}]},
+      {"case":{"when":[[{"not":{"eq":["stmt.catches.count","0"]}},
+        {"seq":[
+          {"line":"} catch (__e) {"},
+          {"indent":[
+            {"line":"let __handled = false;"},
+            {"mapDecl":"stmt.catches","each":{"seq":[
+              {"line":{"tmpl":["if (!__handled",
+                {"case":{"when":[[{"eq":["item.hasType","true"]},
+                  {"tmpl":[" && __e instanceof ",{"type":"item.type"}]}]]}},") {"]}},
+              {"indent":[
+                {"case":{"when":[[{"eq":["item.hasBinding","true"]},
+                  {"line":{"tmpl":["const ",{"get":"item.binding"}," = __e;"]}}]]}},
+                {"case":{"when":[[{"eq":["item.hasGuard","true"]},
+                  {"seq":[
+                    {"line":{"tmpl":["if (",{"emit":"item.guard"},") {"]}},
+                    {"indent":[{"line":"__handled = true;"},{"stmts":"item.body"}]},
+                    {"line":"}"}]}]],
+                  "else":{"seq":[{"line":"__handled = true;"},{"stmts":"item.body"}]}}}]},
+              {"line":"}"}]}},
+            {"case":{"when":[[{"eq":["stmt.hasCatchAll","false"]},
+              {"line":"if (!__handled) { throw __e; }"}]]}}]}]}]]}},
+      {"case":{"when":[[{"eq":["stmt.hasFinally","true"]},
+        {"seq":[{"line":"} finally {"},{"indent":[{"stmts":"stmt.finallyBody"}]}]}]]}},
+      {"line":"}"}]},
   "ForStmt": {"case":{"when":[
       [{"eq":["stmt.isRange","true"]},
         {"block":{"head":{"tmpl":["for (let ",{"get":"stmt.binding"}," = ",{"emit":"stmt.rangeStart"},"; ",
@@ -460,46 +487,8 @@ private:
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
     }
 
-    // TS has a single untyped `catch`, so a typed/guarded catch list becomes an instanceof/guard
-    // dispatch chain. A `__handled` flag reproduces C#'s semantics: a clause whose type matches but
-    // whose `when` guard fails falls through to the next clause; if none handle it, the error rethrows.
-    void emitTry(const ir::Try& t) {
-        line("try {");
-        blockBody(t.body);
-        if (!t.catches.empty()) {
-            line("} catch (__e) {");
-            ++indent_;
-            line("let __handled = false;");
-            bool hasCatchAll = false;
-            for (const auto& c : t.catches) {
-                bool typed = !c.type.name.empty();
-                std::string cond = "!__handled";
-                if (typed) cond += " && __e instanceof " + tsType(c.type);
-                if (!typed && !c.guard) hasCatchAll = true;
-                line("if (" + cond + ") {");
-                ++indent_;
-                if (!c.binding.empty()) line("const " + c.binding + " = __e;");
-                if (c.guard) {
-                    line("if (" + emitExpr(*c.guard) + ") {");
-                    ++indent_;
-                    line("__handled = true;");
-                    for (const auto& st : c.body) emitStmt(*st);
-                    --indent_;
-                    line("}");
-                } else {
-                    line("__handled = true;");
-                    for (const auto& st : c.body) emitStmt(*st);
-                }
-                --indent_;
-                line("}");
-            }
-            if (!hasCatchAll) line("if (!__handled) { throw __e; }");
-            --indent_;
-        }
-        if (t.hasFinally) { line("} finally {"); blockBody(t.finallyBody); }
-        line("}");
-    }
-
+    // (TS's typed/guarded catch list — the `__handled` instanceof/guard dispatch chain reproducing C#'s
+    // fall-through semantics — is the "TryStmt" rule now, composed from line/indent/mapDecl.)
     const BackendSpec& spec() const override { return typescriptSpec(); }
     std::string renderType(const TypeRef& t) override { return tsType(t); }
     const engine::RuleTable* ruleTable() const override { return &tsExprRules(); }
@@ -508,15 +497,6 @@ private:
     std::string localDecl(const std::string& name, bool isMutable) override { return std::string(isMutable ? "let " : "const ") + name; }
     std::string yieldStmt(const std::string& v, bool hasValue) override { return hasValue ? "yield " + v + ";" : "return;"; }
     std::string rethrowStmt() override { return "throw __e;"; }
-
-    void emitStmtTarget(const ir::Stmt& s) override {
-        switch (s.kind) {
-            case ir::StmtKind::Try:
-                emitTry(static_cast<const ir::Try&>(s));
-                break;
-            default: break; // For is the "ForStmt" rule now (shared dispatch in emitStmt)
-        }
-    }
 
     std::string emitExpr(const ir::Expr& e) override {
         // A migrated node kind (see tsExprRuleKey / TS_EXPR_RULES_JSON) is interpreted from its JSON Rule

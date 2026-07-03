@@ -1611,6 +1611,22 @@ Byte-identical (117 files), unit green, 39/39 + 38/38. Next: 7b (Try ×3 — TS'
 is the hard one), 7c (localDecl/yield/rethrow spellings as spec data), 7d (shared emitExpr/emit walk →
 the backend classes dissolve), 7e (physical `plugins/<target>/` split + loader).
 
+**Slice-7b ✅ (2026-07-03) — Try is statement-rule data ×3; `emitStmtTarget` is DEAD (every statement on
+every target is shared-engine or rules).** One new decl primitive: **`{"indent":[rules]}`** (Block minus
+the head/close — manual brace joins), which is all TS's hard shape needed: the **`__handled`
+instanceof/guard dispatch chain** (reproducing C#'s catch fall-through semantics) composes from
+line/indent/mapDecl/case — incl. the `} catch (__e) {`/`} finally {` KnR joins at outer indent, the
+per-catch binding const, the guard-wrapped bodies, and the no-catch-all rethrow line (driven by a new
+derived `stmt.hasCatchAll` read). C#'s shape is three `block`s (typed catch head + ` when (…)` guard);
+Python's is native `except T as e:` + the guard re-raise line + `pass` padding (a `pyItemBody` helper for
+item-scoped bodies — `pyStmtBody` reads stmt.* and would silently miss inside a mapDecl item scope).
+`StmtCtx` gained the Try reads (catches list: hasType/binding/hasGuard/body; finallyBody; catch types via
+hooks; guards re-enter the expression walk). All three `emitTry`s + all three `emitStmtTarget` overrides
+deleted; the base hook is a default no-op kept only as the anti-silent-drop escape valve the loader will
+guard. Mid-slice: a helper defined after its users (C3861) — MSBuild exit 0 masked it AGAIN while stale
+binaries gated green; caught by reading the error lines, not the exit code. Byte-identical (117 files),
+unit green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

@@ -62,7 +62,7 @@ struct Test {
 struct Rule {
     enum class Kind {
         Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type, Fresh, // string flavor
-        Line, Block, MapDecl, Stmts, Seq, MapMembers,                             // decl flavor
+        Line, Block, MapDecl, Stmts, Seq, MapMembers, Indent,                     // decl flavor
     } kind = Kind::Lit;
     std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts/MapMembers: path | Fn/Call: name | Interleave: lits | Fresh: prefix
     std::string s2;                             // Interleave: holes path | MapMembers: decl rule per member | Fresh: alias
