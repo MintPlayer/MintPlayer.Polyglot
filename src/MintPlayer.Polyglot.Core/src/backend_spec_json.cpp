@@ -36,6 +36,7 @@ SpecLoadResult loadBackendSpec(const std::string& json) {
     loadStringMap(doc["scalarType"], r.spec.scalarType);
     loadStringMap(doc["intSuffix"], r.spec.intSuffix);
     loadStringMap(doc["binaryOp"], r.spec.binaryOp);
+    loadStringMap(doc["wrapInt"], r.spec.wrapInt);
 
     for (const auto& kv : doc["delimited"].members) {
         const json::Value& d = kv.second;
@@ -142,6 +143,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"scalarType\":" + mapJson(spec.scalarType) +
            ",\"intSuffix\":" + mapJson(spec.intSuffix) +
            ",\"binaryOp\":" + mapJson(spec.binaryOp) +
+           ",\"wrapInt\":" + mapJson(spec.wrapInt) +
            ",\"delimited\":" + delim +
            ",\"blockStyle\":" + json::quote(bs) +
            ",\"stmtEnd\":" + json::quote(spec.stmtEnd) +

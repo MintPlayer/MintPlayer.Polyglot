@@ -71,6 +71,11 @@ struct BackendSpec {
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
 
+    // §3.C integer-overflow faithfulness: per-width wrap templates (`$x` = the expression). Masks on an
+    // arbitrary-precision target (Python), bitwise re-narrowing + BigInt.asIntN/asUintN on JS, a cast-back
+    // on C# (whose sub-32 arithmetic promotes to int). A width with no row emits unwrapped.
+    std::unordered_map<std::string, std::string> wrapInt;
+
     // Named escape maps for the target's string-ish literal contexts (source sequence -> replacement):
     // C# `$"…"` interpolation chunks double braces, TS template literals escape backtick + `${`, C# char
     // literals escape `'`. Applied by the generic specEscape catalog entry — per-target escape CODE is gone.
@@ -92,6 +97,20 @@ inline std::string specIdent(const BackendSpec& s, const std::string& n) {
     if (s.escapeStrategy == "prefix") return s.escapeWith + n;
     if (s.escapeStrategy == "suffix") return n + s.escapeWith;
     return n;
+}
+
+// Wrap an int-typed expression to its declared width via the spec's template (`$x` = the expression);
+// identity when the spec declares no row for the width.
+inline std::string specWrapInt(const BackendSpec& s, const std::string& tn, const std::string& x) {
+    auto it = s.wrapInt.find(tn);
+    if (it == s.wrapInt.end()) return x;
+    const std::string& t = it->second;
+    std::string out;
+    for (std::size_t i = 0; i < t.size();) {
+        if (t[i] == '$' && i + 1 < t.size() && t[i + 1] == 'x') { out += x; i += 2; }
+        else out += t[i++];
+    }
+    return out;
 }
 
 // Apply the named escape map to `text`: at each position the longest declared source sequence wins

@@ -35,6 +35,11 @@ const char* PY_SPEC_JSON = R"JSON({
   "name": "python",
   "scalarType": {}, "intSuffix": {}, "delimited": {},
   "binaryOp": { "&&": "and", "||": "or" },
+  "wrapInt": { "u8": "(($x) & 0xff)", "u16": "(($x) & 0xffff)", "u32": "(($x) & 0xffffffff)",
+               "u64": "(($x) & 0xffffffffffffffff)",
+               "i8": "(((($x) & 0xff) ^ 0x80) - 0x80)", "i16": "(((($x) & 0xffff) ^ 0x8000) - 0x8000)",
+               "i32": "(((($x) & 0xffffffff) ^ 0x80000000) - 0x80000000)",
+               "i64": "(((($x) & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)" },
   "blockStyle": "colonIndent",
   "stmtEnd": "",
   "throwKeyword": "raise",
@@ -71,20 +76,8 @@ bool isFloatType(const TypeRef& t) {
 // (Keyword suffixing `name_` and the overload-mangle `$`->`_` are the spec's `identifiers` block now; the
 // generic specIdent/specMangle catalog entries serve every read — def sites, call sites, decl hooks.)
 
-// §3.C integer faithfulness: wrap an int result to its width so it overflows like .NET (Python ints are
-// arbitrary-precision). Unsigned masks; signed masks then sign-extends via the (m ^ SIGN) - SIGN trick —
-// `x` appears once, so it's safe to inline without a temporary.
-std::string wrapInt(const std::string& n, const std::string& x) {
-    if (n == "u8")  return "((" + x + ") & 0xff)";
-    if (n == "u16") return "((" + x + ") & 0xffff)";
-    if (n == "u32") return "((" + x + ") & 0xffffffff)";
-    if (n == "u64") return "((" + x + ") & 0xffffffffffffffff)";
-    if (n == "i8")  return "((((" + x + ") & 0xff) ^ 0x80) - 0x80)";
-    if (n == "i16") return "((((" + x + ") & 0xffff) ^ 0x8000) - 0x8000)";
-    if (n == "i32") return "((((" + x + ") & 0xffffffff) ^ 0x80000000) - 0x80000000)";
-    if (n == "i64") return "((((" + x + ") & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)";
-    return x;
-}
+// (§3.C width wrapping — unsigned masks; signed mask + the (m ^ SIGN) - SIGN sign-extension trick — is the
+// spec's `wrapInt` template table now, applied by the generic `wrap` catalog entry.)
 
 // P18: the Python expression walk as declarative JSON Rules — the third consumer of the same interpreter,
 // and the non-sibling stress test (colon+indent, `not`/`and`/`or`, walrus null-safety, no `new`). Per-target
@@ -223,7 +216,7 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
                                            {"emit":"item.value"}]}}, "}" ] },
   "Unary": { "case": { "when": [
                [ {"and":[{"eq":["node.op","-"]},{"eq":["node.typeIsInt","true"]}]},
-                 {"fn":"wrapInt","args":[{"get":"node.type"},
+                 {"fn":"wrap","args":[{"get":"node.type"},
                    {"tmpl":["-",{"emitChild":"node.operand","side":"unary"}]}]} ],
                [ {"eq":["node.op","!"]}, {"tmpl":["not ",{"emitChild":"node.operand","side":"unary"}]} ] ],
              "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
@@ -280,7 +273,7 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
       [ {"and":[{"eq":["node.typeIsInt","true"]},
                 {"or":[{"eq":["node.op","+"]},{"eq":["node.op","-"]},{"eq":["node.op","*"]},
                        {"eq":["node.op","/"]},{"eq":["node.op","%"]}]}]},
-        {"fn":"wrapInt","args":[{"get":"node.type"},
+        {"fn":"wrap","args":[{"get":"node.type"},
           { "case": { "when": [
               [ {"eq":["node.op","/"]}, {"fn":"idiv","args":[{"emit":"node.lhs"},{"emit":"node.rhs"}]} ],
               [ {"eq":["node.op","%"]}, {"fn":"irem","args":[{"emit":"node.lhs"},{"emit":"node.rhs"}]} ] ],
@@ -399,8 +392,6 @@ protected:
     std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "wrapInt")
-            return wrapInt(args.size() > 0 ? args[0] : std::string(), args.size() > 1 ? args[1] : std::string());
         if (name == "idiv" || name == "irem") { // truncating int / and % need the _pg_idiv prelude
             needsIdiv_ = true;
             return std::string(name == "idiv" ? "_pg_idiv(" : "_pg_irem(") +

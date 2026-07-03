@@ -35,7 +35,10 @@ const char* TS_SPEC_JSON = R"JSON({
   "stmtEnd": ";",
   "throwKeyword": "throw",
   "trueLit": "true", "falseLit": "false", "nullLit": "null",
-  "escapes": { "interp": { "`": "\\`", "\\": "\\\\", "${": "\\${" } }
+  "escapes": { "interp": { "`": "\\`", "\\": "\\\\", "${": "\\${" } },
+  "wrapInt": { "i8": "($x << 24 >> 24)", "i16": "($x << 16 >> 16)",
+               "u8": "($x & 0xff)", "u16": "($x & 0xffff)", "u32": "($x >>> 0)", "i32": "($x | 0)",
+               "i64": "BigInt.asIntN(64, $x)", "u64": "BigInt.asUintN(64, $x)" }
 })JSON";
 
 const BackendSpec& typescriptSpec() {
@@ -89,7 +92,7 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                            "item":{"tmpl":[", ",{"get":"item.name"},": ",{"emit":"item.value"}]}}, " }" ] },
   "Unary": { "case": { "when": [
                [ {"and":[{"eq":["node.typeIsSmallInt","true"]},{"eq":["node.op","-"]}]},
-                 {"fn":"narrowWrap","args":[{"get":"node.type"},
+                 {"fn":"wrap","args":[{"get":"node.type"},
                    {"tmpl":["-",{"emitChild":"node.operand","side":"unary"}]}]} ] ],
              "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
   "Cast": { "fn": "convert", "args": [ {"emit":"node.operand"} ] },
@@ -267,13 +270,16 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
         {"tmpl":[{"emitChild":"node.lhs","side":"recv"},".",{"fn":"opMethod","args":[{"get":"node.op"}]},
                  "(",{"emit":"node.rhs"},")"]} ],
       [ {"or":[{"eq":["node.type","i64"]},{"eq":["node.type","u64"]}]},
-        {"fn":"i64Wrap","args":[{"get":"node.type"},
+        {"fn":"wrap","args":[{"get":"node.type"},
           {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"get":"node.op"}," ",{"emitChild":"node.rhs","side":"r"}]}]} ],
       [ {"and":[{"eq":["node.typeIsSmallInt","true"]},{"eq":["node.op","*"]}]},
-        {"fn":"imul","args":[{"get":"node.type"},{"emit":"node.lhs"},{"emit":"node.rhs"}]} ],
+        {"case":{"when":[[{"eq":["node.type","i32"]},
+            {"tmpl":["Math.imul(",{"emit":"node.lhs"},", ",{"emit":"node.rhs"},")"]}]],
+          "else":{"fn":"wrap","args":[{"get":"node.type"},
+            {"tmpl":["Math.imul(",{"emit":"node.lhs"},", ",{"emit":"node.rhs"},")"]}]}}} ],
       [ {"and":[{"eq":["node.typeIsSmallInt","true"]},
                 {"or":[{"eq":["node.op","+"]},{"eq":["node.op","-"]},{"eq":["node.op","/"]},{"eq":["node.op","%"]}]}]},
-        {"fn":"narrowWrap","args":[{"get":"node.type"},
+        {"fn":"wrap","args":[{"get":"node.type"},
           {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"get":"node.op"}," ",{"emitChild":"node.rhs","side":"r"}]}]} ] ],
     "else": {"tmpl":[{"emitChild":"node.lhs","side":"l"}," ",{"fn":"opSpelling","args":[{"get":"node.op"}]}," ",
                      {"emitChild":"node.rhs","side":"r"}]} } }
@@ -474,20 +480,8 @@ protected:
     std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
 
     std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        // §3.C numeric faithfulness — fixed Core primitives the rules select among, never author.
-        if (name == "narrowWrap") // re-narrow a 32-bit-or-narrower int result to its value range
-            return narrowTs(args.size() > 0 ? args[0] : std::string(), args.size() > 1 ? args[1] : std::string());
-        if (name == "i64Wrap") {  // wrap BigInt arithmetic to 64 bits so it overflows like .NET long/ulong
-            const std::string& tn = args.size() > 0 ? args[0] : std::string();
-            const std::string& inner = args.size() > 1 ? args[1] : std::string();
-            return std::string(tn == "u64" ? "BigInt.asUintN(64, " : "BigInt.asIntN(64, ") + inner + ")";
-        }
-        if (name == "imul") {     // small-int `*`: a plain product can exceed 2^53 and lose low bits first
-            const std::string& tn = args.size() > 0 ? args[0] : std::string();
-            std::string prod = "Math.imul(" + (args.size() > 1 ? args[1] : std::string()) + ", " +
-                               (args.size() > 2 ? args[2] : std::string()) + ")";
-            return tn == "i32" ? prod : narrowTs(tn, prod); // Math.imul already yields i32
-        }
+        // (§3.C wrap machinery is the generic `wrap` catalog entry over the spec's wrapInt templates now;
+        // the residue below is the operator-overload method table + the numeric-conversion algorithm.)
         if (name == "opMethod") return opMethod(args.empty() ? std::string() : args[0]);
         if (name == "convert") { // the numeric-conversion algorithm (BigInt boundaries etc.) stays fixed C++
             if (e_.kind != ir::ExprKind::Cast) return "";

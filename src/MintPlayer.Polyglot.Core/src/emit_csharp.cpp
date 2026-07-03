@@ -33,6 +33,7 @@ const char* CSHARP_SPEC_JSON = R"JSON({
                   "f32": "float", "f64": "double", "bool": "bool", "string": "string" },
   "intSuffix": { "i64": "L", "u64": "UL", "u32": "U" },
   "binaryOp": {},
+  "wrapInt": { "i8": "(sbyte)($x)", "i16": "(short)($x)", "u8": "(byte)($x)", "u16": "(ushort)($x)" },
   "delimited": { "tuple": { "open": "(", "sep": ", ", "close": ")" } },
   "blockStyle": "bracesAllman",
   "stmtEnd": ";",
@@ -85,7 +86,7 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
                        "else": {"get":"spec.falseLit"} } },
   "Null":  { "get": "spec.nullLit" },
   "Str":   { "fn": "escapeString", "args": [ {"get":"node.value"} ] },
-  "Binary": { "fn": "subWordWrap", "args": [ {"get":"node.type"},
+  "Binary": { "fn": "wrap", "args": [ {"get":"node.type"},
                 { "tmpl": [ {"emitChild":"node.lhs","side":"l"}, " ",
                             {"fn":"opSpelling","args":[{"get":"node.op"}]}, " ",
                             {"emitChild":"node.rhs","side":"r"} ] } ] },
@@ -374,15 +375,8 @@ protected:
         return c.kind == ir::ExprKind::Binary;
     }
 
-    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "subWordWrap") { // C# sub-32 arithmetic promotes to int; cast back to wrap at 8/16 bits
-            const std::string& tn = args.size() > 0 ? args[0] : std::string();
-            const std::string& inner = args.size() > 1 ? args[1] : std::string();
-            const char* cast = tn == "i8" ? "sbyte" : tn == "i16" ? "short"
-                             : tn == "u8" ? "byte"  : tn == "u16" ? "ushort" : nullptr;
-            return cast ? "(" + std::string(cast) + ")(" + inner + ")" : inner;
-        }
-        return "";
+    std::string targetBuiltin(const std::string&, const std::vector<std::string>&) const override {
+        return ""; // every former C# builtin is a generic catalog entry or rule data now (P19 slice 6)
     }
 };
 

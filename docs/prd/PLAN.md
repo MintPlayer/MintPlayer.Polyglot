@@ -1502,6 +1502,22 @@ C# = `subWordWrap` alone; TS = `narrowWrap`/`i64Wrap`/`imul`/`opMethod`/`convert
 `wrapInt`/`idiv`/`irem`/`nullCoalesce`/`nullSafeMember`/`convert` — exactly slices 6d–6f's targets.
 Byte-identical (117 files), unit green, 39/39 + 38/38.
 
+**Slice-6d ✅ (2026-07-03) — the §3.C integer-wrap machinery is spec data (catalog row 6).** `BackendSpec`
+gained **`wrapInt`: per-width overflow templates** (`$x` = the expression) applied by one generic
+`specWrapInt` behind the shared **`{"fn":"wrap","args":[<width>,<expr>]}`** builtin. As data: C#'s cast-back
+rows (`(sbyte)($x)` … — sub-32 arithmetic promotes to int), TS's bitwise re-narrowing + BigInt rows
+(`($x << 24 >> 24)`, `($x | 0)`, `BigInt.asIntN(64, $x)` …), Python's mask + sign-extension rows
+(`(((($x) & 0xff) ^ 0x80) - 0x80)` …). Five builtins died: C# `subWordWrap` (its targetBuiltin is now
+EMPTY — the first backend with zero per-target expression builtins), TS `narrowWrap`/`i64Wrap`/`imul`
+(imul's "Math.imul, then narrow unless already i32" became rule data — a `case` on `node.type` around the
+generic wrap), Python `wrapInt` (+ the free fn). **Gate catch #2 of this kind:** the first byte-diff run
+flagged 7 TS files — the TS *Unary* rule still called the deleted `narrowWrap`, and an unknown `fn`
+evaluates to "" silently (`(-7 | 0)` became ``), which run-diff would also have caught but the byte gate
+caught first and cheapest. Confirms the P19 loader obligation: **validate every `fn` name in every rule
+against the fixed catalog at load time** — unknown builtins must be load errors, never silent empties.
+TS residue: `opMethod` + `convert`; Python residue: `idiv`/`irem`/`nullCoalesce`/`nullSafeMember`/`convert`.
+Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

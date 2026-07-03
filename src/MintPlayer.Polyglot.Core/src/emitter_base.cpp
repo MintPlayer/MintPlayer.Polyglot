@@ -289,6 +289,8 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "mangleName") return specMangle(spec_, args.empty() ? std::string() : args[0]);
     // Named escape maps — {"fn":"escape","args":["<map>", <text>]} over the spec's `escapes` data (P19).
     if (name == "escape" && args.size() >= 2) return specEscape(spec_, args[0], args[1]);
+    // §3.C integer wrap — {"fn":"wrap","args":[<width>, <expr>]} over the spec's `wrapInt` templates (P19).
+    if (name == "wrap" && args.size() >= 2) return specWrapInt(spec_, args[0], args[1]);
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);
