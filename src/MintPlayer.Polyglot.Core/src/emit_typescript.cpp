@@ -157,6 +157,23 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
           {"case":{"when":[[{"eq":["decl.exprBodied","true"]},
               {"line":{"tmpl":["return ",{"emit":"decl.exprBody"},";"]}}]],
             "else":{"stmts":"decl.body"}}} ]}} }},
+  "tsRecordHead": {"tmpl":["class ",{"get":"decl.name"},{"fn":"generics"},
+      {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
+        "else":{"tmpl":[" implements ",{"map":"decl.bases","sep":", ","item":{"type":"item"}}]}}}]},
+  "RecordDecl": {"block":{"head":{"call":"tsRecordHead"},"body":[
+      {"mapDecl":"decl.fields","each":{"line":{"tmpl":[{"get":"item.name"},": ",{"type":"item.type"},";"]}}},
+      {"block":{"head":{"tmpl":["constructor(",
+          {"map":"decl.fields","sep":", ","item":{"tmpl":[{"get":"item.name"},": ",{"type":"item.type"}]}},")"]},
+        "body":[{"mapDecl":"decl.fields","each":{"line":{"tmpl":["this.",{"get":"item.name"}," = ",{"get":"item.name"},";"]}}}]}},
+      {"block":{"head":{"tmpl":["equals(other: ",{"get":"decl.name"},"): boolean"]},"body":[
+          {"case":{"when":[[{"eq":["decl.fields.count","0"]},{"line":"return true;"}]],
+            "else":{"line":{"tmpl":["return ",
+              {"map":"decl.fields","sep":" && ","item":
+                {"case":{"when":[[{"eq":["item.typeIsRecord","true"]},
+                  {"tmpl":["this.",{"get":"item.name"},".equals(other.",{"get":"item.name"},")"]}]],
+                  "else":{"tmpl":["this.",{"get":"item.name"}," === other.",{"get":"item.name"}]}}}},
+              ";"]}}}}]}},
+      {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
   "InterfaceDecl": { "block": {
       "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
         {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
@@ -472,7 +489,11 @@ public:
             UnionDeclCtx ctx(u, kTsDeclHooks);
             runDeclRule(tsExprRules().at("UnionDecl"), ctx, ctx, &tsExprRules());
         }
-        for (const auto& r : m.records) emitRecord(r);
+        for (const auto& r : m.records) {
+            RecordDeclCtx ctx(r, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); },
+                              [this](const TypeRef& t) { return isRecordType(t); });
+            runDeclRule(tsExprRules().at("RecordDecl"), ctx, ctx, &tsExprRules());
+        }
         for (const auto& c : m.classes) emitClass(c);
         for (const auto& g : m.globals) // top-level const/let
             line(std::string(g.isConst ? "const " : "let ") + g.name + ": " + tsType(g.type) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
@@ -494,50 +515,6 @@ private:
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
-    }
-
-    // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).
-    void emitRecord(const ir::Record& r) {
-        std::string head = "class " + r.name + tsGenerics(r.generics);
-        if (!r.bases.empty()) { // a record implements interfaces
-            head += " implements ";
-            for (std::size_t i = 0; i < r.bases.size(); ++i) { if (i) head += ", "; head += tsType(r.bases[i]); }
-        }
-        line(head + " {");
-        ++indent_;
-        for (const auto& f : r.fields) line(f.name + ": " + tsType(f.type) + ";");
-        std::string ctor = "constructor(";
-        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) ctor += ", "; ctor += r.fields[i].name + ": " + tsType(r.fields[i].type); }
-        line(ctor + ") {");
-        ++indent_;
-        for (const auto& f : r.fields) line("this." + f.name + " = " + f.name + ";");
-        --indent_;
-        line("}");
-        emitRecordEquals(r);
-        for (const auto& m : r.methods) runMethodRule(m);
-        --indent_;
-        line("}");
-    }
-
-    // Structural value equality (§3.C): records are equal when every field is — record fields compare
-    // recursively via their own .equals(); scalar fields via ===. (C# records synthesize this natively.)
-    void emitRecordEquals(const ir::Record& r) {
-        line("equals(other: " + r.name + "): boolean {");
-        ++indent_;
-        if (r.fields.empty()) {
-            line("return true;");
-        } else {
-            std::string cond;
-            for (std::size_t i = 0; i < r.fields.size(); ++i) {
-                if (i) cond += " && ";
-                const std::string& f = r.fields[i].name;
-                cond += isRecordType(r.fields[i].type) ? "this." + f + ".equals(other." + f + ")"
-                                                       : "this." + f + " === other." + f;
-            }
-            line("return " + cond + ";");
-        }
-        --indent_;
-        line("}");
     }
 
     // A mutable reference type: explicit fields, a constructor (`init`), and methods.

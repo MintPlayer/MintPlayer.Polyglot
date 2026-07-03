@@ -139,6 +139,19 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
         "each": { "line": { "tmpl": [ {"get":"item.name"}, " = ", {"get":"item.value"} ] } } } ] } },
   "UnionDecl": { "line": { "tmpl": [ "# union ", {"get":"decl.name"},
       " -> tagged dicts: {\"tag\": <case>, <field>: <value>, ...}" ] } },
+  "RecordDecl": {"block":{"head":{"tmpl":["class ",{"get":"decl.name"}]},"body":[
+      {"block":{"head":{"tmpl":["def __init__(self",
+          {"map":"decl.fields","sep":"","item":{"tmpl":[", ",{"fn":"ident","args":[{"get":"item.name"}]}]}},")"]},
+        "body":[
+          {"case":{"when":[[{"eq":["decl.fields.count","0"]},{"line":"pass"}]]}},
+          {"mapDecl":"decl.fields","each":{"line":{"tmpl":["self.",{"get":"item.name"}," = ",
+              {"fn":"ident","args":[{"get":"item.name"}]}]}}}]}},
+      {"block":{"head":"def __eq__(self, other)","body":[
+          {"case":{"when":[[{"eq":["decl.fields.count","0"]},{"line":"return True"}]],
+            "else":{"line":{"tmpl":["return ",
+              {"map":"decl.fields","sep":" and ","item":
+                {"tmpl":["self.",{"get":"item.name"}," == other.",{"get":"item.name"}]}}]}}}}]}},
+      {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
   "pyParam": {"tmpl":[{"fn":"ident","args":[{"get":"item.name"}]},
       {"case":{"when":[[{"eq":["item.hasDefault","true"]},{"tmpl":[" = ",{"emit":"item.default"}]}]]}}]},
   "pyDunder": {"case":{"when":[
@@ -407,7 +420,10 @@ public:
             UnionDeclCtx ctx(u, kPyDeclHooks);
             runDeclRule(pyExprRules().at("UnionDecl"), ctx, ctx, &pyExprRules());
         }
-        for (const auto& r : m.records) emitRecord(r);
+        for (const auto& r : m.records) {
+            RecordDeclCtx ctx(r, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(pyExprRules().at("RecordDecl"), ctx, ctx, &pyExprRules());
+        }
         for (const auto& c : m.classes) emitClass(c);
         for (const auto& g : m.globals)
             line(g.name + " = " + (g.init ? emitExpr(*g.init) : "None"));
@@ -468,35 +484,6 @@ private:
         }
     }
 
-
-    // A record -> a Python class with an __init__ (positional fields) and a structural __eq__. Python `==`
-    // dispatches to __eq__, so equality is just field-wise `==` joined by `and` (nested records recurse via
-    // their own __eq__ — no explicit recursion as the TS backend needs). Methods, if any, emit as defs.
-    void emitRecord(const ir::Record& r) {
-        openBlock("class " + r.name);
-        ++indent_;
-        std::string ctor = "def __init__(self";
-        for (const auto& f : r.fields) ctor += ", " + pyId(f.name);
-        openBlock(ctor + ")");
-        ++indent_;
-        if (r.fields.empty()) line("pass");
-        for (const auto& f : r.fields) line("self." + f.name + " = " + pyId(f.name));
-        --indent_;
-        openBlock("def __eq__(self, other)");
-        ++indent_;
-        if (r.fields.empty()) line("return True");
-        else {
-            std::string cond;
-            for (std::size_t i = 0; i < r.fields.size(); ++i) {
-                if (i) cond += " and ";
-                cond += "self." + r.fields[i].name + " == other." + r.fields[i].name;
-            }
-            line("return " + cond);
-        }
-        --indent_;
-        for (const auto& m : r.methods) runMethodRule(m);
-        --indent_;
-    }
 
     // A class -> a Python class. `const`/`static` fields become class-level attributes (read as `Owner.name`).
     // Instance-field initializers run in __init__ (after super, before the init body); plain instance fields

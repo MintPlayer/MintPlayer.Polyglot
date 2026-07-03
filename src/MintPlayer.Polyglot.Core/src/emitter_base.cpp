@@ -561,6 +561,52 @@ const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path)
     return path == "decl.body" ? &m_.body : nullptr;
 }
 
+std::string RecordDeclCtx::get(const std::string& path) const {
+    if (path == "decl.name")          return r_.name;
+    if (path == "decl.fields.count")  return std::to_string(r_.fields.size());
+    if (path == "decl.bases.count")   return std::to_string(r_.bases.size());
+    if (path == "decl.methods.count") return std::to_string(r_.methods.size());
+    if (path.rfind("decl.fields.", 0) == 0) { // decl.fields.<i>.{name|typeIsRecord}
+        const std::string sub = path.substr(12);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+        const std::size_t dot = sub.find('.');
+        if (i < r_.fields.size() && dot != std::string::npos) {
+            const std::string rest = sub.substr(dot + 1);
+            if (rest == "name") return r_.fields[i].name;
+            if (rest == "typeIsRecord")
+                return isRecord_ && isRecord_(r_.fields[i].type) ? "true" : "false";
+        }
+    }
+    return "";
+}
+
+std::string RecordDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "generics") return hooks_.generics(r_.generics);
+    if (name == "where")    return hooks_.where(r_.generics);
+    if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    return "";
+}
+
+std::string RecordDeclCtx::renderType(const std::string& path) const {
+    if (path.rfind("decl.bases.", 0) == 0) { // decl.bases.<i>
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+        return i < r_.bases.size() ? hooks_.renderTypeRef(r_.bases[i]) : "";
+    }
+    if (path.rfind("decl.fields.", 0) == 0) { // decl.fields.<i>.type
+        const std::string sub = path.substr(12);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+        if (i < r_.fields.size() && sub.find('.') != std::string::npos && sub.substr(sub.find('.') + 1) == "type")
+            return hooks_.renderTypeRef(r_.fields[i].type);
+    }
+    return "";
+}
+
+std::unique_ptr<IrDeclCtx> RecordDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
+    if (path == "decl.methods" && index < r_.methods.size())
+        return std::make_unique<MethodDeclCtx>(r_.methods[index], r_.name, hooks_, emit_);
+    return nullptr;
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;
@@ -593,6 +639,17 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
         case K::Seq:
             for (const auto& p : r.parts) runDeclRule(p, ctx, root, helpers);
             return;
+        case K::MapMembers: {
+            if (!helpers) return;
+            auto it = helpers->find(r.s2);
+            if (it == helpers->end()) return;
+            int n = 0;
+            for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
+            for (int i = 0; i < n; ++i)
+                if (auto sub = root.memberCtx(ctx.resolvePath(r.s), static_cast<std::size_t>(i)))
+                    runDeclRule(it->second, *sub, *sub, helpers);
+            return;
+        }
         case K::Case:
             for (const auto& arm : r.arms)
                 if (engine::evalTest(arm.first, ctx)) { runDeclRule(arm.second, ctx, root, helpers); return; }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,11 @@ public:
     std::string builtin(const std::string&, const std::vector<std::string>&) const override { return ""; }
     // The ir statement list a `{"stmts":path}` decl rule renders; nullptr when the path names none.
     virtual const std::vector<ir::StmtPtr>* stmtList(const std::string&) const { return nullptr; }
+    // The fresh root context a `{"mapMembers":path,"rule":name}` element runs its rule against (a member
+    // is a full declaration of its own — a record's methods); nullptr when the path names no member list.
+    virtual std::unique_ptr<IrDeclCtx> memberCtx(const std::string& /*path*/, std::size_t /*index*/) const {
+        return nullptr;
+    }
 };
 
 // Shared decl context for enums — pure name/value data, identical for every target.
@@ -150,6 +156,29 @@ private:
     std::string owner_;
     const DeclHooks& hooks_;
     EmitFn emit_;
+};
+
+// Shared decl context for records: name/field/base reads; field/base types render through the hooks;
+// `generics`/`where`/`ident` spell through the hooks; methods run via `{"mapMembers":"decl.methods",
+// "rule":"MethodDecl"}` (memberCtx mints a MethodDeclCtx per method). `isRecordType` is the one module
+// fact a record rule reads (`decl.fields.<i>.typeIsRecord` — TS structural-equals dispatch); backends
+// without the need pass nothing and the path answers "false".
+class RecordDeclCtx : public IrDeclCtx {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    using TypePred = std::function<bool(const TypeRef&)>;
+    RecordDeclCtx(const ir::Record& r, const DeclHooks& hooks, EmitFn emit, TypePred isRecordType = {})
+        : r_(r), hooks_(hooks), emit_(std::move(emit)), isRecord_(std::move(isRecordType)) {}
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+    std::unique_ptr<IrDeclCtx> memberCtx(const std::string& path, std::size_t index) const override;
+
+private:
+    const ir::Record& r_;
+    const DeclHooks& hooks_;
+    EmitFn emit_;
+    TypePred isRecord_;
 };
 
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/

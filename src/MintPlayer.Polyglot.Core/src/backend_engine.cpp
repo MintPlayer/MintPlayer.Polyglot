@@ -138,6 +138,12 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
         r.parts.push_back(parseRule(v["each"], ok, error));
         return r;
     }
+    if (v.has("mapMembers")) { // run the named decl rule once per member of the list at `path`, each
+        r.kind = Rule::Kind::MapMembers; // against its own member-scoped root context (a member is a decl)
+        r.s = v["mapMembers"].asString();
+        r.s2 = v["rule"].asString();
+        return r;
+    }
     if (v.has("stmts")) { // emit the ir statement list at `path` through the shared statement walk
         r.kind = Rule::Kind::Stmts;
         r.s = v["stmts"].asString();

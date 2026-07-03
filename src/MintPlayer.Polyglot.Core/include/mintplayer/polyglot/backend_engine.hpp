@@ -59,10 +59,10 @@ struct Test {
 struct Rule {
     enum class Kind {
         Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type, // string flavor
-        Line, Block, MapDecl, Stmts, Seq,                                  // decl flavor
+        Line, Block, MapDecl, Stmts, Seq, MapMembers,                      // decl flavor
     } kind = Kind::Lit;
-    std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts: path | Fn/Call: name | Interleave: lits
-    std::string s2;                             // Interleave: holes path
+    std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts/MapMembers: path | Fn/Call: name | Interleave: lits
+    std::string s2;                             // Interleave: holes path | MapMembers: the decl rule to run per member
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children
     std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps

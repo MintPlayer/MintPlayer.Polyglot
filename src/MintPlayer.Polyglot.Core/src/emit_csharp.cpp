@@ -178,6 +178,16 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
           [ {"eq":["decl.exprBodied","true"]},
             {"line":{"tmpl":[{"call":"csMethodSig"}," => ",{"emit":"decl.exprBody"},";"]}} ]],
           "else":{"block":{"head":{"call":"csMethodSig"},"body":[{"stmts":"decl.body"}]}} }} }},
+  "csRecordHead": {"tmpl":["record ",{"get":"decl.name"},{"fn":"generics"},"(",
+      {"map":"decl.fields","sep":", ","item":{"tmpl":[{"type":"item.type"}," ",{"fn":"ident","args":[{"get":"item.name"}]}]}},
+      ")",
+      {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
+        "else":{"tmpl":[" : ",{"map":"decl.bases","sep":", ","item":{"type":"item"}}]}}},
+      {"fn":"where"}]},
+  "RecordDecl": {"case":{"when":[
+      [{"eq":["decl.methods.count","0"]},{"line":{"tmpl":[{"call":"csRecordHead"},";"]}}]],
+      "else":{"block":{"head":{"call":"csRecordHead"},
+        "body":[{"mapMembers":"decl.methods","rule":"MethodDecl"}]}}}},
   "InterfaceDecl": { "block": {
       "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
         {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
@@ -449,7 +459,10 @@ public:
             UnionDeclCtx ctx(u, kCsDeclHooks);
             runDeclRule(csharpExprRules().at("UnionDecl"), ctx, ctx, &csharpExprRules());
         }
-        for (const auto& r : m.records) emitRecord(r);
+        for (const auto& r : m.records) {
+            RecordDeclCtx ctx(r, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(csharpExprRules().at("RecordDecl"), ctx, ctx, &csharpExprRules());
+        }
         for (const auto& c : m.classes) emitClass(c);
         if (!m.extensions.empty()) { // extension methods live in a top-level static class (global namespace)
             line("static class Extensions");
@@ -485,24 +498,6 @@ public:
 
 private:
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
-
-    void emitRecord(const ir::Record& r) {
-        std::string head = "record " + r.name + csGenerics(r.generics) + "(";
-        for (std::size_t i = 0; i < r.fields.size(); ++i) { if (i) head += ", "; head += csType(r.fields[i].type) + " " + csIdent(r.fields[i].name); }
-        head += ")";
-        if (!r.bases.empty()) { // implemented interfaces
-            head += " : ";
-            for (std::size_t i = 0; i < r.bases.size(); ++i) { if (i) head += ", "; head += csType(r.bases[i]); }
-        }
-        head += csWhere(r.generics);
-        if (r.methods.empty()) { line(head + ";"); return; }
-        line(head);
-        line("{");
-        ++indent_;
-        for (const auto& m : r.methods) runMethodRule(r.name, m);
-        --indent_;
-        line("}");
-    }
 
     // A mutable reference type: fields, a constructor (`init`), and methods.
     void emitClass(const ir::Class& c) {

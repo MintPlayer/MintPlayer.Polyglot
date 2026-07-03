@@ -1383,6 +1383,26 @@ byte-gated slice (the established pattern — an unread fact can't be meaningful
 RecordDecl can invoke MethodDecl per method), then Class (+ the `base.isInterface` lowering fact for TS
 extends/implements), then Function/Extension, then `program` + `require`.
 
+**Slice-5f ✅ (2026-07-03) — Record is data ×3; the `mapMembers` decl primitive lands.** New decl-flavor
+primitive **`{"mapMembers":path,"rule":name}`**: runs the NAMED decl rule once per member, each against a
+fresh member-scoped ROOT context minted by the new `IrDeclCtx::memberCtx(path, i)` virtual — this is how
+composite declarations invoke member declarations (`RecordDecl` → `MethodDecl`) without path-rebinding
+gymnastics: a member is a full decl of its own, so it gets a full decl ctx (`decl.*` = the method), and
+`MethodDecl` serves standalone wiring and composed runs unchanged. Shared **`RecordDeclCtx`**
+(name/fields/bases/methods; field/base types via hooks; `memberCtx` mints `MethodDeclCtx`s carrying the
+record's name as `decl.owner`). The one module fact a record rule reads — TS structural-equals dispatch
+per field — enters as a `TypePred isRecordType` ctor param answering `decl.fields.<i>.typeIsRecord`
+(C#/Python pass nothing; a later lowering absorption can turn it into an IR bit). The three shapes as
+rules: C# positional-record head + `;`-one-liner vs method block; TS class + field decls + ctor +
+assignments + the synthesized structural `equals` (record-vs-scalar per-field `case`) + methods; Python
+`__init__` (+ empty-`pass` as data) + `__eq__` + methods. Three `emitRecord`s + TS `emitRecordEquals`
+deleted. **Gate catch:** the first run flagged 9 TS diffs — a missing `}` left the equals rule's `";"`
+inside the map object, and the in-house JSON parser swallowed the malformation silently; fixed, and a
+strict-parse checker (`scratchpad check-json.js`, node `JSON.parse` over every embedded blob) now
+backstops authoring — the P19 loader will make strict parsing a load-time obligation (anti-silent-drop).
+Byte-identical (117 files), unit green, 39/39 + 38/38. Next: Class ×3 (+ `base.isInterface` fact), then
+Function/Extension, then `program` + `require`.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
