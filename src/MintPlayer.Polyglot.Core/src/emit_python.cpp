@@ -42,6 +42,8 @@ const char* PY_SPEC_JSON = R"JSON({
                "i64": "(((($x) & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)" },
   "wrapAtom": { "recv": ["binary", "unary", "cond", "cast"], "unary": ["binary"] },
   "rethrow": "raise",
+  "preludes": { "asyncEntry": "import asyncio\n",
+                "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n" },
   "tables": { "localDecl": { "mutable": "$x", "const": "$x" },
               "yield": { "value": "yield $x", "empty": "return" } },
   "blockStyle": "colonIndent",
@@ -337,159 +339,12 @@ const std::unordered_map<std::string, engine::Rule>& pyExprRules() {
     return rules;
 }
 
-// The ExprKind name keying the Python rule table ("" routes to the C++ switch).
-const char* pyExprRuleKey(ir::ExprKind k) {
-    switch (k) {
-        case ir::ExprKind::Int:      return "Int";
-        case ir::ExprKind::Float:    return "Float";
-        case ir::ExprKind::Bool:     return "Bool";
-        case ir::ExprKind::Null:     return "Null";
-        case ir::ExprKind::Str:      return "Str";
-        case ir::ExprKind::Var:      return "Var";
-        case ir::ExprKind::This:     return "This";
-        case ir::ExprKind::Extern:   return "Extern";
-        case ir::ExprKind::Await:    return "Await";
-        case ir::ExprKind::Call:     return "Call";
-        case ir::ExprKind::Member:   return "Member";
-        case ir::ExprKind::Index:    return "Index";
-        case ir::ExprKind::Cond:     return "Cond";
-        case ir::ExprKind::ListLit:  return "ListLit";
-        case ir::ExprKind::Tuple:    return "Tuple";
-        case ir::ExprKind::New:      return "New";
-        case ir::ExprKind::MakeCase: return "MakeCase";
-        case ir::ExprKind::Unary:    return "Unary";
-        case ir::ExprKind::Cast:     return "Cast";
-        case ir::ExprKind::With:       return "With";
-        case ir::ExprKind::Interp:     return "Interp";
-        case ir::ExprKind::MethodCall: return "MethodCall";
-        case ir::ExprKind::Match:      return "Match";
-        case ir::ExprKind::Lambda:     return "Lambda";
-        case ir::ExprKind::Binary:     return "Binary";
-        default:                       return "";
-    }
-}
-
-// The current module's `extern class` type map, set per emit() (same pattern as C#/TS).
-const std::unordered_map<std::string, const ir::ExternType*>* g_externTypes = nullptr;
-
-std::string pyTypeName(const TypeRef& t);
-
-// The Python type-scoped rule context: the extern-class Python spelling + recursion. Python's "Type" rule
-// is the smallest of the three — extern template or bare name (no annotations are emitted).
-class PyTypeCtx : public TypeRefCtx {
-public:
-    using TypeRefCtx::TypeRefCtx;
-
-protected:
-    std::string externTemplate() const override {
-        if (t_.kind != TypeRef::Kind::Named || !g_externTypes) return "";
-        auto it = g_externTypes->find(t_.name);
-        return it != g_externTypes->end() ? it->second->pyType : "";
-    }
-    std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
-};
-
-// The Python spelling of a named type (class bases, catch types, ctor `$T`) — a thin wrapper evaluating
-// the "Type" rule.
-std::string pyTypeName(const TypeRef& t) {
-    PyTypeCtx ctx(t, pythonSpec());
-    return engine::evalRule(pyExprRules().at("Type"), ctx, &pyExprRules());
-}
-
-// The Python declaration hooks — the one per-backend object every decl context reads through.
-class PyDeclHooks : public DeclHooks {
-public:
-    PyDeclHooks() : DeclHooks(&pythonSpec) {}
-    std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
-};
-const PyDeclHooks kPyDeclHooks;
-
-// The Python rule-interpreter seam. The walrus temps, the `_pg_idiv` flag, the builtins, AND the atom
-// policy are all generic machinery + spec data now; only the type renderer remains Python-specific.
-class PyExprCtx : public IrExprCtx {
-public:
-    using IrExprCtx::IrExprCtx;
-
-protected:
-    std::string renderTypeRef(const TypeRef& t) const override { return pyTypeName(t); }
-};
-
-class PythonEmitter : public EmitterBase {
-public:
-    std::string emit(const ir::Module& m) {
-        out_.clear();
-        indent_ = 0;
-        externTypes_.clear();
-        for (const auto& et : m.externTypes) externTypes_[et.name] = &et; // for Error->Exception etc. spellings
-        g_externTypes = &externTypes_;
-        // The whole module shape (decl order, globals, extensions-as-free-fns, the asyncio.run/plain entry)
-        // is the "Program" scaffold rule — data, not code. The two prepended preludes stay fixed builtin
-        // machinery: `import asyncio` keys off the entry fact, `_pg_idiv` off the expression walk's flag.
-        ModuleDeclCtx ctx(m, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); }, "python");
-        runDeclRule(pyExprRules().at("Program"), ctx, ctx, &pyExprRules());
-        for (const auto& fn : m.functions)
-            if (fn.isEntry) { needsAsyncio_ = fn.isAsync; break; } // `asyncio.run(main())` needs the module
-        if (needsAsyncio_) out_ = "import asyncio\n" + out_;
-        if (requires_.count("idiv")) out_ = idivPrelude() + out_; // C#-faithful truncating int `/` and `%`
-        return out_;
-    }
-
-    // Truncate-toward-zero integer division + remainder (Python `//`/`%` floor; .NET truncates). `_pg_irem`
-    // is `a - (a/b)*b` so it matches C#'s sign-of-dividend remainder. Prepended only when used.
-    static std::string idivPrelude() {
-        return "def _pg_idiv(a, b):\n"
-               "    q = a // b\n"
-               "    return q + 1 if (q < 0 and q * b != a) else q\n"
-               "def _pg_irem(a, b):\n"
-               "    return a - _pg_idiv(a, b) * b\n";
-    }
-
-private:
-    const BackendSpec& spec() const override { return pythonSpec(); }
-    std::string renderType(const TypeRef& t) override { return pyTypeName(t); }
-    const engine::RuleTable* ruleTable() const override { return &pyExprRules(); }
-    const DeclHooks* declHooks() const override { return &kPyDeclHooks; }
-    std::unordered_map<std::string, const ir::ExternType*> externTypes_; // backs g_externTypes for this emit
-    int tmp_ = 0; // fresh-name counter for the walrus temporaries that keep `?.`/`??` single-evaluated
-
-    // A parameter: escaped name + optional `= default` (Python supports default args natively).
-    // A record/class member -> a `def`. Most members take a leading `self`; four shapes map idiomatically:
-    //   Method     -> `def name(self, ...)`
-    //   static fn  -> `@staticmethod` + `def name(...)` (no self; called `Type.name(...)`)
-    //   Operator   -> `def __add__(self, ...)` (Python dispatches `a + b` to the dunder natively)
-    //   Property   -> `@property` + `def name(self)` (accessed as `a.prop`, no call)
-    // (try/except/finally — native typed `except T as e:` + the `when`-guard re-raise — is the "TryStmt"
-    // rule now; the empty-body `pass` padding is the pyStmtBody/pyItemBody helper rules.)
-
-    std::unordered_set<std::string> requires_; // prelude keys recorded by `{"fn":"require"}` reads ("idiv")
-    bool needsAsyncio_ = false; // set when an `async fn main` entry is emitted -> prepend `import asyncio`
-
-    std::string emitExpr(const ir::Expr& e) override {
-        // A migrated node kind (see pyExprRuleKey / PY_EXPR_RULES_JSON) is interpreted from its JSON Rule
-        // here; the C++ switch below handles only the kinds whose shape is still imperative.
-        if (const char* key = pyExprRuleKey(e.kind); key[0] != '\0') {
-            const auto& rules = pyExprRules();
-            auto it = rules.find(key);
-            if (it != rules.end()) {
-                PyExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); }, {},
-                              &tmp_, &requires_);
-                return engine::evalRule(it->second, ctx, &rules);
-            }
-        }
-        switch (e.kind) {
-            case ir::ExprKind::Bound: // a portable std method/property resolved to its python FFI template
-                return substBoundTemplate(static_cast<const ir::Bound&>(e).pyTemplate, static_cast<const ir::Bound&>(e));
-            default:
-                return "__py_unsupported_expr__"; // fails loudly at runtime if a non-skeleton node reaches here
-        }
-    }
-
-};
-
 } // namespace
 
+// The Python backend is DATA: the spec + rule JSON above, interpreted by the one shared emitter. (The
+// ExternType/Bound member picks collapse into std overlays at P19 slice 9.)
 std::string emitPython(const ir::Module& module) {
-    PythonEmitter emitter;
+    InterpretedEmitter emitter(&pythonSpec, pyExprRules(), &ir::ExternType::pyType, &ir::Bound::pyTemplate);
     return emitter.emit(module);
 }
 

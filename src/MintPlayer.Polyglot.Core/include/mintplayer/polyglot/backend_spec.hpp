@@ -75,6 +75,12 @@ struct BackendSpec {
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
     // data lives in the backend spec anymore. It carries only type/literal/template tables now.)
 
+    // Prelude fragments prepended (each at most once) when their key is required during the walk — by a
+    // `{"fn":"require"}` read in a rule (`idiv`) or by the fixed entry fact (`asyncEntry`, recorded when
+    // the program's entry fn is async). Prepended in ascending key order, innermost-first, so with both
+    // recorded the output reads `idiv` text, then `asyncEntry` text, then the program.
+    std::unordered_map<std::string, std::string> preludes;
+
     // Generic-parameter spelling strategy. `genericsStyle`: "inlineBounds" carries bounds on each
     // parameter (TS `<T extends A & B, U>`), "whereClauses" spells bare names and puts bounds in trailing
     // clauses (C# `<T, U> where T : A, B`), "" emits nothing (Python). `genericsErase` lists compile-time-

@@ -1638,6 +1638,27 @@ scalar** (`throw;`/`throw __e;`/`raise`). Nine overrides deleted. The per-backen
 emit() setup — pure wiring, zero behavior. Byte-identical (117 files), unit green, 39/39 + 38/38. Next:
 7d — the wiring dissolves into ONE interpreted emitter parameterized by {spec, rules, hooks}.
 
+**Slice-7d ✅ (2026-07-03) — the `InterpretedEmitter`: ONE emitter class serves every backend.**
+`InterpretedEmitter(specFn, rules, &ExternType::<field>, &Bound::<field>)` in `emitter_base` — the three
+backend classes, three expression ctxs, three type ctxs, three decl-hooks classes, three rule-key switches,
+and three `g_externTypes` globals were all instances of one shape and are DELETED. Per backend, what
+remains is pure data: `emit_*.cpp` = two JSON blobs (spec + rules) + their parse-once accessors + a
+one-line factory (`emitCSharp` = `InterpretedEmitter(&csharpSpec, csharpExprRules(), &ir::ExternType::
+csType, &ir::Bound::csTemplate).emit(m)` — the member picks are the LAST per-target parameter, collapsing
+into std overlays at slice 9). Absorbed en route: `type.isValueType` moved into the shared `TypeRefCtx`
+(the value-scalar set is language data — C#'s ctx was the only reader and would have silently lost it);
+Python's prepended preludes became **spec data** (`preludes` map: `asyncEntry`/`idiv`; the fixed algorithm
+records `asyncEntry` off the entry fact for every target — a spec with no such prelude no-ops — and
+prepends recorded keys ascending, so `idiv` text lands outermost, byte-matching the old order); the
+`exprRuleKey` switch is one shared map (union of kinds; a kind with no rule in a table falls through —
+NOTE: Python-`Char` previously hit the dead `__py_unsupported_expr__` sentinel default, now falls to `""`;
+both are silent-wrong and unreachable in the suite — slice 8's anti-silent-drop validation will force a
+rule-or-capability decision for it). The module-fact predicates (recordNames/interfaceNames) are computed
+for every target (unread ⇒ unaffected — C#/Python rules never consult them). `emit_*.cpp` ≈350 lines each,
+~95% of which is the JSON. Byte-identical (117 files), unit green, 39/39 + 38/38. Next: 7e — the JSON
+moves out of the C++ into `plugins/<target>/` files (the physical artifact), loaded by slice 8's
+`loadBackend` with validation.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

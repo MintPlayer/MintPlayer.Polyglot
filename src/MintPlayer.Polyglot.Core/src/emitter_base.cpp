@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/emitter_base.hpp"
 
+#include <algorithm>
 #include <cctype>
 
 // The shared walk machinery for the hand-written backends — see emitter_base.hpp for the abstraction.
@@ -415,6 +416,12 @@ std::string TypeRefCtx::get(const std::string& path) const {
     if (path == "type.scalar") {
         auto it = spec_.scalarType.find(t_.name);
         return it == spec_.scalarType.end() ? std::string() : it->second;
+    }
+    if (path == "type.isValueType") { // the value-scalar family (C# `T?` = Nullable<T> only for these)
+        const std::string& n = t_.name;
+        bool v = n == "i8" || n == "i16" || n == "i32" || n == "i64" || n == "u8" || n == "u16" ||
+                 n == "u32" || n == "u64" || n == "f32" || n == "f64" || n == "bool" || n == "char";
+        return v ? "true" : "false";
     }
     if (path == "type.externTemplate") return externTemplate();
     return targetGet(path);
@@ -1138,6 +1145,143 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
             line(engine::evalRule(r, ctx, helpers));
             return;
     }
+}
+
+// ---- InterpretedEmitter: the one data-parameterized backend (P19 slice 7d) ------------------------------
+
+namespace {
+
+// The rule-table key for an expression kind — one shared map (the three per-target switches were
+// identical). "" routes to the fixed C++ path (Bound — the FFI template substitution).
+const char* exprRuleKey(ir::ExprKind k) {
+    switch (k) {
+        case ir::ExprKind::Int:      return "Int";
+        case ir::ExprKind::Float:    return "Float";
+        case ir::ExprKind::Bool:     return "Bool";
+        case ir::ExprKind::Null:     return "Null";
+        case ir::ExprKind::Str:      return "Str";
+        case ir::ExprKind::Char:     return "Char";
+        case ir::ExprKind::Var:      return "Var";
+        case ir::ExprKind::This:     return "This";
+        case ir::ExprKind::Extern:   return "Extern";
+        case ir::ExprKind::Await:    return "Await";
+        case ir::ExprKind::Call:     return "Call";
+        case ir::ExprKind::Member:   return "Member";
+        case ir::ExprKind::Index:    return "Index";
+        case ir::ExprKind::Cond:     return "Cond";
+        case ir::ExprKind::ListLit:  return "ListLit";
+        case ir::ExprKind::Tuple:    return "Tuple";
+        case ir::ExprKind::New:      return "New";
+        case ir::ExprKind::MakeCase: return "MakeCase";
+        case ir::ExprKind::Unary:    return "Unary";
+        case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::With:       return "With";
+        case ir::ExprKind::Interp:     return "Interp";
+        case ir::ExprKind::MethodCall: return "MethodCall";
+        case ir::ExprKind::Match:      return "Match";
+        case ir::ExprKind::Lambda:     return "Lambda";
+        case ir::ExprKind::Binary:     return "Binary";
+        default:                       return "";
+    }
+}
+
+// The expression context: IrExprCtx whose type renderer routes back to the owning emitter.
+class GenericExprCtx : public IrExprCtx {
+public:
+    GenericExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, InlineFn inlineBlock,
+                   int* fresh, std::unordered_set<std::string>* preludeKeys, InterpretedEmitter& owner)
+        : IrExprCtx(e, spec, std::move(emit), std::move(inlineBlock), fresh, preludeKeys), owner_(owner) {}
+
+protected:
+    std::string renderTypeRef(const TypeRef& t) const override { return owner_.renderType(t); }
+
+private:
+    InterpretedEmitter& owner_;
+};
+
+// The type context: extern-template pick by the parameterized ExternType member; recursion routes back.
+class GenericTypeCtx : public TypeRefCtx {
+public:
+    GenericTypeCtx(const TypeRef& t, const BackendSpec& spec,
+                   const std::unordered_map<std::string, const ir::ExternType*>& externs,
+                   std::string ir::ExternType::* field, InterpretedEmitter& owner)
+        : TypeRefCtx(t, spec), externs_(externs), field_(field), owner_(owner) {}
+
+protected:
+    std::string externTemplate() const override {
+        if (t_.kind != TypeRef::Kind::Named) return "";
+        auto it = externs_.find(t_.name);
+        return it != externs_.end() ? it->second->*field_ : std::string();
+    }
+    std::string renderTypeRef(const TypeRef& t) const override { return owner_.renderType(t); }
+
+private:
+    const std::unordered_map<std::string, const ir::ExternType*>& externs_;
+    std::string ir::ExternType::* field_;
+    InterpretedEmitter& owner_;
+};
+
+} // namespace
+
+InterpretedEmitter::InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules,
+                                       std::string ir::ExternType::* externField,
+                                       std::string ir::Bound::* boundField)
+    : specFn_(spec), rules_(rules), externField_(externField), boundField_(boundField),
+      hooks_(spec, *this) {}
+
+std::string InterpretedEmitter::renderType(const TypeRef& t) {
+    GenericTypeCtx ctx(t, spec(), externMap_, externField_, *this);
+    return engine::evalRule(rules_.at("Type"), ctx, &rules_);
+}
+
+std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
+    if (const char* key = exprRuleKey(e.kind); key[0] != '\0') {
+        auto it = rules_.find(key);
+        if (it != rules_.end()) {
+            GenericExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
+                               [this](const std::vector<ir::StmtPtr>& b) { return inlineBlock(b); },
+                               &tmp_, &requires_, *this);
+            return engine::evalRule(it->second, ctx, &rules_);
+        }
+    }
+    if (e.kind == ir::ExprKind::Bound) // the FFI template substitution — fixed machinery over plugin data
+        return substBoundTemplate(static_cast<const ir::Bound&>(e).*boundField_,
+                                  static_cast<const ir::Bound&>(e));
+    return "";
+}
+
+std::string InterpretedEmitter::emit(const ir::Module& m) {
+    out_.clear();
+    indent_ = 0;
+    externMap_.clear();
+    tmp_ = 0;
+    requires_.clear();
+    for (const auto& et : m.externTypes) externMap_[et.name] = &et;
+    // The two module facts record/class rules read: which named types are records (TS's structural-equals
+    // dispatch) and which bases are interfaces (TS's extends/implements split). Computed for every target;
+    // a target whose rules never read them is unaffected.
+    std::unordered_set<std::string> recordNames, interfaceNames;
+    for (const auto& r : m.records) recordNames.insert(r.name);
+    for (const auto& i : m.interfaces) interfaceNames.insert(i.name);
+    ModuleDeclCtx ctx(m, hooks_, [this](const ir::Expr& e) { return emitExpr(e); }, spec().name,
+                      [&recordNames](const TypeRef& t) {
+                          return t.kind == TypeRef::Kind::Named && recordNames.count(t.name) != 0;
+                      },
+                      [&interfaceNames](const TypeRef& t) {
+                          return t.kind == TypeRef::Kind::Named && interfaceNames.count(t.name) != 0;
+                      });
+    runDeclRule(rules_.at("Program"), ctx, ctx, &rules_);
+    for (const auto& fn : m.functions)
+        if (fn.isEntry) { // an async entry needs the target's event-loop prelude, when it declares one
+            if (fn.isAsync) requires_.insert("asyncEntry");
+            break;
+        }
+    std::vector<std::string> keys; // ascending order, each prepended => the last key ends up outermost
+    for (const auto& k : requires_)
+        if (spec().preludes.count(k)) keys.push_back(k);
+    std::sort(keys.begin(), keys.end());
+    for (const auto& k : keys) out_ = spec().preludes.at(k) + out_;
+    return out_;
 }
 
 void EmitterBase::line(const std::string& s) {

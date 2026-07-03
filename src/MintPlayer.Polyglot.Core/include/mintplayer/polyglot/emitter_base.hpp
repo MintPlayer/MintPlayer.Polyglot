@@ -409,4 +409,46 @@ public:
     virtual ~EmitterBase() = default;
 };
 
+// THE emitter (P19 slice 7d): every backend is this one class parameterized by pure data — its spec
+// accessor, its parsed rule table, and (until slice 9 collapses the per-target IR fields into overlays)
+// which `ir::ExternType`/`ir::Bound` member carries its templates. The old per-target emitter classes,
+// expression/type contexts, decl hooks, and rule-key switches were all instances of exactly this shape.
+class InterpretedEmitter : public EmitterBase {
+public:
+    using SpecFn = DeclHooks::SpecFn;
+    InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules,
+                       std::string ir::ExternType::* externField, std::string ir::Bound::* boundField);
+
+    std::string emit(const ir::Module& m);
+
+    // The target's type spelling: the "Type" rule evaluated against a type context whose extern-template
+    // pick and recursion route back here.
+    std::string renderType(const TypeRef& t) override;
+
+private:
+    const BackendSpec& spec() const override { return specFn_(); }
+    const engine::RuleTable* ruleTable() const override { return &rules_; }
+    const DeclHooks* declHooks() const override { return &hooks_; }
+    std::string emitExpr(const ir::Expr& e) override;
+
+    // DeclHooks whose type renderer routes back to the owning emitter.
+    class Hooks : public DeclHooks {
+    public:
+        Hooks(SpecFn s, InterpretedEmitter& e) : DeclHooks(s), e_(e) {}
+        std::string renderTypeRef(const TypeRef& t) const override { return e_.renderType(t); }
+
+    private:
+        InterpretedEmitter& e_;
+    };
+
+    SpecFn specFn_;
+    const engine::RuleTable& rules_;
+    std::string ir::ExternType::* externField_;
+    std::string ir::Bound::* boundField_;
+    Hooks hooks_;
+    std::unordered_map<std::string, const ir::ExternType*> externMap_; // the module's extern-class spellings
+    int tmp_ = 0;                              // the `fresh` single-eval temp counter
+    std::unordered_set<std::string> requires_; // prelude keys recorded during the walk
+};
+
 } // namespace mintplayer::polyglot
