@@ -1,6 +1,6 @@
 {
   "name": "polyglot-lang",
-  "displayName": "Polyglot",
+  "displayName": "MintPlayer Polyglot",
   "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting).",
   "version": "0.0.1",
   "publisher": "mintplayer",
