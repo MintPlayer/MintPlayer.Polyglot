@@ -1,0 +1,5 @@
+{
+  "// note": "cliPath is resolved relative to this workspace root by the extension. This points at a Debug build of the CLI in a source checkout; change it if you build Release or install the CLI on PATH. `lib`/`root` are NOT set here on purpose — pgconfig.json in this folder provides them, and it wins over the extension settings.",
+  "polyglot.cliPath": "../../../x64/Debug/MintPlayer.Polyglot.Cli.exe",
+  "editor.formatOnSave": false
+}

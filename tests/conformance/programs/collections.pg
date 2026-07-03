@@ -1,0 +1,29 @@
+// P8 hardening: List<T> operations in isolation (the std .pg type + binding mechanism).
+// Exercises list literal, count, indexing, add, for-in iteration, removeAll (predicate),
+// and clear — across C# (System.Collections.Generic.List) and TS (native array). Integer
+// output only, so the two targets are directly comparable.
+
+import { List } from "std.collections"
+
+fn sumOf(xs: List<i32>): i32 {
+  var total = 0
+  for x in xs { total += x }
+  return total
+}
+
+fn main() {
+  var xs: List<i32> = [10, 20, 30]
+  xs.add(40)
+  xs.add(50)
+  print(xs.count)              // 5
+  print(xs[0] + xs[4])         // 60
+  print(sumOf(xs))             // 150
+
+  xs.removeAll((v) => v < 25)  // drop 10, 20 -> keep 30, 40, 50
+  print(xs.count)              // 3
+  print(xs[0])                 // 30
+  print(sumOf(xs))             // 120
+
+  xs.clear()
+  print(xs.count)              // 0
+}

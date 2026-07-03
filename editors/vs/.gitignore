@@ -1,0 +1,8 @@
+# Build output
+bin/
+obj/
+*.user
+
+# Grammar files copied from editors/vscode at build (canonical source lives there — see the csproj CopyPolyglotGrammar target)
+Grammars/polyglot/syntaxes/
+Grammars/polyglot/language-configuration.json

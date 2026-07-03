@@ -1,0 +1,13 @@
+// P6 differential conformance: i64 faithfulness (§3.C). 64-bit ints exceed
+// 2^53, where a JS `number` (f64) loses precision — so the TS backend maps i64
+// to BigInt (`7n`, 64-bit-wrapped arithmetic); C# uses `long`. Values below are
+// all chosen to be inexact as f64, so a non-BigInt lowering would diverge.
+
+fn main() {
+  let a = 9007199254740993i64    // 2^53 + 1 — rounds to 2^53 as an f64
+  print(a)                        // 9007199254740993
+  print(a + 10i64)                // 9007199254741003
+
+  let m = 1000000007i64
+  print(m * m)                    // 1000000014000000049  (~1e18, < 2^63, > 2^53)
+}

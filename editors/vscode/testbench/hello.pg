@@ -1,0 +1,22 @@
+import { Vec2, length } from "./geometry"
+
+record Point(x: f64, y: f64)
+
+fn distanceSquared(a: Point, b: Point): f64 {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    let n: string = "oops"
+    return dx * dx + dy * dy
+}
+
+async fn main() {
+    let p = Point(3.0, 4.0)
+    let q = Point(0.0, 0.0)
+    let d2 = distanceSquared(p, q)
+    print("distance squared = ${d2}")
+    let v = Vec2(3.0, 4.0)
+    print("length = ${length(v)}")
+
+    let base = "Pieterjan"
+    // let super = "De Clippel"
+}

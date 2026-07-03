@@ -1,0 +1,12 @@
+// P5 differential conformance: a record data type — construction + field access.
+// Integer-only output so C# and JS stdout match exactly.
+
+record Point(x: i32, y: i32)
+
+fn main() {
+  let p = Point(3, 4)
+  let q = Point(10, 20)
+  print(p.x + p.y)        // 7
+  print(q.x * q.y)        // 200
+  print(p.x + q.y)        // 23
+}

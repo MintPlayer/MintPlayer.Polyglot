@@ -1,0 +1,84 @@
+{
+  "name": "polyglot-lang",
+  "displayName": "Polyglot",
+  "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting).",
+  "version": "0.0.1",
+  "publisher": "mintplayer",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MintPlayer/MintPlayer.Polyglot"
+  },
+  "engines": { "vscode": "^1.82.0" },
+  "categories": ["Programming Languages", "Formatters", "Linters"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:polyglot"],
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "polyglot.showOutput",
+        "title": "Show Generated Output",
+        "category": "Polyglot",
+        "icon": "$(file-code)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "polyglot.showOutput",
+          "when": "resourceLangId == polyglot",
+          "group": "navigation"
+        }
+      ]
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "polyglotOutputs",
+          "name": "Polyglot Outputs",
+          "visibility": "collapsed",
+          "when": "polyglot.hasOutputs"
+        }
+      ]
+    },
+    "languages": [
+      {
+        "id": "polyglot",
+        "aliases": ["Polyglot", "polyglot"],
+        "extensions": [".pg"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "polyglot",
+        "scopeName": "source.polyglot",
+        "path": "./syntaxes/polyglot.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Polyglot",
+      "properties": {
+        "polyglot.cliPath": {
+          "type": "string",
+          "default": "polyglot",
+          "description": "Path to the polyglot CLI executable (which hosts the language server via `polyglot lsp`). Defaults to 'polyglot' on PATH; a relative path is resolved against the workspace root; set it to the built x64/Debug/MintPlayer.Polyglot.Cli.exe for a source checkout."
+        },
+        "polyglot.lib": {
+          "type": "string",
+          "default": "io,math",
+          "description": "Comma-separated `lib` prelude sent to the server so ambient names (print, Math) resolve. Mirrors the CLI's --lib. Until per-project config (pgconfig.json) lands, this is the assumed prelude."
+        },
+        "polyglot.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the JSON-RPC traffic between VS Code and `polyglot lsp` (for debugging the server)."
+        }
+      }
+    }
+  }
+}

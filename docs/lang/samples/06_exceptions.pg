@@ -1,0 +1,41 @@
+// 06 — exceptions: custom error types, throw, typed catch, `when` guard, finally.
+// Exercises §3.A: exceptions (try/catch/finally, typed catch -> dispatch, when -> guard).
+
+import { print } from "std.io"
+import "std.strings"
+
+class ParseError : Error {
+  let position: i32
+  init(message: string, position: i32) {
+    super(message)
+    this.position = position
+  }
+}
+
+class RangeError : Error {
+  init(message: string) { super(message) }
+}
+
+fn parsePercent(s: string): i32 {
+  if s.isEmpty() { throw ParseError("empty input", 0) }
+  let n = s.toI32()                      // assume std parse; throws ParseError on bad digits
+  if n < 0 || n > 100 { throw RangeError("out of 0..100: ${n}") }
+  return n
+}
+
+fn main() {
+  let inputs = [ "50", "", "150" ]   // (a non-numeric input like "oops" would diverge: C# Int32.Parse throws, JS parseInt -> NaN)
+  for raw in inputs {
+    try {
+      print("ok: ${parsePercent(raw)}")
+    } catch (e: ParseError) when (e.position == 0) {
+      print("empty at start")            // typed catch + `when` guard
+    } catch (e: ParseError) {
+      print("parse error: ${e.message}")
+    } catch (e: RangeError) {
+      print("range error: ${e.message}")
+    } finally {
+      print("— done with '${raw}'")      // always runs
+    }
+  }
+}

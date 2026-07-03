@@ -1,0 +1,21 @@
+// P6 differential conformance: structural value equality for records (§3.C).
+// Two records with equal fields are equal even though they are distinct
+// instances. C# records synthesize structural `==`; the TS backend generates a
+// structural `equals` and routes record `==`/`!=` to it. Nested records too.
+
+record Point(x: i32, y: i32)
+record Line(a: Point, b: Point)
+
+fn main() {
+  let p = Point(1, 2)
+  let q = Point(1, 2)
+  let r = Point(3, 4)
+
+  if p == q { print(1) } else { print(0) }     // 1   (structural, distinct instances)
+  if p == r { print(1) } else { print(0) }     // 0
+  if p != r { print(1) } else { print(0) }     // 1
+
+  let l1 = Line(Point(0, 0), Point(1, 1))
+  let l2 = Line(Point(0, 0), Point(1, 1))
+  if l1 == l2 { print(1) } else { print(0) }    // 1   (nested structural equality)
+}

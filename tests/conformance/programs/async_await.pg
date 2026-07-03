@@ -1,0 +1,22 @@
+// P15 differential conformance: `async fn` + `await` across all three targets. Each async fn resolves
+// synchronously (it awaits an already-computed value), so stdout is deterministic — no wall-clock. The
+// author writes the unwrapped return type `T` (§4.7 Option B); each backend synthesizes its own wrapper:
+//   C#     async Task<T>      + `static void Main() { main().GetAwaiter().GetResult(); }`
+//   TS     async …: Promise<T> + a floating `main();`
+//   Python async def          + `asyncio.run(main())` (an `import asyncio` is prepended)
+
+async fn doubleIt(x: i32): i32 {
+  return x * 2
+}
+
+async fn sumDoubled(a: i32, b: i32): i32 {
+  let x = await doubleIt(a)      // await in a `let` initializer
+  let y = await doubleIt(b)
+  return x + y
+}
+
+async fn main() {
+  let r = await sumDoubled(3, 4)
+  print(r)                       // 14
+  print(await doubleIt(10))      // 20  (await in an argument position)
+}

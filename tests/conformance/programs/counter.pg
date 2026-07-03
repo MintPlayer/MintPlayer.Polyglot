@@ -1,0 +1,21 @@
+// P5 differential conformance: a mutable reference type (class) with an `init`
+// constructor, a mutating method, and a value accessor.
+
+class Counter {
+  var count: i32
+  init(start: i32) {
+    this.count = start
+  }
+  fn bump() {
+    this.count = this.count + 1
+  }
+  fn value(): i32 => this.count
+}
+
+fn main() {
+  let c = Counter(10)
+  c.bump()
+  c.bump()
+  c.bump()
+  print(c.value())     // 13
+}

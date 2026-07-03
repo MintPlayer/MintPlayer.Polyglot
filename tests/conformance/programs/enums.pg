@@ -1,0 +1,24 @@
+// P5 differential conformance: enums + match (enum cases, literals, guard, wildcard).
+// Match returns integers (enum/bool values format differently across C# and JS, so we never print them).
+
+enum Color { Red, Green, Blue }
+
+fn rank(c: Color): i32 => match c {
+  Red => 10,
+  Green => 20,
+  Blue => 30,
+}
+
+fn classify(n: i32): i32 => match n {
+  0 => 100,
+  x if x < 0 => 200,
+  _ => 300,
+}
+
+fn main() {
+  print(rank(Color.Green))    // 20
+  print(rank(Color.Blue))     // 30
+  print(classify(0))          // 100
+  print(classify(-5))         // 200
+  print(classify(7))          // 300
+}

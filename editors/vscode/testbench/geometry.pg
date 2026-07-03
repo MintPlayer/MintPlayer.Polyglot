@@ -1,0 +1,10 @@
+// import { Math } from "std.math"
+
+// A companion module in the testbench, resolved via pgconfig's `root` as the logical import "geometry".
+// `length` calls Math.sqrt — exercising the ambient `math` lib that pgconfig.json auto-imports.
+
+record Vec2(x: f64, y: f64)
+
+fn length(v: Vec2): f64 {
+  return Math.sqrt(v.x * v.x + v.y * v.y)
+}

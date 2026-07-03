@@ -1,0 +1,55 @@
+# Publish the target-language plugins (P19: a language is a JSON file) as npm packages —
+# @mintplayer/polyglot-target-{csharp,typescript,python,php} — to npmjs.org and GitHub Packages.
+# `polyglot install <target>` resolves these by name. Mirrors the org publishing pattern
+# (mintplayer-ng-bootstrap publish-master.yml); PUBLISH_TO_NPMJS is configured organization-wide.
+name: publish-plugins
+
+on:
+  push:
+    branches: [master]
+    paths: ['plugins/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # A plugin that fails strict JSON parsing or misses its required blocks must never publish —
+      # the CLI's loadBackend enforces the full contract at install/load; this is the cheap pre-gate.
+      - name: Validate plugin manifests
+        run: |
+          node -e '
+            const fs = require("fs");
+            let bad = 0;
+            for (const t of fs.readdirSync("plugins")) {
+              const f = `plugins/${t}/polyglot-plugin.json`;
+              try {
+                const m = JSON.parse(fs.readFileSync(f, "utf8"));
+                for (const key of ["name", "spec", "rules"])
+                  if (!(key in m)) throw new Error(`missing ${key}`);
+                if (!("Program" in m.rules) || !("Type" in m.rules)) throw new Error("missing Program/Type rule");
+                console.log(`${f}: ok (${Object.keys(m.rules).length} rules)`);
+              } catch (e) { bad++; console.error(`INVALID ${f}: ${e.message}`); }
+            }
+            process.exit(bad ? 1 : 0);
+          '
+
+      - name: Publish target plugins
+        uses: MintPlayer/github-actions/publish-npm-packages@b08fbddf0b285a8633ac138b89d79ceb8cc8c888
+        with:
+          folder: plugins
+          registries: |
+            [
+              { "url": "https://registry.npmjs.org", "token": "${{ secrets.PUBLISH_TO_NPMJS }}" },
+              { "url": "https://npm.pkg.github.com", "token": "${{ github.token }}" }
+            ]

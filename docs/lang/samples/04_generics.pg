@@ -1,0 +1,48 @@
+// 04 — generic types & functions, constraints, interfaces, indexers.
+// Exercises §3.A: generics (overloading via constraints), indexers, properties.
+
+import { print } from "std.io"
+import { List } from "std.collections"
+
+interface Comparable<T> {
+  fn compareTo(other: T): i32;
+}
+
+// Generic function with a bound: T must be Comparable<T>.
+fn maxOf<T: Comparable<T>>(a: T, b: T): T => if a.compareTo(b) >= 0 { a } else { b }
+
+record Version(major: i32, minor: i32) : Comparable<Version> {
+  override fn compareTo(o: Version): i32 =>
+    if this.major != o.major { this.major - o.major } else { this.minor - o.minor }
+}
+
+// A generic mutable container (reference type) with an indexer and a property.
+class RingBuffer<T> {
+  var items: List<T>
+  let capacity: i32
+
+  init(capacity: i32) {
+    this.capacity = capacity
+    this.items = List<T>()
+  }
+
+  let count: i32 => this.items.count          // computed property
+
+  fn push(value: T) {
+    if this.items.count == this.capacity { this.items.removeAt(0) }
+    this.items.add(value)
+  }
+
+  operator fn get(index: i32): T => this.items[index]      // ring[i]
+}
+
+fn main() {
+  // maxOf needs T : Comparable<T>; primitives aren't Comparable in Polyglot, so use Version (which is).
+  print(maxOf(Version(3, 0), Version(1, 9)).major)    // 3
+  print(maxOf(Version(1, 4), Version(1, 9)).minor)    // 9
+
+  let ring = RingBuffer<string>(2)
+  ring.push("a"); ring.push("b"); ring.push("c")      // "a" evicted
+  print(ring.count)                                   // 2
+  print(ring[0])                                      // b   (indexer)
+}

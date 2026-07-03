@@ -1,0 +1,40 @@
+// 07 — deterministic disposal with `use` and the Disposable interface.
+// Exercises §3.A: using/disposal (-> C# `using` / TS try-finally + Symbol.dispose).
+
+import { print } from "std.io"
+
+interface Disposable {
+  fn dispose();
+}
+
+// A scoped resource that must be released deterministically (no finalizers — §10).
+class ScopedTimer : Disposable {
+  let label: string
+  var disposed: bool
+
+  init(label: string) {
+    this.label = label
+    this.disposed = false
+    print("start ${label}")
+  }
+
+  fn tick() { print("tick ${this.label}") }
+
+  override fn dispose() {
+    if this.disposed { return }          // idempotent dispose
+    this.disposed = true
+    print("stop ${this.label}")
+  }
+}
+
+fn main() {
+  use t = ScopedTimer("outer") {
+    t.tick()
+    use inner = ScopedTimer("inner") {
+      inner.tick()
+    }                                    // "stop inner" here, even on throw
+    t.tick()
+  }                                      // "stop outer" here
+  // Output: start outer / tick outer / start inner / tick inner /
+  //         stop inner / tick outer / stop outer
+}

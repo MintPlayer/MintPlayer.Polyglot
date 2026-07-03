@@ -1,0 +1,54 @@
+<Project>
+
+  <!-- Auto-imported near the BOTTOM of the consuming project. Transpiles each @(PolyglotFile) to a .cs
+       in obj/ before CoreCompile (so generated types exist for IntelliSense too — design-time builds are
+       NOT skipped, Grpc.Tools' hard-won lesson), incrementally via Inputs/Outputs (the tool path is an
+       input, so a CLI upgrade forces regen). A companion always-run target re-adds the generated files
+       when the transpile is skipped, and registers them as FileWrites so `dotnet clean` removes them. -->
+
+  <PropertyGroup>
+    <PolyglotOutDir>$(IntermediateOutputPath)polyglot\</PolyglotOutDir>
+    <!-- Host RID: the SDK's portable RID (e.g. win-x64, linux-x64, osx-arm64), overridable. Resolved
+         here (not the .props) because the SDK defines it after NuGet's top-of-project props import. -->
+    <PolyglotHostRid Condition="'$(PolyglotHostRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</PolyglotHostRid>
+    <_PolyglotToolName Condition="$([MSBuild]::IsOSPlatform('Windows'))">polyglot.exe</_PolyglotToolName>
+    <_PolyglotToolName Condition="'$(_PolyglotToolName)' == ''">polyglot</_PolyglotToolName>
+    <PolyglotTool Condition="'$(PolyglotTool)' == ''">$(MSBuildThisFileDirectory)..\tools\$(PolyglotHostRid)\$(_PolyglotToolName)</PolyglotTool>
+  </PropertyGroup>
+
+  <!-- Fail LOUDLY when no packed binary matches the host — a silent skip would cascade into misleading
+       "type not found" errors far from the cause. -->
+  <Target Name="_PolyglotVerifyTool" Condition="'@(PolyglotFile)' != ''">
+    <Error Condition="!Exists('$(PolyglotTool)')"
+           Text="MintPlayer.Polyglot.MSBuild: no polyglot binary for host RID '$(PolyglotHostRid)' (looked at '$(PolyglotTool)'). Set the PolyglotTool property to a polyglot CLI for this platform." />
+    <!-- NuGet extraction drops the exec bit on unix. -->
+    <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))" Command="chmod +x &quot;$(PolyglotTool)&quot;" />
+  </Target>
+
+  <Target Name="PolyglotTranspile"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="_PolyglotVerifyTool"
+          Condition="'@(PolyglotFile)' != ''"
+          Inputs="@(PolyglotFile);$(PolyglotTool)"
+          Outputs="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)%(Filename).cs')">
+    <PropertyGroup>
+      <_PolyglotLibArg></_PolyglotLibArg>
+      <_PolyglotLibArg Condition="'$(PolyglotLib)' != ''"> --lib &quot;$(PolyglotLib)&quot;</_PolyglotLibArg>
+    </PropertyGroup>
+    <MakeDir Directories="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)')" />
+    <Exec Command="&quot;$(PolyglotTool)&quot; build &quot;%(PolyglotFile.FullPath)&quot; --target csharp --out &quot;$(PolyglotOutDir)%(PolyglotFile.RecursiveDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)" />
+  </Target>
+
+  <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler
+       still needs the previously generated files in @(Compile). -->
+  <Target Name="_PolyglotAddGenerated"
+          BeforeTargets="CoreCompile"
+          AfterTargets="PolyglotTranspile"
+          Condition="'@(PolyglotFile)' != ''">
+    <ItemGroup>
+      <Compile Include="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)%(Filename).cs')" />
+      <FileWrites Include="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)%(Filename).cs')" />
+    </ItemGroup>
+  </Target>
+
+</Project>

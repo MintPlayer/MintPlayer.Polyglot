@@ -1,0 +1,132 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Polyglot",
+  "scopeName": "source.polyglot",
+  "fileTypes": ["pg"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#literals" },
+    { "include": "#types" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.polyglot",
+          "begin": "//",
+          "end": "$"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "comment": "Function name after `fn` (and `operator fn`)",
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.polyglot" },
+            "2": { "name": "entity.name.function.polyglot" }
+          }
+        },
+        {
+          "comment": "Type name after a nominal-type declaration keyword",
+          "match": "\\b(class|record|interface|enum|union|extension)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.polyglot" },
+            "2": { "name": "entity.name.type.polyglot" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.polyglot",
+          "match": "\\b(if|else|while|do|for|in|return|break|continue|yield|match|when|try|catch|finally|throw|with|use|await)\\b"
+        },
+        {
+          "name": "storage.type.polyglot",
+          "match": "\\b(fn|let|var|const|class|record|interface|enum|union|extension|import|init|operator|expect|actual|extern)\\b"
+        },
+        {
+          "name": "storage.modifier.polyglot",
+          "match": "\\b(abstract|open|override|sealed|static|private|async)\\b"
+        }
+      ]
+    },
+    "literals": {
+      "patterns": [
+        {
+          "name": "constant.language.polyglot",
+          "match": "\\b(true|false|null)\\b"
+        },
+        {
+          "name": "variable.language.polyglot",
+          "match": "\\b(this|super)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "comment": "Built-in scalar primitives (reserved type names in the language)",
+          "name": "support.type.primitive.polyglot",
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|char|string|unit)\\b"
+        },
+        {
+          "comment": "Capitalized identifier read as a nominal type (records, classes, unions, generics)",
+          "name": "entity.name.type.polyglot",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.polyglot",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.polyglot" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.polyglot" } },
+          "patterns": [
+            {
+              "name": "constant.character.escape.polyglot",
+              "match": "\\\\([\\\\\"'nrt0]|u[0-9A-Fa-f]{4})"
+            },
+            {
+              "comment": "Interpolation hole `${ expr }` — the expression is highlighted with the full grammar",
+              "name": "meta.template.expression.polyglot",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": { "0": { "name": "punctuation.definition.template-expression.begin.polyglot" } },
+              "endCaptures": { "0": { "name": "punctuation.definition.template-expression.end.polyglot" } },
+              "patterns": [{ "include": "$self" }]
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "comment": "Decimal int/float with `_` separators, optional exponent, optional width suffix (i32/u8/f32/d)",
+          "name": "constant.numeric.polyglot",
+          "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][+-]?[0-9]+)?(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|d)?\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.polyglot",
+          "match": "(=>|\\?\\?|\\?\\.|\\.\\.=|\\.\\.|->|==|!=|<=|>=|&&|\\|\\||[-+*/%<>=!&|^~?:])"
+        }
+      ]
+    }
+  }
+}

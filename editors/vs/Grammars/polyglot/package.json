@@ -1,0 +1,24 @@
+{
+  "name": "polyglot-vs-grammar",
+  "version": "0.0.1",
+  "displayName": "Polyglot",
+  "description": "TextMate grammar + language configuration for Polyglot (.pg). Consumed by Visual Studio's TextMate engine as the offline coloring floor; LSP semantic tokens refine on top.",
+  "engines": { "vscode": "*" },
+  "contributes": {
+    "languages": [
+      {
+        "id": "polyglot",
+        "aliases": ["Polyglot", "polyglot"],
+        "extensions": [".pg"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "polyglot",
+        "scopeName": "source.polyglot",
+        "path": "./syntaxes/polyglot.tmLanguage.json"
+      }
+    ]
+  }
+}

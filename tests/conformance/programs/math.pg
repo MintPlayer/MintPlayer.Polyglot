@@ -1,0 +1,29 @@
+// P13 differential conformance: the `Math` std module (std.math `extern class`) -> C# System.Math.*
+// / JS Math.* (note ln->Log/log, ceil->Ceiling/ceil). Per §3.D only reproducible
+// results are asserted: sqrt of a perfect square, abs/min/max/floor/ceil (exact),
+// and ln(1)=0 (exact). General transcendentals (ln of other values) are NOT
+// promised bit-exact across targets.
+
+import { Math } from "std.math"
+
+fn main() {
+  print((i32)Math.sqrt(144.0))       // 12
+  print((i32)Math.abs(-7.0))         // 7
+  print((i32)Math.min(3.0, 8.0))     // 3
+  print((i32)Math.max(3.0, 8.0))     // 8
+  print((i32)Math.floor(9.8))        // 9
+  print((i32)Math.ceil(9.1))         // 10
+  print((i32)Math.ln(1.0))           // 0   (ln(1) = 0 exactly on both)
+  print((i32)Math.round(2.7))        // 3   (f64 round-to-nearest)
+  print((i32)Math.round(2.3))        // 2
+  print((i32)Math.round((f32)9.6))   // 10  (round works on f32 too, type-preserving)
+
+  // min/max/abs are type-preserving (like C#'s overloads): integer in, integer out,
+  // no cast needed. C# uses Math.Max/Min/Abs overloads; TS uses Math.* for `number`
+  // and operator comparison for BigInt (i64/u64), since JS Math.* rejects BigInt.
+  print(Math.max(3, 8))              // 8    (i32 -> i32)
+  print(Math.min(3, 8))              // 3
+  print(Math.abs(-5))                // 5
+  print(Math.max(10i64, 20i64))      // 20   (i64 -> BigInt: operator compare in TS)
+  print(Math.abs(-9i64))             // 9
+}

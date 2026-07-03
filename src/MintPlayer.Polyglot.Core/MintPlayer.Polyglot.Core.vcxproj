@@ -11,7 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <VCProjectVersion>17.0</VCProjectVersion>
+    <VCProjectVersion>18.0</VCProjectVersion>
     <ProjectGuid>{A1A1A1A1-1111-4111-8111-111111111111}</ProjectGuid>
     <RootNamespace>MintPlayerPolyglotCore</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
@@ -20,14 +20,14 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -39,6 +39,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -51,13 +52,42 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\mintplayer\polyglot\polyglot.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\diagnostics.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\token.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\ast.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\lexer.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\parser.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\sema.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\pg_printer.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\ir.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\lower.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\backend.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\backend_engine.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\backend_spec.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\backend_spec_json.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\emitter_base.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\capability.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />
+    <ClCompile Include="src\lexer.cpp" />
+    <ClCompile Include="src\parser.cpp" />
+    <ClCompile Include="src\sema.cpp" />
+    <ClCompile Include="src\emitter_base.cpp" />
+    <ClCompile Include="src\compiler.cpp" />
+    <ClCompile Include="src\pg_printer.cpp" />
+    <ClCompile Include="src\ir.cpp" />
+    <ClCompile Include="src\lower.cpp" />
+    <ClCompile Include="src\backend.cpp" />
+    <ClCompile Include="src\backend_engine.cpp" />
+    <ClCompile Include="src\backend_spec_json.cpp" />
+    <ClCompile Include="src\capability.cpp" />
+    <ClCompile Include="src\json.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

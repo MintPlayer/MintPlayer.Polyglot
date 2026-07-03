@@ -22,3 +22,6 @@ artifacts/
 *.obj
 *.exe
 *.lib
+
+# The MSBuild package ships its NuGet build/ assets (P11) - not build output
+!src/MintPlayer.Polyglot.MSBuild/build/

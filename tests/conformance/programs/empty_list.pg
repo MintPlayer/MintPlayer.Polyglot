@@ -1,0 +1,13 @@
+// P14b — an empty list literal `[]` takes its element type from the target (`List<i32>`), not a bare
+// `List<unknown>` (which emitted invalid C# `List<object>`). Bidirectional typing, same family as `None`.
+import { List } from "std.collections"
+
+fn firstOr(xs: List<i32>, d: i32): i32 => if xs.count >= 1 { xs[0] } else { d }
+
+fn main() {
+  var xs: List<i32> = []
+  xs.add(7)
+  print(firstOr(xs, -1))   // 7
+  var ys: List<i32> = []
+  print(firstOr(ys, -1))   // -1  (still empty)
+}

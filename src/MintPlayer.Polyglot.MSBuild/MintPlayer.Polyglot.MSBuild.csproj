@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Assets-only packaging project (P11, PLAN §P11 — modeled on Grpc.Tools): ships the self-contained
+       native `polyglot` CLI per host RID plus the auto-imported build/.props/.targets that transpile
+       `.pg` → `.cs` into obj/ before CoreCompile. No managed assembly is built or shipped. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+
+    <PackageId>MintPlayer.Polyglot.MSBuild</PackageId>
+    <Version>0.0.1</Version>
+    <Authors>MintPlayer</Authors>
+    <Description>Transpiles .pg (Polyglot) sources to C# during dotnet build — drop .pg files into an ordinary C# project and build. Ships the self-contained native polyglot CLI; no extra SDK or runtime.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/MintPlayer/MintPlayer.Polyglot</RepositoryUrl>
+    <PackageTags>polyglot;transpiler;msbuild;codegen</PackageTags>
+
+    <!-- Never flows to consumers-of-consumers: build/ (not buildTransitive/) + DevelopmentDependency. -->
+    <DevelopmentDependency>true</DevelopmentDependency>
+
+    <!-- Where the packed CLI comes from; CI overrides with the Release/per-RID layout. -->
+    <PolyglotCliDir Condition="'$(PolyglotCliDir)' == ''">$(MSBuildThisFileDirectory)..\..\x64\Debug\</PolyglotCliDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="build\**" Pack="true" PackagePath="build\" />
+    <None Include="$(PolyglotCliDir)MintPlayer.Polyglot.Cli.exe" Pack="true" PackagePath="tools\win-x64\polyglot.exe" />
+    <None Include="$(MSBuildThisFileDirectory)..\..\plugins\**\polyglot-plugin.json" Pack="true"
+          PackagePath="tools\win-x64\plugins" />
+  </ItemGroup>
+
+</Project>

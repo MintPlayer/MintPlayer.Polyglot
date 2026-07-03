@@ -1,0 +1,19 @@
+// P13: TypeArg inference — a generic call's return type is the inferred type argument, not a bare `T`.
+// The i64 cases are the canary: only if inference types the result as i64 does TS apply its BigInt
+// String(...) print-wrap, so C# `10` and TS `10` (not `10n`) agree. Covers 1 and 2 type-args, return
+// in the 1st or 2nd position, and a generic METHOD (its own type params, separate from any class ones).
+
+record Chooser() {
+  fn pickSecond<A, B>(a: A, b: B): B => b
+}
+
+fn pick<T>(a: T, b: T): T => a
+fn firstOf<K, V>(k: K, v: V): K => k
+
+fn main() {
+  print(pick(10i64, 20i64))          // 10  — single type-arg, return T
+  print(firstOf(8i64, 5i32))         // 8   — two type-args, return the FIRST (K = i64)
+  print(firstOf(8i32, 5i64))         // 8   — return the FIRST (K = i32; the i64 is V, unused)
+  let c = Chooser()
+  print(c.pickSecond(7i32, 99i64))   // 99  — method, two type-args, return the SECOND (B = i64)
+}

@@ -1,0 +1,22 @@
+<Project>
+
+  <!-- Auto-imported near the TOP of the consuming project (NuGet build/ convention). Resolves the host
+       RID and the packed native `polyglot` tool, and declares the default `.pg` item glob — all
+       overridable: set $(PolyglotTool) to point at your own CLI (the CI hook), or add/remove
+       @(PolyglotFile) items in the project. -->
+
+  <PropertyGroup>
+    <!-- Optional knobs: the ambient std prelude (the CLI lib flag, e.g. io,math) and the module root.
+         PolyglotHostRid / PolyglotTool are also overridable here; their DEFAULTS are computed in the
+         .targets file — the SDK hasn't defined NETCoreSdkPortableRuntimeIdentifier yet at props time. -->
+    <PolyglotLib Condition="'$(PolyglotLib)' == ''"></PolyglotLib>
+    <PolyglotRoot Condition="'$(PolyglotRoot)' == ''">$(MSBuildProjectDirectory)</PolyglotRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PolyglotFile Include="**\*.pg" Exclude="$(DefaultItemExcludes);bin\**;obj\**" />
+    <!-- Make .pg files visible in the IDE's solution explorer. -->
+    <None Include="@(PolyglotFile)" Condition="'$(EnableDefaultItems)' != 'false'" />
+  </ItemGroup>
+
+</Project>

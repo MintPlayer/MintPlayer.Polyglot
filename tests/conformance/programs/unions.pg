@@ -1,0 +1,20 @@
+// P5 differential conformance: a discriminated union + exhaustive match with
+// constructor patterns (binders) and a payload-free case.
+
+union Shape {
+  Circle(r: i32)
+  Rect(w: i32, h: i32)
+  Empty
+}
+
+fn area(s: Shape): i32 => match s {
+  Circle(r) => r * r,
+  Rect(w, h) => w * h,
+  Empty => 0,
+}
+
+fn main() {
+  print(area(Circle(3)))     // 9
+  print(area(Rect(2, 5)))    // 10
+  print(area(Empty))         // 0
+}

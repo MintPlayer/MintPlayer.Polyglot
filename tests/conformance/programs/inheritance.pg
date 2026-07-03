@@ -1,0 +1,42 @@
+// P5 differential conformance: class inheritance + `super(...)`, custom
+// exception subtypes, and a multi-clause typed `catch` dispatch. Each subclass
+// derives from the core `Error` root (C# System.Exception / JS Error) and
+// passes a message up via `super`, while carrying its own `code` field.
+
+class AppError : Error {
+  let code: i32
+  init(code: i32) {
+    super("app error")
+    this.code = code
+  }
+}
+
+class IoError : Error {
+  let code: i32
+  init(code: i32) {
+    super("io error")
+    this.code = code
+  }
+}
+
+fn fail(kind: i32) {
+  if kind == 1 { throw AppError(42) }
+  if kind == 2 { throw IoError(7) }
+}
+
+fn classify(kind: i32): i32 {
+  try {
+    fail(kind)
+    return 0
+  } catch (e: AppError) {
+    return e.code
+  } catch (e: IoError) {
+    return e.code + 100
+  }
+}
+
+fn main() {
+  print(classify(0))    // 0    (no throw)
+  print(classify(1))    // 42   (AppError clause)
+  print(classify(2))    // 107  (IoError clause: 7 + 100)
+}

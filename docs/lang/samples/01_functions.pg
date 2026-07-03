@@ -1,0 +1,45 @@
+// 01 — functions: declarations, overloading, default params, recursion,
+//      expression bodies, lambdas/closures, higher-order functions.
+// Exercises §3.A: closures, function overloading.
+
+import { print } from "std.io"
+
+// Expression-bodied function.
+fn square(x: i32): i32 => x * x
+
+// Block body, explicit return.
+fn factorial(n: i64): i64 {
+  if n <= 1i64 { return 1i64 }
+  return n * factorial(n - 1i64)
+}
+
+// Default parameter value.
+fn greet(name: string, greeting: string = "Hello"): string => "${greeting}, ${name}!"
+
+// Overloading — same name, different signatures. (Lowers to name-mangled
+// statics in TS; real overloads in C#.)
+fn describe(x: i32): string => "int ${x}"
+fn describe(x: f64): string => "float ${x}"
+fn describe(x: bool): string => if x { "yes" } else { "no" }
+
+// Higher-order: takes a function, returns a closure that captures `factor`.
+fn scaler(factor: i32): (i32) => i32 => (x) => x * factor
+
+fn applyTwice<T>(f: (T) => T, value: T): T => f(f(value))
+
+fn main() {
+  print(greet("world"))                 // Hello, world!
+  print(greet("world", "Hi"))           // Hi, world!
+  print(describe(42))                   // int 42
+  print(describe(3.5))                  // float 3.5
+
+  let triple = scaler(3)                // closure capturing factor = 3
+  print(triple(10))                     // 30
+  print(applyTwice(triple, 2))          // 18
+
+  // Lambda with a captured mutable accumulator.
+  var total = 0
+  let add = (n: i32) => { total += n }
+  for i in 1..=5 { add(square(i)) }     // 1 + 4 + 9 + 16 + 25
+  print(total)                          // 55
+}

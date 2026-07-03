@@ -1,0 +1,40 @@
+// 05 — iterators via `yield`, ranges, lazy sequences, for-in consumption.
+// Exercises §3.A: iterators/yield.
+
+import { print } from "std.io"
+
+// An iterator function: its return type is Iterable<T> and it `yield`s.
+// -> C#: IEnumerable<int> + yield return ;  TS: function* + yield.
+fn fibonacci(count: i32): Iterable<i64> {
+  var a = 0i64
+  var b = 1i64
+  var n = 0
+  while n < count {
+    yield a
+    let next = a + b
+    a = b
+    b = next
+    n += 1
+  }
+}
+
+// Lazy transform: consumes one Iterable, yields another (nothing runs until
+// the result is iterated).
+fn squares(source: Iterable<i64>): Iterable<i64> {
+  for x in source { yield x * x }
+}
+
+// Ranges are iterable too; `..` is exclusive, `..=` inclusive.
+fn evensUpTo(n: i32): Iterable<i32> {
+  for i in 0..=n {
+    if i % 2 == 0 { yield i }
+  }
+}
+
+fn main() {
+  for f in fibonacci(8) { print(f) }            // 0 1 1 2 3 5 8 13
+
+  for s in squares(fibonacci(5)) { print(s) }   // 0 1 1 4 9
+
+  for e in evensUpTo(10) { print(e) }           // 0 2 4 6 8 10
+}

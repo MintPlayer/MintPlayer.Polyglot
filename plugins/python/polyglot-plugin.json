@@ -1,0 +1,2722 @@
+{
+  "schema": 1,
+  "name": "python",
+  "capabilities": {
+    "blockLambdas": false,
+    "interfaces": "emulated"
+  },
+  "spec": {
+    "name": "python",
+    "scalarType": {},
+    "intSuffix": {},
+    "delimited": {},
+    "binaryOp": {
+      "&&": "and",
+      "||": "or"
+    },
+    "wrapInt": {
+      "u8": "(($x) & 0xff)",
+      "u16": "(($x) & 0xffff)",
+      "u32": "(($x) & 0xffffffff)",
+      "u64": "(($x) & 0xffffffffffffffff)",
+      "i8": "(((($x) & 0xff) ^ 0x80) - 0x80)",
+      "i16": "(((($x) & 0xffff) ^ 0x8000) - 0x8000)",
+      "i32": "(((($x) & 0xffffffff) ^ 0x80000000) - 0x80000000)",
+      "i64": "(((($x) & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)"
+    },
+    "wrapAtom": {
+      "recv": [
+        "binary",
+        "unary",
+        "cond",
+        "cast"
+      ],
+      "unary": [
+        "binary"
+      ]
+    },
+    "rethrow": "raise",
+    "preludes": {
+      "asyncEntry": "import asyncio\n",
+      "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n"
+    },
+    "tables": {
+      "localDecl": {
+        "mutable": "$x",
+        "const": "$x"
+      },
+      "yield": {
+        "value": "yield $x",
+        "empty": "return"
+      }
+    },
+    "blockStyle": "colonIndent",
+    "stmtEnd": "",
+    "throwKeyword": "raise",
+    "trueLit": "True",
+    "falseLit": "False",
+    "nullLit": "None",
+    "identifiers": {
+      "keywords": [
+        "False",
+        "None",
+        "True",
+        "and",
+        "as",
+        "assert",
+        "async",
+        "await",
+        "break",
+        "class",
+        "continue",
+        "def",
+        "del",
+        "elif",
+        "else",
+        "except",
+        "finally",
+        "for",
+        "from",
+        "global",
+        "if",
+        "import",
+        "in",
+        "is",
+        "lambda",
+        "nonlocal",
+        "not",
+        "or",
+        "pass",
+        "raise",
+        "return",
+        "try",
+        "while",
+        "with",
+        "yield",
+        "match",
+        "case"
+      ],
+      "escape": {
+        "strategy": "suffix",
+        "with": "_"
+      },
+      "mangle": {
+        "replace": "$",
+        "with": "_"
+      },
+      "reserved": [
+        "_m",
+        "self",
+        "_pg_idiv",
+        "_pg_irem",
+        "__c*",
+        "__o*",
+        "__e",
+        "tag",
+        "__opt*",
+        "__w*"
+      ],
+      "globals": [
+        "str"
+      ]
+    }
+  },
+  "rules": {
+    "Int": {
+      "tmpl": [
+        {
+          "get": "node.text"
+        },
+        {
+          "fn": "intSuffix",
+          "args": [
+            {
+              "get": "node.type"
+            }
+          ]
+        }
+      ]
+    },
+    "Float": {
+      "get": "node.text"
+    },
+    "Bool": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.value",
+                "true"
+              ]
+            },
+            {
+              "get": "spec.trueLit"
+            }
+          ]
+        ],
+        "else": {
+          "get": "spec.falseLit"
+        }
+      }
+    },
+    "Null": {
+      "get": "spec.nullLit"
+    },
+    "Str": {
+      "fn": "escapeString",
+      "args": [
+        {
+          "get": "node.value"
+        }
+      ]
+    },
+    "Var": {
+      "fn": "ident",
+      "args": [
+        {
+          "get": "node.name"
+        }
+      ]
+    },
+    "This": "self",
+    "Extern": {
+      "get": "node.code"
+    },
+    "Await": {
+      "tmpl": [
+        "await ",
+        {
+          "emitChild": "node.operand",
+          "side": "recv"
+        }
+      ]
+    },
+    "Call": {
+      "tmpl": [
+        {
+          "fn": "mangleName",
+          "args": [
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.mangledCallee"
+                }
+              ]
+            }
+          ]
+        },
+        "(",
+        {
+          "map": "node.args",
+          "sep": ", "
+        },
+        ")"
+      ]
+    },
+    "Member": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.nullSafe",
+                "true"
+              ]
+            },
+            {
+              "fresh": {
+                "prefix": "__o",
+                "as": "t",
+                "in": {
+                  "tmpl": [
+                    "(",
+                    {
+                      "get": "t"
+                    },
+                    ".",
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "node.field"
+                        }
+                      ]
+                    },
+                    " if (",
+                    {
+                      "get": "t"
+                    },
+                    " := ",
+                    {
+                      "emit": "node.object"
+                    },
+                    ") is not None else None)"
+                  ]
+                }
+              }
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "has": "node.staticType"
+                    },
+                    {
+                      "get": "node.staticType"
+                    }
+                  ]
+                ],
+                "else": {
+                  "emitChild": "node.object",
+                  "side": "recv"
+                }
+              }
+            },
+            ".",
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.field"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "Index": {
+      "tmpl": [
+        {
+          "emitChild": "node.receiver",
+          "side": "recv"
+        },
+        "[",
+        {
+          "emit": "node.index"
+        },
+        "]"
+      ]
+    },
+    "Cond": {
+      "tmpl": [
+        "(",
+        {
+          "emit": "node.then"
+        },
+        " if ",
+        {
+          "emit": "node.cond"
+        },
+        " else ",
+        {
+          "emit": "node.els"
+        },
+        ")"
+      ]
+    },
+    "ListLit": {
+      "tmpl": [
+        "[",
+        {
+          "map": "node.elements",
+          "sep": ", "
+        },
+        "]"
+      ]
+    },
+    "Tuple": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.elements.count",
+                "1"
+              ]
+            },
+            {
+              "tmpl": [
+                "(",
+                {
+                  "emit": "node.elements.0"
+                },
+                ",)"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "(",
+            {
+              "map": "node.elements",
+              "sep": ", "
+            },
+            ")"
+          ]
+        }
+      }
+    },
+    "New": {
+      "tmpl": [
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.typeName"
+            }
+          ]
+        },
+        "(",
+        {
+          "map": "node.args",
+          "sep": ", "
+        },
+        ")"
+      ]
+    },
+    "Lambda": {
+      "tmpl": [
+        "lambda ",
+        {
+          "map": "node.params",
+          "sep": ", ",
+          "item": {
+            "fn": "ident",
+            "args": [
+              {
+                "get": "item.name"
+              }
+            ]
+          }
+        },
+        ": ",
+        {
+          "emit": "node.body"
+        }
+      ]
+    },
+    "Type": {
+      "case": {
+        "when": [
+          [
+            {
+              "has": "type.externTemplate"
+            },
+            {
+              "fn": "substExtern"
+            }
+          ]
+        ],
+        "else": {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "type.name"
+            }
+          ]
+        }
+      }
+    },
+    "EnumDecl": {
+      "block": {
+        "head": {
+          "tmpl": [
+            "class ",
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
+            }
+          ]
+        },
+        "body": [
+          {
+            "case": {
+              "when": [
+                [
+                  {
+                    "eq": [
+                      "decl.cases.count",
+                      "0"
+                    ]
+                  },
+                  {
+                    "line": "pass"
+                  }
+                ]
+              ]
+            }
+          },
+          {
+            "mapDecl": "decl.cases",
+            "each": {
+              "line": {
+                "tmpl": [
+                  {
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
+                  },
+                  " = ",
+                  {
+                    "get": "item.value"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "UnionDecl": {
+      "line": {
+        "tmpl": [
+          "# union ",
+          {
+            "fn": "ident",
+            "args": [
+              {
+                "get": "decl.name"
+              }
+            ]
+          },
+          " -> tagged dicts: {\"tag\": <case>, <field>: <value>, ...}"
+        ]
+      }
+    },
+    "RecordDecl": {
+      "block": {
+        "head": {
+          "tmpl": [
+            "class ",
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
+            }
+          ]
+        },
+        "body": [
+          {
+            "block": {
+              "head": {
+                "tmpl": [
+                  "def __init__(self",
+                  {
+                    "map": "decl.fields",
+                    "sep": "",
+                    "item": {
+                      "tmpl": [
+                        ", ",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  ")"
+                ]
+              },
+              "body": [
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.fields.count",
+                            "0"
+                          ]
+                        },
+                        {
+                          "line": "pass"
+                        }
+                      ]
+                    ]
+                  }
+                },
+                {
+                  "mapDecl": "decl.fields",
+                  "each": {
+                    "line": {
+                      "tmpl": [
+                        "self.",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
+                        },
+                        " = ",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "block": {
+              "head": "def __eq__(self, other)",
+              "body": [
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.fields.count",
+                            "0"
+                          ]
+                        },
+                        {
+                          "line": "return True"
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "line": {
+                        "tmpl": [
+                          "return ",
+                          {
+                            "map": "decl.fields",
+                            "sep": " and ",
+                            "item": {
+                              "tmpl": [
+                                "self.",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.name"
+                                    }
+                                  ]
+                                },
+                                " == other.",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.name"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "mapMembers": "decl.methods",
+            "rule": "MethodDecl"
+          }
+        ]
+      }
+    },
+    "pyStmtBody": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "stmt.body.count",
+                "0"
+              ]
+            },
+            {
+              "line": "pass"
+            }
+          ]
+        ],
+        "else": {
+          "stmts": "stmt.body"
+        }
+      }
+    },
+    "pyItemBody": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.body.count",
+                "0"
+              ]
+            },
+            {
+              "line": "pass"
+            }
+          ]
+        ],
+        "else": {
+          "stmts": "item.body"
+        }
+      }
+    },
+    "TryStmt": {
+      "seq": [
+        {
+          "block": {
+            "head": "try",
+            "body": [
+              {
+                "call": "pyStmtBody"
+              }
+            ]
+          }
+        },
+        {
+          "mapDecl": "stmt.catches",
+          "each": {
+            "block": {
+              "head": {
+                "tmpl": [
+                  "except ",
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.hasType",
+                              "true"
+                            ]
+                          },
+                          {
+                            "type": "item.type"
+                          }
+                        ]
+                      ],
+                      "else": "Exception"
+                    }
+                  },
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.hasBinding",
+                              "true"
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              " as ",
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "item.binding"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ]
+              },
+              "body": [
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "item.hasGuard",
+                            "true"
+                          ]
+                        },
+                        {
+                          "line": {
+                            "tmpl": [
+                              "if not (",
+                              {
+                                "emit": "item.guard"
+                              },
+                              "): raise"
+                            ]
+                          }
+                        }
+                      ]
+                    ]
+                  }
+                },
+                {
+                  "call": "pyItemBody"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "stmt.hasFinally",
+                    "true"
+                  ]
+                },
+                {
+                  "block": {
+                    "head": "finally",
+                    "body": [
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "stmt.finallyBody.count",
+                                  "0"
+                                ]
+                              },
+                              {
+                                "line": "pass"
+                              }
+                            ]
+                          ],
+                          "else": {
+                            "stmts": "stmt.finallyBody"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "ForStmt": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "stmt.isRange",
+                "true"
+              ]
+            },
+            {
+              "block": {
+                "head": {
+                  "tmpl": [
+                    "for ",
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "stmt.binding"
+                        }
+                      ]
+                    },
+                    " in range(",
+                    {
+                      "emit": "stmt.rangeStart"
+                    },
+                    ", ",
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "stmt.inclusive",
+                                "true"
+                              ]
+                            },
+                            {
+                              "tmpl": [
+                                "(",
+                                {
+                                  "emit": "stmt.rangeEnd"
+                                },
+                                ") + 1"
+                              ]
+                            }
+                          ]
+                        ],
+                        "else": {
+                          "emit": "stmt.rangeEnd"
+                        }
+                      }
+                    },
+                    ")"
+                  ]
+                },
+                "body": [
+                  {
+                    "call": "pyStmtBody"
+                  }
+                ]
+              }
+            }
+          ],
+          [
+            {
+              "not": {
+                "eq": [
+                  "stmt.tupleBindings.count",
+                  "0"
+                ]
+              }
+            },
+            {
+              "block": {
+                "head": {
+                  "tmpl": [
+                    "for ",
+                    {
+                      "map": "stmt.tupleBindings",
+                      "sep": ", ",
+                      "item": {
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "item"
+                          }
+                        ]
+                      }
+                    },
+                    " in ",
+                    {
+                      "emit": "stmt.iterable"
+                    }
+                  ]
+                },
+                "body": [
+                  {
+                    "call": "pyStmtBody"
+                  }
+                ]
+              }
+            }
+          ]
+        ],
+        "else": {
+          "block": {
+            "head": {
+              "tmpl": [
+                "for ",
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "stmt.binding"
+                    }
+                  ]
+                },
+                " in ",
+                {
+                  "emit": "stmt.iterable"
+                }
+              ]
+            },
+            "body": [
+              {
+                "call": "pyStmtBody"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "Program": {
+      "seq": [
+        {
+          "mapMembers": "module.enums",
+          "rule": "EnumDecl"
+        },
+        {
+          "mapMembers": "module.unions",
+          "rule": "UnionDecl"
+        },
+        {
+          "mapMembers": "module.records",
+          "rule": "RecordDecl"
+        },
+        {
+          "mapMembers": "module.classes",
+          "rule": "ClassDecl"
+        },
+        {
+          "mapDecl": "module.globals",
+          "each": {
+            "line": {
+              "tmpl": [
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.name"
+                    }
+                  ]
+                },
+                " = ",
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "item.hasInit",
+                            "true"
+                          ]
+                        },
+                        {
+                          "emit": "item.init"
+                        }
+                      ]
+                    ],
+                    "else": "None"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "mapMembers": "module.functions",
+          "rule": "FunctionDecl"
+        },
+        {
+          "mapMembers": "module.extensions",
+          "rule": "FunctionDecl"
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "module.hasEntry",
+                    "true"
+                  ]
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "module.entry.isAsync",
+                            "true"
+                          ]
+                        },
+                        {
+                          "line": {
+                            "tmpl": [
+                              "asyncio.run(",
+                              {
+                                "fn": "mangle",
+                                "args": [
+                                  {
+                                    "get": "module.entry.mangledName"
+                                  }
+                                ]
+                              },
+                              "())"
+                            ]
+                          }
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "line": {
+                        "tmpl": [
+                          {
+                            "fn": "mangle",
+                            "args": [
+                              {
+                                "get": "module.entry.mangledName"
+                              }
+                            ]
+                          },
+                          "()"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "pyFnSig": {
+      "tmpl": [
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.isAsync",
+                    "true"
+                  ]
+                },
+                "async def "
+              ]
+            ],
+            "else": "def "
+          }
+        },
+        {
+          "fn": "mangle",
+          "args": [
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.emitName"
+                }
+              ]
+            }
+          ]
+        },
+        "(",
+        {
+          "map": "decl.params",
+          "sep": ", ",
+          "item": {
+            "call": "pyParam"
+          }
+        },
+        ")"
+      ]
+    },
+    "FunctionDecl": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "decl.exprBodied",
+                "true"
+              ]
+            },
+            {
+              "block": {
+                "head": {
+                  "call": "pyFnSig"
+                },
+                "body": [
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "decl.returnsUnit",
+                              "true"
+                            ]
+                          },
+                          {
+                            "line": {
+                              "emit": "decl.exprBody"
+                            }
+                          }
+                        ]
+                      ],
+                      "else": {
+                        "line": {
+                          "tmpl": [
+                            "return ",
+                            {
+                              "emit": "decl.exprBody"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        ],
+        "else": {
+          "block": {
+            "head": {
+              "call": "pyFnSig"
+            },
+            "body": [
+              {
+                "case": {
+                  "when": [
+                    [
+                      {
+                        "eq": [
+                          "decl.body.count",
+                          "0"
+                        ]
+                      },
+                      {
+                        "line": "pass"
+                      }
+                    ]
+                  ],
+                  "else": {
+                    "stmts": "decl.body"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "pyClassHead": {
+      "tmpl": [
+        "class ",
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.bases.count",
+                    "0"
+                  ]
+                },
+                ""
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                "(",
+                {
+                  "map": "decl.bases",
+                  "sep": ", ",
+                  "item": {
+                    "type": "item"
+                  }
+                },
+                ")"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ClassDecl": {
+      "block": {
+        "head": {
+          "call": "pyClassHead"
+        },
+        "body": [
+          {
+            "mapDecl": "decl.staticInitFields",
+            "each": {
+              "line": {
+                "tmpl": [
+                  {
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.name"
+                      }
+                    ]
+                  },
+                  " = ",
+                  {
+                    "emit": "item.init"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "case": {
+              "when": [
+                [
+                  {
+                    "eq": [
+                      "decl.needsCtor",
+                      "true"
+                    ]
+                  },
+                  {
+                    "block": {
+                      "head": {
+                        "tmpl": [
+                          "def __init__(self",
+                          {
+                            "map": "decl.initParams",
+                            "sep": "",
+                            "item": {
+                              "tmpl": [
+                                ", ",
+                                {
+                                  "call": "pyParam"
+                                }
+                              ]
+                            }
+                          },
+                          ")"
+                        ]
+                      },
+                      "body": [
+                        {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "eq": [
+                                    "decl.hasSuper",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "line": {
+                                    "tmpl": [
+                                      "super().__init__(",
+                                      {
+                                        "map": "decl.superArgs",
+                                        "sep": ", ",
+                                        "item": {
+                                          "emit": "item"
+                                        }
+                                      },
+                                      ")"
+                                    ]
+                                  }
+                                }
+                              ]
+                            ]
+                          }
+                        },
+                        {
+                          "mapDecl": "decl.instanceInitFields",
+                          "each": {
+                            "line": {
+                              "tmpl": [
+                                "self.",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.name"
+                                    }
+                                  ]
+                                },
+                                " = ",
+                                {
+                                  "emit": "item.init"
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        {
+                          "stmts": "decl.initBody"
+                        },
+                        {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "and": [
+                                    {
+                                      "eq": [
+                                        "decl.hasSuper",
+                                        "false"
+                                      ]
+                                    },
+                                    {
+                                      "eq": [
+                                        "decl.instanceInitFields.count",
+                                        "0"
+                                      ]
+                                    },
+                                    {
+                                      "eq": [
+                                        "decl.initBody.count",
+                                        "0"
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "line": "pass"
+                                }
+                              ]
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              ]
+            }
+          },
+          {
+            "mapMembers": "decl.methods",
+            "rule": "MethodDecl"
+          },
+          {
+            "case": {
+              "when": [
+                [
+                  {
+                    "and": [
+                      {
+                        "eq": [
+                          "decl.staticInitFields.count",
+                          "0"
+                        ]
+                      },
+                      {
+                        "eq": [
+                          "decl.needsCtor",
+                          "false"
+                        ]
+                      },
+                      {
+                        "eq": [
+                          "decl.methods.count",
+                          "0"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "line": "pass"
+                  }
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "pyParam": {
+      "tmpl": [
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "item.name"
+            }
+          ]
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "item.hasDefault",
+                    "true"
+                  ]
+                },
+                {
+                  "tmpl": [
+                    " = ",
+                    {
+                      "emit": "item.default"
+                    }
+                  ]
+                }
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    "pyDunder": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "+"
+              ]
+            },
+            "__add__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "-"
+              ]
+            },
+            "__sub__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "*"
+              ]
+            },
+            "__mul__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "/"
+              ]
+            },
+            "__truediv__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "%"
+              ]
+            },
+            "__mod__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "=="
+              ]
+            },
+            "__eq__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "<"
+              ]
+            },
+            "__lt__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "<="
+              ]
+            },
+            "__le__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                ">"
+              ]
+            },
+            "__gt__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                ">="
+              ]
+            },
+            "__ge__"
+          ]
+        ],
+        "else": {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
+        }
+      }
+    },
+    "pyMethodSig": {
+      "tmpl": [
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.isAsync",
+                    "true"
+                  ]
+                },
+                "async def "
+              ]
+            ],
+            "else": "def "
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "operator"
+                  ]
+                },
+                {
+                  "call": "pyDunder"
+                }
+              ]
+            ],
+            "else": {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
+            }
+          }
+        },
+        "(",
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.isStatic",
+                    "true"
+                  ]
+                },
+                ""
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                "self",
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.params.count",
+                            "0"
+                          ]
+                        },
+                        ""
+                      ]
+                    ],
+                    "else": ", "
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "map": "decl.params",
+          "sep": ", ",
+          "item": {
+            "call": "pyParam"
+          }
+        },
+        ")"
+      ]
+    },
+    "MethodDecl": {
+      "seq": [
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "property"
+                  ]
+                },
+                {
+                  "line": "@property"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.isStatic",
+                    "true"
+                  ]
+                },
+                {
+                  "line": "@staticmethod"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.exprBodied",
+                    "true"
+                  ]
+                },
+                {
+                  "block": {
+                    "head": {
+                      "call": "pyMethodSig"
+                    },
+                    "body": [
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "decl.returnsUnit",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "line": {
+                                  "emit": "decl.exprBody"
+                                }
+                              }
+                            ]
+                          ],
+                          "else": {
+                            "line": {
+                              "tmpl": [
+                                "return ",
+                                {
+                                  "emit": "decl.exprBody"
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            ],
+            "else": {
+              "block": {
+                "head": {
+                  "call": "pyMethodSig"
+                },
+                "body": [
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "decl.body.count",
+                              "0"
+                            ]
+                          },
+                          {
+                            "line": "pass"
+                          }
+                        ]
+                      ],
+                      "else": {
+                        "stmts": "decl.body"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "MakeCase": {
+      "tmpl": [
+        "{\"tag\": ",
+        {
+          "fn": "escapeString",
+          "args": [
+            {
+              "get": "node.caseName"
+            }
+          ]
+        },
+        {
+          "map": "node.fields",
+          "sep": "",
+          "item": {
+            "tmpl": [
+              ", ",
+              {
+                "fn": "escapeString",
+                "args": [
+                  {
+                    "get": "item.name"
+                  }
+                ]
+              },
+              ": ",
+              {
+                "emit": "item.value"
+              }
+            ]
+          }
+        },
+        "}"
+      ]
+    },
+    "Unary": {
+      "case": {
+        "when": [
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.op",
+                    "-"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.typeIsInt",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "tmpl": [
+                    "-",
+                    {
+                      "emitChild": "node.operand",
+                      "side": "unary"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "node.op",
+                "!"
+              ]
+            },
+            {
+              "tmpl": [
+                "not ",
+                {
+                  "emitChild": "node.operand",
+                  "side": "unary"
+                }
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "get": "node.op"
+            },
+            {
+              "emitChild": "node.operand",
+              "side": "unary"
+            }
+          ]
+        }
+      }
+    },
+    "Cast": {
+      "case": {
+        "when": [
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsFloat",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsInt",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "float(",
+                {
+                  "emit": "node.operand"
+                },
+                ")"
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "node.typeIsFloat",
+                "true"
+              ]
+            },
+            {
+              "emit": "node.operand"
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsInt",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsFloat",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "int(",
+                {
+                  "emit": "node.operand"
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "emit": "node.operand"
+        }
+      }
+    },
+    "With": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.baseIsSimple",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "get": "node.type"
+                },
+                "(",
+                {
+                  "map": "node.ctorArgs",
+                  "sep": ", "
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "(lambda ",
+            {
+              "get": "node.tempName"
+            },
+            ": ",
+            {
+              "get": "node.type"
+            },
+            "(",
+            {
+              "map": "node.ctorArgs",
+              "sep": ", "
+            },
+            "))(",
+            {
+              "emit": "node.base"
+            },
+            ")"
+          ]
+        }
+      }
+    },
+    "Interp": {
+      "interleave": {
+        "lits": "node.chunks",
+        "holes": "node.holes",
+        "lit": {
+          "fn": "escapeString",
+          "args": [
+            {
+              "get": "item"
+            }
+          ]
+        },
+        "hole": {
+          "tmpl": [
+            " + str(",
+            {
+              "emit": "item"
+            },
+            ") + "
+          ]
+        }
+      }
+    },
+    "MethodCall": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.isExtension",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.method"
+                    }
+                  ]
+                },
+                "(",
+                {
+                  "emit": "node.object"
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.args.count",
+                            "0"
+                          ]
+                        },
+                        ""
+                      ]
+                    ],
+                    "else": {
+                      "tmpl": [
+                        ", ",
+                        {
+                          "map": "node.args",
+                          "sep": ", "
+                        }
+                      ]
+                    }
+                  }
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "has": "node.staticType"
+                    },
+                    {
+                      "get": "node.staticType"
+                    }
+                  ]
+                ],
+                "else": {
+                  "emitChild": "node.object",
+                  "side": "recv"
+                }
+              }
+            },
+            ".",
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.method"
+                }
+              ]
+            },
+            "(",
+            {
+              "map": "node.args",
+              "sep": ", "
+            },
+            ")"
+          ]
+        }
+      }
+    },
+    "Match": {
+      "tmpl": [
+        "(lambda _m: ",
+        {
+          "fold": {
+            "list": "node.arms",
+            "seed": {
+              "call": "pyArmValue"
+            },
+            "each": {
+              "tmpl": [
+                {
+                  "call": "pyArmValue"
+                },
+                " if ",
+                {
+                  "call": "pyArmCond"
+                },
+                " else ",
+                {
+                  "get": "acc"
+                }
+              ]
+            }
+          }
+        },
+        ")(",
+        {
+          "emit": "node.scrutinee"
+        },
+        ")"
+      ]
+    },
+    "pyArmValue": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "binding"
+              ]
+            },
+            {
+              "tmpl": [
+                "(lambda ",
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.pattern.binding"
+                    }
+                  ]
+                },
+                ": ",
+                {
+                  "emit": "item.body"
+                },
+                ")(_m)"
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "ctor"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "item.pattern.binders.count",
+                      "0"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "(lambda ",
+                {
+                  "map": "item.pattern.binders",
+                  "sep": ", ",
+                  "item": {
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.binding"
+                      }
+                    ]
+                  }
+                },
+                ": ",
+                {
+                  "emit": "item.body"
+                },
+                ")(",
+                {
+                  "map": "item.pattern.binders",
+                  "sep": ", ",
+                  "item": {
+                    "tmpl": [
+                      "_m[\"",
+                      {
+                        "get": "item.field"
+                      },
+                      "\"]"
+                    ]
+                  }
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "emit": "item.body"
+        }
+      }
+    },
+    "pyArmGuard": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "binding"
+              ]
+            },
+            {
+              "tmpl": [
+                "(lambda ",
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.pattern.binding"
+                    }
+                  ]
+                },
+                ": ",
+                {
+                  "emit": "item.guard"
+                },
+                ")(_m)"
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "ctor"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "item.pattern.binders.count",
+                      "0"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "(lambda ",
+                {
+                  "map": "item.pattern.binders",
+                  "sep": ", ",
+                  "item": {
+                    "fn": "ident",
+                    "args": [
+                      {
+                        "get": "item.binding"
+                      }
+                    ]
+                  }
+                },
+                ": ",
+                {
+                  "emit": "item.guard"
+                },
+                ")(",
+                {
+                  "map": "item.pattern.binders",
+                  "sep": ", ",
+                  "item": {
+                    "tmpl": [
+                      "_m[\"",
+                      {
+                        "get": "item.field"
+                      },
+                      "\"]"
+                    ]
+                  }
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "emit": "item.guard"
+        }
+      }
+    },
+    "pyArmBase": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "literal"
+              ]
+            },
+            {
+              "tmpl": [
+                "_m == ",
+                {
+                  "emit": "item.pattern.literal"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "enumCase"
+              ]
+            },
+            {
+              "tmpl": [
+                "_m == ",
+                {
+                  "get": "item.pattern.enumType"
+                },
+                ".",
+                {
+                  "get": "item.pattern.enumCase"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "ctor"
+              ]
+            },
+            {
+              "tmpl": [
+                "_m[\"tag\"] == ",
+                {
+                  "fn": "escapeString",
+                  "args": [
+                    {
+                      "get": "item.pattern.ctorCase"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        ],
+        "else": "True"
+      }
+    },
+    "pyArmCond": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.hasGuard",
+                "false"
+              ]
+            },
+            {
+              "call": "pyArmBase"
+            }
+          ],
+          [
+            {
+              "or": [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "wildcard"
+                  ]
+                },
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "binding"
+                  ]
+                }
+              ]
+            },
+            {
+              "call": "pyArmGuard"
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "call": "pyArmBase"
+            },
+            " and ",
+            {
+              "call": "pyArmGuard"
+            }
+          ]
+        }
+      }
+    },
+    "Binary": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.op",
+                "??"
+              ]
+            },
+            {
+              "fresh": {
+                "prefix": "__c",
+                "as": "t",
+                "in": {
+                  "tmpl": [
+                    "(",
+                    {
+                      "get": "t"
+                    },
+                    " if (",
+                    {
+                      "get": "t"
+                    },
+                    " := ",
+                    {
+                      "emit": "node.lhs"
+                    },
+                    ") is not None else ",
+                    {
+                      "emit": "node.rhs"
+                    },
+                    ")"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsInt",
+                    "true"
+                  ]
+                },
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "+"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "-"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "*"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "/"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "%"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            "/"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            {
+                              "fn": "require",
+                              "args": [
+                                "idiv"
+                              ]
+                            },
+                            "_pg_idiv(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            ", ",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            ")"
+                          ]
+                        }
+                      ],
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            "%"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            {
+                              "fn": "require",
+                              "args": [
+                                "idiv"
+                              ]
+                            },
+                            "_pg_irem(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            ", ",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            ")"
+                          ]
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "l"
+                        },
+                        " ",
+                        {
+                          "get": "node.op"
+                        },
+                        " ",
+                        {
+                          "emitChild": "node.rhs",
+                          "side": "r"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "emitChild": "node.lhs",
+              "side": "l"
+            },
+            " ",
+            {
+              "fn": "opSpelling",
+              "args": [
+                {
+                  "get": "node.op"
+                }
+              ]
+            },
+            " ",
+            {
+              "emitChild": "node.rhs",
+              "side": "r"
+            }
+          ]
+        }
+      }
+    },
+    "Char": {
+      "fn": "escapeString",
+      "args": [
+        {
+          "get": "node.value"
+        }
+      ]
+    }
+  },
+  "std": {
+    "std.collections": {
+      "List.type": "list",
+      "List.init": "[]",
+      "List.count": "len($this)",
+      "List.add": "$this.append($0)",
+      "List.clear": "$this = []",
+      "List.removeAll": "$this = [__e for __e in $this if not (($0)(__e))]",
+      "List.removeAt": "$this.pop($0)"
+    },
+    "std.io": {
+      "print": "__builtins__.print(str(x).lower() if isinstance(x, bool) else x)"
+    },
+    "std.math": {
+      "Math.PI": "__import__('math').pi",
+      "Math.E": "__import__('math').e",
+      "Math.sqrt": "__import__('math').sqrt($0)",
+      "Math.ln": "__import__('math').log($0)",
+      "Math.floor": "float(__import__('math').floor($0))",
+      "Math.ceil": "float(__import__('math').ceil($0))",
+      "Math.min": "min($0, $1)",
+      "Math.max": "max($0, $1)",
+      "Math.abs": "abs($0)",
+      "Math.round": "float(round($0))"
+    },
+    "std.strings": {
+      "string.isEmpty": "(len($this) == 0)",
+      "string.len": "len($this)",
+      "string.toUpper": "$this.upper()",
+      "string.toLower": "$this.lower()",
+      "string.charAt": "$this[$0]",
+      "string.codePoints": "list($this)",
+      "string.toI32": "int($this)"
+    },
+    "std.core": {
+      "Error.type": "Exception",
+      "Error.init": "$T($0)",
+      "Error.message": "str($this)",
+      "Iterable.type": "list",
+      "i8.parse": "int($0)",
+      "i16.parse": "int($0)",
+      "i32.parse": "int($0)",
+      "i64.parse": "int($0)",
+      "u8.parse": "int($0)",
+      "u16.parse": "int($0)",
+      "u32.parse": "int($0)",
+      "u64.parse": "int($0)",
+      "f32.parse": "float($0)",
+      "f64.parse": "float($0)"
+    }
+  },
+  "fileExtension": ".py"
+}

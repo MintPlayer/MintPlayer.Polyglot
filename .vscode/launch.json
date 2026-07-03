@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Polyglot VS Code extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "preLaunchTask": "prepare-extension",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode",
+        "${workspaceFolder}/editors/vscode/testbench"
+      ]
+    }
+  ]
+}

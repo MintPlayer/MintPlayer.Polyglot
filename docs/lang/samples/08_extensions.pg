@@ -1,0 +1,28 @@
+// 08 — extension functions on existing types (built-in and generic).
+// Exercises §3.A: extension methods (-> static calls on both targets).
+
+import { print } from "std.io"
+import { List } from "std.collections"
+import "std.strings"
+
+// Extend a primitive type.
+extension fn string.shout(): string => this.toUpper() + "!"
+
+// Extend with a parameter.
+extension fn i32.clamp(lo: i32, hi: i32): i32 =>
+  if this < lo { lo } else if this > hi { hi } else { this }
+
+// Extend a generic type; returns a nullable.
+extension fn List<T>.secondOrNull(): T? =>
+  if this.count >= 2 { this[1] } else { null }
+
+fn main() {
+  print("hello".shout())            // HELLO!   (TS: shout("hello"))
+  print(42.clamp(0, 10))            // 10
+  print((-3).clamp(0, 10))          // 0
+
+  let xs = [ 10, 20, 30 ]
+  print(xs.secondOrNull() ?? -1)    // 20
+  let empty = List<i32>()
+  print(empty.secondOrNull() ?? -1) // -1
+}
