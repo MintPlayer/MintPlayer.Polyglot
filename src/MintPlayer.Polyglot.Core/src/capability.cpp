@@ -18,6 +18,10 @@ class Collector {
 public:
     std::vector<FeatureUse> uses;
     std::vector<std::pair<std::string, SourcePos>> calls; // free-function call sites: (callee name, pos)
+    // Member/construction use sites, keyed "<TypeOrOwner>.<member>" (both the receiver's semantic type and,
+    // for a bare-name receiver, its spelling — statics like `Math.sqrt` resolve by the latter). The bound-
+    // member arm check (P19 slice 9b follow-up) matches these against binding-shaped declarations.
+    std::vector<std::pair<std::vector<std::string>, SourcePos>> memberUses;
 
     void run(const CompilationUnit& u) {
         for (const auto& e : u.extensions) {
@@ -88,8 +92,17 @@ private:
         }
         if (e->kind == ExprKind::With)   mark(Feature::WithExpressions, e->pos);
         if (e->kind == ExprKind::Await)  mark(Feature::Async, e->pos);
-        if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name)
+        if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name) {
             calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`
+            memberUses.push_back({{e->lhs->text + ".init"}, e->pos}); // or a construction `Type(args)`
+        }
+        if (e->kind == ExprKind::Member && e->lhs) {
+            std::vector<std::string> keys;
+            if (e->lhs->type.kind == TypeRef::Kind::Named && !e->lhs->type.name.empty())
+                keys.push_back(e->lhs->type.name + "." + e->text);
+            if (e->lhs->kind == ExprKind::Name) keys.push_back(e->lhs->text + "." + e->text);
+            if (!keys.empty()) memberUses.push_back({std::move(keys), e->pos});
+        }
         expr(e->lhs.get());
         expr(e->rhs.get());
         expr(e->extra.get());
@@ -139,6 +152,37 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
             diags.error(call.second, std::string("portable function '") + call.first +
                                           "' has no 'actual' implementation for target '" + backend.name() +
                                           "'; add `actual(" + backend.name() + ")` or drop that target");
+    }
+
+    // P19 slice 9b follow-up: a BOUND member (an extern-class member/type/ctor, or a bound extension) used
+    // without this target's arm refuses at the use site — the member-level twin of the portable-fn check
+    // above. Binding-shaped = declares a binding block (possibly the empty skeleton form awaiting overlay).
+    std::unordered_map<std::string, bool> boundMembers; // "Type.member" -> has an arm for this target
+    auto hasArm = [&](const std::vector<TargetBinding>& bs) {
+        for (const auto& b : bs)
+            if (b.target == backend.name()) return true;
+        return false;
+    };
+    for (const auto& d : unit.classes) {
+        if (!d.isExtern) continue;
+        for (const auto& m : d.members) {
+            if (!(m.hasBody && m.body.empty() && !m.exprBody)) continue; // binding-shaped members only
+            const std::string member = m.kind == MemberKind::Init ? "init" : m.name;
+            boundMembers[d.name + "." + member] = hasArm(m.bindings);
+        }
+    }
+    for (const auto& e : unit.extensions) {
+        const bool boundShaped = !e.bindings.empty() || (e.body.empty() && !e.exprBody);
+        if (boundShaped) boundMembers[e.receiver.name + "." + e.name] = hasArm(e.bindings);
+    }
+    for (const auto& use : c.memberUses) {
+        for (const std::string& key : use.first) {
+            auto it = boundMembers.find(key);
+            if (it != boundMembers.end() && !it->second)
+                diags.error(use.second, "'" + key + "' has no binding for target '" + backend.name() +
+                                            "'; add an `actual(" + backend.name() +
+                                            ")` arm (or a plugin std overlay) or drop that target");
+        }
     }
 }
 
