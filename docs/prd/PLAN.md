@@ -1369,6 +1369,20 @@ not shared lowering). Three `emitMethod`s deleted. Byte-identical (117 files), u
 Next: Record/Class shapes (their heads/fields/ctors; method loops already rule-driven), then
 Function/Extension, then `program` + `require`.
 
+**Slice-5e ✅ (2026-07-03) — the operator `this`→`lhs` rebind is a lowering fact; the last expr-ctx state
+falls.** Supersedes slice-2's `ctx.thisAlias` deviation with the principled split the design table always
+wanted: lowering stamps a **target-neutral fact** (`ir::This.insideOperator`, set via an `inOperator_` flag
+scoped around a non-indexer operator's body — nested lambdas included, mirroring `inExtension_`), and only
+the C# **rule** consumes it (`This` = `case` on `node.insideOperator` → `"lhs"`; TS/Python rules unchanged —
+they never read it). What was rejected earlier was lowering the C#-specific *rewrite* (`This`→`Var("lhs")`);
+marking the *fact* is target-neutral. Deleted: `CsExprCtx`'s alias member/ctor param + `ctx.thisAlias`
+targetGet, the emitter's `thisAlias_` state, and the wiring's set/clear scoping — `CsExprCtx` now has zero
+per-emit state and C#'s `runMethodRule` is identical in shape to TS/Python's. Fact + consumer land in one
+byte-gated slice (the established pattern — an unread fact can't be meaningfully gated). Byte-identical
+(117 files), unit green, 39/39 + 38/38. Next: Record ×3 (needs a member-iteration decl primitive so
+RecordDecl can invoke MethodDecl per method), then Class (+ the `base.isInterface` lowering fact for TS
+extends/implements), then Function/Extension, then `program` + `require`.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

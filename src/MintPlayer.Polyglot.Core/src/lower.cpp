@@ -193,6 +193,7 @@ private:
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
+    bool inOperator_ = false;   // set while lowering a (non-indexer) operator body; stamps This.insideOperator
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
     std::unordered_map<std::string, const std::vector<TargetBinding>*> bindings_; // "Type.member" -> FFI arms
     std::unordered_map<std::string, const std::vector<TargetBinding>*> ctorBindings_; // "Type" -> ctor FFI arms
@@ -385,8 +386,13 @@ private:
         if (m.kind == MemberKind::Operator) im.opSymbol = operatorSymbol(m.name);
         im.returnType = m.returnType;
         for (const auto& p : m.params) im.params.push_back(irParam(p));
+        // A real operator (not the `get` indexer) rebinds `this` on targets whose operator declaration is
+        // static (C#): stamp the fact on every This lowered from its body (nested lambdas included).
+        const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get";
+        if (opBody) inOperator_ = true;
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
         else { im.exprBodied = false; im.body = block(m.body); }
+        if (opBody) inOperator_ = false;
         return im;
     }
 
@@ -413,9 +419,12 @@ private:
                     return m;
                 }
                 return std::make_unique<ir::Var>(e.pos, e.type, e.text);
-            case ExprKind::This:
+            case ExprKind::This: {
                 if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
-                return std::make_unique<ir::This>(e.pos, e.type);
+                auto t = std::make_unique<ir::This>(e.pos, e.type);
+                t->insideOperator = inOperator_;
+                return t;
+            }
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
             case ExprKind::Await:     return std::make_unique<ir::Await>(e.pos, e.type, expr(*e.lhs));
             case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));

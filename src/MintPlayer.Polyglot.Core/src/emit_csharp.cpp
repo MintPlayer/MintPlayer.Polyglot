@@ -109,7 +109,7 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
                 "lit":{"fn":"interpEscape","args":[{"get":"item"}]},
                 "hole":{"tmpl":["{",{"emit":"item"},"}"]}}}, "\"" ] },
   "Char": { "fn": "charLit", "args": [ {"get":"node.value"} ] },
-  "This": { "case": { "when": [ [ {"has":"ctx.thisAlias"}, {"get":"ctx.thisAlias"} ] ], "else": "this" } },
+  "This": { "case": { "when": [ [ {"eq":["node.insideOperator","true"]}, "lhs" ] ], "else": "this" } },
   "MethodCall": { "tmpl": [
       { "case": { "when": [ [ {"has":"node.staticType"}, {"get":"node.staticType"} ] ],
                   "else": {"emitChild":"node.object","side":"recv"} } },
@@ -273,20 +273,13 @@ std::string csType(const TypeRef& t);      // defined below; the `elemType` buil
 
 // The C# rule-interpreter seam: only what differs from the shared IrExprCtx — the C# builtins (keyword
 // escaping, C# type rendering, sub-word wrap-back, interpolation/char escaping) and the C# atom-wrapping
-// policy. `thisAlias` is the emitter's operator-body rebind (`this` -> `lhs`) — a C# declaration-shape
-// consequence (a C# operator is a static method), so it stays a C#-only context scalar the This rule reads.
+// policy. (The operator-body `this`->`lhs` rebind is the lowering-precomputed `This.insideOperator` fact
+// now — the This rule branches on it; no emitter state.)
 class CsExprCtx : public IrExprCtx {
 public:
-    CsExprCtx(const ir::Expr& e, const BackendSpec& spec, EmitFn emit, InlineFn inlineBlock,
-              const std::string& thisAlias)
-        : IrExprCtx(e, spec, std::move(emit), std::move(inlineBlock)), thisAlias_(thisAlias) {}
+    using IrExprCtx::IrExprCtx;
 
 protected:
-    std::string targetGet(const std::string& path) const override {
-        if (path == "ctx.thisAlias") return thisAlias_;
-        return "";
-    }
-
     std::string renderTypeRef(const TypeRef& t) const override { return csType(t); }
 
     bool wrapAtom(const ir::Expr& c, const std::string& side) const override {
@@ -349,9 +342,6 @@ protected:
         }
         return "";
     }
-
-private:
-    const std::string& thisAlias_;
 };
 
 // The current module's `extern class` type map (name -> spelling/ctor templates), set at the top of each
@@ -494,7 +484,6 @@ public:
     }
 
 private:
-    std::string thisAlias_; // non-empty inside a static operator body: `this` is emitted as this name
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
 
     void emitRecord(const ir::Record& r) {
@@ -557,14 +546,9 @@ private:
         return s;
     }
 
-    // Run the MethodDecl rule for one member. The real-static-operator `this`->`lhs` rebind is a C#
-    // declaration-shape consequence, so the alias scopes around the rule run (not shared lowering).
     void runMethodRule(const std::string& owner, const ir::Method& m) {
-        const bool opAlias = m.kind == ir::MethodKind::Operator && m.opSymbol != "get";
-        if (opAlias) thisAlias_ = "lhs";
         MethodDeclCtx ctx(m, owner, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
         runDeclRule(csharpExprRules().at("MethodDecl"), ctx, ctx, &csharpExprRules());
-        if (opAlias) thisAlias_.clear();
     }
 
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as C#.
@@ -661,7 +645,7 @@ private:
             auto it = rules.find(key);
             if (it != rules.end()) {
                 CsExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
-                              [this](const std::vector<ir::StmtPtr>& b) { return inlineBlock(b); }, thisAlias_);
+                              [this](const std::vector<ir::StmtPtr>& b) { return inlineBlock(b); });
                 return engine::evalRule(it->second, ctx, &rules);
             }
         }

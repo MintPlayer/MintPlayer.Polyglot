@@ -22,6 +22,8 @@ std::string IrExprCtx::get(const std::string& path) const {
     }
     if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index)
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
+    if (path == "node.insideOperator" && e_.kind == ir::ExprKind::This)
+        return static_cast<const ir::This&>(e_).insideOperator ? "true" : "false";
     if (e_.kind == ir::ExprKind::With) {
         const auto& w = static_cast<const ir::With&>(e_);
         if (path == "node.baseIsSimple")   return w.baseIsSimple ? "true" : "false";

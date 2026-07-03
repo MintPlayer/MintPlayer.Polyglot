@@ -72,6 +72,9 @@ struct Var : Expr { // reference to a local or parameter
     Var(SourcePos p, Type t, std::string n) : Expr(ExprKind::Var, p, std::move(t)), name(std::move(n)) {}
 };
 struct This : Expr {
+    // Lowering-precomputed fact (P19): inside an operator method's body. Target-neutral; only the C#
+    // static-operator declaration shape consumes it (`this` -> the `lhs` first operand).
+    bool insideOperator = false;
     explicit This(SourcePos p, Type t) : Expr(ExprKind::This, p, std::move(t)) {}
 };
 struct Unary : Expr {
