@@ -110,6 +110,26 @@ private:
     const DeclHooks& hooks_;
 };
 
+// Shared decl context for interfaces: name/method/param reads; base/return/param types render through the
+// hooks. `generics` spells the interface's list with no args, a method's with the method index as its arg
+// (`{"fn":"generics","args":[{"get":"item.#"}]}`); `where` spells the interface's bounds. A param default
+// re-enters the expression walk via `{"emit":"item.default"}`.
+class InterfaceDeclCtx : public IrDeclCtx {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    InterfaceDeclCtx(const ir::Interface& it, const DeclHooks& hooks, EmitFn emit)
+        : it_(it), hooks_(hooks), emit_(std::move(emit)) {}
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+    std::string emitChild(const std::string& path, const std::string& side) const override;
+
+private:
+    const ir::Interface& it_;
+    const DeclHooks& hooks_;
+    EmitFn emit_;
+};
+
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
 // `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
 // `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern

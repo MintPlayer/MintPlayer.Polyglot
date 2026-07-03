@@ -144,6 +144,20 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
   "EnumDecl": { "line": { "tmpl": [ "enum ", {"get":"decl.name"}, " { ",
       {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"}," = ",{"get":"item.value"}]}},
       " }" ] } },
+  "InterfaceDecl": { "block": {
+      "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
+        {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
+          "else":{"tmpl":[" : ",{"map":"decl.bases","sep":", ","item":{"type":"item"}}]}}},
+        {"fn":"where"} ] },
+      "body": [
+        { "mapDecl": "decl.methods", "each": { "line": { "tmpl": [
+            {"type":"item.returnType"}, " ", {"fn":"ident","args":[{"get":"item.name"}]},
+            {"fn":"generics","args":[{"get":"item.#"}]}, "(",
+            {"map":"item.params","sep":", ","item":{"tmpl":[
+                {"type":"item.type"}," ",{"fn":"ident","args":[{"get":"item.name"}]},
+                {"case":{"when":[[{"eq":["item.hasDefault","true"]},
+                  {"tmpl":[" = ",{"emit":"item.default"}]}]]}} ]}},
+            ");" ] } } } ] } },
   "UnionDecl": { "seq": [
       { "line": { "tmpl": [ "abstract record ", {"get":"decl.name"}, {"fn":"generics"}, ";" ] } },
       { "mapDecl": "decl.cases", "each": { "line": { "tmpl": [
@@ -403,7 +417,10 @@ public:
             EnumDeclCtx ctx(e);
             runDeclRule(csharpExprRules().at("EnumDecl"), ctx, ctx, &csharpExprRules());
         }
-        for (const auto& i : m.interfaces) emitInterface(i);
+        for (const auto& i : m.interfaces) {
+            InterfaceDeclCtx ctx(i, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(csharpExprRules().at("InterfaceDecl"), ctx, ctx, &csharpExprRules());
+        }
         for (const auto& u : m.unions) {
             UnionDeclCtx ctx(u, kCsDeclHooks);
             runDeclRule(csharpExprRules().at("UnionDecl"), ctx, ctx, &csharpExprRules());
@@ -445,24 +462,6 @@ public:
 private:
     std::string thisAlias_; // non-empty inside a static operator body: `this` is emitted as this name
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
-
-    void emitInterface(const ir::Interface& it) {
-        std::string head = "interface " + it.name + csGenerics(it.generics);
-        if (!it.bases.empty()) {
-            head += " : ";
-            for (std::size_t i = 0; i < it.bases.size(); ++i) { if (i) head += ", "; head += csType(it.bases[i]); }
-        }
-        line(head + csWhere(it.generics));
-        line("{");
-        ++indent_;
-        for (const auto& m : it.methods) { // implicitly public abstract; signature only
-            std::string sig = csType(m.returnType) + " " + csIdent(m.name) + csGenerics(m.generics) + "(";
-            for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += csParam(m.params[i]); }
-            line(sig + ");");
-        }
-        --indent_;
-        line("}");
-    }
 
     void emitRecord(const ir::Record& r) {
         std::string head = "record " + r.name + csGenerics(r.generics) + "(";

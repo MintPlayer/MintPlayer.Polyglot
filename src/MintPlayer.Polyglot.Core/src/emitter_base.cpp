@@ -412,6 +412,84 @@ std::string UnionDeclCtx::renderType(const std::string& path) const {
     return hooks_.renderTypeRef(u_.cases[i].fields[j].type);
 }
 
+std::string InterfaceDeclCtx::get(const std::string& path) const {
+    if (path == "decl.name")          return it_.name;
+    if (path == "decl.bases.count")   return std::to_string(it_.bases.size());
+    if (path == "decl.methods.count") return std::to_string(it_.methods.size());
+    if (path.rfind("decl.methods.", 0) == 0) { // decl.methods.<i>.{name | params.count | params.<j>.{name|hasDefault}}
+        const std::string sub = path.substr(13);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+        const std::size_t dot = sub.find('.');
+        if (i < it_.methods.size() && dot != std::string::npos) {
+            const ir::Method& m = it_.methods[i];
+            const std::string rest = sub.substr(dot + 1);
+            if (rest == "name")         return m.name;
+            if (rest == "params.count") return std::to_string(m.params.size());
+            if (rest.rfind("params.", 0) == 0) {
+                const std::string ps = rest.substr(7);
+                const std::size_t j = static_cast<std::size_t>(std::stoul(ps));
+                const std::size_t pdot = ps.find('.');
+                if (j < m.params.size() && pdot != std::string::npos) {
+                    const std::string pf = ps.substr(pdot + 1);
+                    if (pf == "name")       return m.params[j].name;
+                    if (pf == "hasDefault") return m.params[j].defaultValue ? "true" : "false";
+                }
+            }
+        }
+    }
+    return "";
+}
+
+std::string InterfaceDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "generics") {
+        if (args.empty() || args[0].empty()) return hooks_.generics(it_.generics);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(args[0]));
+        return i < it_.methods.size() ? hooks_.generics(it_.methods[i].generics) : "";
+    }
+    if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "where") return hooks_.where(it_.generics);
+    return "";
+}
+
+std::string InterfaceDeclCtx::renderType(const std::string& path) const {
+    if (path.rfind("decl.bases.", 0) == 0) { // decl.bases.<i>
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+        return i < it_.bases.size() ? hooks_.renderTypeRef(it_.bases[i]) : "";
+    }
+    if (path.rfind("decl.methods.", 0) != 0) return ""; // decl.methods.<i>.{returnType | params.<j>.type}
+    const std::string sub = path.substr(13);
+    const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+    const std::size_t dot = sub.find('.');
+    if (i >= it_.methods.size() || dot == std::string::npos) return "";
+    const ir::Method& m = it_.methods[i];
+    const std::string rest = sub.substr(dot + 1);
+    if (rest == "returnType") return hooks_.renderTypeRef(m.returnType);
+    if (rest.rfind("params.", 0) == 0) {
+        const std::string ps = rest.substr(7);
+        const std::size_t j = static_cast<std::size_t>(std::stoul(ps));
+        if (j < m.params.size() && ps.find('.') != std::string::npos && ps.substr(ps.find('.') + 1) == "type")
+            return hooks_.renderTypeRef(m.params[j].type);
+    }
+    return "";
+}
+
+std::string InterfaceDeclCtx::emitChild(const std::string& path, const std::string&) const {
+    // decl.methods.<i>.params.<j>.default — a param default re-enters the expression walk.
+    if (!emit_ || path.rfind("decl.methods.", 0) != 0) return "";
+    const std::string sub = path.substr(13);
+    const std::size_t i = static_cast<std::size_t>(std::stoul(sub));
+    const std::size_t dot = sub.find('.');
+    if (i >= it_.methods.size() || dot == std::string::npos) return "";
+    const ir::Method& m = it_.methods[i];
+    const std::string rest = sub.substr(dot + 1);
+    if (rest.rfind("params.", 0) != 0) return "";
+    const std::string ps = rest.substr(7);
+    const std::size_t j = static_cast<std::size_t>(std::stoul(ps));
+    if (j >= m.params.size() || ps.find('.') == std::string::npos || ps.substr(ps.find('.') + 1) != "default")
+        return "";
+    return m.params[j].defaultValue ? emit_(*m.params[j].defaultValue) : "";
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;

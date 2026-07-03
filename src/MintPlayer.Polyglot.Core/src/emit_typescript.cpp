@@ -140,6 +140,18 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
       { "line": { "tmpl": [ "const ", {"get":"decl.name"}, " = { ",
           {"map":"decl.cases","sep":", ","item":{"tmpl":[{"get":"item.name"},": ",{"get":"item.value"}]}},
           " };" ] } } ] },
+  "InterfaceDecl": { "block": {
+      "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
+        {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
+          "else":{"tmpl":[" extends ",{"map":"decl.bases","sep":", ","item":{"type":"item"}}]}}} ] },
+      "body": [
+        { "mapDecl": "decl.methods", "each": { "line": { "tmpl": [
+            {"get":"item.name"}, {"fn":"generics","args":[{"get":"item.#"}]}, "(",
+            {"map":"item.params","sep":", ","item":{"tmpl":[
+                {"get":"item.name"},": ",{"type":"item.type"},
+                {"case":{"when":[[{"eq":["item.hasDefault","true"]},
+                  {"tmpl":[" = ",{"emit":"item.default"}]}]]}} ]}},
+            "): ", {"type":"item.returnType"}, ";" ] } } } ] } },
   "UnionDecl": { "line": { "tmpl": [ "type ", {"get":"decl.name"}, {"fn":"generics"}, " = ",
       {"map":"decl.cases","sep":" | ","item":{"tmpl":["{ tag: \"",{"get":"item.name"},"\"",
         {"map":"item.fields","sep":"","item":{"tmpl":["; ",{"get":"item.name"},": ",{"type":"item.type"}]}},
@@ -435,7 +447,10 @@ public:
             EnumDeclCtx ctx(e);
             runDeclRule(tsExprRules().at("EnumDecl"), ctx, ctx, &tsExprRules());
         }
-        for (const auto& i : m.interfaces) emitInterface(i);
+        for (const auto& i : m.interfaces) {
+            InterfaceDeclCtx ctx(i, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(tsExprRules().at("InterfaceDecl"), ctx, ctx, &tsExprRules());
+        }
         for (const auto& u : m.unions) {
             UnionDeclCtx ctx(u, kTsDeclHooks);
             runDeclRule(tsExprRules().at("UnionDecl"), ctx, ctx, &tsExprRules());
@@ -462,23 +477,6 @@ private:
 
     bool isRecordType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
-    }
-
-    void emitInterface(const ir::Interface& it) {
-        std::string head = "interface " + it.name + tsGenerics(it.generics);
-        if (!it.bases.empty()) {
-            head += " extends ";
-            for (std::size_t i = 0; i < it.bases.size(); ++i) { if (i) head += ", "; head += tsType(it.bases[i]); }
-        }
-        line(head + " {");
-        ++indent_;
-        for (const auto& m : it.methods) { // signature only
-            std::string sig = m.name + tsGenerics(m.generics) + "(";
-            for (std::size_t i = 0; i < m.params.size(); ++i) { if (i) sig += ", "; sig += tsParam(m.params[i]); }
-            line(sig + "): " + tsType(m.returnType) + ";");
-        }
-        --indent_;
-        line("}");
     }
 
     // Explicit fields + a constructor (not TS parameter-properties, which Node's type-stripping rejects).

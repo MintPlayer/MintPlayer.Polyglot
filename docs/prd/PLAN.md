@@ -1342,6 +1342,17 @@ filter inside a data `map` needs a filtered-map primitive — revisit when the d
 complete). Byte-identical (117 files), unit green, 39/39 + 38/38. Next: Interface, then
 Record/Class/Method/Function, then `program` + `require`.
 
+**Slice-5c ✅ (2026-07-03) — Interface is data ×2 (Python emits none — duck typing, unchanged).** Shared
+**`InterfaceDeclCtx`** (name/bases/methods/params paths; base/return/param types via the hooks; `generics`
+spells the interface's list bare and a *method's* list given the method index — the first index-arg builtin,
+fed by `{"fn":"generics","args":[{"get":"item.#"}]}` from the methods `mapDecl` scope; `where` = the decl's
+bounds; a param default re-enters the expression walk via `emitChild` `{"emit":"item.default"}` +
+`item.hasDefault`, preserving csParam/tsParam fidelity beyond the suite). The two shapes as `block` rules:
+C# Allman `interface N<G> : B1, B2 where…` + per-method `ret Name<MG>(type name, …);` lines; TS KnR
+`interface N<G> extends B1, B2 {` + `name<MG>(p: T, …): Ret;` lines (raw names — TS never escaped them).
+Two `emitInterface`s deleted. Byte-identical (117 files), unit green, 39/39 + 38/38. Next:
+Record/Class/Method/Function, then `program` + `require`.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
