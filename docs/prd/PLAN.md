@@ -1403,6 +1403,24 @@ backstops authoring — the P19 loader will make strict parsing a load-time obli
 Byte-identical (117 files), unit green, 39/39 + 38/38. Next: Class ×3 (+ `base.isInterface` fact), then
 Function/Extension, then `program` + `require`.
 
+**Slice-5g ✅ (2026-07-03) — Class is data ×3; every member-bearing declaration is now rules.** Shared
+**`ClassDeclCtx`**: raw reads (bases/fields/initParams/superArgs/initBody/flags; field `isStatic`/
+`isMutable`/`hasInit`; super args + field inits + param defaults re-enter the expression walk) **plus the
+precomputed derived views the data-DSL can't filter for**: `decl.staticInitFields`/`decl.instanceInitFields`
+(initializer-bearing fields split by static-ness — Python's class-attribute vs `__init__` split),
+`decl.extBase`/`decl.ifaceBases` (the TS extends/implements split, driven by an `isInterface` `TypePred` the
+TS wiring supplies from `interfaceNames_` — same predicate pattern as 5f's `isRecordType`; the
+`base.isInterface` lowering-bit absorption stays open), and `decl.needsCtor` (`hasInit` OR any instance
+field init). The three shapes as rules: C# head+`where` / four-way field-modifier `case`
+(`static`/`static readonly`/``/`readonly`) / `public N(params) : base(args)` ctor block / methods; TS
+extends-then-implements head / plain-vs-static field mods / `constructor(...)` + `super(...);` + initBody;
+Python `class N(bases)` / class-attribute lines / synthesized `__init__` (super → field inits → body →
+empty-`pass` as data) / trailing class-level `pass` when nothing emitted (all three counts zero — the old
+`any` flag as declarative tests). Three `emitClass`es deleted, and all three now-dead `runMethodRule`
+wrappers with them — composites reach MethodDecl only through `mapMembers`. Byte-identical (117 files),
+unit green, 39/39 + 38/38. Next: Function/Extension (the last per-decl emitters), then `program` +
+`require` (the module scaffold — deletes each emit()'s driver body).
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

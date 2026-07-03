@@ -188,6 +188,27 @@ const char* CSHARP_EXPR_RULES_JSON = R"JSON({
       [{"eq":["decl.methods.count","0"]},{"line":{"tmpl":[{"call":"csRecordHead"},";"]}}]],
       "else":{"block":{"head":{"call":"csRecordHead"},
         "body":[{"mapMembers":"decl.methods","rule":"MethodDecl"}]}}}},
+  "csClassHead": {"tmpl":["class ",{"get":"decl.name"},{"fn":"generics"},
+      {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
+        "else":{"tmpl":[" : ",{"map":"decl.bases","sep":", ","item":{"type":"item"}}]}}},
+      {"fn":"where"}]},
+  "ClassDecl": {"block":{"head":{"call":"csClassHead"},"body":[
+      {"mapDecl":"decl.fields","each":{"line":{"tmpl":["public ",
+          {"case":{"when":[
+            [{"and":[{"eq":["item.isStatic","true"]},{"eq":["item.isMutable","true"]}]},"static "],
+            [{"eq":["item.isStatic","true"]},"static readonly "],
+            [{"eq":["item.isMutable","true"]},""]],
+            "else":"readonly "}},
+          {"type":"item.type"}," ",{"fn":"ident","args":[{"get":"item.name"}]},
+          {"case":{"when":[[{"eq":["item.hasInit","true"]},{"tmpl":[" = ",{"emit":"item.init"}]}]]}},
+          ";"]}}},
+      {"case":{"when":[[{"eq":["decl.hasInit","true"]},
+        {"block":{"head":{"tmpl":["public ",{"get":"decl.name"},"(",
+            {"map":"decl.initParams","sep":", ","item":{"call":"csParam"}},")",
+            {"case":{"when":[[{"eq":["decl.hasSuper","true"]},
+              {"tmpl":[" : base(",{"map":"decl.superArgs","sep":", ","item":{"emit":"item"}},")"]}]]}}]},
+          "body":[{"stmts":"decl.initBody"}]}}]]}},
+      {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
   "InterfaceDecl": { "block": {
       "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
         {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
@@ -463,7 +484,10 @@ public:
             RecordDeclCtx ctx(r, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
             runDeclRule(csharpExprRules().at("RecordDecl"), ctx, ctx, &csharpExprRules());
         }
-        for (const auto& c : m.classes) emitClass(c);
+        for (const auto& c : m.classes) {
+            ClassDeclCtx ctx(c, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(csharpExprRules().at("ClassDecl"), ctx, ctx, &csharpExprRules());
+        }
         if (!m.extensions.empty()) { // extension methods live in a top-level static class (global namespace)
             line("static class Extensions");
             line("{");
@@ -499,51 +523,11 @@ public:
 private:
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // backs g_externTypes for this emit
 
-    // A mutable reference type: fields, a constructor (`init`), and methods.
-    void emitClass(const ir::Class& c) {
-        std::string head = "class " + c.name + csGenerics(c.generics);
-        if (!c.bases.empty()) {
-            head += " : ";
-            for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += csType(c.bases[i]); }
-        }
-        head += csWhere(c.generics);
-        line(head);
-        line("{");
-        ++indent_;
-        for (const auto& f : c.fields) {
-            // `static readonly` (not `const`) for immutable statics: it accepts any initializer expression,
-            // not just compile-time constants, and reads identically as `Owner.Name`.
-            std::string mods = f.isStatic ? (f.isMutable ? "static " : "static readonly ") : (f.isMutable ? "" : "readonly ");
-            std::string decl = "public " + mods + csType(f.type) + " " + csIdent(f.name);
-            if (f.init) decl += " = " + emitExpr(*f.init);
-            line(decl + ";");
-        }
-        if (c.hasInit) {
-            std::string sig = "public " + c.name + "(";
-            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += csParam(c.initParams[i]); }
-            sig += ")";
-            if (c.hasSuper) {
-                sig += " : base(";
-                for (std::size_t i = 0; i < c.superArgs.size(); ++i) { if (i) sig += ", "; sig += emitExpr(*c.superArgs[i]); }
-                sig += ")";
-            }
-            headBlock(sig, c.initBody);
-        }
-        for (const auto& m : c.methods) runMethodRule(c.name, m);
-        --indent_;
-        line("}");
-    }
-
     // `T name` or `T name = default` — a parameter declaration with its optional default value.
     std::string csParam(const ir::Param& p) {
         std::string s = csType(p.type) + " " + csIdent(p.name);
         if (p.defaultValue) s += " = " + emitExpr(*p.defaultValue);
         return s;
-    }
-
-    void runMethodRule(const std::string& owner, const ir::Method& m) {
-        MethodDeclCtx ctx(m, owner, kCsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-        runDeclRule(csharpExprRules().at("MethodDecl"), ctx, ctx, &csharpExprRules());
     }
 
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as C#.

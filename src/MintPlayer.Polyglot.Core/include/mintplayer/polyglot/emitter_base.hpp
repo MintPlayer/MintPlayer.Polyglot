@@ -181,6 +181,34 @@ private:
     TypePred isRecord_;
 };
 
+// Shared decl context for classes: name/base/field/ctor reads; types render through the hooks; methods
+// run via `mapMembers` (memberCtx mints MethodDeclCtxs). Beyond the raw lists it precomputes the derived
+// views class rules need (the data-DSL has no filtered map): `decl.staticInitFields`/`decl.instanceInitFields`
+// (fields with an initializer, split by static — Python's class-attribute/`__init__` split), and the TS
+// extends/implements split (`decl.extBase` = the last non-interface base, `decl.ifaceBases` = the interface
+// bases, driven by the `isInterface` predicate — backends without the split pass nothing). `decl.needsCtor`
+// = hasInit OR any instance field initializer (Python synthesizes `__init__` for field inits).
+class ClassDeclCtx : public IrDeclCtx {
+public:
+    using EmitFn = std::function<std::string(const ir::Expr&)>;
+    using TypePred = std::function<bool(const TypeRef&)>;
+    ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn emit, TypePred isInterface = {});
+    std::string get(const std::string& path) const override;
+    std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    std::string renderType(const std::string& path) const override;
+    std::string emitChild(const std::string& path, const std::string& side) const override;
+    const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
+    std::unique_ptr<IrDeclCtx> memberCtx(const std::string& path, std::size_t index) const override;
+
+private:
+    const ir::Class& c_;
+    const DeclHooks& hooks_;
+    EmitFn emit_;
+    std::vector<std::size_t> staticInit_, instanceInit_; // field indices with an initializer, by static-ness
+    std::vector<std::size_t> ifaceBases_;                // base indices the predicate calls interfaces
+    int extBase_ = -1;                                   // the last non-interface base index (-1 = none)
+};
+
 // The type-scoped context the "Type" rule evaluates against: shared TypeRef reads (`type.kind`/`.name`/
 // `.nullable`/`.scalar`/`.args.count`/`.returnsUnit`…) + child-type recursion (`type.args.<i>`, `type.base`,
 // `type.ret` re-enter the target's renderer). Per-target: extra predicates (`type.isValueType`), the extern

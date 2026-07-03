@@ -607,6 +607,115 @@ std::unique_ptr<IrDeclCtx> RecordDeclCtx::memberCtx(const std::string& path, std
     return nullptr;
 }
 
+ClassDeclCtx::ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn emit, TypePred isInterface)
+    : c_(c), hooks_(hooks), emit_(std::move(emit)) {
+    for (std::size_t i = 0; i < c_.fields.size(); ++i)
+        if (c_.fields[i].init) (c_.fields[i].isStatic ? staticInit_ : instanceInit_).push_back(i);
+    for (std::size_t i = 0; i < c_.bases.size(); ++i) {
+        if (isInterface && isInterface(c_.bases[i])) ifaceBases_.push_back(i);
+        else extBase_ = static_cast<int>(i);
+    }
+}
+
+namespace {
+// Split a `decl.<list>.<i>.<field>` path into its index + trailing field ("" when the path is bare).
+bool splitIndexed(const std::string& path, std::size_t prefixLen, std::size_t& idx, std::string& field) {
+    const std::string sub = path.substr(prefixLen);
+    if (sub.empty() || sub[0] < '0' || sub[0] > '9') return false;
+    idx = static_cast<std::size_t>(std::stoul(sub));
+    const std::size_t dot = sub.find('.');
+    field = dot == std::string::npos ? std::string() : sub.substr(dot + 1);
+    return true;
+}
+} // namespace
+
+std::string ClassDeclCtx::get(const std::string& path) const {
+    if (path == "decl.name")             return c_.name;
+    if (path == "decl.bases.count")      return std::to_string(c_.bases.size());
+    if (path == "decl.methods.count")    return std::to_string(c_.methods.size());
+    if (path == "decl.fields.count")     return std::to_string(c_.fields.size());
+    if (path == "decl.hasInit")          return c_.hasInit ? "true" : "false";
+    if (path == "decl.hasSuper")         return c_.hasSuper ? "true" : "false";
+    if (path == "decl.needsCtor")        return c_.hasInit || !instanceInit_.empty() ? "true" : "false";
+    if (path == "decl.initBody.count")   return std::to_string(c_.initBody.size());
+    if (path == "decl.superArgs.count")  return std::to_string(c_.superArgs.size());
+    if (path == "decl.initParams.count") return std::to_string(c_.initParams.size());
+    if (path == "decl.hasExtBase")       return extBase_ >= 0 ? "true" : "false";
+    if (path == "decl.ifaceBases.count")         return std::to_string(ifaceBases_.size());
+    if (path == "decl.staticInitFields.count")   return std::to_string(staticInit_.size());
+    if (path == "decl.instanceInitFields.count") return std::to_string(instanceInit_.size());
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size()) {
+        const ir::ClassField& fld = c_.fields[i];
+        if (f == "name")      return fld.name;
+        if (f == "isStatic")  return fld.isStatic ? "true" : "false";
+        if (f == "isMutable") return fld.isMutable ? "true" : "false";
+        if (f == "hasInit")   return fld.init ? "true" : "false";
+    }
+    if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size()) {
+        if (f == "name")       return c_.initParams[i].name;
+        if (f == "hasDefault") return c_.initParams[i].defaultValue ? "true" : "false";
+    }
+    if (path.rfind("decl.staticInitFields.", 0) == 0 && splitIndexed(path, 22, i, f) && i < staticInit_.size()) {
+        if (f == "name") return c_.fields[staticInit_[i]].name;
+    }
+    if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size()) {
+        if (f == "name") return c_.fields[instanceInit_[i]].name;
+    }
+    return "";
+}
+
+std::string ClassDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
+    if (name == "generics") return hooks_.generics(c_.generics);
+    if (name == "where")    return hooks_.where(c_.generics);
+    if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    return "";
+}
+
+std::string ClassDeclCtx::renderType(const std::string& path) const {
+    if (path == "decl.extBase")
+        return extBase_ >= 0 ? hooks_.renderTypeRef(c_.bases[static_cast<std::size_t>(extBase_)]) : "";
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("decl.bases.", 0) == 0 && splitIndexed(path, 11, i, f) && i < c_.bases.size() && f.empty())
+        return hooks_.renderTypeRef(c_.bases[i]);
+    if (path.rfind("decl.ifaceBases.", 0) == 0 && splitIndexed(path, 16, i, f) && i < ifaceBases_.size() && f.empty())
+        return hooks_.renderTypeRef(c_.bases[ifaceBases_[i]]);
+    if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size() && f == "type")
+        return hooks_.renderTypeRef(c_.fields[i].type);
+    if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size() && f == "type")
+        return hooks_.renderTypeRef(c_.initParams[i].type);
+    return "";
+}
+
+std::string ClassDeclCtx::emitChild(const std::string& path, const std::string&) const {
+    if (!emit_) return "";
+    std::size_t i = 0;
+    std::string f;
+    if (path.rfind("decl.superArgs.", 0) == 0 && splitIndexed(path, 15, i, f) && i < c_.superArgs.size() && f.empty())
+        return emit_(*c_.superArgs[i]);
+    if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size() && f == "init")
+        return c_.fields[i].init ? emit_(*c_.fields[i].init) : "";
+    if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size() && f == "default")
+        return c_.initParams[i].defaultValue ? emit_(*c_.initParams[i].defaultValue) : "";
+    if (path.rfind("decl.staticInitFields.", 0) == 0 && splitIndexed(path, 22, i, f) && i < staticInit_.size() && f == "init")
+        return emit_(*c_.fields[staticInit_[i]].init);
+    if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size() && f == "init")
+        return emit_(*c_.fields[instanceInit_[i]].init);
+    return "";
+}
+
+const std::vector<ir::StmtPtr>* ClassDeclCtx::stmtList(const std::string& path) const {
+    return path == "decl.initBody" ? &c_.initBody : nullptr;
+}
+
+std::unique_ptr<IrDeclCtx> ClassDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
+    if (path == "decl.methods" && index < c_.methods.size())
+        return std::make_unique<MethodDeclCtx>(c_.methods[index], c_.name, hooks_, emit_);
+    return nullptr;
+}
+
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
     using K = engine::Rule::Kind;

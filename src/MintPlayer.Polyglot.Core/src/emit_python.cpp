@@ -152,6 +152,24 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
               {"map":"decl.fields","sep":" and ","item":
                 {"tmpl":["self.",{"get":"item.name"}," == other.",{"get":"item.name"}]}}]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "pyClassHead": {"tmpl":["class ",{"get":"decl.name"},
+      {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
+        "else":{"tmpl":["(",{"map":"decl.bases","sep":", ","item":{"type":"item"}},")"]}}}]},
+  "ClassDecl": {"block":{"head":{"call":"pyClassHead"},"body":[
+      {"mapDecl":"decl.staticInitFields","each":{"line":{"tmpl":[{"get":"item.name"}," = ",{"emit":"item.init"}]}}},
+      {"case":{"when":[[{"eq":["decl.needsCtor","true"]},
+        {"block":{"head":{"tmpl":["def __init__(self",
+            {"map":"decl.initParams","sep":"","item":{"tmpl":[", ",{"call":"pyParam"}]}},")"]},
+          "body":[
+            {"case":{"when":[[{"eq":["decl.hasSuper","true"]},
+              {"line":{"tmpl":["super().__init__(",{"map":"decl.superArgs","sep":", ","item":{"emit":"item"}},")"]}}]]}},
+            {"mapDecl":"decl.instanceInitFields","each":{"line":{"tmpl":["self.",{"get":"item.name"}," = ",{"emit":"item.init"}]}}},
+            {"stmts":"decl.initBody"},
+            {"case":{"when":[[{"and":[{"eq":["decl.hasSuper","false"]},{"eq":["decl.instanceInitFields.count","0"]},{"eq":["decl.initBody.count","0"]}]},
+              {"line":"pass"}]]}}]}}]]}},
+      {"mapMembers":"decl.methods","rule":"MethodDecl"},
+      {"case":{"when":[[{"and":[{"eq":["decl.staticInitFields.count","0"]},{"eq":["decl.needsCtor","false"]},{"eq":["decl.methods.count","0"]}]},
+        {"line":"pass"}]]}}]}},
   "pyParam": {"tmpl":[{"fn":"ident","args":[{"get":"item.name"}]},
       {"case":{"when":[[{"eq":["item.hasDefault","true"]},{"tmpl":[" = ",{"emit":"item.default"}]}]]}}]},
   "pyDunder": {"case":{"when":[
@@ -424,7 +442,10 @@ public:
             RecordDeclCtx ctx(r, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
             runDeclRule(pyExprRules().at("RecordDecl"), ctx, ctx, &pyExprRules());
         }
-        for (const auto& c : m.classes) emitClass(c);
+        for (const auto& c : m.classes) {
+            ClassDeclCtx ctx(c, kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
+            runDeclRule(pyExprRules().at("ClassDecl"), ctx, ctx, &pyExprRules());
+        }
         for (const auto& g : m.globals)
             line(g.name + " = " + (g.init ? emitExpr(*g.init) : "None"));
         for (const auto& fn : m.functions) {
@@ -485,56 +506,11 @@ private:
     }
 
 
-    // A class -> a Python class. `const`/`static` fields become class-level attributes (read as `Owner.name`).
-    // Instance-field initializers run in __init__ (after super, before the init body); plain instance fields
-    // with no initializer need no declaration (Python sets them on first assignment in the init body).
-    void emitClass(const ir::Class& c) {
-        std::string head = "class " + c.name;
-        if (!c.bases.empty()) {
-            head += "(";
-            for (std::size_t i = 0; i < c.bases.size(); ++i) { if (i) head += ", "; head += pyTypeName(c.bases[i]); }
-            head += ")";
-        }
-        openBlock(head);
-        ++indent_;
-        bool any = false;
-        for (const auto& f : c.fields)
-            if (f.isStatic && f.init) { line(f.name + " = " + emitExpr(*f.init)); any = true; } // class attribute
-
-        bool hasFieldInit = false;
-        for (const auto& f : c.fields) if (!f.isStatic && f.init) hasFieldInit = true;
-        if (c.hasInit || hasFieldInit) {
-            std::string sig = "def __init__(self";
-            for (const auto& p : c.initParams) sig += ", " + param(p); // empty when synthesized for field inits
-            openBlock(sig + ")");
-            ++indent_;
-            if (c.hasSuper) {
-                std::vector<std::string> sa;
-                for (const auto& a : c.superArgs) sa.push_back(emitExpr(*a));
-                line("super().__init__" + renderArgs(sa));
-            }
-            for (const auto& f : c.fields)
-                if (!f.isStatic && f.init) line("self." + f.name + " = " + emitExpr(*f.init));
-            for (const auto& s : c.initBody) emitStmt(*s);
-            if (!c.hasSuper && !hasFieldInit && c.initBody.empty()) line("pass");
-            --indent_;
-            any = true;
-        }
-        for (const auto& m : c.methods) { runMethodRule(m); any = true; }
-        if (!any) line("pass");
-        --indent_;
-    }
-
     // A record/class member -> a `def`. Most members take a leading `self`; four shapes map idiomatically:
     //   Method     -> `def name(self, ...)`
     //   static fn  -> `@staticmethod` + `def name(...)` (no self; called `Type.name(...)`)
     //   Operator   -> `def __add__(self, ...)` (Python dispatches `a + b` to the dunder natively)
     //   Property   -> `@property` + `def name(self)` (accessed as `a.prop`, no call)
-    void runMethodRule(const ir::Method& m) {
-        MethodDeclCtx ctx(m, "", kPyDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-        runDeclRule(pyExprRules().at("MethodDecl"), ctx, ctx, &pyExprRules());
-    }
-
     void emitStmtTarget(const ir::Stmt& s) override {
         // For and Try are the non-shared statements: their shape (not just spelling) diverges per target.
         if (s.kind == ir::StmtKind::For) {

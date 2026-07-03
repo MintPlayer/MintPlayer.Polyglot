@@ -174,6 +174,27 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                   "else":{"tmpl":["this.",{"get":"item.name"}," === other.",{"get":"item.name"}]}}}},
               ";"]}}}}]}},
       {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
+  "tsClassHead": {"tmpl":["class ",{"get":"decl.name"},{"fn":"generics"},
+      {"case":{"when":[[{"eq":["decl.hasExtBase","true"]},{"tmpl":[" extends ",{"type":"decl.extBase"}]}]]}},
+      {"case":{"when":[[{"eq":["decl.ifaceBases.count","0"]},""]],
+        "else":{"tmpl":[" implements ",{"map":"decl.ifaceBases","sep":", ","item":{"type":"item"}}]}}}]},
+  "ClassDecl": {"block":{"head":{"call":"tsClassHead"},"body":[
+      {"mapDecl":"decl.fields","each":{"line":{"tmpl":[
+          {"case":{"when":[
+            [{"and":[{"eq":["item.isStatic","true"]},{"eq":["item.isMutable","true"]}]},"static "],
+            [{"eq":["item.isStatic","true"]},"static readonly "]],
+            "else":""}},
+          {"get":"item.name"},": ",{"type":"item.type"},
+          {"case":{"when":[[{"eq":["item.hasInit","true"]},{"tmpl":[" = ",{"emit":"item.init"}]}]]}},
+          ";"]}}},
+      {"case":{"when":[[{"eq":["decl.hasInit","true"]},
+        {"block":{"head":{"tmpl":["constructor(",
+            {"map":"decl.initParams","sep":", ","item":{"call":"tsParam"}},")"]},
+          "body":[
+            {"case":{"when":[[{"eq":["decl.hasSuper","true"]},
+              {"line":{"tmpl":["super(",{"map":"decl.superArgs","sep":", ","item":{"emit":"item"}},");"]}}]]}},
+            {"stmts":"decl.initBody"}]}}]]}},
+      {"mapMembers":"decl.methods","rule":"MethodDecl"}]}},
   "InterfaceDecl": { "block": {
       "head": {"tmpl": [ "interface ", {"get":"decl.name"}, {"fn":"generics"},
         {"case":{"when":[[{"eq":["decl.bases.count","0"]},""]],
@@ -494,7 +515,11 @@ public:
                               [this](const TypeRef& t) { return isRecordType(t); });
             runDeclRule(tsExprRules().at("RecordDecl"), ctx, ctx, &tsExprRules());
         }
-        for (const auto& c : m.classes) emitClass(c);
+        for (const auto& c : m.classes) {
+            ClassDeclCtx ctx(c, kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); },
+                             [this](const TypeRef& t) { return t.kind == TypeRef::Kind::Named && interfaceNames_.count(t.name) != 0; });
+            runDeclRule(tsExprRules().at("ClassDecl"), ctx, ctx, &tsExprRules());
+        }
         for (const auto& g : m.globals) // top-level const/let
             line(std::string(g.isConst ? "const " : "let ") + g.name + ": " + tsType(g.type) + (g.init ? " = " + emitExpr(*g.init) : "") + ";");
         for (const auto& f : m.extensions) emitExtension(f);
@@ -517,54 +542,11 @@ private:
         return t.kind == TypeRef::Kind::Named && recordNames_.count(t.name) != 0;
     }
 
-    // A mutable reference type: explicit fields, a constructor (`init`), and methods.
-    void emitClass(const ir::Class& c) {
-        std::string head = "class " + c.name + tsGenerics(c.generics);
-        // A class `extends` its (single) base class and `implements` its interface bases — distinct in TS.
-        std::string ext, impl;
-        for (const auto& b : c.bases) {
-            if (interfaceNames_.count(b.name)) { if (!impl.empty()) impl += ", "; impl += tsType(b); }
-            else ext = tsType(b);
-        }
-        if (!ext.empty()) head += " extends " + ext;
-        if (!impl.empty()) head += " implements " + impl;
-        line(head + " {");
-        ++indent_;
-        for (const auto& f : c.fields) {
-            std::string mods = f.isStatic ? (f.isMutable ? "static " : "static readonly ") : "";
-            std::string decl = mods + f.name + ": " + tsType(f.type);
-            if (f.init) decl += " = " + emitExpr(*f.init);
-            line(decl + ";");
-        }
-        if (c.hasInit) {
-            std::string sig = "constructor(";
-            for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) sig += ", "; sig += tsParam(c.initParams[i]); }
-            line(sig + ") {");
-            ++indent_;
-            if (c.hasSuper) {
-                std::string call = "super(";
-                for (std::size_t i = 0; i < c.superArgs.size(); ++i) { if (i) call += ", "; call += emitExpr(*c.superArgs[i]); }
-                line(call + ");");
-            }
-            for (const auto& s : c.initBody) emitStmt(*s);
-            --indent_;
-            line("}");
-        }
-        for (const auto& m : c.methods) runMethodRule(m);
-        --indent_;
-        line("}");
-    }
-
     // `name: T` or `name: T = default` — a parameter declaration with its optional default value.
     std::string tsParam(const ir::Param& p) {
         std::string s = p.name + ": " + tsType(p.type);
         if (p.defaultValue) s += " = " + emitExpr(*p.defaultValue);
         return s;
-    }
-
-    void runMethodRule(const ir::Method& m) {
-        MethodDeclCtx ctx(m, "", kTsDeclHooks, [this](const ir::Expr& e) { return emitExpr(e); });
-        runDeclRule(tsExprRules().at("MethodDecl"), ctx, ctx, &tsExprRules());
     }
 
     // Substitute a binding template: `$this` -> receiver, `$0`,`$1`,… -> args, each rendered as TS.
