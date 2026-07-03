@@ -62,17 +62,6 @@ const BackendSpec& pythonSpec() {
     return spec;
 }
 
-bool isIntType(const TypeRef& t) {
-    if (t.kind != TypeRef::Kind::Named) return false;
-    const std::string& n = t.name;
-    return n == "i8" || n == "i16" || n == "i32" || n == "i64" ||
-           n == "u8" || n == "u16" || n == "u32" || n == "u64";
-}
-
-bool isFloatType(const TypeRef& t) {
-    return t.kind == TypeRef::Kind::Named && (t.name == "f32" || t.name == "f64");
-}
-
 // (Keyword suffixing `name_` and the overload-mangle `$`->`_` are the spec's `identifiers` block now; the
 // generic specIdent/specMangle catalog entries serve every read — def sites, call sites, decl hooks.)
 
@@ -220,7 +209,13 @@ const char* PY_EXPR_RULES_JSON = R"JSON({
                    {"tmpl":["-",{"emitChild":"node.operand","side":"unary"}]}]} ],
                [ {"eq":["node.op","!"]}, {"tmpl":["not ",{"emitChild":"node.operand","side":"unary"}]} ] ],
              "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
-  "Cast": { "fn": "convert", "args": [ {"emit":"node.operand"} ] },
+  "Cast": { "case": { "when": [
+      [ {"and":[{"eq":["node.typeIsFloat","true"]},{"eq":["node.fromIsInt","true"]}]},
+        {"tmpl":["float(",{"emit":"node.operand"},")"]} ],
+      [ {"eq":["node.typeIsFloat","true"]}, {"emit":"node.operand"} ],
+      [ {"and":[{"eq":["node.typeIsInt","true"]},{"eq":["node.fromIsFloat","true"]}]},
+        {"tmpl":["int(",{"emit":"node.operand"},")"]} ] ],
+    "else": {"emit":"node.operand"} } },
   "With": { "case": { "when": [ [ {"eq":["node.baseIsSimple","true"]},
               {"tmpl":[{"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},")"]} ] ],
             "else": {"tmpl":["(lambda ",{"get":"node.tempName"},": ",{"get":"node.type"},
@@ -404,14 +399,6 @@ protected:
             const auto& m = static_cast<const ir::Member&>(e_);
             std::string t = "__o" + std::to_string(tmp_++);
             return "(" + t + "." + m.field + " if (" + t + " := " + emit_(*m.object) + ") is not None else None)";
-        }
-        if (name == "convert") { // numeric casts: int->float / float->int truncation; int<->int passes through
-            if (e_.kind != ir::ExprKind::Cast) return "";
-            const auto& c = static_cast<const ir::Cast&>(e_);
-            const std::string& x = args.empty() ? std::string() : args[0];
-            if (isFloatType(e_.type)) return isIntType(c.operand->type) ? "float(" + x + ")" : x;
-            if (isIntType(e_.type) && isFloatType(c.operand->type)) return "int(" + x + ")"; // truncates toward zero (matches C#)
-            return x; // int<->int: Python ints are arbitrary-precision (overflow masking is a later slice)
         }
         return "";
     }

@@ -14,6 +14,12 @@ bool isIntTypeName(const TypeRef& t) {
     return n == "i8" || n == "i16" || n == "i32" || n == "i64" ||
            n == "u8" || n == "u16" || n == "u32" || n == "u64";
 }
+bool isFloatTypeName(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && (t.name == "f32" || t.name == "f64");
+}
+bool isInt64Name(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && (t.name == "i64" || t.name == "u64");
+}
 } // namespace
 
 std::string IrExprCtx::get(const std::string& path) const {
@@ -34,11 +40,23 @@ std::string IrExprCtx::get(const std::string& path) const {
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
     if (path == "node.insideOperator" && e_.kind == ir::ExprKind::This)
         return static_cast<const ir::This&>(e_).insideOperator ? "true" : "false";
-    // Type-class predicates — which `.pg` types are ints is a LANGUAGE fact, not a target fact; the
-    // per-target part is only which predicate a rule consults.
+    // Type-class predicates — which `.pg` types are ints/floats/64-bit is a LANGUAGE fact, not a target
+    // fact; the per-target part is only which predicate a rule consults.
     if (path == "node.typeIsInt")      return isIntTypeName(e_.type) ? "true" : "false";
     if (path == "node.typeIsSmallInt") // 32-bit-or-narrower (i64/u64 ride BigInt on JS, not bitwise ops)
         return isIntTypeName(e_.type) && e_.type.name != "i64" && e_.type.name != "u64" ? "true" : "false";
+    if (path == "node.typeIsFloat") return isFloatTypeName(e_.type) ? "true" : "false";
+    if (path == "node.typeIsInt64") return isInt64Name(e_.type) ? "true" : "false";
+    if (e_.kind == ir::ExprKind::Cast) { // the operand's (source) type classes, for conversion rules
+        const TypeRef& from = static_cast<const ir::Cast&>(e_).operand->type;
+        if (path == "node.castSame")
+            return from.kind == TypeRef::Kind::Named && e_.type.kind == TypeRef::Kind::Named &&
+                           from.name == e_.type.name
+                       ? "true" : "false";
+        if (path == "node.fromIsInt")   return isIntTypeName(from) ? "true" : "false";
+        if (path == "node.fromIsFloat") return isFloatTypeName(from) ? "true" : "false";
+        if (path == "node.fromIsInt64") return isInt64Name(from) ? "true" : "false";
+    }
     if (path == "node.hasOpMethod" && e_.kind == ir::ExprKind::Binary) {
         // operator overload -> method call, on targets whose spec declares an opMethod table row
         const auto& b = static_cast<const ir::Binary&>(e_);
@@ -313,6 +331,9 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "wrap" && args.size() >= 2) return specWrapInt(spec_, args[0], args[1]);
     // Named table lookup — {"fn":"table","args":[<table>, <key>]} over the spec's `tables` data (P19).
     if (name == "table" && args.size() >= 2) return specTable(spec_, args[0], args[1]);
+    // Table-template substitution — {"fn":"subst","args":[<table>, <key>, <expr>]}: look the template up,
+    // fill its `$x` holes (identity when absent). The conversion rules' width-specific pieces live here.
+    if (name == "subst" && args.size() >= 3) return specSubst(spec_, args[0], args[1], args[2]);
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);

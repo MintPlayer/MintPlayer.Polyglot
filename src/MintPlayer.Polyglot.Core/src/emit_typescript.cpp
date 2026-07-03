@@ -36,7 +36,10 @@ const char* TS_SPEC_JSON = R"JSON({
   "throwKeyword": "throw",
   "trueLit": "true", "falseLit": "false", "nullLit": "null",
   "tables": { "opMethod": { "+": "plus", "-": "minus", "*": "times", "/": "div", "%": "rem",
-                            "==": "eq", "<": "lt", "<=": "le", ">": "gt", ">=": "ge" } },
+                            "==": "eq", "<": "lt", "<=": "le", ">": "gt", ">=": "ge" },
+              "bigNarrow": { "i8": "BigInt.asIntN(8, $x)", "i16": "BigInt.asIntN(16, $x)",
+                             "i32": "BigInt.asIntN(32, $x)", "u8": "BigInt.asUintN(8, $x)",
+                             "u16": "BigInt.asUintN(16, $x)", "u32": "BigInt.asUintN(32, $x)" } },
   "escapes": { "interp": { "`": "\\`", "\\": "\\\\", "${": "\\${" } },
   "wrapInt": { "i8": "($x << 24 >> 24)", "i16": "($x << 16 >> 16)",
                "u8": "($x & 0xff)", "u16": "($x & 0xffff)", "u32": "($x >>> 0)", "i32": "($x | 0)",
@@ -97,7 +100,21 @@ const char* TS_EXPR_RULES_JSON = R"JSON({
                  {"fn":"wrap","args":[{"get":"node.type"},
                    {"tmpl":["-",{"emitChild":"node.operand","side":"unary"}]}]} ] ],
              "else": {"tmpl":[{"get":"node.op"},{"emitChild":"node.operand","side":"unary"}]} } },
-  "Cast": { "fn": "convert", "args": [ {"emit":"node.operand"} ] },
+  "Cast": { "case": { "when": [
+      [ {"eq":["node.castSame","true"]}, {"emit":"node.operand"} ],
+      [ {"and":[{"eq":["node.typeIsInt64","true"]},{"eq":["node.fromIsInt64","true"]}]},
+        {"fn":"wrap","args":[{"get":"node.type"},{"emit":"node.operand"}]} ],
+      [ {"and":[{"eq":["node.typeIsInt64","true"]},{"eq":["node.fromIsFloat","true"]}]},
+        {"tmpl":["BigInt(Math.trunc(",{"emit":"node.operand"},"))"]} ],
+      [ {"eq":["node.typeIsInt64","true"]}, {"tmpl":["BigInt(",{"emit":"node.operand"},")"]} ],
+      [ {"and":[{"eq":["node.typeIsFloat","true"]},{"eq":["node.fromIsInt64","true"]}]},
+        {"tmpl":["Number(",{"emit":"node.operand"},")"]} ],
+      [ {"eq":["node.typeIsFloat","true"]}, {"emit":"node.operand"} ],
+      [ {"eq":["node.fromIsInt64","true"]},
+        {"tmpl":["Number(",{"fn":"subst","args":["bigNarrow",{"get":"node.type"},{"emit":"node.operand"}]},")"]} ],
+      [ {"eq":["node.fromIsFloat","true"]},
+        {"fn":"wrap","args":[{"get":"node.type"},{"tmpl":["Math.trunc(",{"emit":"node.operand"},")"]}]} ] ],
+    "else": {"fn":"wrap","args":[{"get":"node.type"},{"emit":"node.operand"}]} } },
   "With": { "case": { "when": [ [ {"eq":["node.baseIsSimple","true"]},
               {"tmpl":["new ",{"get":"node.type"},"(",{"map":"node.ctorArgs","sep":", "},")"]} ] ],
             "else": {"tmpl":["(() => { const ",{"get":"node.tempName"}," = ",{"emit":"node.base"},"; return new ",
@@ -370,20 +387,9 @@ bool isScalarName(const std::string& n) {
 bool isUserType(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && !t.name.empty() && !isScalarName(t.name);
 }
-bool isI64(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && (t.name == "i64" || t.name == "u64"); }
-// Coerce a JS number back into the value range of a 32-bit-or-narrower int type (§3.C overflow masking).
-// (The expression-walk copy is the spec's wrapInt table now; this remains only for tsConvert until the
-// conversion matrix migrates.)
-std::string narrowTs(const std::string& n, const std::string& inner) {
-    if (n == "i8")  return "(" + inner + " << 24 >> 24)";
-    if (n == "i16") return "(" + inner + " << 16 >> 16)";
-    if (n == "u8")  return "(" + inner + " & 0xff)";
-    if (n == "u16") return "(" + inner + " & 0xffff)";
-    if (n == "u32") return "(" + inner + " >>> 0)";
-    return "(" + inner + " | 0)"; // i32
-}
-// (The operator-overload method names are the spec's `opMethod` table now; the shared `node.hasOpMethod`
-// read and the `{"fn":"table"}` catalog entry consult it.)
+// (§3.C narrowing, the operator-overload method names, AND the numeric-conversion algorithm are all spec
+// data now — the wrapInt/opMethod/bigNarrow tables consulted by the Cast/Binary rules through the generic
+// wrap/table/subst catalog entries.)
 
 // TS carries bounds inline on each parameter: `<T extends A & B, U>`. The `INumber` marker is a Polyglot
 // compile-time-only numeric constraint (no TS equivalent), so it is erased here.
@@ -413,29 +419,6 @@ public:
 };
 const TsDeclHooks kTsDeclHooks;
 
-// A numeric conversion, lowered per source/target representation. The hard boundary is BigInt (i64/u64):
-// crossing into it needs BigInt(); crossing out needs a width-exact BigInt.asIntN/asUintN before Number()
-// (a plain Number() of a >2^53 BigInt would lose the low bits a C# `(int)long` keeps).
-std::string tsConvert(const TypeRef& from, const TypeRef& to, const std::string& x) {
-    bool toBig = isI64(to), fromBig = isI64(from);
-    bool toFloat = to.kind == TypeRef::Kind::Named && (to.name == "f32" || to.name == "f64");
-    bool fromFloat = from.kind == TypeRef::Kind::Named && (from.name == "f32" || from.name == "f64");
-    if (from.kind == TypeRef::Kind::Named && to.kind == TypeRef::Kind::Named && from.name == to.name) return x;
-    if (toBig) {
-        if (fromBig)   return std::string(to.name == "u64" ? "BigInt.asUintN(64, " : "BigInt.asIntN(64, ") + x + ")";
-        if (fromFloat) return "BigInt(Math.trunc(" + x + "))";
-        return "BigInt(" + x + ")";
-    }
-    if (toFloat) return fromBig ? "Number(" + x + ")" : x; // number<->number is a no-op (f32 rides f64)
-    if (fromBig) { // BigInt -> 32-bit-or-narrower int: narrow the BigInt exactly, then to a number
-        int w = (to.name == "i8" || to.name == "u8") ? 8 : (to.name == "i16" || to.name == "u16") ? 16 : 32;
-        const char* fn = to.name[0] == 'u' ? "asUintN" : "asIntN";
-        return "Number(BigInt." + std::string(fn) + "(" + std::to_string(w) + ", " + x + "))";
-    }
-    if (fromFloat) return narrowTs(to.name, "Math.trunc(" + x + ")");
-    return narrowTs(to.name, x);
-}
-
 // The TS rule-interpreter seam: only what differs from the shared IrExprCtx — the TS builtins, the TS
 // atom-wrapping policy, and the TS-specific predicates (the module facts themselves — lhsIsRecord,
 // receiverHasIndexer — are lowering-precomputed IR bits the shared IrExprCtx reads).
@@ -456,13 +439,8 @@ protected:
 
     std::string renderTypeRef(const TypeRef& t) const override { return tsType(t); }
 
-    std::string targetBuiltin(const std::string& name, const std::vector<std::string>& args) const override {
-        if (name == "convert") { // the numeric-conversion algorithm (BigInt boundaries etc.) stays fixed C++
-            if (e_.kind != ir::ExprKind::Cast) return "";
-            return tsConvert(static_cast<const ir::Cast&>(e_).operand->type, e_.type,
-                             args.empty() ? std::string() : args[0]);
-        }
-        return "";
+    std::string targetBuiltin(const std::string&, const std::vector<std::string>&) const override {
+        return ""; // every former TS builtin is a generic catalog entry or rule data now (P19 slice 6)
     }
 };
 

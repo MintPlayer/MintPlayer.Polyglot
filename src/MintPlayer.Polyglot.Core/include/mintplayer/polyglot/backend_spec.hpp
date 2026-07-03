@@ -112,18 +112,31 @@ inline std::string specTable(const BackendSpec& s, const std::string& table, con
     return it == t->second.end() ? std::string() : it->second;
 }
 
-// Wrap an int-typed expression to its declared width via the spec's template (`$x` = the expression);
-// identity when the spec declares no row for the width.
-inline std::string specWrapInt(const BackendSpec& s, const std::string& tn, const std::string& x) {
-    auto it = s.wrapInt.find(tn);
-    if (it == s.wrapInt.end()) return x;
-    const std::string& t = it->second;
+// Substitute `x` into a template's `$x` holes.
+inline std::string substX(const std::string& t, const std::string& x) {
     std::string out;
     for (std::size_t i = 0; i < t.size();) {
         if (t[i] == '$' && i + 1 < t.size() && t[i + 1] == 'x') { out += x; i += 2; }
         else out += t[i++];
     }
     return out;
+}
+
+// Wrap an int-typed expression to its declared width via the spec's template (`$x` = the expression);
+// identity when the spec declares no row for the width.
+inline std::string specWrapInt(const BackendSpec& s, const std::string& tn, const std::string& x) {
+    auto it = s.wrapInt.find(tn);
+    return it == s.wrapInt.end() ? x : substX(it->second, x);
+}
+
+// Look up a template in a named spec table and substitute `x` into its `$x` holes; identity (returns `x`)
+// when the table or key is absent.
+inline std::string specSubst(const BackendSpec& s, const std::string& table, const std::string& key,
+                             const std::string& x) {
+    auto t = s.tables.find(table);
+    if (t == s.tables.end()) return x;
+    auto it = t->second.find(key);
+    return it == t->second.end() ? x : substX(it->second, x);
 }
 
 // Apply the named escape map to `text`: at each position the longest declared source sequence wins

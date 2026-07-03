@@ -1532,6 +1532,22 @@ helper until 6f. TS residue: `convert` alone; Python residue: `idiv`/`irem`/`nul
 `nullSafeMember`/`convert` — all stateful-or-matrix, the 6f target. Byte-identical (117 files), unit green,
 39/39 + 38/38.
 
+**Slice-6f ✅ (2026-07-03) — the numeric-conversion algorithm is rule data (catalog row 7, resolved
+simpler than designed).** The design guessed a `(fromClass,toClass) → Rule` matrix; extraction showed
+**`tsConvert` decomposes entirely into language facts + existing tables + one new width table**, so the
+whole algorithm is a `case` chain in each target's `Cast` rule — no matrix machinery. New shared Cast-node
+reads (language facts): `node.castSame` (same Named source/target name), `node.fromIsInt`/`fromIsFloat`/
+`fromIsInt64` + `node.typeIsFloat`/`typeIsInt64` on the result. New generic entry **`subst`**
+(`{"fn":"subst","args":[table,key,expr]}` — table template + `$x` fill; `substX` factored out of
+`specWrapInt`). TS's Cast `case` rows map tsConvert 1:1: same→x; 64↔64 → the **wrapInt** rows
+(`BigInt.asIntN(64,…)` — already data); float→64 `BigInt(Math.trunc(x))`; small→64 `BigInt(x)`; 64→float
+`Number(x)`; float↔float x; **64→small = `Number(subst(bigNarrow, to, x))`** over the new 6-row `bigNarrow`
+width table; float→small `wrap(to, Math.trunc(x))`; small→small `wrap(to, x)`. Python's 4-row version
+(`float(x)`/`int(x)`/pass-through) likewise. Deleted: `tsConvert` + `narrowTs` + `isI64`, Python `convert`
++ `isIntType`/`isFloatType` — **TS's targetBuiltin is now EMPTY (second backend at zero)**. Python residue:
+`idiv`/`irem` (the `require`-bucket prelude flag) + `nullCoalesce`/`nullSafeMember` (the `fresh` walrus
+temps) — the stateful tail, next. Byte-identical (117 files), unit green, 39/39 + 38/38.
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
