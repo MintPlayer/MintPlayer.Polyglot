@@ -184,8 +184,12 @@ private:
         expect(TokKind::RBrace, "'}'");
     }
     // A per-target FFI binding body instead of a portable one. Returns true and fills m.bindings if present.
+    // An EMPTY block `{ }` also parses as a binding body with zero arms (P19 slice 9b: a std SKELETON
+    // declares the shape; the active target's plugin overlay injects the arms at compile time).
     bool tryParseBindings(Member& m) {
-        if (!(at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual)) return false;
+        if (!(at(TokKind::LBrace) &&
+              (peek(1).kind == TokKind::KwActual || peek(1).kind == TokKind::RBrace)))
+            return false;
         parseBindingArms(m.bindings);
         m.hasBody = true;
         return true;
@@ -222,8 +226,9 @@ private:
             { Token nt = expect(TokKind::Identifier, "a constant name"); m.name = nt.text; m.namePos = nt.pos; }
             expect(TokKind::Colon, "':'");
             m.type = parseType();
-            if (at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual) { // a bound const (e.g. Math.PI)
-                tryParseBindings(m);
+            if (at(TokKind::LBrace) &&
+                (peek(1).kind == TokKind::KwActual || peek(1).kind == TokKind::RBrace)) {
+                tryParseBindings(m); // a bound const (e.g. Math.PI) — `{ }` = overlay-armed skeleton
             } else {
                 expect(TokKind::Assign, "'='");
                 m.init = parseExpr();
@@ -251,7 +256,10 @@ private:
             { Token nt = expect(TokKind::Identifier, "a member name"); m.name = nt.text; m.namePos = nt.pos; }
             expect(TokKind::Colon, "':'");
             m.type = parseType();
-            if (at(TokKind::LBrace) && peek(1).kind == TokKind::KwActual) { m.kind = MemberKind::Property; tryParseBindings(m); }
+            if (at(TokKind::LBrace) && (peek(1).kind == TokKind::KwActual || peek(1).kind == TokKind::RBrace)) {
+                m.kind = MemberKind::Property; // bound property — `{ }` = overlay-armed skeleton (P19 s9b)
+                tryParseBindings(m);
+            }
             else if (accept(TokKind::Arrow)) { m.kind = MemberKind::Property; m.init = parseExpr(); }
             else if (accept(TokKind::Assign)) { m.kind = MemberKind::Field; m.init = parseExpr(); }
             else { m.kind = MemberKind::Field; }

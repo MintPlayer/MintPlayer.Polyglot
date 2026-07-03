@@ -2988,5 +2988,61 @@
         }
       }
     }
+  },
+  "std": {
+    "std.collections": {
+      "List.type": "$0[]",
+      "List.init": "[]",
+      "List.count": "$this.length",
+      "List.add": "$this.push($0)",
+      "List.clear": "$this = []",
+      "List.removeAll": "$this = $this.filter(__e => !(($0)(__e)))",
+      "List.removeAt": "$this.splice($0, 1)"
+    },
+    "std.io": {
+      "print": "console.log(String(x))",
+      "readText": "require('fs').readFileSync(path, 'utf8')",
+      "writeText": "require('fs').writeFileSync(path, content)",
+      "appendText": "require('fs').appendFileSync(path, content)",
+      "fileExists": "require('fs').existsSync(path)",
+      "deleteFile": "require('fs').unlinkSync(path)"
+    },
+    "std.math": {
+      "Math.PI": "Math.PI",
+      "Math.E": "Math.E",
+      "Math.sqrt": "Math.sqrt($0)",
+      "Math.ln": "Math.log($0)",
+      "Math.floor": "Math.floor($0)",
+      "Math.ceil": "Math.ceil($0)",
+      "Math.min": "((a, b) => (a <= b ? a : b))($0, $1)",
+      "Math.max": "((a, b) => (a >= b ? a : b))($0, $1)",
+      "Math.abs": "((a) => (a < (a - a) ? -a : a))($0)",
+      "Math.round": "Math.round($0)"
+    },
+    "std.strings": {
+      "string.isEmpty": "($this.length === 0)",
+      "string.len": "$this.length",
+      "string.toUpper": "$this.toUpperCase()",
+      "string.toLower": "$this.toLowerCase()",
+      "string.charAt": "$this.charAt($0)",
+      "string.codePoints": "Array.from($this)",
+      "string.toI32": "parseInt($this, 10)"
+    },
+    "std.core": {
+      "Error.type": "Error",
+      "Error.init": "new $T($0)",
+      "Error.message": "$this.message",
+      "Iterable.type": "Iterable<$0>",
+      "i8.parse": "(Number.parseInt($0, 10) << 24 >> 24)",
+      "i16.parse": "(Number.parseInt($0, 10) << 16 >> 16)",
+      "i32.parse": "(Number.parseInt($0, 10) | 0)",
+      "i64.parse": "BigInt($0)",
+      "u8.parse": "(Number.parseInt($0, 10) & 0xff)",
+      "u16.parse": "(Number.parseInt($0, 10) & 0xffff)",
+      "u32.parse": "(Number.parseInt($0, 10) >>> 0)",
+      "u64.parse": "BigInt($0)",
+      "f32.parse": "Number($0)",
+      "f64.parse": "Number($0)"
+    }
   }
 }

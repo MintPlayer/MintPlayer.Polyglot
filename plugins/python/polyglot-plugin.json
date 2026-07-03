@@ -2521,5 +2521,56 @@
         }
       ]
     }
+  },
+  "std": {
+    "std.collections": {
+      "List.type": "list",
+      "List.init": "[]",
+      "List.count": "len($this)",
+      "List.add": "$this.append($0)",
+      "List.clear": "$this = []",
+      "List.removeAll": "$this = [__e for __e in $this if not (($0)(__e))]",
+      "List.removeAt": "$this.pop($0)"
+    },
+    "std.io": {
+      "print": "__builtins__.print(str(x).lower() if isinstance(x, bool) else x)"
+    },
+    "std.math": {
+      "Math.PI": "__import__('math').pi",
+      "Math.E": "__import__('math').e",
+      "Math.sqrt": "__import__('math').sqrt($0)",
+      "Math.ln": "__import__('math').log($0)",
+      "Math.floor": "float(__import__('math').floor($0))",
+      "Math.ceil": "float(__import__('math').ceil($0))",
+      "Math.min": "min($0, $1)",
+      "Math.max": "max($0, $1)",
+      "Math.abs": "abs($0)",
+      "Math.round": "float(round($0))"
+    },
+    "std.strings": {
+      "string.isEmpty": "(len($this) == 0)",
+      "string.len": "len($this)",
+      "string.toUpper": "$this.upper()",
+      "string.toLower": "$this.lower()",
+      "string.charAt": "$this[$0]",
+      "string.codePoints": "list($this)",
+      "string.toI32": "int($this)"
+    },
+    "std.core": {
+      "Error.type": "Exception",
+      "Error.init": "$T($0)",
+      "Error.message": "str($this)",
+      "Iterable.type": "list",
+      "i8.parse": "int($0)",
+      "i16.parse": "int($0)",
+      "i32.parse": "int($0)",
+      "i64.parse": "int($0)",
+      "u8.parse": "int($0)",
+      "u16.parse": "int($0)",
+      "u32.parse": "int($0)",
+      "u64.parse": "int($0)",
+      "f32.parse": "float($0)",
+      "f64.parse": "float($0)"
+    }
   }
 }

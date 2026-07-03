@@ -24,39 +24,18 @@ namespace {
 const char* STD_COLLECTIONS = R"PG(
 extern class List<T> {
   type {
-    actual(csharp)     extern("global::System.Collections.Generic.List<$0>")
-    actual(typescript) extern("$0[]")
-    actual(python)     extern("list")
   }
   init() {
-    actual(csharp)     extern("new $T()")
-    actual(typescript) extern("[]")
-    actual(python)     extern("[]")
   }
   let count: i32 {
-    actual(csharp)     extern("$this.Count")
-    actual(typescript) extern("$this.length")
-    actual(python)     extern("len($this)")
   }
   fn add(item: T) {
-    actual(csharp)     extern("$this.Add($0)")
-    actual(typescript) extern("$this.push($0)")
-    actual(python)     extern("$this.append($0)")
   }
   fn clear() {
-    actual(csharp)     extern("$this.Clear()")
-    actual(typescript) extern("$this = []")
-    actual(python)     extern("$this = []")
   }
   fn removeAll(pred: (T) => bool) {
-    actual(csharp)     extern("$this.RemoveAll($0)")
-    actual(typescript) extern("$this = $this.filter(__e => !(($0)(__e)))")
-    actual(python)     extern("$this = [__e for __e in $this if not (($0)(__e))]")
   }
   fn removeAt(index: i32) {
-    actual(csharp)     extern("$this.RemoveAt($0)")
-    actual(typescript) extern("$this.splice($0, 1)")
-    actual(python)     extern("$this.pop($0)")
   }
 }
 )PG";
@@ -68,29 +47,16 @@ extern class List<T> {
 // on the §3.B refuse-list, so it's permitted.
 const char* STD_IO = R"PG(
 expect fn print<T>(x: T)
-actual(csharp)     fn print<T>(x: T) { extern("global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object)x)") }
-actual(typescript) fn print<T>(x: T) { extern("console.log(String(x))") }
-actual(python)     fn print<T>(x: T) { extern("__builtins__.print(str(x).lower() if isinstance(x, bool) else x)") }
 
 expect fn readText(path: string): string
-actual(csharp)     fn readText(path: string): string => extern("global::System.IO.File.ReadAllText(path)")
-actual(typescript) fn readText(path: string): string => extern("require('fs').readFileSync(path, 'utf8')")
 
 expect fn writeText(path: string, content: string)
-actual(csharp)     fn writeText(path: string, content: string) { extern("global::System.IO.File.WriteAllText(path, content)") }
-actual(typescript) fn writeText(path: string, content: string) { extern("require('fs').writeFileSync(path, content)") }
 
 expect fn appendText(path: string, content: string)
-actual(csharp)     fn appendText(path: string, content: string) { extern("global::System.IO.File.AppendAllText(path, content)") }
-actual(typescript) fn appendText(path: string, content: string) { extern("require('fs').appendFileSync(path, content)") }
 
 expect fn fileExists(path: string): bool
-actual(csharp)     fn fileExists(path: string): bool => extern("global::System.IO.File.Exists(path)")
-actual(typescript) fn fileExists(path: string): bool => extern("require('fs').existsSync(path)")
 
 expect fn deleteFile(path: string)
-actual(csharp)     fn deleteFile(path: string) { extern("global::System.IO.File.Delete(path)") }
-actual(typescript) fn deleteFile(path: string) { extern("require('fs').unlinkSync(path)") }
 )PG";
 
 // std.math — the Math namespace as a native-backed `extern class` (preserving the `Math.sqrt(x)` / `Math.PI`
@@ -102,49 +68,22 @@ actual(typescript) fn deleteFile(path: string) { extern("require('fs').unlinkSyn
 const char* STD_MATH = R"PG(
 extern class Math {
   const PI: f64 {
-    actual(csharp)     extern("global::System.Math.PI")
-    actual(typescript) extern("Math.PI")
-    actual(python)     extern("__import__('math').pi")
   }
   const E: f64 {
-    actual(csharp)     extern("global::System.Math.E")
-    actual(typescript) extern("Math.E")
-    actual(python)     extern("__import__('math').e")
   }
   static fn sqrt(x: f64): f64 {
-    actual(csharp)     extern("global::System.Math.Sqrt($0)")
-    actual(typescript) extern("Math.sqrt($0)")
-    actual(python)     extern("__import__('math').sqrt($0)")
   }
   static fn ln(x: f64): f64 {
-    actual(csharp)     extern("global::System.Math.Log($0)")
-    actual(typescript) extern("Math.log($0)")
-    actual(python)     extern("__import__('math').log($0)")
   }
   static fn floor(x: f64): f64 {
-    actual(csharp)     extern("global::System.Math.Floor($0)")
-    actual(typescript) extern("Math.floor($0)")
-    actual(python)     extern("float(__import__('math').floor($0))")
   }
   static fn ceil(x: f64): f64 {
-    actual(csharp)     extern("global::System.Math.Ceiling($0)")
-    actual(typescript) extern("Math.ceil($0)")
-    actual(python)     extern("float(__import__('math').ceil($0))")
   }
   static fn min<T: INumber>(a: T, b: T): T {
-    actual(csharp)     extern("global::System.Math.Min($0, $1)")
-    actual(typescript) extern("((a, b) => (a <= b ? a : b))($0, $1)")
-    actual(python)     extern("min($0, $1)")
   }
   static fn max<T: INumber>(a: T, b: T): T {
-    actual(csharp)     extern("global::System.Math.Max($0, $1)")
-    actual(typescript) extern("((a, b) => (a >= b ? a : b))($0, $1)")
-    actual(python)     extern("max($0, $1)")
   }
   static fn abs<T: INumber>(x: T): T {
-    actual(csharp)     extern("global::System.Math.Abs($0)")
-    actual(typescript) extern("((a) => (a < (a - a) ? -a : a))($0)")
-    actual(python)     extern("abs($0)")
   }
   // round-to-nearest, type-preserving (f32 in -> f32 out, f64 -> f64). Generic covers both float widths, so
   // no overload is needed. C# `Math.Round` has only a `double` overload, so the result is cast back to `$T`
@@ -152,9 +91,6 @@ extern class Math {
   // Halfway cases are NOT bit-reproducible cross-target (C#/Python round-half-to-even, JS rounds half up) —
   // §3.D covers only + - * / sqrt — so callers relying on exact parity must avoid exact-.5 inputs.
   static fn round<T: INumber>(x: T): T {
-    actual(csharp)     extern("(($T) global::System.Math.Round($0))")
-    actual(typescript) extern("Math.round($0)")
-    actual(python)     extern("float(round($0))")
   }
 }
 )PG";
@@ -164,39 +100,18 @@ extern class Math {
 // (SPEC §8) so `len`/`charAt` are code-unit operations; `codePoints` iterates code points (surrogate-aware).
 const char* STD_STRINGS = R"PG(
 extension fn string.isEmpty(): bool {
-  actual(csharp)     extern("($this.Length == 0)")
-  actual(typescript) extern("($this.length === 0)")
-  actual(python)     extern("(len($this) == 0)")
 }
 extension fn string.len(): i32 {
-  actual(csharp)     extern("$this.Length")
-  actual(typescript) extern("$this.length")
-  actual(python)     extern("len($this)")
 }
 extension fn string.toUpper(): string {
-  actual(csharp)     extern("$this.ToUpper()")
-  actual(typescript) extern("$this.toUpperCase()")
-  actual(python)     extern("$this.upper()")
 }
 extension fn string.toLower(): string {
-  actual(csharp)     extern("$this.ToLower()")
-  actual(typescript) extern("$this.toLowerCase()")
-  actual(python)     extern("$this.lower()")
 }
 extension fn string.charAt(index: i32): string {
-  actual(csharp)     extern("$this[$0].ToString()")
-  actual(typescript) extern("$this.charAt($0)")
-  actual(python)     extern("$this[$0]")
 }
 extension fn string.codePoints(): Iterable<string> {
-  actual(csharp)     extern("$this.EnumerateRunes()")
-  actual(typescript) extern("Array.from($this)")
-  actual(python)     extern("list($this)")
 }
 extension fn string.toI32(): i32 {
-  actual(csharp)     extern("global::System.Int32.Parse($this)")
-  actual(typescript) extern("parseInt($this, 10)")
-  actual(python)     extern("int($this)")
 }
 )PG";
 
@@ -212,26 +127,14 @@ extension fn string.toI32(): i32 {
 const char* STD_CORE = R"PG(
 extern class Error {
   type {
-    actual(csharp)     extern("global::System.Exception")
-    actual(typescript) extern("Error")
-    actual(python)     extern("Exception")
   }
   init(message: string) {
-    actual(csharp)     extern("new $T($0)")
-    actual(typescript) extern("new $T($0)")
-    actual(python)     extern("$T($0)")
   }
   let message: string {
-    actual(csharp)     extern("$this.Message")
-    actual(typescript) extern("$this.message")
-    actual(python)     extern("str($this)")
   }
 }
 extern class Iterable<T> {
   type {
-    actual(csharp)     extern("global::System.Collections.Generic.IEnumerable<$0>")
-    actual(typescript) extern("Iterable<$0>")
-    actual(python)     extern("list")
   }
 }
 // A marker constraint for numeric type parameters, like .NET's System.Numerics.INumber<T>: the numeric
@@ -246,25 +149,25 @@ union Option<T> {
   None
 }
 extern class i8 { static fn parse(s: string): i8 {
-  actual(csharp) extern("sbyte.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) << 24 >> 24)") actual(python) extern("int($0)") } }
+     } }
 extern class i16 { static fn parse(s: string): i16 {
-  actual(csharp) extern("short.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) << 16 >> 16)") actual(python) extern("int($0)") } }
+     } }
 extern class i32 { static fn parse(s: string): i32 {
-  actual(csharp) extern("int.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) | 0)") actual(python) extern("int($0)") } }
+     } }
 extern class i64 { static fn parse(s: string): i64 {
-  actual(csharp) extern("long.Parse($0)") actual(typescript) extern("BigInt($0)") actual(python) extern("int($0)") } }
+     } }
 extern class u8 { static fn parse(s: string): u8 {
-  actual(csharp) extern("byte.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) & 0xff)") actual(python) extern("int($0)") } }
+     } }
 extern class u16 { static fn parse(s: string): u16 {
-  actual(csharp) extern("ushort.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) & 0xffff)") actual(python) extern("int($0)") } }
+     } }
 extern class u32 { static fn parse(s: string): u32 {
-  actual(csharp) extern("uint.Parse($0)") actual(typescript) extern("(Number.parseInt($0, 10) >>> 0)") actual(python) extern("int($0)") } }
+     } }
 extern class u64 { static fn parse(s: string): u64 {
-  actual(csharp) extern("ulong.Parse($0)") actual(typescript) extern("BigInt($0)") actual(python) extern("int($0)") } }
+     } }
 extern class f32 { static fn parse(s: string): f32 {
-  actual(csharp) extern("float.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)") actual(typescript) extern("Number($0)") actual(python) extern("float($0)") } }
+     } }
 extern class f64 { static fn parse(s: string): f64 {
-  actual(csharp) extern("double.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)") actual(typescript) extern("Number($0)") actual(python) extern("float($0)") } }
+     } }
 )PG";
 
 // The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,
@@ -467,6 +370,78 @@ BackendHandle findTarget(const std::string& name) {
     return h;
 }
 
+// Attach the ACTIVE target's std overlay arms (from its plugin) onto the linked skeleton decls (P19 slice
+// 9b): binding members / `type` / `init` on extern classes, extension fns, and expect fns (a synthesized
+// single-`extern` actual). Runs AFTER sema (templates are opaque — nothing to re-check) and BEFORE the
+// capability gate, so a used member with no overlay entry refuses exactly like a missing `actual` arm.
+// A decl that already carries an arm for this target keeps it (user/source arms win).
+void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
+    const auto& ov = backend.stdOverlays();
+    if (ov.empty()) return;
+    const std::string target = backend.name();
+    auto find = [&](const std::string& key) -> const std::string* {
+        auto it = ov.find(key);
+        return it == ov.end() ? nullptr : &it->second;
+    };
+    auto hasArm = [&](const std::vector<TargetBinding>& bs) {
+        for (const auto& b : bs)
+            if (b.target == target) return true;
+        return false;
+    };
+    for (auto& c : unit.classes) {
+        if (!c.isExtern) continue;
+        if (const std::string* t = find(c.name + ".type"); t && !hasArm(c.typeBindings))
+            c.typeBindings.push_back({target, *t, c.pos});
+        for (auto& mem : c.members) {
+            const std::string key = c.name + "." + (mem.kind == MemberKind::Init ? "init" : mem.name);
+            if (const std::string* t = find(key); t && !hasArm(mem.bindings))
+                mem.bindings.push_back({target, *t, mem.pos});
+        }
+    }
+    for (auto& e : unit.extensions)
+        if (const std::string* t = find(e.receiver.name + "." + e.name); t && !hasArm(e.bindings))
+            e.bindings.push_back({target, *t, e.pos});
+    // Expect fns: synthesize the actual — the signature cloned, the body a single opaque extern (every
+    // first-party actual was exactly that shape; richer bodies stay expressible as source arms).
+    std::vector<FunctionDecl> synthesized;
+    for (const auto& f : unit.functions) {
+        if (!f.isExpect) continue;
+        bool have = false;
+        for (const auto& g : unit.functions)
+            if (!g.isExpect && g.name == f.name && g.actualTarget == target) have = true;
+        if (have) continue;
+        const std::string* t = find(f.name);
+        if (!t) continue;
+        FunctionDecl a;
+        a.name = f.name;
+        a.mangledName = f.mangledName;
+        a.pos = f.pos;
+        a.namePos = f.namePos;
+        a.generics = f.generics;
+        for (const auto& p : f.params) { // Param owns its default expr — clone the declared shape only
+            Param cp;                    // (no std expect declares a default; source arms cover that case)
+            cp.name = p.name;
+            cp.type = p.type;
+            a.params.push_back(std::move(cp));
+        }
+        a.returnType = f.returnType;
+        a.isAsync = f.isAsync;
+        a.actualTarget = target;
+        auto ex = std::make_unique<Expr>();
+        ex->kind = ExprKind::Extern;
+        ex->pos = f.pos;
+        ex->text = *t;
+        auto st = std::make_unique<Stmt>();
+        st->pos = f.pos;
+        const bool returnsUnit = a.returnType.kind == TypeRef::Kind::Named && a.returnType.name == "unit";
+        st->kind = returnsUnit ? StmtKind::ExprStmt : StmtKind::Return;
+        st->value = std::move(ex);
+        a.body.push_back(std::move(st));
+        synthesized.push_back(std::move(a));
+    }
+    for (auto& f : synthesized) unit.functions.push_back(std::move(f));
+}
+
 EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib) {
     EmitResult result;
     DiagnosticBag diags;
@@ -484,6 +459,8 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr)) { result.diagnostics = diags.items(); return result; }
+
+    injectStdOverlays(unit, *target.backend()); // the plugin's std arms land on the skeletons (P19 s9b)
 
     // §3.E: refuse any used feature this target can't emit, before lowering/emitting (never miscompile).
     checkCapabilities(unit, *target.backend(), diags);

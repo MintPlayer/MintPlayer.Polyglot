@@ -126,8 +126,13 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
     // silent broken program). Keyed on *calls*, so an unused portable fn missing this target's arm is fine
     // (e.g. std.io's readText has no python arm, but a python program that never calls it is unaffected).
     std::unordered_map<std::string, std::unordered_set<std::string>> actualTargets; // fn name -> targets with an actual
-    for (const auto& f : unit.functions)
+    for (const auto& f : unit.functions) {
+        // An `expect` fn is portable even with ZERO actuals in the unit (P19 slice 9b: the arms live in
+        // plugin overlays and only the active target's are injected) — the empty entry makes a call to an
+        // un-overlaid expect refuse below instead of slipping through as "not portable".
+        if (f.isExpect) actualTargets[f.name];
         if (!f.actualTarget.empty()) actualTargets[f.name].insert(f.actualTarget);
+    }
     for (const auto& call : c.calls) {
         auto it = actualTargets.find(call.first);
         if (it != actualTargets.end() && !it->second.count(backend.name()))

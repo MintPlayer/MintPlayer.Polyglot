@@ -1718,6 +1718,28 @@ in the embedded std `.pg` texts (compiler.cpp `STD_*`); moving them into plugin 
 package — deferred to ride with slice 12's 4th-backend proof, which needs it. Gates: artifacts
 strict-parse, byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10.
 
+**Slice-9b ✅ (2026-07-03) — STD OVERLAYS: every per-target arm ships in its target's plugin.** The
+embedded std sources (`STD_COLLECTIONS/IO/MATH/STRINGS/CORE`) are now pure **skeletons** — zero
+`actual(...)` arms remain in Core (grep-verified; only comments mention the syntax). The plugin manifests
+gained the **`std` block** (`{module → member-key → template}`, organized per module, flattened at load):
+44 templates each for C#/TS, 39 for Python (the five file-io fns it never had — refusal behavior
+preserved). Extraction was scripted from the shipping sources (with `.pg` string-escape DECODING — the
+lexer decoded `\"` for parsed arms; injection bypasses the lexer, so the manifest carries the decoded
+text). **`injectStdOverlays(unit, backend)`** runs in `compile()` after sema, before the capability gate:
+binding members / `type` / `init` on extern classes, extension fns (`string.isEmpty`), and expect fns —
+the last SYNTHESIZED as a cloned signature + single opaque-`extern` body (every first-party actual was
+exactly that shape; `ExprStmt` for unit returns, `Return` otherwise; params cloned field-wise —
+`Param` owns its default expr). Source-declared arms win over overlay entries. Two supporting fixes:
+(1) the parser accepts an **empty binding block `{ }`** on properties/consts/members (a skeleton is valid
+`.pg` — previously "expected a member"); (2) `checkCapabilities` treats an **`expect` fn with ZERO actuals
+as portable** (the empty-entry registration — without it, an un-overlaid expect call would slip through
+as "not portable" and emit a call to a function that doesn't exist). Known gap recorded: there is NO
+member-level missing-arm refusal (a bound MEMBER with no overlay entry lowers to an empty template —
+unreachable today, reachable with a partial 4th-target overlay; close in slice 12's bring-up).
+Gates: artifacts strict-parse, byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10 +
+fmt round-trip 10/10 (the parser change). **A new target can now ship spec + rules + capabilities + std
+arms as ONE JSON file, zero Core changes.**
+
 ## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax

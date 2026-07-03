@@ -2562,5 +2562,61 @@
         }
       }
     }
+  },
+  "std": {
+    "std.collections": {
+      "List.type": "global::System.Collections.Generic.List<$0>",
+      "List.init": "new $T()",
+      "List.count": "$this.Count",
+      "List.add": "$this.Add($0)",
+      "List.clear": "$this.Clear()",
+      "List.removeAll": "$this.RemoveAll($0)",
+      "List.removeAt": "$this.RemoveAt($0)"
+    },
+    "std.io": {
+      "print": "global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object)x)",
+      "readText": "global::System.IO.File.ReadAllText(path)",
+      "writeText": "global::System.IO.File.WriteAllText(path, content)",
+      "appendText": "global::System.IO.File.AppendAllText(path, content)",
+      "fileExists": "global::System.IO.File.Exists(path)",
+      "deleteFile": "global::System.IO.File.Delete(path)"
+    },
+    "std.math": {
+      "Math.PI": "global::System.Math.PI",
+      "Math.E": "global::System.Math.E",
+      "Math.sqrt": "global::System.Math.Sqrt($0)",
+      "Math.ln": "global::System.Math.Log($0)",
+      "Math.floor": "global::System.Math.Floor($0)",
+      "Math.ceil": "global::System.Math.Ceiling($0)",
+      "Math.min": "global::System.Math.Min($0, $1)",
+      "Math.max": "global::System.Math.Max($0, $1)",
+      "Math.abs": "global::System.Math.Abs($0)",
+      "Math.round": "(($T) global::System.Math.Round($0))"
+    },
+    "std.strings": {
+      "string.isEmpty": "($this.Length == 0)",
+      "string.len": "$this.Length",
+      "string.toUpper": "$this.ToUpper()",
+      "string.toLower": "$this.ToLower()",
+      "string.charAt": "$this[$0].ToString()",
+      "string.codePoints": "$this.EnumerateRunes()",
+      "string.toI32": "global::System.Int32.Parse($this)"
+    },
+    "std.core": {
+      "Error.type": "global::System.Exception",
+      "Error.init": "new $T($0)",
+      "Error.message": "$this.Message",
+      "Iterable.type": "global::System.Collections.Generic.IEnumerable<$0>",
+      "i8.parse": "sbyte.Parse($0)",
+      "i16.parse": "short.Parse($0)",
+      "i32.parse": "int.Parse($0)",
+      "i64.parse": "long.Parse($0)",
+      "u8.parse": "byte.Parse($0)",
+      "u16.parse": "ushort.Parse($0)",
+      "u32.parse": "uint.Parse($0)",
+      "u64.parse": "ulong.Parse($0)",
+      "f32.parse": "float.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "f64.parse": "double.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)"
+    }
   }
 }

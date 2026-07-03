@@ -41,9 +41,10 @@ namespace {
 class LoadedBackend : public Backend {
 public:
     LoadedBackend(std::string name, BackendSpec spec, engine::RuleTable rules,
-                  std::unordered_map<std::string, std::string> capabilities)
+                  std::unordered_map<std::string, std::string> capabilities,
+                  std::unordered_map<std::string, std::string> overlays)
         : name_(std::move(name)), spec_(std::move(spec)), rules_(std::move(rules)),
-          capabilities_(std::move(capabilities)) {}
+          capabilities_(std::move(capabilities)), overlays_(std::move(overlays)) {}
 
     std::string name() const override { return name_; }
 
@@ -60,11 +61,14 @@ public:
         return it == capabilities_.end() || it->second != "false";
     }
 
+    const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
+
 private:
     std::string name_;
     BackendSpec spec_;
     engine::RuleTable rules_;
     std::unordered_map<std::string, std::string> capabilities_;
+    std::unordered_map<std::string, std::string> overlays_; // flattened std FFI templates
 };
 
 // ---- Load-time validation (P19 slice 8) ------------------------------------------------------------------
@@ -209,8 +213,15 @@ bool loadBackend(const std::string& artifactJson, std::string& error) {
             }
     }
 
+    // The std overlay arms, organized by module in the manifest for readability, flattened here (member
+    // keys — "List.add", "print" — are unique across the std surface).
+    std::unordered_map<std::string, std::string> overlays;
+    for (const auto& mod : doc["std"].members)
+        for (const auto& kv : mod.second.members)
+            if (kv.second.kind == json::Value::Kind::String) overlays[kv.first] = kv.second.asString();
+
     registry().push_back(std::make_unique<LoadedBackend>(name, std::move(spec.spec), std::move(rules),
-                                                         std::move(caps)));
+                                                         std::move(caps), std::move(overlays)));
     return true;
 }
 
