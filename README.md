@@ -119,8 +119,10 @@ polyglot install path\to\plugin    # from a local directory
 ```
 
 Writing a new language means writing a JSON file — the PHP backend was added without touching the
-compiler. See [`docs/design/json-plugins.md`](docs/design/json-plugins.md) and
-[`plugins/php/polyglot-plugin.json`](plugins/php/polyglot-plugin.json) as the reference example.
+compiler. **[`docs/plugin-authoring.md`](docs/plugin-authoring.md)** is the guide (manifest anatomy,
+the rule DSL, validation, testing, publishing), with
+[`plugins/php/polyglot-plugin.json`](plugins/php/polyglot-plugin.json) as the worked example;
+[`docs/design/json-plugins.md`](docs/design/json-plugins.md) records the underlying design.
 
 ## Editor support
 
