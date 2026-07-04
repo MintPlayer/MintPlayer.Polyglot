@@ -194,7 +194,10 @@ jobs:
           shopt -s globstar nullglob
           archives=(dist/**/polyglot-*.zip dist/**/polyglot-*.tar.gz)
           if [[ ${#archives[@]} -eq 0 ]]; then echo "::error::no archives to release"; exit 1; fi
-          args=(--title "polyglot ${{ steps.tag.outputs.tag }}" --generate-notes)
+          # --repo is required: this job downloads artifacts only (no checkout), so gh has no git remote
+          # to infer the repo from — without it gh errors "not a git repository". --generate-notes and
+          # --target both resolve server-side via the API, so no local clone is needed.
+          args=(--repo "${{ github.repository }}" --title "polyglot ${{ steps.tag.outputs.tag }}" --generate-notes)
           if [[ "${{ github.ref }}" != refs/tags/* ]]; then args+=(--target "${{ github.sha }}"); fi
           gh release create "${{ steps.tag.outputs.tag }}" "${archives[@]}" "${args[@]}"
 
