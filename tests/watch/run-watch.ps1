@@ -108,6 +108,31 @@ try {
     Assert ((Get-Content (Join-Path $work "main.cs") -Raw).Contains("area(3, 5)")) `
         "the recovery cycle refreshed the output"
 
+    # --- cycles 5-6: an unresolved import's candidate path is polled (slice 3) --------------------------
+    Set-Content -Path $entry -Value "import { area } from `"./util`"`nimport { boost } from `"./extra`"`nimport { print } from `"std.io`"`nfn main() {`n  print(area(3, 5))`n}`n" -NoNewline
+    $lines = Wait-Cycles 5
+    $end5 = @($lines | Where-Object { $_ -match $reEnd }) | Select-Object -Last 1
+    Assert ($null -ne $end5 -and $end5 -match $reEnd -and [int]$Matches[1] -ge 1) `
+        "an import of a not-yet-existing file fails the cycle"
+    Set-Content -Path (Join-Path $work "extra.pg") -Value "fn boost(x: i32): i32 {`n  return x`n}`n" -NoNewline
+    $lines = Wait-Cycles 6
+    $end6 = @($lines | Where-Object { $_ -match $reEnd }) | Select-Object -Last 1
+    Assert ($null -ne $end6 -and $end6 -match $reEnd -and $Matches[1] -eq '0') `
+        "creating the missing import target triggers a green rebuild"
+
+    # --- cycle 7: creating a pgconfig.json re-resolves the context (target set shrinks) -----------------
+    Remove-Item (Join-Path $work "main.cs"), (Join-Path $work "main.ts") -Force
+    Set-Content -Path (Join-Path $work "pgconfig.json") -Value "{ `"targets`": [`"csharp`"] }" -NoNewline
+    $lines = Wait-Cycles 7
+    Assert (Test-Path (Join-Path $work "main.cs")) "the pgconfig-triggered cycle emitted the configured target"
+    Assert (-not (Test-Path (Join-Path $work "main.ts"))) `
+        "a pgconfig 'targets' set replaces the default pair (no stray .ts)"
+
+    # --- cycle 8: EDITING the active pgconfig.json re-resolves again (target set grows back) ------------
+    Set-Content -Path (Join-Path $work "pgconfig.json") -Value "{ `"targets`": [`"csharp`", `"typescript`"] }" -NoNewline
+    $lines = Wait-Cycles 8
+    Assert (Test-Path (Join-Path $work "main.ts")) "editing the active pgconfig re-resolves the target set"
+
     # --- protocol sweep: every line in the log is one of the known shapes -------------------------------
     $known = @($lines | Where-Object {
         $_ -match $reBegin -or $_ -match $reEnd -or $_ -match $reDiag -or $_ -match '^  -> ' -or $_ -eq ''

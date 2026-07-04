@@ -2002,6 +2002,15 @@ stated guarantee).
   candidate paths of **unresolved** imports so creating the missing file triggers the rebuild users expect.
   *Gate:* scripted — add an import to a not-yet-existing file (build fails, last-good kept), create the file
   (watch rebuilds green); flip `targets` in pgconfig (next cycle emits the new set).
+  **✅ built (2026-07-04).** `FileModuleResolver` gained a public `candidate(spec, importer)` (the mapping
+  `resolve` already used, extracted — watch polls it for every `RecordingResolver.unresolved()` pair); the
+  watch cycle absolutizes `entryDir` (a relative `.` has no parent, so the walk-up never walked) and watches
+  every `pgconfig.json` **candidate** location from the entry up to the answering config (or the FS root when
+  none answered) — so editing the active config AND creating a nearer/first one both re-resolve. The
+  restart-only limits stay as designed (editing an already-loaded plugin manifest; `resolveConfiguredTargets`
+  re-runs per cycle and is load-once-safe, so a NEW plugin target added to pgconfig actually loads live).
+  Gate grew to 20 assertions (broken-import → create-file recovery; pgconfig create shrinks the target set —
+  no stray `.ts`; pgconfig edit grows it back). All suites green.
 - **Slice 4 — VS Code surfacing.** package.json: `taskDefinitions` (`type: "polyglot"`, `task: "watch"`,
   optional `file`/`target`), the **`$polyglot-watch` problemMatcher** (pattern
   `^(.+?)\((\d+),(\d+)\):\s+(error|warning|info):\s+(.+)$`, `fileLocation: "absolute"`; background

@@ -181,18 +181,22 @@ public:
         : root_(std::move(root)), entryDir_(std::move(entryDir)) {}
 
     std::optional<ResolvedModule> resolve(const std::string& spec, const std::string& importer) override {
-        fs::path file;
-        if (spec.rfind("./", 0) == 0 || spec.rfind("../", 0) == 0) {
-            fs::path base = importer.empty() ? entryDir_ : fs::path(importer).parent_path();
-            file = base / (spec + ".pg");
-        } else {
-            std::string rel = spec;
-            for (char& c : rel) if (c == '.') c = '/';
-            file = root_ / (rel + ".pg");
-        }
+        fs::path file = candidate(spec, importer);
         std::string src;
         if (!readFile(file, src)) return std::nullopt;
         return ResolvedModule{fs::weakly_canonical(file).string(), std::move(src)};
+    }
+
+    // The file this resolver WOULD load for a specifier — exposed so watch mode can also poll the paths
+    // of unresolved imports (creating the missing file then triggers the rebuild users expect).
+    fs::path candidate(const std::string& spec, const std::string& importer) const {
+        if (spec.rfind("./", 0) == 0 || spec.rfind("../", 0) == 0) {
+            fs::path base = importer.empty() ? entryDir_ : fs::path(importer).parent_path();
+            return (base / (spec + ".pg")).lexically_normal();
+        }
+        std::string rel = spec;
+        for (char& c : rel) if (c == '.') c = '/';
+        return (root_ / (rel + ".pg")).lexically_normal();
     }
 
 private:
@@ -308,9 +312,19 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         return c;
     }
 
-    fs::path entryDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
+    // Absolute so the pgconfig walk-up actually walks for a relative input (a relative "." has no
+    // parent to walk to) — the chain below and the closure paths must be pollable absolute paths anyway.
+    const fs::path entryDir =
+        fs::absolute(input.has_parent_path() ? input.parent_path() : fs::path(".")).lexically_normal();
     PgConfig pc = loadPgConfig(entryDir);
-    if (pc.found) c.watched.push_back(pc.dir / "pgconfig.json");
+    // Watch every pgconfig.json CANDIDATE between the entry and the config that answered (or the
+    // filesystem root when none did): editing the active config re-resolves the whole context next
+    // cycle (targets/lib/root/forbiddenIdentifiers), and creating a NEARER one takes over.
+    for (fs::path d = entryDir;; d = d.parent_path()) {
+        c.watched.push_back(d / "pgconfig.json");
+        if (pc.found && d == pc.dir) break;
+        if (!d.has_parent_path() || d.parent_path() == d) break;
+    }
 
     fs::path root = rootArg;
     std::string libArg = libArgIn;
@@ -359,6 +373,9 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
     }
 
     for (const auto& p : resolver.loaded()) c.watched.push_back(p);
+    // Unresolved imports: poll the file each one WOULD load, so creating it triggers the rebuild.
+    for (const auto& [spec, importer] : resolver.unresolved())
+        c.watched.push_back(fileResolver.candidate(spec, importer));
     return c;
 }
 
