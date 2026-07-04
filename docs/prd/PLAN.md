@@ -2091,6 +2091,134 @@ diverges from C#'s silent truncation), `internal` generated C# types (P11 limit,
 consumers). Versions: CLI + NuGet → **0.1.1** (plugins unchanged — the fix is engine-side). Gates:
 42/42 C#/TS (2 new), 41/41 Python, samples 10/10, fmt 10/10, watch 20/20, unit +4.
 
+> **P11 "Remaining for shipped" (per-RID CI packaging + NuGet publish + the npm sibling) is now scoped as
+> its own phase — see [P22](#p22) below.** The design confirmed the NuGet's consume-side `.targets` is
+> already fully multi-RID; the real dependency is a portable (CMake) build + a native build matrix.
+
+## P22 — Cross-platform CLI (Linux) + multi-RID distribution — 🚧 slices 1–2 + 4–5 built, slices 3 & 6 remain (2026-07-04; PRD §4.14, 4-agent investigation)
+
+> **Scope: macOS is NOT planned** (user decision, 2026-07-04). The shipping RID set is **win-x64,
+> linux-x64, linux-arm64**. The `osx-x64`/`osx-arm64` design (native mac legs, ad-hoc codesign, the
+> `_NSGetExecutablePath` code branch) is left below **for reference only** in case that changes — it is not
+> on the roadmap, so ignore the macOS-specific steps in the slices.
+
+Make the native `polyglot` CLI build and ship for **linux-x64, linux-arm64** alongside win-x64, so the
+`MintPlayer.Polyglot.MSBuild` NuGet transpiles `.pg`→`.cs` during `dotnet build` on a Linux CI runner
+(MintPlayer.AI's `ubuntu-latest`) with **no committed generated output** — the driving need, plus the
+GitHub-Releases channel and the P11 npm-sibling remainder. Investigation verdicts (full detail PRD §4.14):
+**Core is already 100% portable standard C++** — the port is ~a day of CLI-only fixes + a build system,
+not a refactor; **a parallel CMakeLists for POSIX, the `.vcxproj`/VS-2026 workflow left untouched** (drift
+guarded by glob + a CI parity check); **glibc 2.35 floor** (`-static-libstdc++ -static-libgcc`, built on
+ubuntu-22.04); the NuGet's consume-side `.targets` is **already fully multi-RID — zero changes** (only the
+csproj pack + CI build one RID today); **one fat package** (~1.5 MB / 3 RIDs); a `release.yml` matrix
+with **per-job provenance attestation** and two fan-ins (GitHub Release + NuGet pack); the Linux leg finally
+closes the **PHP runtime-differential** TODO (php is preinstalled); npm sibling via the **esbuild
+`optionalDependencies` pattern**. The five portability fixes land first and must be **byte-identical on
+Windows** (the existing gates prove it).
+
+- **Slice 1 — POSIX portability + resilience fixes (Windows byte-identical).** ✅ **built (2026-07-04)** —
+  brought forward and done immediately at the user's direction ("the CLI-tool and nuget package MUST be
+  resilient immediately"). Every platform branch is `#ifdef`-guarded so the Windows build is provably
+  unchanged (full gate re-run green: build + unit + fidelity 10/10 + watch + conformance 42/42). Shipped:
+  (a) a **shared `src/MintPlayer.Polyglot.Cli/src/exe_path.hpp`** — `cli::executablePath(argv0)` with the
+  reliable per-OS primitive (`GetModuleFileNameA` Windows / `fs::read_symlink("/proc/self/exe")` Linux /
+  `_NSGetExecutablePath`+`weakly_canonical` macOS, `argv0` last resort) — consumed by BOTH `main.cpp`
+  `loadPluginsNextToExe` **and** `tests_main.cpp` (which had NO `#else` — tests couldn't find plugins on
+  POSIX; now both share one implementation, no duplication). This is **the load-bearing fix**: bare `argv0`
+  passes CI but silently breaks plugin discovery for every PATH-invoked install (npm/NuGet/tar). (b)
+  plugin-cache dir → durable per-user location on each OS (`%LOCALAPPDATA%` / `$XDG_DATA_HOME` →
+  `~/.local/share` / `~/Library/Application Support`), `temp_directory_path()` only as never-fail last
+  resort. (c) `polyglot install`'s `npm pack` output-silencing redirect `>nul 2>nul` → `#ifdef` to
+  `>/dev/null 2>&1` on POSIX (on `/bin/sh` the cmd-ism created a stray file named `nul` and hid nothing).
+  **Command-construction quoting audited end-to-end:** every path interpolated into a shell command was
+  already quoted (install's `npm pack "<spec>" --pack-destination "<tmp>"` + `tar -xzf "<file>"`; the NuGet
+  `.targets` quotes `$(PolyglotTool)`, `%(PolyglotFile.FullPath)`, `$(PolyglotOutDir)…`, `$(PolyglotRoot)`,
+  `$(PolyglotLib)`, and the `chmod` target) — so spaces in a consumer's project path can't wreck a command;
+  the `>nul` fix was the sole command-construction defect. **Audit correction:** the reported "dead
+  `windows.h` in `watch.hpp`" was a false positive (verified absent) — no change. **Bonus harness
+  resilience:** `tests/fidelity/run-roundtrip.ps1` forces `[Console]::OutputEncoding = UTF8` so non-ASCII
+  samples (curly quotes, the FruitCake emoji) stop coming back mojibake through the console's OEM codepage
+  — a pre-existing codepage-dependent gate flake, now environment-independent. Versions: **CLI + NuGet →
+  0.1.2** (`kVersion` + the MSBuild package; plugins + editor extensions unchanged, so not bumped).
+  *POSIX branch verification:* the Linux `/proc/self/exe` branch is now **compile- and run-verified on
+  real Linux** (slice 2 below); the macOS `_NSGetExecutablePath` branch stays idiom-correct but unbuilt
+  until a macOS runner (slice 4).
+
+- **Slice 2 — the CMake build (POSIX; Windows supported too).** ✅ **built + verified on real Linux
+  (2026-07-04).** `CMakeLists.txt` at the repo root: three targets mirroring the `.vcxproj` — `polyglot-core`
+  (STATIC), `polyglot` (the CLI exe, `OUTPUT_NAME polyglot` = the shipped name), `polyglot-tests` — with
+  `CMAKE_CXX_STANDARD 20` + `CXX_EXTENSIONS OFF` (mirrors `/permissive-`), `file(GLOB … CONFIGURE_DEPENDS)`
+  over `src/*.cpp` per project (so a new TU is auto-tracked), `Core/include` PUBLIC + `Cli/src` on the CLI
+  and Tests (for `exe_path.hpp`/`watch.hpp`), `Threads::Threads` (pthread for `std::thread`),
+  `-static-libstdc++ -static-libgcc` on the CLI on Linux, `CMAKE_OSX_DEPLOYMENT_TARGET=13.0` on macOS, a
+  `copy_directory plugins → $<TARGET_FILE_DIR>/plugins` POST_BUILD on both exes (the `xcopy` equivalent), and
+  `enable_testing()` + `add_test(unit)`. The `.vcxproj`/`.sln` stay the untouched VS-2026 source of truth
+  (the MSBuild gate is unchanged). **Drift guard:** `scripts/check-buildfile-parity.ps1` asserts each
+  project's `.vcxproj` `<ClCompile>` set equals its `*.cpp` on disk (= the CMake glob); wired into
+  `build-and-test.ps1` as the first stage. **Verified (WSL Ubuntu 24.04, g++ 13.3 + cmake 3.28):** configure
+  + `cmake --build` green for all three targets; `polyglot --version` → `0.1.2`; `ldd` shows **no
+  libstdc++/libgcc_s** (static link confirmed); the **unit suite passes on Linux** — which proves the
+  slice-1 `/proc/self/exe` plugin discovery works (the suite FATAL-aborts if it can't load the three plugins
+  next to the exe); and an end-to-end `polyglot build smoke.pg --lib io` **run from a foreign cwd** emits
+  correct C# (plugins found next to the binary, not the cwd — the exact PATH-invoked case the argv0 bug
+  broke). *Not yet run:* the `run-diff`/`run-python` conformance gates on Linux (WSL has node 20 + .NET 9;
+  the oracle wants net10 + node 22 — that's the CI runner's job, slice 4) and any macOS build.
+
+- **Slice 3 — `run-php.ps1` + close the PHP differential.** Write `tests/conformance/run-php.ps1` mirroring
+  `run-python.ps1` (emit PHP + the C# oracle, run both, diff stdout) — php is preinstalled on the ubuntu
+  runner, closing the "no php.exe on the dev box" TODO. *Gate:* `run-php.ps1 -Cli <path>` green against the
+  full conformance set on a runner with php; the FruitCake north-star program agrees byte-for-byte.
+
+- **Slice 4 — the release matrix + provenance.** ✅ **built (2026-07-04).** `release.yml` reworked into four
+  jobs: `build-windows` (unchanged MSBuild/vswhere path + the existing run-diff gate → `polyglot-win-x64.zip`);
+  a `build-linux` **matrix** — `ubuntu-22.04` (linux-x64, `full_gates`) + `ubuntu-22.04-arm` (linux-arm64,
+  native runner) — each `apt install cmake g++` → CMake Release build → `--version` → `polyglot-tests` unit
+  suite → a **smoke transpile from a foreign cwd** (proves plugin discovery next to the binary) → tar
+  `polyglot-<rid>.tar.gz` (preserves +x); the linux-x64 leg additionally runs **run-diff** (setup-dotnet 10 +
+  setup-node 22). Each build job **attests provenance** (archive + inner binary). Two fan-ins: `github-release`
+  (downloads all artifacts, tag = `github.ref_name` on a tag push else the linux-x64 binary's `--version`,
+  `gh release create` with every archive) and `nuget` (slice 5). *Design deviations, deliberate:* the
+  cross-process conformance on linux is **run-diff on x64 only** — `run-python` + `run-php` on the linux leg
+  are deferred (run-php is slice 3, unwritten; the differential is arch-independent and fully covered on the
+  Windows leg + locally), and arm64 is build+unit+smoke (its binary correctness is the same engine the unit
+  suite exercises). *(macOS legs — `macos-15-intel`/`macos-15` + ad-hoc `codesign` — **not planned**,
+  retained in the design only.)* *CI-only-verifiable* (runner labels, matrix attestation, artifact fan-in) —
+  needs a dispatch run; the YAML parses and the build/pack halves are proven locally (below).
+
+- **Slice 5 — the fat multi-RID NuGet.** ✅ **built + north-star verified on real Linux (2026-07-04).** The
+  csproj packs the whole CI-staged tree when `-p:PolyglotStageRoot=<abs>` is set (`None Include="…\**\*"
+  PackagePath="tools\"`, `%(RecursiveDir)` = the `<rid>/…` path preserved), and keeps the historical
+  single-RID win-x64 pack when unset (so `run-nuget.ps1` stays green offline). The `nuget` fan-in job in
+  `release.yml` downloads every artifact, unzips/untars them into `staging/<rid>/`, packs once, and pushes to
+  nuget.org + GitHub Packages; **NuGet is now tag-gated** (the `publish-nuget` job was removed from
+  `publish-plugins.yml`; the npm plugin packages stay master-push). The consume-side `.targets` is
+  **unchanged** (already RID-generic + `chmod +x`). **Verified locally:** (a) a staged tree
+  (win-x64 real exe + real WSL-built linux-x64/arm64 binaries + plugins) packs to a nupkg with exactly
+  `tools/{win-x64/polyglot.exe, linux-x64/polyglot, linux-arm64/polyglot}` each + 4 plugins; (b)
+  `run-nuget.ps1` still green (9/9, single-RID fallback); (c) **the north-star** — on WSL Ubuntu, a fresh
+  net9.0 console app referencing that nupkg (local feed) ran `dotnet build` → the `.targets` resolved +
+  chmod'd + ran `tools/linux-x64/polyglot`, transpiled `shapes.pg`→`obj/…/polyglot/shapes.cs`, and
+  `dotnet run` printed **7**. That is `dotnet build` transpiling `.pg` on Linux with no committed output —
+  the phase's whole reason for being. *CI-only-verifiable:* nuget.org/GitHub-Packages push.
+
+- **Slice 6 — the npm sibling (last; NuGet-on-Linux is the driving need).** The esbuild
+  `optionalDependencies` pattern: an `@mintplayer/polyglot` wrapper (JS `bin` shim doing
+  `require.resolve("@mintplayer/polyglot-cli-${process.platform}-${process.arch}/…")` + exact-pinned
+  optionalDependencies) and per-platform payload packages `@mintplayer/polyglot-cli-<platform>-<arch>`
+  (**Node tokens** `linux|darwin|win32` × `x64|arm64`, `os`/`cpu` fields, `preferUnplugged`, the binary +
+  a `plugins/` copy beside it; +x preserved by npm — no chmod). A dotnet-RID↔Node-token mapping table in
+  the CI stage step. Publish via `publish-plugins.yml`'s dual-registry pattern (npmjs direct + GitHub
+  Packages). *Gate:* `npm i -g @mintplayer/polyglot` on Linux/Windows installs only the host payload
+  and `polyglot --version` runs; `polyglot build foo.pg` emits + finds plugins. (The pattern supports
+  `darwin-*` payloads too, but macOS is not planned — see the scope note.)
+
+- **Deferred (recorded, not scheduled):** win-arm64 (limited hosted-runner support; likely cross-compile
+  with the ARM64 MSVC toolset, or Grpc.Tools-style x86-under-emulation remap); linux-musl-x64 (Alpine —
+  `NETCoreSdkPortableRuntimeIdentifier` is `linux-musl-x64`, so the `.targets` already fails loudly there
+  when unshipped; add on demand, built in an Alpine container); a wider glibc floor via manylinux2014 or a
+  `zig cc -target …-musl` fully-static artifact; a `lipo` universal macOS binary; full notarization; the
+  full CMake migration (single source of truth — revisit only if two build definitions become painful).
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

@@ -684,6 +684,86 @@ work. Until then the hardcoded list is a knowing stopgap, flagged at the code si
 
 **Decisions.** (1) `--watch` is a flag on `build` + `check`, no separate verb. (2) Polling watcher behind the `FileWatcher` seam, CLI-layer only, zero Core change. (3) The console protocol above is **frozen and golden-tested**. (4) VS Code: task type + `$polyglot-watch` matcher + status-bar toggle. (5) The NuGet ships the `Watch` item. (6) Failure never deletes or overwrites last-good outputs. (7) Deferred, recorded: native RDCW/inotify watcher, incremental module-graph rebuilds, `--clear`, a VS-native command (demand-gated), plugin-manifest hot reload.
 
+### 4.14 Cross-platform CLI — Linux builds + multi-RID distribution (design — 2026-07-04; investigated by a 4-agent team; PLAN §P22)
+
+> **macOS is not planned** (user decision, 2026-07-04). The osx-x64/osx-arm64 design below (native builds,
+> ad-hoc codesign, the `_NSGetExecutablePath` code branch) is **retained for reference** should that change;
+> it is not on the roadmap. The shipping target set is **Windows + Linux**.
+
+**The user need.** MintPlayer.AI (the first real consumer) builds on GitHub Actions **ubuntu-latest**; the
+MSBuild NuGet ships only `tools/win-x64/`, so Linux CI cannot transpile `.pg` at build time — the pilot's
+mitigation is committing the generated `.cs`. North-star gate: **a plain `dotnet build` on a Linux runner
+transpiles `.pg` live via the NuGet, no committed output**. Same work unlocks the GitHub-Releases channel
+for all platforms and the recorded P11 npm-sibling remainder.
+
+**Findings (per front).** *Portability:* **Core is 100% portable standard C++** — zero Windows headers,
+zero Win32, zero MSVC-isms (`__declspec`/`_s` funcs/pragmas), no wide-char/codecvt; ALL platform code sits
+in the CLI's `main.cpp` + `tests_main.cpp`, and nearly every `#ifdef _WIN32` already has a POSIX branch.
+Five fix sites, ~a day: (1) **exe-path discovery** (`main.cpp` `loadPluginsNextToExe`) falls back to bare
+`argv0` on POSIX — the trap: **passes CI (relative-path invocation) yet silently breaks plugin discovery
+for every PATH-invoked install** (npm/NuGet/tar put `polyglot` on PATH) → `readlink("/proc/self/exe")` on
+Linux, `_NSGetExecutablePath` on macOS, argv0 last resort; (2) `tests_main.cpp` has NO `#else` for the same
+lookup → all tests fail on POSIX; (3) the plugin cache dir's POSIX fallback is `fs::temp_directory_path()`
+(volatile — installed plugins vanish on reboot) → `$XDG_DATA_HOME`/`~/.local/share/polyglot/plugins`
+(macOS `~/Library/Application Support`); (4) `polyglot install`'s `npm pack` command ends with an
+**unguarded cmd-ism `>nul 2>nul`** — on `/bin/sh` it creates a file named `nul` and hides nothing → `#ifdef`
+to `>/dev/null 2>&1`; (5) a dead `windows.h` include in `watch.hpp` (nothing uses it). The compiler floor
+is modest — **GCC ≥ 10 / Clang ≥ 12** (no `std::format`/ranges/coroutines/concepts; keep it that way).
+*Build system:* **a parallel `CMakeLists.txt` for POSIX; the `.vcxproj`/`.sln` stays the untouched VS-2026
+source of truth** (the user's IDE workflow is a hard constraint). The current build is easy to replicate:
+explicit 14-file Core list, only `Core/include` (+`Cli/src` for Tests) includes, no defines beyond
+`_DEBUG`/`NDEBUG`, no codegen (the embedded std is plain raw-string literals in `compiler.cpp`), one
+post-build `plugins/` copy. Drift between the two definitions is the top risk → CMake
+`file(GLOB … CONFIGURE_DEPENDS)` + a CI parity script diffing the `.vcxproj` `<ClCompile>` set against
+disk. Runner-up recorded: full CMake migration (single source of truth) — revisit only if maintaining two
+definitions bites; VS 2026's CMake path is presets-driven, a real workflow change. Cross-compiling
+(zig/clang) rejected as primary: native GitHub-hosted runners are free for public repos and each leg runs
+the test exe + gates it just built. *Static linking:* Windows keeps `/MT`; **Linux = `-static-libstdc++
+-static-libgcc -pthread` built on ubuntu-22.04(-arm) → glibc 2.35 floor** (the protoc/LLVM model; covers
+Ubuntu 22.04+/Debian 12+/RHEL 9+ — fine for a dev tool that already needs node + .NET; manylinux/musl
+full-static recorded as the wider-reach fork); **macOS** has nothing to statically link but needs
+`MACOSX_DEPLOYMENT_TARGET` (13.0) and — **mandatory on arm64, where unsigned binaries are SIGKILLed —
+an ad-hoc codesign** (`codesign -s - -f` + `--verify`, no Developer ID, no notarization: the quarantine
+xattr comes from browser downloads, not npm/NuGet/tar extraction). *Packaging:* the pleasant surprise —
+**the NuGet's consume-side `.targets` is ALREADY fully multi-RID** (`PolyglotHostRid` from
+`$(NETCoreSdkPortableRuntimeIdentifier)` → `tools/<rid>/polyglot[.exe]`, no `.exe` on Unix, `chmod +x`
+on Unix, loud missing-RID error naming the override) — **zero changes**; the whole gap is the csproj's
+hardcoded win-x64 pack ItemGroup + CI building one RID. **One fat package** (~2.6 MB for 5 RIDs — 1.12 MB
+exe + 256 KB plugin JSON per RID, vs Grpc.Tools' accepted 22 MB); a per-RID split is rejected — NuGet has
+no npm-style os/cpu restore-time selection for build-time tools. Each `tools/<rid>/` carries its own
+`plugins/` copy (`loadPluginsNextToExe` wants them beside the binary; negligible). Grpc.Tools precedent
+verified: it ships **no chmod at all**, relying on nupkg zip mode bits — documented as fragile
+(NuGet/Home#13402, grpc#18338 "protoc not runnable on Alpine"); our existing chmod is belt-and-suspenders
+the precedent lacks — keep it. *CI:* **one `release.yml`**: the existing windows job + a 4-leg POSIX
+matrix — `ubuntu-22.04`, `ubuntu-22.04-arm` (arm64 runners GA + free for public repos since 2025-08;
+this repo is public), `macos-15-intel` (**`macos-13` is retired**), `macos-15` — each CMake-building,
+running the unit exe + conformance gates (pwsh/node preinstalled; `setup-dotnet` pins 10.0.x), attesting
+provenance **per job** (archive + inner binary), uploading artifacts; then two fan-ins: `github-release`
+(all archives; a dispatch-run derives the tag by executing the linux-x64 binary) and `nuget` (downloads
+all artifacts into `tools/<rid>/`, packs once, pushes). PHP is preinstalled on ubuntu runners — **the
+linux leg finally closes the open PHP runtime-differential TODO** (a new `run-php.ps1`). *npm sibling:*
+the **esbuild `optionalDependencies` pattern** — an `@mintplayer/polyglot` wrapper (JS `bin` shim,
+`require.resolve`, exact-pinned optionalDependencies) + per-platform payload packages
+(`@mintplayer/polyglot-cli-<platform>-<arch>`, **Node tokens** `linux|darwin|win32`, `os`/`cpu` fields,
+`preferUnplugged`, binary + `plugins/` beside it). npm **preserves the +x bit** — no chmod dance.
+Postinstall-download rejected (offline/proxy/`--ignore-scripts`/CI-cache failures). Third naming scheme
+alert: dotnet RID `osx-arm64` = npm `darwin-arm64` — one mapping table in the CI stage step.
+
+**Decisions.** (1) **RID set v1: win-x64, linux-x64, linux-arm64** (macOS **not planned** — see below;
+the `osx-x64`/`osx-arm64` design is retained for if that changes). Deferred: win-arm64, linux-musl-x64
+(Alpine's `NETCoreSdkPortableRuntimeIdentifier` is `linux-musl-x64`, so the `.targets` already fails loudly
+there — the correct failure mode, documented). (2) Parallel CMake for POSIX, `.vcxproj` untouched, glob +
+CI parity gate. (3) glibc 2.35 floor (build on ubuntu-22.04); `-static-libstdc++ -static-libgcc`. *(macOS
+ad-hoc codesign — mandatory on arm64 — applies only if macOS is picked up; not planned.)* (4) One fat NuGet;
+`.targets` unchanged; the csproj packs a CI-staged `tools/` tree (`-p:PolyglotStageRoot=…`) and keeps the
+historical single-RID local pack as fallback so `run-nuget.ps1` stays green offline. (5) NuGet publishing
+moves from `publish-plugins.yml` (master-push) into `release.yml`'s fan-in → **NuGet becomes tag-gated**
+(recorded behavior change: package cadence = release cadence; the npm plugin packages stay master-push).
+(6) Artifacts: `polyglot-win-x64.zip` + `polyglot-<rid>.tar.gz` (tar preserves +x). (7) The five
+portability fixes land first, byte-identical on Windows. (8) The npm sibling is the last slice (esbuild
+pattern above) — NuGet-on-Linux is the driving need. (9) Deferred, recorded: win-arm64, linux-musl-x64,
+manylinux/zig-musl wider floor, `lipo` universal macOS binary, notarization, full CMake migration.
+
 ---
 
 ## 5. Testing strategy
@@ -811,6 +891,17 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   VS Code problemMatcher (task type + status-bar toggle in the extension), and one line in the MSBuild NuGet
   (`<Watch Include="@(PolyglotFile)" />`) so `dotnet watch` gives Visual Studio the C#-host path for free.
   Slice plan: PLAN §P21.
+- **P22 — Cross-platform CLI (Linux) + multi-RID distribution.** 🚧 Slices 1–2 + 4–5 built; slices 3 & 6
+  remain (macOS **not planned** — osx design retained for reference; shipping set = Windows + Linux)
+  (2026-07-04; §4.14, from a 4-agent investigation). Built: the POSIX resilience fixes + command-quoting
+  audit (shared portable exe-path lookup, XDG cache dir, `>nul`→`/dev/null`, all `#ifdef`-guarded); a
+  parallel `CMakeLists.txt` (`.vcxproj` untouched) + drift-parity guard; a **Windows + Linux (x64/arm64)
+  release matrix** with per-job provenance attestation; and the **fat multi-RID NuGet** (win-x64 +
+  linux-x64 + linux-arm64 in one package; the `.targets` was already RID-generic). **North star reached
+  and verified on real Linux (WSL):** `dotnet build` on a net9.0 app consuming the multi-RID NuGet resolves
+  + chmods + runs `tools/linux-x64/polyglot`, transpiles the `.pg`, and runs — no committed output.
+  Remaining: the PHP runtime differential (slice 3) and the esbuild-pattern npm sibling (slice 6). Slice
+  plan: PLAN §P22.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 

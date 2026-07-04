@@ -28,7 +28,8 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 #include "mintplayer/polyglot/sema.hpp"
 
-#include "watch.hpp" // the CLI's watch-mode support (P21); the tests project adds Cli/src to its includes
+#include "exe_path.hpp" // the CLI's portable executable-path lookup; tests add Cli/src to their includes
+#include "watch.hpp"    // the CLI's watch-mode support (P21); same include path
 
 // A deliberately tiny, zero-dependency assert harness. The cross-process differential conformance suite
 // (compile+run the emitted C# and TS, compare stdout) lives in tests/conformance/ (PLAN P2 gate); these
@@ -142,12 +143,7 @@ int main() {
     // post-build step. The suite depends on all three — fail hard, not test-by-test, if any is missing.
     {
         namespace fs = std::filesystem;
-        fs::path exe;
-#ifdef _WIN32
-        char buf[4096];
-        const unsigned long n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
-        exe = fs::path(std::string(buf, n));
-#endif
+        const fs::path exe = cli::executablePath();
         for (const char* t : {"csharp", "typescript", "python"}) {
             const fs::path manifest = exe.parent_path() / "plugins" / t / "polyglot-plugin.json";
             std::ifstream in(manifest, std::ios::binary);

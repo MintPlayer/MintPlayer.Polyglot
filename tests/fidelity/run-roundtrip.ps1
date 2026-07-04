@@ -9,6 +9,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# The CLI writes UTF-8; decode its stdout as UTF-8 regardless of the console's OEM codepage, or non-ASCII
+# samples (curly quotes, emoji) come back mojibake and the round-trip compare spuriously fails.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 if (-not (Test-Path $Cli)) {
     Write-Host "polyglot CLI not found at $Cli — build the solution first (see CLAUDE.md)."
     exit 2
