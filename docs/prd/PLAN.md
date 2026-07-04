@@ -2183,7 +2183,12 @@ Windows** (the existing gates prove it).
   Windows leg + locally), and arm64 is build+unit+smoke (its binary correctness is the same engine the unit
   suite exercises). *(macOS legs — `macos-15-intel`/`macos-15` + ad-hoc `codesign` — **not planned**,
   retained in the design only.)* *CI-only-verifiable* (runner labels, matrix attestation, artifact fan-in) —
-  needs a dispatch run; the YAML parses and the build/pack halves are proven locally (below).
+  needs a dispatch run; the YAML parses and the build/pack halves are proven locally (below). **First
+  dispatch run (2026-07-04) did its job:** it caught a real **gcc-11 incompatibility** the local WSL
+  gcc-13 build masked — `MapModuleResolver({{k, v}})` in `tests_main.cpp` is ambiguous under ubuntu-22.04's
+  default gcc 11 (map-ctor vs copy/move). Fixed at the root (a dedicated `initializer_list` ctor, preferred
+  for braced-init on every compiler); re-verified by installing g++-11 in WSL (build + unit suite green)
+  and on MSVC. The compiler floor is now genuinely validated at **gcc 11**, not just claimed.
 
 - **Slice 5 — the fat multi-RID NuGet.** ✅ **built + north-star verified on real Linux (2026-07-04).** The
   csproj packs the whole CI-staged tree when `-p:PolyglotStageRoot=<abs>` is set (`None Include="…\**\*"
