@@ -41,7 +41,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.1
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.2
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -365,8 +365,13 @@ SyntaxError; comparison×comparison = Python chaining). Byte-audit proved the on
 (NaN → loud -1) — integer-only stdout had masked the NaN by coincidence. `--out` now creates its dir.
 CLI+NuGet → 0.1.1. New: `precedence_null_coalesce.pg` + `precedence_bitwise.pg` (42/42 C#/TS, 41/41 py).
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
-(build-integration NuGet — ✅ v1 above; per-RID CI + publish remain), **P16d** (Visual Studio LSP client),
-**P20** (input skins, gated, above), **P21** (watch mode — ✅ done, above).
+(build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
+LSP client), **P20** (input skins, gated, above), **P22 🚧 designed — cross-platform CLI (Linux/macOS) +
+multi-RID distribution** (PRD §4.14, PLAN §P22, 4-agent investigation 2026-07-04): Core is already 100%
+portable C++, so a parallel CMake build (VS-2026 `.vcxproj` untouched) + five CLI-only POSIX fixes + a
+5-leg release matrix + the fat multi-RID NuGet (the `.targets` is already RID-generic) lets `dotnet build`
+transpile `.pg` on a Linux runner; also closes the PHP runtime differential and adds the esbuild-pattern
+npm sibling. **P21** (watch mode — ✅ done, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

@@ -29,6 +29,7 @@
 #include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
+#include "exe_path.hpp"
 #include "watch.hpp"
 
 using namespace mintplayer::polyglot;
@@ -136,12 +137,22 @@ PgConfig loadPgConfig(const fs::path& startDir) {
     }
 }
 
-// The user-level plugin cache `polyglot install` populates (%LOCALAPPDATA%\polyglot\plugins\<name>\).
+// The user-level plugin cache `polyglot install` populates: %LOCALAPPDATA%\polyglot\plugins on Windows,
+// the XDG data dir on Linux, ~/Library/Application Support on macOS — a DURABLE per-user location so
+// installed plugins survive a reboot. temp_directory_path() is only the last resort (never fail here).
 fs::path pluginCacheDir() {
 #ifdef _WIN32
     char buf[4096];
     const unsigned long n = GetEnvironmentVariableA("LOCALAPPDATA", buf, sizeof(buf));
     if (n > 0 && n < sizeof(buf)) return fs::path(std::string(buf, n)) / "polyglot" / "plugins";
+#elif defined(__APPLE__)
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return fs::path(home) / "Library" / "Application Support" / "polyglot" / "plugins";
+#else
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
+        return fs::path(xdg) / "polyglot" / "plugins";
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return fs::path(home) / ".local" / "share" / "polyglot" / "plugins";
 #endif
     return fs::temp_directory_path() / "polyglot" / "plugins";
 }
@@ -1286,7 +1297,14 @@ int runInstall(const std::vector<std::string>& args) {
         const fs::path tmp = fs::temp_directory_path() / "polyglot-install";
         fs::remove_all(tmp, ec);
         fs::create_directories(tmp, ec);
-        const std::string cmd = "npm pack \"" + spec + "\" --pack-destination \"" + tmp.string() + "\" >nul 2>nul";
+        // Silence npm's own chatter (we print our own diagnostic on failure). `>nul` is a cmd.exe-ism —
+        // on /bin/sh it would create a real file named `nul` and discard nothing.
+#ifdef _WIN32
+        const char* quiet = " >nul 2>nul";
+#else
+        const char* quiet = " >/dev/null 2>&1";
+#endif
+        const std::string cmd = "npm pack \"" + spec + "\" --pack-destination \"" + tmp.string() + "\"" + quiet;
         if (std::system(cmd.c_str()) != 0) {
             std::cerr << "polyglot: npm pack '" << spec << "' failed (is npm on PATH and the package published?)\n";
             return 1;
@@ -1335,14 +1353,7 @@ int runInstall(const std::vector<std::string>& args) {
 // cache / registry) layers on top at P19 slice 10. A missing plugins dir just leaves the registry empty
 // (findTarget then explains what was expected); a MALFORMED artifact is reported and skipped.
 void loadPluginsNextToExe(const char* argv0) {
-    fs::path exe;
-#ifdef _WIN32
-    char buf[4096];
-    const unsigned long n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
-    exe = n > 0 ? fs::path(std::string(buf, n)) : fs::path(argv0);
-#else
-    exe = fs::path(argv0);
-#endif
+    const fs::path exe = cli::executablePath(argv0);
     std::error_code ec;
     const fs::path dir = exe.parent_path() / "plugins";
     for (const auto& entry : fs::directory_iterator(dir, ec)) {

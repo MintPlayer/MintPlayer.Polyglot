@@ -69,6 +69,7 @@
     <ClCompile Include="src\main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\exe_path.hpp" />
     <ClInclude Include="src\watch.hpp" />
   </ItemGroup>
   <ItemGroup>
