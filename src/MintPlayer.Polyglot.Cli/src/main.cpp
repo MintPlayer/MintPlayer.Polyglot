@@ -1097,7 +1097,14 @@ int runInstall(const std::vector<std::string>& args) {
         fs::path tgz;
         for (const auto& e : fs::directory_iterator(tmp, ec))
             if (e.path().extension() == ".tgz") tgz = e.path();
-        if (tgz.empty() || std::system(("tar -xzf \"" + tgz.string() + "\" -C \"" + tmp.string() + "\"").c_str()) != 0) {
+        // Extract from INSIDE the temp dir with a bare filename: a "C:\..." argument makes GNU tar
+        // (common on PATH via Git for Windows) treat the drive letter as a remote host and fail.
+#ifdef _WIN32
+        const std::string extract = "cd /d \"" + tmp.string() + "\" && tar -xzf \"" + tgz.filename().string() + "\"";
+#else
+        const std::string extract = "cd \"" + tmp.string() + "\" && tar -xzf \"" + tgz.filename().string() + "\"";
+#endif
+        if (tgz.empty() || std::system(extract.c_str()) != 0) {
             std::cerr << "polyglot: could not extract the npm package\n";
             return 1;
         }
