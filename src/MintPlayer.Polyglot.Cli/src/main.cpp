@@ -1204,7 +1204,8 @@ int runLsp(const std::vector<std::string>&) {
                          "\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"type\","
                          "\"method\",\"property\",\"variable\",\"parameter\",\"enumMember\"],"
                          "\"tokenModifiers\":[\"declaration\"]},\"full\":true}},"
-                         "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"0.0.1\"}}");
+                         "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"" +
+                             std::string(kVersion) + "\"}}");
         } else if (method == "shutdown") {
             lspReply(id, "null");
         } else if (method == "exit") {

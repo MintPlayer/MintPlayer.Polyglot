@@ -17,9 +17,11 @@ New-Item -ItemType Directory -Force $feed | Out-Null
 $cached = Join-Path $env:USERPROFILE ".nuget/packages/mintplayer.polyglot.msbuild"
 if (Test-Path $cached) { Remove-Item -Recurse -Force $cached }
 
-# 0. Pack from the working tree into a private feed.
+# 0. Pack from the working tree into a private feed. The version is read from the csproj so a bump
+# can never desync this gate from what actually packs.
+$pkgVer = ([xml](Get-Content (Join-Path $repo "src/MintPlayer.Polyglot.MSBuild/MintPlayer.Polyglot.MSBuild.csproj"))).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 dotnet pack (Join-Path $repo "src/MintPlayer.Polyglot.MSBuild") -c Release -o $feed --nologo -v q | Out-Null
-Check (Test-Path (Join-Path $feed "MintPlayer.Polyglot.MSBuild.0.0.1.nupkg")) "package packs from the working tree"
+Check (Test-Path (Join-Path $feed "MintPlayer.Polyglot.MSBuild.$pkgVer.nupkg")) "package packs from the working tree ($pkgVer)"
 
 # Consumer solution: App (uses the package + a .pg) and Downstream (references App, has its own .pg,
 # must NOT transpile it).
@@ -55,7 +57,7 @@ var q = new Point(3, 4);
 System.Console.WriteLine(p.x + q.x + q.y);
 "@ | Set-Content (Join-Path $app "Program.cs")
 
-dotnet add $app package MintPlayer.Polyglot.MSBuild --version 0.0.1 | Out-Null
+dotnet add $app package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
 
 # 1. dotnet build alone compiles the .pg types into the assembly.
 dotnet build $app --nologo -v q 2>&1 | Out-Null
