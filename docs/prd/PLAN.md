@@ -1946,7 +1946,7 @@ demand (real users, not speculation) + `.pg` grammar frozen. Until then only sli
   "TS/C# input"). The P19 manifest may *declare* `"frontend": {"parserId": …}` naming a Core-registered
   parser — symmetric packaging, asymmetric implementation.
 
-## P21 — Watch mode: `--watch` on the CLI + editor surfacing — 🚧 designed (2026-07-04; PRD §4.13, 4-agent investigation)
+## P21 — Watch mode: `--watch` on the CLI + editor surfacing — ✅ done (designed + built 2026-07-04; PRD §4.13, 4-agent investigation)
 
 Keep the emitted output files fresh as `.pg` sources change — the disk-file sibling of P17's in-memory
 preview (preview = unsaved on-type emit to a virtual doc; watch = saved-file on-change emit to disk; never
@@ -2034,6 +2034,11 @@ stated guarantee).
   on the consuming project — C#-host path only, standalone TS/Python/PHP watch = the CLI. *Gate:*
   `run-nuget.ps1` gains a check that the packed `.targets` contributes `@(PolyglotFile)` to `Watch`
   (`dotnet msbuild -t:GenerateWatchList` or item inspection on the consumer).
+  **✅ built (2026-07-04).** One `ItemGroup` in the `.targets` (`Watch Include="@(PolyglotFile)"`,
+  killed by `PolyglotWatch=false`; per-file opt-out = `Watch="false"` metadata, which flows through the
+  transform). Gate check uses `dotnet msbuild -getItem:Watch` on the restored consumer (evaluates the
+  project the same way dotnet watch's `GenerateWatchList` does) — `run-nuget.ps1` is now 9 checks, all
+  green. README (CLI `--watch`, editor watch, NuGet dotnet-watch note) + the VSIX overview updated.
 - **Deferred (recorded, not scheduled):** a native `ReadDirectoryChangesW`/inotify watcher behind the seam
   (only if polling latency/battery ever matters); incremental rebuilds via a module-graph dirty set; a
   `--clear` flag; a VS-native watch command (demand-gated — would force the thin MEF VSIX into

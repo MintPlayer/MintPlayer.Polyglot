@@ -672,7 +672,7 @@ work. Until then the hardcoded list is a knowing stopgap, flagged at the code si
 
 **Decision — staged and gated (§3.F):** (1) now, near-free: Rosetta cheat-sheets ("Polyglot for C#/TS developers", incl. the `let`-immutability false-friend) + lean on the shipped P17 preview — the need is already ~80% met by `.pg`'s deliberately TS-flavored surface and the live preview; (2) the cheap `Frontend` seam lands post-P19 (P20 slice 1) to keep the door open; (3) one-way `polyglot convert` only on *observed* demand — it doubles as the cheapest honest demand test for a skin; (4) the C# authoring skin only if convert proves sustained demand and the grammar is frozen — compiled-in, `.pgcs`, dialect-banner framing, skin-scoped refusal diagnostics; (5) the TS skin never.
 
-### 4.13 Watch mode (design — 2026-07-04; investigated by a 4-agent team)
+### 4.13 Watch mode (design — 2026-07-04; investigated by a 4-agent team; **implemented 2026-07-04**, PLAN §P21)
 
 **The user need.** `polyglot build --watch`: keep the emitted output files on disk fresh as `.pg` sources change, so a host project consuming them (a C# solution, a bundler-watched TS app) rebuilds live. This is the **disk-file sibling of §4.9's preview** — keep the mental model crisp: *preview = unsaved in-memory emit, on-type, virtual doc; watch = saved-file emit to disk, on-change*. They can momentarily differ; they are deliberately not unified (watch never routes through the LSP). Then surface watch in both editor extensions. Slice plan: PLAN §P21.
 
@@ -805,7 +805,7 @@ Full detail in [PLAN.md](PLAN.md). Summary:
 - **P20 — Alternative input syntaxes ("skins").** 🚦 Gated, not scheduled (2026-07-02; §4.12 + §3.F). Rosetta
   docs shipped (slice 0); the `Frontend` seam, one-way `polyglot convert`, and the `.pgcs` C# authoring skin
   open only on observed external demand with the grammar frozen. The TS skin is refused permanently.
-- **P21 — Watch mode.** 🚧 Designed (2026-07-04; §4.13, from a 4-agent investigation). `polyglot build --watch`
+- **P21 — Watch mode.** ✅ Done (2026-07-04; §4.13, from a 4-agent investigation). `polyglot build --watch`
   / `check --watch`: a CLI-layer polling watcher over the exact transitive input set (a `RecordingResolver`
   captures the closure — zero Core change), a frozen tsc-style console protocol parsed by a `$polyglot-watch`
   VS Code problemMatcher (task type + status-bar toggle in the extension), and one line in the MSBuild NuGet

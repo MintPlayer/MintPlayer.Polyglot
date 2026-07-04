@@ -75,6 +75,13 @@ Check ((Get-Item $gen).LastWriteTimeUtc -eq $stamp) "incremental build skips tra
 dotnet build $app --nologo -v q 2>&1 | Out-Null
 Check ((Get-Item $gen).LastWriteTimeUtc -ne $stamp) "touching the .pg re-transpiles"
 
+# 2b. dotnet-watch integration (P21 slice 5): the package declares the .pg sources as `Watch` items —
+# the item group dotnet watch honors beyond its Compile/EmbeddedResource defaults — so `dotnet watch
+# build|run` on a consuming project re-transpiles on every .pg edit. -getItem evaluates the project the
+# same way the watcher's GenerateWatchList does.
+$watchItems = dotnet msbuild $app -getItem:Watch -nologo 2>&1 | Out-String
+Check ($watchItems -match 'shapes\.pg') "the .pg sources are declared as dotnet-watch Watch items"
+
 # 3. dotnet clean removes the generated file (FileWrites).
 dotnet clean $app --nologo -v q 2>&1 | Out-Null
 Check (-not (Test-Path $gen)) "dotnet clean removes the generated .cs"

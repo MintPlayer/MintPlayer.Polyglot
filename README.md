@@ -71,12 +71,16 @@ One-shot verification (build → unit tests → differential conformance; needs 
 ## Using the CLI
 
 ```
-polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>]
-polyglot check <input.pg> [--json]        # diagnostics only, no output files
-polyglot fmt   <input.pg>                 # canonical re-print of the source
-polyglot lsp                              # the language server (spawned by editors, stdio JSON-RPC)
-polyglot install <plugin-dir | npm-name>  # add a target plugin to the user cache
+polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>] [--watch]
+polyglot check <input.pg> [--json] [--watch]   # diagnostics only, no output files
+polyglot fmt   <input.pg>                      # canonical re-print of the source
+polyglot lsp                                   # the language server (spawned by editors, stdio JSON-RPC)
+polyglot install <plugin-dir | npm-name>       # add a target plugin to the user cache
 ```
+
+`--watch` keeps the emitted outputs fresh: it rebuilds whenever the input, any transitively imported
+`.pg`, or `pgconfig.json` changes (all configured targets per rebuild). A failed rebuild prints the
+diagnostics, keeps watching, and never touches the last good outputs.
 
 A `pgconfig.json` next to (or above) your `.pg` files replaces the flags:
 
@@ -129,16 +133,20 @@ the rule DSL, validation, testing, publishing), with
 The **[MintPlayer Polyglot](https://marketplace.visualstudio.com/items?itemName=mintplayer.polyglot-lang)**
 VS Code extension ships syntax highlighting plus the full language server: live diagnostics,
 go-to-definition (including into the std library), hover, completion, rename, formatting, per-target
-reserved-name checks, and a **live generated-output preview** ("Show Generated Output" opens the emitted
-C#/TS/Python beside your `.pg` as you type). Highlighting works out of the box; the language features
-need the CLI — set `polyglot.cliPath` or have `polyglot` on `PATH`.
+reserved-name checks, a **live generated-output preview** ("Show Generated Output" opens the emitted
+C#/TS/Python beside your `.pg` as you type), and **watch mode** (a status-bar toggle / `polyglot` task
+type runs `build --watch` in the background with errors in the Problems panel). Highlighting works out
+of the box; the language features need the CLI — set `polyglot.cliPath` or have `polyglot` on `PATH`.
 
 ## .NET build integration
 
 `MintPlayer.Polyglot.MSBuild` (in [`src/MintPlayer.Polyglot.MSBuild/`](src/MintPlayer.Polyglot.MSBuild/),
 not yet on nuget.org) makes `dotnet build` transpile `.pg` files straight into an ordinary C# project —
-incremental, clean-aware, non-transitive, no extra SDK. Pack it locally with `dotnet pack` (it embeds the
-CLI you built); the end-to-end gate is `tests/msbuild/run-nuget.ps1`.
+incremental, clean-aware, non-transitive, no extra SDK. The `.pg` sources are registered as `Watch`
+items, so **`dotnet watch build|run` re-transpiles on every `.pg` edit** — which is also the watch story
+inside Visual Studio for .NET hosts (opt out with `Watch="false"` metadata or `PolyglotWatch=false`).
+Pack it locally with `dotnet pack` (it embeds the CLI you built); the end-to-end gate is
+`tests/msbuild/run-nuget.ps1`.
 
 ## Layout
 
