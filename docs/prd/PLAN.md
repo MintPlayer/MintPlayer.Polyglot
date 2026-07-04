@@ -2020,6 +2020,14 @@ stated guarantee).
   terminate is VS Code's). Version-skew guard: an old CLI without `--watch` fails the task loudly; no
   capability probe in v1. Testbench `tasks.json` + README. *Gate:* manual — Problems entries appear, clear,
   and reappear across edit→error→fix cycles; `vsce package` still green.
+  **✅ built (2026-07-04).** Deviations from the sketch, both simplifications: `file` is REQUIRED in the
+  task definition (the CLI needs an entry; "watch the pgconfig root" isn't a CLI mode), and the execution is
+  a `ProcessExecution` (no shell quoting surface). `provideTasks` offers a ready-made task for the active
+  `.pg`; `resolveTask` serves tasks.json definitions; the status-bar eye/spin toggle and the
+  start/stop commands all run THE TASK (one code path; `onDidStartTask`/`onDidEndTask` drive the indicator,
+  so tasks started via Run Task update it too). Extension bumped to **0.1.0** (publishes on the next master
+  push). `node --check` + `vsce package` green (323 files). The interactive Problems-panel cycle check is
+  the user's F5 step, as with P16d.
 - **Slice 5 — the .NET-host path (Visual Studio for free).** `<Watch Include="@(PolyglotFile)" />` in the
   NuGet's `.targets` (dotnet watch honors the explicit `Watch` item group; users opt out per-file with
   `Watch="false"` metadata). README + VSIX overview note: VS/.NET users get watch via `dotnet watch build|run`

@@ -92,6 +92,7 @@ function activate(context) {
   vscode.workspace.textDocuments.forEach(asPolyglot);
 
   setupGeneratedPreview(context);
+  setupWatch(context);
 
   client.start().catch((err) => {
     vscode.window.showWarningMessage(
@@ -241,6 +242,102 @@ function setupGeneratedPreview(context) {
     vscode.workspace.onDidCloseTextDocument(refreshTree)
   );
   refreshTree();
+}
+
+// Watch mode (PRD §4.13 / PLAN §P21): keep the REAL emitted output files on disk fresh as .pg sources
+// change — the disk-file sibling of the in-memory preview above (preview = unsaved on-type emit to a
+// virtual doc; watch = saved-file on-change emit to disk). The work is one `polyglot build <file> --watch`
+// process wrapped in a VS Code background task, so the Problems panel comes free via the $polyglot-watch
+// problemMatcher (package.json — its regexes are the CLI's frozen watch protocol, golden-tested by
+// tests/watch/run-watch.ps1). The status-bar toggle and the commands RUN THE TASK — one code path, and
+// terminate/restart is VS Code's job, not ours.
+function setupWatch(context) {
+  const TASK_TYPE = 'polyglot';
+
+  // Build the background Task for one entry file. `file` may be workspace-relative (tasks.json) or
+  // absolute (the startWatch command passes the active editor's path).
+  const makeWatchTask = (definition, scope) => {
+    const folder = scope && scope.uri ? scope.uri.fsPath : undefined;
+    const file = path.isAbsolute(definition.file)
+      ? definition.file
+      : folder ? path.resolve(folder, definition.file) : definition.file;
+    const args = ['build', file, '--watch'];
+    if (definition.target) args.push('--target', definition.target);
+    const task = new vscode.Task(
+      definition,
+      scope || vscode.TaskScope.Workspace,
+      `watch ${path.basename(file)}${definition.target ? ` (${definition.target})` : ''}`,
+      TASK_TYPE,
+      new vscode.ProcessExecution(resolveCli(), args),
+      '$polyglot-watch'
+    );
+    task.isBackground = true;
+    task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Dedicated };
+    return task;
+  };
+
+  context.subscriptions.push(vscode.tasks.registerTaskProvider(TASK_TYPE, {
+    // Offer a ready-made "polyglot: watch" task for the active .pg (discoverable via Run Task).
+    provideTasks: () => {
+      const e = vscode.window.activeTextEditor;
+      if (!e || e.document.languageId !== 'polyglot' || e.document.uri.scheme !== 'file') return [];
+      const folder = vscode.workspace.getWorkspaceFolder(e.document.uri);
+      return [makeWatchTask({ type: TASK_TYPE, task: 'watch', file: e.document.uri.fsPath }, folder)];
+    },
+    // Give tasks.json-defined polyglot tasks their execution (VS Code hands us the bare definition).
+    resolveTask: (task) => {
+      const def = task.definition;
+      if (def.type !== TASK_TYPE || def.task !== 'watch' || !def.file) return undefined;
+      return makeWatchTask(def, task.scope && task.scope.uri ? task.scope : undefined);
+    }
+  }));
+
+  // Status-bar toggle: $(eye) idle -> click starts watching the active .pg; $(sync~spin) running ->
+  // click stops. State tracks task lifecycle events so tasks started any other way (Run Task,
+  // tasks.json) drive the same indicator.
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
+  context.subscriptions.push(status);
+  let running = null; // the active TaskExecution, if any
+
+  const renderStatus = () => {
+    if (running) {
+      status.text = '$(sync~spin) polyglot watch';
+      status.tooltip = `Watching ${running.task.name.replace(/^watch /, '')} — click to stop`;
+      status.command = 'polyglot.stopWatch';
+    } else {
+      status.text = '$(eye) polyglot watch';
+      status.tooltip = 'Start watching the active .pg (emit output files on change)';
+      status.command = 'polyglot.startWatch';
+    }
+    const e = vscode.window.activeTextEditor;
+    const relevant = running || (e && e.document.languageId === 'polyglot' && e.document.uri.scheme === 'file');
+    if (relevant) status.show(); else status.hide();
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('polyglot.startWatch', async () => {
+      if (running) { vscode.window.showInformationMessage('Polyglot: a watch task is already running.'); return; }
+      const e = vscode.window.activeTextEditor;
+      if (!e || e.document.languageId !== 'polyglot' || e.document.uri.scheme !== 'file') {
+        vscode.window.showInformationMessage('Polyglot: open a .pg file to start watching it.');
+        return;
+      }
+      const folder = vscode.workspace.getWorkspaceFolder(e.document.uri);
+      await vscode.tasks.executeTask(
+        makeWatchTask({ type: TASK_TYPE, task: 'watch', file: e.document.uri.fsPath }, folder));
+    }),
+    vscode.commands.registerCommand('polyglot.stopWatch', () => {
+      if (running) running.terminate();
+    }),
+    vscode.tasks.onDidStartTask((ev) => {
+      if (ev.execution.task.definition.type === TASK_TYPE) { running = ev.execution; renderStatus(); }
+    }),
+    vscode.tasks.onDidEndTask((ev) => {
+      if (running && ev.execution === running) { running = null; renderStatus(); }
+    }),
+    vscode.window.onDidChangeActiveTextEditor(renderStatus)
+  );
+  renderStatus();
 }
 
 function deactivate() {

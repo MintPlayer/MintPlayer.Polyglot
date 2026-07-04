@@ -1,0 +1,17 @@
+{
+  // Watch task example: `Terminal > Run Task... > polyglot: watch hello.pg`. Diagnostics land in the
+  // Problems panel via the $polyglot-watch background matcher; emitted outputs (per the pgconfig
+  // `targets` set) refresh on every save. The status-bar eye toggle runs the same kind of task for
+  // whichever .pg is active.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "polyglot",
+      "task": "watch",
+      "file": "hello.pg",
+      "label": "polyglot: watch hello.pg",
+      "isBackground": true,
+      "problemMatcher": "$polyglot-watch"
+    }
+  ]
+}

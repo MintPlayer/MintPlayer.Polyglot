@@ -14,6 +14,17 @@ readable **C#**, **TypeScript**, **Python**, and **PHP**.
   single target on demand.
 - **Per-target reserved-name checks** — identifiers that would collide with a configured target's
   generated code or runtime globals squiggle live, named per target.
+- **Watch mode** — keep the real emitted output files on disk fresh as you save. The status-bar
+  **eye toggle** (or *Polyglot: Start Watch*) runs `polyglot build <file> --watch` as a background
+  task for the active `.pg`; errors land in the **Problems panel** (`$polyglot-watch` matcher), and a
+  failed rebuild never touches the last good outputs. Also available as a task type for `tasks.json`:
+
+  ```json
+  { "type": "polyglot", "task": "watch", "file": "hello.pg", "problemMatcher": "$polyglot-watch" }
+  ```
+
+  (Preview shows *unsaved* code in a virtual tab as you type; watch emits *saved* files to disk —
+  they complement each other.)
 
 ## Requirements
 
