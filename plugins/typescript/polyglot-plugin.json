@@ -367,6 +367,30 @@
         },
         {
           "get": "spec.delimited.list.close"
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "node.elements.count",
+                    "0"
+                  ]
+                },
+                {
+                  "tmpl": [
+                    " as ",
+                    {
+                      "type": "node.elem"
+                    },
+                    "[]"
+                  ]
+                }
+              ]
+            ],
+            "else": ""
+          }
         }
       ]
     },
@@ -1129,7 +1153,7 @@
             }
           }
         },
-        "})()"
+        "throw new Error(\"non-exhaustive match\"); })()"
       ]
     },
     "Lambda": {
@@ -1208,7 +1232,7 @@
         {
           "line": {
             "tmpl": [
-              "type ",
+              "export type ",
               {
                 "fn": "ident",
                 "args": [
@@ -1224,7 +1248,7 @@
         {
           "line": {
             "tmpl": [
-              "const ",
+              "export const ",
               {
                 "fn": "ident",
                 "args": [
@@ -1465,7 +1489,7 @@
     },
     "tsRecordHead": {
       "tmpl": [
-        "class ",
+        "export class ",
         {
           "fn": "ident",
           "args": [
@@ -1607,6 +1631,9 @@
                       }
                     ]
                   },
+                  {
+                    "fn": "generics"
+                  },
                   "): boolean"
                 ]
               },
@@ -1740,6 +1767,18 @@
                     },
                     {
                       "indent": [
+                        {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "eq": [
+                                    "stmt.catchesHaveGuard",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "seq": [
                         {
                           "line": "let __handled = false;"
                         },
@@ -1884,6 +1923,188 @@
                                 }
                               ]
                             ]
+                          }
+                        }
+                                  ]
+                                }
+                              ]
+                            ],
+                            "else": {
+                              "seq": [
+                                {
+                                  "mapDecl": "stmt.catches",
+                                  "each": {
+                                    "case": {
+                                      "when": [
+                                        [
+                                          {
+                                            "eq": [
+                                              "item.hasType",
+                                              "true"
+                                            ]
+                                          },
+                                          {
+                                            "seq": [
+                                              {
+                                                "line": {
+                                                  "tmpl": [
+                                                    {
+                                                      "case": {
+                                                        "when": [
+                                                          [
+                                                            {
+                                                              "eq": [
+                                                                "item.#",
+                                                                "0"
+                                                              ]
+                                                            },
+                                                            "if ("
+                                                          ]
+                                                        ],
+                                                        "else": "else if ("
+                                                      }
+                                                    },
+                                                    "__e instanceof ",
+                                                    {
+                                                      "type": "item.type"
+                                                    },
+                                                    ") {"
+                                                  ]
+                                                }
+                                              },
+                                              {
+                                                "indent": [
+                                                  {
+                                                    "case": {
+                                                      "when": [
+                                                        [
+                                                          {
+                                                            "eq": [
+                                                              "item.hasBinding",
+                                                              "true"
+                                                            ]
+                                                          },
+                                                          {
+                                                            "line": {
+                                                              "tmpl": [
+                                                                "const ",
+                                                                {
+                                                                  "fn": "ident",
+                                                                  "args": [
+                                                                    {
+                                                                      "get": "item.binding"
+                                                                    }
+                                                                  ]
+                                                                },
+                                                                " = __e;"
+                                                              ]
+                                                            }
+                                                          }
+                                                        ]
+                                                      ]
+                                                    }
+                                                  },
+                                                  {
+                                                    "stmts": "item.body"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "line": "}"
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      ],
+                                      "else": {
+                                        "seq": [
+                                          {
+                                            "line": {
+                                              "tmpl": [
+                                                {
+                                                  "case": {
+                                                    "when": [
+                                                      [
+                                                        {
+                                                          "eq": [
+                                                            "item.#",
+                                                            "0"
+                                                          ]
+                                                        },
+                                                        ""
+                                                      ]
+                                                    ],
+                                                    "else": "else "
+                                                  }
+                                                },
+                                                "{"
+                                              ]
+                                            }
+                                          },
+                                          {
+                                            "indent": [
+                                              {
+                                                "case": {
+                                                  "when": [
+                                                    [
+                                                      {
+                                                        "eq": [
+                                                          "item.hasBinding",
+                                                          "true"
+                                                        ]
+                                                      },
+                                                      {
+                                                        "line": {
+                                                          "tmpl": [
+                                                            "const ",
+                                                            {
+                                                              "fn": "ident",
+                                                              "args": [
+                                                                {
+                                                                  "get": "item.binding"
+                                                                }
+                                                              ]
+                                                            },
+                                                            " = __e;"
+                                                          ]
+                                                        }
+                                                      }
+                                                    ]
+                                                  ]
+                                                }
+                                              },
+                                              {
+                                                "stmts": "item.body"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "line": "}"
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "case": {
+                                    "when": [
+                                      [
+                                        {
+                                          "eq": [
+                                            "stmt.hasCatchAll",
+                                            "false"
+                                          ]
+                                        },
+                                        {
+                                          "line": "else { throw __e; }"
+                                        }
+                                      ]
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
                           }
                         }
                       ]
@@ -2095,6 +2316,7 @@
           "each": {
             "line": {
               "tmpl": [
+                "export ",
                 {
                   "case": {
                     "when": [
@@ -2186,6 +2408,7 @@
     },
     "tsFnSig": {
       "tmpl": [
+        "export ",
         {
           "case": {
             "when": [
@@ -2268,7 +2491,7 @@
     },
     "tsExtSig": {
       "tmpl": [
-        "function ",
+        "export function ",
         {
           "fn": "ident",
           "args": [
@@ -2333,7 +2556,7 @@
     },
     "tsClassHead": {
       "tmpl": [
-        "class ",
+        "export class ",
         {
           "fn": "ident",
           "args": [
@@ -2557,7 +2780,7 @@
       "block": {
         "head": {
           "tmpl": [
-            "interface ",
+            "export interface ",
             {
               "fn": "ident",
               "args": [
@@ -2678,7 +2901,7 @@
     "UnionDecl": {
       "line": {
         "tmpl": [
-          "type ",
+          "export type ",
           {
             "fn": "ident",
             "args": [
@@ -3246,11 +3469,11 @@
     },
     "std.io": {
       "print": "console.log(String(x))",
-      "readText": "require('fs').readFileSync(path, 'utf8')",
-      "writeText": "require('fs').writeFileSync(path, content)",
-      "appendText": "require('fs').appendFileSync(path, content)",
-      "fileExists": "require('fs').existsSync(path)",
-      "deleteFile": "require('fs').unlinkSync(path)"
+      "readText": "process.getBuiltinModule('fs').readFileSync(path, 'utf8')",
+      "writeText": "process.getBuiltinModule('fs').writeFileSync(path, content)",
+      "appendText": "process.getBuiltinModule('fs').appendFileSync(path, content)",
+      "fileExists": "process.getBuiltinModule('fs').existsSync(path)",
+      "deleteFile": "process.getBuiltinModule('fs').unlinkSync(path)"
     },
     "std.math": {
       "Math.PI": "Math.PI",

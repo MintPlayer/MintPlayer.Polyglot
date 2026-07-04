@@ -2137,6 +2137,58 @@ every position (text assertions the stdout-differential gate structurally cannot
 with 0 warnings**. Versions: CLI + NuGet → **0.1.3**, csharp plugin → **0.2.1** (typescript/python/php
 plugins unchanged — the fix is C#-only).
 
+## Hotfix 0.1.4 — the TS emitter emits a script, not an importable ES module (2026-07-05, found live by the MintPlayer.AI FruitCake pilot)
+
+The FruitCake pilot could **run** the generated `.ts` but not **import** it: the TS backend emitted every
+top-level declaration bare (`class Foo`, `function bar`, `type T`, `const g`), so from any consumer (an
+Angular app, a sibling `.ts`) there was **nothing to import**, and the file tripped `isolatedModules`. The
+C# side is unaffected because C# compiles all files together; TS needs explicit `export`s. The
+stdout-differential gate (run-diff) could never catch this — `node prog.ts` still executes `main()` and
+prints the right thing; the output is just unusable *as a library*. Same faithfulness class as the `??`
+(0.1.1) and nullable (0.1.3) hotfixes: a real consumer scenario the run-only gate is blind to.
+
+**Fix (typescript plugin `polyglot-plugin.json` only — the export change; plus one Core primitive for the
+try/catch strict-cleanliness below):**
+1. **`export` on every top-level declaration** — Enum/Union/Interface/Record/Class/Function/Extension +
+   module globals. Node treats the file as ESM and still runs the trailing `main();`, so script *and*
+   library use coexist (the reporter verified an exported core drives a full real consumer, type-clean
+   under `--strict --isolatedModules`). Nested class members (methods) are untouched.
+2. **std.io File bindings `require('fs')` → `process.getBuiltinModule('fs')`** — making the module ESM
+   removes the CommonJS `require`, so the old binding would throw `ReferenceError` at runtime under ESM.
+   `process.getBuiltinModule` is synchronous and works in **both** ESM and CJS (Node ≥ 22.3), so std.io
+   File works regardless of module system.
+
+**Systemic prevention — the library-consumption gate** (`tests/library/run-library.ps1`, wired into
+`build-and-test.ps1`): for every conformance program it emits TS, asserts **every** top-level declaration
+is `export`ed (the exact regression guard), writes a sibling module that imports the emitted one, and
+type-checks the whole set in ONE `tsc` pass under `strict`/`isolatedModules` (+ the flags a modern bundler
+applies). Green = the emitted module is an importable, strict-clean ES module — not just a runnable script.
+Type-checking is hermetic (a tiny `env.d.ts` declares the Node surface the std bindings touch — no
+`@types/node`/network). Together with `run-nullable.ps1` (emitted C# compiles clean under
+`<Nullable>enable</>;<TreatWarningsAsErrors>`), both targets are now gated **as libraries, not scripts** —
+the drip the reporter asked to end.
+
+**Diligence — the gate immediately found four more pre-existing strict-consumption defects, all fixed at
+the root (typescript plugin only, except one Core primitive):**
+- **Match expressions** typed as `T | undefined` / "not all code paths return" (TS7030): the IIFE `if`
+  chain had no final return. Added an unreachable trailing `throw` (sema already proves exhaustiveness) —
+  stdout-neutral, makes TS's control-flow see the match always returns/throws.
+- **Generic record `equals`** emitted `equals(other: Box)` — the type param `<T>` was dropped (TS2314).
+  Appended `{"fn":"generics"}` so it's `equals(other: Box<T>)`.
+- **Empty list literal `[]`** inferred `any[]` (TS7034/7005). Emitted `[] as T[]` for the empty case
+  (the `ir::ListLit` node carries its element type via `node.elem`).
+- **Multi-clause typed `catch`** in a value-returning function: the `__handled`-flag dispatch defeats TS
+  flow analysis, so the function was seen as maybe-not-returning (TS2366). The `__handled` model is kept
+  for **guarded** catches (it is C#-faithful: type-matches-but-guard-fails falls through to the next
+  clause, incl. same-type-multiple-guards), but **guard-free** catches now emit a clean
+  `if / else if / … / else { throw __e }` chain that TS proves exhaustive. The switch is driven by a new
+  engine fact **`stmt.catchesHaveGuard`** (symmetric with `stmt.hasCatchAll`; the sole Core change) — all
+  three backends' differential output is unchanged (stdout-neutral; the guarded `__handled` path is
+  byte-identical to before).
+
+Versions: CLI + NuGet → **0.1.4**, typescript plugin → **0.2.0** (csharp/python/php plugins unchanged —
+the emission fixes are TS-only; the `catchesHaveGuard` fact is inert for backends that don't read it).
+
 > **P11 "Remaining for shipped" (per-RID CI packaging + NuGet publish + the npm sibling) is now scoped as
 > its own phase — see [P22](#p22) below.** The design confirmed the NuGet's consume-side `.targets` is
 > already fully multi-RID; the real dependency is a portable (CMake) build + a native build matrix.

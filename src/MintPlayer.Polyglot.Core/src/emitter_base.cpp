@@ -1052,6 +1052,11 @@ std::string StmtCtx::get(const std::string& path) const {
                 if (c.type.name.empty() && !c.guard) return "true";
             return "false";
         }
+        if (path == "stmt.catchesHaveGuard") { // any guarded catch forces the fall-through dispatch shape
+            for (const auto& c : t.catches)
+                if (c.guard) return "true";
+            return "false";
+        }
         std::size_t i = 0;
         std::string f;
         if (path.rfind("stmt.catches.", 0) == 0 && splitIndexed(path, 13, i, f) && i < t.catches.size()) {

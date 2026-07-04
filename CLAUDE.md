@@ -41,7 +41,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.2
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.4
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -387,6 +387,26 @@ nullable warnings corpus-wide (39/41 clean; the other 2 are pre-existing, non-nu
 `catch` binding and CS1718 the deliberate `v != v` NaN idiom in the fruitcake/precedence test programs).
 New: `nullable_positions.pg` (C#/TS/Python agree `4`) + `tests/nullable/run-nullable.ps1` (annotations-
 preserved + NRT-clean gate, wired into `build-and-test.ps1`). CLI + NuGet → 0.1.3, csharp plugin → 0.2.1.
+**Hotfix 0.1.4 ✅ (2026-07-05) — TS emits a script, not an importable ES module** (PLAN §Hotfix 0.1.4;
+found live by the MintPlayer.AI FruitCake pilot): the TS backend emitted every top-level decl bare (`class
+Foo`, `function bar`, `type T`), so the output could be *run* (`node prog.ts` runs `main()`) but not
+*imported* — nothing to `import`, and it tripped `isolatedModules`. run-diff (stdout-only) is structurally
+blind to this. Fix (typescript plugin only, + one Core primitive): **`export` on every top-level decl**
+(records/classes/functions/enums/unions/interfaces/extensions/globals; script+library coexist via the
+trailing `main();`), and std.io File's `require('fs')` → `process.getBuiltinModule('fs')` (ESM+CJS-safe,
+since the exports make the file ESM where `require` is undefined). **Systemic prevention:** a new
+**library-consumption gate** (`tests/library/run-library.ps1`, wired into `build-and-test.ps1`) emits each
+program's TS, asserts every top-level decl is `export`ed, imports it from a sibling module, and type-checks
+the whole corpus in one `tsc` pass under `strict`/`isolatedModules` — green = importable strict-clean ES
+module, not just a runnable script (hermetic: a tiny `env.d.ts`, no `@types/node`). With `run-nullable.ps1`
+(C# side) both targets are now gated **as libraries**. The gate immediately caught four more pre-existing
+strict-consumption defects, all root-fixed (TS plugin only, except one Core fact): match IIFEs typed
+`T|undefined` (added an unreachable trailing `throw` — sema already proves exhaustiveness); generic record
+`equals(other: Box)` dropped `<T>` (→ `Box<T>`); empty `[]` inferred `any[]` (→ `[] as T[]` via
+`node.elem`); and multi-clause typed `catch` in a value-returning fn (TS2366) — **guard-free** catches now
+emit a TS-exhaustive `if/else if/else { throw }` chain while **guarded** catches keep the C#-faithful
+`__handled` fallthrough, switched by a new engine fact **`stmt.catchesHaveGuard`** (the sole Core change;
+all backends' stdout unchanged). CLI + NuGet → 0.1.4, typescript plugin → 0.2.0.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
 LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 + 4–5 built — cross-platform CLI
