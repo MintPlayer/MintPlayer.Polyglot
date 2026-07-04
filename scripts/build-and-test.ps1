@@ -46,6 +46,10 @@ Write-Host "`n==> Parser-fidelity round-trip (all samples)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\fidelity\run-roundtrip.ps1")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nROUND-TRIP FAILED."; exit 1 }
 
+Write-Host "`n==> Watch-mode protocol gate (--watch)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\watch\run-watch.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nWATCH GATE FAILED."; exit 1 }
+
 if (-not $SkipConformance) {
     Write-Host "`n==> Differential conformance (C# vs TS)"
     & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-diff.ps1")

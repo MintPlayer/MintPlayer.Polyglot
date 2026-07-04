@@ -1991,6 +1991,11 @@ stated guarantee).
   disk; introduce an error → assert the diagnostic line shape, the non-zero count sentinel, and **last-good
   outputs untouched**; fix it → recovery cycle; kill → clean exit. The regexes in the gate are the same ones
   the VS Code matcher will ship — drift breaks the gate, not the Problems panel.
+  **✅ built (2026-07-04).** `tests/watch/run-watch.ps1`, 15 assertions, green first run (the protocol
+  shipped in slice 1). Locks additionally: the rebuild trigger is an edit to an **imported** module (closure
+  watching, not entry-only), a **protocol sweep** (every watch-stream line must be a sentinel / diagnostic /
+  `  -> ` output line — no strays can creep in), and **stdout-only** (stderr must stay empty). Wired into
+  `scripts/build-and-test.ps1` between the fidelity and conformance stages (needs no dotnet/node).
 - **Slice 3 — closure + pgconfig dynamics.** `pgconfig.json` joins the watched set → change = full context
   re-resolution (root/lib/targets/forbiddenIdentifiers — the tsc-restarts-on-tsconfig behavior; recorded
   caveat: a `targets` entry needing a not-yet-loaded plugin still needs a restart). Poll the computed
