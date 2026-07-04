@@ -1971,6 +1971,16 @@ stated guarantee).
   flag → clean exit 0; targets/plugins resolve ONCE at startup (registry is load-once — manifest edits need a
   restart, recorded). *Gate:* unit tests for `PollingFileWatcher` (temp files: modify / rename-over / delete
   / re-baseline) + `RecordingResolver`; all existing suites untouched.
+  **✅ built (2026-07-04).** `src/MintPlayer.Polyglot.Cli/src/watch.hpp` (header-only, namespace
+  `mintplayer::polyglot::cli`, so the tests project unit-tests it by adding `Cli\src` to its includes);
+  `watchBuildOnce` mirrors `runBuild`'s target resolution and **dedups diagnostic lines within a cycle**
+  (identical frontend errors repeat per target — the end sentinel counts unique lines, not lines×targets);
+  `check --watch` = the same loop, reference target, no writes (`--json` + `--watch` refuses, 64). One
+  protocol deviation from the design text, deliberate: the end sentinel uses an ASCII hyphen (`N error(s)
+  - watching for changes`), not an em-dash — a Windows console codepage must never be able to mangle a
+  matcher anchor. 10 new unit tests green; smoke-tested live (build → edit → rebuild → error keeps
+  last-good outputs + prints `ABSPATH(3,9): error: undeclared name 'oops'` → kill). All suites green
+  (unit, 40/40 C#/TS, 39/39 Python, samples 10/10).
 - **Slice 2 — the frozen console protocol + golden gate.** Watch-stream output (and ONLY the watch stream —
   `build`/`check` keep gcc-style `path:line:col:`): begin `[HH:MM:SS] polyglot watch: building <entry>`
   (later `rebuilding`), diagnostics `ABSPATH(LINE,COL): error: message` (MSBuild-canonical, absolute paths —
