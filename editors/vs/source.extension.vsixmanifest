@@ -2,7 +2,7 @@
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
     <Identity Id="MintPlayer.Polyglot.VisualStudio.7d1e4c90-3a2b-4f6e-9c11-2b8f5a0d6e34" Version="0.0.1" Language="en-US" Publisher="MintPlayer" />
-    <DisplayName>Polyglot Language Support</DisplayName>
+    <DisplayName>MintPlayer Polyglot for Visual Studio</DisplayName>
     <Description xml:space="preserve">Syntax highlighting and a language server (diagnostics, go-to-definition, hover, document symbols, semantic tokens, formatting, references, rename, completion) for Polyglot (.pg) files. Drives the same `polyglot lsp` server as the VS Code extension.</Description>
   </Metadata>
   <Installation>
