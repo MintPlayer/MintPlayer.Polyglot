@@ -572,13 +572,36 @@
               ]
             },
             "hole": {
-              "tmpl": [
-                "{",
-                {
-                  "emit": "item"
-                },
-                "}"
-              ]
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "item.typeIsBool",
+                        "true"
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        "{(",
+                        {
+                          "emit": "item"
+                        },
+                        " ? \"true\" : \"false\")}"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    "{",
+                    {
+                      "emit": "item"
+                    },
+                    "}"
+                  ]
+                }
+              }
             }
           }
         },

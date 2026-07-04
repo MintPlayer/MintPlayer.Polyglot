@@ -1877,7 +1877,22 @@ runs so plugin targets squiggle too) and appends to the published diagnostics �
 refuse now squiggles live, labeled with the target that reserves it (spawn-tested: TS `tag` + a
 pgconfig-forbidden name squiggle on didOpen; C# correctly silent on `tag`).
 
-## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
+**Stringification faithfulness ✅ (2026-07-04) — three latent print/interp divergences fixed, found by
+the README's hello-world.** The conformance suite exercised interpolation exactly ONCE (fruitcake, int
+holes only), so these never tripped a gate: **Python** stringified whole floats as `25.0` (C#/TS: `25`)
+and interp bools as `True` — in bare `print` AND in every `${hole}`; **C#** interp bools spelled `True`
+(`bool.ToString()`) where TS says `true` — C# and TS disagreed with each other; **PHP** string-casts
+`true` to `"1"` and `false` to `""`. Canonical spelling (matching the print shims): lowercase
+`true`/`false`, whole floats without `.0`. Fixes, all rule/overlay data: a generic **engine** addition —
+child-path type-class predicates (`<path>.typeIsBool`/`.typeIsFloat`/… resolve any child a rule can name;
+`isBoolTypeName` added) — then C#/PHP interp holes type-gate bool → ternary spelling, Python's interp
+holes go through a new `_pg_str` prelude (bool + whole-float aware, `require`-keyed) and its `print`
+overlay gets the float branch inline (overlays can't `require`). New conformance program
+**`interp_print.pg`** (whole/frac/negative floats, both bools, i64/i32/string — bare print + interp +
+through-arithmetic) locks it: 40/40 C#/TS, 39/39 Python. Byte gate: only `.py` files changed (the print
+overlay in each), zero `.cs`/`.ts` churn. Honest residue: generically-typed holes (`${t}` with `T=bool`
+on C#) still spell natively — needs a runtime-dispatched C# fmt helper; exotic float ranges (`1e16+`,
+`inf`/`nan` spellings) remain per-target — §3.D honesty, recorded not hidden. Plugins bumped to 0.2.0. — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
 skin over the *same* §3.A semantics (Reason-over-OCaml), never "compile arbitrary C#". The

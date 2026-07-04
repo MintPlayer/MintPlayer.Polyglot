@@ -38,7 +38,8 @@
     "rethrow": "raise",
     "preludes": {
       "asyncEntry": "import asyncio\n",
-      "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n"
+      "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
+      "fstr": "def _pg_str(x):\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if isinstance(x, float) and x.is_integer() and abs(x) < 1e16:\n        return str(int(x))\n    return str(x)\n"
     },
     "tables": {
       "localDecl": {
@@ -2035,7 +2036,13 @@
         },
         "hole": {
           "tmpl": [
-            " + str(",
+            {
+              "fn": "require",
+              "args": [
+                "fstr"
+              ]
+            },
+            " + _pg_str(",
             {
               "emit": "item"
             },
@@ -2678,7 +2685,7 @@
       "List.removeAt": "$this.pop($0)"
     },
     "std.io": {
-      "print": "__builtins__.print(str(x).lower() if isinstance(x, bool) else x)"
+      "print": "__builtins__.print((\"true\" if x else \"false\") if isinstance(x, bool) else (str(int(x)) if isinstance(x, float) and x.is_integer() and abs(x) < 1e16 else x))"
     },
     "std.math": {
       "Math.PI": "__import__('math').pi",
