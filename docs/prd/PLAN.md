@@ -2095,7 +2095,7 @@ consumers). Versions: CLI + NuGet → **0.1.1** (plugins unchanged — the fix i
 > its own phase — see [P22](#p22) below.** The design confirmed the NuGet's consume-side `.targets` is
 > already fully multi-RID; the real dependency is a portable (CMake) build + a native build matrix.
 
-## P22 — Cross-platform CLI (Linux) + multi-RID distribution — 🚧 slices 1–2 built, slices 3–6 designed (2026-07-04; PRD §4.14, 4-agent investigation)
+## P22 — Cross-platform CLI (Linux) + multi-RID distribution — 🚧 slices 1–2 + 4–5 built, slices 3 & 6 remain (2026-07-04; PRD §4.14, 4-agent investigation)
 
 > **Scope: macOS is NOT planned** (user decision, 2026-07-04). The shipping RID set is **win-x64,
 > linux-x64, linux-arm64**. The `osx-x64`/`osx-arm64` design (native mac legs, ad-hoc codesign, the
@@ -2169,27 +2169,37 @@ Windows** (the existing gates prove it).
   runner, closing the "no php.exe on the dev box" TODO. *Gate:* `run-php.ps1 -Cli <path>` green against the
   full conformance set on a runner with php; the FruitCake north-star program agrees byte-for-byte.
 
-- **Slice 4 — the release matrix + provenance.** Rework `release.yml` into: the existing `build-windows`
-  job (unchanged MSBuild/vswhere path, + add the python gate) → a `build-linux` matrix (`ubuntu-22.04`
-  linux-x64, `ubuntu-22.04-arm` linux-arm64) each CMake-building Release, running the unit exe +
-  `run-diff`/`run-python`/`run-php`, tarring `polyglot-<rid>.tar.gz` (tar preserves +x) and attesting
-  provenance per job (archive + inner binary). *Gate:* a dispatch run produces all three artifacts
-  (win-x64 zip + two linux tarballs), each `gh attestation verify`-able; the fan-in `github-release` job
-  attaches them (deriving the tag by running the linux-x64 binary on a dispatch, `github.ref_name` on a
-  tag push). *(macOS legs — `macos-15-intel` osx-x64, `macos-15` osx-arm64, with ad-hoc `codesign -s - -f`
-  — are **not planned**; retained here only for if that changes.)*
+- **Slice 4 — the release matrix + provenance.** ✅ **built (2026-07-04).** `release.yml` reworked into four
+  jobs: `build-windows` (unchanged MSBuild/vswhere path + the existing run-diff gate → `polyglot-win-x64.zip`);
+  a `build-linux` **matrix** — `ubuntu-22.04` (linux-x64, `full_gates`) + `ubuntu-22.04-arm` (linux-arm64,
+  native runner) — each `apt install cmake g++` → CMake Release build → `--version` → `polyglot-tests` unit
+  suite → a **smoke transpile from a foreign cwd** (proves plugin discovery next to the binary) → tar
+  `polyglot-<rid>.tar.gz` (preserves +x); the linux-x64 leg additionally runs **run-diff** (setup-dotnet 10 +
+  setup-node 22). Each build job **attests provenance** (archive + inner binary). Two fan-ins: `github-release`
+  (downloads all artifacts, tag = `github.ref_name` on a tag push else the linux-x64 binary's `--version`,
+  `gh release create` with every archive) and `nuget` (slice 5). *Design deviations, deliberate:* the
+  cross-process conformance on linux is **run-diff on x64 only** — `run-python` + `run-php` on the linux leg
+  are deferred (run-php is slice 3, unwritten; the differential is arch-independent and fully covered on the
+  Windows leg + locally), and arm64 is build+unit+smoke (its binary correctness is the same engine the unit
+  suite exercises). *(macOS legs — `macos-15-intel`/`macos-15` + ad-hoc `codesign` — **not planned**,
+  retained in the design only.)* *CI-only-verifiable* (runner labels, matrix attestation, artifact fan-in) —
+  needs a dispatch run; the YAML parses and the build/pack halves are proven locally (below).
 
-- **Slice 5 — the fat multi-RID NuGet.** Generalize the csproj pack: CI stages each built binary as
-  `staging/<rid>/polyglot[.exe]` + a `plugins/` copy; the csproj packs `staging/**` with `PackagePath=tools\`
-  when `-p:PolyglotStageRoot=…` is set, and keeps the historical single-RID local pack when unset (so
-  `run-nuget.ps1` stays green offline). A `nuget` fan-in job in `release.yml` downloads all matrix artifacts,
-  lays out `tools/<rid>/`, packs once, and pushes to nuget.org + GitHub Packages (**NuGet becomes tag-gated**
-  — remove `publish-nuget` from `publish-plugins.yml`; the npm plugin packages stay master-push). The
-  consume-side `.targets` is **unchanged** (already RID-generic + chmod). Pack on a way that stamps 0755 into
-  the archive OR rely on the existing `.targets` chmod (belt-and-suspenders Grpc.Tools lacks). *Gate:*
-  `run-nuget.ps1` still green locally (single-RID fallback); a Linux CI job installs the multi-RID package
-  into a fresh C# project and `dotnet build` transpiles a `.pg` with **no committed output** (the north-star
-  gate) — the `tools/linux-x64/polyglot` is found, chmod'd, and run.
+- **Slice 5 — the fat multi-RID NuGet.** ✅ **built + north-star verified on real Linux (2026-07-04).** The
+  csproj packs the whole CI-staged tree when `-p:PolyglotStageRoot=<abs>` is set (`None Include="…\**\*"
+  PackagePath="tools\"`, `%(RecursiveDir)` = the `<rid>/…` path preserved), and keeps the historical
+  single-RID win-x64 pack when unset (so `run-nuget.ps1` stays green offline). The `nuget` fan-in job in
+  `release.yml` downloads every artifact, unzips/untars them into `staging/<rid>/`, packs once, and pushes to
+  nuget.org + GitHub Packages; **NuGet is now tag-gated** (the `publish-nuget` job was removed from
+  `publish-plugins.yml`; the npm plugin packages stay master-push). The consume-side `.targets` is
+  **unchanged** (already RID-generic + `chmod +x`). **Verified locally:** (a) a staged tree
+  (win-x64 real exe + real WSL-built linux-x64/arm64 binaries + plugins) packs to a nupkg with exactly
+  `tools/{win-x64/polyglot.exe, linux-x64/polyglot, linux-arm64/polyglot}` each + 4 plugins; (b)
+  `run-nuget.ps1` still green (9/9, single-RID fallback); (c) **the north-star** — on WSL Ubuntu, a fresh
+  net9.0 console app referencing that nupkg (local feed) ran `dotnet build` → the `.targets` resolved +
+  chmod'd + ran `tools/linux-x64/polyglot`, transpiled `shapes.pg`→`obj/…/polyglot/shapes.cs`, and
+  `dotnet run` printed **7**. That is `dotnet build` transpiling `.pg` on Linux with no committed output —
+  the phase's whole reason for being. *CI-only-verifiable:* nuget.org/GitHub-Packages push.
 
 - **Slice 6 — the npm sibling (last; NuGet-on-Linux is the driving need).** The esbuild
   `optionalDependencies` pattern: an `@mintplayer/polyglot` wrapper (JS `bin` shim doing

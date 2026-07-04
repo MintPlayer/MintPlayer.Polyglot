@@ -1,33 +1,36 @@
 name: Release the CLI
 
-# Publishes a GitHub Release with the prebuilt win-x64 CLI: builds Release with the VS 2026 (v145)
-# MSBuild, gates it (unit tests + the C#/TS differential conformance suite), stages polyglot.exe +
-# its plugins/ as polyglot-win-x64.zip, and ATTESTS BUILD PROVENANCE before uploading.
+# Builds the native `polyglot` CLI for every shipped RID, publishes a GitHub Release with all archives,
+# and packs + pushes the multi-RID MintPlayer.Polyglot.MSBuild NuGet (which EMBEDS the CLI + plugins per
+# RID, so `dotnet build` transpiles .pg on Windows AND Linux CI). Shipping set: win-x64, linux-x64,
+# linux-arm64 (macOS is not planned — PRD §4.14 / PLAN §P22).
 #
-# Provenance (the "was this exe really built from that commit?" answer): actions/attest-build-provenance
-# generates a signed SLSA provenance statement (Sigstore; GitHub's built-in artifact attestations) that
-# binds the artifact's sha256 to THIS repository, workflow, run, and source commit. Visitors verify with:
+# Topology:
+#   build-windows          MSBuild v145 (VS 2026) → polyglot-win-x64.zip     + provenance
+#   build-linux (matrix)   CMake/g++ on native runners → polyglot-<rid>.tar.gz + provenance
+#   github-release (fan-in) attaches every archive to a GitHub Release
+#   nuget          (fan-in) lays out tools/<rid>/ from all artifacts, packs once, pushes
 #
-#   gh attestation verify polyglot-win-x64.zip --repo MintPlayer/MintPlayer.Polyglot
+# Provenance: actions/attest-build-provenance binds each artifact's sha256 to THIS repo/workflow/run/commit
+# (Sigstore/SLSA). Verify: gh attestation verify <archive-or-binary> --repo MintPlayer/MintPlayer.Polyglot.
 #
-# The bare polyglot.exe inside the zip is attested too, so the same command works on the extracted exe.
-# Verification fails for any binary not produced by this workflow — a tampered or locally-rebuilt exe
-# has a different digest and no matching attestation.
-#
-# Trigger: push a version tag (`git tag v0.1.0 && git push origin v0.1.0`), or run manually —
-# workflow_dispatch derives the tag from the CLI's own --version and creates it at the built commit.
-# Re-releasing an existing tag fails loudly (the version-bump reminder, same stance as VsixPublisher).
+# Trigger: push a version tag (`git tag v0.1.2 && git push origin v0.1.2`), or run manually —
+# workflow_dispatch derives the tag from the linux-x64 CLI's own --version and creates it at this commit.
+# NuGet push is skip-duplicate, so it is a no-op until the csproj <Version> is bumped.
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  build-windows:
     runs-on: windows-latest
     permissions:
-      contents: write     # create the release (and, on dispatch, its tag)
       id-token: write     # Sigstore OIDC identity for signing the attestation
       attestations: write # store the attestation in the repo's attestation registry
     steps:
@@ -55,8 +58,7 @@ jobs:
         shell: pwsh
         run: x64\Release\MintPlayer.Polyglot.Tests.exe
 
-      # The conformance runner compiles its C# oracle against net10.0 - pin the SDK instead of
-      # gambling on the image's default set.
+      # The conformance runner compiles its C# oracle against net10.0 - pin the SDK.
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
         with:
@@ -67,19 +69,15 @@ jobs:
         run: pwsh tests/conformance/run-diff.ps1 -Cli x64/Release/MintPlayer.Polyglot.Cli.exe
 
       - name: Stage and zip (polyglot.exe + plugins)
-        id: stage
         shell: pwsh
         run: |
-          $ver = (x64\Release\MintPlayer.Polyglot.Cli.exe --version).Trim()
           New-Item -ItemType Directory -Force stage | Out-Null
           Copy-Item x64\Release\MintPlayer.Polyglot.Cli.exe stage\polyglot.exe
           Copy-Item -Recurse x64\Release\plugins stage\plugins
           Compress-Archive -Path stage\* -DestinationPath polyglot-win-x64.zip
-          # The zip must be self-sufficient: exe + the four target plugins.
           $names = (Get-ChildItem stage\plugins -Directory).Name -join ','
           if (-not $names) { Write-Error "staging produced no plugins - the zip would be a CLI with zero targets"; exit 1 }
-          Write-Host "staged CLI $ver with plugins: $names"
-          "version=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "staged win-x64 CLI with plugins: $names"
 
       - name: Attest build provenance (zip + exe)
         uses: actions/attest-build-provenance@v2
@@ -88,16 +86,149 @@ jobs:
             polyglot-win-x64.zip
             stage/polyglot.exe
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: polyglot-win-x64
+          path: polyglot-win-x64.zip
+          if-no-files-found: error
+
+  build-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runs-on: ubuntu-22.04     # glibc 2.35 floor (PRD §4.14)
+            full_gates: true          # the shipping-critical RID: run the differential too
+          - rid: linux-arm64
+            runs-on: ubuntu-22.04-arm  # native ARM64 runner (GA + free for public repos)
+            full_gates: false          # build + unit + smoke only (differential is arch-independent)
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain (cmake, g++)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++
+
+      - name: Build the native CLI (CMake, Release)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+          ./build/polyglot --version
+
+      - name: Gate - unit tests
+        run: ./build/polyglot-tests
+
+      - name: Gate - smoke transpile (plugins found next to the binary, not cwd)
+        run: |
+          printf 'fn main() {\n  print(6 * 7)\n}\n' > /tmp/smoke.pg
+          (cd /tmp && "$GITHUB_WORKSPACE/build/polyglot" build /tmp/smoke.pg --target csharp --out /tmp/ --lib io)
+          grep -q 'print(6 \* 7)' /tmp/smoke.cs
+
+      - name: Set up .NET 10
+        if: matrix.full_gates
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Node 22 (TS type-stripping for the differential)
+        if: matrix.full_gates
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Gate - differential conformance (C# vs TS)
+        if: matrix.full_gates
+        run: pwsh tests/conformance/run-diff.ps1 -Cli ./build/polyglot
+
+      - name: Package (tar.gz preserves the +x bit)
+        run: tar czf "polyglot-${{ matrix.rid }}.tar.gz" -C build polyglot plugins
+
+      - name: Attest build provenance (tarball + binary)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            polyglot-${{ matrix.rid }}.tar.gz
+            build/polyglot
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: polyglot-${{ matrix.rid }}
+          path: polyglot-${{ matrix.rid }}.tar.gz
+          if-no-files-found: error
+
+  github-release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the release (and, on dispatch, its tag)
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: polyglot-*
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            # dispatch: derive from the linux-x64 binary we just built (this runner is linux-x64).
+            mkdir -p /tmp/ver && tar xzf dist/polyglot-linux-x64/polyglot-linux-x64.tar.gz -C /tmp/ver
+            ver="$(/tmp/ver/polyglot --version | tr -d '[:space:]')"
+            echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create the GitHub Release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ("${{ github.ref }}".StartsWith("refs/tags/")) {
-            $tag = "${{ github.ref_name }}"
-            gh release create $tag polyglot-win-x64.zip --title "polyglot $tag (win-x64)" --generate-notes
-          } else {
-            $tag = "v${{ steps.stage.outputs.version }}"
-            gh release create $tag polyglot-win-x64.zip --target "${{ github.sha }}" --title "polyglot $tag (win-x64)" --generate-notes
-          }
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          shopt -s globstar nullglob
+          archives=(dist/**/polyglot-*.zip dist/**/polyglot-*.tar.gz)
+          if [[ ${#archives[@]} -eq 0 ]]; then echo "::error::no archives to release"; exit 1; fi
+          args=(--title "polyglot ${{ steps.tag.outputs.tag }}" --generate-notes)
+          if [[ "${{ github.ref }}" != refs/tags/* ]]; then args+=(--target "${{ github.sha }}"); fi
+          gh release create "${{ steps.tag.outputs.tag }}" "${archives[@]}" "${args[@]}"
+
+  nuget:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write     # push to GitHub Packages
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: polyglot-*
+
+      - name: Lay out tools/<rid>/ staging tree
+        run: |
+          set -euo pipefail
+          mkdir -p staging/win-x64
+          unzip -o dist/polyglot-win-x64/polyglot-win-x64.zip -d staging/win-x64
+          for rid in linux-x64 linux-arm64; do
+            mkdir -p "staging/$rid"
+            tar xzf "dist/polyglot-$rid/polyglot-$rid.tar.gz" -C "staging/$rid"
+          done
+          echo "== staged tree ==" && find staging -maxdepth 2 -type d | sort
+
+      - name: Pack the multi-RID NuGet
+        run: dotnet pack src/MintPlayer.Polyglot.MSBuild -c Release -o artifacts "-p:PolyglotStageRoot=$GITHUB_WORKSPACE/staging"
+
+      - name: Push to nuget.org
+        run: dotnet nuget push artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.PUBLISH_TO_NUGET_ORG }}" --skip-duplicate
+
+      - name: Push to GitHub Packages
+        run: dotnet nuget push artifacts/*.nupkg --source https://nuget.pkg.github.com/MintPlayer/index.json --api-key "${{ github.token }}" --skip-duplicate

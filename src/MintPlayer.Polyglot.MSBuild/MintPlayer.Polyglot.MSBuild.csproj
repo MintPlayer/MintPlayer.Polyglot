@@ -20,12 +20,26 @@
     <!-- Never flows to consumers-of-consumers: build/ (not buildTransitive/) + DevelopmentDependency. -->
     <DevelopmentDependency>true</DevelopmentDependency>
 
-    <!-- Where the packed CLI comes from; CI overrides with the Release/per-RID layout. -->
+    <!-- Local/dev single-RID pack: where the win-x64 CLI comes from. -->
     <PolyglotCliDir Condition="'$(PolyglotCliDir)' == ''">$(MSBuildThisFileDirectory)..\..\x64\Debug\</PolyglotCliDir>
+    <!-- CI multi-RID pack: an absolute path to a staging dir laid out as <rid>/{polyglot[.exe],plugins/…}
+         (release.yml assembles it from every build artifact). When set, it wins over the local pack. -->
+    <PolyglotStageRoot Condition="'$(PolyglotStageRoot)' == ''"></PolyglotStageRoot>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="build\**" Pack="true" PackagePath="build\" />
+  </ItemGroup>
+
+  <!-- CI: pack the whole staged tools/<rid>/ tree verbatim (PackagePath ends in \ so %(RecursiveDir) —
+       the <rid>/… path — is preserved). Ships win-x64 + linux-x64 + linux-arm64 in one fat package. -->
+  <ItemGroup Condition="'$(PolyglotStageRoot)' != ''">
+    <None Include="$(PolyglotStageRoot)\**\*" Pack="true" PackagePath="tools\" />
+  </ItemGroup>
+
+  <!-- Local/dev fallback (no staging): the historical single-RID win-x64 pack, so the offline build and
+       tests/msbuild/run-nuget.ps1 stay green without a full release matrix. -->
+  <ItemGroup Condition="'$(PolyglotStageRoot)' == ''">
     <None Include="$(PolyglotCliDir)MintPlayer.Polyglot.Cli.exe" Pack="true" PackagePath="tools\win-x64\polyglot.exe" />
     <None Include="$(MSBuildThisFileDirectory)..\..\plugins\**\polyglot-plugin.json" Pack="true"
           PackagePath="tools\win-x64\plugins" />

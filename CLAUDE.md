@@ -373,13 +373,14 @@ SyntaxError; comparison×comparison = Python chaining). Byte-audit proved the on
 CLI+NuGet → 0.1.1. New: `precedence_null_coalesce.pg` + `precedence_bitwise.pg` (42/42 C#/TS, 41/41 py).
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
-LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 built — cross-platform CLI (Linux) +
-multi-RID distribution** (PRD §4.14, PLAN §P22, 4-agent investigation 2026-07-04; **macOS not planned** —
-shipping set = Windows + Linux, osx design retained for reference): Core is already 100% portable C++, so a
-parallel CMake build (VS-2026 `.vcxproj` untouched) + CLI-only POSIX fixes (done, verified on WSL Linux) +
-a Windows+Linux release matrix + the fat multi-RID NuGet (the `.targets` is already RID-generic) lets
-`dotnet build` transpile `.pg` on a Linux runner; also closes the PHP runtime differential and adds the
-esbuild-pattern npm sibling. **P21** (watch mode — ✅ done, above).
+LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 + 4–5 built — cross-platform CLI
+(Linux) + multi-RID distribution** (PRD §4.14, PLAN §P22, 4-agent investigation 2026-07-04; **macOS not
+planned** — shipping set = Windows + Linux, osx design retained for reference): Core is already 100%
+portable C++; done + verified on WSL Linux = CLI-only POSIX fixes + a parallel CMake build (VS-2026
+`.vcxproj` untouched) + a Windows+Linux(x64/arm64) release matrix + the fat multi-RID NuGet (the `.targets`
+was already RID-generic) — **the north star is proven: `dotnet build` transpiles `.pg` on Linux via the
+NuGet**. Remaining: the PHP runtime differential (slice 3) + the esbuild-pattern npm sibling (slice 6);
+release/nuget-push YAML is CI-only-verifiable (needs a dispatch run). **P21** (watch mode — ✅ done, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

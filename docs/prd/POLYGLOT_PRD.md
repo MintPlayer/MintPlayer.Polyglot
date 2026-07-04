@@ -891,17 +891,17 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   VS Code problemMatcher (task type + status-bar toggle in the extension), and one line in the MSBuild NuGet
   (`<Watch Include="@(PolyglotFile)" />`) so `dotnet watch` gives Visual Studio the C#-host path for free.
   Slice plan: PLAN §P21.
-- **P22 — Cross-platform CLI (Linux) + multi-RID distribution.** 🚧 Slices 1–2 built, 3–6 designed
-  (macOS **not planned** — osx design retained for reference; shipping set = Windows + Linux)
-  (2026-07-04; §4.14, from a 4-agent investigation). The POSIX resilience fixes + command-quoting audit
-  landed immediately (a shared portable exe-path lookup, XDG cache dir, the `>nul`→`/dev/null` fix, all
-  `#ifdef`-guarded and Windows-gate-green), and a parallel `CMakeLists.txt` (`.vcxproj` untouched) + a
-  drift-parity guard now **build + pass the unit suite on real Linux** (WSL, static-linked, plugins found
-  via `/proc/self/exe`). Remaining: a
-  Windows + Linux release matrix with per-job provenance attestation, the fat multi-RID NuGet (the
-  `.targets` is already RID-generic — only the pack changes), the PHP runtime differential on the Linux
-  leg, and the esbuild-pattern npm sibling. North star: `dotnet build` transpiles `.pg` on a Linux runner.
-  Slice plan: PLAN §P22.
+- **P22 — Cross-platform CLI (Linux) + multi-RID distribution.** 🚧 Slices 1–2 + 4–5 built; slices 3 & 6
+  remain (macOS **not planned** — osx design retained for reference; shipping set = Windows + Linux)
+  (2026-07-04; §4.14, from a 4-agent investigation). Built: the POSIX resilience fixes + command-quoting
+  audit (shared portable exe-path lookup, XDG cache dir, `>nul`→`/dev/null`, all `#ifdef`-guarded); a
+  parallel `CMakeLists.txt` (`.vcxproj` untouched) + drift-parity guard; a **Windows + Linux (x64/arm64)
+  release matrix** with per-job provenance attestation; and the **fat multi-RID NuGet** (win-x64 +
+  linux-x64 + linux-arm64 in one package; the `.targets` was already RID-generic). **North star reached
+  and verified on real Linux (WSL):** `dotnet build` on a net9.0 app consuming the multi-RID NuGet resolves
+  + chmods + runs `tools/linux-x64/polyglot`, transpiles the `.pg`, and runs — no committed output.
+  Remaining: the PHP runtime differential (slice 3) and the esbuild-pattern npm sibling (slice 6). Slice
+  plan: PLAN §P22.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
