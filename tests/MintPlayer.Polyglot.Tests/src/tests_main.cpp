@@ -110,6 +110,12 @@ std::string runRule(const std::string& json, const engine::EvalContext& ctx, boo
 class MapModuleResolver : public ModuleResolver {
 public:
     explicit MapModuleResolver(std::map<std::string, std::string> modules) : modules_(std::move(modules)) {}
+    // gcc 11 finds MapModuleResolver({{k, v}, …}) ambiguous between the map ctor and the copy/move ctors
+    // (gcc 13 and MSVC resolve it). A dedicated initializer_list ctor is preferred for braced-init on every
+    // compiler, so the call sites stay `{{k, v}}` and compile on the whole supported floor (gcc 10+).
+    MapModuleResolver(std::initializer_list<std::pair<std::string, std::string>> modules) {
+        for (const auto& [spec, src] : modules) modules_.emplace(spec, src);
+    }
     std::optional<ResolvedModule> resolve(const std::string& spec, const std::string&) override {
         auto it = modules_.find(spec);
         if (it == modules_.end()) return std::nullopt;
