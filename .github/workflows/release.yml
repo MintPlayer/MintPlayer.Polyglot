@@ -1,0 +1,103 @@
+name: Release the CLI
+
+# Publishes a GitHub Release with the prebuilt win-x64 CLI: builds Release with the VS 2026 (v145)
+# MSBuild, gates it (unit tests + the C#/TS differential conformance suite), stages polyglot.exe +
+# its plugins/ as polyglot-win-x64.zip, and ATTESTS BUILD PROVENANCE before uploading.
+#
+# Provenance (the "was this exe really built from that commit?" answer): actions/attest-build-provenance
+# generates a signed SLSA provenance statement (Sigstore; GitHub's built-in artifact attestations) that
+# binds the artifact's sha256 to THIS repository, workflow, run, and source commit. Visitors verify with:
+#
+#   gh attestation verify polyglot-win-x64.zip --repo MintPlayer/MintPlayer.Polyglot
+#
+# The bare polyglot.exe inside the zip is attested too, so the same command works on the extracted exe.
+# Verification fails for any binary not produced by this workflow — a tampered or locally-rebuilt exe
+# has a different digest and no matching attestation.
+#
+# Trigger: push a version tag (`git tag v0.1.0 && git push origin v0.1.0`), or run manually —
+# workflow_dispatch derives the tag from the CLI's own --version and creates it at the built commit.
+# Re-releasing an existing tag fails loudly (the version-bump reminder, same stance as VsixPublisher).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write     # create the release (and, on dispatch, its tag)
+      id-token: write     # Sigstore OIDC identity for signing the attestation
+      attestations: write # store the attestation in the repo's attestation registry
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate a VS 2026 (v145) MSBuild
+        id: msbuild
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -prerelease -version '[18.0,)' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { Write-Error "No VS 2026 (v145-capable) MSBuild on this runner."; exit 1 }
+          "path=$msbuild" >> $env:GITHUB_OUTPUT
+
+      - name: Build the native CLI (Release x64)
+        shell: pwsh
+        run: |
+          & "${{ steps.msbuild.outputs.path }}" MintPlayer.Polyglot.sln /p:Configuration=Release /p:Platform=x64 /m
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # MSBuild exit codes have lied before - prove the exe runs.
+          x64\Release\MintPlayer.Polyglot.Cli.exe --version
+
+      - name: Gate - unit tests
+        shell: pwsh
+        run: x64\Release\MintPlayer.Polyglot.Tests.exe
+
+      # The conformance runner compiles its C# oracle against net10.0 - pin the SDK instead of
+      # gambling on the image's default set.
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Gate - differential conformance (C# vs TS)
+        shell: pwsh
+        run: pwsh tests/conformance/run-diff.ps1 -Cli x64/Release/MintPlayer.Polyglot.Cli.exe
+
+      - name: Stage and zip (polyglot.exe + plugins)
+        id: stage
+        shell: pwsh
+        run: |
+          $ver = (x64\Release\MintPlayer.Polyglot.Cli.exe --version).Trim()
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item x64\Release\MintPlayer.Polyglot.Cli.exe stage\polyglot.exe
+          Copy-Item -Recurse x64\Release\plugins stage\plugins
+          Compress-Archive -Path stage\* -DestinationPath polyglot-win-x64.zip
+          # The zip must be self-sufficient: exe + the four target plugins.
+          $names = (Get-ChildItem stage\plugins -Directory).Name -join ','
+          if (-not $names) { Write-Error "staging produced no plugins - the zip would be a CLI with zero targets"; exit 1 }
+          Write-Host "staged CLI $ver with plugins: $names"
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Attest build provenance (zip + exe)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            polyglot-win-x64.zip
+            stage/polyglot.exe
+
+      - name: Create the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ("${{ github.ref }}".StartsWith("refs/tags/")) {
+            $tag = "${{ github.ref_name }}"
+            gh release create $tag polyglot-win-x64.zip --title "polyglot $tag (win-x64)" --generate-notes
+          } else {
+            $tag = "v${{ steps.stage.outputs.version }}"
+            gh release create $tag polyglot-win-x64.zip --target "${{ github.sha }}" --title "polyglot $tag (win-x64)" --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }

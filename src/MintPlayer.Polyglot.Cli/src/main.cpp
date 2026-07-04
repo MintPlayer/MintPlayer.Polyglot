@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -28,6 +29,8 @@
 #include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
+#include "watch.hpp"
+
 using namespace mintplayer::polyglot;
 
 namespace fs = std::filesystem;
@@ -40,14 +43,16 @@ void printUsage() {
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
-        << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
+        << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot fmt <input.pg>\n"
-        << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>]\n"
+        << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
         << "  polyglot install <plugin-dir | npm-package>\n"
         << "\n"
         << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
+        << "         --watch rebuilds whenever the input, an imported .pg, or pgconfig.json changes\n"
+        << "         (a failed rebuild keeps watching and never touches the last good outputs).\n"
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
         << "  check  Reports parse/type diagnostics without emitting. --json prints a machine-readable\n"
         << "         array (line/col/severity/message) for editor tooling.\n"
@@ -176,18 +181,22 @@ public:
         : root_(std::move(root)), entryDir_(std::move(entryDir)) {}
 
     std::optional<ResolvedModule> resolve(const std::string& spec, const std::string& importer) override {
-        fs::path file;
-        if (spec.rfind("./", 0) == 0 || spec.rfind("../", 0) == 0) {
-            fs::path base = importer.empty() ? entryDir_ : fs::path(importer).parent_path();
-            file = base / (spec + ".pg");
-        } else {
-            std::string rel = spec;
-            for (char& c : rel) if (c == '.') c = '/';
-            file = root_ / (rel + ".pg");
-        }
+        fs::path file = candidate(spec, importer);
         std::string src;
         if (!readFile(file, src)) return std::nullopt;
         return ResolvedModule{fs::weakly_canonical(file).string(), std::move(src)};
+    }
+
+    // The file this resolver WOULD load for a specifier — exposed so watch mode can also poll the paths
+    // of unresolved imports (creating the missing file then triggers the rebuild users expect).
+    fs::path candidate(const std::string& spec, const std::string& importer) const {
+        if (spec.rfind("./", 0) == 0 || spec.rfind("../", 0) == 0) {
+            fs::path base = importer.empty() ? entryDir_ : fs::path(importer).parent_path();
+            return (base / (spec + ".pg")).lexically_normal();
+        }
+        std::string rel = spec;
+        for (char& c : rel) if (c == '.') c = '/';
+        return (root_ / (rel + ".pg")).lexically_normal();
     }
 
 private:
@@ -199,6 +208,15 @@ void reportDiagnostics(const fs::path& input, const EmitResult& result) {
     for (const auto& d : result.diagnostics) {
         std::cerr << input.string() << ":" << d.pos.line << ":" << d.pos.col
                   << ": error: " << d.message << "\n";
+    }
+}
+
+const char* severityName(Severity s) {
+    switch (s) {
+        case Severity::Warning: return "warning";
+        case Severity::Info:    return "info";
+        case Severity::Hint:    return "hint";
+        default:                return "error";
     }
 }
 
@@ -220,12 +238,188 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& o
     return true;
 }
 
+// ============================ watch mode (`--watch`) — PRD §4.13 / PLAN §P21 ============================
+// The frozen watch console protocol (golden-tested; the VS Code `$polyglot-watch` background problemMatcher
+// anchors on these exact shapes — drift breaks tests/watch/run-watch.ps1 before it breaks the editor):
+//   [HH:MM:SS] polyglot watch: building <abs entry>       (first cycle; later cycles say "rebuilding")
+//   <ABSPATH>(<line>,<col>): error: <message>              (MSBuild-canonical; watch stream only)
+//   [HH:MM:SS] polyglot watch: N error(s) - watching for changes
+// Deliberately ASCII-only and un-localized (a Windows console codepage must not be able to mangle the
+// matcher anchors), 24h clock, everything on stdout (one predictable stream for task runners).
+
+// [HH:MM:SS] wall-clock stamp for the sentinel lines.
+std::string clockStamp() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "[%02d:%02d:%02d]", tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return buf;
+}
+
+#ifdef _WIN32
+// The console-control handler runs on an OS-injected thread; it may only poke the watcher's atomic stop
+// flag. Returning TRUE claims the event so the process exits via the loop (cleanly, after the current
+// cycle) instead of being killed mid-write.
+cli::FileWatcher* g_watchStopTarget = nullptr;
+BOOL WINAPI watchCtrlHandler(DWORD type) {
+    if (g_watchStopTarget &&
+        (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT)) {
+        g_watchStopTarget->stop();
+        return TRUE;
+    }
+    return FALSE;
+}
+#endif
+
+// One watch rebuild cycle: compile (+ write, unless checkOnly) every configured target, printing
+// MSBuild-canonical diagnostics, and report the exact input closure to re-arm the watcher with.
+// Identical frontend diagnostics repeat per target, so lines are deduped within the cycle (the count
+// the end sentinel reports is unique error lines, not lines-times-targets).
+struct WatchCycle {
+    int errors = 0;
+    std::vector<fs::path> watched;
+};
+
+WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, const fs::path& rootArg,
+                          const std::string& targetArg, const std::string& libArgIn, bool checkOnly) {
+    WatchCycle c;
+    const fs::path absInput = fs::absolute(input).lexically_normal();
+    c.watched.push_back(absInput);
+
+    std::set<std::string> printed; // per-cycle dedup of diagnostic lines
+    auto emitDiag = [&](const std::string& line, Severity sev) {
+        if (!printed.insert(line).second) return;
+        std::cout << line << "\n";
+        if (sev == Severity::Error) ++c.errors;
+    };
+    auto emitDiagAt = [&](const Diagnostic& d) {
+        emitDiag(absInput.string() + "(" + std::to_string(d.pos.line) + "," + std::to_string(d.pos.col) +
+                     "): " + severityName(d.severity) + ": " + d.message,
+                 d.severity);
+    };
+    auto emitTopLevel = [&](const std::string& message) {
+        emitDiag(absInput.string() + "(1,1): error: " + message, Severity::Error);
+    };
+
+    std::string source;
+    if (!readFile(input, source)) {
+        emitTopLevel("cannot open input file");
+        return c;
+    }
+
+    // Absolute so the pgconfig walk-up actually walks for a relative input (a relative "." has no
+    // parent to walk to) — the chain below and the closure paths must be pollable absolute paths anyway.
+    const fs::path entryDir =
+        fs::absolute(input.has_parent_path() ? input.parent_path() : fs::path(".")).lexically_normal();
+    PgConfig pc = loadPgConfig(entryDir);
+    // Watch every pgconfig.json CANDIDATE between the entry and the config that answered (or the
+    // filesystem root when none did): editing the active config re-resolves the whole context next
+    // cycle (targets/lib/root/forbiddenIdentifiers), and creating a NEARER one takes over.
+    for (fs::path d = entryDir;; d = d.parent_path()) {
+        c.watched.push_back(d / "pgconfig.json");
+        if (pc.found && d == pc.dir) break;
+        if (!d.has_parent_path() || d.parent_path() == d) break;
+    }
+
+    fs::path root = rootArg;
+    std::string libArg = libArgIn;
+    if (root.empty() && pc.found && !pc.root.empty()) root = pc.root;
+    if (libArg.empty() && pc.found) libArg = pc.lib;
+    if (root.empty()) root = entryDir;
+    FileModuleResolver fileResolver(root, entryDir);
+    cli::RecordingResolver resolver(fileResolver);
+
+    LibConfig lib = parseLibList(libArg);
+    lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
+
+    resolveConfiguredTargets(pc); // safe per-cycle: already-registered names are skipped
+
+    // The target set mirrors runBuild's resolution; `check --watch` uses the reference target only.
+    std::vector<std::string> targets;
+    if (checkOnly)
+        targets.push_back("csharp");
+    else if (!targetArg.empty())
+        targets.push_back(targetArg);
+    else if (!pc.targets.empty())
+        targets = pc.targets;
+    else
+        targets = {"csharp", "typescript"};
+
+    for (const auto& t : targets) {
+        if (!findTarget(t).ok()) loadPluginFile(pluginCacheDir() / t / "polyglot-plugin.json");
+        BackendHandle h = findTarget(t);
+        if (!h.ok()) {
+            emitTopLevel(h.error());
+            continue;
+        }
+        EmitResult result = compile(source, h, &resolver, lib);
+        if (!result.ok) {
+            for (const auto& d : result.diagnostics) emitDiagAt(d);
+            if (result.diagnostics.empty()) emitTopLevel("compilation failed for target '" + t + "'");
+            continue; // last-good outputs stay in place
+        }
+        if (checkOnly) continue;
+        fs::path out = outDirArg / input.stem();
+        out += h.backend()->fileExtension();
+        if (!writeFile(out, result.code))
+            emitTopLevel("cannot write '" + out.string() + "'");
+        else
+            std::cout << "  -> " << out.string() << "\n";
+    }
+
+    for (const auto& p : resolver.loaded()) c.watched.push_back(p);
+    // Unresolved imports: poll the file each one WOULD load, so creating it triggers the rebuild.
+    for (const auto& [spec, importer] : resolver.unresolved())
+        c.watched.push_back(fileResolver.candidate(spec, importer));
+    return c;
+}
+
+int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root,
+             const std::string& target, const std::string& libArg, bool checkOnly) {
+    cli::PollingFileWatcher watcher;
+#ifdef _WIN32
+    g_watchStopTarget = &watcher;
+    SetConsoleCtrlHandler(watchCtrlHandler, TRUE);
+#endif
+    const fs::path absInput = fs::absolute(input).lexically_normal();
+    const char* verb = "building";
+    for (;;) {
+        std::cout << clockStamp() << " polyglot watch: " << verb << " " << absInput.string() << "\n";
+        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly);
+        std::cout << clockStamp() << " polyglot watch: " << c.errors
+                  << " error(s) - watching for changes\n";
+        std::cout.flush();
+        verb = "rebuilding";
+
+        watcher.watch(c.watched);
+        cli::FileWatcher::Event e;
+        do {
+            e = watcher.waitNext(std::chrono::hours(1));
+        } while (e == cli::FileWatcher::Event::TimedOut);
+        if (e == cli::FileWatcher::Event::Stopped) break;
+        // Debounce: a save burst (multi-file save, atomic-rename double edge) is one rebuild — drain
+        // until 250 ms of quiet.
+        do {
+            e = watcher.waitNext(std::chrono::milliseconds(250));
+        } while (e == cli::FileWatcher::Event::Changed);
+        if (e == cli::FileWatcher::Event::Stopped) break;
+    }
+    std::cout << clockStamp() << " polyglot watch: stopped\n";
+    return 0;
+}
+
 int runBuild(const std::vector<std::string>& args) {
     fs::path input;
     fs::path outDir;
     fs::path root;      // workspace root for logical-name imports; empty => input's parent dir
     std::string target; // empty => both
     std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
+    bool watch = false;
 
     for (std::size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
@@ -237,6 +431,8 @@ int runBuild(const std::vector<std::string>& args) {
             root = args[++i];
         } else if (a == "--lib" && i + 1 < args.size()) {
             libArg = args[++i];
+        } else if (a == "--watch") {
+            watch = true;
         } else if (!a.empty() && a[0] == '-') {
             std::cerr << "polyglot: unknown option '" << a << "'\n";
             return 64;
@@ -253,6 +449,8 @@ int runBuild(const std::vector<std::string>& args) {
         return 64;
     }
     if (outDir.empty()) outDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
+
+    if (watch) return runWatch(input, outDir, root, target, libArg, /*checkOnly=*/false);
 
     std::string source;
     if (!readFile(input, source)) {
@@ -330,14 +528,6 @@ std::string jsonEscape(const std::string& s) {
 // `check --json` and the LSP `polyglot/emit` preview response (whole-file list, no identifier-widening —
 // that widening is a squiggle-only concern of publishDiagnostics).
 std::string diagnosticsToJson(const std::vector<Diagnostic>& diags) {
-    auto severityName = [](Severity s) {
-        switch (s) {
-            case Severity::Warning: return "warning";
-            case Severity::Info:    return "info";
-            case Severity::Hint:    return "hint";
-            default:                return "error";
-        }
-    };
     std::string out = "[";
     for (std::size_t i = 0; i < diags.size(); ++i) {
         const auto& d = diags[i];
@@ -359,10 +549,12 @@ int runCheck(const std::vector<std::string>& args) {
     fs::path root;
     std::string libArg;
     bool json = false;
+    bool watch = false;
 
     for (std::size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
         if (a == "--json") json = true;
+        else if (a == "--watch") watch = true;
         else if (a == "--root" && i + 1 < args.size()) root = args[++i];
         else if (a == "--lib" && i + 1 < args.size()) libArg = args[++i];
         else if (!a.empty() && a[0] == '-') { std::cerr << "polyglot: unknown option '" << a << "'\n"; return 64; }
@@ -370,6 +562,8 @@ int runCheck(const std::vector<std::string>& args) {
         else { std::cerr << "polyglot: unexpected argument '" << a << "'\n"; return 64; }
     }
     if (input.empty()) { std::cerr << "polyglot: 'check' needs an input file\n"; return 64; }
+    if (watch && json) { std::cerr << "polyglot: --json and --watch cannot be combined\n"; return 64; }
+    if (watch) return runWatch(input, /*outDir=*/{}, root, /*target=*/{}, libArg, /*checkOnly=*/true);
 
     std::string source;
     if (!readFile(input, source)) {
@@ -1010,7 +1204,8 @@ int runLsp(const std::vector<std::string>&) {
                          "\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":[\"function\",\"type\","
                          "\"method\",\"property\",\"variable\",\"parameter\",\"enumMember\"],"
                          "\"tokenModifiers\":[\"declaration\"]},\"full\":true}},"
-                         "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"0.0.1\"}}");
+                         "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"" +
+                             std::string(kVersion) + "\"}}");
         } else if (method == "shutdown") {
             lspReply(id, "null");
         } else if (method == "exit") {

@@ -16,6 +16,15 @@
     <PolyglotTool Condition="'$(PolyglotTool)' == ''">$(MSBuildThisFileDirectory)..\tools\$(PolyglotHostRid)\$(_PolyglotToolName)</PolyglotTool>
   </PropertyGroup>
 
+  <!-- dotnet watch monitors only Compile/EmbeddedResource by default; declaring the .pg sources as Watch
+       items makes `dotnet watch build|run` on the consuming project re-run PolyglotTranspile on every .pg
+       edit — the free Visual Studio/.NET watch path (PRD 4.13). Opt out per file with Watch="false"
+       metadata on the PolyglotFile item (it flows through the transform), or entirely with the
+       PolyglotWatch=false property. -->
+  <ItemGroup Condition="'$(PolyglotWatch)' != 'false'">
+    <Watch Include="@(PolyglotFile)" />
+  </ItemGroup>
+
   <!-- Fail LOUDLY when no packed binary matches the host — a silent skip would cascade into misleading
        "type not found" errors far from the cause. -->
   <Target Name="_PolyglotVerifyTool" Condition="'@(PolyglotFile)' != ''">

@@ -28,6 +28,8 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 #include "mintplayer/polyglot/sema.hpp"
 
+#include "watch.hpp" // the CLI's watch-mode support (P21); the tests project adds Cli/src to its includes
+
 // A deliberately tiny, zero-dependency assert harness. The cross-process differential conformance suite
 // (compile+run the emitted C# and TS, compare stdout) lives in tests/conformance/ (PLAN P2 gate); these
 // in-process tests cover the passes and golden emission.
@@ -1280,6 +1282,57 @@ int main() {
                                  findTarget("typescript"));
         check(!kts.ok && has(kts.diagnostics[0].message, "'function' is reserved by target 'typescript'"),
               "P19: TS declares no escape, so its keywords are reserved names -> honest refusal");
+    }
+
+    // ---- P21 slice 1: watch-mode support (FileWatcher polling + RecordingResolver) ---------------------
+    {
+        using cli::FileWatcher;
+        using cli::PollingFileWatcher;
+        using cli::RecordingResolver;
+        namespace fs = std::filesystem;
+        using namespace std::chrono_literals;
+
+        const fs::path dir = fs::temp_directory_path() / "polyglot-watch-tests";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir);
+        const fs::path a = dir / "a.pg";
+        const fs::path b = dir / "b.pg"; // watched before it exists: its appearance must count as a change
+        { std::ofstream(a, std::ios::binary) << "fn main() {}\n"; }
+
+        PollingFileWatcher w(10ms); // fast tick so the suite stays quick
+        w.watch({a, b});
+        check(w.waitNext(50ms) == FileWatcher::Event::TimedOut, "P21: unchanged set times out");
+
+        { std::ofstream(a, std::ios::binary) << "fn main() {\n  print(1)\n}\n"; }
+        check(w.waitNext(2000ms) == FileWatcher::Event::Changed, "P21: a modified file reports Changed");
+        check(w.waitNext(50ms) == FileWatcher::Event::TimedOut,
+              "P21: detected changes fold into the baseline (no double report)");
+
+        { std::ofstream(b, std::ios::binary) << "fn helper() {}\n"; }
+        check(w.waitNext(2000ms) == FileWatcher::Event::Changed,
+              "P21: a missing watched file appearing reports Changed");
+
+        fs::remove(a);
+        check(w.waitNext(2000ms) == FileWatcher::Event::Changed, "P21: a deleted file reports Changed");
+
+        w.stop();
+        check(w.waitNext(2000ms) == FileWatcher::Event::Stopped, "P21: stop() makes waitNext return Stopped");
+
+        fs::remove_all(dir, ec);
+
+        // RecordingResolver captures the loaded closure + the unresolved specifiers.
+        MapModuleResolver inner({{"geometry", "fn area(w: i32, h: i32): i32 {\n  return w * h\n}\n"}});
+        RecordingResolver rec(inner);
+        check(rec.resolve("geometry", "").has_value() && rec.loaded().count("geometry") == 1,
+              "P21: RecordingResolver records a resolved module's canonical path");
+        check(!rec.resolve("missing", "entry.pg").has_value() &&
+                  rec.unresolved().count({"missing", "entry.pg"}) == 1,
+              "P21: RecordingResolver records unresolved (spec, importer) pairs");
+        EmitResult r = compile("import { area } from \"geometry\"\nfn main() {\n  print(area(3, 4))\n}\n",
+                               findTarget("csharp"), &rec, LibConfig{{"io"}});
+        check(r.ok && rec.loaded().count("geometry") == 1,
+              "P21: compile through a RecordingResolver captures the import closure");
     }
 
     if (g_failures == 0) {

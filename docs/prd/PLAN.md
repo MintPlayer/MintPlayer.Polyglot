@@ -1832,6 +1832,21 @@ marketplace validation pipeline took ~3 minutes; npmjs read-side propagation of 
 minutes more. With the registry live, `polyglot install <bare-name>` was verified end-to-end (and fixed:
 the GNU-tar `C:\` bug above).
 
+**GitHub-Releases CLI channel + build provenance ✅ (2026-07-04).** `.github/workflows/release.yml`
+closes the "no prebuilt binary" gap: on a `v*` tag push (or dispatch, which derives the tag from the
+CLI's own `--version`), a windows-latest runner builds Release with the v145 MSBuild, gates it (unit
+tests + the 40-program C#/TS conformance suite, .NET 10 pinned for the oracle), stages
+`polyglot.exe` + `plugins/` as `polyglot-win-x64.zip` (refusing a plugin-less zip — a CLI with zero
+targets), and publishes a GitHub Release. **Provenance is GitHub's built-in artifact attestations**
+(`actions/attest-build-provenance`, permissions `id-token`+`attestations: write`): a signed SLSA
+statement (Sigstore) binds each artifact's sha256 to this repo + workflow + source commit, and both the
+zip AND the inner exe are attested subjects, so
+`gh attestation verify polyglot-win-x64.zip --repo MintPlayer/MintPlayer.Polyglot` (or the extracted
+exe) names the exact commit — a tampered or elsewhere-built binary fails verification. Re-releasing an
+existing tag fails loudly (the version-bump reminder). README's "Getting the CLI" now leads with the
+release channel + the verify command. NuGet note: `MintPlayer.Polyglot.MSBuild 0.0.1` confirmed LIVE on
+nuget.org (the post-merge `publish-plugins` run succeeded), README updated accordingly.
+
 **Slices 13–15 ✅ v1 (2026-07-03) — reserved/forbidden identifiers: the 7 collision miscompiles are loud
 per-target refusals.** The v1 stance is **refuse, don't rename**: every generated-name collision the
 investigation found (record `Program`/fn `Main`/param `lhs` on C#; match-arm `_m`, union-discriminant
@@ -1892,7 +1907,9 @@ overlay gets the float branch inline (overlays can't `require`). New conformance
 through-arithmetic) locks it: 40/40 C#/TS, 39/39 Python. Byte gate: only `.py` files changed (the print
 overlay in each), zero `.cs`/`.ts` churn. Honest residue: generically-typed holes (`${t}` with `T=bool`
 on C#) still spell natively — needs a runtime-dispatched C# fmt helper; exotic float ranges (`1e16+`,
-`inf`/`nan` spellings) remain per-target — §3.D honesty, recorded not hidden. Plugins bumped to 0.2.0. — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
+`inf`/`nan` spellings) remain per-target — §3.D honesty, recorded not hidden. Plugins bumped to 0.2.0.
+
+## P20 — Alternative input syntaxes ("skins") — 🚦 GATED, not scheduled (designed 2026-07-02; PRD §4.12 + §3.F, design `docs/design/frontend-skins.md`, 4-agent investigation)
 
 **The ask:** let developers author in a familiar C#/TS-flavored surface instead of `.pg` — a syntax
 skin over the *same* §3.A semantics (Reason-over-OCaml), never "compile arbitrary C#". The
@@ -1943,6 +1960,104 @@ demand (real users, not speculation) + `.pg` grammar frozen. Until then only sli
   isomorphic *reskin* via surface tables inside a compiled-in parser, honestly named, never sold as
   "TS/C# input"). The P19 manifest may *declare* `"frontend": {"parserId": …}` naming a Core-registered
   parser — symmetric packaging, asymmetric implementation.
+
+## P21 — Watch mode: `--watch` on the CLI + editor surfacing — ✅ done (designed + built 2026-07-04; PRD §4.13, 4-agent investigation)
+
+Keep the emitted output files fresh as `.pg` sources change — the disk-file sibling of P17's in-memory
+preview (preview = unsaved on-type emit to a virtual doc; watch = saved-file on-change emit to disk; never
+unified, watch never routes through the LSP). Investigation verdicts (full detail PRD §4.13): the loop is
+**CLI-layer only, zero Core change** (a `RecordingResolver` decorator over `FileModuleResolver` captures the
+transitive input closure `compile()` otherwise discards); **v1 watching is portable timestamp polling** of
+the exact input set behind a `FileWatcher` seam (self-triggering impossible by construction — outputs are
+never in the polled set; no RDCW sharp edges; no thread); **`--watch` is a flag** on `build`/`check`, not a
+verb (tsc/esbuild convention); the console protocol is **frozen and golden-tested** because two editors'
+problemMatchers parse it; VS Code gets a **task type + background matcher + status-bar toggle**; Visual
+Studio gets the C#-host path **free via `dotnet watch`** (one `Watch` item in the NuGet). A failed rebuild
+keeps watching and **never touches last-good outputs** (§3.B ethos; already `emitOne`'s behavior — now a
+stated guarantee).
+
+- **Slice 1 — the watch loop (CLI).** `filewatcher.hpp`: the seam (`watch(files)` re-baselines,
+  `waitNext(timeout)` → `Changed|TimedOut|Stopped`, `stop()` for the Ctrl+C handler) + `PollingFileWatcher`
+  (`(mtime,size)` map, ~250 ms tick, transient-stat-failure = skip a tick; retry-on-sharing-violation ~3×30 ms
+  on the re-read). `RecordingResolver` decorator (records each `resolve()`'s canonicalPath). `--watch` on
+  `runBuild`: initial full build → watched set = entry + recorded closure + pgconfig walk-up chain → block in
+  `waitNext` → on change, 250 ms quiet-window drain → rebuild all configured targets → re-arm with the new
+  closure. `check --watch` = the same loop, diagnostics only, no writes. `SetConsoleCtrlHandler` → atomic
+  flag → clean exit 0; targets/plugins resolve ONCE at startup (registry is load-once — manifest edits need a
+  restart, recorded). *Gate:* unit tests for `PollingFileWatcher` (temp files: modify / rename-over / delete
+  / re-baseline) + `RecordingResolver`; all existing suites untouched.
+  **✅ built (2026-07-04).** `src/MintPlayer.Polyglot.Cli/src/watch.hpp` (header-only, namespace
+  `mintplayer::polyglot::cli`, so the tests project unit-tests it by adding `Cli\src` to its includes);
+  `watchBuildOnce` mirrors `runBuild`'s target resolution and **dedups diagnostic lines within a cycle**
+  (identical frontend errors repeat per target — the end sentinel counts unique lines, not lines×targets);
+  `check --watch` = the same loop, reference target, no writes (`--json` + `--watch` refuses, 64). One
+  protocol deviation from the design text, deliberate: the end sentinel uses an ASCII hyphen (`N error(s)
+  - watching for changes`), not an em-dash — a Windows console codepage must never be able to mangle a
+  matcher anchor. 10 new unit tests green; smoke-tested live (build → edit → rebuild → error keeps
+  last-good outputs + prints `ABSPATH(3,9): error: undeclared name 'oops'` → kill). All suites green
+  (unit, 40/40 C#/TS, 39/39 Python, samples 10/10).
+- **Slice 2 — the frozen console protocol + golden gate.** Watch-stream output (and ONLY the watch stream —
+  `build`/`check` keep gcc-style `path:line:col:`): begin `[HH:MM:SS] polyglot watch: building <entry>`
+  (later `rebuilding`), diagnostics `ABSPATH(LINE,COL): error: message` (MSBuild-canonical, absolute paths —
+  the one form VS Code matchers and the VS Error List both parse), end `[HH:MM:SS] polyglot watch: N error(s)
+  — watching for changes`. One begin/end cycle per change event, all targets inside. Fixed English, 24 h
+  timestamps (tsc's locale-sensitive anchors are the cautionary tale). *Gate:* `tests/watch/run-watch.ps1` —
+  spawn `build --watch`; edit a module → assert sentinel lines match the frozen regexes + outputs update on
+  disk; introduce an error → assert the diagnostic line shape, the non-zero count sentinel, and **last-good
+  outputs untouched**; fix it → recovery cycle; kill → clean exit. The regexes in the gate are the same ones
+  the VS Code matcher will ship — drift breaks the gate, not the Problems panel.
+  **✅ built (2026-07-04).** `tests/watch/run-watch.ps1`, 15 assertions, green first run (the protocol
+  shipped in slice 1). Locks additionally: the rebuild trigger is an edit to an **imported** module (closure
+  watching, not entry-only), a **protocol sweep** (every watch-stream line must be a sentinel / diagnostic /
+  `  -> ` output line — no strays can creep in), and **stdout-only** (stderr must stay empty). Wired into
+  `scripts/build-and-test.ps1` between the fidelity and conformance stages (needs no dotnet/node).
+- **Slice 3 — closure + pgconfig dynamics.** `pgconfig.json` joins the watched set → change = full context
+  re-resolution (root/lib/targets/forbiddenIdentifiers — the tsc-restarts-on-tsconfig behavior; recorded
+  caveat: a `targets` entry needing a not-yet-loaded plugin still needs a restart). Poll the computed
+  candidate paths of **unresolved** imports so creating the missing file triggers the rebuild users expect.
+  *Gate:* scripted — add an import to a not-yet-existing file (build fails, last-good kept), create the file
+  (watch rebuilds green); flip `targets` in pgconfig (next cycle emits the new set).
+  **✅ built (2026-07-04).** `FileModuleResolver` gained a public `candidate(spec, importer)` (the mapping
+  `resolve` already used, extracted — watch polls it for every `RecordingResolver.unresolved()` pair); the
+  watch cycle absolutizes `entryDir` (a relative `.` has no parent, so the walk-up never walked) and watches
+  every `pgconfig.json` **candidate** location from the entry up to the answering config (or the FS root when
+  none answered) — so editing the active config AND creating a nearer/first one both re-resolve. The
+  restart-only limits stay as designed (editing an already-loaded plugin manifest; `resolveConfiguredTargets`
+  re-runs per cycle and is load-once-safe, so a NEW plugin target added to pgconfig actually loads live).
+  Gate grew to 20 assertions (broken-import → create-file recovery; pgconfig create shrinks the target set —
+  no stray `.ts`; pgconfig edit grows it back). All suites green.
+- **Slice 4 — VS Code surfacing.** package.json: `taskDefinitions` (`type: "polyglot"`, `task: "watch"`,
+  optional `file`/`target`), the **`$polyglot-watch` problemMatcher** (pattern
+  `^(.+?)\((\d+),(\d+)\):\s+(error|warning|info):\s+(.+)$`, `fileLocation: "absolute"`; background
+  `activeOnStart: true`, begins/ends = the slice-2 sentinels), a `TaskProvider` (ShellExecution over
+  `resolveCli()`, per workspace folder — each may have its own pgconfig), and `polyglot.startWatch`/
+  `polyglot.stopWatch` commands + a status-bar toggle that **run the contributed task** (one code path;
+  terminate is VS Code's). Version-skew guard: an old CLI without `--watch` fails the task loudly; no
+  capability probe in v1. Testbench `tasks.json` + README. *Gate:* manual — Problems entries appear, clear,
+  and reappear across edit→error→fix cycles; `vsce package` still green.
+  **✅ built (2026-07-04).** Deviations from the sketch, both simplifications: `file` is REQUIRED in the
+  task definition (the CLI needs an entry; "watch the pgconfig root" isn't a CLI mode), and the execution is
+  a `ProcessExecution` (no shell quoting surface). `provideTasks` offers a ready-made task for the active
+  `.pg`; `resolveTask` serves tasks.json definitions; the status-bar eye/spin toggle and the
+  start/stop commands all run THE TASK (one code path; `onDidStartTask`/`onDidEndTask` drive the indicator,
+  so tasks started via Run Task update it too). Extension bumped to **0.1.0** (publishes on the next master
+  push). `node --check` + `vsce package` green (323 files). The interactive Problems-panel cycle check is
+  the user's F5 step, as with P16d.
+- **Slice 5 — the .NET-host path (Visual Studio for free).** `<Watch Include="@(PolyglotFile)" />` in the
+  NuGet's `.targets` (dotnet watch honors the explicit `Watch` item group; users opt out per-file with
+  `Watch="false"` metadata). README + VSIX overview note: VS/.NET users get watch via `dotnet watch build|run`
+  on the consuming project — C#-host path only, standalone TS/Python/PHP watch = the CLI. *Gate:*
+  `run-nuget.ps1` gains a check that the packed `.targets` contributes `@(PolyglotFile)` to `Watch`
+  (`dotnet msbuild -t:GenerateWatchList` or item inspection on the consumer).
+  **✅ built (2026-07-04).** One `ItemGroup` in the `.targets` (`Watch Include="@(PolyglotFile)"`,
+  killed by `PolyglotWatch=false`; per-file opt-out = `Watch="false"` metadata, which flows through the
+  transform). Gate check uses `dotnet msbuild -getItem:Watch` on the restored consumer (evaluates the
+  project the same way dotnet watch's `GenerateWatchList` does) — `run-nuget.ps1` is now 9 checks, all
+  green. README (CLI `--watch`, editor watch, NuGet dotnet-watch note) + the VSIX overview updated.
+- **Deferred (recorded, not scheduled):** a native `ReadDirectoryChangesW`/inotify watcher behind the seam
+  (only if polling latency/battery ever matters); incremental rebuilds via a module-graph dirty set; a
+  `--clear` flag; a VS-native watch command (demand-gated — would force the thin MEF VSIX into
+  `AsyncPackage` + `.vsct`); plugin-manifest hot reload; a JSON event stream.
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).

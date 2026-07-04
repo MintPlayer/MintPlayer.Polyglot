@@ -69,6 +69,9 @@
     <ClCompile Include="src\main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\watch.hpp" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\MintPlayer.Polyglot.Core\MintPlayer.Polyglot.Core.vcxproj">
       <Project>{A1A1A1A1-1111-4111-8111-111111111111}</Project>
     </ProjectReference>

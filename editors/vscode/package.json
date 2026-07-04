@@ -1,8 +1,8 @@
 {
   "name": "polyglot-lang",
   "displayName": "MintPlayer Polyglot",
-  "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting).",
-  "version": "0.0.1",
+  "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting) + watch mode (rebuild emitted outputs on save).",
+  "version": "0.1.0",
   "publisher": "mintplayer",
   "license": "MIT",
   "repository": {
@@ -23,6 +23,61 @@
         "title": "Show Generated Output",
         "category": "Polyglot",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "polyglot.startWatch",
+        "title": "Start Watch (emit output files on change)",
+        "category": "Polyglot",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "polyglot.stopWatch",
+        "title": "Stop Watch",
+        "category": "Polyglot",
+        "icon": "$(eye-closed)"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "polyglot",
+        "required": ["task", "file"],
+        "properties": {
+          "task": {
+            "type": "string",
+            "enum": ["watch"],
+            "description": "The polyglot task kind (only 'watch' exists)."
+          },
+          "file": {
+            "type": "string",
+            "description": "The entry .pg file to watch (workspace-relative or absolute)."
+          },
+          "target": {
+            "type": "string",
+            "description": "A single target to emit; omit to emit the pgconfig 'targets' set (or the cs+ts default)."
+          }
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "polyglot-watch",
+        "label": "Polyglot watch problems",
+        "owner": "polyglot",
+        "source": "polyglot",
+        "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.+?)\\((\\d+),(\\d+)\\):\\s+(error|warning|info):\\s+(.+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[\\d{2}:\\d{2}:\\d{2}\\] polyglot watch: (?:re)?building ",
+          "endsPattern": "^\\[\\d{2}:\\d{2}:\\d{2}\\] polyglot watch: \\d+ error\\(s\\) - watching for changes$"
+        }
       }
     ],
     "menus": {

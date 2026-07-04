@@ -41,7 +41,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.0.1
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.0
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -330,10 +330,34 @@ Gate: `tests/msbuild/run-nuget.ps1` (8 checks, all green). v1 limits recorded in
 collision with top-level statements~~ (**✅ fixed 2026-07-04: the C# wrapper is `PolyglotProgram`/
 `PolyglotExtensions` — pure rule data + reserved entries, csharp plugin 0.2.0; the gate's consumer now uses
 top-level statements**), `internal` generated types, one-import-root per
-project. Remaining: per-RID CI packaging + NuGet publish, npm sibling.
+project. **NuGet 0.0.1 is LIVE on nuget.org** (publish-plugins.yml, 2026-07-04). Remaining: more RIDs
+(linux/mac need a cross-toolchain story), npm sibling.
+**Prebuilt-CLI release channel ✅ (2026-07-04):** `.github/workflows/release.yml` — a `v*` tag push (or
+dispatch) builds/gates Release on windows-latest, ships `polyglot-win-x64.zip` (exe + plugins) as a
+GitHub Release, and **attests build provenance** (GitHub artifact attestations / SLSA / Sigstore; zip AND
+inner exe are subjects) so `gh attestation verify <file> --repo MintPlayer/MintPlayer.Polyglot` proves
+the binary came from this repo's workflow at a named commit.
+**P21 ✅ done (2026-07-04, designed + built same day) — watch mode** (PRD §4.13; slice log PLAN §P21):
+`--watch` as a FLAG on `build`/`check` (tsc convention, not a verb). CLI-layer only, **zero Core change** —
+a `RecordingResolver` decorator over `FileModuleResolver` captures the transitive input closure `compile()`
+discards; v1 watching is **portable timestamp polling** of that exact set (`(mtime,size)`, ~250 ms tick +
+250 ms quiet-window debounce) behind a `FileWatcher` seam (self-trigger impossible — outputs never polled;
+no RDCW edges; no thread). Console protocol **frozen + golden-tested** (`tests/watch/run-watch.ps1`):
+`[HH:MM:SS] polyglot watch: building|rebuilding …` / `ABSPATH(LINE,COL): error: msg` (MSBuild-canonical,
+watch stream only) / `… N error(s) — watching for changes` — the same regexes ship in the VS Code
+`$polyglot-watch` background problemMatcher (task type + status-bar toggle running the task; LSP
+emit-on-save rejected as wrong layering). Visual Studio gets the C#-host path FREE: one
+`<Watch Include="@(PolyglotFile)" />` in the NuGet `.targets` makes `dotnet watch` re-transpile on `.pg`
+edits (no VSIX change). Failed rebuilds keep watching and never touch last-good outputs. Plugins/targets
+resolve once at startup (registry is load-once; manifest edits need a restart — recorded; a NEW plugin
+target added to pgconfig loads live, since `resolveConfiguredTargets` re-runs per cycle). Built: watch.hpp
+(header-only, unit-testable), the pgconfig walk-up-chain + unresolved-import candidate polling, the
+20-assertion golden gate (`tests/watch/run-watch.ps1`, wired into `scripts/build-and-test.ps1`), the VS
+Code task provider + status-bar toggle (extension 0.1.0), the NuGet `Watch` item (`run-nuget.ps1` now 9
+checks). VS Code Problems-panel cycling is the user's interactive F5 check.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish remain), **P16d** (Visual Studio LSP client),
-**P19** (100% JSON plugins, above), **P20** (input skins, gated, above).
+**P20** (input skins, gated, above), **P21** (watch mode — ✅ done, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

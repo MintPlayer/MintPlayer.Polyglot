@@ -12,6 +12,12 @@ readable **C#**, **TypeScript**, **Python**, and **PHP**.
 - **Per-target reserved-name checks** — identifiers that would collide with a configured target's
   generated code squiggle live, named per target.
 
+## Watch / rebuild-on-save
+
+For a .NET project consuming the `MintPlayer.Polyglot.MSBuild` NuGet, `.pg` files are registered as
+`dotnet watch` inputs — run `dotnet watch build` (or `run`) on the project and every `.pg` save
+re-transpiles automatically. For standalone use, the CLI has `polyglot build <file> --watch`.
+
 ## Requirements
 
 The language features need the **polyglot CLI** on your `PATH` (it hosts the language server).
