@@ -44,27 +44,33 @@ jobs:
             process.exit(bad ? 1 : 0);
           '
 
-      # TEMPORARY diagnostic: the publish action swallows npm's stderr, so the 4 npmjs failures were
-      # opaque. Surface the real npm output: is the secret empty here, is the token valid (whoami),
-      # and what exactly does a direct publish say? Remove once npmjs publishing works.
-      - name: npm token diagnostics
+      # npmjs is published DIRECTLY: the shared publish action failed all npmjs publishes with its
+      # error output swallowed, while a plain `npm publish` with the same token succeeds (diagnosed
+      # 2026-07-04 — token valid, publishConfig.access already public). Skips versions already live.
+      - name: Publish target plugins to npmjs
         env:
           TOKEN: ${{ secrets.PUBLISH_TO_NPMJS }}
         run: |
           if [ -z "$TOKEN" ]; then echo "::error::PUBLISH_TO_NPMJS resolves EMPTY in this repo"; exit 1; fi
           echo "//registry.npmjs.org/:_authToken=$TOKEN" > ~/.npmrc
-          echo "--- npm whoami:"
-          npm whoami --registry=https://registry.npmjs.org || { echo "::error::token invalid or expired (whoami failed)"; exit 1; }
-          echo "--- direct publish attempt (csharp):"
-          cd plugins/csharp
-          npm publish --access public --registry=https://registry.npmjs.org 2>&1 || echo "::warning::direct npm publish failed - real error above"
+          fail=0
+          for d in plugins/*/; do
+            name=$(node -p "require('./$d/package.json').name")
+            ver=$(node -p "require('./$d/package.json').version")
+            if npm view "$name@$ver" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "skip: $name@$ver already on npmjs"
+              continue
+            fi
+            (cd "$d" && npm publish --access public --registry=https://registry.npmjs.org) \
+              || { echo "::error::npm publish failed for $name@$ver"; fail=1; }
+          done
+          exit $fail
 
-      - name: Publish target plugins
+      - name: Publish target plugins to GitHub Packages
         uses: MintPlayer/github-actions/publish-npm-packages@b08fbddf0b285a8633ac138b89d79ceb8cc8c888
         with:
           folder: plugins
           registries: |
             [
-              { "url": "https://registry.npmjs.org", "token": "${{ secrets.PUBLISH_TO_NPMJS }}" },
               { "url": "https://npm.pkg.github.com", "token": "${{ github.token }}" }
             ]
