@@ -1737,6 +1737,12 @@
     "Program": {
       "seq": [
         {
+          "line": "#nullable enable"
+        },
+        {
+          "line": ""
+        },
+        {
           "mapMembers": "module.enums",
           "rule": "EnumDecl"
         },
@@ -2635,19 +2641,9 @@
           ],
           [
             {
-              "and": [
-                {
-                  "eq": [
-                    "type.nullable",
-                    "true"
-                  ]
-                },
-                {
-                  "eq": [
-                    "type.isValueType",
-                    "true"
-                  ]
-                }
+              "eq": [
+                "type.nullable",
+                "true"
               ]
             },
             {
@@ -2657,17 +2653,6 @@
                 },
                 "?"
               ]
-            }
-          ],
-          [
-            {
-              "eq": [
-                "type.nullable",
-                "true"
-              ]
-            },
-            {
-              "type": "type.base"
             }
           ],
           [
@@ -2750,7 +2735,7 @@
       "List.removeAt": "$this.RemoveAt($0)"
     },
     "std.io": {
-      "print": "global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object)x)",
+      "print": "global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object?)x)",
       "readText": "global::System.IO.File.ReadAllText(path)",
       "writeText": "global::System.IO.File.WriteAllText(path, content)",
       "appendText": "global::System.IO.File.AppendAllText(path, content)",

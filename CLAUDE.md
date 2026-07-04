@@ -371,6 +371,22 @@ SyntaxError; comparison×comparison = Python chaining). Byte-audit proved the on
 41×3 emissions is the miscompile line itself. The FruitCake gate now prints a **float-state checksum**
 (NaN → loud -1) — integer-only stdout had masked the NaN by coincidence. `--out` now creates its dir.
 CLI+NuGet → 0.1.1. New: `precedence_null_coalesce.pg` + `precedence_bitwise.pg` (42/42 C#/TS, 41/41 py).
+**Hotfix 0.1.3 ✅ (2026-07-04) — C# nullable-reference annotations + `#nullable enable`** (PLAN §Hotfix
+0.1.3; found live by the MintPlayer.AI FruitCake pilot): the csharp plugin's `type` rule kept the `?` only
+on nullable **value** types (`i32?`→`int?`) and **dropped it on reference types** — `record Pair(a: Box,
+b: Box?)` emitted `Box b`, a §3.C faithfulness break that cascades CS8625/CS8073/CS8602 under
+`<Nullable>enable/>` and forces `#nullable disable` on every generated file (TS already emitted `Box |
+null`). Fix (csharp plugin only, zero Core change): the two nullable `type` cases collapse to one (`base` +
+`?`, correct for both value and reference types), and **every generated C# file now begins with `#nullable
+enable`** (Program-scaffold rule data) so the annotations are valid regardless of the consumer's project
+setting. All declaration positions render through the one `type` rule, so the fix covers record params,
+fields, method params/returns and locals at once (verified). Also fixed the one genuinely-nullable warning
+the header surfaced in universally-shipped code: `print<T>`'s `(object)x` → `(object?)x` (CS8600). A
+full-corpus scan under `<Nullable>enable</>;<TreatWarningsAsErrors>true</>` proves the header adds **zero**
+nullable warnings corpus-wide (39/41 clean; the other 2 are pre-existing, non-nullable — CS0168 an unused
+`catch` binding and CS1718 the deliberate `v != v` NaN idiom in the fruitcake/precedence test programs).
+New: `nullable_positions.pg` (C#/TS/Python agree `4`) + `tests/nullable/run-nullable.ps1` (annotations-
+preserved + NRT-clean gate, wired into `build-and-test.ps1`). CLI + NuGet → 0.1.3, csharp plugin → 0.2.1.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
 LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 + 4–5 built — cross-platform CLI

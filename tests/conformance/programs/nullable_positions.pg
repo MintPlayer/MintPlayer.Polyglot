@@ -1,0 +1,29 @@
+// Nullable reference/value types across every declaration position: record param, field, method
+// param/return, and `??`. The C# emitter must keep the `?` on reference types (regression: it was
+// dropped, producing CS8xxx cascades under <Nullable>enable/>) — TS/Python erase it. Runtime-identical.
+class Box {
+  var v: i32
+  init(v: i32) { this.v = v }
+}
+
+record Pair(a: Box, b: Box?)
+
+class Holder {
+  var maybe: Box?
+  init() { this.maybe = null }
+  fn get(): Box? { return this.maybe }
+  fn set(x: Box?) { this.maybe = x }
+}
+
+fn pick(x: Box?, y: Box): Box {
+  return x ?? y
+}
+
+fn main() {
+  let h = Holder()
+  h.set(Box(1))
+  let chosen: Box = pick(h.get(), Box(2))
+  let p = Pair(Box(3), null)
+  let other: Box = pick(p.b, p.a)
+  print(chosen.v + other.v)
+}

@@ -2091,6 +2091,52 @@ diverges from C#'s silent truncation), `internal` generated C# types (P11 limit,
 consumers). Versions: CLI + NuGet → **0.1.1** (plugins unchanged — the fix is engine-side). Gates:
 42/42 C#/TS (2 new), 41/41 Python, samples 10/10, fmt 10/10, watch 20/20, unit +4.
 
+## Hotfix 0.1.3 — C# nullable-reference annotations + `#nullable enable` (2026-07-04, found live by the MintPlayer.AI FruitCake pilot)
+
+The FruitCake pilot hit a §3.C **faithfulness break**: the csharp plugin's `type` rule had two nullable
+cases — value types (`i32?`) emitted `base` + `?` → `int?`, but the reference-type fallback emitted
+`base` and **silently dropped the `?`**. So `record Pair(a: Box, b: Box?)` became `record Pair(Box a,
+Box b)` — the nullability of `b` erased. Under a modern `<Nullable>enable</Nullable>` consumer that
+cascades CS8625 (passing `null` to a "non-nullable"), CS8073/CS8602 (`== null` / `?.` on a "non-null"
+ref), forcing `#nullable disable` on every generated file. The TS emitter already produced `Box | null`
+correctly; only C# lost information.
+
+**Fix (csharp plugin `polyglot-plugin.json` only — zero Core change):**
+1. The two nullable `type` cases **collapse to one**: `type.nullable == true` → `type.base` + `?`. That
+   spelling is correct for BOTH families — `int?` = `Nullable<int>` for value types, `Box?` for reference
+   types under NRT — so the value/reference split that caused the drop is gone.
+2. **Every generated C# file now begins with `#nullable enable`** (a `line` at the head of the `Program`
+   scaffold rule). The generated file self-declares its nullable context, so the annotations are always
+   valid regardless of the consuming project's `<Nullable>` setting (a nullable-oblivious project no
+   longer warns CS8632 on the `?`, and a nullable-enabled project sees faithful annotations).
+3. The one genuinely-nullable warning `#nullable enable` surfaced in **universally-shipped** code: the
+   std.io `print<T>` helper cast `(object)x` (x is unconstrained `T`, possibly null) → CS8600. Changed to
+   `(object?)x` (matches `Console.WriteLine(object?)`). Now every generated file's prelude is NRT-clean.
+
+Because **all** declaration positions render their type through the single `type` rule (`renderTypeRef`),
+fixing that one rule fixes record params, fields, method params, returns, and locals simultaneously —
+verified with `nullable_positions.pg` exercising every position.
+
+**Diligence — full-corpus NRT scan** under `<Nullable>enable</Nullable>;<TreatWarningsAsErrors>true</>`
+(each of the 41 conformance programs' emitted C# compiled as a single file): **39/41 clean, 0 nullable
+warnings anywhere** — i.e. stamping `#nullable enable` into every file introduced ZERO new nullable
+warnings across the whole surface (the generated code is already NRT-correct because `.pg`'s own
+null-safety sema mirrors C#'s flow analysis). The 2 remaining failures are **pre-existing and orthogonal
+to nullability** (they fail identically under `<Nullable>disable</>` + warnings-as-errors): `exceptions`
+trips CS0168 (a `catch (Exception e)` whose binding the source never uses) and `fruitcake` /
+`precedence_null_coalesce` trip CS1718 (`s != s` / `v != v` — the **deliberate NaN-detection idiom** those
+test programs were authored with; correct C#, heuristic warning). Left for a separate, non-nullable
+follow-up — not folded into this hotfix (scope line).
+
+**Regression coverage:** `tests/conformance/programs/nullable_positions.pg` — nullable in record param,
+field, method param/return, and `??`, printing a stable `4` (C#/TS/Python agree, joins run-diff +
+run-python automatically). Plus a dedicated `tests/nullable/run-nullable.ps1` gate (wired into
+`scripts/build-and-test.ps1`): asserts the emitted C# begins with `#nullable enable`, keeps the `?` in
+every position (text assertions the stdout-differential gate structurally cannot catch — `Box b` and
+`Box? b` run identically), and **compiles clean under `<Nullable>enable</>;<TreatWarningsAsErrors>true</>`
+with 0 warnings**. Versions: CLI + NuGet → **0.1.3**, csharp plugin → **0.2.1** (typescript/python/php
+plugins unchanged — the fix is C#-only).
+
 > **P11 "Remaining for shipped" (per-RID CI packaging + NuGet publish + the npm sibling) is now scoped as
 > its own phase — see [P22](#p22) below.** The design confirmed the NuGet's consume-side `.targets` is
 > already fully multi-RID; the real dependency is a portable (CMake) build + a native build matrix.
