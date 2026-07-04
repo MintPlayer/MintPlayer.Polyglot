@@ -1805,13 +1805,28 @@ an artifact through the NEW Core `validateBackend` (the full slice-8 pipeline WI
 `loadBackend` refactored into `buildBackend` + two wrappers; the duplicate-name check stays first for the
 clearer re-load error, which the unit test caught when the refactor reordered it) and copies it into the
 cache; a bare name shells out to `npm pack` + the system `tar` and extracts `package/polyglot-plugin.json`
-(the npm channel is wired but end-to-end-untestable until packages are published — recorded, not claimed).
+(**✅ verified end-to-end against the live registry, 2026-07-04**, once the packages were published — the
+first real run caught a Windows bug, GNU tar parsing `C:\` as a remote host; fixed by extracting from
+inside the temp dir with a bare filename).
 **End-to-end verified locally:** `install plugins\php` → cache; a project with `targets: ["csharp","php"]`
 built BOTH from a bare `polyglot build` with the in-box php copy DELETED (cache channel), then again via a
 `file:` dependency with the cache cleared (dependency channel), then refused cleanly with neither.
 Gates: byte-identical (117), unit green, 39/39 + 38/38 + samples 10/10. Remaining in P19: the 9b
 member-arm refusal gap, npm publishing of the four first-party packages (needs an npm account/decision),
 13–15 (identifier hygiene + reserved names — pgconfig `forbiddenIdentifiers` now has its config seam).
+
+**Publishing ✅ shipped (2026-07-04) — every distribution channel is live.** The four
+`@mintplayer/polyglot-target-*@0.1.0` packages are on **npmjs** and **GitHub Packages**, and the VS Code
+extension is on the **marketplace** (`mintplayer.polyglot-lang`, displayName "MintPlayer Polyglot" —
+plain "Polyglot" was taken, caught by the first publish attempt). Two workflow lessons: the org's shared
+`publish-npm-packages` action **fails npmjs silently** (all four failed with npm's stderr swallowed while
+`npm whoami` + a direct `npm publish` with the same token succeeded), so `publish-plugins.yml` publishes
+npmjs DIRECTLY (a loop that skips already-live versions) and keeps the action only for its working
+GH-Packages leg; and the extension's `package-lock.json` was gitignored, so the runner's `npm ci` had
+nothing to install from (caught by the user actually running the workflow steps — now committed). The
+marketplace validation pipeline took ~3 minutes; npmjs read-side propagation of brand-new names a few
+minutes more. With the registry live, `polyglot install <bare-name>` was verified end-to-end (and fixed:
+the GNU-tar `C:\` bug above).
 
 **Slices 13–15 ✅ v1 (2026-07-03) — reserved/forbidden identifiers: the 7 collision miscompiles are loud
 per-target refusals.** The v1 stance is **refuse, don't rename**: every generated-name collision the
