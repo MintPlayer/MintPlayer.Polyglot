@@ -33,7 +33,11 @@ if (-not (Test-Path $msbuild)) {
     exit 2
 }
 
-Write-Host "==> Build ($Configuration|x64)"
+Write-Host "==> Build-file parity (.vcxproj <-> CMake glob)"
+& pwsh -NoProfile -File (Join-Path $repo "scripts\check-buildfile-parity.ps1")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nBUILD-FILE PARITY FAILED."; exit 1 }
+
+Write-Host "`n==> Build ($Configuration|x64)"
 & $msbuild $sln /p:Configuration=$Configuration /p:Platform=x64 /m /nologo /clp:Summary
 if ($LASTEXITCODE -ne 0) { Write-Host "`nBUILD FAILED."; exit 1 }
 

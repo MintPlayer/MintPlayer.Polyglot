@@ -55,6 +55,12 @@ VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. T
 
 VS 2019 BuildTools (v142) and VS 2022 (v143) are both **insufficient** for v145 — don't build with them.
 
+**POSIX build (Linux/macOS)** — P22 slice 2, the `.vcxproj` stays the Windows source of truth: a root
+`CMakeLists.txt` mirrors the three projects (verified on WSL Ubuntu with g++/cmake). `cmake -S . -B build
+-DCMAKE_BUILD_TYPE=Release && cmake --build build` → `build/polyglot` (the CLI, static-linked libstdc++) +
+`build/polyglot-tests`. `scripts/check-buildfile-parity.ps1` guards `.vcxproj`↔CMake source-list drift
+(first stage of `build-and-test.ps1`).
+
 ## Layout
 ```
 src/MintPlayer.Polyglot.Core/   # compiler library (lexer→parser→typed IR→backends); public headers in include/

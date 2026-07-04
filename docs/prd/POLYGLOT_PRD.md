@@ -886,14 +886,16 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   VS Code problemMatcher (task type + status-bar toggle in the extension), and one line in the MSBuild NuGet
   (`<Watch Include="@(PolyglotFile)" />`) so `dotnet watch` gives Visual Studio the C#-host path for free.
   Slice plan: PLAN §P21.
-- **P22 — Cross-platform CLI (Linux/macOS) + multi-RID distribution.** 🚧 Slice 1 built, 2–6 designed
+- **P22 — Cross-platform CLI (Linux/macOS) + multi-RID distribution.** 🚧 Slices 1–2 built, 3–6 designed
   (2026-07-04; §4.14, from a 4-agent investigation). The POSIX resilience fixes + command-quoting audit
   landed immediately (a shared portable exe-path lookup, XDG cache dir, the `>nul`→`/dev/null` fix, all
-  `#ifdef`-guarded and Windows-gate-green). Remaining: a parallel
-  CMake build for POSIX (the `.vcxproj`/VS-2026 workflow untouched), a 5-leg release matrix with per-job
-  provenance attestation, the fat multi-RID NuGet (the `.targets` is already RID-generic — only the pack
-  changes), the PHP runtime differential on the Linux leg, and the esbuild-pattern npm sibling.
-  North star: `dotnet build` transpiles `.pg` on a Linux runner. Slice plan: PLAN §P22.
+  `#ifdef`-guarded and Windows-gate-green), and a parallel `CMakeLists.txt` (`.vcxproj` untouched) + a
+  drift-parity guard now **build + pass the unit suite on real Linux** (WSL, static-linked, plugins found
+  via `/proc/self/exe`). Remaining: a
+  5-leg release matrix with per-job provenance attestation, the fat multi-RID NuGet (the `.targets` is
+  already RID-generic — only the pack changes), the PHP runtime differential on the Linux leg, and the
+  esbuild-pattern npm sibling. North star: `dotnet build` transpiles `.pg` on a Linux runner. Slice plan:
+  PLAN §P22.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 

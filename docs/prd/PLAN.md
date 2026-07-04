@@ -2095,7 +2095,7 @@ consumers). Versions: CLI + NuGet → **0.1.1** (plugins unchanged — the fix i
 > its own phase — see [P22](#p22) below.** The design confirmed the NuGet's consume-side `.targets` is
 > already fully multi-RID; the real dependency is a portable (CMake) build + a native build matrix.
 
-## P22 — Cross-platform CLI (Linux/macOS) + multi-RID distribution — 🚧 slice 1 built, slices 2–6 designed (2026-07-04; PRD §4.14, 4-agent investigation)
+## P22 — Cross-platform CLI (Linux/macOS) + multi-RID distribution — 🚧 slices 1–2 built, slices 3–6 designed (2026-07-04; PRD §4.14, 4-agent investigation)
 
 Make the native `polyglot` CLI build and ship for **linux-x64, linux-arm64, osx-x64, osx-arm64** alongside
 win-x64, so the `MintPlayer.Polyglot.MSBuild` NuGet transpiles `.pg`→`.cs` during `dotnet build` on a Linux
@@ -2136,19 +2136,29 @@ Windows** (the existing gates prove it).
   samples (curly quotes, the FruitCake emoji) stop coming back mojibake through the console's OEM codepage
   — a pre-existing codepage-dependent gate flake, now environment-independent. Versions: **CLI + NuGet →
   0.1.2** (`kVersion` + the MSBuild package; plugins + editor extensions unchanged, so not bumped).
-  *Deferred to the CMake
-  slice (needs a POSIX toolchain to compile-verify):* the `mach-o/dyld.h`/`unistd.h` POSIX branches are
-  written to standard idioms but not yet built on Linux/macOS.
+  *POSIX branch verification:* the Linux `/proc/self/exe` branch is now **compile- and run-verified on
+  real Linux** (slice 2 below); the macOS `_NSGetExecutablePath` branch stays idiom-correct but unbuilt
+  until a macOS runner (slice 4).
 
-- **Slice 2 — the CMake build (POSIX; optionally CI-Windows).** `CMakeLists.txt`: three targets mirroring
-  the `.vcxproj` (Core static lib, Cli exe, Tests exe), `-std=c++20`, `file(GLOB … CONFIGURE_DEPENDS)` over
-  `src/*.cpp` per project, `Core/include` (+`Cli/src` for Tests) includes, `-static-libstdc++
-  -static-libgcc -pthread` on Linux, `MACOSX_DEPLOYMENT_TARGET=13.0` on macOS, and a POST_BUILD/install rule
-  copying `plugins/` next to the exe (the `xcopy` equivalent). The `.vcxproj`/`.sln` stay the untouched
-  VS-2026 source of truth. **Drift guard:** a ~15-line CI script asserting the CMake-globbed file set equals
-  the `.vcxproj` `<ClCompile Include>` set (14 files — cheap). *Gate:* on a Linux dev/CI box, CMake configure
-  + build produces `polyglot` + `plugins/`; `polyglot --version`; the unit-test exe passes; `run-diff.ps1
-  -Cli ./polyglot` + `run-python.ps1` green (pwsh + .NET 10 + node). Parity script green.
+- **Slice 2 — the CMake build (POSIX; Windows supported too).** ✅ **built + verified on real Linux
+  (2026-07-04).** `CMakeLists.txt` at the repo root: three targets mirroring the `.vcxproj` — `polyglot-core`
+  (STATIC), `polyglot` (the CLI exe, `OUTPUT_NAME polyglot` = the shipped name), `polyglot-tests` — with
+  `CMAKE_CXX_STANDARD 20` + `CXX_EXTENSIONS OFF` (mirrors `/permissive-`), `file(GLOB … CONFIGURE_DEPENDS)`
+  over `src/*.cpp` per project (so a new TU is auto-tracked), `Core/include` PUBLIC + `Cli/src` on the CLI
+  and Tests (for `exe_path.hpp`/`watch.hpp`), `Threads::Threads` (pthread for `std::thread`),
+  `-static-libstdc++ -static-libgcc` on the CLI on Linux, `CMAKE_OSX_DEPLOYMENT_TARGET=13.0` on macOS, a
+  `copy_directory plugins → $<TARGET_FILE_DIR>/plugins` POST_BUILD on both exes (the `xcopy` equivalent), and
+  `enable_testing()` + `add_test(unit)`. The `.vcxproj`/`.sln` stay the untouched VS-2026 source of truth
+  (the MSBuild gate is unchanged). **Drift guard:** `scripts/check-buildfile-parity.ps1` asserts each
+  project's `.vcxproj` `<ClCompile>` set equals its `*.cpp` on disk (= the CMake glob); wired into
+  `build-and-test.ps1` as the first stage. **Verified (WSL Ubuntu 24.04, g++ 13.3 + cmake 3.28):** configure
+  + `cmake --build` green for all three targets; `polyglot --version` → `0.1.2`; `ldd` shows **no
+  libstdc++/libgcc_s** (static link confirmed); the **unit suite passes on Linux** — which proves the
+  slice-1 `/proc/self/exe` plugin discovery works (the suite FATAL-aborts if it can't load the three plugins
+  next to the exe); and an end-to-end `polyglot build smoke.pg --lib io` **run from a foreign cwd** emits
+  correct C# (plugins found next to the binary, not the cwd — the exact PATH-invoked case the argv0 bug
+  broke). *Not yet run:* the `run-diff`/`run-python` conformance gates on Linux (WSL has node 20 + .NET 9;
+  the oracle wants net10 + node 22 — that's the CI runner's job, slice 4) and any macOS build.
 
 - **Slice 3 — `run-php.ps1` + close the PHP differential.** Write `tests/conformance/run-php.ps1` mirroring
   `run-python.ps1` (emit PHP + the C# oracle, run both, diff stdout) — php is preinstalled on ubuntu/macos
