@@ -41,7 +41,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.0
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.1
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -355,6 +355,15 @@ target added to pgconfig loads live, since `resolveConfiguredTargets` re-runs pe
 20-assertion golden gate (`tests/watch/run-watch.ps1`, wired into `scripts/build-and-test.ps1`), the VS
 Code task provider + status-bar toggle (extension 0.1.0), the NuGet `Watch` item (`run-nuget.ps1` now 9
 checks). VS Code Problems-panel cycling is the user's interactive F5 check.
+**Hotfix 0.1.1 ✅ (2026-07-04) — the `??` precedence miscompile** (PLAN §Hotfix 0.1.1; found live by the
+MintPlayer.AI FruitCake pilot): the engine's `operatorPrecedence` table lacked `??`/bitwise/shifts, so
+they fell to the TIGHTEST default and dropped required parens — `a + (b?.v ?? 0.0)` emitted bare,
+reparsing as `(a + b?.v) ?? 0.0` (C# silently 0.0 / JS NaN — wrong AND divergent). Root fix in the
+shared engine (zero plugin changes): the complete C-family table + two mixing guards (`??`×logical = JS
+SyntaxError; comparison×comparison = Python chaining). Byte-audit proved the only paren change across
+41×3 emissions is the miscompile line itself. The FruitCake gate now prints a **float-state checksum**
+(NaN → loud -1) — integer-only stdout had masked the NaN by coincidence. `--out` now creates its dir.
+CLI+NuGet → 0.1.1. New: `precedence_null_coalesce.pg` + `precedence_bitwise.pg` (42/42 C#/TS, 41/41 py).
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish remain), **P16d** (Visual Studio LSP client),
 **P20** (input skins, gated, above), **P21** (watch mode — ✅ done, above).

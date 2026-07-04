@@ -2059,6 +2059,38 @@ stated guarantee).
   `--clear` flag; a VS-native watch command (demand-gated — would force the thin MEF VSIX into
   `AsyncPackage` + `.vsct`); plugin-manifest hot reload; a JSON event stream.
 
+## Hotfix 0.1.1 — the `??` precedence miscompile (2026-07-04, found live by the MintPlayer.AI FruitCake pilot)
+
+The first real consumer (the MintPlayer.AI single-source pilot; handoff:
+`C:\Repos\MintPlayer.AI\docs\prd\polyglot-pilot\POLYGLOT_BUG_HANDOFF.md`) hit a §3.B-class silent
+miscompile in 0.1.0: **the engine's shared `operatorPrecedence` table had no `??` entry** (nor bitwise
+`| ^ &` nor shifts), so those ops fell through to the TIGHTEST default level and `emitChild`'s paren rule
+dropped required parentheses — `a.invMass + (b?.invMass ?? 0.0)` emitted bare as
+`a.invMass + b?.invMass ?? 0.0`, which reparses as `(… + …) ?? 0.0`: **wrong on both targets AND
+divergent** (C# null-propagates the sum → `?? 0.0` → silently skipped wall correction; JS produces NaN,
+which `??` does NOT catch → every body NaN). Fix, all at the root in the shared engine (zero plugin
+changes): (1) the **complete C-family table** (`?? < || < && < | < ^ < & < ==/!= < rel < shifts < +- <
+*/%`) with a header comment making "every ir::Binary op must appear" the rule; (2) two **target-quirk
+guards** in the shared paren policy — `??` mixed with `&&`/`||` always parenthesizes (bare `a && b ?? c`
+is a JS *SyntaxError*), and comparison-under-comparison always parenthesizes (Python CHAINS `a < b == c`)
+— both harmless extra parens on the other targets. Byte-diff audit (41 programs × 3 targets, pre- vs
+post-fix): the ONLY paren change anywhere is the FruitCake miscompile line itself — the table reshuffle
+is a proven no-op for every previously-covered operator. Regression coverage: 4 unit tests +
+`precedence_null_coalesce.pg` (the handoff repro: add/sub/mul over `opt?.v ??`, null + non-null, a
+NaN→-1 classifier so recurrence is loud) + `precedence_bitwise.pg` (shifts/`&`/`|`/`^` under arithmetic,
+each with the bare-emission wrong value in a comment, + the Python comparison-chain case).
+**Gate-soundness fix** (the handoff's second finding): `fruitcake.pg` passed 0.1.0's gate by coincidence
+— integer stdout only, and the scripted drops' integers matched while the TS float state was silently
+NaN. Its `main` now prints a **scaled-integer checksum of the final float state** (pure `+`/`×` over
+bit-exact f64 per §3.D → must agree to the byte; NaN anywhere → a loud `-1`) — all three targets agree
+(`checksum=12987455752`). Also fixed from the handoff's rough-edge list: `build --out <dir>` now creates
+the directory (`writeFile` creates parents). Recorded, not yet addressed: f32 literal ergonomics (every
+literal needs `(f32)` — impractical for numeric files), TS `i64` return lowering to
+`BigInt(Math.trunc(x))` which throws on NaN/Infinity (arguably a feature — NaN gets loud — but it
+diverges from C#'s silent truncation), `internal` generated C# types (P11 limit, cross-assembly
+consumers). Versions: CLI + NuGet → **0.1.1** (plugins unchanged — the fix is engine-side). Gates:
+42/42 C#/TS (2 new), 41/41 Python, samples 10/10, fmt 10/10, watch 20/20, unit +4.
+
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.

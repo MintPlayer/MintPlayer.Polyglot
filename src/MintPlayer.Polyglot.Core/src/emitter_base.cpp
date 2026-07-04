@@ -326,8 +326,20 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
     std::string inner = emit_(*c);
     if (side == "l" || side == "r") { // binary operand: wrap by precedence + associativity (shared policy)
         if (e_.kind == ir::ExprKind::Binary && c->kind == ir::ExprKind::Binary) {
-            int pp = operatorPrecedence(static_cast<const ir::Binary&>(e_).op);
-            int cp = operatorPrecedence(static_cast<const ir::Binary&>(*c).op);
+            const std::string& po = static_cast<const ir::Binary&>(e_).op;
+            const std::string& co = static_cast<const ir::Binary&>(*c).op;
+            // Two target quirks precedence levels can't express, both harmless as extra parens on the
+            // other targets: JS makes bare `a && b ?? c` a SyntaxError (?? refuses to mix with &&/||
+            // unparenthesized), and Python CHAINS comparisons (`a < b == c` means `a < b and b == c`),
+            // so a comparison operand of a comparison keeps its parens even where C# wouldn't need them.
+            auto logical = [](const std::string& o) { return o == "&&" || o == "||"; };
+            auto comparison = [](const std::string& o) {
+                return o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=";
+            };
+            if ((po == "??" && logical(co)) || (co == "??" && logical(po))) return "(" + inner + ")";
+            if (comparison(po) && comparison(co)) return "(" + inner + ")";
+            int pp = operatorPrecedence(po);
+            int cp = operatorPrecedence(co);
             if (side == "r" ? cp <= pp : cp < pp) return "(" + inner + ")";
         }
         return inner;

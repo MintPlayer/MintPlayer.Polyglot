@@ -244,16 +244,25 @@ inline std::string renderArgs(const std::vector<std::string>& children) {
     return renderDelimited({"(", ", ", ")"}, children);
 }
 
-// Binary-operator precedence (higher binds tighter), used by the engine for parenthesization. Identical
-// across C# and TS — a shared engine concern, not per-backend data — so it lives here, not in a BackendSpec.
+// Binary-operator precedence (higher binds tighter), used by the engine for parenthesization. The
+// C-family (C#/TS) order — a shared engine concern, not per-backend data — so it lives here, not in a
+// BackendSpec. EVERY operator ir::Binary can carry must appear: an op missing from this table used to
+// fall through to the TIGHTEST level, silently dropping required parens — `a + (b ?? c)` emitted as
+// `a + b ?? c`, which reparses as `(a + b) ?? c` and produced the FruitCake NaN miscompile (2026-07-04).
+// The default stays tightest for genuinely atom-like rendering, but no real operator may rely on it.
 inline int operatorPrecedence(const std::string& op) {
+    if (op == "??") return 0;
     if (op == "||") return 1;
     if (op == "&&") return 2;
-    if (op == "==" || op == "!=") return 3;
-    if (op == "<" || op == "<=" || op == ">" || op == ">=") return 4;
-    if (op == "+" || op == "-") return 5;
-    if (op == "*" || op == "/" || op == "%") return 6;
-    return 7;
+    if (op == "|") return 3;
+    if (op == "^") return 4;
+    if (op == "&") return 5;
+    if (op == "==" || op == "!=") return 6;
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") return 7;
+    if (op == "<<" || op == ">>" || op == ">>>") return 8;
+    if (op == "+" || op == "-") return 9;
+    if (op == "*" || op == "/" || op == "%") return 10;
+    return 11;
 }
 
 } // namespace mintplayer::polyglot
