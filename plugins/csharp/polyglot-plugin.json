@@ -176,8 +176,8 @@
         "with": "@"
       },
       "reserved": [
-        "Program",
-        "Extensions",
+        "PolyglotProgram",
+        "PolyglotExtensions",
         "Main",
         "lhs",
         "__opt*",
@@ -279,7 +279,7 @@
                 },
                 {
                   "tmpl": [
-                    "Program.",
+                    "PolyglotProgram.",
                     {
                       "fn": "ident",
                       "args": [
@@ -572,13 +572,36 @@
               ]
             },
             "hole": {
-              "tmpl": [
-                "{",
-                {
-                  "emit": "item"
-                },
-                "}"
-              ]
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "item.typeIsBool",
+                        "true"
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        "{(",
+                        {
+                          "emit": "item"
+                        },
+                        " ? \"true\" : \"false\")}"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    "{",
+                    {
+                      "emit": "item"
+                    },
+                    "}"
+                  ]
+                }
+              }
             }
           }
         },
@@ -1747,7 +1770,7 @@
                 },
                 {
                   "block": {
-                    "head": "static class Extensions",
+                    "head": "static class PolyglotExtensions",
                     "body": [
                       {
                         "mapMembers": "module.extensions",
@@ -1817,7 +1840,7 @@
         },
         {
           "block": {
-            "head": "static class Program",
+            "head": "static class PolyglotProgram",
             "body": [
               {
                 "mapDecl": "module.globals",

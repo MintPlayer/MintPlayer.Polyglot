@@ -1,0 +1,23 @@
+// Stringification faithfulness — bare print AND interpolation holes must spell every scalar the same
+// on every target. The traps each backend shims: whole floats (C# `{25.0}` is "25" but Python
+// `str(25.0)` is "25.0"), bools (C# `{b}` is "True", PHP casts true to "1" — canonical is lowercase),
+// and the same values flowing through arithmetic before stringifying.
+fn main() {
+  let f = 25.0
+  let g = 2.5
+  let h = -3.0
+  let b = true
+  let c = false
+  let n = 42i64
+  let i = 7
+  let s = "txt"
+  print(f)
+  print(g)
+  print(h)
+  print(b)
+  print(c)
+  print("f=${f} g=${g} h=${h}")
+  print("b=${b} c=${c}")
+  print("n=${n} i=${i} s=${s}")
+  print("expr=${f + g} not=${!b}")
+}

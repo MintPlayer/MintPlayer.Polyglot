@@ -1,0 +1,51 @@
+name: Publish Visual Studio extension
+
+# Builds editors/vs (the VSIX LSP client) and publishes it to the Visual Studio Marketplace with
+# VsixPublisher. Needs a Windows runner: the VSIX build is VSSDK MSBuild (windows-latest carries
+# VS 2026 since June 2026). Uses the same org marketplace PAT as the VS Code extension
+# (PUBLISH_SNIPPETS - an Azure DevOps PAT with Marketplace publish scope for the `mintplayer`
+# publisher). VsixPublisher has no skip-duplicate: republishing an already-published version fails
+# loudly, which is the version-bump reminder.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'editors/vs/**'
+      - '.github/workflows/publish-vs.yml'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate VS 2026 tooling (MSBuild + VsixPublisher)
+        id: vs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -prerelease -version '[18.0,)' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { Write-Error "No VS 2026 MSBuild on this runner."; exit 1 }
+          $publisher = & $vswhere -latest -prerelease -version '[18.0,)' -find 'VSSDK\VisualStudioIntegration\Tools\Bin\VsixPublisher.exe' | Select-Object -First 1
+          if (-not $publisher) { Write-Error "VsixPublisher.exe not found on this runner (VSSDK component missing)."; exit 1 }
+          "msbuild=$msbuild" >> $env:GITHUB_OUTPUT
+          "publisher=$publisher" >> $env:GITHUB_OUTPUT
+
+      - name: Build the VSIX (Release)
+        shell: pwsh
+        run: |
+          & "${{ steps.vs.outputs.msbuild }}" editors/vs/MintPlayer.Polyglot.VisualStudio.csproj -restore /p:Configuration=Release /m
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path "editors/vs/bin/Release/MintPlayer.Polyglot.VisualStudio.vsix")) { Write-Error "VSIX not produced."; exit 1 }
+
+      - name: Publish to the Visual Studio Marketplace
+        shell: pwsh
+        run: |
+          & "${{ steps.vs.outputs.publisher }}" publish `
+            -payload "editors/vs/bin/Release/MintPlayer.Polyglot.VisualStudio.vsix" `
+            -publishManifest "editors/vs/publishManifest.json" `
+            -personalAccessToken "${{ secrets.PUBLISH_SNIPPETS }}"
+          if ($LASTEXITCODE -ne 0) { exit 1 }

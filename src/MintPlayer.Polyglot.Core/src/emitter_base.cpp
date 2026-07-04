@@ -23,6 +23,9 @@ bool isFloatTypeName(const TypeRef& t) {
 bool isInt64Name(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && (t.name == "i64" || t.name == "u64");
 }
+bool isBoolTypeName(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && t.name == "bool";
+}
 } // namespace
 
 std::string IrExprCtx::get(const std::string& path) const {
@@ -203,6 +206,21 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Bool) return static_cast<const ir::BoolLit&>(e_).value ? "true" : "false";
         if (e_.kind == ir::ExprKind::Str)  return static_cast<const ir::StrLit&>(e_).value;
         if (e_.kind == ir::ExprKind::Char) return static_cast<const ir::CharLit&>(e_).value;
+    }
+    // Child type-class predicates: `<child-path>.typeIsBool` / `.typeIsFloat` / … answer the LANGUAGE
+    // type-class of any child expression a rule can name — an interp hole type-gates its stringification
+    // with these (a bool hole must spell "true"/"false" identically on every target, PRD §3.C).
+    {
+        static const std::pair<const char*, bool (*)(const TypeRef&)> kChildTypeFacts[] = {
+            {".typeIsBool", isBoolTypeName},   {".typeIsFloat", isFloatTypeName},
+            {".typeIsInt", isIntTypeName},     {".typeIsInt64", isInt64Name},
+        };
+        for (const auto& [suffix, pred] : kChildTypeFacts) {
+            const std::size_t n = std::string(suffix).size();
+            if (path.size() > n && path.compare(path.size() - n, n, suffix) == 0)
+                if (const ir::Expr* child = childExpr(path.substr(0, path.size() - n)))
+                    return pred(child->type) ? "true" : "false";
+        }
     }
     return targetGet(path);
 }

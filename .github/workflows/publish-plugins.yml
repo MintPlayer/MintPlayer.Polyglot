@@ -1,13 +1,17 @@
 # Publish the target-language plugins (P19: a language is a JSON file) as npm packages —
-# @mintplayer/polyglot-target-{csharp,typescript,python,php} — to npmjs.org and GitHub Packages.
-# `polyglot install <target>` resolves these by name. Mirrors the org publishing pattern
-# (mintplayer-ng-bootstrap publish-master.yml); PUBLISH_TO_NPMJS is configured organization-wide.
+# @mintplayer/polyglot-target-{csharp,typescript,python,php} — to npmjs.org and GitHub Packages,
+# and the MintPlayer.Polyglot.MSBuild NuGet (which EMBEDS the native CLI + these plugins) to
+# nuget.org and GitHub Packages. `polyglot install <target>` resolves the npm packages by name.
+# Mirrors the org publishing pattern; PUBLISH_TO_NPMJS / PUBLISH_TO_NUGET_ORG are org-wide secrets.
 name: publish-plugins
 
 on:
   push:
     branches: [master]
-    paths: ['plugins/**']
+    paths:
+      - 'plugins/**'
+      - 'src/**'
+      - '.github/workflows/publish-plugins.yml'
   workflow_dispatch:
 
 concurrency:
@@ -74,3 +78,51 @@ jobs:
             [
               { "url": "https://npm.pkg.github.com", "token": "${{ github.token }}" }
             ]
+
+  # The .pg-aware NuGet (MintPlayer.Polyglot.MSBuild) embeds the NATIVE win-x64 CLI + its plugins, so
+  # this job must build C++ with MSVC v145 — hence a Windows runner (windows-latest carries VS 2026
+  # since June 2026; the vswhere probe fails loudly if the image regresses to a v143-only VS).
+  # skip-duplicate makes it a no-op until the package Version in the csproj is bumped.
+  publish-nuget:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate a VS 2026 (v145) MSBuild
+        id: msbuild
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -prerelease -version '[18.0,)' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { Write-Error "No VS 2026 (v145-capable) MSBuild on this runner - cannot build the native CLI this package embeds."; exit 1 }
+          "path=$msbuild" >> $env:GITHUB_OUTPUT
+
+      - name: Build the native CLI (Release x64)
+        shell: pwsh
+        run: |
+          & "${{ steps.msbuild.outputs.path }}" MintPlayer.Polyglot.sln /p:Configuration=Release /p:Platform=x64 /m
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # MSBuild exit codes have lied before - prove the exe runs.
+          x64\Release\MintPlayer.Polyglot.Cli.exe --version
+
+      - name: Run the unit tests
+        shell: pwsh
+        run: x64\Release\MintPlayer.Polyglot.Tests.exe
+
+      - name: Pack
+        shell: pwsh
+        # Forward slashes: a trailing backslash before the closing quote would escape it on the native
+        # command line. MSBuild accepts mixed separators; the csproj appends the exe name directly.
+        run: dotnet pack src/MintPlayer.Polyglot.MSBuild -c Release -o artifacts "-p:PolyglotCliDir=${{ github.workspace }}/x64/Release/"
+
+      - name: Push to nuget.org
+        shell: pwsh
+        run: dotnet nuget push artifacts\*.nupkg --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.PUBLISH_TO_NUGET_ORG }}" --skip-duplicate
+
+      - name: Push to GitHub Packages
+        shell: pwsh
+        run: dotnet nuget push artifacts\*.nupkg --source https://nuget.pkg.github.com/MintPlayer/index.json --api-key "${{ github.token }}" --skip-duplicate
