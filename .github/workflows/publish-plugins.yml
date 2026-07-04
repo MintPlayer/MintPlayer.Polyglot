@@ -44,6 +44,21 @@ jobs:
             process.exit(bad ? 1 : 0);
           '
 
+      # TEMPORARY diagnostic: the publish action swallows npm's stderr, so the 4 npmjs failures were
+      # opaque. Surface the real npm output: is the secret empty here, is the token valid (whoami),
+      # and what exactly does a direct publish say? Remove once npmjs publishing works.
+      - name: npm token diagnostics
+        env:
+          TOKEN: ${{ secrets.PUBLISH_TO_NPMJS }}
+        run: |
+          if [ -z "$TOKEN" ]; then echo "::error::PUBLISH_TO_NPMJS resolves EMPTY in this repo"; exit 1; fi
+          echo "//registry.npmjs.org/:_authToken=$TOKEN" > ~/.npmrc
+          echo "--- npm whoami:"
+          npm whoami --registry=https://registry.npmjs.org || { echo "::error::token invalid or expired (whoami failed)"; exit 1; }
+          echo "--- direct publish attempt (csharp):"
+          cd plugins/csharp
+          npm publish --access public --registry=https://registry.npmjs.org 2>&1 || echo "::warning::direct npm publish failed - real error above"
+
       - name: Publish target plugins
         uses: MintPlayer/github-actions/publish-npm-packages@b08fbddf0b285a8633ac138b89d79ceb8cc8c888
         with:
