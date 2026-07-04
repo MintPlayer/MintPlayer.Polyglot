@@ -1832,6 +1832,21 @@ marketplace validation pipeline took ~3 minutes; npmjs read-side propagation of 
 minutes more. With the registry live, `polyglot install <bare-name>` was verified end-to-end (and fixed:
 the GNU-tar `C:\` bug above).
 
+**GitHub-Releases CLI channel + build provenance ✅ (2026-07-04).** `.github/workflows/release.yml`
+closes the "no prebuilt binary" gap: on a `v*` tag push (or dispatch, which derives the tag from the
+CLI's own `--version`), a windows-latest runner builds Release with the v145 MSBuild, gates it (unit
+tests + the 40-program C#/TS conformance suite, .NET 10 pinned for the oracle), stages
+`polyglot.exe` + `plugins/` as `polyglot-win-x64.zip` (refusing a plugin-less zip — a CLI with zero
+targets), and publishes a GitHub Release. **Provenance is GitHub's built-in artifact attestations**
+(`actions/attest-build-provenance`, permissions `id-token`+`attestations: write`): a signed SLSA
+statement (Sigstore) binds each artifact's sha256 to this repo + workflow + source commit, and both the
+zip AND the inner exe are attested subjects, so
+`gh attestation verify polyglot-win-x64.zip --repo MintPlayer/MintPlayer.Polyglot` (or the extracted
+exe) names the exact commit — a tampered or elsewhere-built binary fails verification. Re-releasing an
+existing tag fails loudly (the version-bump reminder). README's "Getting the CLI" now leads with the
+release channel + the verify command. NuGet note: `MintPlayer.Polyglot.MSBuild 0.0.1` confirmed LIVE on
+nuget.org (the post-merge `publish-plugins` run succeeded), README updated accordingly.
+
 **Slices 13–15 ✅ v1 (2026-07-03) — reserved/forbidden identifiers: the 7 collision miscompiles are loud
 per-target refusals.** The v1 stance is **refuse, don't rename**: every generated-name collision the
 investigation found (record `Program`/fn `Main`/param `lhs` on C#; match-arm `_m`, union-discriminant

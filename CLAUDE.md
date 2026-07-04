@@ -330,7 +330,13 @@ Gate: `tests/msbuild/run-nuget.ps1` (8 checks, all green). v1 limits recorded in
 collision with top-level statements~~ (**✅ fixed 2026-07-04: the C# wrapper is `PolyglotProgram`/
 `PolyglotExtensions` — pure rule data + reserved entries, csharp plugin 0.2.0; the gate's consumer now uses
 top-level statements**), `internal` generated types, one-import-root per
-project. Remaining: per-RID CI packaging + NuGet publish, npm sibling.
+project. **NuGet 0.0.1 is LIVE on nuget.org** (publish-plugins.yml, 2026-07-04). Remaining: more RIDs
+(linux/mac need a cross-toolchain story), npm sibling.
+**Prebuilt-CLI release channel ✅ (2026-07-04):** `.github/workflows/release.yml` — a `v*` tag push (or
+dispatch) builds/gates Release on windows-latest, ships `polyglot-win-x64.zip` (exe + plugins) as a
+GitHub Release, and **attests build provenance** (GitHub artifact attestations / SLSA / Sigstore; zip AND
+inner exe are subjects) so `gh attestation verify <file> --repo MintPlayer/MintPlayer.Polyglot` proves
+the binary came from this repo's workflow at a named commit.
 **P21 ✅ done (2026-07-04, designed + built same day) — watch mode** (PRD §4.13; slice log PLAN §P21):
 `--watch` as a FLAG on `build`/`check` (tsc convention, not a verb). CLI-layer only, **zero Core change** —
 a `RecordingResolver` decorator over `FileModuleResolver` captures the transitive input closure `compile()`

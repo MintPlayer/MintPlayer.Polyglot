@@ -50,8 +50,23 @@ bytes.
 
 ## Getting the CLI
 
-There is no prebuilt binary distribution yet — the CLI is built from source (a GitHub-Releases channel
-is on the roadmap):
+**Prebuilt (Windows x64):** download `polyglot-win-x64.zip` from
+[GitHub Releases](https://github.com/MintPlayer/MintPlayer.Polyglot/releases) and unzip — it contains
+`polyglot.exe` with its `plugins/` folder beside it (statically linked, zero runtime dependencies). Put
+the folder on your `PATH`.
+
+Every release binary ships with a **signed build-provenance attestation** (GitHub artifact
+attestations, SLSA + Sigstore): you can prove your download was built by this repository's release
+workflow from a specific source commit — not tampered with, not built elsewhere:
+
+```
+gh attestation verify polyglot-win-x64.zip --repo MintPlayer/MintPlayer.Polyglot
+```
+
+The extracted `polyglot.exe` is attested too, so the same command works on the bare exe. The
+verification output names the exact commit and workflow run that produced the binary.
+
+**From source:**
 
 1. You need **Visual Studio 2026** with the *Desktop development with C++* workload (the projects pin
    platform toolset **v145**; VS 2022/v143 is not sufficient).
@@ -62,11 +77,10 @@ is on the roadmap):
    ```
 
 3. The self-contained CLI lands at `x64\Debug\MintPlayer.Polyglot.Cli.exe` with its target plugins in
-   the `plugins\` folder beside it (statically linked CRT — no runtime dependencies). Put it on your
-   `PATH` as `polyglot` if you like.
+   the `plugins\` folder beside it. Put it on your `PATH` as `polyglot` if you like.
 
-One-shot verification (build → unit tests → differential conformance; needs `dotnet` + `node`):
-`pwsh scripts/build-and-test.ps1`.
+One-shot verification (build → unit tests → watch gate → differential conformance; needs `dotnet` +
+`node`): `pwsh scripts/build-and-test.ps1`.
 
 ## Using the CLI
 
@@ -140,13 +154,18 @@ of the box; the language features need the CLI — set `polyglot.cliPath` or hav
 
 ## .NET build integration
 
-`MintPlayer.Polyglot.MSBuild` (in [`src/MintPlayer.Polyglot.MSBuild/`](src/MintPlayer.Polyglot.MSBuild/),
-not yet on nuget.org) makes `dotnet build` transpile `.pg` files straight into an ordinary C# project —
-incremental, clean-aware, non-transitive, no extra SDK. The `.pg` sources are registered as `Watch`
-items, so **`dotnet watch build|run` re-transpiles on every `.pg` edit** — which is also the watch story
-inside Visual Studio for .NET hosts (opt out with `Watch="false"` metadata or `PolyglotWatch=false`).
-Pack it locally with `dotnet pack` (it embeds the CLI you built); the end-to-end gate is
-`tests/msbuild/run-nuget.ps1`.
+[`MintPlayer.Polyglot.MSBuild`](https://www.nuget.org/packages/MintPlayer.Polyglot.MSBuild) (sources in
+[`src/MintPlayer.Polyglot.MSBuild/`](src/MintPlayer.Polyglot.MSBuild/)) makes `dotnet build` transpile
+`.pg` files straight into an ordinary C# project — incremental, clean-aware, non-transitive, no extra
+SDK (the package embeds the native CLI):
+
+```
+dotnet add package MintPlayer.Polyglot.MSBuild
+```
+
+The `.pg` sources are registered as `Watch` items, so **`dotnet watch build|run` re-transpiles on every
+`.pg` edit** — which is also the watch story inside Visual Studio for .NET hosts (opt out with
+`Watch="false"` metadata or `PolyglotWatch=false`). The end-to-end gate is `tests/msbuild/run-nuget.ps1`.
 
 ## Layout
 
