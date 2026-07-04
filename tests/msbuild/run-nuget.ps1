@@ -46,19 +46,13 @@ fn makeOrigin(): Point {
 }
 "@ | Set-Content (Join-Path $app "shapes.pg")
 
-# Explicit-Main consumer: the generated wrapper is `static class Program`, which collides with the
-# implicit Program class of top-level statements (recorded P11 sharp edge; wrapper-rename is the
-# deferred fix). Class libraries and explicit-Main apps are the v1 consumption story.
+# Top-level statements deliberately: the generated wrapper is `static class PolyglotProgram`
+# precisely so it can coexist with the implicit `Program` class every modern console app has
+# (the collision was P11's sharpest edge until the wrapper rename).
 @"
-static class App
-{
-    static void Main()
-    {
-        var p = Program.makeOrigin();
-        var q = new Point(3, 4);
-        System.Console.WriteLine(p.x + q.x + q.y);
-    }
-}
+var p = PolyglotProgram.makeOrigin();
+var q = new Point(3, 4);
+System.Console.WriteLine(p.x + q.x + q.y);
 "@ | Set-Content (Join-Path $app "Program.cs")
 
 dotnet add $app package MintPlayer.Polyglot.MSBuild --version 0.0.1 | Out-Null

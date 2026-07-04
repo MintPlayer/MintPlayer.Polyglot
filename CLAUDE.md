@@ -326,8 +326,10 @@ grammar. Nothing built yet; only docs may land early.
 (`src/MintPlayer.Polyglot.MSBuild/`, assets-only, `DevelopmentDependency`, non-transitive `build/`) ships the
 CLI + its `plugins/` under `tools/win-x64/` and transpiles `**/*.pg`→obj/ `BeforeTargets=CoreCompile`
 (incremental, clean-aware, loud missing-RID error, `PolyglotTool`/`PolyglotLib`/`PolyglotRoot` overrides).
-Gate: `tests/msbuild/run-nuget.ps1` (8 checks, all green). v1 limits recorded in PLAN §P11: `Program`-wrapper
-collision with top-level statements (bumps wrapper-rename), `internal` generated types, one-import-root per
+Gate: `tests/msbuild/run-nuget.ps1` (8 checks, all green). v1 limits recorded in PLAN §P11: ~~`Program`-wrapper
+collision with top-level statements~~ (**✅ fixed 2026-07-04: the C# wrapper is `PolyglotProgram`/
+`PolyglotExtensions` — pure rule data + reserved entries, csharp plugin 0.2.0; the gate's consumer now uses
+top-level statements**), `internal` generated types, one-import-root per
 project. Remaining: per-RID CI packaging + NuGet publish, npm sibling.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish remain), **P16d** (Visual Studio LSP client),

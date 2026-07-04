@@ -429,10 +429,12 @@ transpile (`BeforeTargets=CoreCompile`, `Inputs/Outputs` incl. the tool path, `E
 the RID + the `PolyglotTool` override when no binary matches, unix `chmod +x`). Two integration lessons
 paid for: NuGet's XML comments can't contain `--` (a literal flag name in a comment broke every consumer
 import with MSB4024), and **RID resolution must live in `.targets`** — `NETCoreSdkPortableRuntimeIdentifier`
-is undefined at NuGet's top-of-project props import. **Recorded v1 limits:** (a) the generated `static
-class Program` wrapper collides with the implicit `Program` of top-level statements (CS0260) — v1
-consumption = class libraries / explicit-Main apps; this bumps the deferred **wrapper-rename** (P19
-slice-15 note) from cosmetic to adoption-relevant; (b) generated types are `internal` — same-assembly
+is undefined at NuGet's top-of-project props import. **Recorded v1 limits:** (a) ~~the generated `static
+class Program` wrapper collides with the implicit `Program` of top-level statements (CS0260)~~ —
+**✅ fixed 2026-07-04 by the wrapper rename** (`PolyglotProgram`/`PolyglotExtensions`, pure rule data in
+the csharp plugin + its reserved-list entries; the gate's consumer now uses top-level statements on
+purpose; the emitted-source diff was verified to touch ONLY the two class names across all 39 programs,
+plugin bumped to 0.2.0); (b) generated types are `internal` — same-assembly
 consumption only, a `public`-emission option is future work; (c) each emitted file carries the Option
 prelude, so multi-`.pg` projects need a single import root (or explicit `@(PolyglotFile)` pruning) until
 prelude dedup exists. **Remaining for “shipped”:** per-RID CI packaging (linux/osx × x64/arm64) + NuGet
@@ -1255,6 +1257,8 @@ New slices, in priority order:
     declaration-name sites (today value-sites only); TS gets honest `escape: null` semantics (its
     unescapable words become refusals). Wrapper-rename (un-reserving `Program`/`Extensions` by renaming
     the generated wrapper) recorded as a future alternative — deferred, it churns every emitted file.
+    **✅ Wrapper-rename done 2026-07-04** — P11 upgraded it from cosmetic to adoption-relevant (the
+    wrapper collided with every top-level-statements console app); see the P11 as-built note.
 
 **Slice-1 ✅ (2026-07-02):** the two latent §3.B silent-broken-output bugs are now **capability refusals**:
 `Feature::BlockLambdas` + `Feature::WithExpressions` added (capability.cpp detects a Lambda with `flag`

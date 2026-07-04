@@ -265,9 +265,9 @@ int main() {
         check(!has(cs.code, "using System;"), "C#: no `using` (BCL refs are global::-qualified)");
         check(has(cs.code, "public static int add(int a, int b)"), "C#: function signature mapped");
         // print is now std.io's generic `print<T>` (capability mechanism): its csharp `actual` body is the
-        // Console.WriteLine, and the call site is a normal free-function call (Program.print(...)).
+        // Console.WriteLine, and the call site is a normal free-function call (PolyglotProgram.print(...)).
         check(has(cs.code, "global::System.Console.WriteLine(x is bool"), "C#: std.io print body -> Console.WriteLine (bool-lowercasing)");
-        check(has(cs.code, "Program.print(Program.add(sum, 100))"), "C#: print call site -> Program.print");
+        check(has(cs.code, "PolyglotProgram.print(PolyglotProgram.add(sum, 100))"), "C#: print call site -> PolyglotProgram.print");
         check(has(cs.code, "static void Main() {") && has(cs.code, "InvariantCulture") && has(cs.code, "main(); }"),
               "C#: main entry point emitted (with invariant-culture pin)");
     }
@@ -499,7 +499,7 @@ int main() {
               "P15 C#: async fn -> `async Task<T>` (unwrapped T wrapped by the backend)");
         check(has(cs.code, "async global::System.Threading.Tasks.Task main"),
               "P15 C#: async unit fn -> `async Task` (bare, no <T>)");
-        check(has(cs.code, "await Program.doubleIt(21)"), "P15 C#: `await e` emits `await`");
+        check(has(cs.code, "await PolyglotProgram.doubleIt(21)"), "P15 C#: `await e` emits `await`");
         check(has(cs.code, "main().GetAwaiter().GetResult();"),
               "P15 C#: async main is driven synchronously from Main()");
 
@@ -886,7 +886,7 @@ int main() {
             "fn main() { print(MyMath.twice(5))\n  print(MyMath.K) }\n";
         // twice(5) inlines to (5 * 2); the static const K inlines to 42 (passed to the print free function).
         EmitResult cs = compileStd(prog, findTarget("csharp"));
-        check(cs.ok && has(cs.code, "(5 * 2)") && has(cs.code, "Program.print(42)") && !has(cs.code, "class MyMath"),
+        check(cs.ok && has(cs.code, "(5 * 2)") && has(cs.code, "PolyglotProgram.print(42)") && !has(cs.code, "class MyMath"),
               "P13: static method + static const bindings fire on an extern class (C#)");
         EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "(5 * 2)") && !has(ts.code, "class MyMath"),
@@ -1241,9 +1241,9 @@ int main() {
                                 findTarget("python"));
         check(!py.ok && has(py.diagnostics[0].message, "'_pg_idiv' is reserved by target 'python'"),
               "P19: a python-runtime-helper fn name refuses on python");
-        EmitResult cs = compile("record Program(x: i32)\nfn main() {}\n", findTarget("csharp"));
-        check(!cs.ok && has(cs.diagnostics[0].message, "'Program' is reserved by target 'csharp'"),
-              "P19: a C#-scaffolding type name ('Program') refuses on csharp");
+        EmitResult cs = compile("record PolyglotProgram(x: i32)\nfn main() {}\n", findTarget("csharp"));
+        check(!cs.ok && has(cs.diagnostics[0].message, "'PolyglotProgram' is reserved by target 'csharp'"),
+              "P19: a C#-scaffolding type name ('PolyglotProgram') refuses on csharp");
         // Prefix families: `__w*` covers every lowering temp, not just one spelled-out name.
         EmitResult w = compile("fn main() {\n  let __w1 = 1\n  var y = __w1\n}\n", findTarget("csharp"));
         check(!w.ok && has(w.diagnostics[0].message, "'__w1' is reserved"),
@@ -1270,7 +1270,7 @@ int main() {
                                  "fn main() {\n  let s = switch(5)\n  var y = checked(s.delegate)\n}\n",
                                  findTarget("csharp"));
         check(kcs.ok && has(kcs.code, "record @switch(int @delegate)") && has(kcs.code, "int @checked(int a)") &&
-                  has(kcs.code, "Program.@checked(s.@delegate)") && has(kcs.code, "new @switch(5)"),
+                  has(kcs.code, "PolyglotProgram.@checked(s.@delegate)") && has(kcs.code, "new @switch(5)"),
               "P19: C#-keyword names escape as @name at decl, call, member, and construction sites");
         EmitResult kpy = compile("fn global(a: i32): i32 {\n  return a\n}\nfn main() {\n  var y = global(7)\n}\n",
                                  findTarget("python"));
