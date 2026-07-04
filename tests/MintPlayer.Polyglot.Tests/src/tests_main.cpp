@@ -1284,6 +1284,37 @@ int main() {
               "P19: TS declares no escape, so its keywords are reserved names -> honest refusal");
     }
 
+    // ---- Precedence parenthesization (the 2026-07-04 FruitCake NaN miscompile) -------------------------
+    // `??`/bitwise/shifts were missing from the engine's operatorPrecedence table and fell through to the
+    // TIGHTEST level, dropping required parens: `basis + (opt?.v ?? 0.0)` emitted bare reparses as
+    // `(basis + opt?.v) ?? 0.0` — wrong on both targets and divergent (C# 0.0 vs JS NaN).
+    {
+        const char* src =
+            "class Box {\n  var v: f64\n  init(v: f64) { this.v = v }\n}\n"
+            "fn addOpt(basis: f64, opt: Box?): f64 => basis + (opt?.v ?? 0.0)\n"
+            "fn main() {\n  print(addOpt(5.0, null))\n}\n";
+        EmitResult cs = compileStd(src, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "+ (opt?.v ?? "),
+              "precedence: C# keeps the parens around a ?? operand of +");
+        EmitResult ts = compileStd(src, findTarget("typescript"));
+        check(ts.ok && has(ts.code, "+ (opt?.v ?? "),
+              "precedence: TS keeps the parens around a ?? operand of +");
+
+        const char* shifts =
+            "fn f(a: i32, b: i32, c: i32): i32 => (a << b) + c\n"
+            "fn main() {\n  print(f(5, 2, 3))\n}\n";
+        EmitResult scs = compileStd(shifts, findTarget("csharp"));
+        check(scs.ok && has(scs.code, "(a << b) + c"),
+              "precedence: C# keeps the parens around a shift operand of +");
+
+        const char* cmp =
+            "fn g(a: i32, b: i32, c: i32): bool => (b > a) == (c > a)\n"
+            "fn main() {\n  print(g(1, 2, 3))\n}\n";
+        EmitResult pcs = compileStd(cmp, findTarget("python"));
+        check(pcs.ok && has(pcs.code, "(b > a) == (c > a)"),
+              "precedence: python keeps comparison-under-comparison parens (no chaining)");
+    }
+
     // ---- P21 slice 1: watch-mode support (FileWatcher polling + RecordingResolver) ---------------------
     {
         using cli::FileWatcher;

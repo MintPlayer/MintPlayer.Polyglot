@@ -284,6 +284,18 @@ fn dropAndSettle(world: FruitCakeWorld, tier: i32, x: f64): i32 {
   return world.settleAfterDrop(2.0, 8, 800)
 }
 
+// Gate soundness (2026-07-04): the integer summary alone let a real codegen bug slip — the `??`
+// precedence miscompile made this program's TS float state silently NaN while the printed integers
+// still matched by coincidence. The checksum makes the FLOAT state part of the differential oracle:
+// it is pure + and × over bit-exact f64 (§3.D), so a scaled-integer truncation must agree to the
+// byte — and NaN anywhere becomes a loud -1 instead of a masked divergence.
+fn checksum(world: FruitCakeWorld): i64 {
+  var s = 0.0
+  for b in world.bodies { s += b.x * 3.0 + b.y * 7.0 + b.vx * b.vx + b.vy * b.vy }
+  if s != s { return -1 }                    // NaN in the final state -> loud
+  return (i64)(s * 1000000.0)
+}
+
 fn main() {
   let world = FruitCakeWorld()
   var scored = 0
@@ -292,5 +304,5 @@ fn main() {
   scored += dropAndSettle(world, 0, 308.0)   // another tier-0
   scored += dropAndSettle(world, 0, 315.0)   // -> a second tier-1 (may cascade to tier-2)
   scored += dropAndSettle(world, 1, 310.0)   // drop a tier-1 onto the pile
-  print("bodies=${world.count} scored=${scored}")
+  print("bodies=${world.count} scored=${scored} checksum=${checksum(world)}")
 }

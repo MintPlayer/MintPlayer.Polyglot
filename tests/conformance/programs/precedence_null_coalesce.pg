@@ -1,0 +1,24 @@
+// Regression for the FruitCake NaN miscompile (2026-07-04, found live by the MintPlayer.AI pilot):
+// `??` binds LOOSEST in C#/TS, but the engine's precedence table had no `??` entry, so it fell to the
+// TIGHTEST level and `basis + (opt?.v ?? 0.0)` emitted bare as `basis + opt?.v ?? 0.0`, which reparses
+// as `(basis + opt?.v) ?? 0.0` — wrong on both targets AND divergent: C# null-propagates the sum so
+// `?? 0.0` yields 0.0, while JS turns it into NaN, which `??` does NOT catch. classify() maps NaN to
+// -1 so any recurrence is loud in the differential gate, not a coincidence-masked float divergence.
+class Box {
+  var v: f64
+  init(v: f64) { this.v = v }
+}
+
+fn classify(v: f64): i32 => if v != v { -1 } else { (i32)(v + 0.5) }
+
+fn addOpt(basis: f64, opt: Box?): f64 => basis + (opt?.v ?? 0.0)
+fn subOpt(basis: f64, opt: Box?): f64 => basis - (opt?.v ?? 2.0)
+fn mulOpt(opt: Box?, scale: f64): f64 => (opt?.v ?? 3.0) * scale
+
+fn main() {
+  print("add_null=${classify(addOpt(5.0, null))}")       // 5
+  print("add_some=${classify(addOpt(5.0, Box(2.0)))}")   // 7
+  print("sub_null=${classify(subOpt(10.0, null))}")      // 8
+  print("mul_null=${classify(mulOpt(null, 4.0))}")       // 12
+  print("mul_some=${classify(mulOpt(Box(5.0), 4.0))}")   // 20
+}

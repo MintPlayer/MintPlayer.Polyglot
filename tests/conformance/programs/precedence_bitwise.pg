@@ -1,0 +1,15 @@
+// The rest of the dropped-parens class fixed with the `??` bug: bitwise and shift operators were also
+// missing from the engine precedence table, so they defaulted to the tightest level and lost their
+// required parentheses under arithmetic/comparisons (`(a << b) + c` emitted bare reparses as
+// `a << (b + c)`). Each line's comment shows the value the BARE (buggy) emission would produce.
+fn main() {
+  let a = 5
+  let b = 2
+  let c = 3
+  print((a << b) + c)            // 23  (bare: a << (b + c) = 160)
+  print(a << (b + c))            // 160
+  print((a & c) + b)             // 3   (bare: a & (c + b) = 5)
+  print((a | b) * c)             // 21  (bare: a | (b * c) = 7)
+  print((a ^ b) - c)             // 4   (bare: a ^ (b - c) = -6)
+  print((b > a) == (c > a))      // true — false==false (a bare Python chain b > a == c > a is false)
+}

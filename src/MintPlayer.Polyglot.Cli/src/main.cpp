@@ -71,6 +71,8 @@ bool readFile(const fs::path& path, std::string& out) {
 }
 
 bool writeFile(const fs::path& path, const std::string& content) {
+    std::error_code ec;
+    if (path.has_parent_path()) fs::create_directories(path.parent_path(), ec); // `--out newdir` just works
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
     os << content;
