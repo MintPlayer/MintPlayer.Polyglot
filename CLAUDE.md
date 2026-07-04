@@ -287,8 +287,9 @@ runtime differential TODO). **Slices 10–11 built (2026-07-03): distribution.**
 the project's whole target set; no config = the historical cs+ts) + `dependencies` (`file:<dir>`).
 Resolution: in-box `plugins/` → pgconfig `file:` → user cache (`%LOCALAPPDATA%\polyglot\plugins\`) → clean
 refusal. **`polyglot install <dir|npm-name>`** validates via the new Core `validateBackend` (full slice-8
-pipeline, no registration) and copies to the cache; bare names shell to `npm pack`+`tar` (wired; end-to-end
-awaits published packages). All three channels verified locally with the PHP plugin. **9b member-arm gap
+pipeline, no registration) and copies to the cache; bare names shell to `npm pack`+`tar` — **✅ verified
+end-to-end against the live registry** (2026-07-04; needed a fix: extract from inside the temp dir, GNU tar
+reads `C:\` as a remote host). All three channels verified with the PHP plugin. **9b member-arm gap
 ✅ closed** (bound members without this target's arm refuse at the use site). **npm packaging ✅ committed**
 (`plugins/*/package.json` as `@mintplayer/polyglot-target-*` + `.github/workflows/publish-plugins.yml` via
 the org's shared publish action; actual publish fires on push to main). **Slices 13–15 ✅ v1 (2026-07-03):
@@ -301,8 +302,12 @@ refusals squiggle live. v1 is kind-blind + refuse-not-rename. **Slice 15 ✅:** 
 rule tables (116) wrapped in `{"fn":"ident"}` — keyword-named decls escape consistently at decl+reference+
 type sites (C# `@switch`, python `global_`); TS declares no escape so its JS-reserved-words are
 `identifiers.reserved` → honest refusals; `ident` dispatch added to `TypeRefCtx`/`EnumDeclCtx` (engine
-gaps the byte gate caught). **P19 is COMPLETE** except npm publish-on-push (workflow committed) and the
-PHP runtime differential (needs a php toolchain).
+gaps the byte gate caught). **P19 is COMPLETE and PUBLISHED (2026-07-04):** all four
+`@mintplayer/polyglot-target-*` 0.1.0 packages are live on npmjs + GitHub Packages (npmjs publishes
+DIRECTLY in the workflow — the shared org action fails npmjs silently; its GH-Packages leg works), the
+VS Code extension is on the marketplace (`mintplayer.polyglot-lang`, displayName "MintPlayer Polyglot" —
+plain "Polyglot" was taken), and `polyglot install <bare-name>` resolves from the live registry. Only the
+PHP runtime differential remains (needs a php toolchain).
 **P20 🚦 designed & GATED — alternative input syntaxes ("skins")** (PRD §4.12 + new contract clause **§3.F**;
 design `docs/design/frontend-skins.md`; slice plan PLAN §P20; from a 4-agent investigation, 2026-07-02). Let devs
 author in a familiar surface over the same §3.A semantics — Reason-over-OCaml, never "compile arbitrary C#".
