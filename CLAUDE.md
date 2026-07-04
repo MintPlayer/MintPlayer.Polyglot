@@ -55,7 +55,8 @@ VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. T
 
 VS 2019 BuildTools (v142) and VS 2022 (v143) are both **insufficient** for v145 — don't build with them.
 
-**POSIX build (Linux/macOS)** — P22 slice 2, the `.vcxproj` stays the Windows source of truth: a root
+**POSIX build (Linux)** — P22 slice 2, the `.vcxproj` stays the Windows source of truth (macOS not
+planned; the CMake file still supports it if that changes): a root
 `CMakeLists.txt` mirrors the three projects (verified on WSL Ubuntu with g++/cmake). `cmake -S . -B build
 -DCMAKE_BUILD_TYPE=Release && cmake --build build` → `build/polyglot` (the CLI, static-linked libstdc++) +
 `build/polyglot-tests`. `scripts/check-buildfile-parity.ps1` guards `.vcxproj`↔CMake source-list drift
@@ -372,12 +373,13 @@ SyntaxError; comparison×comparison = Python chaining). Byte-audit proved the on
 CLI+NuGet → 0.1.1. New: `precedence_null_coalesce.pg` + `precedence_bitwise.pg` (42/42 C#/TS, 41/41 py).
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
-LSP client), **P20** (input skins, gated, above), **P22 🚧 designed — cross-platform CLI (Linux/macOS) +
-multi-RID distribution** (PRD §4.14, PLAN §P22, 4-agent investigation 2026-07-04): Core is already 100%
-portable C++, so a parallel CMake build (VS-2026 `.vcxproj` untouched) + five CLI-only POSIX fixes + a
-5-leg release matrix + the fat multi-RID NuGet (the `.targets` is already RID-generic) lets `dotnet build`
-transpile `.pg` on a Linux runner; also closes the PHP runtime differential and adds the esbuild-pattern
-npm sibling. **P21** (watch mode — ✅ done, above).
+LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 built — cross-platform CLI (Linux) +
+multi-RID distribution** (PRD §4.14, PLAN §P22, 4-agent investigation 2026-07-04; **macOS not planned** —
+shipping set = Windows + Linux, osx design retained for reference): Core is already 100% portable C++, so a
+parallel CMake build (VS-2026 `.vcxproj` untouched) + CLI-only POSIX fixes (done, verified on WSL Linux) +
+a Windows+Linux release matrix + the fat multi-RID NuGet (the `.targets` is already RID-generic) lets
+`dotnet build` transpile `.pg` on a Linux runner; also closes the PHP runtime differential and adds the
+esbuild-pattern npm sibling. **P21** (watch mode — ✅ done, above).
 
 ## Sibling repo
 The P8 dogfood target (FruitCake physics twins) lives in `C:\Repos\MintPlayer.AI` — see PRD §8 for paths.

@@ -2095,18 +2095,22 @@ consumers). Versions: CLI + NuGet → **0.1.1** (plugins unchanged — the fix i
 > its own phase — see [P22](#p22) below.** The design confirmed the NuGet's consume-side `.targets` is
 > already fully multi-RID; the real dependency is a portable (CMake) build + a native build matrix.
 
-## P22 — Cross-platform CLI (Linux/macOS) + multi-RID distribution — 🚧 slices 1–2 built, slices 3–6 designed (2026-07-04; PRD §4.14, 4-agent investigation)
+## P22 — Cross-platform CLI (Linux) + multi-RID distribution — 🚧 slices 1–2 built, slices 3–6 designed (2026-07-04; PRD §4.14, 4-agent investigation)
 
-Make the native `polyglot` CLI build and ship for **linux-x64, linux-arm64, osx-x64, osx-arm64** alongside
-win-x64, so the `MintPlayer.Polyglot.MSBuild` NuGet transpiles `.pg`→`.cs` during `dotnet build` on a Linux
-CI runner (MintPlayer.AI's `ubuntu-latest`) with **no committed generated output** — the driving need, plus
-the all-platform GitHub-Releases channel and the P11 npm-sibling remainder. Investigation verdicts (full
-detail PRD §4.14): **Core is already 100% portable standard C++** — the port is ~a day of CLI-only fixes +
-a build system, not a refactor; **a parallel CMakeLists for POSIX, the `.vcxproj`/VS-2026 workflow left
-untouched** (drift guarded by glob + a CI parity check); **glibc 2.35 floor** (`-static-libstdc++
--static-libgcc`, built on ubuntu-22.04) + **mandatory ad-hoc codesign on macOS arm64** (unsigned binaries
-are SIGKILLed); the NuGet's consume-side `.targets` is **already fully multi-RID — zero changes** (only the
-csproj pack + CI build one RID today); **one fat package** (~2.6 MB / 5 RIDs); a 5-leg `release.yml` matrix
+> **Scope: macOS is NOT planned** (user decision, 2026-07-04). The shipping RID set is **win-x64,
+> linux-x64, linux-arm64**. The `osx-x64`/`osx-arm64` design (native mac legs, ad-hoc codesign, the
+> `_NSGetExecutablePath` code branch) is left below **for reference only** in case that changes — it is not
+> on the roadmap, so ignore the macOS-specific steps in the slices.
+
+Make the native `polyglot` CLI build and ship for **linux-x64, linux-arm64** alongside win-x64, so the
+`MintPlayer.Polyglot.MSBuild` NuGet transpiles `.pg`→`.cs` during `dotnet build` on a Linux CI runner
+(MintPlayer.AI's `ubuntu-latest`) with **no committed generated output** — the driving need, plus the
+GitHub-Releases channel and the P11 npm-sibling remainder. Investigation verdicts (full detail PRD §4.14):
+**Core is already 100% portable standard C++** — the port is ~a day of CLI-only fixes + a build system,
+not a refactor; **a parallel CMakeLists for POSIX, the `.vcxproj`/VS-2026 workflow left untouched** (drift
+guarded by glob + a CI parity check); **glibc 2.35 floor** (`-static-libstdc++ -static-libgcc`, built on
+ubuntu-22.04); the NuGet's consume-side `.targets` is **already fully multi-RID — zero changes** (only the
+csproj pack + CI build one RID today); **one fat package** (~1.5 MB / 3 RIDs); a `release.yml` matrix
 with **per-job provenance attestation** and two fan-ins (GitHub Release + NuGet pack); the Linux leg finally
 closes the **PHP runtime-differential** TODO (php is preinstalled); npm sibling via the **esbuild
 `optionalDependencies` pattern**. The five portability fixes land first and must be **byte-identical on
@@ -2161,18 +2165,19 @@ Windows** (the existing gates prove it).
   the oracle wants net10 + node 22 — that's the CI runner's job, slice 4) and any macOS build.
 
 - **Slice 3 — `run-php.ps1` + close the PHP differential.** Write `tests/conformance/run-php.ps1` mirroring
-  `run-python.ps1` (emit PHP + the C# oracle, run both, diff stdout) — php is preinstalled on ubuntu/macos
-  runners, closing the "no php.exe on the dev box" TODO. *Gate:* `run-php.ps1 -Cli <path>` green against the
+  `run-python.ps1` (emit PHP + the C# oracle, run both, diff stdout) — php is preinstalled on the ubuntu
+  runner, closing the "no php.exe on the dev box" TODO. *Gate:* `run-php.ps1 -Cli <path>` green against the
   full conformance set on a runner with php; the FruitCake north-star program agrees byte-for-byte.
 
 - **Slice 4 — the release matrix + provenance.** Rework `release.yml` into: the existing `build-windows`
-  job (unchanged MSBuild/vswhere path, + add the python gate) → a `build-posix` matrix (`ubuntu-22.04`
-  linux-x64, `ubuntu-22.04-arm` linux-arm64, `macos-15-intel` osx-x64, `macos-15` osx-arm64) each CMake-
-  building Release, running the unit exe + `run-diff`/`run-python` (+ `run-php` on linux), **ad-hoc
-  codesigning on the macOS legs** (`codesign -s - -f` + `--verify`), tarring `polyglot-<rid>.tar.gz`
-  (tar preserves +x) and attesting provenance per job (archive + inner binary). *Gate:* a dispatch run
-  produces all five artifacts, each `gh attestation verify`-able; the fan-in `github-release` job attaches
-  them (deriving the tag by running the linux-x64 binary on a dispatch, `github.ref_name` on a tag push).
+  job (unchanged MSBuild/vswhere path, + add the python gate) → a `build-linux` matrix (`ubuntu-22.04`
+  linux-x64, `ubuntu-22.04-arm` linux-arm64) each CMake-building Release, running the unit exe +
+  `run-diff`/`run-python`/`run-php`, tarring `polyglot-<rid>.tar.gz` (tar preserves +x) and attesting
+  provenance per job (archive + inner binary). *Gate:* a dispatch run produces all three artifacts
+  (win-x64 zip + two linux tarballs), each `gh attestation verify`-able; the fan-in `github-release` job
+  attaches them (deriving the tag by running the linux-x64 binary on a dispatch, `github.ref_name` on a
+  tag push). *(macOS legs — `macos-15-intel` osx-x64, `macos-15` osx-arm64, with ad-hoc `codesign -s - -f`
+  — are **not planned**; retained here only for if that changes.)*
 
 - **Slice 5 — the fat multi-RID NuGet.** Generalize the csproj pack: CI stages each built binary as
   `staging/<rid>/polyglot[.exe]` + a `plugins/` copy; the csproj packs `staging/**` with `PackagePath=tools\`
@@ -2193,8 +2198,9 @@ Windows** (the existing gates prove it).
   (**Node tokens** `linux|darwin|win32` × `x64|arm64`, `os`/`cpu` fields, `preferUnplugged`, the binary +
   a `plugins/` copy beside it; +x preserved by npm — no chmod). A dotnet-RID↔Node-token mapping table in
   the CI stage step. Publish via `publish-plugins.yml`'s dual-registry pattern (npmjs direct + GitHub
-  Packages). *Gate:* `npm i -g @mintplayer/polyglot` on Linux/macOS/Windows installs only the host payload
-  and `polyglot --version` runs; `polyglot build foo.pg` emits + finds plugins.
+  Packages). *Gate:* `npm i -g @mintplayer/polyglot` on Linux/Windows installs only the host payload
+  and `polyglot --version` runs; `polyglot build foo.pg` emits + finds plugins. (The pattern supports
+  `darwin-*` payloads too, but macOS is not planned — see the scope note.)
 
 - **Deferred (recorded, not scheduled):** win-arm64 (limited hosted-runner support; likely cross-compile
   with the ARM64 MSVC toolset, or Grpc.Tools-style x86-under-emulation remap); linux-musl-x64 (Alpine —

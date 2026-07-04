@@ -684,7 +684,11 @@ work. Until then the hardcoded list is a knowing stopgap, flagged at the code si
 
 **Decisions.** (1) `--watch` is a flag on `build` + `check`, no separate verb. (2) Polling watcher behind the `FileWatcher` seam, CLI-layer only, zero Core change. (3) The console protocol above is **frozen and golden-tested**. (4) VS Code: task type + `$polyglot-watch` matcher + status-bar toggle. (5) The NuGet ships the `Watch` item. (6) Failure never deletes or overwrites last-good outputs. (7) Deferred, recorded: native RDCW/inotify watcher, incremental module-graph rebuilds, `--clear`, a VS-native command (demand-gated), plugin-manifest hot reload.
 
-### 4.14 Cross-platform CLI — Linux/macOS builds + multi-RID distribution (design — 2026-07-04; investigated by a 4-agent team; PLAN §P22)
+### 4.14 Cross-platform CLI — Linux builds + multi-RID distribution (design — 2026-07-04; investigated by a 4-agent team; PLAN §P22)
+
+> **macOS is not planned** (user decision, 2026-07-04). The osx-x64/osx-arm64 design below (native builds,
+> ad-hoc codesign, the `_NSGetExecutablePath` code branch) is **retained for reference** should that change;
+> it is not on the roadmap. The shipping target set is **Windows + Linux**.
 
 **The user need.** MintPlayer.AI (the first real consumer) builds on GitHub Actions **ubuntu-latest**; the
 MSBuild NuGet ships only `tools/win-x64/`, so Linux CI cannot transpile `.pg` at build time — the pilot's
@@ -745,11 +749,12 @@ the **esbuild `optionalDependencies` pattern** — an `@mintplayer/polyglot` wra
 Postinstall-download rejected (offline/proxy/`--ignore-scripts`/CI-cache failures). Third naming scheme
 alert: dotnet RID `osx-arm64` = npm `darwin-arm64` — one mapping table in the CI stage step.
 
-**Decisions.** (1) **RID set v1: win-x64, linux-x64, linux-arm64, osx-x64, osx-arm64**; deferred:
-win-arm64, linux-musl-x64 (Alpine's `NETCoreSdkPortableRuntimeIdentifier` is `linux-musl-x64`, so the
-`.targets` already fails loudly there — the correct failure mode, documented). (2) Parallel CMake for
-POSIX, `.vcxproj` untouched, glob + CI parity gate. (3) glibc 2.35 floor (build on ubuntu-22.04);
-`-static-libstdc++ -static-libgcc`; mandatory ad-hoc codesign on the macOS legs. (4) One fat NuGet;
+**Decisions.** (1) **RID set v1: win-x64, linux-x64, linux-arm64** (macOS **not planned** — see below;
+the `osx-x64`/`osx-arm64` design is retained for if that changes). Deferred: win-arm64, linux-musl-x64
+(Alpine's `NETCoreSdkPortableRuntimeIdentifier` is `linux-musl-x64`, so the `.targets` already fails loudly
+there — the correct failure mode, documented). (2) Parallel CMake for POSIX, `.vcxproj` untouched, glob +
+CI parity gate. (3) glibc 2.35 floor (build on ubuntu-22.04); `-static-libstdc++ -static-libgcc`. *(macOS
+ad-hoc codesign — mandatory on arm64 — applies only if macOS is picked up; not planned.)* (4) One fat NuGet;
 `.targets` unchanged; the csproj packs a CI-staged `tools/` tree (`-p:PolyglotStageRoot=…`) and keeps the
 historical single-RID local pack as fallback so `run-nuget.ps1` stays green offline. (5) NuGet publishing
 moves from `publish-plugins.yml` (master-push) into `release.yml`'s fan-in → **NuGet becomes tag-gated**
@@ -886,16 +891,17 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   VS Code problemMatcher (task type + status-bar toggle in the extension), and one line in the MSBuild NuGet
   (`<Watch Include="@(PolyglotFile)" />`) so `dotnet watch` gives Visual Studio the C#-host path for free.
   Slice plan: PLAN §P21.
-- **P22 — Cross-platform CLI (Linux/macOS) + multi-RID distribution.** 🚧 Slices 1–2 built, 3–6 designed
+- **P22 — Cross-platform CLI (Linux) + multi-RID distribution.** 🚧 Slices 1–2 built, 3–6 designed
+  (macOS **not planned** — osx design retained for reference; shipping set = Windows + Linux)
   (2026-07-04; §4.14, from a 4-agent investigation). The POSIX resilience fixes + command-quoting audit
   landed immediately (a shared portable exe-path lookup, XDG cache dir, the `>nul`→`/dev/null` fix, all
   `#ifdef`-guarded and Windows-gate-green), and a parallel `CMakeLists.txt` (`.vcxproj` untouched) + a
   drift-parity guard now **build + pass the unit suite on real Linux** (WSL, static-linked, plugins found
   via `/proc/self/exe`). Remaining: a
-  5-leg release matrix with per-job provenance attestation, the fat multi-RID NuGet (the `.targets` is
-  already RID-generic — only the pack changes), the PHP runtime differential on the Linux leg, and the
-  esbuild-pattern npm sibling. North star: `dotnet build` transpiles `.pg` on a Linux runner. Slice plan:
-  PLAN §P22.
+  Windows + Linux release matrix with per-job provenance attestation, the fat multi-RID NuGet (the
+  `.targets` is already RID-generic — only the pack changes), the PHP runtime differential on the Linux
+  leg, and the esbuild-pattern npm sibling. North star: `dotnet build` transpiles `.pg` on a Linux runner.
+  Slice plan: PLAN §P22.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
