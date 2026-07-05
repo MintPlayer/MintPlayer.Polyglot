@@ -1,0 +1,20 @@
+// Issue #11 (1.C) regression: float -> integer casts across widths must agree cross-target.
+// TS previously wrapped i32 via `(Math.trunc(x) | 0)`; now it emits plain `Math.trunc(x)` (and PHP plain
+// `(int)(x)`), matching C#'s `(int)` and Python's `int(x)`. C# float->integral is truncate-toward-zero for
+// every width, so plain truncation matches for all in-range values. Values chosen in-range so C#/TS/Python
+// stdout is byte-identical; int->int narrowing wraps are covered elsewhere (casts.pg) and stay unchanged.
+
+fn main() {
+  let x = 100.7
+  print(i8(x))       // 100
+  print(i16(x))      // 100
+  print(i32(x))      // 100
+  print(u8(x))       // 100
+  print(u16(x))      // 100
+  print(u32(x))      // 100
+
+  let n = -5.9
+  print(i8(n))       // -5  (truncates toward zero)
+  print(i16(n))      // -5
+  print(i32(n))      // -5
+}

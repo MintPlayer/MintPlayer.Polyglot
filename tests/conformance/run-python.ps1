@@ -41,37 +41,53 @@ if (-not $py) { Write-Host "python3 not found on PATH."; exit 2 }
 
 $fail = 0
 $count = 0
-foreach ($name in $programs) {
-    $count++
-    $src = Join-Path $progDir "$name.pg"
+
+# Transpile one program (single .pg or a multi-file entry) to Python + C#, build+run the C# oracle and run
+# the Python, compare stdout. $stem is the emitted entry basename; $cliArgs is the `polyglot build …` argv.
+# Multi-module (§4.5): the C# csproj globs every generated .cs (one assembly — proves no CS0101); Python
+# runs the entry, which imports its siblings from the same directory.
+function Test-Program($name, $stem, $cliArgs) {
     $dir = Join-Path $work $name
     Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $dir | Out-Null
 
-    & $Cli build $src --target python --lib io --out $dir | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name (python transpile failed)"; $fail++; continue }
-    & $Cli build $src --target csharp --lib io --out $dir | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name (csharp transpile failed)"; $fail++; continue }
+    & $Cli @cliArgs --target python --lib io --out $dir | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name (python transpile failed)"; return $false }
+    & $Cli @cliArgs --target csharp --lib io --out $dir | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name (csharp transpile failed)"; return $false }
 
-    $csproj | Set-Content (Join-Path $dir "$name.csproj")
-    & dotnet build (Join-Path $dir "$name.csproj") -c Release -v quiet --nologo *> $null
-    $dll = Join-Path $dir "bin\Release\net10.0\$name.dll"
+    $csproj | Set-Content (Join-Path $dir "$stem.csproj")
+    & dotnet build (Join-Path $dir "$stem.csproj") -c Release -v quiet --nologo *> $null
+    $dll = Join-Path $dir "bin\Release\net10.0\$stem.dll"
     # Assert the generated C# compiled and both runtimes exited cleanly — a symmetric double-failure
     # (empty == empty) must not false-pass (issue #9 lesson; see run-diff.ps1).
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dll)) { Write-Host "[FAIL] $name : generated C# did not compile"; $fail++; continue }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dll)) { Write-Host "[FAIL] $name : generated C# did not compile"; return $false }
     $cs = (& dotnet $dll 2>$null | Out-String).TrimEnd("`r", "`n")
-    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $LASTEXITCODE)"; $fail++; continue }
-    $pyOut = (& $py.Source (Join-Path $dir "$name.py") 2>$null | Out-String).TrimEnd("`r", "`n")
-    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated Python crashed at runtime (exit $LASTEXITCODE)"; $fail++; continue }
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $LASTEXITCODE)"; return $false }
+    $pyOut = (& $py.Source (Join-Path $dir "$stem.py") 2>$null | Out-String).TrimEnd("`r", "`n")
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated Python crashed at runtime (exit $LASTEXITCODE)"; return $false }
 
     if ($cs -eq $pyOut) {
         Write-Host "[PASS] $name  ->  $($pyOut -replace "`r?`n", ' | ')"
-    } else {
-        Write-Host "[FAIL] $name : C# and Python diverged"
-        Write-Host "        C#: $($cs -replace "`r?`n", ' | ')"
-        Write-Host "        Py: $($pyOut -replace "`r?`n", ' | ')"
-        $fail++
+        return $true
     }
+    Write-Host "[FAIL] $name : C# and Python diverged"
+    Write-Host "        C#: $($cs -replace "`r?`n", ' | ')"
+    Write-Host "        Py: $($pyOut -replace "`r?`n", ' | ')"
+    return $false
+}
+
+# Single-file programs.
+foreach ($name in $programs) {
+    $count++
+    if (-not (Test-Program $name $name @("build", (Join-Path $progDir "$name.pg")))) { $fail++ }
+}
+# Multi-file programs (§4.5 module linking): each programs/<dir>/ with an entry.pg, built with --root <dir>.
+foreach ($d in Get-ChildItem $progDir -Directory | Sort-Object Name) {
+    $entry = Join-Path $d.FullName "entry.pg"
+    if (-not (Test-Path $entry)) { continue }
+    $count++
+    if (-not (Test-Program $d.Name "entry" @("build", $entry, "--root", $d.FullName))) { $fail++ }
 }
 
 Write-Host ""

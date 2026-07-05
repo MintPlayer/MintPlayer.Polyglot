@@ -71,16 +71,22 @@ try {
         "initial cycle closes with '0 error(s)'"
     Assert ((Test-Path (Join-Path $work "main.cs")) -and (Test-Path (Join-Path $work "main.ts"))) `
         "initial build wrote both default outputs"
-    $goodCs = Get-Content (Join-Path $work "main.cs") -Raw
+    # §4.5 module linking: the imported module emits its OWN file (util.cs) rather than being inlined into main.
+    Assert ((Test-Path (Join-Path $work "util.cs")) -and (Test-Path (Join-Path $work "util.ts"))) `
+        "initial build wrote the imported module's own linked outputs"
+    $goodUtil = Get-Content (Join-Path $work "util.cs") -Raw
 
     # --- cycle 2: edit the IMPORTED module (closure watching, not just the entry) -----------------------
     Set-Content -Path $util -Value "fn area(w: i32, h: i32): i32 {`n  return w * h * 2`n}`n" -NoNewline
     $lines = Wait-Cycles 2
     Assert (@($lines | Where-Object { $_ -match $reBegin -and $_ -match 'rebuilding' }).Count -ge 1) `
         "an edit to an imported .pg triggers a 'rebuilding' cycle"
-    $csAfterEdit = Get-Content (Join-Path $work "main.cs") -Raw
-    Assert ($csAfterEdit -ne $goodCs -and $csAfterEdit.Contains("* 2")) `
-        "the rebuild refreshed the emitted output"
+    # Under linking `area`'s body lives in util.cs (main.cs only references it), so the imported module's
+    # own output is what refreshes.
+    $utilAfterEdit = Get-Content (Join-Path $work "util.cs") -Raw
+    Assert ($utilAfterEdit -ne $goodUtil -and $utilAfterEdit.Contains("* 2")) `
+        "the rebuild refreshed the imported module's emitted output"
+    $csAfterEdit = Get-Content (Join-Path $work "main.cs") -Raw  # last-good entry output going into the broken cycle
 
     # --- cycle 3: a broken edit keeps watching and never touches last-good outputs ----------------------
     Set-Content -Path $entry -Value "import { area } from `"./util`"`nimport { print } from `"std.io`"`nfn main() {`n  print(area(3, oops))`n}`n" -NoNewline

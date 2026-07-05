@@ -312,6 +312,51 @@ int main() {
     rejects("fn f(x: i32, y: i32): i32 => i32(x, y)\n", "issue#9 Bug1: i32(a, b) with two arguments is rejected");
     rejects("fn f(): i32 => i32(true)\n", "issue#9 Bug1: i32(true) from a bool source is rejected");
 
+    // Issue #11 (1.A) — the transcendental std.math tier emits as plain 1:1 bound statics on both targets.
+    {
+        EmitResult cs = compileStd("fn f(x: f64): f64 => Math.cos(x) + Math.tanh(x) + Math.pow(x, 2.0)\n", findTarget("csharp"));
+        check(cs.ok && has(cs.code, "Math.Cos(") && has(cs.code, "Math.Tanh(") && has(cs.code, "Math.Pow("),
+              "issue#11 1.A: transcendental std.math emits (C# Math.Cos/Tanh/Pow)");
+        EmitResult ts = compileStd("fn f(x: f64): f64 => Math.cos(x) + Math.tanh(x)\n", findTarget("typescript"));
+        check(ts.ok && has(ts.code, "Math.cos(") && has(ts.code, "Math.tanh("),
+              "issue#11 1.A: transcendental std.math emits (TS Math.cos/tanh)");
+    }
+
+    // Issue #11 (1.C) — a float->i32 cast emits plain Math.trunc on TS (no 32-bit `| 0` wrap that diverges
+    // from C#'s (int) across the full range).
+    {
+        EmitResult ts = compile("fn f(x: f64): i32 => i32(x)\n", findTarget("typescript"));
+        check(ts.ok && has(ts.code, "Math.trunc(x)") && !has(ts.code, "| 0"),
+              "issue#11 1.C: i32(float) TS emits plain Math.trunc (no | 0)");
+    }
+
+    // Issue #11 (1.B) — proper module linking: the importer REFERENCES imported symbols (does not re-define
+    // them), the imported module is emitted as its own file, and the C# wrappers become `partial`.
+    {
+        MapModuleResolver res({{"lib", "class Box { var v: i32\n  init(v: i32) { this.v = v } }\nfn dbl(x: i32): i32 { return x * 2 }\n"}});
+        EmitResult r = compile("import { dbl, Box } from \"lib\"\nfn compute(): i32 {\n  let b = Box(21)\n  return dbl(b.v)\n}\n",
+                               findTarget("csharp"), &res, LibConfig{});
+        check(r.ok, "issue#11 1.B: a cross-module program compiles");
+        check(!has(r.code, "class Box"), "issue#11 1.B: the importer does NOT re-define the imported type");
+        check(has(r.code, "static partial class PolyglotProgram"), "issue#11 1.B: linked C# wrapper is `partial`");
+        check(r.modules.size() == 1 && r.modules[0].basename == "lib", "issue#11 1.B: the imported module is emitted as its own file");
+        check(!r.modules.empty() && has(r.modules[0].code, "class Box") && has(r.modules[0].code, "int dbl("),
+              "issue#11 1.B: the imported type + function are defined in the imported module's file");
+    }
+    check(importSpecifiers("import { a } from \"nn\"\nimport { b } from \"std.io\"\nfn f() {}\n") == std::vector<std::string>{"nn"},
+          "issue#11 1.B: importSpecifiers returns non-std imports only");
+
+    // Access modifier — `--access public` (LibConfig::access) prefixes emitted C# types + wrappers; the
+    // default (empty) keeps C#'s modifier-less `internal` (byte-identical).
+    {
+        LibConfig pub; pub.access = "public";
+        EmitResult r = compile("record Point(x: i32, y: i32)\nfn origin(): Point => Point(0, 0)\n", findTarget("csharp"), nullptr, pub);
+        check(r.ok && has(r.code, "public record Point") && has(r.code, "public static class PolyglotProgram"),
+              "issue#11 access: --access public emits public types + wrapper");
+        EmitResult def = compile("record Point(x: i32, y: i32)\n", findTarget("csharp"));
+        check(def.ok && !has(def.code, "public record Point"), "issue#11 access: default is internal (no public modifier)");
+    }
+
     // P4 — name / type resolution across the declaration surface.
     auto resolves = [&](const char* src, const std::string& name) {
         EmitResult r = compile(src, findTarget("csharp"));

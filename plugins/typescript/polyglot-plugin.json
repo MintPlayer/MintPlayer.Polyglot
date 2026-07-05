@@ -690,20 +690,12 @@
               ]
             },
             {
-              "fn": "wrap",
-              "args": [
+              "tmpl": [
+                "Math.trunc(",
                 {
-                  "get": "node.type"
+                  "emit": "node.operand"
                 },
-                {
-                  "tmpl": [
-                    "Math.trunc(",
-                    {
-                      "emit": "node.operand"
-                    },
-                    ")"
-                  ]
-                }
+                ")"
               ]
             }
           ]
@@ -2292,6 +2284,26 @@
     "Program": {
       "seq": [
         {
+          "mapDecl": "module.imports",
+          "each": {
+            "line": {
+              "case": {
+                "when": [
+                  [
+                    { "eq": [ "item.isNamespace", "true" ] },
+                    { "tmpl": [ "import * as ", { "get": "item.ns" }, " from \"./", { "get": "item.path" }, "\";" ] }
+                  ],
+                  [
+                    { "not": { "eq": [ "item.names", "" ] } },
+                    { "tmpl": [ "import { ", { "get": "item.names" }, " } from \"./", { "get": "item.path" }, "\";" ] }
+                  ]
+                ],
+                "else": { "tmpl": [ "import \"./", { "get": "item.path" }, "\";" ] }
+              }
+            }
+          }
+        },
+        {
           "mapMembers": "module.enums",
           "rule": "EnumDecl"
         },
@@ -3480,6 +3492,22 @@
       "Math.E": "Math.E",
       "Math.sqrt": "Math.sqrt($0)",
       "Math.ln": "Math.log($0)",
+      "Math.log": "Math.log($0)",
+      "Math.log2": "Math.log2($0)",
+      "Math.log10": "Math.log10($0)",
+      "Math.exp": "Math.exp($0)",
+      "Math.pow": "Math.pow($0, $1)",
+      "Math.sin": "Math.sin($0)",
+      "Math.cos": "Math.cos($0)",
+      "Math.tan": "Math.tan($0)",
+      "Math.asin": "Math.asin($0)",
+      "Math.acos": "Math.acos($0)",
+      "Math.atan": "Math.atan($0)",
+      "Math.atan2": "Math.atan2($0, $1)",
+      "Math.sinh": "Math.sinh($0)",
+      "Math.cosh": "Math.cosh($0)",
+      "Math.tanh": "Math.tanh($0)",
+      "Math.trunc": "Math.trunc($0)",
       "Math.floor": "Math.floor($0)",
       "Math.ceil": "Math.ceil($0)",
       "Math.min": "((a, b) => (a <= b ? a : b))($0, $1)",

@@ -17,7 +17,7 @@
 namespace mintplayer::polyglot {
 
 // Semantic version of the Polyglot toolchain.
-inline constexpr const char* kVersion = "0.2.0";
+inline constexpr const char* kVersion = "0.3.0";
 
 // The compiler facade. Kept for the version entry point; the pipeline is exposed via compile() below.
 class Compiler {
@@ -52,11 +52,23 @@ private:
 // name returns a !ok() handle whose error() lists the known targets.
 BackendHandle findTarget(const std::string& name);
 
+// One emitted output file of a multi-module build (§4.5): `basename` is the file's stem (its imported
+// module's canonical basename), `code` its emitted source. `basename` is empty for the entry file (the CLI
+// names it after the input).
+struct ModuleFile {
+    std::string basename;
+    std::string code;
+};
+
 // Result of compiling one source to one target. On success `ok` is true and `code` holds the emitted
 // source; on failure `ok` is false and `diagnostics` explains why (positions are 1-based).
+// Module linking (§4.5): `code` is always the entry file. For a multi-module program `modules` additionally
+// lists every imported user module's emitted file (each with its own `basename`); it is empty for a
+// single-file program (then `code` is the whole output).
 struct EmitResult {
     bool ok = false;
     std::string code;
+    std::vector<ModuleFile> modules;
     std::vector<Diagnostic> diagnostics;
 };
 
@@ -88,6 +100,11 @@ struct LibConfig {
     // pgconfig `forbiddenIdentifiers` (P19 design note 7): (target-or-"*", name) pairs refused by checkReservedNames
     // when compiling for a matching target. Project policy, carried with the lib config for plumbing economy.
     std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;
+    // Requested accessibility of emitted top-level C# declarations ("public" / "internal"). Empty = the target
+    // default (C# modifier-less top-level types are `internal`), which keeps output byte-identical. Lets a
+    // consumer expose the generated types across assemblies without a hand-written public facade. C#-only
+    // (TS already `export`s everything; Python/PHP have no equivalent), carried with the lib config.
+    std::string access;
 };
 
 // Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->
@@ -101,6 +118,11 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
 // Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.
 EmitResult format(const std::string& source);
+
+// The non-std `import … from "spec"` specifiers a source declares (lex + parse only — no sema, no resolver).
+// The CLI uses this to build a multi-file project's import graph (which inputs are imported by another) so
+// it emits each linked module exactly once (§4.5). `std.*` specifiers are excluded (the inlined prelude).
+std::vector<std::string> importSpecifiers(const std::string& source);
 
 // Maps a SourcePos.fileId to the source it came from, so cross-module positions stay unambiguous after the
 // linker merges every module into one unit (§4.8). Index 0 is unknown/synthetic (the always-linked core

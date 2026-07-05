@@ -1,7 +1,9 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 
 #include <algorithm>
+#include <map>
 #include <optional>
+#include <set>
 #include <unordered_set>
 
 #include "mintplayer/polyglot/ast.hpp"
@@ -63,8 +65,14 @@ expect fn deleteFile(path: string)
 // surface). sqrt/ln/floor/ceil are f64; min/max/abs are generic and CALL-SITE-INLINED (a generic C#
 // Math.Min over unconstrained T wouldn't compile, so the binding substitutes the concrete-typed args at
 // each call). The TS min/max/abs use single-eval IIFE templates that work for both `number` and `bigint`
-// (the `a - a` zero is type-agnostic). PI/E are bound consts. Determinism (§3.D): only sqrt is reproducible
-// across targets; ln/transcendentals are not promised bit-exact.
+// (the `a - a` zero is type-agnostic). PI/E are bound consts.
+// Determinism (§3.D): only sqrt is correctly-rounded/reproducible across targets. The TRANSCENDENTAL tier
+// (sin/cos/tan/asin/acos/atan/atan2, sinh/cosh/tanh, exp/log/ln/log2/log10, pow) is a documented
+// BEST-EFFORT tier — available on every target, but results may differ by <=1 ULP across the .NET JIT and a
+// JS/Python/PHP runtime. Code that needs cross-target identity must use + - * / sqrt (or a future fixed-point
+// std type), NOT these. Every member is a plain 1:1 bound static (no emulation); cbrt/sign are intentionally
+// omitted (not uniformly available as a clean binding — cbrt is absent on PHP and Python<3.11; sign diverges,
+// C# Math.Sign throws on NaN while JS returns NaN).
 const char* STD_MATH = R"PG(
 extern class Math {
   const PI: f64 {
@@ -74,6 +82,38 @@ extern class Math {
   static fn sqrt(x: f64): f64 {
   }
   static fn ln(x: f64): f64 {
+  }
+  static fn log(x: f64): f64 {
+  }
+  static fn log2(x: f64): f64 {
+  }
+  static fn log10(x: f64): f64 {
+  }
+  static fn exp(x: f64): f64 {
+  }
+  static fn pow(x: f64, y: f64): f64 {
+  }
+  static fn sin(x: f64): f64 {
+  }
+  static fn cos(x: f64): f64 {
+  }
+  static fn tan(x: f64): f64 {
+  }
+  static fn asin(x: f64): f64 {
+  }
+  static fn acos(x: f64): f64 {
+  }
+  static fn atan(x: f64): f64 {
+  }
+  static fn atan2(y: f64, x: f64): f64 {
+  }
+  static fn sinh(x: f64): f64 {
+  }
+  static fn cosh(x: f64): f64 {
+  }
+  static fn tanh(x: f64): f64 {
+  }
+  static fn trunc(x: f64): f64 {
   }
   static fn floor(x: f64): f64 {
   }
@@ -185,17 +225,30 @@ const StdModule STD_MODULES[] = {
 const char* kCoreModuleName = "std.core";
 
 // Append all top-level declarations of a loaded module into the root unit (the module's own `imports` were
-// already processed by the caller). Output stays single-file per target: everything lands in one unit.
-void mergeDecls(CompilationUnit& mod, CompilationUnit& root) {
-    for (auto& c : mod.classes)    root.classes.push_back(std::move(c));
-    for (auto& r : mod.records)    root.records.push_back(std::move(r));
-    for (auto& e : mod.enums)      root.enums.push_back(std::move(e));
-    for (auto& u : mod.unions)     root.unions.push_back(std::move(u));
-    for (auto& i : mod.interfaces) root.interfaces.push_back(std::move(i));
-    for (auto& v : mod.values)     root.values.push_back(std::move(v));
-    for (auto& f : mod.functions)  root.functions.push_back(std::move(f));
-    for (auto& e : mod.extensions) root.extensions.push_back(std::move(e)); // e.g. std.strings' bound methods
+// already processed by the caller). Everything lands in one unit for sema; module linking (§4.5) later
+// partitions emission back out by `originModule`, stamped here: a user module's canonical path, or the
+// "<prelude>" sentinel for embedded std/core/lib decls (which are never emitted as their own file).
+void mergeDecls(CompilationUnit& mod, CompilationUnit& root, const std::string& origin) {
+    for (auto& c : mod.classes)    { c.originModule = origin; root.classes.push_back(std::move(c)); }
+    for (auto& r : mod.records)    { r.originModule = origin; root.records.push_back(std::move(r)); }
+    for (auto& e : mod.enums)      { e.originModule = origin; root.enums.push_back(std::move(e)); }
+    for (auto& u : mod.unions)     { u.originModule = origin; root.unions.push_back(std::move(u)); }
+    for (auto& i : mod.interfaces) { i.originModule = origin; root.interfaces.push_back(std::move(i)); }
+    for (auto& v : mod.values)     { v.originModule = origin; root.values.push_back(std::move(v)); }
+    for (auto& f : mod.functions)  { f.originModule = origin; root.functions.push_back(std::move(f)); }
+    for (auto& e : mod.extensions) { e.originModule = origin; root.extensions.push_back(std::move(e)); } // e.g. std.strings
 }
+
+// The origin sentinel for embedded std/core/lib decls — never emitted as their own module file (§4.5).
+const char* kPreludeOrigin = "<prelude>";
+
+// Module linking (§4.5): what each module imports from other USER modules, so emission can re-emit the
+// cross-module reference (a target import statement) instead of the inlined copy. Keyed by the importer's
+// canonical id ("" = the entry); std/lib specifiers are excluded (they're the inlined prelude). `fromCanon`
+// is the imported module's canonical id (its emitted basename derives from it); `names` is the source's own
+// `{ a, b as c }` group.
+struct ResolvedImport { std::string fromCanon; std::vector<ImportName> names; bool isNamespace = false; std::string nsAlias; };
+using ImportGraph = std::map<std::string, std::vector<ResolvedImport>>;
 
 void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, DiagnosticBag& diags) {
     if (imp.names.empty()) return; // namespace / bare import: nothing to validate
@@ -216,15 +269,17 @@ void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, Diag
 // through `resolver`. `visited` dedups; `stack` (the in-progress chain) detects import cycles.
 void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::string& selfPath,
                  ModuleResolver* resolver, DiagnosticBag& diags,
-                 std::unordered_set<std::string>& visited, std::vector<std::string>& stack, SourceMap* src) {
+                 std::unordered_set<std::string>& visited, std::vector<std::string>& stack, SourceMap* src,
+                 ImportGraph* graph) {
     stack.push_back(selfPath);
     for (const auto& imp : unit.imports) {
         std::string source, canon;
-        if (imp.path.rfind("std.", 0) == 0) { // first-party std: embedded, no IO
-            const char* src = nullptr;
-            for (const auto& m : STD_MODULES) if (imp.path == m.path) src = m.source;
-            if (!src) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
-            source = src;
+        bool isStd = imp.path.rfind("std.", 0) == 0;
+        if (isStd) { // first-party std: embedded, no IO
+            const char* stdSrc = nullptr;
+            for (const auto& m : STD_MODULES) if (imp.path == m.path) stdSrc = m.source;
+            if (!stdSrc) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
+            source = stdSrc;
             canon = imp.path;
         } else { // user module: ask the resolver (none => unresolvable)
             std::optional<ResolvedModule> r = resolver ? resolver->resolve(imp.path, selfPath) : std::nullopt;
@@ -239,6 +294,9 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
             diags.error(imp.pos, "import cycle: " + chain + canon);
             continue;
         }
+        // §4.5 linking: record every USER cross-module reference (even a re-import of an already-loaded
+        // module) so the importer emits an import statement for it. std imports are the inlined prelude.
+        if (!isStd && graph) (*graph)[selfPath].push_back({canon, imp.names, imp.isNamespace, imp.nsAlias});
         if (!visited.insert(canon).second) continue; // already loaded (imported more than once)
 
         int fileId = src ? src->add(canon) : 0; // stamp this module's tokens so its positions stay unambiguous
@@ -248,8 +306,8 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
         if (diags.hasErrors()) return;
 
         validateImportNames(imp, mod, diags);
-        loadImports(root, mod, canon, resolver, diags, visited, stack, src); // dependencies first (post-order)
-        mergeDecls(mod, root);
+        loadImports(root, mod, canon, resolver, diags, visited, stack, src, graph); // dependencies first (post-order)
+        mergeDecls(mod, root, isStd ? kPreludeOrigin : canon); // std -> inlined prelude; user module -> its canon
     }
     stack.pop_back();
 }
@@ -265,15 +323,17 @@ void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags, SourceMap* src)
     std::unordered_set<std::string> have;
     for (const auto& c : unit.classes) have.insert(c.name);
     for (const auto& u : unit.unions)  have.insert(u.name);
-    for (auto& c : core.classes) if (!have.count(c.name)) unit.classes.push_back(std::move(c));
-    for (auto& u : core.unions)  if (!have.count(u.name)) unit.unions.push_back(std::move(u));
+    for (auto& c : core.classes) if (!have.count(c.name)) { c.originModule = kPreludeOrigin; unit.classes.push_back(std::move(c)); }
+    for (auto& u : core.unions)  if (!have.count(u.name)) { u.originModule = kPreludeOrigin; unit.unions.push_back(std::move(u)); }
 }
 
-// Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports).
-void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags, SourceMap* src) {
+// Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports). `graph` (optional)
+// collects the user cross-module import edges for §4.5 linking; nullptr = don't record (e.g. the lib prelude).
+void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags, SourceMap* src,
+                 ImportGraph* graph = nullptr) {
     std::unordered_set<std::string> visited;
     std::vector<std::string> stack;
-    loadImports(unit, unit, "", resolver, diags, visited, stack, src);
+    loadImports(unit, unit, "", resolver, diags, visited, stack, src, graph);
 }
 
 // A stable identity string for a type (so a lib function only shadows a user function of the SAME signature,
@@ -322,14 +382,14 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
     for (const auto& f : unit.functions)  fns.insert(fnSigKey(f.name, f.params));
     for (const auto& e : unit.extensions) exts.insert(e.receiver.name + "." + e.name);
 
-    for (auto& d : staging.records)    if (!types.count(d.name)) unit.records.push_back(std::move(d));
-    for (auto& d : staging.classes)    if (!types.count(d.name)) unit.classes.push_back(std::move(d));
-    for (auto& d : staging.interfaces) if (!types.count(d.name)) unit.interfaces.push_back(std::move(d));
-    for (auto& d : staging.enums)      if (!types.count(d.name)) unit.enums.push_back(std::move(d));
-    for (auto& d : staging.unions)     if (!types.count(d.name)) unit.unions.push_back(std::move(d));
-    for (auto& v : staging.values)     if (!values.count(v.name)) unit.values.push_back(std::move(v));
-    for (auto& f : staging.functions)  if (!fns.count(fnSigKey(f.name, f.params))) unit.functions.push_back(std::move(f));
-    for (auto& e : staging.extensions) if (!exts.count(e.receiver.name + "." + e.name)) unit.extensions.push_back(std::move(e));
+    for (auto& d : staging.records)    if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.records.push_back(std::move(d)); }
+    for (auto& d : staging.classes)    if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.classes.push_back(std::move(d)); }
+    for (auto& d : staging.interfaces) if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.interfaces.push_back(std::move(d)); }
+    for (auto& d : staging.enums)      if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.enums.push_back(std::move(d)); }
+    for (auto& d : staging.unions)     if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.unions.push_back(std::move(d)); }
+    for (auto& v : staging.values)     if (!values.count(v.name)) { v.originModule = kPreludeOrigin; unit.values.push_back(std::move(v)); }
+    for (auto& f : staging.functions)  if (!fns.count(fnSigKey(f.name, f.params))) { f.originModule = kPreludeOrigin; unit.functions.push_back(std::move(f)); }
+    for (auto& e : staging.extensions) if (!exts.count(e.receiver.name + "." + e.name)) { e.originModule = kPreludeOrigin; unit.extensions.push_back(std::move(e)); }
 }
 
 } // namespace
@@ -347,10 +407,10 @@ std::string embeddedModuleSource(const std::string& name) {
 // AST for tooling). Bails between passes on the first error. `model`/`req` are forwarded to `check` so the
 // LSP path can request a semantic model; `compile` passes nullptr and pays nothing.
 bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfig& lib, DiagnosticBag& diags,
-                 SemanticModel* model, const SemanticRequest* req, SourceMap* src) {
-    linkCoreModule(unit, diags, src);               if (diags.hasErrors()) return false; // Error/Iterable (no import)
-    linkModules(unit, resolver, diags, src);        if (diags.hasErrors()) return false; // imported std + user modules
-    linkLibModules(unit, lib, resolver, diags, src); if (diags.hasErrors()) return false; // ambient prelude
+                 SemanticModel* model, const SemanticRequest* req, SourceMap* src, ImportGraph* graph = nullptr) {
+    linkCoreModule(unit, diags, src);                     if (diags.hasErrors()) return false; // Error/Iterable (no import)
+    linkModules(unit, resolver, diags, src, graph);       if (diags.hasErrors()) return false; // imported std + user modules
+    linkLibModules(unit, lib, resolver, diags, src);      if (diags.hasErrors()) return false; // ambient prelude (not recorded)
     check(unit, diags, model, req);
     return !diags.hasErrors();
 }
@@ -427,6 +487,7 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         a.returnType = f.returnType;
         a.isAsync = f.isAsync;
         a.actualTarget = target;
+        a.originModule = f.originModule; // §4.5: the synthesized actual inherits the expect fn's origin (prelude)
         auto ex = std::make_unique<Expr>();
         ex->kind = ExprKind::Extern;
         ex->pos = f.pos;
@@ -440,6 +501,44 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         synthesized.push_back(std::move(a));
     }
     for (auto& f : synthesized) unit.functions.push_back(std::move(f));
+}
+
+// §4.5: the emitted basename for an imported user module — its canonical path's last path component with a
+// trailing `.pg` stripped (pure string arithmetic; Core does no filesystem IO). v1 output is flat.
+static std::string moduleBasename(const std::string& canon) {
+    std::size_t slash = canon.find_last_of("/\\");
+    std::string f = (slash == std::string::npos) ? canon : canon.substr(slash + 1);
+    if (f.size() > 3 && f.compare(f.size() - 3, 3, ".pg") == 0) f.resize(f.size() - 3);
+    return f;
+}
+
+// §4.5: the cross-module import list a given file emits. C# needs none (global-namespace types + `partial`
+// wrappers in one assembly). Other targets get one entry per user import, keyed to the imported module's
+// emitted basename; the selective group is pre-joined ("a, b as c") since TS and Python share that spelling.
+static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, const std::string& fileOrigin,
+                                                  const std::map<std::string, std::string>& baseByCanon,
+                                                  const std::string& target) {
+    std::vector<ir::ModuleImport> out;
+    if (target == "csharp") return out;
+    auto it = graph.find(fileOrigin);
+    if (it == graph.end()) return out;
+    for (const auto& ri : it->second) {
+        auto b = baseByCanon.find(ri.fromCanon);
+        if (b == baseByCanon.end()) continue; // imported module contributed no emitted decls
+        ir::ModuleImport mi;
+        mi.path = b->second;
+        if (ri.isNamespace) { mi.isNamespace = true; mi.ns = ri.nsAlias; }
+        else {
+            std::string joined;
+            for (const auto& n : ri.names) {
+                if (!joined.empty()) joined += ", ";
+                joined += n.alias.empty() ? n.name : (n.name + " as " + n.alias);
+            }
+            mi.names = joined;
+        }
+        out.push_back(std::move(mi));
+    }
+    return out;
 }
 
 EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib) {
@@ -458,7 +557,8 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     CompilationUnit unit = parse(tokens, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr)) { result.diagnostics = diags.items(); return result; }
+    ImportGraph importGraph; // §4.5: user cross-module import edges, keyed by importer ("" = entry)
+    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr, &importGraph)) { result.diagnostics = diags.items(); return result; }
 
     injectStdOverlays(unit, *target.backend()); // the plugin's std arms land on the skeletons (P19 s9b)
 
@@ -469,10 +569,79 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     checkReservedNames(unit, *target.backend(), lib.forbiddenIdentifiers, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    ir::Module module = lower(unit, target.name()); // per-target IR: binding/extern arms picked here (P19 s9)
-    result.code = target.backend()->emit(module);
+    // §4.5 module linking: distinct imported-user-module origins present in the linked unit (non-entry,
+    // non-prelude). Empty => a single-file program: take the exact historical path (byte-identical output).
+    std::set<std::string> userOrigins;
+    auto note = [&](const std::string& o) { if (!o.empty() && o != kPreludeOrigin) userOrigins.insert(o); };
+    for (const auto& d : unit.enums)      note(d.originModule);
+    for (const auto& d : unit.unions)     note(d.originModule);
+    for (const auto& d : unit.records)    note(d.originModule);
+    for (const auto& d : unit.classes)    note(d.originModule);
+    for (const auto& d : unit.interfaces) note(d.originModule);
+    for (const auto& d : unit.values)     note(d.originModule);
+    for (const auto& d : unit.functions)  note(d.originModule);
+    for (const auto& d : unit.extensions) note(d.originModule);
+
+    if (userOrigins.empty()) { // single-file: unchanged
+        ir::Module module = lower(unit, target.name());
+        module.access = lib.access; // C# accessibility knob (empty = target default -> byte-identical)
+        result.code = target.backend()->emit(module);
+        result.ok = true;
+        return result;
+    }
+
+    // Multi-module: emit one file per user module + the entry, each re-lowered fresh (lowering is pure; the
+    // Lowerer needs the full type universe, so we lower the whole unit and then keep only this file's decls).
+    // Basenames must be unique across the closure (v1 emits flat — see PRD §3.B).
+    std::map<std::string, std::string> baseByCanon; // canon -> emitted basename
+    std::set<std::string> seenBase;
+    for (const auto& canon : userOrigins) {
+        std::string base = moduleBasename(canon);
+        if (!seenBase.insert(base).second) {
+            diags.error({}, "module linking: two imported modules share the basename '" + base +
+                                "' (v1 emits flat output; give them distinct file names)");
+            result.diagnostics = diags.items();
+            return result;
+        }
+        baseByCanon[canon] = base;
+    }
+
+    const bool preludeEverywhere = target.name() != "csharp"; // C#: prelude only in the entry (partial + one assembly)
+    auto emitFile = [&](const std::string& fileOrigin) -> std::string {
+        std::set<std::string> keep;
+        keep.insert(fileOrigin);
+        if (fileOrigin.empty() || preludeEverywhere) keep.insert(kPreludeOrigin);
+        ir::Module m = lower(unit, target.name());
+        auto prune = [&](auto& vec) {
+            vec.erase(std::remove_if(vec.begin(), vec.end(),
+                                     [&](const auto& d) { return !keep.count(d.originModule); }),
+                      vec.end());
+        };
+        prune(m.enums); prune(m.unions); prune(m.records); prune(m.classes);
+        prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
+        m.linked = true;
+        m.access = lib.access;
+        m.imports = buildImports(importGraph, fileOrigin, baseByCanon, target.name());
+        return target.backend()->emit(m);
+    };
+
+    result.code = emitFile(""); // the entry file (the CLI names it after the input)
+    for (const auto& canon : userOrigins)
+        result.modules.push_back({baseByCanon[canon], emitFile(canon)});
     result.ok = true;
     return result;
+}
+
+std::vector<std::string> importSpecifiers(const std::string& source) {
+    std::vector<std::string> specs;
+    DiagnosticBag diags;
+    std::vector<Token> tokens = lex(source, diags);
+    if (diags.hasErrors()) return specs;
+    CompilationUnit unit = parse(tokens, diags);
+    if (diags.hasErrors()) return specs;
+    for (const auto& imp : unit.imports)
+        if (imp.path.rfind("std.", 0) != 0) specs.push_back(imp.path);
+    return specs;
 }
 
 EmitResult format(const std::string& source) {

@@ -932,6 +932,7 @@
     "EnumDecl": {
       "line": {
         "tmpl": [
+          { "fn": "access" },
           "enum ",
           {
             "fn": "ident",
@@ -1366,6 +1367,7 @@
     },
     "csRecordHead": {
       "tmpl": [
+        { "fn": "access" },
         "record ",
         {
           "fn": "ident",
@@ -1780,7 +1782,7 @@
                 },
                 {
                   "block": {
-                    "head": "static class PolyglotExtensions",
+                    "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotExtensions" ] },
                     "body": [
                       {
                         "mapMembers": "module.extensions",
@@ -1850,7 +1852,7 @@
         },
         {
           "block": {
-            "head": "static class PolyglotProgram",
+            "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotProgram" ] },
             "body": [
               {
                 "mapDecl": "module.globals",
@@ -2123,6 +2125,7 @@
     },
     "csClassHead": {
       "tmpl": [
+        { "fn": "access" },
         "class ",
         {
           "fn": "ident",
@@ -2345,6 +2348,7 @@
       "block": {
         "head": {
           "tmpl": [
+            { "fn": "access" },
             "interface ",
             {
               "fn": "ident",
@@ -2471,6 +2475,7 @@
         {
           "line": {
             "tmpl": [
+              { "fn": "access" },
               "abstract record ",
               {
                 "fn": "ident",
@@ -2492,6 +2497,7 @@
           "each": {
             "line": {
               "tmpl": [
+                { "fn": "access" },
                 "sealed record ",
                 {
                   "fn": "ident",
@@ -2751,6 +2757,22 @@
       "Math.E": "global::System.Math.E",
       "Math.sqrt": "global::System.Math.Sqrt($0)",
       "Math.ln": "global::System.Math.Log($0)",
+      "Math.log": "global::System.Math.Log($0)",
+      "Math.log2": "global::System.Math.Log2($0)",
+      "Math.log10": "global::System.Math.Log10($0)",
+      "Math.exp": "global::System.Math.Exp($0)",
+      "Math.pow": "global::System.Math.Pow($0, $1)",
+      "Math.sin": "global::System.Math.Sin($0)",
+      "Math.cos": "global::System.Math.Cos($0)",
+      "Math.tan": "global::System.Math.Tan($0)",
+      "Math.asin": "global::System.Math.Asin($0)",
+      "Math.acos": "global::System.Math.Acos($0)",
+      "Math.atan": "global::System.Math.Atan($0)",
+      "Math.atan2": "global::System.Math.Atan2($0, $1)",
+      "Math.sinh": "global::System.Math.Sinh($0)",
+      "Math.cosh": "global::System.Math.Cosh($0)",
+      "Math.tanh": "global::System.Math.Tanh($0)",
+      "Math.trunc": "global::System.Math.Truncate($0)",
       "Math.floor": "global::System.Math.Floor($0)",
       "Math.ceil": "global::System.Math.Ceiling($0)",
       "Math.min": "global::System.Math.Min($0, $1)",

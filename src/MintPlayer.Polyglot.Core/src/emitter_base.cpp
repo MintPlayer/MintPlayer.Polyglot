@@ -501,6 +501,7 @@ std::string EnumDeclCtx::get(const std::string& path) const {
 
 std::string EnumDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "access") return hooks_.accessPrefix();
     return "";
 }
 
@@ -530,6 +531,7 @@ std::string UnionDeclCtx::get(const std::string& path) const {
 std::string UnionDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "generics") return hooks_.generics(u_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "access")   return hooks_.accessPrefix();
     return "";
 }
 
@@ -619,6 +621,7 @@ std::string InterfaceDeclCtx::builtin(const std::string& name, const std::vector
         const std::size_t i = static_cast<std::size_t>(std::stoul(args[0]));
         return i < it_.methods.size() ? hooks_.generics(it_.methods[i].generics) : "";
     }
+    if (name == "access") return hooks_.accessPrefix();
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
     if (name == "where") return hooks_.where(it_.generics);
     return "";
@@ -755,6 +758,7 @@ std::string RecordDeclCtx::builtin(const std::string& name, const std::vector<st
     if (name == "generics") return hooks_.generics(r_.generics);
     if (name == "where")    return hooks_.where(r_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "access")   return hooks_.accessPrefix();
     return "";
 }
 
@@ -841,6 +845,7 @@ std::string ClassDeclCtx::builtin(const std::string& name, const std::vector<std
     if (name == "generics") return hooks_.generics(c_.generics);
     if (name == "where")    return hooks_.where(c_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "access")   return hooks_.accessPrefix();
     return "";
 }
 
@@ -970,6 +975,8 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.extensions.count") return std::to_string(m_.extensions.size());
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
+    if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.linked")           return m_.linked ? "true" : "false";
     if (path == "module.hasEntry")         return entry_ >= 0 ? "true" : "false";
     if (entry_ >= 0) {
         const ir::Function& e = m_.functions[static_cast<std::size_t>(entry_)];
@@ -984,12 +991,19 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
         if (f == "isConst") return m_.globals[i].isConst ? "true" : "false";
         if (f == "hasInit") return m_.globals[i].init ? "true" : "false";
     }
+    if (path.rfind("module.imports.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.imports.size()) {
+        if (f == "path")        return m_.imports[i].path;
+        if (f == "names")       return m_.imports[i].names;
+        if (f == "isNamespace") return m_.imports[i].isNamespace ? "true" : "false";
+        if (f == "ns")          return m_.imports[i].ns;
+    }
     return "";
 }
 
 std::string ModuleDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
     if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
+    if (name == "access") return hooks_.accessPrefix();
     return "";
 }
 
@@ -1293,6 +1307,7 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     externMap_.clear();
     tmp_ = 0;
     requires_.clear();
+    hooks_.access = m.access; // per-emit accessibility for the `{"fn":"access"}` decl builtin (§ access modifier)
     for (const auto& et : m.externTypes) externMap_[et.name] = &et;
     // The two module facts record/class rules read: which named types are records (TS's structural-equals
     // dispatch) and which bases are interfaces (TS's extends/implements split). Computed for every target;

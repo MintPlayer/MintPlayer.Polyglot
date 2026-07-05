@@ -119,6 +119,13 @@ FMA contraction, and JIT reassociation diverge between the .NET JIT and a JS eng
 identical results across targets must use the std's **fixed-point / soft-float** numeric type (a planned
 std module), *not* `float`/`double`. (The FruitCake solver uses only `+ − × ÷ √`, so its differential
 test gates on **tolerance + behavioural equality**, never bit-equality — see the M30 plan in MintPlayer.AI.)
+- **Transcendental `std.math` tier (✅ 0.3.0, issue #11):** `sin cos tan asin acos atan atan2 sinh cosh tanh
+  exp log log2 log10 pow trunc` ship as an explicitly documented **best-effort tier** — available on every
+  target (plain 1:1 bindings to each runtime's `Math`/`math`), but results may differ by ≤1 ULP across the
+  .NET JIT and a JS/Python/PHP runtime. Authors opt in knowingly; code needing cross-target identity uses
+  `+ − × ÷ √` (or the planned fixed-point type), never these. Their conformance program gates on **quantized
+  equality** (scale + truncate), not bit-equality. `cbrt`/`sign` are intentionally omitted — not uniformly a
+  clean 1:1 binding (cbrt absent on PHP / Python<3.11; C# `Math.Sign` throws on NaN where JS returns NaN).
 
 ### E. Per-target capability negotiation (the multi-target generalization)
 §3.A is written against C# and TS, which both happen to support the **entire** supported surface. That

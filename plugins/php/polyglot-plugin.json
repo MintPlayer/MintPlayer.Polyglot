@@ -155,6 +155,34 @@
     "std.core": {
       "i32.parse": "(intval($0) & 0xffffffff)",
       "f64.parse": "floatval($0)"
+    },
+    "std.math": {
+      "Math.PI": "M_PI",
+      "Math.E": "M_E",
+      "Math.sqrt": "sqrt($0)",
+      "Math.ln": "log($0)",
+      "Math.log": "log($0)",
+      "Math.log2": "log($0, 2)",
+      "Math.log10": "log10($0)",
+      "Math.exp": "exp($0)",
+      "Math.pow": "pow($0, $1)",
+      "Math.sin": "sin($0)",
+      "Math.cos": "cos($0)",
+      "Math.tan": "tan($0)",
+      "Math.asin": "asin($0)",
+      "Math.acos": "acos($0)",
+      "Math.atan": "atan($0)",
+      "Math.atan2": "atan2($0, $1)",
+      "Math.sinh": "sinh($0)",
+      "Math.cosh": "cosh($0)",
+      "Math.tanh": "tanh($0)",
+      "Math.trunc": "(float)(int)($0)",
+      "Math.floor": "floor($0)",
+      "Math.ceil": "ceil($0)",
+      "Math.min": "min($0, $1)",
+      "Math.max": "max($0, $1)",
+      "Math.abs": "abs($0)",
+      "Math.round": "round($0)"
     }
   },
   "rules": {
@@ -561,20 +589,12 @@
               ]
             },
             {
-              "fn": "wrap",
-              "args": [
+              "tmpl": [
+                "(int)(",
                 {
-                  "get": "node.type"
+                  "emit": "node.operand"
                 },
-                {
-                  "tmpl": [
-                    "(int)(",
-                    {
-                      "emit": "node.operand"
-                    },
-                    ")"
-                  ]
-                }
+                ")"
               ]
             }
           ]
@@ -1425,6 +1445,14 @@
       "seq": [
         {
           "line": "<?php"
+        },
+        {
+          "mapDecl": "module.imports",
+          "each": {
+            "line": {
+              "tmpl": [ "require_once __DIR__ . '/", { "get": "item.path" }, ".php';" ]
+            }
+          }
         },
         {
           "mapMembers": "module.enums",

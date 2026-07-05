@@ -1,6 +1,6 @@
 {
   "name": "@mintplayer/polyglot-target-typescript",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MintPlayer Polyglot TypeScript / JavaScript target — a pure-JSON language plugin (spec + emission rules + capabilities + std bindings) for the polyglot transpiler.",
   "keywords": [
     "polyglot",
