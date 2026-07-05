@@ -91,12 +91,14 @@ public:
             ie.name = e.name;
             long long next = 0;
             for (const auto& c : e.cases) { long long v = c.hasValue ? c.value : next; ie.cases.push_back({c.name, v}); next = v + 1; }
+            ie.originModule = e.originModule;
             m.enums.push_back(std::move(ie));
         }
         for (const auto& u : unit.unions) {
             ir::Union iu;
             iu.name = u.name;
             iu.generics = generics(u.generics);
+            iu.originModule = u.originModule;
             for (const auto& c : u.cases) {
                 ir::UnionCase ic;
                 ic.name = c.name;
@@ -114,9 +116,10 @@ public:
             for (const auto& mem : r.members)
                 if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property)
                     rec.methods.push_back(method(mem));
+            rec.originModule = r.originModule;
             m.records.push_back(std::move(rec));
         }
-        for (const auto& c : unit.classes) if (!c.isExtern) m.classes.push_back(lowerClass(c)); // extern = native-backed, not emitted
+        for (const auto& c : unit.classes) if (!c.isExtern) { ir::Class ic = lowerClass(c); ic.originModule = c.originModule; m.classes.push_back(std::move(ic)); } // extern = native-backed, not emitted
         for (const auto& d : unit.interfaces) { // contracts: signatures only, emitted as `interface`
             ir::Interface ii;
             ii.name = d.name;
@@ -124,6 +127,7 @@ public:
             for (const auto& b : d.bases) ii.bases.push_back(b);
             for (const auto& mem : d.members)
                 if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator) ii.methods.push_back(method(mem));
+            ii.originModule = d.originModule;
             m.interfaces.push_back(std::move(ii));
         }
         // `extern class` type/ctor spellings -> the IR registry the emitters consult (replaces the hardcoded
@@ -141,6 +145,7 @@ public:
             g.isConst = v.isConst;
             g.type = v.hasType ? v.type : (v.init ? v.init->type : TypeRef{});
             if (v.init) g.init = expr(*v.init);
+            g.originModule = v.originModule;
             m.globals.push_back(std::move(g));
         }
         for (const auto& ext : unit.extensions) {
@@ -156,6 +161,7 @@ public:
             if (ext.exprBody) { f.exprBodied = true; f.exprBody = expr(*ext.exprBody); }
             else f.body = block(ext.body);
             inExtension_ = false;
+            f.originModule = ext.originModule;
             m.extensions.push_back(std::move(f));
         }
         for (const auto& fn : unit.functions) {
@@ -172,6 +178,7 @@ public:
             sawYield_ = false;
             f.body = block(fn.body);
             f.isIterator = sawYield_;
+            f.originModule = fn.originModule;
             m.functions.push_back(std::move(f));
         }
         return m;

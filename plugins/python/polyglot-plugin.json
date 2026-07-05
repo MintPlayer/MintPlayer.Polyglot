@@ -972,6 +972,26 @@
     "Program": {
       "seq": [
         {
+          "mapDecl": "module.imports",
+          "each": {
+            "line": {
+              "case": {
+                "when": [
+                  [
+                    { "eq": [ "item.isNamespace", "true" ] },
+                    { "tmpl": [ "import ", { "get": "item.path" }, " as ", { "get": "item.ns" } ] }
+                  ],
+                  [
+                    { "not": { "eq": [ "item.names", "" ] } },
+                    { "tmpl": [ "from ", { "get": "item.path" }, " import ", { "get": "item.names" } ] }
+                  ]
+                ],
+                "else": { "tmpl": [ "import ", { "get": "item.path" } ] }
+              }
+            }
+          }
+        },
+        {
           "mapMembers": "module.enums",
           "rule": "EnumDecl"
         },

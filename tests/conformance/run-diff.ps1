@@ -59,7 +59,24 @@ function Test-Program($name, $stem, $cliArgs) {
     }
     $cs = (& dotnet $dll 2>$null | Out-String).TrimEnd("`r","`n")
     if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $LASTEXITCODE)"; return $false }
-    $ts = (& node (Join-Path $dir "$stem.ts") 2>$null | Out-String).TrimEnd("`r","`n")
+
+    # §4.5 module linking: a multi-module program emits several .ts files with extensionless cross-imports
+    # (`import { X } from "./dep"`) — bundler-idiomatic, but Node's ESM loader can't resolve extensionless
+    # sibling specifiers when running a .ts directly. Compile the module set to CommonJS and run the entry
+    # .js (a harness-only resolution step; the emitted product output stays extensionless). A single-file
+    # program runs directly via Node's type-stripping (fast, no tsc).
+    $tsFiles = @(Get-ChildItem $dir -Filter *.ts)
+    if ($tsFiles.Count -gt 1) {
+        @'
+{ "compilerOptions": { "module": "commonjs", "target": "ES2020", "moduleResolution": "node", "skipLibCheck": true, "types": [] }, "include": ["**/*.ts"] }
+'@ | Set-Content (Join-Path $dir "tsconfig.json")
+        & tsc -p (Join-Path $dir "tsconfig.json") *> $null   # ignore type-only errors (no @types/node); assert emit
+        $entryJs = Join-Path $dir "$stem.js"
+        if (-not (Test-Path $entryJs)) { Write-Host "[FAIL] $name : linked TS did not compile to JS"; return $false }
+        $ts = (& node $entryJs 2>$null | Out-String).TrimEnd("`r","`n")
+    } else {
+        $ts = (& node (Join-Path $dir "$stem.ts") 2>$null | Out-String).TrimEnd("`r","`n")
+    }
     if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated TS crashed at runtime (exit $LASTEXITCODE)"; return $false }
 
     if ($cs -eq $ts) {

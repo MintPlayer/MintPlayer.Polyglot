@@ -347,6 +347,7 @@ struct Function {
     std::string actualTarget; // `actual(<target>)` impl — emitted only by the matching backend; else empty
     bool exprBodied = false; // `=> expr` vs block (extensions; regular fns always use a block today)
     ExprPtr exprBody;        // exprBodied
+    std::string originModule; // module linking (§4.5): "" = entry-own, a canonical path = imported user module, "<prelude>" = std/core/lib
 };
 struct RecordField {
     std::string name;
@@ -372,6 +373,7 @@ struct Record { // an immutable data type (record)
     std::vector<Type> bases;        // implemented interfaces
     std::vector<RecordField> fields;
     std::vector<Method> methods;
+    std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct EnumCase {
     std::string name;
@@ -380,6 +382,7 @@ struct EnumCase {
 struct Enum {
     std::string name;
     std::vector<EnumCase> cases;
+    std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct UnionCaseField {
     std::string name;
@@ -393,6 +396,7 @@ struct Union {
     std::string name;
     std::vector<GenericParam> generics; // `union Option<T> { … }`
     std::vector<UnionCase> cases;
+    std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct ClassField {
     std::string name;
@@ -412,18 +416,21 @@ struct Class { // a mutable reference type
     std::vector<ExprPtr> superArgs;    // the base-constructor arguments (hoisted out of initBody)
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;
+    std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct Interface { // a contract: method signatures only (no bodies). C# `interface`, TS `interface`.
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;     // extended interfaces
     std::vector<Method> methods; // signatures (body empty)
+    std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct Global { // a top-level `const`/`let` value
     std::string name;
     bool isConst = false;
     Type type;
     ExprPtr init;
+    std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 // A native-backed `extern class`: how its name spells on THE ACTIVE TARGET (`$0,$1,…` = the rendered type
 // args) — lowering picks the target's arm (P19 slice 9). Construction (`Type(args)` with `$T`/`$0…` ctor
@@ -431,6 +438,16 @@ struct Global { // a top-level `const`/`let` value
 struct ExternType {
     std::string name;
     std::string typeTmpl; // the active target's type-spelling template; empty -> the bare name
+};
+
+// Module linking (§4.5): one cross-module reference this file emits as a target import. `path` is the
+// imported module's emitted basename; `names` is the pre-joined selective group ("a, b as c"); for a
+// `* as ns` import `isNamespace` is set and `ns` holds the alias; a bare `import "x"` has all three empty.
+struct ModuleImport {
+    std::string path;
+    std::string names;
+    bool isNamespace = false;
+    std::string ns;
 };
 
 struct Module {
@@ -443,6 +460,8 @@ struct Module {
     std::vector<Function> extensions; // `extension fn T.m(...)` — each isExtension, params[0] is `self`
     std::vector<Function> functions;
     std::vector<ExternType> externTypes; // native-backed `extern class` type/ctor spellings (see ExternType)
+    std::vector<ModuleImport> imports;   // §4.5: this file's cross-module imports (empty for single-file builds)
+    bool linked = false;                 // §4.5: this is one file of a multi-module build (drives C# `partial`)
 };
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).

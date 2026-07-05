@@ -1447,6 +1447,14 @@
           "line": "<?php"
         },
         {
+          "mapDecl": "module.imports",
+          "each": {
+            "line": {
+              "tmpl": [ "require_once __DIR__ . '/", { "get": "item.path" }, ".php';" ]
+            }
+          }
+        },
+        {
           "mapMembers": "module.enums",
           "rule": "EnumDecl"
         },

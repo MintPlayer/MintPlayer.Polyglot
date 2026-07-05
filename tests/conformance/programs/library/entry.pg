@@ -1,0 +1,5 @@
+import { twice, PgThing } from "./nn"
+fn main() {
+  let t = PgThing(21.0)
+  print(i32(twice(t.v)))   // 42
+}

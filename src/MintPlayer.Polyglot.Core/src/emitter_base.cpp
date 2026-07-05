@@ -970,6 +970,8 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.extensions.count") return std::to_string(m_.extensions.size());
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
+    if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.linked")           return m_.linked ? "true" : "false";
     if (path == "module.hasEntry")         return entry_ >= 0 ? "true" : "false";
     if (entry_ >= 0) {
         const ir::Function& e = m_.functions[static_cast<std::size_t>(entry_)];
@@ -983,6 +985,12 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
         if (f == "name")    return m_.globals[i].name;
         if (f == "isConst") return m_.globals[i].isConst ? "true" : "false";
         if (f == "hasInit") return m_.globals[i].init ? "true" : "false";
+    }
+    if (path.rfind("module.imports.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.imports.size()) {
+        if (f == "path")        return m_.imports[i].path;
+        if (f == "names")       return m_.imports[i].names;
+        if (f == "isNamespace") return m_.imports[i].isNamespace ? "true" : "false";
+        if (f == "ns")          return m_.imports[i].ns;
     }
     return "";
 }

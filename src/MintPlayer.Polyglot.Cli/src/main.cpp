@@ -248,6 +248,16 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& o
         return false;
     }
     std::cout << "  -> " << out.string() << "\n";
+    // §4.5 module linking: a multi-module program emits one file per imported user module alongside the entry.
+    for (const auto& mf : result.modules) {
+        fs::path mout = outDir / mf.basename;
+        mout += ext;
+        if (!writeFile(mout, mf.code)) {
+            std::cerr << "polyglot: cannot write '" << mout.string() << "'\n";
+            return false;
+        }
+        std::cout << "  -> " << mout.string() << "\n";
+    }
     return true;
 }
 

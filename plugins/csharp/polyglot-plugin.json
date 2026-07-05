@@ -1780,7 +1780,7 @@
                 },
                 {
                   "block": {
-                    "head": "static class PolyglotExtensions",
+                    "head": { "tmpl": [ "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotExtensions" ] },
                     "body": [
                       {
                         "mapMembers": "module.extensions",
@@ -1850,7 +1850,7 @@
         },
         {
           "block": {
-            "head": "static class PolyglotProgram",
+            "head": { "tmpl": [ "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotProgram" ] },
             "body": [
               {
                 "mapDecl": "module.globals",

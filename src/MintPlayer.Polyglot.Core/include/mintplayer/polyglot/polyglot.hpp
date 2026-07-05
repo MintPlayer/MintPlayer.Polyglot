@@ -52,11 +52,23 @@ private:
 // name returns a !ok() handle whose error() lists the known targets.
 BackendHandle findTarget(const std::string& name);
 
+// One emitted output file of a multi-module build (§4.5): `basename` is the file's stem (its imported
+// module's canonical basename), `code` its emitted source. `basename` is empty for the entry file (the CLI
+// names it after the input).
+struct ModuleFile {
+    std::string basename;
+    std::string code;
+};
+
 // Result of compiling one source to one target. On success `ok` is true and `code` holds the emitted
 // source; on failure `ok` is false and `diagnostics` explains why (positions are 1-based).
+// Module linking (§4.5): `code` is always the entry file. For a multi-module program `modules` additionally
+// lists every imported user module's emitted file (each with its own `basename`); it is empty for a
+// single-file program (then `code` is the whole output).
 struct EmitResult {
     bool ok = false;
     std::string code;
+    std::vector<ModuleFile> modules;
     std::vector<Diagnostic> diagnostics;
 };
 
