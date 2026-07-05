@@ -2411,3 +2411,15 @@ Full PRD/plan: `docs/prd/issue-11-features/`. Four things, six byte-gated slices
 New programs: `cast_float_int.pg`, `math_transcendental.pg`, `library/`. Harness: run-diff/run-python cover
 multi-file dirs; run-nuget gains a shared-library CS0101 fixture; watch gate asserts linked-output refresh;
 unit tests for all four. CLI + NuGet → **0.3.0**; all four plugins → **0.3.0**.
+
+## Hotfix 0.3.1 — issue #14 (2026-07-05)
+Full PRD/plan: `docs/prd/issue-14-prelude/`. A 0.3.0 module-linking regression: multiple independent `.pg`
+files in one C# project each emitted the runtime prelude (`Option`/`Some`/`None` + the `PolyglotProgram`
+wrapper) → CS0101 + CS8863 (param-list records can't be `partial`). Root cause: a no-import `.pg` takes
+`compile()`'s single-file fast path (inlines the prelude, `linked=false`), and the multi-root CLI build runs
+N independent `compile()`s deduped only by output path. **Fix (C#-only):** `LibConfig::sharedPrelude` (set by
+the CLI's multi-input branch) hoists the `"<prelude>"`-origin decls into one reserved `__polyglot_prelude.cs`
+and emits every module `linked=true` (partial wrappers already exist); identical across roots so the existing
+`writeDedup` collapses it to one file. MSBuild `_PolyglotAddGenerated` globs `*.cs`. Single-`.pg` + all
+non-C# output byte-identical (the split gates on C# + multi-input). New run-nuget independent-multi-`.pg`
+fixture + unit tests. CLI + NuGet → **0.3.1**; plugins unchanged. Retires the "one C# entry per assembly" limit.

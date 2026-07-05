@@ -1,6 +1,6 @@
 # PRD — Issue #14: multi-`.pg` C# projects duplicate the runtime prelude (CS0101/CS8863)
 
-> **Status:** Draft · 2026-07-05 · targets release **0.3.1** (patch — regression from 0.3.0 module linking)
+> **Status:** ✅ DONE · 2026-07-05 · released as **0.3.1** (all six slices built + gated)
 > **Source:** [GitHub issue #14](https://github.com/MintPlayer/MintPlayer.Polyglot/issues/14) — blocking the
 > MintPlayer.AI M33 Snake port (a **second** `.pg` alongside the existing FruitCake `.pg` in one project) on
 > `MintPlayer.Polyglot.MSBuild 0.3.0`.

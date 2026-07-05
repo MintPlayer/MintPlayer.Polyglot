@@ -10,7 +10,7 @@
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
     <PackageId>MintPlayer.Polyglot.MSBuild</PackageId>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <Authors>MintPlayer</Authors>
     <Description>Transpiles .pg (Polyglot) sources to C# during dotnet build — drop .pg files into an ordinary C# project and build. Ships the self-contained native polyglot CLI; no extra SDK or runtime.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
