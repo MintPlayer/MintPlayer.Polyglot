@@ -59,6 +59,14 @@ if (-not $SkipConformance) {
     & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-diff.ps1")
     if ($LASTEXITCODE -ne 0) { Write-Host "`nCONFORMANCE FAILED."; exit 1 }
 
+    Write-Host "`n==> Differential conformance (C# vs Python)"
+    & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-python.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+    if ($LASTEXITCODE -ne 0) { Write-Host "`nPYTHON CONFORMANCE FAILED."; exit 1 }
+
+    Write-Host "`n==> Sample emit gate (each sample's C# compiles + TS runs)"
+    & pwsh -NoProfile -File (Join-Path $repo "tests\samples\run-emit.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+    if ($LASTEXITCODE -ne 0) { Write-Host "`nSAMPLE EMIT GATE FAILED."; exit 1 }
+
     Write-Host "`n==> Nullable / NRT gate (annotations preserved + clean under <Nullable>enable/>)"
     & pwsh -NoProfile -File (Join-Path $repo "tests\nullable\run-nullable.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
     if ($LASTEXITCODE -ne 0) { Write-Host "`nNULLABLE GATE FAILED."; exit 1 }

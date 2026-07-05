@@ -56,8 +56,13 @@ foreach ($name in $programs) {
     $csproj | Set-Content (Join-Path $dir "$name.csproj")
     & dotnet build (Join-Path $dir "$name.csproj") -c Release -v quiet --nologo *> $null
     $dll = Join-Path $dir "bin\Release\net10.0\$name.dll"
+    # Assert the generated C# compiled and both runtimes exited cleanly — a symmetric double-failure
+    # (empty == empty) must not false-pass (issue #9 lesson; see run-diff.ps1).
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dll)) { Write-Host "[FAIL] $name : generated C# did not compile"; $fail++; continue }
     $cs = (& dotnet $dll 2>$null | Out-String).TrimEnd("`r", "`n")
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $LASTEXITCODE)"; $fail++; continue }
     $pyOut = (& $py.Source (Join-Path $dir "$name.py") 2>$null | Out-String).TrimEnd("`r", "`n")
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated Python crashed at runtime (exit $LASTEXITCODE)"; $fail++; continue }
 
     if ($cs -eq $pyOut) {
         Write-Host "[PASS] $name  ->  $($pyOut -replace "`r?`n", ' | ')"
