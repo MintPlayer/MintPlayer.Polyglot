@@ -2189,6 +2189,53 @@ the root (typescript plugin only, except one Core primitive):**
 Versions: CLI + NuGet → **0.1.4**, typescript plugin → **0.2.0** (csharp/python/php plugins unchanged —
 the emission fixes are TS-only; the `catchesHaveGuard` fact is inert for backends that don't read it).
 
+## Release 0.2.0 — three v0.1.4 codegen/parse bugs (issue #9) + differential-gate hardening (2026-07-05, found live by the MintPlayer.AI FruitCake pilot)
+
+Full PRD + slice plan: `docs/prd/issue-9-codegen/`. Three constructs type-checked cleanly (`polyglot check`
+happy) but emitted code that did not compile (C#) or crashed at runtime (TS) — the §3.B "never a miscompile"
+failure mode — and the crown-jewel stdout-differential gate was structurally blind to all three. Root causes
+from a 4-agent read-only investigation (one per bug + one on the gate). The minor bump (not a patch) reflects
+the three fixes plus the systemic gate change.
+
+**Bug 1 — call-syntax primitive cast `i32(x)`/`f64(n)` emitted `new i32(x)`** (C# CS0815 / TS runtime crash).
+The numeric scalars (`i8…u64`, `f32`, `f64`) are `extern class` prelude types (so `i32.parse` resolves), so a
+call `i32(x)` resolved as construction in sema (`checkCall` hit `types_`) → `ir::New`. Fix (Core-only,
+`sema.cpp` `checkCall`): when the callee is a numeric type name, rewrite the node in place to the existing
+`ExprKind::Cast` (the `coerce`/`wrapSome` in-place pattern) — `i32(x)` ≡ `(i32)x`, reusing the already-correct
+`Cast` rules on all four targets (C# `(int)x`, TS `Math.trunc(x)|0`, Python `int(x)`; i64/u64 BigInt and
+i8..u32 narrowing handled for free). Bonus: the previously-silent bad forms `i32()`/`i32(a,b)`/`i32(true)` now
+diagnose. No plugin change.
+
+**Bug 2 — `var x: T? = null` dropped the type in C#** (`var x = null;`, CS0815). The shared engine's `Let`
+statement spells every local via the single-hole `localDecl` table (C# `var $x`), discarding the declared type
+— fine when `var` can infer, CS0815 on a bare `null`. Fix: a new two-hole `localDeclTyped` (`$T $x`) seam
+(`substTX`/`specSubstTX` in `backend_spec.hpp`, a `localDeclTyped` helper on `EmitterBase`); the `Let` case
+routes through it when `init` is the null literal **and** a type renders. Only the **csharp** plugin declares
+the row (`$T $x`); TS/Python/PHP get `""` back and fall through to the unchanged untyped `localDecl`, so their
+output is byte-identical (also fixes `var x: i32? = null` → `int? x = null`). Core + csharp-plugin only.
+
+**Bug 3 — 2+ nested-generic (`List<List<f64>>`) params failed to parse** ("expected ')'" at the second one).
+Not the `>>`-lexing state the reporter suspected — the generic-arg loop in `parseTypeCore` tested for a
+separator comma *before* honoring the pending outer-generic close: after the inner `List<f64>` consumed `>>`
+and lent a `>` to close the outer `List` (`pendingAngles_ > 0`), the loop wrongly accepted the *parameter*
+comma and parsed the next param as a third type-arg. Fix (Core parser, 2 sites — `parseTypeCore` and the
+generic call/construction path): guard the comma loop with `pendingAngles_ == 0 &&` (the two states are
+mutually exclusive). No lexer change.
+
+**Systemic — the differential gates false-passed on symmetric failures.** `run-diff.ps1` / `run-python.ps1`
+built the generated C# and ran the generated TS/Python but **discarded both outcomes**, comparing only stdout —
+so when both targets failed identically (empty == empty) the program PASSED. This is the exact blind spot the
+`??`-precedence (0.1.1) and TS-export (0.1.4) hotfixes also exposed. Fix: both gates now assert the C#
+compiled (dll present, `dotnet build` exit 0) and both runtimes exited 0 before comparing stdout — extending a
+whole-corpus C#-compile assertion that previously existed only in `run-nullable`'s single fixture. Also wired
+`run-python.ps1` and `run-emit.ps1` into `build-and-test.ps1` (both were previously unorchestrated).
+
+**Regression coverage:** `casts_call.pg` (call-syntax casts, `3|-7|49|7|49`), `nested_generics.pg` (two
+`List<List<f64>>` params, `3|2`), `null_local.pg` (nullable ref + value locals, `42|-1|5`) — each would go
+**red before** its fix under the hardened gate and is **green after**. Full `build-and-test.ps1` green (build +
+unit + fidelity + watch + hardened C#/TS diff + C#/Python diff + sample-emit + nullable + library). Versions:
+CLI + NuGet → **0.2.0**, csharp plugin → **0.2.2** (typescript/python/php plugins unchanged).
+
 > **P11 "Remaining for shipped" (per-RID CI packaging + NuGet publish + the npm sibling) is now scoped as
 > its own phase — see [P22](#p22) below.** The design confirmed the NuGet's consume-side `.targets` is
 > already fully multi-RID; the real dependency is a portable (CMake) build + a native build matrix.

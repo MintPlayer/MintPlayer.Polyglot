@@ -91,12 +91,10 @@ compiles (C#) + runs (TS/Python) + matches C# oracle. Full `build-and-test.ps1` 
 two-hole variant alongside the existing single-hole `specSubst`, `backend_spec.hpp:149-172`). Otherwise
 unchanged. The non-empty-type guard keeps degenerate/annotation-less cases on current behavior.
 
-**Plugin data** — add a `localDeclTyped` table row to each `polyglot-plugin.json`:
-- **csharp**: `{"mutable":"$T $x","const":"$T $x"}` → `Box? best`
-- **typescript**: `{"mutable":"let $x","const":"const $x"}` (ignores `$T` → output unchanged)
-- **python**: `{"mutable":"$x","const":"$x"}`; **php**: `{"mutable":"$$x","const":"$$x"}`
-
-This also fixes `var x: i32? = null` → `int? x = null`, and is target-agnostic.
+**Plugin data** — add a `localDeclTyped` table row to the **csharp** plugin only:
+`{"mutable":"$T $x","const":"$T $x"}` → `Box? best`. TS/Python/PHP declare no such row; `specSubstTX`
+returns `""` for them and the Core `Let` case falls back to the unchanged untyped `localDecl`, so their
+output is byte-identical (verified). This also fixes `var x: i32? = null` → `int? x = null`.
 
 **Regression:** `tests/conformance/programs/null_local.pg` — `var x: T? = null` for a reference type **and**
 a value type (`i32?`), later assigned and read, printing a stable scalar. It must pass the **hardened**
@@ -113,9 +111,8 @@ locals; TS/Python/PHP byte-identical. Full `build-and-test.ps1` green.
 **Versions** (per PRD §6):
 - `src/MintPlayer.Polyglot.Core/include/mintplayer/polyglot/polyglot.hpp` `kVersion`: `0.1.4` → `0.2.0`.
 - `src/MintPlayer.Polyglot.MSBuild/MintPlayer.Polyglot.MSBuild.csproj` `<Version>`: `0.1.4` → `0.2.0`.
-- `plugins/csharp/package.json` `0.2.1` → `0.2.2`; `plugins/{typescript,python,php}/package.json`
-  `0.2.0` → `0.2.1`. (Bump only because Bug 2 touched their data; csharp/ts/py/php all get the
-  `localDeclTyped` row.)
+- `plugins/csharp/package.json` `0.2.1` → `0.2.2` only. (Bug 2's `localDeclTyped` row is C#-only;
+  ts/py/php output is byte-unchanged, so they don't bump.)
 
 **Docs:**
 - Append a `## Release 0.2.0` retrospective to `docs/prd/PLAN.md` (matching the 0.1.1/0.1.3/0.1.4 style):
@@ -141,5 +138,5 @@ programs, referencing that all three are now covered by a gate that compiles the
 | 1 | gate | `run-diff.ps1`, `run-python.ps1`, `build-and-test.ps1` | — |
 | 2 | Bug 3 | `parser.cpp` (2 lines) + `nested_generics.pg` | Core |
 | 3 | Bug 1 | `sema.cpp` (`checkCall`) + `casts_call.pg` | Core |
-| 4 | Bug 2 | `emitter_base.cpp` + `backend_spec.hpp` + 4× `polyglot-plugin.json` + `null_local.pg` | Core + all plugins |
-| 5 | release | `polyglot.hpp`, `.csproj`, 4× `package.json`, `PLAN.md`, `CLAUDE.md` | Core + NuGet + all plugins |
+| 4 | Bug 2 | `emitter_base.cpp` + `emitter_base.hpp` + `backend_spec.hpp` + csharp `polyglot-plugin.json` + `null_local.pg` | Core + csharp plugin |
+| 5 | release | `polyglot.hpp`, `.csproj`, csharp `package.json`, `PLAN.md`, `CLAUDE.md` | Core + NuGet + csharp plugin |

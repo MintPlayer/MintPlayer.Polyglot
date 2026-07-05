@@ -125,8 +125,9 @@ None of the three touches the §3.B refusal set; all are corrections inside the 
 - **Core / CLI** (`polyglot.hpp kVersion`, `--version`): `0.1.4` → **`0.2.0`** (Bugs 1 & 3 + Bug 2's Core
   `Let`-case change + gate hardening).
 - **NuGet** (`MintPlayer.Polyglot.MSBuild.csproj <Version>`): `0.1.4` → **`0.2.0`**.
-- **Plugins** — only Bug 2 touches plugin data (one `localDeclTyped` row each): **csharp 0.2.1 → 0.2.2**,
-  **typescript 0.2.0 → 0.2.1**, **python 0.2.0 → 0.2.1**, **php 0.2.0 → 0.2.1**. (Bugs 1 & 3 are Core-only,
-  no plugin change.)
+- **Plugins** — only Bug 2 touches plugin data, and only C# needs it (the new `localDeclTyped` row).
+  TS/Python/PHP get `""` back from `specSubstTX` and fall through to the unchanged untyped `localDecl`, so
+  their output is byte-identical and they do **not** bump: **csharp 0.2.1 → 0.2.2** only. (Bugs 1 & 3 are
+  Core-only, no plugin change.)
 
 See [PLAN.md](./PLAN.md) for the sliced implementation.
