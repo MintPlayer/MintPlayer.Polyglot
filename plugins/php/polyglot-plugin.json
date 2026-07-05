@@ -561,20 +561,12 @@
               ]
             },
             {
-              "fn": "wrap",
-              "args": [
+              "tmpl": [
+                "(int)(",
                 {
-                  "get": "node.type"
+                  "emit": "node.operand"
                 },
-                {
-                  "tmpl": [
-                    "(int)(",
-                    {
-                      "emit": "node.operand"
-                    },
-                    ")"
-                  ]
-                }
+                ")"
               ]
             }
           ]

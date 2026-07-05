@@ -690,20 +690,12 @@
               ]
             },
             {
-              "fn": "wrap",
-              "args": [
+              "tmpl": [
+                "Math.trunc(",
                 {
-                  "get": "node.type"
+                  "emit": "node.operand"
                 },
-                {
-                  "tmpl": [
-                    "Math.trunc(",
-                    {
-                      "emit": "node.operand"
-                    },
-                    ")"
-                  ]
-                }
+                ")"
               ]
             }
           ]
