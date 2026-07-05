@@ -119,42 +119,52 @@ being inlined.
    file's own decls are the entry origin; `mergeDecls` stamps merged user-module decls with their source
    module's canonical id; `linkCoreModule`/`linkLibModules` stamp std/core/lib decls with a **`prelude`**
    sentinel. (This is the "per-file import-scope table" the deferred P12-phase-2 work always needed.)
-2. **Split for emit.** `compile()` still runs the front-end once over the whole closure, but now emits **one
-   file per user module** (entry + each imported non-std module), each containing **only its own-origin
-   decls** plus target-native import statements for its cross-module references. `EmitResult` gains a
-   `std::vector<ModuleFile> modules` (`{ basename, code }`); `code` stays the **entry** module's source for
-   back-compat. A program with no user imports yields exactly one module (== `code`), byte-identical to today.
-3. **Prelude stays inlined.** `prelude`-origin decls are **not** emitted as their own file and generate **no**
-   import statement — std is embedded (no sibling source file) and is overwhelmingly `extern`/call-site
-   bindings (`print`, `Math`, `Error`, `Iterable`, `List` emit *nothing* as a top-level definition; they map
-   to native types or inline templates). The one case that *does* emit a real top-level definition — a std
-   **extension method** (e.g. `string.len`) referenced from a module — is handled by a shared, on-demand
-   **prelude file** (`polyglot_prelude.<ext>`) that carries such definitions once and is imported by any
-   module that uses them; it is only emitted when non-empty. (See PLAN: this is empirically verified — in the
-   current corpus no std decl emits a top-level definition, so the prelude file is a correctness backstop, not
-   a common-case artifact.)
+2. **Split for emit (partition by name→origin).** `compile()` runs the front-end once over the whole closure
+   and lowers the whole merged unit once (the `Lowerer` needs the full type universe — it builds cross-module
+   lookup tables — so per-module lowering in isolation is *not* safe). It then **partitions the one lowered
+   `ir::Module` by a name→origin map** (built from the tagged AST; no per-decl IR field needed) into one
+   emitted file per user module, and emits each. `EmitResult` gains `std::vector<ModuleFile> modules`
+   (`{ basename, code }`); `code` stays the **entry** module's source for back-compat.
+   **Single-module programs (no user imports) emit byte-identically to today** — the whole existing corpus is
+   unaffected; only the one multi-module program (`modular`) and the new `library` program change. Linked
+   emission (imports / `partial`) is switched on **only when the closure has >1 module**.
+3. **Prelude is a real problem, handled per target.** `print` is *not* a call-site binding — it is an
+   `expect/actual` function emitted as a **top-level `PolyglotProgram.print<T>` method**, and every user free
+   function likewise lives inside `PolyglotProgram`. So a naive split duplicates the **whole wrapper**, not
+   just user types (verified: both files emit `class PgThing` **and** `static class PolyglotProgram { twice;
+   print }`). The prelude (core/lib/std-origin) decls therefore need a target-appropriate home:
+   - **C#** (one assembly): `PolyglotProgram`/`PolyglotExtensions` become **`partial`** (only when linked), so
+     every module's file contributes to the one merged class; **prelude decls are emitted into the entry file
+     only** and are visible assembly-wide. Types emit into the **global namespace** (verified — only the
+     wrapper is a class), so cross-file type references resolve with **no `using`**. Requires exactly one
+     entry (the module with `main`) per assembly — a documented v1 boundary (a pure-library project with no
+     `main` that calls `print` from a type method is out of scope).
+   - **TS / Python / PHP** (each file is its own module scope — no cross-file collision): prelude decls are
+     **inlined into every module file**. A `print` defined+exported in both `main.ts` and `nn.ts` is harmless
+     (distinct module scopes); tsc under `isolatedModules` accepts it. No prelude import is needed.
 4. **Import list is the source's own `import` decls.** A module's cross-module imports are exactly its parsed
-   `import { a, b as c } from "spec"` statements, with `std.*`/lib specifiers filtered out (they're prelude).
-   No IR reference-scan is needed. `ir::Module` gains `imports: [{ path, names:[{name, alias}] }]`, where
-   `path` is the emitted-file basename mapped from the specifier's canonical id.
+   `import { a, b as c } from "spec"` statements, with `std.*`/lib specifiers filtered out (prelude). No IR
+   reference-scan. `ir::Module` gains `imports: [{ path, names:[{name, alias}] }]` (+ a `linked` flag), where
+   `path` is the imported module's **basename** (its canonical path's last component, sans `.pg`). **v1 output
+   is flat** — every module emits to `<basename>.<ext>` and imports reference `./<basename>`; this keeps Core
+   path-free (pure string op on canonical paths, no `<filesystem>`). **v1 requires unique basenames** across
+   the closure (documented); subdir-mirroring + relative-path specifiers are a follow-up.
 
 **Per-target import emission** (Program-scaffold rule data + one engine primitive to iterate `module.imports`):
-- **C#** — types emit into the **global namespace** (verified: only globals/entry are wrapped in
-  `static class PolyglotProgram`), so within one assembly a cross-file reference resolves with **no `using`**.
-  C# emits **no** import statement; linking for C# is simply "stop inlining." (This is why C# was the target
-  that hit CS0101 — everything compiles together.)
-- **TypeScript** — `import { a, b as c } from "./nn";` at file top (0.1.4 already made every top-level decl
-  `export`, so the imports resolve). Extension: the emitted-path spelling for the harness's `node <file>.ts`
-  ESM run must resolve (relative specifier + correct extension) — nailed in PLAN.
-- **Python** — `from nn import a, b as c` (module name = file stem; siblings importable when run from the dir).
-- **PHP** — `require_once __DIR__ . '/nn.php';` (global namespace; PHP symbols are process-global once required).
+- **C#** — no import statement (global-namespace types + `partial` wrappers, one assembly).
+- **TypeScript** — `import { a, b as c } from "./nn";` at file top (0.1.4 already `export`s every top-level decl).
+  The emitted-path spelling for the harness's `node <file>.ts` ESM run must resolve — pinned in PLAN 4b.
+- **Python** — `from nn import a, b as c` (module = file stem; siblings importable when run from the dir).
+- **PHP** — `require_once __DIR__ . '/nn.php';` (process-global once required).
 
-**CLI / build-system contract.** `polyglot build X.pg` writes **every** module in `X`'s closure (each exactly
-once, deduped by canonical id) so the result is compilable/runnable as a set. Passing several inputs
-(`build a.pg b.pg`) emits the **deduped union** of their closures. The `MintPlayer.Polyglot.MSBuild` target
-invokes the CLI **once** over all `@(PolyglotFile)` and adds the deduped generated set to `@(Compile)` — so
-each type is defined once, referenced across files, and CS0101 is gone with **no** hand-exclusion and **no**
-library-module concept needed.
+**CLI / build-system contract.** `compile()` (one root) returns that root's whole closure as `modules`; the CLI
+writes them all. Given **several** input files (MSBuild globs all `**/*.pg`), the CLI first builds the input
+set's import graph, compiles only the **roots** (files not imported by another input) and **dedups** shared
+modules across roots by basename (identical content; a content conflict is an error) — so an imported-only
+library `.pg` is emitted **as part of its importer's closure**, never also as its own entry. This is what
+removes the double-emit: `main.pg` → `{main.cs, nn.cs}` and `nn.pg` (imported) is *not* compiled separately.
+The `MintPlayer.Polyglot.MSBuild` target invokes the CLI **once** over all `@(PolyglotFile)` and adds the
+deduped generated set to `@(Compile)` — each type/function defined once, CS0101 gone, **no** hand-exclusion.
 
 **Conformance-harness rework.** `run-diff.ps1` / `run-python.ps1` currently emit one file for a multi-file
 program and compile/run only that. They are reworked to emit the whole module set and compile/run it together

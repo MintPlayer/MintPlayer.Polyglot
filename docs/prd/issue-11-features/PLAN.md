@@ -49,61 +49,66 @@ PHP emission spot-checked (no php runtime here — inspection, per the existing 
 ---
 
 ## Slice 3 — module linking, plumbing (Core; **byte-identical output**)
-No emission change in this slice — it only threads the data that Slice 4 will consume. Output stays inlined
-and byte-identical.
-- **3a — origin tag.** Add `std::string originModule` to each top-level AST decl (or a parallel origin map on
-  `CompilationUnit`). `mergeDecls` (`compiler.cpp:189`) stamps merged user-module decls with the source
-  module's canonical id; `linkCoreModule` (260) / `linkLibModules` (298) stamp `"<prelude>"`; the entry's own
-  decls keep the entry id. Carry the origin through `lower` onto the `ir` decls (add an origin field to the
-  `ir` decl structs or a side table on `ir::Module`).
-- **3b — import list.** Capture each module's parsed `import` decls (specifier + `{name, alias}` list),
-  resolve each specifier to its canonical id (already known during `loadImports`), and record on `ir::Module`
-  a new `imports: [{ path, names:[{name, alias}] }]` where `path` is the emitted basename (specifier's
-  canonical stem); **filter out `std.*` / lib specifiers** (prelude). Populate but do not yet emit.
+No emission change in this slice — it only threads the data Slice 4 consumes. Output stays inlined, byte-identical.
+- **3a — origin tag.** Add `std::string originModule` to each top-level AST decl (empty = entry-own).
+  `mergeDecls` (`compiler.cpp:227`) stamps merged user-module decls with the source module's canonical id;
+  `linkCoreModule` (298) / `linkLibModules` (336) / std-module merges in `loadImports` stamp `"<prelude>"`.
+  (This is the "per-file import-scope table" the deferred P12-phase-2 work always needed.)
+- **3b — import capture.** During `loadImports`, record per importer (`""` = entry) the list of resolved
+  **user** imports `{ importedCanon, names:[{name,alias}] }` (std/lib specifiers filtered — prelude). Surface
+  this map out of `runFrontEnd`. The entry's own imports are already on `root.imports`.
+- **No IR per-decl field.** Emission partitions by a **name→origin map** built from the tagged AST (ir decls
+  carry `.name`; functions share a name+origin; extensions key on receiver+name). `ir::Module` gains only
+  `std::vector<ModuleImport> imports` + `bool linked` (set per-partition in Slice 4).
 **Gate:** full-corpus byte diff = **zero** changes.
 
 ---
 
 ## Slice 4 — module linking, split-for-emit (Core + engine + 4 plugins; the behavior change)
-- **4a — `EmitResult.modules`.** Add `struct ModuleFile { std::string basename; std::string code; }` and
-  `std::vector<ModuleFile> modules` to `EmitResult` (`polyglot.hpp:57`). Populate with a single entry
-  (`{entry-stem, code}`) for every program first — CLI still writes `code`. Byte-identical.
-- **4b — emit split + import emission.** `compile()` emits **one file per non-prelude origin**: for each user
-  module, run the backend over a filtered `ir::Module` view containing only that module's own-origin decls,
-  with `module.imports` set to that module's import list. Prelude-origin decls fold into the **entry** file
-  (as today) and emit no import. Add an engine primitive to iterate `module.imports` in the Program-scaffold
-  rule; add the per-target import preamble to each plugin's `Program` rule:
-  - csharp: **no** import line (global namespace) — for C#, "split" alone (own-origin filter) is the whole fix.
-  - typescript: `import { $name (as $alias)?, … } from "./$path";`
-  - python: `from $path import $name (as $alias)?, …`
-  - php: `require_once __DIR__ . '/$path.php';`
-  `EmitResult.code` stays the entry file; `modules` lists entry + each user module (deduped by canonical id).
-- **4c — CLI writes the set.** `emitOne` (`main.cpp:236`) writes every `result.modules` entry (basename +
-  ext) under `--out`, not just `code`. `polyglot build a.pg b.pg …` unions + dedups closures. Relative-import
-  basenames that live in subdirs (e.g. `geom/vec`) preserve their relative path under `--out`.
-- **4d — prelude-file backstop.** Verify empirically whether any `<prelude>`-origin decl emits a top-level
-  definition (scan emitted output of the corpus for std-origin functions/classes). If none (expected — std is
-  extern/binding), document "verified empty" and skip. If any do (a std extension method used cross-module),
-  emit them once into `polyglot_prelude.<ext>` and add an import to each module that references them.
-**Gate:** **single-module** programs byte-identical; `modular` program stdout byte-identical cross-target,
-now via multiple files; the new `library` program (Slice 5) compiles into one C# assembly with no CS0101 and
-imports cleanly in TS/Python.
+Lower the whole merged unit **once** (the `Lowerer` needs the full type universe). Then in `compile()`
+partition the one `ir::Module` by name→origin into per-module files. **Linked mode is active only when the
+closure has >1 module** — single-module programs take the exact current path and stay byte-identical.
+- **4a — `EmitResult.modules`.** `struct ModuleFile { std::string basename; std::string code; }` +
+  `std::vector<ModuleFile> modules` on `EmitResult` (`polyglot.hpp:57`). For single-module programs, one entry
+  == `code`. Byte-identical.
+- **4b — partition + per-target prelude policy.** For each origin O (entry + each user-module canon), build a
+  filtered `ir::Module` = decls whose name→origin is O, **plus the full `externTypes` registry** (type
+  spelling must still resolve), plus O's `imports` (from Slice 3b, mapped to basenames), `linked=true`. Prelude
+  policy:
+  - **C#:** prelude-origin decls go into the **entry** partition only; `PolyglotProgram`/`PolyglotExtensions`
+    emit `partial` when `linked`; types are global-namespace (no `using`). No import statements.
+  - **TS/Python/PHP:** prelude-origin decls are included in **every** partition (per-file inline; distinct
+    module scopes, no collision).
+  Add an engine primitive to iterate `module.imports`; add each plugin's `Program`-rule preamble:
+  - typescript: `import { $name (as $alias)?, … } from "./$basename";`
+  - python: `from $basename import $name (as $alias)?, …`
+  - php: `require_once __DIR__ . '/$basename.php';`
+  - csharp: none. C# `Program` rule emits `static partial class` (vs `static class`) gated on `module.linked`.
+  `EmitResult.code` = entry partition; `modules` = every partition ({basename, code}).
+- **4c — CLI writes the set + multi-input roots/dedup.** `emitOne` (`main.cpp:236`) writes each
+  `result.modules` entry to `<outDir>/<basename><ext>`. For **multiple** inputs, the CLI builds the input
+  set's import graph, compiles only **roots** (inputs not imported by another input), and dedups emitted
+  modules by basename (identical content; conflict = error) — so an imported-only library `.pg` is emitted as
+  part of its importer's closure, never also as its own entry.
+- **v1 limitations (documented):** flat output (`<basename><ext>`) → **unique basenames required**; **one C#
+  entry (with `main`) per assembly** (prelude lives there). Subdir mirroring + multi-entry C# are follow-ups.
+**Gate:** **single-module** programs byte-identical; `modular` stdout byte-identical cross-target via multiple
+files; the new `library` program compiles into one C# assembly (no CS0101) and imports cleanly in TS/Python.
 
 ---
 
 ## Slice 5 — conformance harness + MSBuild rework, and the CS0101 regression witness
-- **New program** `tests/conformance/programs/library/` = the exact issue-#11 shape: `nn.pg`
-  (`class PgThing` + `fn twice`) + `entry.pg` (`import { twice, PgThing } from "./nn"`), prints a value.
-- **`run-diff.ps1` / `run-python.ps1`:** for a multi-file program dir, emit the whole module set (the CLI now
-  writes all closure files), compile **all** generated `.cs` into one assembly and run it (proves no CS0101),
-  and run the entry `.ts`/`.py` with siblings present. Keep the issue-#9 hardening (assert C# compiled + both
+- **New program** `tests/conformance/programs/library/` = the issue-#11 shape: `nn.pg` (`class PgThing` +
+  `fn twice`) + `entry.pg` (`import { twice, PgThing } from "./nn"`), prints a value.
+- **`run-diff.ps1` / `run-python.ps1`:** for a multi-file program dir, emit the whole module set (the CLI writes
+  all closure files from the entry), compile **all** generated `.cs` into one assembly and run it (proves no
+  CS0101), and run the entry `.ts`/`.py` with siblings present. Keep the issue-#9 hardening (C# compiled + both
   runtimes exit 0). Stdout stays byte-identical to 0.2.0.
 - **MSBuild** (`src/MintPlayer.Polyglot.MSBuild/build/MintPlayer.Polyglot.MSBuild.targets`): invoke the CLI
-  **once** over all `@(PolyglotFile)` (not per-file batched) so each module emits once; add the deduped
+  **once** over all `@(PolyglotFile)` (roots/dedup handled CLI-side) so each module emits once; add the deduped
   generated set to `@(Compile)`. Extend `tests/msbuild/run-nuget.ps1` with a two-`.pg`-sharing-a-library
   fixture that must build into one assembly with no CS0101.
-**Gate:** `run-diff` + `run-python` green (incl. `modular` + `library`); `run-nuget` green incl. the new
-shared-library fixture.
+**Gate:** `run-diff` + `run-python` green (incl. `modular` + `library`); `run-nuget` green incl. the fixture.
 
 ---
 
