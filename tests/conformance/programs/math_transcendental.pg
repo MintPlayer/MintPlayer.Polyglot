@@ -1,0 +1,36 @@
+// Issue #11 (1.A) — the transcendental std.math tier. Per §3.D these are BEST-EFFORT (may differ by <=1 ULP
+// across the .NET / JS / Python runtimes), so this program does NOT compare raw floats: it scales each result
+// by 1e5 and truncates to an integer via `i32(...)`. Cross-runtime drift is ~1e-10, and every input is chosen
+// so the scaled value is far from an integer boundary — the truncated integer is therefore byte-identical on
+// C#/TS/Python. This is the tolerance gate expressed as quantized equality.
+
+import { Math } from "std.math"
+
+fn q(x: f64): i32 => i32(x * 100000.0)   // scale-and-truncate quantizer (robust to <=1 ULP drift)
+
+fn main() {
+  // trig
+  print(q(Math.sin(1.0)))        // 84147
+  print(q(Math.cos(1.0)))        // 54030
+  print(q(Math.tan(1.0)))        // 155740
+  print(q(Math.asin(0.5)))       // 52359
+  print(q(Math.acos(0.5)))       // 104719
+  print(q(Math.atan(1.0)))       // 78539
+  print(q(Math.atan2(1.0, 2.0))) // 46364
+
+  // hyperbolic
+  print(q(Math.sinh(1.0)))       // 117520
+  print(q(Math.cosh(1.0)))       // 154308
+  print(q(Math.tanh(1.0)))       // 76159
+
+  // exp / log / pow
+  print(q(Math.exp(1.0)))        // 271828
+  print(q(Math.log(10.0)))       // 230258   (natural log)
+  print(q(Math.log2(10.0)))      // 332192
+  print(q(Math.log10(30.0)))     // 147712
+  print(q(Math.pow(2.0, 0.5)))   // 141421
+
+  // trunc (exact)
+  print(i32(Math.trunc(3.7)))    // 3
+  print(i32(Math.trunc(-3.7)))   // -3
+}

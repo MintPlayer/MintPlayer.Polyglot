@@ -63,8 +63,14 @@ expect fn deleteFile(path: string)
 // surface). sqrt/ln/floor/ceil are f64; min/max/abs are generic and CALL-SITE-INLINED (a generic C#
 // Math.Min over unconstrained T wouldn't compile, so the binding substitutes the concrete-typed args at
 // each call). The TS min/max/abs use single-eval IIFE templates that work for both `number` and `bigint`
-// (the `a - a` zero is type-agnostic). PI/E are bound consts. Determinism (§3.D): only sqrt is reproducible
-// across targets; ln/transcendentals are not promised bit-exact.
+// (the `a - a` zero is type-agnostic). PI/E are bound consts.
+// Determinism (§3.D): only sqrt is correctly-rounded/reproducible across targets. The TRANSCENDENTAL tier
+// (sin/cos/tan/asin/acos/atan/atan2, sinh/cosh/tanh, exp/log/ln/log2/log10, pow) is a documented
+// BEST-EFFORT tier — available on every target, but results may differ by <=1 ULP across the .NET JIT and a
+// JS/Python/PHP runtime. Code that needs cross-target identity must use + - * / sqrt (or a future fixed-point
+// std type), NOT these. Every member is a plain 1:1 bound static (no emulation); cbrt/sign are intentionally
+// omitted (not uniformly available as a clean binding — cbrt is absent on PHP and Python<3.11; sign diverges,
+// C# Math.Sign throws on NaN while JS returns NaN).
 const char* STD_MATH = R"PG(
 extern class Math {
   const PI: f64 {
@@ -74,6 +80,38 @@ extern class Math {
   static fn sqrt(x: f64): f64 {
   }
   static fn ln(x: f64): f64 {
+  }
+  static fn log(x: f64): f64 {
+  }
+  static fn log2(x: f64): f64 {
+  }
+  static fn log10(x: f64): f64 {
+  }
+  static fn exp(x: f64): f64 {
+  }
+  static fn pow(x: f64, y: f64): f64 {
+  }
+  static fn sin(x: f64): f64 {
+  }
+  static fn cos(x: f64): f64 {
+  }
+  static fn tan(x: f64): f64 {
+  }
+  static fn asin(x: f64): f64 {
+  }
+  static fn acos(x: f64): f64 {
+  }
+  static fn atan(x: f64): f64 {
+  }
+  static fn atan2(y: f64, x: f64): f64 {
+  }
+  static fn sinh(x: f64): f64 {
+  }
+  static fn cosh(x: f64): f64 {
+  }
+  static fn tanh(x: f64): f64 {
+  }
+  static fn trunc(x: f64): f64 {
   }
   static fn floor(x: f64): f64 {
   }
