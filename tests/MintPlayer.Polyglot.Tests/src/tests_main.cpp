@@ -357,6 +357,29 @@ int main() {
         check(def.ok && !has(def.code, "public record Point"), "issue#11 access: default is internal (no public modifier)");
     }
 
+    // Issue #14 — a multi-file C# PROJECT build (LibConfig::sharedPrelude) hoists the runtime prelude
+    // (Option/Some/None + wrapper) into a separate `__polyglot_prelude` module so N independent roots don't
+    // each emit it (CS0101/CS8863). The default (sharedPrelude=false) inlines it -> byte-identical.
+    {
+        const char* src = "fn fa(): i32 { return 1 }\n";
+        LibConfig proj; proj.sharedPrelude = true;
+        EmitResult r = compile(src, findTarget("csharp"), nullptr, proj);
+        check(r.ok, "issue#14: C# project build compiles");
+        check(!has(r.code, "record Option"), "issue#14: entry file does NOT inline the prelude Option union");
+        check(has(r.code, "static partial class PolyglotProgram"), "issue#14: entry wrapper is `partial` (mergeable)");
+        bool preludeFile = false;
+        for (const auto& mf : r.modules)
+            if (mf.basename == "__polyglot_prelude" && has(mf.code, "record Option")) preludeFile = true;
+        check(preludeFile, "issue#14: the prelude (Option) is emitted once into __polyglot_prelude");
+        // Default (single-file) still inlines the prelude — byte-identical.
+        EmitResult def = compile(src, findTarget("csharp"));
+        check(def.ok && has(def.code, "record Option") && def.modules.empty(),
+              "issue#14: default (non-project) build still inlines the prelude (unchanged)");
+        // C#-only: a TS project build keeps the prelude per-file (no shared file).
+        EmitResult ts = compile(src, findTarget("typescript"), nullptr, proj);
+        check(ts.ok && ts.modules.empty(), "issue#14: sharedPrelude is a no-op for non-C# targets");
+    }
+
     // P4 — name / type resolution across the declaration surface.
     auto resolves = [&](const char* src, const std::string& name) {
         EmitResult r = compile(src, findTarget("csharp"));

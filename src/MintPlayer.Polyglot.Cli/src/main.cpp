@@ -560,6 +560,11 @@ int runBuild(const std::vector<std::string>& args) {
     // Read all inputs, canonicalize, and find the ROOTS — inputs not imported by another input. Compile only
     // roots (an imported-only library .pg is emitted within its importer's closure, never also as its own
     // entry), deduping modules shared across roots by output path.
+    // §4.5 / issue #14: a multi-file build is a C# PROJECT — hoist the shared prelude into one
+    // __polyglot_prelude.cs. Every root emits identical content there, so the writeDedup below collapses it
+    // to one file. (No-op for TS/Python/PHP, whose per-file prelude inline is collision-free.)
+    lib.sharedPrelude = true;
+
     struct In { fs::path path; std::string canon; std::string source; };
     std::vector<In> ins;
     for (const auto& p : inputs) {

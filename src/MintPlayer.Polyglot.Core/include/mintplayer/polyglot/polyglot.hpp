@@ -105,6 +105,12 @@ struct LibConfig {
     // consumer expose the generated types across assemblies without a hand-written public facade. C#-only
     // (TS already `export`s everything; Python/PHP have no equivalent), carried with the lib config.
     std::string access;
+    // §4.5 / issue #14: this compile is one unit of a multi-file C# PROJECT build (the CLI sets it when given
+    // 2+ inputs). When set, the C# backend hoists the shared runtime prelude (Option/Some/None + the
+    // PolyglotProgram wrapper) into a single reserved `__polyglot_prelude` file instead of inlining it, so N
+    // independent link roots don't each emit it (which collides as CS0101/CS8863 in one assembly). Off = the
+    // single-file behavior (prelude inlined) — byte-identical. C#-only; TS/Python/PHP inline it per file safely.
+    bool sharedPrelude = false;
 };
 
 // Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->
