@@ -34,29 +34,34 @@
     <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))" Command="chmod +x &quot;$(PolyglotTool)&quot;" />
   </Target>
 
+  <!-- §4.5 module linking: transpile the WHOLE .pg set in ONE CLI invocation (not batched per file). The CLI
+       links cross-module imports into references (each type/function defined once) and emits one flat .cs per
+       .pg module — so compiling them all into one assembly no longer hits CS0101. A per-file invocation would
+       double-emit shared library modules and clash on the C# `partial` wrapper. Output is flat (basename.cs),
+       so .pg filenames must be unique across the project (v1 — see PRD §3.B). -->
   <Target Name="PolyglotTranspile"
           BeforeTargets="CoreCompile"
           DependsOnTargets="_PolyglotVerifyTool"
           Condition="'@(PolyglotFile)' != ''"
           Inputs="@(PolyglotFile);$(PolyglotTool)"
-          Outputs="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)%(Filename).cs')">
+          Outputs="@(PolyglotFile->'$(PolyglotOutDir)%(Filename).cs')">
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>
       <_PolyglotLibArg Condition="'$(PolyglotLib)' != ''"> --lib &quot;$(PolyglotLib)&quot;</_PolyglotLibArg>
     </PropertyGroup>
-    <MakeDir Directories="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)')" />
-    <Exec Command="&quot;$(PolyglotTool)&quot; build &quot;%(PolyglotFile.FullPath)&quot; --target csharp --out &quot;$(PolyglotOutDir)%(PolyglotFile.RecursiveDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)" />
+    <MakeDir Directories="$(PolyglotOutDir)" />
+    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --target csharp --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)" />
   </Target>
 
   <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler
-       still needs the previously generated files in @(Compile). -->
+       still needs the previously generated files in @(Compile). One flat .cs per .pg module. -->
   <Target Name="_PolyglotAddGenerated"
           BeforeTargets="CoreCompile"
           AfterTargets="PolyglotTranspile"
           Condition="'@(PolyglotFile)' != ''">
     <ItemGroup>
-      <Compile Include="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)%(Filename).cs')" />
-      <FileWrites Include="@(PolyglotFile->'$(PolyglotOutDir)%(RecursiveDir)%(Filename).cs')" />
+      <Compile Include="@(PolyglotFile->'$(PolyglotOutDir)%(Filename).cs')" />
+      <FileWrites Include="@(PolyglotFile->'$(PolyglotOutDir)%(Filename).cs')" />
     </ItemGroup>
   </Target>
 

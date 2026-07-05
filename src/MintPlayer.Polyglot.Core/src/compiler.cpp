@@ -630,6 +630,18 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     return result;
 }
 
+std::vector<std::string> importSpecifiers(const std::string& source) {
+    std::vector<std::string> specs;
+    DiagnosticBag diags;
+    std::vector<Token> tokens = lex(source, diags);
+    if (diags.hasErrors()) return specs;
+    CompilationUnit unit = parse(tokens, diags);
+    if (diags.hasErrors()) return specs;
+    for (const auto& imp : unit.imports)
+        if (imp.path.rfind("std.", 0) != 0) specs.push_back(imp.path);
+    return specs;
+}
+
 EmitResult format(const std::string& source) {
     EmitResult result;
     DiagnosticBag diags;

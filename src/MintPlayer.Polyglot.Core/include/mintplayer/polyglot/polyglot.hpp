@@ -114,6 +114,11 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.
 EmitResult format(const std::string& source);
 
+// The non-std `import … from "spec"` specifiers a source declares (lex + parse only — no sema, no resolver).
+// The CLI uses this to build a multi-file project's import graph (which inputs are imported by another) so
+// it emits each linked module exactly once (§4.5). `std.*` specifiers are excluded (the inlined prelude).
+std::vector<std::string> importSpecifiers(const std::string& source);
+
 // Maps a SourcePos.fileId to the source it came from, so cross-module positions stay unambiguous after the
 // linker merges every module into one unit (§4.8). Index 0 is unknown/synthetic (the always-linked core
 // prelude + anything unstamped). analyze() assigns the entry file id 1 and each transitively loaded module

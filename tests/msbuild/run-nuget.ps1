@@ -98,6 +98,36 @@ Check (-not (Test-Path (Join-Path $down "obj/Debug/net8.0/polyglot"))) "a refere
 $downRun = dotnet run --project $down --no-build 2>&1
 Check ("$downRun".Trim() -eq "42") "downstream builds and runs untouched (prints 42)"
 
+# 5. Shared library (§4.5 module linking / issue #11 1.B): a project with two .pg files where one imports
+# the other. Under proper linking each type/function is defined once and referenced across files, so
+# compiling both generated .cs into one assembly must NOT hit CS0101 (the exact bug the inline model caused).
+$shared = Join-Path $work "Shared"
+dotnet new console -o $shared --framework net8.0 | Out-Null
+Copy-Item (Join-Path $work "nuget.config") (Join-Path $shared "nuget.config")
+@"
+class PgThing {
+  var v: i32
+  init(v: i32) { this.v = v }
+}
+fn twice(x: i32): i32 { return x * 2 }
+"@ | Set-Content (Join-Path $shared "nn.pg")
+@"
+import { twice, PgThing } from "./nn"
+fn compute(): i32 {
+  let t = PgThing(21)
+  return twice(t.v)
+}
+"@ | Set-Content (Join-Path $shared "game.pg")
+@"
+System.Console.WriteLine(PolyglotProgram.compute());
+"@ | Set-Content (Join-Path $shared "Program.cs")
+dotnet add $shared package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+$sharedBuild = dotnet build $shared --nologo -v q 2>&1 | Out-String
+Check ($LASTEXITCODE -eq 0 -and $sharedBuild -notmatch 'CS0101') "shared-library .pg imports compile into one assembly (no CS0101)"
+Check ((Test-Path (Join-Path $shared "obj/Debug/net8.0/polyglot/game.cs")) -and (Test-Path (Join-Path $shared "obj/Debug/net8.0/polyglot/nn.cs"))) "both modules emit one flat .cs each"
+$sharedRun = dotnet run --project $shared --no-build 2>&1
+Check ("$sharedRun".Trim() -eq "42") "the shared library is usable across .pg files (runs, prints 42)"
+
 if ($failures -eq 0) { Write-Host "`nP11 gate: all checks passed."; exit 0 }
 Write-Host "`nP11 gate: $failures check(s) FAILED." -ForegroundColor Red
 exit 1
