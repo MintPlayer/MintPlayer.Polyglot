@@ -1392,9 +1392,22 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             return;
         case ir::StmtKind::Let: {
             const auto& l = static_cast<const ir::Let&>(s);
-            line(localDecl(l.name, l.isMutable) + " = " + emitExpr(*l.init) + spec().stmtEnd);
+            // A bare `null` initializer gives the target no type to infer (C# `var x = null` is CS0815;
+            // issue #9 Bug 2). When the local has a declared type, emit it explicitly via localDeclTyped;
+            // else keep the idiomatic inferred form. Only C# declares a `localDeclTyped` row — TS/Python/PHP
+            // get "" back and fall through to `localDecl`, so their output is byte-unchanged.
+            std::string decl = localDecl(l.name, l.isMutable);
+            if (l.init && l.init->kind == ir::ExprKind::Null) {
+                std::string ty = renderType(l.type);
+                if (!ty.empty()) {
+                    std::string typed = localDeclTyped(l.name, l.isMutable, ty);
+                    if (!typed.empty()) decl = typed;
+                }
+            }
+            line(decl + " = " + emitExpr(*l.init) + spec().stmtEnd);
             return;
         }
+
         case ir::StmtKind::Yield: {
             const auto& y = static_cast<const ir::Yield&>(s);
             std::string v = y.value ? emitExpr(*y.value) : std::string{};

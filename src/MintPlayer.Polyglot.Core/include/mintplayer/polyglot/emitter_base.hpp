@@ -408,6 +408,12 @@ protected:
     std::string yieldStmt(const std::string& value, bool hasValue) {
         return specSubst(spec(), "yield", hasValue ? "value" : "empty", value);
     }
+    // A local decl that carries its declared type (`$T $x`), for when the initializer's type can't be
+    // inferred (e.g. C# `var x = null` -> CS0815; issue #9 Bug 2). Returns "" when the target declares no
+    // `localDeclTyped` row (TS/Python/PHP untyped locals), so the caller falls back to the untyped form.
+    std::string localDeclTyped(const std::string& name, bool isMutable, const std::string& type) {
+        return specSubstTX(spec(), "localDeclTyped", isMutable ? "mutable" : "const", type, specIdent(spec(), name));
+    }
     std::string rethrowStmt() { return spec().rethrow; }
 
 public:
