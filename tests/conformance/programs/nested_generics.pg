@@ -1,0 +1,24 @@
+// Issue #9 Bug 3 regression: two or more nested-generic (List<List<f64>>) parameters in one
+// signature. Before the parser fix (guard the generic-arg comma loop with pendingAngles_ == 0),
+// the SECOND such param failed with "expected ')'" — a single one parsed fine. Integer output
+// only, so C#/TS/Python are directly comparable.
+
+import { List } from "std.collections"
+
+class Layers {
+  var w1: List<List<f64>>
+  var w2: List<List<f64>>
+  init(w1: List<List<f64>>, w2: List<List<f64>>) {
+    this.w1 = w1
+    this.w2 = w2
+  }
+  fn rows(): i32 { return this.w1.count + this.w2.count }
+}
+
+fn main() {
+  var a: List<List<f64>> = [[1.0, 2.0], [3.0, 4.0]]
+  var b: List<List<f64>> = [[5.0]]
+  let net = Layers(a, b)
+  print(net.rows())     // 3
+  print(a[0].count)     // 2
+}
