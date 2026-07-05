@@ -1,0 +1,14 @@
+// Issue #9 Bug 1 regression: call-syntax primitive casts `i32(x)` / `f64(n)` / `i64(x)`.
+// These must emit identical code to the `(i32)x` prefix-cast form (covered by casts.pg) — before the
+// fix they emitted `new i32(x)` (C# CS0815 / TS runtime crash). Integer output only, cross-target safe.
+
+fn main() {
+  let x = 7
+  print(i32(f64(x) / 2.0))              // 3   (f64 3.5 -> i32, truncates)
+  print(i32(-7.9))                      // -7  (truncates toward zero)
+
+  let wide = i64(x)                     // i32 -> i64 (BigInt)
+  print(wide * wide)                    // 49
+  print(i32(1000000007i64 % 1000i64))   // 7   (i64 -> i32)
+  print(i64(f64(x) * f64(x)))           // 49  (f64 49.0 -> i64)
+}
