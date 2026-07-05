@@ -469,7 +469,11 @@ private:
         }
         TypeRef t = namedType(expect(TokKind::Identifier, "a type name").text);
         if (accept(TokKind::Lt)) { // generic args (nested `>>` split via acceptAngleClose)
-            do { t.args.push_back(parseType()); } while (accept(TokKind::Comma));
+            // Guard the comma with `pendingAngles_ == 0`: after a nested `List<f64>>` consumes `>>` and
+            // lends a `>` to close THIS level (pendingAngles_ > 0), the next token is a caller's separator
+            // comma, not another type-arg. Consuming it here parsed `b` as a third arg — the issue #9 Bug 3
+            // failure on `init(a: List<List<f64>>, b: List<List<f64>>)`. The two states are exclusive.
+            do { t.args.push_back(parseType()); } while (pendingAngles_ == 0 && accept(TokKind::Comma));
             expectAngleClose();
         }
         return t;
@@ -881,7 +885,9 @@ private:
                 // Generic construction / call: Name<TypeArgs>(args), e.g. List<i32>().
                 auto call = mk(ExprKind::Call, e->pos);
                 advance(); // '<'
-                do { call->typeArgs.push_back(parseType()); } while (accept(TokKind::Comma));
+                // Same pending-angle guard as parseTypeCore: a `>` borrowed to close this generic list
+                // (pendingAngles_ > 0) must not be preceded by consuming a caller's separator comma.
+                do { call->typeArgs.push_back(parseType()); } while (pendingAngles_ == 0 && accept(TokKind::Comma));
                 expectAngleClose();
                 expect(TokKind::LParen, "'('");
                 call->lhs = std::move(e);

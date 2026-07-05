@@ -50,8 +50,17 @@ function Test-Program($name, $stem, $cliArgs) {
     # Build quietly and run the assembly directly, so build diagnostics never mix into program stdout.
     & dotnet build (Join-Path $dir "$stem.csproj") -c Release -v quiet --nologo *> $null
     $dll = Join-Path $dir "bin\Release\net10.0\$stem.dll"
+    # Assert the generated C# actually compiled. Without this, a non-compiling program yields an empty
+    # stdout, and if the TS also fails (empty stdout) the "" == "" comparison FALSE-PASSES — the exact
+    # blind spot that let issue #9's codegen bugs through (compile the C#, don't just diff stdout).
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dll)) {
+        Write-Host "[FAIL] $name : generated C# did not compile"
+        return $false
+    }
     $cs = (& dotnet $dll 2>$null | Out-String).TrimEnd("`r","`n")
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $LASTEXITCODE)"; return $false }
     $ts = (& node (Join-Path $dir "$stem.ts") 2>$null | Out-String).TrimEnd("`r","`n")
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated TS crashed at runtime (exit $LASTEXITCODE)"; return $false }
 
     if ($cs -eq $ts) {
         Write-Host "[PASS] $name  ->  $($cs -replace "`r?`n", ' | ')"

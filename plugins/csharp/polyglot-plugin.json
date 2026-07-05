@@ -47,6 +47,10 @@
         "mutable": "var $x",
         "const": "var $x"
       },
+      "localDeclTyped": {
+        "mutable": "$T $x",
+        "const": "$T $x"
+      },
       "yield": {
         "value": "yield return $x;",
         "empty": "yield break;"

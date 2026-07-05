@@ -41,7 +41,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.1.4
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.2.0
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -407,6 +407,22 @@ strict-consumption defects, all root-fixed (TS plugin only, except one Core fact
 emit a TS-exhaustive `if/else if/else { throw }` chain while **guarded** catches keep the C#-faithful
 `__handled` fallthrough, switched by a new engine fact **`stmt.catchesHaveGuard`** (the sole Core change;
 all backends' stdout unchanged). CLI + NuGet → 0.1.4, typescript plugin → 0.2.0.
+**Release 0.2.0 ✅ (2026-07-05) — three v0.1.4 codegen/parse bugs (issue #9) + a systemic gate hardening**
+(PRD/plan: `docs/prd/issue-9-codegen/`; found live by the MintPlayer.AI FruitCake pilot; root causes from a
+4-agent investigation). All three type-checked cleanly but emitted broken code, and the stdout-only diff gate
+was blind to them. **Bug 1** — call-syntax primitive cast `i32(x)`/`f64(n)` emitted `new i32(x)` (the numeric
+scalars are extern-class prelude types, so `i32(x)` resolved as construction); fix rewrites it to the existing
+`(i32)x` Cast node in sema's `checkCall` (Core-only; also turns silent `i32()`/`i32(a,b)`/`i32(true)` into
+diagnostics). **Bug 2** — `var x: T? = null` dropped the type in C# (`var x = null;`, CS0815); fix adds a
+`localDeclTyped` (`$T $x`) seam so the `Let` emitter emits the declared type when the initializer is `null` and
+a type is renderable (Core `emitter_base` + a C#-only plugin row; TS/Py/PHP fall back byte-unchanged). **Bug 3**
+— 2+ nested-generic (`List<List<f64>>`) params failed to parse; fix guards the generic-arg comma loop with
+`pendingAngles_ == 0` so a `>` borrowed to close the outer generic isn't preceded by consuming a caller's
+separator comma (Core parser, 2 sites). **Systemic:** `run-diff.ps1`/`run-python.ps1` built the C# and ran the
+TS/Python but **discarded both outcomes**, so a symmetric double-failure (empty == empty) false-passed — now
+they assert the C# compiled and both runtimes exited 0; `run-python.ps1` + `run-emit.ps1` wired into
+`build-and-test.ps1`. New conformance programs: `casts_call.pg`, `nested_generics.pg`, `null_local.pg`. CLI +
+NuGet → **0.2.0**, csharp plugin → **0.2.2** (ts/py/php unchanged).
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
 LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 + 4–5 built — cross-platform CLI

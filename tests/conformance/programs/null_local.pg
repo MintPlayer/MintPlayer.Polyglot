@@ -1,0 +1,26 @@
+// Issue #9 Bug 2 regression: a mutable local with an explicit nullable annotation initialized to null.
+// Before the fix, C# emitted `var best = null;` (CS0815 — can't infer a type from null); now it emits the
+// declared type `Box? best = null;`. Covers a reference-type nullable AND a value-type nullable (i32?).
+// TS/Python output is byte-unchanged. Integer output only, cross-target safe.
+
+class Box {
+  var v: i32
+  init(v: i32) { this.v = v }
+}
+
+fn pick(create: bool): Box? {
+  var best: Box? = null
+  if create { best = Box(42) }
+  return best
+}
+
+fn main() {
+  let a = pick(true)
+  let b = pick(false)
+  print(if a != null { a!.v } else { -1 })   // 42
+  print(if b != null { b!.v } else { -1 })   // -1
+
+  var n: i32? = null
+  n = 5
+  print(n!)                                  // 5
+}

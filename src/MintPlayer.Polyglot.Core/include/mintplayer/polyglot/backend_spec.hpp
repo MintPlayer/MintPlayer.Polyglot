@@ -172,6 +172,27 @@ inline std::string specSubst(const BackendSpec& s, const std::string& table, con
     return it == t->second.end() ? x : substX(it->second, x);
 }
 
+// Substitute `type` into `$T` holes and `x` into `$x` holes (two-hole variant of substX).
+inline std::string substTX(const std::string& t, const std::string& type, const std::string& x) {
+    std::string out;
+    for (std::size_t i = 0; i < t.size();) {
+        if (t[i] == '$' && i + 1 < t.size() && t[i + 1] == 'T') { out += type; i += 2; }
+        else if (t[i] == '$' && i + 1 < t.size() && t[i + 1] == 'x') { out += x; i += 2; }
+        else out += t[i++];
+    }
+    return out;
+}
+
+// Two-hole variant of specSubst (`$T`=type, `$x`=x). Returns "" when the table or key is absent, so the
+// caller can fall back (a typed local decl has no single-string identity to return).
+inline std::string specSubstTX(const BackendSpec& s, const std::string& table, const std::string& key,
+                               const std::string& type, const std::string& x) {
+    auto t = s.tables.find(table);
+    if (t == s.tables.end()) return "";
+    auto it = t->second.find(key);
+    return it == t->second.end() ? std::string() : substTX(it->second, type, x);
+}
+
 // Apply the named escape map to `text`: at each position the longest declared source sequence wins
 // (2 chars, then 1); unmatched characters pass through. An unknown map name is the identity transform.
 inline std::string specEscape(const BackendSpec& s, const std::string& mapName, const std::string& text) {

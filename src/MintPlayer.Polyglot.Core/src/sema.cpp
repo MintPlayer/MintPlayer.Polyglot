@@ -1262,6 +1262,28 @@ private:
         if (e.lhs->kind != ExprKind::Name) { checkExpr(*e.lhs); return tUnknown(); }
 
         const std::string& name = e.lhs->text;
+        // Call-syntax primitive cast `i32(x)` / `f64(n)`: the numeric scalars are extern-class prelude types
+        // (so `i32.parse` resolves), which would otherwise resolve `i32(x)` as construction -> `new i32(x)`,
+        // invalid in every target (issue #9 Bug 1). Rewrite it into the identical `(i32)x` Cast node so it
+        // reuses the existing, correct Cast lowering/emission. Also turns the previously-silent bad forms
+        // (`i32()`, `i32(a,b)`, `i32(true)`) into diagnostics.
+        if (isNumericTypeName(tNamed(name))) {
+            if (e.args.size() != 1) {
+                diags_.error(e.pos, "cast to '" + name + "' expects a single argument");
+                return tNamed(name);
+            }
+            Ty fs = scalarTyOf(argTypes[0]);
+            if (fs == Ty::Bool || fs == Ty::String)
+                diags_.error(e.pos, std::string("cannot cast ") + tyName(fs) + " to numeric type '" + name + "'");
+            TypeRef target = tNamed(name);
+            resolveTypeRef(target, e.pos);
+            e.castType = target;
+            e.type = target;
+            e.lhs = std::move(e.args[0]); // replace the `i32` callee with the operand; `name` now dangles
+            e.args.clear();
+            e.kind = ExprKind::Cast;
+            return target;
+        }
         // `print` is the std.io `print<T>` function (import-only), but it keeps a printable-arg guard: its
         // generic signature accepts any T, yet a non-scalar would emit divergent output (C# ToString vs JS
         // String) — a §3 miscompile. Diagnose here, then fall through to normal resolution (so it's still

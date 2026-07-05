@@ -305,6 +305,13 @@ int main() {
     rejects("fn main() { let x = 1; x = 2; }\n", "sema: rejects assignment to immutable let");
     rejects("fn main() { if 1 { print(0); } }\n", "sema: rejects non-bool if condition");
 
+    // Issue #9 Bug 1 — call-syntax primitive cast `i32(x)` is a cast, not construction (used to emit
+    // `new i32(x)`). The happy path is casts_call.pg (conformance); here we lock in the diagnostics for the
+    // bad forms that previously emitted silently.
+    rejects("fn f(): i32 => i32()\n", "issue#9 Bug1: i32() with no argument is rejected");
+    rejects("fn f(x: i32, y: i32): i32 => i32(x, y)\n", "issue#9 Bug1: i32(a, b) with two arguments is rejected");
+    rejects("fn f(): i32 => i32(true)\n", "issue#9 Bug1: i32(true) from a bool source is rejected");
+
     // P4 — name / type resolution across the declaration surface.
     auto resolves = [&](const char* src, const std::string& name) {
         EmitResult r = compile(src, findTarget("csharp"));
