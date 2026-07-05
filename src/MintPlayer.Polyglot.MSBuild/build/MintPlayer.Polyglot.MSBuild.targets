@@ -57,15 +57,18 @@
     <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --target csharp --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)" />
   </Target>
 
-  <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler
-       still needs the previously generated files in @(Compile). One flat .cs per .pg module. -->
+  <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler still
+       needs the previously generated files in @(Compile). Glob every generated .cs rather than mapping one
+       per .pg: a 2+-.pg project also emits the shared __polyglot_prelude.cs (issue #14), which has no source
+       .pg. The glob compiles + cleans it too; a single-.pg project still yields just its one .cs. -->
   <Target Name="_PolyglotAddGenerated"
           BeforeTargets="CoreCompile"
           AfterTargets="PolyglotTranspile"
           Condition="'@(PolyglotFile)' != ''">
     <ItemGroup>
-      <Compile Include="@(PolyglotFile->'$(PolyglotOutDir)%(Filename).cs')" />
-      <FileWrites Include="@(PolyglotFile->'$(PolyglotOutDir)%(Filename).cs')" />
+      <_PolyglotGenerated Include="$(PolyglotOutDir)*.cs" />
+      <Compile Include="@(_PolyglotGenerated)" />
+      <FileWrites Include="@(_PolyglotGenerated)" />
     </ItemGroup>
   </Target>
 

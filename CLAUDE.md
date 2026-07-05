@@ -41,7 +41,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.3.0
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.3.1
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -446,6 +446,23 @@ a new `access` knob (`--access public` / pgconfig `"access"` / `<PolyglotAccess>
 default (byte-identical). New: `cast_float_int.pg`, `math_transcendental.pg`, `library/` (the issue-#11
 repro); run-diff/run-python cover multi-file dirs; run-nuget gains a shared-library fixture; unit tests for
 all four. CLI + NuGet → **0.3.0**; all four plugins → **0.3.0**.
+**Hotfix 0.3.1 ✅ (2026-07-05) — multi-`.pg` C# projects duplicated the runtime prelude** (PRD/plan:
+`docs/prd/issue-14-prelude/`; found live by the MintPlayer.AI M33 Snake port — a 2nd `.pg` alongside FruitCake;
+2-agent investigation). A 0.3.0 module-linking regression: a `.pg` that imports nothing takes `compile()`'s
+**single-file fast path** (`userOrigins` empty) and inlines the whole prelude (`Option`/`Some`/`None` + the
+`PolyglotProgram` wrapper) with `linked=false`; the multi-root CLI build runs *N* independent `compile()`s
+with only **path-keyed** dedup, so two independent files each emit the prelude → **CS0101** (duplicate
+`Option`/`PolyglotProgram`) + **CS8863** (the param-list `record`s can't be `partial`). The run-nuget
+shared-library fixture missed it (its two `.pg` *import* each other → one root). **Fix (C#-only):** a multi-file
+project build (`LibConfig::sharedPrelude`, set by the CLI's multi-input branch) hoists the `"<prelude>"`-origin
+decls into one reserved **`__polyglot_prelude.cs`** and emits every module with `linked=true` (the `partial`
+wrappers already exist); every root emits a byte-identical prelude file so the existing `writeDedup` collapses
+it to one. Global-namespace types + `partial` → no `using`, **no plugin change**. Single-`.pg` and all
+TS/Python/PHP output stay **byte-identical** (the split gates on C# + multi-input). MSBuild `_PolyglotAddGenerated`
+now globs `$(PolyglotOutDir)*.cs` so the prelude file is compiled + cleaned. `run-nuget.ps1` gains an
+independent-multi-`.pg` fixture (phys.pg + snake.pg → one assembly, no CS0101/CS8863, prints 3, one
+`__polyglot_prelude.cs`); unit tests for the split. Retires the 0.3.0 "one C# entry per assembly" limitation.
+CLI + NuGet → **0.3.1**; plugins unchanged (**0.3.0**).
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
 LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 + 4–5 built — cross-platform CLI

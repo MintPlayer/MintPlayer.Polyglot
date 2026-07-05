@@ -242,6 +242,10 @@ void mergeDecls(CompilationUnit& mod, CompilationUnit& root, const std::string& 
 // The origin sentinel for embedded std/core/lib decls — never emitted as their own module file (§4.5).
 const char* kPreludeOrigin = "<prelude>";
 
+// The reserved basename of the shared C# prelude file (issue #14): when a multi-file C# project build hoists
+// the prelude out, all roots emit this one file (identical content -> the CLI's writeDedup collapses it).
+const char* kPreludeBasename = "__polyglot_prelude";
+
 // Module linking (§4.5): what each module imports from other USER modules, so emission can re-emit the
 // cross-module reference (a target import statement) instead of the inlined copy. Keyed by the importer's
 // canonical id ("" = the entry); std/lib specifiers are excluded (they're the inlined prelude). `fromCanon`
@@ -582,7 +586,12 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     for (const auto& d : unit.functions)  note(d.originModule);
     for (const auto& d : unit.extensions) note(d.originModule);
 
-    if (userOrigins.empty()) { // single-file: unchanged
+    // §4.5 / issue #14: for a multi-file C# PROJECT build, hoist the shared prelude (Option/Some/None + the
+    // PolyglotProgram wrapper) into one reserved `__polyglot_prelude` file instead of inlining it, so N
+    // independent link roots don't each emit it (CS0101/CS8863 in one assembly). C#-only.
+    const bool splitPrelude = (target.name() == "csharp") && lib.sharedPrelude;
+
+    if (userOrigins.empty() && !splitPrelude) { // single-file: unchanged (byte-identical)
         ir::Module module = lower(unit, target.name());
         module.access = lib.access; // C# accessibility knob (empty = target default -> byte-identical)
         result.code = target.backend()->emit(module);
@@ -590,13 +599,18 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         return result;
     }
 
-    // Multi-module: emit one file per user module + the entry, each re-lowered fresh (lowering is pure; the
-    // Lowerer needs the full type universe, so we lower the whole unit and then keep only this file's decls).
-    // Basenames must be unique across the closure (v1 emits flat — see PRD §3.B).
+    // Partitioned emit: one file per user module + the entry (+ a shared prelude file for C# project builds),
+    // each re-lowered fresh (lowering is pure; the Lowerer needs the full type universe, so we lower the whole
+    // unit and then keep only this file's decls). Basenames must be unique across the closure (flat output).
     std::map<std::string, std::string> baseByCanon; // canon -> emitted basename
     std::set<std::string> seenBase;
     for (const auto& canon : userOrigins) {
         std::string base = moduleBasename(canon);
+        if (base == kPreludeBasename) {
+            diags.error({}, std::string("module '") + canon + "' uses the reserved basename '" + kPreludeBasename + "'");
+            result.diagnostics = diags.items();
+            return result;
+        }
         if (!seenBase.insert(base).second) {
             diags.error({}, "module linking: two imported modules share the basename '" + base +
                                 "' (v1 emits flat output; give them distinct file names)");
@@ -606,11 +620,9 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         baseByCanon[canon] = base;
     }
 
-    const bool preludeEverywhere = target.name() != "csharp"; // C#: prelude only in the entry (partial + one assembly)
-    auto emitFile = [&](const std::string& fileOrigin) -> std::string {
-        std::set<std::string> keep;
-        keep.insert(fileOrigin);
-        if (fileOrigin.empty() || preludeEverywhere) keep.insert(kPreludeOrigin);
+    const bool preludeEverywhere = target.name() != "csharp"; // C#: prelude in the entry (or its own file when split)
+    // Emit one file: re-lower the unit, keep only `keep`-origin decls, set link/access, resolve imports.
+    auto emitKeep = [&](const std::set<std::string>& keep, const std::string& importOrigin) -> std::string {
         ir::Module m = lower(unit, target.name());
         auto prune = [&](auto& vec) {
             vec.erase(std::remove_if(vec.begin(), vec.end(),
@@ -621,13 +633,22 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         m.linked = true;
         m.access = lib.access;
-        m.imports = buildImports(importGraph, fileOrigin, baseByCanon, target.name());
+        m.imports = buildImports(importGraph, importOrigin, baseByCanon, target.name());
         return target.backend()->emit(m);
+    };
+    auto emitFile = [&](const std::string& fileOrigin) -> std::string {
+        std::set<std::string> keep{fileOrigin};
+        // The prelude folds into the entry inline UNLESS it's hoisted to its own file (splitPrelude); non-C#
+        // targets inline it into every file (preludeEverywhere), each file being its own module scope.
+        if ((fileOrigin.empty() && !splitPrelude) || preludeEverywhere) keep.insert(kPreludeOrigin);
+        return emitKeep(keep, fileOrigin);
     };
 
     result.code = emitFile(""); // the entry file (the CLI names it after the input)
     for (const auto& canon : userOrigins)
         result.modules.push_back({baseByCanon[canon], emitFile(canon)});
+    if (splitPrelude) // the shared runtime prelude, emitted once (identical across roots -> CLI writeDedup collapses it)
+        result.modules.push_back({kPreludeBasename, emitKeep({kPreludeOrigin}, kPreludeBasename)});
     result.ok = true;
     return result;
 }

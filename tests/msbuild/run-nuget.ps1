@@ -128,6 +128,28 @@ Check ((Test-Path (Join-Path $shared "obj/Debug/net8.0/polyglot/game.cs")) -and 
 $sharedRun = dotnet run --project $shared --no-build 2>&1
 Check ("$sharedRun".Trim() -eq "42") "the shared library is usable across .pg files (runs, prints 42)"
 
+# 6. Independent multi-.pg (issue #14): two .pg files that do NOT import each other (the FruitCake + Snake
+# shape). Each is a separate link root, so the auto-emitted runtime prelude (Option/Some/None + the
+# PolyglotProgram wrapper) must be hoisted into ONE shared __polyglot_prelude.cs — not duplicated per file —
+# or the assembly fails with CS0101 (duplicate Option/PolyglotProgram) + CS8863 (record param lists can't be
+# partial). This is the multi-ROOT case run-nuget's shared-library fixture (5) does not exercise.
+$multi = Join-Path $work "MultiPg"
+dotnet new console -o $multi --framework net8.0 | Out-Null
+Copy-Item (Join-Path $work "nuget.config") (Join-Path $multi "nuget.config")
+"fn step(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $multi "phys.pg")
+"fn tick(): i32 {`n  return 2`n}`n" | Set-Content (Join-Path $multi "snake.pg")
+@"
+System.Console.WriteLine(PolyglotProgram.step() + PolyglotProgram.tick());
+"@ | Set-Content (Join-Path $multi "Program.cs")
+dotnet add $multi package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+$multiBuild = dotnet build $multi --nologo -v q 2>&1 | Out-String
+Check ($LASTEXITCODE -eq 0 -and $multiBuild -notmatch 'CS0101' -and $multiBuild -notmatch 'CS8863') `
+    "two independent .pg files compile into one assembly (no CS0101/CS8863 - issue #14)"
+$multiRun = dotnet run --project $multi --no-build 2>&1
+Check ("$multiRun".Trim() -eq "3") "independent multi-.pg project runs (prints 3)"
+Check (Test-Path (Join-Path $multi "obj/Debug/net8.0/polyglot/__polyglot_prelude.cs")) `
+    "the shared runtime prelude is emitted once as __polyglot_prelude.cs"
+
 if ($failures -eq 0) { Write-Host "`nP11 gate: all checks passed."; exit 0 }
 Write-Host "`nP11 gate: $failures check(s) FAILED." -ForegroundColor Red
 exit 1
