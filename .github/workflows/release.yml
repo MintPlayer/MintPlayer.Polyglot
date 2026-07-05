@@ -64,6 +64,13 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # run-diff runs the emitted TS via Node's type-stripping (incl. multi-module linked programs, which
+      # import sibling `.ts` files) - pin Node instead of trusting the runner image (matches build-linux).
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Gate - differential conformance (C# vs TS)
         shell: pwsh
         run: pwsh tests/conformance/run-diff.ps1 -Cli x64/Release/MintPlayer.Polyglot.Cli.exe

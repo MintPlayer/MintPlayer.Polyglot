@@ -61,22 +61,20 @@ function Test-Program($name, $stem, $cliArgs) {
     if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $LASTEXITCODE)"; return $false }
 
     # §4.5 module linking: a multi-module program emits several .ts files with extensionless cross-imports
-    # (`import { X } from "./dep"`) — bundler-idiomatic, but Node's ESM loader can't resolve extensionless
-    # sibling specifiers when running a .ts directly. Compile the module set to CommonJS and run the entry
-    # .js (a harness-only resolution step; the emitted product output stays extensionless). A single-file
-    # program runs directly via Node's type-stripping (fast, no tsc).
+    # (`import { X } from "./dep"`) — bundler-idiomatic, but Node's ESM loader can't resolve an extensionless
+    # sibling specifier when running a .ts directly. Rewrite the relative specifiers in the emitted files to
+    # add the `.ts` extension, then run the entry with Node's type-stripping — NODE-ONLY (no tsc, so this gate
+    # keeps its single dependency and runs on any Node-equipped CI). The rewrite is harness-local; the emitted
+    # product output stays extensionless (its strict-clean-library shape is gated by run-library.ps1).
     $tsFiles = @(Get-ChildItem $dir -Filter *.ts)
     if ($tsFiles.Count -gt 1) {
-        @'
-{ "compilerOptions": { "module": "commonjs", "target": "ES2020", "moduleResolution": "node", "skipLibCheck": true, "types": [] }, "include": ["**/*.ts"] }
-'@ | Set-Content (Join-Path $dir "tsconfig.json")
-        & tsc -p (Join-Path $dir "tsconfig.json") *> $null   # ignore type-only errors (no @types/node); assert emit
-        $entryJs = Join-Path $dir "$stem.js"
-        if (-not (Test-Path $entryJs)) { Write-Host "[FAIL] $name : linked TS did not compile to JS"; return $false }
-        $ts = (& node $entryJs 2>$null | Out-String).TrimEnd("`r","`n")
-    } else {
-        $ts = (& node (Join-Path $dir "$stem.ts") 2>$null | Out-String).TrimEnd("`r","`n")
+        foreach ($f in $tsFiles) {
+            $c = Get-Content $f.FullName -Raw
+            $c = [regex]::Replace($c, 'from "(\./[^"]+)"', 'from "$1.ts"')
+            Set-Content $f.FullName -Value $c -NoNewline
+        }
     }
+    $ts = (& node (Join-Path $dir "$stem.ts") 2>$null | Out-String).TrimEnd("`r","`n")
     if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated TS crashed at runtime (exit $LASTEXITCODE)"; return $false }
 
     if ($cs -eq $ts) {
