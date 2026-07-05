@@ -1,6 +1,7 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 
 #include <algorithm>
+#include <map>
 #include <optional>
 #include <unordered_set>
 
@@ -223,17 +224,30 @@ const StdModule STD_MODULES[] = {
 const char* kCoreModuleName = "std.core";
 
 // Append all top-level declarations of a loaded module into the root unit (the module's own `imports` were
-// already processed by the caller). Output stays single-file per target: everything lands in one unit.
-void mergeDecls(CompilationUnit& mod, CompilationUnit& root) {
-    for (auto& c : mod.classes)    root.classes.push_back(std::move(c));
-    for (auto& r : mod.records)    root.records.push_back(std::move(r));
-    for (auto& e : mod.enums)      root.enums.push_back(std::move(e));
-    for (auto& u : mod.unions)     root.unions.push_back(std::move(u));
-    for (auto& i : mod.interfaces) root.interfaces.push_back(std::move(i));
-    for (auto& v : mod.values)     root.values.push_back(std::move(v));
-    for (auto& f : mod.functions)  root.functions.push_back(std::move(f));
-    for (auto& e : mod.extensions) root.extensions.push_back(std::move(e)); // e.g. std.strings' bound methods
+// already processed by the caller). Everything lands in one unit for sema; module linking (§4.5) later
+// partitions emission back out by `originModule`, stamped here: a user module's canonical path, or the
+// "<prelude>" sentinel for embedded std/core/lib decls (which are never emitted as their own file).
+void mergeDecls(CompilationUnit& mod, CompilationUnit& root, const std::string& origin) {
+    for (auto& c : mod.classes)    { c.originModule = origin; root.classes.push_back(std::move(c)); }
+    for (auto& r : mod.records)    { r.originModule = origin; root.records.push_back(std::move(r)); }
+    for (auto& e : mod.enums)      { e.originModule = origin; root.enums.push_back(std::move(e)); }
+    for (auto& u : mod.unions)     { u.originModule = origin; root.unions.push_back(std::move(u)); }
+    for (auto& i : mod.interfaces) { i.originModule = origin; root.interfaces.push_back(std::move(i)); }
+    for (auto& v : mod.values)     { v.originModule = origin; root.values.push_back(std::move(v)); }
+    for (auto& f : mod.functions)  { f.originModule = origin; root.functions.push_back(std::move(f)); }
+    for (auto& e : mod.extensions) { e.originModule = origin; root.extensions.push_back(std::move(e)); } // e.g. std.strings
 }
+
+// The origin sentinel for embedded std/core/lib decls — never emitted as their own module file (§4.5).
+const char* kPreludeOrigin = "<prelude>";
+
+// Module linking (§4.5): what each module imports from other USER modules, so emission can re-emit the
+// cross-module reference (a target import statement) instead of the inlined copy. Keyed by the importer's
+// canonical id ("" = the entry); std/lib specifiers are excluded (they're the inlined prelude). `fromCanon`
+// is the imported module's canonical id (its emitted basename derives from it); `names` is the source's own
+// `{ a, b as c }` group.
+struct ResolvedImport { std::string fromCanon; std::vector<ImportName> names; };
+using ImportGraph = std::map<std::string, std::vector<ResolvedImport>>;
 
 void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, DiagnosticBag& diags) {
     if (imp.names.empty()) return; // namespace / bare import: nothing to validate
@@ -254,15 +268,17 @@ void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, Diag
 // through `resolver`. `visited` dedups; `stack` (the in-progress chain) detects import cycles.
 void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::string& selfPath,
                  ModuleResolver* resolver, DiagnosticBag& diags,
-                 std::unordered_set<std::string>& visited, std::vector<std::string>& stack, SourceMap* src) {
+                 std::unordered_set<std::string>& visited, std::vector<std::string>& stack, SourceMap* src,
+                 ImportGraph* graph) {
     stack.push_back(selfPath);
     for (const auto& imp : unit.imports) {
         std::string source, canon;
-        if (imp.path.rfind("std.", 0) == 0) { // first-party std: embedded, no IO
-            const char* src = nullptr;
-            for (const auto& m : STD_MODULES) if (imp.path == m.path) src = m.source;
-            if (!src) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
-            source = src;
+        bool isStd = imp.path.rfind("std.", 0) == 0;
+        if (isStd) { // first-party std: embedded, no IO
+            const char* stdSrc = nullptr;
+            for (const auto& m : STD_MODULES) if (imp.path == m.path) stdSrc = m.source;
+            if (!stdSrc) { diags.error(imp.pos, "unknown module '" + imp.path + "'"); continue; }
+            source = stdSrc;
             canon = imp.path;
         } else { // user module: ask the resolver (none => unresolvable)
             std::optional<ResolvedModule> r = resolver ? resolver->resolve(imp.path, selfPath) : std::nullopt;
@@ -277,6 +293,9 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
             diags.error(imp.pos, "import cycle: " + chain + canon);
             continue;
         }
+        // §4.5 linking: record every USER cross-module reference (even a re-import of an already-loaded
+        // module) so the importer emits an import statement for it. std imports are the inlined prelude.
+        if (!isStd && graph) (*graph)[selfPath].push_back({canon, imp.names});
         if (!visited.insert(canon).second) continue; // already loaded (imported more than once)
 
         int fileId = src ? src->add(canon) : 0; // stamp this module's tokens so its positions stay unambiguous
@@ -286,8 +305,8 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
         if (diags.hasErrors()) return;
 
         validateImportNames(imp, mod, diags);
-        loadImports(root, mod, canon, resolver, diags, visited, stack, src); // dependencies first (post-order)
-        mergeDecls(mod, root);
+        loadImports(root, mod, canon, resolver, diags, visited, stack, src, graph); // dependencies first (post-order)
+        mergeDecls(mod, root, isStd ? kPreludeOrigin : canon); // std -> inlined prelude; user module -> its canon
     }
     stack.pop_back();
 }
@@ -303,15 +322,17 @@ void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags, SourceMap* src)
     std::unordered_set<std::string> have;
     for (const auto& c : unit.classes) have.insert(c.name);
     for (const auto& u : unit.unions)  have.insert(u.name);
-    for (auto& c : core.classes) if (!have.count(c.name)) unit.classes.push_back(std::move(c));
-    for (auto& u : core.unions)  if (!have.count(u.name)) unit.unions.push_back(std::move(u));
+    for (auto& c : core.classes) if (!have.count(c.name)) { c.originModule = kPreludeOrigin; unit.classes.push_back(std::move(c)); }
+    for (auto& u : core.unions)  if (!have.count(u.name)) { u.originModule = kPreludeOrigin; unit.unions.push_back(std::move(u)); }
 }
 
-// Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports).
-void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags, SourceMap* src) {
+// Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports). `graph` (optional)
+// collects the user cross-module import edges for §4.5 linking; nullptr = don't record (e.g. the lib prelude).
+void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags, SourceMap* src,
+                 ImportGraph* graph = nullptr) {
     std::unordered_set<std::string> visited;
     std::vector<std::string> stack;
-    loadImports(unit, unit, "", resolver, diags, visited, stack, src);
+    loadImports(unit, unit, "", resolver, diags, visited, stack, src, graph);
 }
 
 // A stable identity string for a type (so a lib function only shadows a user function of the SAME signature,
@@ -360,14 +381,14 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
     for (const auto& f : unit.functions)  fns.insert(fnSigKey(f.name, f.params));
     for (const auto& e : unit.extensions) exts.insert(e.receiver.name + "." + e.name);
 
-    for (auto& d : staging.records)    if (!types.count(d.name)) unit.records.push_back(std::move(d));
-    for (auto& d : staging.classes)    if (!types.count(d.name)) unit.classes.push_back(std::move(d));
-    for (auto& d : staging.interfaces) if (!types.count(d.name)) unit.interfaces.push_back(std::move(d));
-    for (auto& d : staging.enums)      if (!types.count(d.name)) unit.enums.push_back(std::move(d));
-    for (auto& d : staging.unions)     if (!types.count(d.name)) unit.unions.push_back(std::move(d));
-    for (auto& v : staging.values)     if (!values.count(v.name)) unit.values.push_back(std::move(v));
-    for (auto& f : staging.functions)  if (!fns.count(fnSigKey(f.name, f.params))) unit.functions.push_back(std::move(f));
-    for (auto& e : staging.extensions) if (!exts.count(e.receiver.name + "." + e.name)) unit.extensions.push_back(std::move(e));
+    for (auto& d : staging.records)    if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.records.push_back(std::move(d)); }
+    for (auto& d : staging.classes)    if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.classes.push_back(std::move(d)); }
+    for (auto& d : staging.interfaces) if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.interfaces.push_back(std::move(d)); }
+    for (auto& d : staging.enums)      if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.enums.push_back(std::move(d)); }
+    for (auto& d : staging.unions)     if (!types.count(d.name)) { d.originModule = kPreludeOrigin; unit.unions.push_back(std::move(d)); }
+    for (auto& v : staging.values)     if (!values.count(v.name)) { v.originModule = kPreludeOrigin; unit.values.push_back(std::move(v)); }
+    for (auto& f : staging.functions)  if (!fns.count(fnSigKey(f.name, f.params))) { f.originModule = kPreludeOrigin; unit.functions.push_back(std::move(f)); }
+    for (auto& e : staging.extensions) if (!exts.count(e.receiver.name + "." + e.name)) { e.originModule = kPreludeOrigin; unit.extensions.push_back(std::move(e)); }
 }
 
 } // namespace
@@ -385,10 +406,10 @@ std::string embeddedModuleSource(const std::string& name) {
 // AST for tooling). Bails between passes on the first error. `model`/`req` are forwarded to `check` so the
 // LSP path can request a semantic model; `compile` passes nullptr and pays nothing.
 bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfig& lib, DiagnosticBag& diags,
-                 SemanticModel* model, const SemanticRequest* req, SourceMap* src) {
-    linkCoreModule(unit, diags, src);               if (diags.hasErrors()) return false; // Error/Iterable (no import)
-    linkModules(unit, resolver, diags, src);        if (diags.hasErrors()) return false; // imported std + user modules
-    linkLibModules(unit, lib, resolver, diags, src); if (diags.hasErrors()) return false; // ambient prelude
+                 SemanticModel* model, const SemanticRequest* req, SourceMap* src, ImportGraph* graph = nullptr) {
+    linkCoreModule(unit, diags, src);                     if (diags.hasErrors()) return false; // Error/Iterable (no import)
+    linkModules(unit, resolver, diags, src, graph);       if (diags.hasErrors()) return false; // imported std + user modules
+    linkLibModules(unit, lib, resolver, diags, src);      if (diags.hasErrors()) return false; // ambient prelude (not recorded)
     check(unit, diags, model, req);
     return !diags.hasErrors();
 }
@@ -496,7 +517,8 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     CompilationUnit unit = parse(tokens, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
-    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr)) { result.diagnostics = diags.items(); return result; }
+    ImportGraph importGraph; // §4.5: user cross-module import edges, keyed by importer ("" = entry)
+    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr, &importGraph)) { result.diagnostics = diags.items(); return result; }
 
     injectStdOverlays(unit, *target.backend()); // the plugin's std arms land on the skeletons (P19 s9b)
 

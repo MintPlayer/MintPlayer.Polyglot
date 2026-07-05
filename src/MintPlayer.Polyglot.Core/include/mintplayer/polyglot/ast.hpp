@@ -179,6 +179,7 @@ struct FunctionDecl {
     bool isExpect = false;         // `expect fn` — a capability signature with no body (§4.4)
     std::string actualTarget;      // `actual(<target>) fn` — the per-target implementation; empty otherwise
     bool isAsync = false;          // `async fn` — a coroutine; each backend wraps the return in Task/Promise/async def (§4.7)
+    std::string originModule;      // module linking (§4.5): "" = entry-own; a canonical path = imported user module; "<prelude>" = core/lib/std
 };
 
 // A per-target call-site binding for a method/property: raw target code with `$this` (the receiver)
@@ -221,6 +222,7 @@ struct RecordDecl {
     std::vector<Param> fields;           // positional fields
     std::vector<TypeRef> bases;          // implemented interfaces
     std::vector<Member> members;         // optional body
+    std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
 };
 struct ClassDecl {
     std::vector<std::string> modifiers;
@@ -232,6 +234,7 @@ struct ClassDecl {
     std::vector<Member> members;
     bool isExtern = false;               // `extern class`: native-backed std type; not emitted (only its bindings)
     std::vector<TargetBinding> typeBindings; // `extern class`: the `type { actual… }` per-target spelling arms
+    std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
 };
 struct InterfaceDecl {
     std::string name;
@@ -240,6 +243,7 @@ struct InterfaceDecl {
     std::vector<GenericParam> generics;
     std::vector<TypeRef> bases;
     std::vector<Member> members;
+    std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
 };
 struct ExtensionDecl {                   // `extension fn Receiver.name<...>(...): ret body`
     TypeRef receiver;
@@ -252,6 +256,7 @@ struct ExtensionDecl {                   // `extension fn Receiver.name<...>(...
     ExprPtr exprBody;
     bool exprBodied = false;
     std::vector<TargetBinding> bindings; // per-target FFI arms (a bound method on an existing type, e.g. string)
+    std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
 };
 struct ValueDecl {                       // top-level `const` / `let`
     bool isConst = false;
@@ -261,6 +266,7 @@ struct ValueDecl {                       // top-level `const` / `let`
     TypeRef type;
     bool hasType = false;
     ExprPtr init;
+    std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
 };
 
 struct EnumCase {
@@ -274,6 +280,7 @@ struct EnumDecl {
     SourcePos pos;
     SourcePos namePos;                   // the type-name identifier (go-to-def / semantic-token anchor)
     std::vector<EnumCase> cases;
+    std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
 };
 
 struct UnionCase {
@@ -287,6 +294,7 @@ struct UnionDecl {
     SourcePos namePos;                   // the type-name identifier (go-to-def / semantic-token anchor)
     std::vector<GenericParam> generics;  // `union Option<T> { … }`
     std::vector<UnionCase> cases;
+    std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
 };
 
 struct ImportName {                  // one entry of a `{ a, b as c }` group
