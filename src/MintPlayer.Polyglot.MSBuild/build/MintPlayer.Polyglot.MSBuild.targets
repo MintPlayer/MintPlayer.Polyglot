@@ -48,9 +48,13 @@
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>
       <_PolyglotLibArg Condition="'$(PolyglotLib)' != ''"> --lib &quot;$(PolyglotLib)&quot;</_PolyglotLibArg>
+      <!-- PolyglotAccess=public emits `public` on the generated C# types (usable across assemblies with no
+           hand-written facade); unset keeps C#'s modifier-less default (internal). -->
+      <_PolyglotAccessArg></_PolyglotAccessArg>
+      <_PolyglotAccessArg Condition="'$(PolyglotAccess)' != ''"> --access &quot;$(PolyglotAccess)&quot;</_PolyglotAccessArg>
     </PropertyGroup>
     <MakeDir Directories="$(PolyglotOutDir)" />
-    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --target csharp --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)" />
+    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --target csharp --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)" />
   </Target>
 
   <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler

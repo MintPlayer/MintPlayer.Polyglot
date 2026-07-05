@@ -131,6 +131,12 @@ public:
     std::string generics(const std::vector<ir::GenericParam>& gs) const;
     std::string where(const std::vector<ir::GenericParam>& gs) const;
 
+    // Requested accessibility of emitted top-level declarations (LibConfig::access, set per-emit from
+    // ir::Module::access). `accessPrefix()` is the ready-to-emit modifier ("public "/"internal ") or "" for
+    // the target default — the `{"fn":"access"}` decl builtin returns it, so it is byte-identical when unset.
+    std::string access;
+    std::string accessPrefix() const { return access.empty() ? std::string() : access + " "; }
+
 protected:
     SpecFn specFn_;
 };

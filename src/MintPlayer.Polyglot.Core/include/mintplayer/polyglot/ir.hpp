@@ -462,6 +462,7 @@ struct Module {
     std::vector<ExternType> externTypes; // native-backed `extern class` type/ctor spellings (see ExternType)
     std::vector<ModuleImport> imports;   // §4.5: this file's cross-module imports (empty for single-file builds)
     bool linked = false;                 // §4.5: this is one file of a multi-module build (drives C# `partial`)
+    std::string access;                  // requested accessibility for emitted C# types ("public"/"internal"); "" = target default
 };
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).

@@ -83,7 +83,7 @@ const std::unordered_set<std::string>& fnCatalog() {
     static const std::unordered_set<std::string> names = {
         "intSuffix", "escapeString", "opSpelling", "ident", "mangleName", "escape", "wrap", "table",
         "subst", "require", "inlineBlock", // shared expression catalog
-        "generics", "where", "mangle",     // declaration-context catalog
+        "generics", "where", "mangle", "access", // declaration-context catalog (`access` = the requested accessibility modifier)
         "substExtern",                     // type-context catalog (extern-class template substitution)
     };
     return names;

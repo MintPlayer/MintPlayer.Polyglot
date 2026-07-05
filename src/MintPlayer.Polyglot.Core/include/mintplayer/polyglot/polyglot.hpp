@@ -100,6 +100,11 @@ struct LibConfig {
     // pgconfig `forbiddenIdentifiers` (P19 design note 7): (target-or-"*", name) pairs refused by checkReservedNames
     // when compiling for a matching target. Project policy, carried with the lib config for plumbing economy.
     std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;
+    // Requested accessibility of emitted top-level C# declarations ("public" / "internal"). Empty = the target
+    // default (C# modifier-less top-level types are `internal`), which keeps output byte-identical. Lets a
+    // consumer expose the generated types across assemblies without a hand-written public facade. C#-only
+    // (TS already `export`s everything; Python/PHP have no equivalent), carried with the lib config.
+    std::string access;
 };
 
 // Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->

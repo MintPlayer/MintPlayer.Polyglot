@@ -101,6 +101,7 @@ struct PgConfig {
     bool found = false;
     std::string root; // absolute, resolved against the config's directory
     std::string lib;  // comma-joined lib names
+    std::string access; // emitted C# accessibility ("public"/"internal"); empty = target default
     std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
     std::vector<std::pair<std::string, std::string>> dependencies; // target -> source spec ("file:<dir>")
     // project-policy identifier bans (P19 slices 13-15): (target-or-"*", name) fed to checkReservedNames.
@@ -119,6 +120,7 @@ PgConfig loadPgConfig(const fs::path& startDir) {
             std::string r = v["root"].asString();
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
+            pc.access = v["access"].asString();
             for (const auto& e : v["targets"].items())
                 if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
             for (const auto& kv : v["dependencies"].members)
@@ -406,12 +408,19 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
             continue; // last-good outputs stay in place
         }
         if (checkOnly) continue;
+        const std::string ext = h.backend()->fileExtension();
         fs::path out = outDirArg / input.stem();
-        out += h.backend()->fileExtension();
-        if (!writeFile(out, result.code))
-            emitTopLevel("cannot write '" + out.string() + "'");
-        else
-            std::cout << "  -> " << out.string() << "\n";
+        out += ext;
+        if (!writeFile(out, result.code)) { emitTopLevel("cannot write '" + out.string() + "'"); continue; }
+        std::cout << "  -> " << out.string() << "\n";
+        // §4.5 module linking: also (re)write each imported user module's file, so editing an imported .pg
+        // refreshes its own output — the entry file no longer inlines it.
+        for (const auto& mf : result.modules) {
+            fs::path mout = outDirArg / mf.basename;
+            mout += ext;
+            if (!writeFile(mout, mf.code)) { emitTopLevel("cannot write '" + mout.string() + "'"); continue; }
+            std::cout << "  -> " << mout.string() << "\n";
+        }
     }
 
     for (const auto& p : resolver.loaded()) c.watched.push_back(p);
@@ -461,6 +470,7 @@ int runBuild(const std::vector<std::string>& args) {
     fs::path root;      // workspace root for logical-name imports; empty => input's parent dir
     std::string target; // empty => both
     std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
+    std::string accessArg; // --access public|internal (C# emitted-type accessibility)
     bool watch = false;
 
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -473,6 +483,8 @@ int runBuild(const std::vector<std::string>& args) {
             root = args[++i];
         } else if (a == "--lib" && i + 1 < args.size()) {
             libArg = args[++i];
+        } else if (a == "--access" && i + 1 < args.size()) {
+            accessArg = args[++i];
         } else if (a == "--watch") {
             watch = true;
         } else if (!a.empty() && a[0] == '-') {
@@ -504,6 +516,11 @@ int runBuild(const std::vector<std::string>& args) {
 
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
+    lib.access = !accessArg.empty() ? accessArg : pc.access; // --access wins over pgconfig "access"
+    if (!lib.access.empty() && lib.access != "public" && lib.access != "internal") {
+        std::cerr << "polyglot: --access must be 'public' or 'internal' (got '" << lib.access << "')\n";
+        return 64;
+    }
 
     resolveConfiguredTargets(pc); // pgconfig `dependencies` (file:) + the install cache (P19 slices 10-11)
 

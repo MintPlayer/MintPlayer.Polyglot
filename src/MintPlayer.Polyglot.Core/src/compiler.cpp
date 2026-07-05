@@ -584,6 +584,7 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
 
     if (userOrigins.empty()) { // single-file: unchanged
         ir::Module module = lower(unit, target.name());
+        module.access = lib.access; // C# accessibility knob (empty = target default -> byte-identical)
         result.code = target.backend()->emit(module);
         result.ok = true;
         return result;
@@ -619,6 +620,7 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         prune(m.enums); prune(m.unions); prune(m.records); prune(m.classes);
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         m.linked = true;
+        m.access = lib.access;
         m.imports = buildImports(importGraph, fileOrigin, baseByCanon, target.name());
         return target.backend()->emit(m);
     };

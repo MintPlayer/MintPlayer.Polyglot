@@ -932,6 +932,7 @@
     "EnumDecl": {
       "line": {
         "tmpl": [
+          { "fn": "access" },
           "enum ",
           {
             "fn": "ident",
@@ -1366,6 +1367,7 @@
     },
     "csRecordHead": {
       "tmpl": [
+        { "fn": "access" },
         "record ",
         {
           "fn": "ident",
@@ -1780,7 +1782,7 @@
                 },
                 {
                   "block": {
-                    "head": { "tmpl": [ "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotExtensions" ] },
+                    "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotExtensions" ] },
                     "body": [
                       {
                         "mapMembers": "module.extensions",
@@ -1850,7 +1852,7 @@
         },
         {
           "block": {
-            "head": { "tmpl": [ "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotProgram" ] },
+            "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotProgram" ] },
             "body": [
               {
                 "mapDecl": "module.globals",
@@ -2123,6 +2125,7 @@
     },
     "csClassHead": {
       "tmpl": [
+        { "fn": "access" },
         "class ",
         {
           "fn": "ident",
@@ -2345,6 +2348,7 @@
       "block": {
         "head": {
           "tmpl": [
+            { "fn": "access" },
             "interface ",
             {
               "fn": "ident",
@@ -2471,6 +2475,7 @@
         {
           "line": {
             "tmpl": [
+              { "fn": "access" },
               "abstract record ",
               {
                 "fn": "ident",
@@ -2492,6 +2497,7 @@
           "each": {
             "line": {
               "tmpl": [
+                { "fn": "access" },
                 "sealed record ",
                 {
                   "fn": "ident",
