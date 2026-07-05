@@ -41,7 +41,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.2.0
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.3.0
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -423,6 +423,29 @@ TS/Python but **discarded both outcomes**, so a symmetric double-failure (empty 
 they assert the C# compiled and both runtimes exited 0; `run-python.ps1` + `run-emit.ps1` wired into
 `build-and-test.ps1`. New conformance programs: `casts_call.pg`, `nested_generics.pg`, `null_local.pg`. CLI +
 NuGet → **0.2.0**, csharp plugin → **0.2.2** (ts/py/php unchanged).
+**Release 0.3.0 ✅ (2026-07-05) — issue #11: transcendental std.math, proper module linking, faithful i32()
+TS cast, + a configurable C# access modifier** (PRD/plan: `docs/prd/issue-11-features/`; found live scoping
+the MintPlayer.AI Snake + MountainCar ports; 3-agent investigation). **(1.A) transcendental std.math tier:**
+`sin cos tan asin acos atan atan2 sinh cosh tanh exp log log2 log10 pow trunc` (+ natural-log alias `log`)
+added to the `STD_MATH` skeleton + each plugin's `std.math` overlay (PHP gained a `std.math` block for the
+first time). All are plain 1:1 bound statics — no emulation; `cbrt`/`sign` omitted (not uniformly a clean
+binding). Per §3.D they are a documented **best-effort tier** (≤1 ULP cross-runtime), gated by quantized
+equality (`math_transcendental.pg`). **(1.B) proper module linking** replaces inline-everything: sema still
+runs on the merged unit (resolution/collisions/exhaustiveness/capability gating unchanged), but emission now
+partitions the one lowered `ir::Module` by a name→origin map (from AST origin tags) into one file per user
+module — each defined once, cross-module refs emitted as target imports (C# global-namespace types +
+`partial` wrappers, no `using`; TS `import`, Python `from…import`, PHP `require_once`); the std prelude is
+C#-entry-only / per-file-inline on the others. Single-module output stays **byte-identical** (linked mode
+only fires for >1 module). `EmitResult.modules`; the CLI's `build` takes many inputs, compiles the ROOTS and
+dedups shared modules; the MSBuild NuGet runs the CLI once over all `**/*.pg` → each type/function defined
+once, **no CS0101** (the reported bug). Watch mode writes the linked module set. v1 limits: flat output
+(unique `.pg` basenames), one C# entry per assembly. **(1.C)** float→i32 cast emits plain `Math.trunc`
+(TS)/`(int)` (PHP) — no 32-bit wrap. **Access modifier (user request):** generated C# was always `internal`;
+a new `access` knob (`--access public` / pgconfig `"access"` / `<PolyglotAccess>`) prefixes emitted C# types
++ wrappers so they're consumable across assemblies with no hand-written facade; unset = the `internal`
+default (byte-identical). New: `cast_float_int.pg`, `math_transcendental.pg`, `library/` (the issue-#11
+repro); run-diff/run-python cover multi-file dirs; run-nuget gains a shared-library fixture; unit tests for
+all four. CLI + NuGet → **0.3.0**; all four plugins → **0.3.0**.
 **Roadmap: P10** (plugin *distribution* — now largely absorbed into P19 slices 10–12), **P11**
 (build-integration NuGet — ✅ v1 above; per-RID CI + publish now scoped as P22), **P16d** (Visual Studio
 LSP client), **P20** (input skins, gated, above), **P22 🚧 slices 1–2 + 4–5 built — cross-platform CLI

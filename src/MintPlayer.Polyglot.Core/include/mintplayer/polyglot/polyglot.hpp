@@ -17,7 +17,7 @@
 namespace mintplayer::polyglot {
 
 // Semantic version of the Polyglot toolchain.
-inline constexpr const char* kVersion = "0.2.0";
+inline constexpr const char* kVersion = "0.3.0";
 
 // The compiler facade. Kept for the version entry point; the pipeline is exposed via compile() below.
 class Compiler {

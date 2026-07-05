@@ -2390,3 +2390,24 @@ Windows** (the existing gates prove it).
 - **Binding auto-generation:** shape-only bindings from `.d.ts` / .NET metadata / WebIDL + hand overrides
   (feeds the plugin ecosystem; produces declarative data at authoring time).
 - **Plugin registry & signing:** distribution/versioning infrastructure + signature trust for downloads.
+
+## Release 0.3.0 — issue #11 (2026-07-05, designed + built same day)
+Full PRD/plan: `docs/prd/issue-11-features/`. Four things, six byte-gated slices:
+- **Transcendental std.math** (1.A) — 1:1 tier (`sin cos tan asin acos atan atan2 sinh cosh tanh exp log log2
+  log10 pow trunc`, `log`≡`ln`) in the `STD_MATH` skeleton + each plugin overlay; PHP gained `std.math`.
+  Best-effort per §3.D, gated by quantized equality. `cbrt`/`sign` dropped (non-uniform bindings).
+- **Proper module linking** (1.B) — the deferred P12-phase-2 capability. Merge-for-sema / split-for-emit:
+  lower the merged unit once, partition the one `ir::Module` by a name→origin map (AST decls carry
+  `originModule`; ir decls too), emit one file per user module. Per-target prelude policy (C# entry-only +
+  `partial` wrappers + global-namespace types; TS/Py/PHP per-file-inline prelude + `import`/`require_once`).
+  `EmitResult.modules`; CLI `build` takes many inputs → roots + dedup; the MSBuild NuGet runs the CLI once
+  over all `**/*.pg`. Single-module output byte-identical (linked mode only for >1 module). Watch writes the
+  module set. v1 limits: flat output (unique basenames), one C# entry per assembly. Selective-import
+  visibility + `as` rebinding are now unblocked (the origin/import table exists).
+- **i32() cast** (1.C) — float→int emits plain `Math.trunc` (TS) / `(int)` (PHP), no 32-bit wrap.
+- **C# access modifier** (added on user request) — `access` knob threads `LibConfig` → `ir::Module` → the
+  `{"fn":"access"}` decl builtin (in the fixed catalog); prefixes emitted C# types + wrappers. `--access
+  public` / pgconfig `"access"` / `<PolyglotAccess>`; unset = `internal` (byte-identical). C#-only.
+New programs: `cast_float_int.pg`, `math_transcendental.pg`, `library/`. Harness: run-diff/run-python cover
+multi-file dirs; run-nuget gains a shared-library CS0101 fixture; watch gate asserts linked-output refresh;
+unit tests for all four. CLI + NuGet → **0.3.0**; all four plugins → **0.3.0**.

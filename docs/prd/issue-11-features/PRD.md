@@ -1,6 +1,6 @@
 # PRD — Issue #11: transcendental std.math, real module linking, faithful `i32()` TS cast
 
-> **Status:** Draft · 2026-07-05 · targets release **0.3.0**
+> **Status:** ✅ DONE · 2026-07-05 · released as **0.3.0** (all six slices built + gated; see PLAN.md as-built)
 > **Source:** [GitHub issue #11](https://github.com/MintPlayer/MintPlayer.Polyglot/issues/11) — feature gaps
 > found while scoping MintPlayer.AI's M33 client-side-AI ports (Snake + MountainCar) on the
 > `MintPlayer.Polyglot.MSBuild 0.2.0` NuGet.
@@ -226,3 +226,24 @@ for every width in-range.
   - `@mintplayer/polyglot-target-php` 0.2.0 → **0.3.0** (std.math block net-new, import emission, i32 cast fix).
 - Publishing rides the existing `publish-plugins.yml` (push to master → npm + GitHub Packages) and
   `release.yml` (`v0.3.0` tag → CLI RIDs + GitHub Release + NuGet). No workflow changes expected.
+
+## 7. Delivered (as built, 2026-07-05)
+All three reported issues fixed + one user-requested addition, released as 0.3.0:
+- **1.A transcendental std.math** — the 1:1 tier shipped (`cbrt`/`sign` dropped as non-uniform); PHP gained a
+  `std.math` block; documented best-effort per §3.D; `math_transcendental.pg` gates on quantized equality.
+- **1.B module linking** — implemented as merge-for-sema / **split-for-emit by name→origin** (lower once, then
+  partition the one `ir::Module`; ir decls carry `originModule`). Per-target prelude policy (C# entry-only +
+  `partial`; TS/Py/PHP per-file inline). `EmitResult.modules`; CLI multi-input **roots + dedup**; MSBuild runs
+  the CLI once over all `**/*.pg`. `library/` + the run-nuget shared-library fixture prove **no CS0101**;
+  single-module output byte-identical. v1 limits: flat output (unique basenames), one C# entry per assembly.
+- **1.C i32() cast** — TS `Math.trunc` / PHP `(int)`, no 32-bit wrap; `cast_float_int.pg`.
+- **Access modifier (added on user request, mid-PR):** generated C# was always `internal`, forcing a public
+  facade. New `access` knob (`LibConfig::access` → `ir::Module::access` → the `{"fn":"access"}` decl builtin,
+  in the plugin fixed-builtin catalog) prefixes emitted C# types + the `PolyglotProgram`/`PolyglotExtensions`
+  wrappers. `--access public` (CLI) / pgconfig `"access"` / `<PolyglotAccess>` (MSBuild); unset = `internal`
+  (byte-identical). C#-only (TS already `export`s; Python/PHP have no equivalent).
+
+**Gates:** `build-and-test.ps1` green — run-diff (49) + run-python (49) + run-emit + library + nullable +
+watch (22, incl. the linked-output check) + run-nuget (12, incl. 3 shared-library checks) + unit tests.
+**Deferred follow-ups:** subdir-mirroring output (drop the unique-basename rule); multi-entry C# assemblies;
+selective-import visibility + `as` rebinding (now unblocked by the origin/import table); PHP runtime differential.
