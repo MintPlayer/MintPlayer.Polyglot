@@ -26,8 +26,9 @@ on:
 
 env:
   # The polyglot CLI version bundled into the platform vsixes — a P22 GitHub Release tag is v<version>.
-  # Bump this (independently of the extension version) to ship a newer server.
-  POLYGLOT_CLI_VERSION: '0.3.1'
+  # Bump this (independently of the extension version) to ship a newer server. 0.3.2 is the first release
+  # that ships macOS (osx-x64/osx-arm64) — the darwin legs below need it.
+  POLYGLOT_CLI_VERSION: '0.3.2'
 
 jobs:
   publish:
@@ -44,7 +45,11 @@ jobs:
             vscodeTarget: linux-x64
           - stage: linux-arm64
             vscodeTarget: linux-arm64
-          - stage: universal          # no-binary fallback (macOS / win-arm64 / alpine / everything else)
+          - stage: darwin-x64          # macOS Intel — stages the CLI's osx-x64 archive
+            vscodeTarget: darwin-x64
+          - stage: darwin-arm64        # macOS Apple Silicon — stages the CLI's osx-arm64 archive
+            vscodeTarget: darwin-arm64
+          - stage: universal          # no-binary fallback (win-arm64 / alpine / everything else)
             vscodeTarget: ''           # empty → the action omits --target → platform-independent vsix
     name: publish (${{ matrix.stage }})
     steps:

@@ -2453,6 +2453,16 @@ platform-specific + a universal fallback coexist at one version with no ordering
 sidesteps any `skipDuplicate` ambiguity against the already-live 0.4.0-universal). Packaging proven locally;
 the publish half is CI-only.
 
+**macOS bundling (2026-07-11, same PR as the CI fix + the P22 macOS CLI legs).** Now that the CLI ships
+`osx-x64`/`osx-arm64` (P22, CLI → 0.3.2), the extension bundles them too: two more publish legs
+(`darwin-x64`/`darwin-arm64` → the CLI's `osx-*` archives; `stage-cli.ps1` gains the map rows),
+`POLYGLOT_CLI_VERSION` → **0.3.2**, and the activation ladder's rung 2 **strips `com.apple.quarantine`**
+after the chmod so Gatekeeper lets the ad-hoc-signed bundled server run (no Apple Developer account /
+notarization — PRD §4.14). macOS drops out of the universal-fallback list (it now has real platform vsixes);
+win-arm64/alpine still fall back. Verified: `stage-cli.ps1 -Target darwin-*` maps correctly and the YAML
+carries 6 legs; the actual mac publish + a real-hardware launch (that the quarantine-strip suffices) are
+CI-/Mac-only. Extension stays **0.4.1** (this is one combined release: publish fix + macOS).
+
 Make the *released* marketplace extension **work out of the box**: install it, open a `.pg` file, and the
 language server starts — no separate CLI install, no PATH fiddling. Today it fails `spawn polyglot ENOENT`
 because the vsix ships **no server** and `resolveCli()` does **zero discovery** — it spawns the bare word

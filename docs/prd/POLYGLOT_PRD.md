@@ -1020,7 +1020,8 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   artifacts (win-x64/linux-x64/linux-arm64 + a universal no-binary fallback), a 5-rung `resolveCli()` ladder,
   plus branding (marketplace icon + rename to "Polyglot language server", extension → 0.4.1). Extension + CI
   only, no Core change. First publish run surfaced a HaaLeo packagePath+target incompatibility (fixed: two-step
-  package/publish, PR #17). Pending: interactive vsix install + confirming the fixed publish. Slice plan: PLAN §P23.
+  package/publish); **macOS bundling added** (darwin-x64/darwin-arm64 legs + quarantine-strip on activation,
+  bundling CLI 0.3.2). Pending: interactive vsix install + confirming the fixed publish. Slice plan: PLAN §P23.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
