@@ -982,6 +982,79 @@ defer to §P27** (Rust behind a §3.C soundness caveat; Haskell/Elixir as functi
 syntax** (the grammar is not a hard-bind). Full slice plans: PLAN §P26 (PHP uplift + vocab growth + Kotlin
 + Swift + the Dart/Go fork) and §P27 (the hard targets).
 
+#### 4.17.1 Rust & Go deep-dive (added 2026-07-11; investigated by a 2-agent team)
+
+A focused follow-up on the two §P27 systems targets, because both are frequently *assumed* to be easy
+JSON-plugin wins and are not. The through-line: **each is the richest feature match on part of the surface
+yet forces a whole-program, non-local transform a declarative rule provably cannot express** — so both are
+**first-party / local-full-power-tier** targets (decision D4 above), not downloadable data-only plugins, and
+both stay in **§P27**. The investigation confirms and sharpens the existing slotting; it does not reopen it.
+
+**Capability profile (tri-state per §3.E/§4.11).**
+
+| Feature | Rust | Go |
+|---|---|---|
+| pattern matching / ADTs | **native** (best-in-class: `enum`+`match`+exhaustiveness) | **emulated** (type-switch/if-chain; **no** compile-time exhaustiveness) |
+| enums | native | emulated (`const`+`iota`) |
+| operators | native (`std::ops`) | **false** (no overloading, no method fallback) |
+| extension methods | native (extension trait + `use`) | emulated (free fn `m(x)`) |
+| properties/indexers | emulated (`x.prop()`; `Index`/`IndexMut`) | false |
+| disposal (`using`) | **native** (RAII `Drop`) | **native** (`defer`) |
+| closures | native (expr); **emulated** (shared-mutable → `Rc<RefCell>`) | **native** (capture by ref) |
+| with-expressions | native (`Foo { f, ..base }`) | native (struct copy) |
+| async/await | native (`impl Future` — needs an executor builddep) | **false** (goroutines aren't call-site-preserving `async`) |
+| exceptions | **emulated/local-tier** (`Result` threading or `panic`) | **native *via local-tier rewrite*** (`(T,error)`) |
+| iterators / `yield` | emulated/local-tier (synthesized `impl Iterator`) | emulated/local-tier (goroutine+chan / 1.23 range-over-func) |
+| overloading | emulated (name-mangling, as TS) | false |
+| inheritance | **false** (no classical inheritance/`super`) | false (embedding, not inheritance) |
+| `mutableRefClasses` | **emulated** (`Rc<RefCell<T>>` — unsound by default, see below) | **native** (pointers to mutable structs) |
+| `fixedWidthIntegers` | native (`i8..i128`/`u8..u128`; emit `wrapping_*` per §3.C) | native (`int8..uint64`, defined wrap) |
+| `utf16Strings` | **false** (UTF-8 `String`, 4-byte `char`) | **false** (UTF-8 bytes + runes) |
+
+**The hard problem, per target.**
+- **Go — exceptions → `(T, error)`.** The faithful emission threads `(T, error)` through the *whole call
+  graph*: every function that can (transitively) throw gains an `error` return; every call site becomes
+  `v, err := f(); if err != nil { return <zero>, err }`; `try/catch/finally` decompose into inline error
+  checks + `errors.As` dispatch + `defer`. This rewrites *callee signatures from a caller's context* and
+  synthesizes `err`/zero-value plumbing across nodes — provably outside the declarative DSL (which sees one
+  node with node-local context and cannot compute the transitive throw-set). This is the first *non-local,
+  call-graph-wide* lowering Polyglot would own.
+- **Rust — GC → `Rc<RefCell<T>>`.** A shared mutable object (the `mutableRefClasses` core) has no GC to map
+  to, so it becomes `Rc<RefCell<T>>`: shared ownership + a **runtime** borrow check. This injects two
+  behaviours *absent from the source* — `RefCell` **panics** on aliased/re-entrant `borrow_mut()` (legal
+  under GC/C# semantics), and `Rc` **leaks reference cycles** a GC would collect. Rust's exceptions (`Result`
+  threading) and `yield` (state machine) are the same local-tier shapes as Go/Java.
+
+**Pure-JSON vs local-tier.** Both are **hybrids**: a large declarative JSON plugin (ADTs/`match`, operators,
+extension traits, `Drop`/`defer` disposal, `..`/struct-copy update, async *signatures*, fixed-width ints via
+one additive `intRepr=wrapping` value) **plus** a small set of first-party C++ local-tier passes — the
+`Result`/error rewrite, the shared cell-lowering pass (§4.18 D3), and the `yield` state-machine — **most of
+which are shared with Java/C++ and not target-specific**. A **gated pure-JSON MVP is viable for Go** (declare
+`exceptions:false` + `iterators:false` and it rides the ordinary interpreter with zero Core code, covering
+its genuine strengths — structural interfaces, closures, `defer`, unsigned/fixed-width ints, struct-update);
+it defers only throwing/yielding programs and is a plausible early FruitCake passer. Rust's MVP is narrower
+because its memory model, not just error handling, needs the cell pass.
+
+**Toolchain / conformance.** A `run-rust.ps1` / `run-go.ps1` mirrors `run-php.ps1` (emit to target **and** to
+C# the oracle, run both, diff stdout; a clean §3.E refusal is an expected PASS), with the target compiler
+under `%LOCALAPPDATA%\polyglot-toolchains\` and a conformance-only `runCommand` in the manifest. **Go** ships a
+single self-contained Windows `go.exe` (fits the convention; **not currently installed**). **Rust** needs
+`rustup` + the MSVC linker (present on this VS-2026 box) — heavier than an interpreter; and conformance **must
+build with `wrapping_*` (or release)** so an overflow reflects §3.C defined-wrap, not a debug-build panic.
+
+**Recommendations.** Keep **both in §P27**; neither meets the P26 bar (cheap, high-fidelity, pure-JSON,
+mobile-matrix). **Go:** ship the gated pure-JSON MVP first (real value, exercises the harness + the three new
+flags on a UTF-8/fixed-width target), then the local-tier `(T,error)` rewrite as its own slice gated on a
+nested-try/typed-catch conformance test. **Rust:** admit only on concrete demand, under the admissibility
+gate — the §3.C soundness caveat authored **before the first Rust byte ships**, with the borrow-panic + cycle-
+leak classes each **reproduced in a committed test**; offer **both** an opt-in "sound mode" (compile-time
+single-owner/no-shared-aliasing check) *and* the published caveat. **Biggest risks:** Go's `(T,error)` is a
+new *class* of Core machinery (non-local; a wrong throw-closure/zero-value both a buggy pass and its consumer
+share is invisible to the differential gate — the §4.11 "lowering bug both backends consume" hazard, here with
+no second oracle); Rust's `RefCell` **runtime borrow panic is data-path-dependent and invisible to any finite
+conformance corpus** — only the sound-mode check or the explicit caveat makes it honest. Both mitigations are
+exactly why these two sit below the reference-quality plugins.
+
 ---
 
 ### 4.18 Lambdas & closures — faithful capture across every target (design — 2026-07-11; investigated by a 3-agent team; PLAN §P25)
