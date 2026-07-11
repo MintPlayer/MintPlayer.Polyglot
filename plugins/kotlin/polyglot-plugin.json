@@ -1,35 +1,40 @@
 {
   "schema": 1,
-  "name": "csharp",
-  "capabilities": {},
+  "name": "kotlin",
+  "capabilities": {
+    "disposal": "emulated",
+    "async": "emulated"
+  },
   "spec": {
-    "name": "csharp",
+    "name": "kotlin",
     "scalarType": {
-      "unit": "void",
-      "i8": "sbyte",
-      "i16": "short",
-      "i32": "int",
-      "i64": "long",
-      "u8": "byte",
-      "u16": "ushort",
-      "u32": "uint",
-      "u64": "ulong",
-      "f32": "float",
-      "f64": "double",
-      "bool": "bool",
-      "string": "string"
+      "unit": "Unit",
+      "i8": "Byte",
+      "i16": "Short",
+      "i32": "Int",
+      "i64": "Long",
+      "u8": "UByte",
+      "u16": "UShort",
+      "u32": "UInt",
+      "u64": "ULong",
+      "f32": "Float",
+      "f64": "Double",
+      "bool": "Boolean",
+      "string": "String"
     },
     "intSuffix": {
       "i64": "L",
       "u64": "UL",
-      "u32": "U"
+      "u32": "U",
+      "u16": "U",
+      "u8": "U"
     },
     "binaryOp": {},
     "wrapInt": {
-      "i8": "(sbyte)($x)",
-      "i16": "(short)($x)",
-      "u8": "(byte)($x)",
-      "u16": "(ushort)($x)"
+      "i8": "($x).toByte()",
+      "i16": "($x).toShort()",
+      "u8": "($x).toUByte()",
+      "u16": "($x).toUShort()"
     },
     "wrapAtom": {
       "recv": [
@@ -41,19 +46,19 @@
         "binary"
       ]
     },
-    "rethrow": "throw;",
+    "rethrow": "throw __e",
     "tables": {
       "localDecl": {
         "mutable": "var $x",
-        "const": "var $x"
+        "const": "val $x"
       },
       "localDeclTyped": {
-        "mutable": "$T $x",
-        "const": "$T $x"
+        "mutable": "var $x: $T",
+        "const": "val $x: $T"
       },
       "yield": {
-        "value": "yield return $x;",
-        "empty": "yield break;"
+        "value": "yield($x)",
+        "empty": "return@sequence"
       }
     },
     "generics": {
@@ -71,8 +76,8 @@
         "close": ")"
       }
     },
-    "blockStyle": "bracesAllman",
-    "stmtEnd": ";",
+    "blockStyle": "bracesKnR",
+    "stmtEnd": "",
     "throwKeyword": "throw",
     "trueLit": "true",
     "falseLit": "false",
@@ -272,39 +277,12 @@
     "Call": {
       "tmpl": [
         {
-          "case": {
-            "when": [
-              [
-                {
-                  "eq": [
-                    "node.isFree",
-                    "true"
-                  ]
-                },
-                {
-                  "tmpl": [
-                    "PolyglotProgram.",
-                    {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "node.callee"
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            ],
-            "else": {
-              "fn": "ident",
-              "args": [
-                {
-                  "get": "node.callee"
-                }
-              ]
+          "fn": "ident",
+          "args": [
+            {
+              "get": "node.callee"
             }
-          }
+          ]
         },
         "(",
         {
@@ -434,21 +412,16 @@
     },
     "ListLit": {
       "tmpl": [
-        "new global::System.Collections.Generic.List<",
-        {
-          "type": "node.elem"
-        },
-        "> { ",
+        "mutableListOf(",
         {
           "map": "node.elements",
           "sep": ", "
         },
-        " }"
+        ")"
       ]
     },
     "New": {
       "tmpl": [
-        "new ",
         {
           "fn": "ident",
           "args": [
@@ -470,7 +443,6 @@
     },
     "MakeCase": {
       "tmpl": [
-        "new ",
         {
           "get": "node.caseName"
         },
@@ -539,13 +511,13 @@
       "tmpl": [
         "(",
         {
-          "type": "node.type"
-        },
-        ")(",
-        {
           "emit": "node.operand"
         },
-        ")"
+        ").to",
+        {
+          "type": "node.type"
+        },
+        "()"
       ]
     },
     "Unary": {
@@ -857,27 +829,54 @@
     },
     "Lambda": {
       "tmpl": [
-        "(",
+        "{ ",
         {
-          "map": "node.params",
-          "sep": ", ",
-          "item": {
-            "case": {
-              "when": [
-                [
-                  {
-                    "eq": [
-                      "item.hasType",
-                      "true"
-                    ]
-                  },
-                  {
-                    "tmpl": [
-                      {
-                        "type": "item.type"
-                      },
-                      " ",
-                      {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "node.params.count",
+                    "0"
+                  ]
+                },
+                ""
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                {
+                  "map": "node.params",
+                  "sep": ", ",
+                  "item": {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.hasType",
+                              "true"
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "item.name"
+                                  }
+                                ]
+                              },
+                              ": ",
+                              {
+                                "type": "item.type"
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": {
                         "fn": "ident",
                         "args": [
                           {
@@ -885,22 +884,14 @@
                           }
                         ]
                       }
-                    ]
+                    }
                   }
-                ]
-              ],
-              "else": {
-                "fn": "ident",
-                "args": [
-                  {
-                    "get": "item.name"
-                  }
-                ]
-              }
+                },
+                " -> "
+              ]
             }
           }
         },
-        ") => ",
         {
           "case": {
             "when": [
@@ -917,22 +908,19 @@
               ]
             ],
             "else": {
-              "tmpl": [
-                "{ ",
-                {
-                  "fn": "inlineBlock"
-                },
-                "}"
-              ]
+              "fn": "inlineBlock"
             }
           }
-        }
+        },
+        " }"
       ]
     },
     "EnumDecl": {
       "line": {
         "tmpl": [
-          { "fn": "access" },
+          {
+            "fn": "access"
+          },
           "enum ",
           {
             "fn": "ident",
@@ -970,16 +958,16 @@
     "csParam": {
       "tmpl": [
         {
-          "type": "item.type"
-        },
-        " ",
-        {
           "fn": "ident",
           "args": [
             {
               "get": "item.name"
             }
           ]
+        },
+        ": ",
+        {
+          "type": "item.type"
         },
         {
           "case": {
@@ -1367,8 +1355,7 @@
     },
     "csRecordHead": {
       "tmpl": [
-        { "fn": "access" },
-        "record ",
+        "data class ",
         {
           "fn": "ident",
           "args": [
@@ -1386,10 +1373,7 @@
           "sep": ", ",
           "item": {
             "tmpl": [
-              {
-                "type": "item.type"
-              },
-              " ",
+              "val ",
               {
                 "fn": "ident",
                 "args": [
@@ -1397,6 +1381,10 @@
                     "get": "item.name"
                   }
                 ]
+              },
+              ": ",
+              {
+                "type": "item.type"
               }
             ]
           }
@@ -1428,9 +1416,6 @@
               ]
             }
           }
-        },
-        {
-          "fn": "where"
         }
       ]
     },
@@ -1446,12 +1431,7 @@
             },
             {
               "line": {
-                "tmpl": [
-                  {
-                    "call": "csRecordHead"
-                  },
-                  ";"
-                ]
+                "call": "csRecordHead"
               }
             }
           ]
@@ -1743,12 +1723,6 @@
     "Program": {
       "seq": [
         {
-          "line": "#nullable enable"
-        },
-        {
-          "line": ""
-        },
-        {
           "mapMembers": "module.enums",
           "rule": "EnumDecl"
         },
@@ -1769,189 +1743,62 @@
           "rule": "ClassDecl"
         },
         {
-          "case": {
-            "when": [
-              [
-                {
-                  "not": {
-                    "eq": [
-                      "module.extensions.count",
-                      "0"
-                    ]
-                  }
-                },
-                {
-                  "block": {
-                    "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotExtensions" ] },
-                    "body": [
-                      {
-                        "mapMembers": "module.extensions",
-                        "rule": "ExtensionDecl"
-                      }
-                    ]
-                  }
-                }
-              ]
-            ]
-          }
+          "mapMembers": "module.extensions",
+          "rule": "ExtensionDecl"
         },
         {
-          "case": {
-            "when": [
-              [
+          "mapDecl": "module.globals",
+          "each": {
+            "line": {
+              "tmpl": [
+                "val ",
                 {
-                  "or": [
+                  "fn": "ident",
+                  "args": [
                     {
-                      "not": {
-                        "eq": [
-                          "module.enums.count",
-                          "0"
-                        ]
-                      }
-                    },
-                    {
-                      "not": {
-                        "eq": [
-                          "module.unions.count",
-                          "0"
-                        ]
-                      }
-                    },
-                    {
-                      "not": {
-                        "eq": [
-                          "module.records.count",
-                          "0"
-                        ]
-                      }
-                    },
-                    {
-                      "not": {
-                        "eq": [
-                          "module.classes.count",
-                          "0"
-                        ]
-                      }
-                    },
-                    {
-                      "not": {
-                        "eq": [
-                          "module.extensions.count",
-                          "0"
-                        ]
-                      }
+                      "get": "item.name"
                     }
                   ]
                 },
+                ": ",
                 {
-                  "line": ""
+                  "type": "item.type"
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "item.hasInit",
+                            "true"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            " = ",
+                            {
+                              "emit": "item.init"
+                            }
+                          ]
+                        }
+                      ]
+                    ],
+                    "else": " = TODO()"
+                  }
                 }
               ]
-            ]
+            }
           }
         },
         {
-          "block": {
-            "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotProgram" ] },
-            "body": [
-              {
-                "mapDecl": "module.globals",
-                "each": {
-                  "line": {
-                    "tmpl": [
-                      "static readonly ",
-                      {
-                        "type": "item.type"
-                      },
-                      " ",
-                      {
-                        "fn": "ident",
-                        "args": [
-                          {
-                            "get": "item.name"
-                          }
-                        ]
-                      },
-                      {
-                        "case": {
-                          "when": [
-                            [
-                              {
-                                "eq": [
-                                  "item.hasInit",
-                                  "true"
-                                ]
-                              },
-                              {
-                                "tmpl": [
-                                  " = ",
-                                  {
-                                    "emit": "item.init"
-                                  }
-                                ]
-                              }
-                            ]
-                          ]
-                        }
-                      },
-                      ";"
-                    ]
-                  }
-                }
-              },
-              {
-                "mapMembers": "module.functions",
-                "rule": "FunctionDecl"
-              },
-              {
-                "case": {
-                  "when": [
-                    [
-                      {
-                        "eq": [
-                          "module.hasEntry",
-                          "true"
-                        ]
-                      },
-                      {
-                        "seq": [
-                          {
-                            "line": ""
-                          },
-                          {
-                            "case": {
-                              "when": [
-                                [
-                                  {
-                                    "eq": [
-                                      "module.entry.isAsync",
-                                      "true"
-                                    ]
-                                  },
-                                  {
-                                    "line": "static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main().GetAwaiter().GetResult(); }"
-                                  }
-                                ]
-                              ],
-                              "else": {
-                                "line": "static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main(); }"
-                              }
-                            }
-                          }
-                        ]
-                      }
-                    ]
-                  ]
-                }
-              }
-            ]
-          }
+          "mapMembers": "module.functions",
+          "rule": "FunctionDecl"
         }
       ]
     },
     "csFnSig": {
       "tmpl": [
-        "public static ",
         {
           "case": {
             "when": [
@@ -1962,30 +1809,14 @@
                     "true"
                   ]
                 },
-                "async "
+                "suspend "
               ]
             ]
           }
         },
+        "fun ",
         {
-          "case": {
-            "when": [
-              [
-                {
-                  "eq": [
-                    "decl.isAsync",
-                    "true"
-                  ]
-                },
-                {
-                  "call": "csAsyncRet"
-                }
-              ]
-            ],
-            "else": {
-              "type": "decl.returnType"
-            }
-          }
+          "fn": "generics"
         },
         " ",
         {
@@ -1995,9 +1826,6 @@
               "get": "decl.name"
             }
           ]
-        },
-        {
-          "fn": "generics"
         },
         "(",
         {
@@ -2009,7 +1837,27 @@
         },
         ")",
         {
-          "fn": "where"
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.returnsUnit",
+                    "true"
+                  ]
+                },
+                ""
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                ": ",
+                {
+                  "type": "decl.returnType"
+                }
+              ]
+            }
+          }
         }
       ]
     },
@@ -2125,7 +1973,9 @@
     },
     "csClassHead": {
       "tmpl": [
-        { "fn": "access" },
+        {
+          "fn": "access"
+        },
         "class ",
         {
           "fn": "ident",
@@ -2348,7 +2198,9 @@
       "block": {
         "head": {
           "tmpl": [
-            { "fn": "access" },
+            {
+              "fn": "access"
+            },
             "interface ",
             {
               "fn": "ident",
@@ -2475,8 +2327,7 @@
         {
           "line": {
             "tmpl": [
-              { "fn": "access" },
-              "abstract record ",
+              "sealed class ",
               {
                 "fn": "ident",
                 "args": [
@@ -2487,8 +2338,7 @@
               },
               {
                 "fn": "generics"
-              },
-              ";"
+              }
             ]
           }
         },
@@ -2497,41 +2347,76 @@
           "each": {
             "line": {
               "tmpl": [
-                { "fn": "access" },
-                "sealed record ",
                 {
-                  "fn": "ident",
-                  "args": [
-                    {
-                      "get": "item.name"
-                    }
-                  ]
-                },
-                {
-                  "fn": "generics"
-                },
-                "(",
-                {
-                  "map": "item.fields",
-                  "sep": ", ",
-                  "item": {
-                    "tmpl": [
-                      {
-                        "type": "item.type"
-                      },
-                      " ",
-                      {
-                        "fn": "ident",
-                        "args": [
-                          {
-                            "get": "item.name"
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "item.fields.count",
+                            "0"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "class ",
+                            {
+                              "fn": "ident",
+                              "args": [
+                                {
+                                  "get": "item.name"
+                                }
+                              ]
+                            },
+                            {
+                              "fn": "generics"
+                            }
+                          ]
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "tmpl": [
+                        "data class ",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "item.name"
+                            }
+                          ]
+                        },
+                        {
+                          "fn": "generics"
+                        },
+                        "(",
+                        {
+                          "map": "item.fields",
+                          "sep": ", ",
+                          "item": {
+                            "tmpl": [
+                              "val ",
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "item.name"
+                                  }
+                                ]
+                              },
+                              ": ",
+                              {
+                                "type": "item.type"
+                              }
+                            ]
                           }
-                        ]
-                      }
-                    ]
+                        },
+                        ")"
+                      ]
+                    }
                   }
                 },
-                ") : ",
+                " : ",
                 {
                   "fn": "ident",
                   "args": [
@@ -2543,7 +2428,7 @@
                 {
                   "fn": "generics"
                 },
-                ";"
+                "()"
               ]
             }
           }
@@ -2561,71 +2446,35 @@
               ]
             },
             {
-              "case": {
-                "when": [
-                  [
-                    {
-                      "and": [
+              "tmpl": [
+                "(",
+                {
+                  "map": "type.args",
+                  "sep": ", ",
+                  "item": {
+                    "type": "item"
+                  }
+                },
+                ") -> ",
+                {
+                  "case": {
+                    "when": [
+                      [
                         {
                           "eq": [
                             "type.returnsUnit",
                             "true"
                           ]
                         },
-                        {
-                          "eq": [
-                            "type.args.count",
-                            "0"
-                          ]
-                        }
+                        "Unit"
                       ]
-                    },
-                    "global::System.Action"
-                  ],
-                  [
-                    {
-                      "eq": [
-                        "type.returnsUnit",
-                        "true"
-                      ]
-                    },
-                    {
-                      "tmpl": [
-                        "global::System.Action<",
-                        {
-                          "map": "type.args",
-                          "sep": ", ",
-                          "item": {
-                            "type": "item"
-                          }
-                        },
-                        ">"
-                      ]
-                    }
-                  ]
-                ],
-                "else": {
-                  "tmpl": [
-                    "global::System.Func<",
-                    {
-                      "map": "type.args",
-                      "sep": "",
-                      "item": {
-                        "tmpl": [
-                          {
-                            "type": "item"
-                          },
-                          ", "
-                        ]
-                      }
-                    },
-                    {
+                    ],
+                    "else": {
                       "type": "type.ret"
-                    },
-                    ">"
-                  ]
+                    }
+                  }
                 }
-              }
+              ]
             }
           ],
           [
@@ -2637,7 +2486,7 @@
             },
             {
               "tmpl": [
-                "(",
+                "Pair<",
                 {
                   "map": "type.args",
                   "sep": ", ",
@@ -2645,7 +2494,7 @@
                     "type": "item"
                   }
                 },
-                ")"
+                ">"
               ]
             }
           ],
@@ -2680,7 +2529,7 @@
                 "true"
               ]
             },
-            "object"
+            "Any"
           ],
           [
             {
@@ -2736,75 +2585,70 @@
   },
   "std": {
     "std.collections": {
-      "List.type": "global::System.Collections.Generic.List<$0>",
-      "List.init": "new $T()",
-      "List.count": "$this.Count",
-      "List.add": "$this.Add($0)",
-      "List.clear": "$this.Clear()",
-      "List.removeAll": "$this.RemoveAll($0)",
-      "List.removeAt": "$this.RemoveAt($0)"
+      "List.type": "MutableList<$0>",
+      "List.init": "mutableListOf()",
+      "List.count": "$this.size",
+      "List.add": "$this.add($0)",
+      "List.clear": "$this.clear()",
+      "List.removeAll": "$this.removeAll { __e -> ($0)(__e) }",
+      "List.removeAt": "$this.removeAt($0)"
     },
     "std.io": {
-      "print": "global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object?)x)",
-      "readText": "global::System.IO.File.ReadAllText(path)",
-      "writeText": "global::System.IO.File.WriteAllText(path, content)",
-      "appendText": "global::System.IO.File.AppendAllText(path, content)",
-      "fileExists": "global::System.IO.File.Exists(path)",
-      "deleteFile": "global::System.IO.File.Delete(path)"
+      "print": "println(x)"
     },
     "std.math": {
-      "Math.PI": "global::System.Math.PI",
-      "Math.E": "global::System.Math.E",
-      "Math.sqrt": "global::System.Math.Sqrt($0)",
-      "Math.ln": "global::System.Math.Log($0)",
-      "Math.log": "global::System.Math.Log($0)",
-      "Math.log2": "global::System.Math.Log2($0)",
-      "Math.log10": "global::System.Math.Log10($0)",
-      "Math.exp": "global::System.Math.Exp($0)",
-      "Math.pow": "global::System.Math.Pow($0, $1)",
-      "Math.sin": "global::System.Math.Sin($0)",
-      "Math.cos": "global::System.Math.Cos($0)",
-      "Math.tan": "global::System.Math.Tan($0)",
-      "Math.asin": "global::System.Math.Asin($0)",
-      "Math.acos": "global::System.Math.Acos($0)",
-      "Math.atan": "global::System.Math.Atan($0)",
-      "Math.atan2": "global::System.Math.Atan2($0, $1)",
-      "Math.sinh": "global::System.Math.Sinh($0)",
-      "Math.cosh": "global::System.Math.Cosh($0)",
-      "Math.tanh": "global::System.Math.Tanh($0)",
-      "Math.trunc": "global::System.Math.Truncate($0)",
-      "Math.floor": "global::System.Math.Floor($0)",
-      "Math.ceil": "global::System.Math.Ceiling($0)",
-      "Math.min": "global::System.Math.Min($0, $1)",
-      "Math.max": "global::System.Math.Max($0, $1)",
-      "Math.abs": "global::System.Math.Abs($0)",
-      "Math.round": "(($T) global::System.Math.Round($0))"
+      "Math.PI": "kotlin.math.PI",
+      "Math.E": "kotlin.math.E",
+      "Math.sqrt": "kotlin.math.sqrt($0)",
+      "Math.ln": "kotlin.math.ln($0)",
+      "Math.log": "kotlin.math.ln($0)",
+      "Math.log2": "kotlin.math.log2($0)",
+      "Math.log10": "kotlin.math.log10($0)",
+      "Math.exp": "kotlin.math.exp($0)",
+      "Math.pow": "$0.pow($1)",
+      "Math.sin": "kotlin.math.sin($0)",
+      "Math.cos": "kotlin.math.cos($0)",
+      "Math.tan": "kotlin.math.tan($0)",
+      "Math.asin": "kotlin.math.asin($0)",
+      "Math.acos": "kotlin.math.acos($0)",
+      "Math.atan": "kotlin.math.atan($0)",
+      "Math.atan2": "kotlin.math.atan2($0, $1)",
+      "Math.sinh": "kotlin.math.sinh($0)",
+      "Math.cosh": "kotlin.math.cosh($0)",
+      "Math.tanh": "kotlin.math.tanh($0)",
+      "Math.trunc": "kotlin.math.truncate($0)",
+      "Math.floor": "kotlin.math.floor($0)",
+      "Math.ceil": "kotlin.math.ceil($0)",
+      "Math.min": "kotlin.math.min($0, $1)",
+      "Math.max": "kotlin.math.max($0, $1)",
+      "Math.abs": "kotlin.math.abs($0)",
+      "Math.round": "kotlin.math.round($0)"
     },
     "std.strings": {
-      "string.isEmpty": "($this.Length == 0)",
-      "string.len": "$this.Length",
-      "string.toUpper": "$this.ToUpper()",
-      "string.toLower": "$this.ToLower()",
-      "string.charAt": "$this[$0].ToString()",
-      "string.codePoints": "$this.EnumerateRunes()",
-      "string.toI32": "global::System.Int32.Parse($this)"
+      "string.isEmpty": "$this.isEmpty()",
+      "string.len": "$this.length",
+      "string.toUpper": "$this.uppercase()",
+      "string.toLower": "$this.lowercase()",
+      "string.charAt": "$this[$0].toString()",
+      "string.codePoints": "$this.toList()",
+      "string.toI32": "$this.toInt()"
     },
     "std.core": {
-      "Error.type": "global::System.Exception",
-      "Error.init": "new $T($0)",
-      "Error.message": "$this.Message",
-      "Iterable.type": "global::System.Collections.Generic.IEnumerable<$0>",
-      "i8.parse": "sbyte.Parse($0)",
-      "i16.parse": "short.Parse($0)",
-      "i32.parse": "int.Parse($0)",
-      "i64.parse": "long.Parse($0)",
-      "u8.parse": "byte.Parse($0)",
-      "u16.parse": "ushort.Parse($0)",
-      "u32.parse": "uint.Parse($0)",
-      "u64.parse": "ulong.Parse($0)",
-      "f32.parse": "float.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)",
-      "f64.parse": "double.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)"
+      "Error.type": "Exception",
+      "Error.init": "$T($0)",
+      "Error.message": "($this.message ?: \"\")",
+      "Iterable.type": "Iterable<$0>",
+      "i8.parse": "$0.toByte()",
+      "i16.parse": "$0.toShort()",
+      "i32.parse": "$0.toInt()",
+      "i64.parse": "$0.toLong()",
+      "u8.parse": "$0.toUByte()",
+      "u16.parse": "$0.toUShort()",
+      "u32.parse": "$0.toUInt()",
+      "u64.parse": "$0.toULong()",
+      "f32.parse": "$0.toFloat()",
+      "f64.parse": "$0.toDouble()"
     }
   },
-  "fileExtension": ".cs"
+  "fileExtension": ".kt"
 }
