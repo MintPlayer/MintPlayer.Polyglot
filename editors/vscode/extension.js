@@ -8,6 +8,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
 let client;
@@ -86,6 +87,12 @@ function resolveCli(context) {
       if (fs.statSync(bundled).isFile()) {
         // The vsix is a zip; extraction can strip +x, so restore it before use (rust-analyzer does the same).
         if (process.platform !== 'win32') { try { fs.chmodSync(bundled, 0o755); } catch (_e) { /* best effort */ } }
+        // macOS: the bundled CLI is ad-hoc signed (not notarized), so Gatekeeper quarantines a downloaded
+        // vsix's binary and refuses to exec it. Strip the quarantine xattr so the server can launch. Best
+        // effort — errors if the attr isn't present (common) or xattr is unavailable; neither is fatal.
+        if (process.platform === 'darwin') {
+          try { execFileSync('xattr', ['-d', 'com.apple.quarantine', bundled], { stdio: 'ignore' }); } catch (_e) { /* not quarantined */ }
+        }
         return bundled;
       }
     } catch (_e) { /* not a bundled vsix — fall through */ }

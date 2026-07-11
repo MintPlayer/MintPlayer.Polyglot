@@ -2,7 +2,7 @@
   "name": "polyglot-lang",
   "displayName": "Polyglot language server",
   "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting) + watch mode (rebuild emitted outputs on save).",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "mintplayer",
   "license": "MIT",
   "icon": "icon.png",

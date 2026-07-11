@@ -14,17 +14,21 @@
 #   pwsh editors/vscode/scripts/stage-cli.ps1 -Target universal          # empty bin/ (no-binary fallback vsix)
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)][ValidateSet('win32-x64', 'linux-x64', 'linux-arm64', 'universal')][string]$Target,
-  [string]$Version = '0.3.1',
+  [Parameter(Mandatory)][ValidateSet('win32-x64', 'linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'universal')][string]$Target,
+  [string]$Version = '0.3.2',
   [string]$Repo = 'MintPlayer/MintPlayer.Polyglot'
 )
 $ErrorActionPreference = 'Stop'
 
-# VS Code target -> dotnet RID -> release asset + the binary name inside it (one row, echoing P22's RID set).
+# VS Code target -> release asset + the binary name inside it (echoing P22's RID set; VS Code's `darwin-*`
+# maps to the CLI's `osx-*` archive). macOS binaries are ad-hoc signed at build; the extension additionally
+# strips the com.apple.quarantine xattr on activation so Gatekeeper lets the bundled server run.
 $map = @{
-  'win32-x64'   = @{ asset = 'polyglot-win-x64.zip';        bin = 'polyglot.exe' }
-  'linux-x64'   = @{ asset = 'polyglot-linux-x64.tar.gz';   bin = 'polyglot'     }
-  'linux-arm64' = @{ asset = 'polyglot-linux-arm64.tar.gz'; bin = 'polyglot'     }
+  'win32-x64'    = @{ asset = 'polyglot-win-x64.zip';        bin = 'polyglot.exe' }
+  'linux-x64'    = @{ asset = 'polyglot-linux-x64.tar.gz';   bin = 'polyglot'     }
+  'linux-arm64'  = @{ asset = 'polyglot-linux-arm64.tar.gz'; bin = 'polyglot'     }
+  'darwin-x64'   = @{ asset = 'polyglot-osx-x64.tar.gz';     bin = 'polyglot'     }
+  'darwin-arm64' = @{ asset = 'polyglot-osx-arm64.tar.gz';   bin = 'polyglot'     }
 }
 
 $extDir = Split-Path -Parent $PSScriptRoot   # editors/vscode

@@ -2242,10 +2242,14 @@ CLI + NuGet → **0.2.0**, csharp plugin → **0.2.2** (typescript/python/php pl
 
 ## P22 — Cross-platform CLI (Linux) + multi-RID distribution — 🚧 slices 1–2 + 4–5 built, slices 3 & 6 remain (2026-07-04; PRD §4.14, 4-agent investigation)
 
-> **Scope: macOS is NOT planned** (user decision, 2026-07-04). The shipping RID set is **win-x64,
-> linux-x64, linux-arm64**. The `osx-x64`/`osx-arm64` design (native mac legs, ad-hoc codesign, the
-> `_NSGetExecutablePath` code branch) is left below **for reference only** in case that changes — it is not
-> on the roadmap, so ignore the macOS-specific steps in the slices.
+> **Scope update (2026-07-11): macOS is now IN the shipping set** (user decision — reverses the 2026-07-04
+> "not planned" call). The RID set is **win-x64, linux-x64, linux-arm64, osx-x64, osx-arm64**. The
+> `osx-x64`/`osx-arm64` design (native `macos-13`/`macos-14` CMake legs, ad-hoc `codesign`, the
+> `_NSGetExecutablePath` exe-path branch) is now BUILT: `release.yml` has a `build-macos` matrix feeding the
+> GitHub Release + the fat NuGet (CLI → **0.3.2**). Gatekeeper without an Apple Developer account — ad-hoc
+> signature + the extension stripping `com.apple.quarantine` on activation; Developer-ID notarization
+> deferred (PRD §4.14). The VS Code extension's `darwin-x64`/`darwin-arm64` bundling follows in P23 once a
+> macOS-inclusive CLI release exists.
 
 Make the native `polyglot` CLI build and ship for **linux-x64, linux-arm64** alongside win-x64, so the
 `MintPlayer.Polyglot.MSBuild` NuGet transpiles `.pg`→`.cs` during `dotnet build` on a Linux CI runner
@@ -2436,6 +2440,28 @@ runs `--version` → 0.3.1 and resolves plugins next to itself); `publish-vscode
 confirmed from the action source). **Pending (structurally un-runnable from a Windows dev box, per each
 slice's gate):** an interactive clean-PATH vsix install proving the LSP starts from rung 2, and the first
 live marketplace publish. No Core/CLI change — extension + CI only.
+
+**CI fix (2026-07-11, PR #17 — first live publish run of the merged workflow).** The 4-leg matrix ran on
+merge to master: the **universal leg published 0.4.0** (confirming the empty-target fallback works), but the
+three platform legs failed — HaaLeo `publish-vscode-extension` **rejects `packagePath` + `target` together**
+(*"Both options not supported simultaneously… use `vsce package --target` then `vsce publish --packagePath`"*).
+Fix: the matrix now **packages** the vsix in a run step (`vsce package --target <t>`, empty target on the
+universal leg → platform-agnostic; the platform is baked into the vsix's `TargetPlatform`, verified locally)
+and hands the pre-built file to the action via **`extensionFile`** (no `packagePath`/`target` on the publish
+step). Bumped **0.4.0 → 0.4.1** so all four legs publish cleanly in one run (per the VS Marketplace docs,
+platform-specific + a universal fallback coexist at one version with no ordering constraint; the bump also
+sidesteps any `skipDuplicate` ambiguity against the already-live 0.4.0-universal). Packaging proven locally;
+the publish half is CI-only.
+
+**macOS bundling (2026-07-11, same PR as the CI fix + the P22 macOS CLI legs).** Now that the CLI ships
+`osx-x64`/`osx-arm64` (P22, CLI → 0.3.2), the extension bundles them too: two more publish legs
+(`darwin-x64`/`darwin-arm64` → the CLI's `osx-*` archives; `stage-cli.ps1` gains the map rows),
+`POLYGLOT_CLI_VERSION` → **0.3.2**, and the activation ladder's rung 2 **strips `com.apple.quarantine`**
+after the chmod so Gatekeeper lets the ad-hoc-signed bundled server run (no Apple Developer account /
+notarization — PRD §4.14). macOS drops out of the universal-fallback list (it now has real platform vsixes);
+win-arm64/alpine still fall back. Verified: `stage-cli.ps1 -Target darwin-*` maps correctly and the YAML
+carries 6 legs; the actual mac publish + a real-hardware launch (that the quarantine-strip suffices) are
+CI-/Mac-only. Extension stays **0.4.1** (this is one combined release: publish fix + macOS).
 
 Make the *released* marketplace extension **work out of the box**: install it, open a `.pg` file, and the
 language server starts — no separate CLI install, no PATH fiddling. Today it fails `spawn polyglot ENOENT`

@@ -693,9 +693,13 @@ work. Until then the hardcoded list is a knowing stopgap, flagged at the code si
 
 ### 4.14 Cross-platform CLI — Linux builds + multi-RID distribution (design — 2026-07-04; investigated by a 4-agent team; PLAN §P22)
 
-> **macOS is not planned** (user decision, 2026-07-04). The osx-x64/osx-arm64 design below (native builds,
-> ad-hoc codesign, the `_NSGetExecutablePath` code branch) is **retained for reference** should that change;
-> it is not on the roadmap. The shipping target set is **Windows + Linux**.
+> **macOS added to the shipping set** (user decision, 2026-07-11 — reverses the 2026-07-04 "not planned"
+> call). The osx-x64/osx-arm64 design below (native CMake builds on `macos-13`/`macos-14`, ad-hoc `codesign`,
+> the `_NSGetExecutablePath` exe-path branch) is now **built** in `release.yml` and staged into the fat NuGet;
+> the shipping set is **Windows + Linux + macOS**. Gatekeeper is handled without an Apple Developer account
+> (~$99/yr): natively-linked binaries are ad-hoc signed and the VS Code extension strips the
+> `com.apple.quarantine` xattr on activation. Full Developer-ID **notarization is deferred** — reach for it
+> only if the ad-hoc + quarantine-strip path proves insufficient on real hardware.
 
 **The user need.** MintPlayer.AI (the first real consumer) builds on GitHub Actions **ubuntu-latest**; the
 MSBuild NuGet ships only `tools/win-x64/`, so Linux CI cannot transpile `.pg` at build time — the pilot's
@@ -996,14 +1000,15 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   (`<Watch Include="@(PolyglotFile)" />`) so `dotnet watch` gives Visual Studio the C#-host path for free.
   Slice plan: PLAN §P21.
 - **P22 — Cross-platform CLI (Linux) + multi-RID distribution.** 🚧 Slices 1–2 + 4–5 built; slices 3 & 6
-  remain (macOS **not planned** — osx design retained for reference; shipping set = Windows + Linux)
+  remain (**macOS added 2026-07-11** — shipping set = Windows + Linux + macOS; CLI → 0.3.2)
   (2026-07-04; §4.14, from a 4-agent investigation). Built: the POSIX resilience fixes + command-quoting
   audit (shared portable exe-path lookup, XDG cache dir, `>nul`→`/dev/null`, all `#ifdef`-guarded); a
-  parallel `CMakeLists.txt` (`.vcxproj` untouched) + drift-parity guard; a **Windows + Linux (x64/arm64)
-  release matrix** with per-job provenance attestation; and the **fat multi-RID NuGet** (win-x64 +
-  linux-x64 + linux-arm64 in one package; the `.targets` was already RID-generic). **North star reached
+  parallel `CMakeLists.txt` (`.vcxproj` untouched) + drift-parity guard; a **Windows + Linux (x64/arm64) +
+  macOS (x64/arm64)** release matrix with per-job provenance attestation; and the **fat multi-RID NuGet**
+  (all five RIDs in one package; the `.targets` was already RID-generic). **North star reached
   and verified on real Linux (WSL):** `dotnet build` on a net9.0 app consuming the multi-RID NuGet resolves
-  + chmods + runs `tools/linux-x64/polyglot`, transpiles the `.pg`, and runs — no committed output.
+  + chmods + runs `tools/linux-x64/polyglot`, transpiles the `.pg`, and runs — no committed output. macOS
+  legs (`macos-13`/`macos-14`, ad-hoc `codesign`) build + gate but await verification on real hardware.
   Remaining: the PHP runtime differential (slice 3) and the esbuild-pattern npm sibling (slice 6). Slice
   plan: PLAN §P22.
 - **P23 — VS Code extension: bundle the CLI (zero-setup) + branding.** 🚧 Slices 1–4 built (2026-07-11,
@@ -1013,8 +1018,10 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   via VS Code's platform-specific-extension mechanism (one marketplace listing, ID `mintplayer.polyglot-lang`
   frozen; the marketplace serves the matching vsix per platform), reusing P22's already-attested CLI
   artifacts (win-x64/linux-x64/linux-arm64 + a universal no-binary fallback), a 5-rung `resolveCli()` ladder,
-  plus branding (marketplace icon + rename to "Polyglot language server", extension → 0.4.0). Extension + CI
-  only, no Core change. Pending: interactive vsix install + first live marketplace publish. Slice plan: PLAN §P23.
+  plus branding (marketplace icon + rename to "Polyglot language server", extension → 0.4.1). Extension + CI
+  only, no Core change. First publish run surfaced a HaaLeo packagePath+target incompatibility (fixed: two-step
+  package/publish); **macOS bundling added** (darwin-x64/darwin-arm64 legs + quarantine-strip on activation,
+  bundling CLI 0.3.2). Pending: interactive vsix install + confirming the fixed publish. Slice plan: PLAN §P23.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
