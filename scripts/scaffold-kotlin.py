@@ -83,6 +83,33 @@ r['Lambda'] = {"tmpl": ["{ ",
             {"tmpl": [ident("item.name"), ": ", {"type": "item.type"}]}]], "else": ident("item.name")}}}, " -> "]}}},
     {"case": {"when": [[{"eq": ["node.exprBodied", "true"]}, {"emit": "node.body"}]], "else": {"fn": "inlineBlock"}}},
     " }"]}
+# EnumDecl -> Kotlin `enum class` (enums.pg matches cases; the int value is unused there).
+r['EnumDecl'] = {"line": {"tmpl": ["enum class ", ident("decl.name"), " { ",
+    {"map": "decl.cases", "sep": ", ", "item": ident("item.name")}, " }"]}}
+# Match -> `(scrutinee).let { _m -> when { <cond> -> <value> ... else -> throw } }`. `.let` types _m from
+# the scrutinee (numeric guards work); subject-less `when` allows boolean guards; `is` smart-casts _m.
+r['ktArmBase'] = {"case": {"when": [
+    [{"eq": ["item.pattern.kind", "literal"]}, {"tmpl": ["_m == ", {"emit": "item.pattern.literal"}]}],
+    [{"eq": ["item.pattern.kind", "enumCase"]}, {"tmpl": ["_m == ", {"get": "item.pattern.enumType"}, ".", {"get": "item.pattern.enumCase"}]}],
+    [{"eq": ["item.pattern.kind", "ctor"]}, {"tmpl": ["_m is ", {"get": "item.pattern.ctorCase"}]}]],
+  "else": "true"}}
+r['ktArmGuard'] = {"case": {"when": [
+    [{"eq": ["item.pattern.kind", "binding"]}, {"tmpl": ["run { val ", ident("item.pattern.binding"), " = _m; ", {"emit": "item.guard"}, " }"]}],
+    [{"and": [{"eq": ["item.pattern.kind", "ctor"]}, {"not": {"eq": ["item.pattern.binders.count", "0"]}}]},
+     {"tmpl": ["run { ", {"map": "item.pattern.binders", "sep": "", "item": {"tmpl": ["val ", ident("item.binding"), " = _m.", {"get": "item.field"}, "; "]}}, {"emit": "item.guard"}, " }"]}]],
+  "else": {"emit": "item.guard"}}}
+r['ktArmValue'] = {"case": {"when": [
+    [{"eq": ["item.pattern.kind", "binding"]}, {"tmpl": ["run { val ", ident("item.pattern.binding"), " = _m; ", {"emit": "item.body"}, " }"]}],
+    [{"and": [{"eq": ["item.pattern.kind", "ctor"]}, {"not": {"eq": ["item.pattern.binders.count", "0"]}}]},
+     {"tmpl": ["run { ", {"map": "item.pattern.binders", "sep": "", "item": {"tmpl": ["val ", ident("item.binding"), " = _m.", {"get": "item.field"}, "; "]}}, {"emit": "item.body"}, " }"]}]],
+  "else": {"emit": "item.body"}}}
+r['ktArmCond'] = {"case": {"when": [
+    [{"eq": ["item.hasGuard", "false"]}, {"call": "ktArmBase"}],
+    [{"or": [{"eq": ["item.pattern.kind", "wildcard"]}, {"eq": ["item.pattern.kind", "binding"]}]}, {"call": "ktArmGuard"}]],
+  "else": {"tmpl": ["(", {"call": "ktArmBase"}, ") && (", {"call": "ktArmGuard"}, ")"]}}}
+r['Match'] = {"tmpl": ["(", {"emit": "node.scrutinee"}, ").let { _m -> when {\n",
+    {"map": "node.arms", "sep": "", "item": {"tmpl": ["  ", {"call": "ktArmCond"}, " -> ", {"call": "ktArmValue"}, "\n"]}},
+    "  else -> throw RuntimeException()\n} }"]}
 r['UnionDecl'] = {"seq": [
     {"line": {"tmpl": ["sealed class ", ident("decl.name"), {"fn": "generics"}]}},
     {"mapDecl": "decl.cases", "each": {"line": {"tmpl": [

@@ -654,177 +654,29 @@
     },
     "Match": {
       "tmpl": [
+        "(",
         {
-          "emitChild": "node.scrutinee",
-          "side": "recv"
+          "emit": "node.scrutinee"
         },
-        " switch { ",
+        ").let { _m -> when {\n",
         {
           "map": "node.arms",
-          "sep": ", ",
+          "sep": "",
           "item": {
             "tmpl": [
+              "  ",
               {
-                "case": {
-                  "when": [
-                    [
-                      {
-                        "eq": [
-                          "item.pattern.kind",
-                          "wildcard"
-                        ]
-                      },
-                      "_"
-                    ],
-                    [
-                      {
-                        "eq": [
-                          "item.pattern.kind",
-                          "literal"
-                        ]
-                      },
-                      {
-                        "emit": "item.pattern.literal"
-                      }
-                    ],
-                    [
-                      {
-                        "eq": [
-                          "item.pattern.kind",
-                          "binding"
-                        ]
-                      },
-                      {
-                        "tmpl": [
-                          "var ",
-                          {
-                            "fn": "ident",
-                            "args": [
-                              {
-                                "get": "item.pattern.binding"
-                              }
-                            ]
-                          }
-                        ]
-                      }
-                    ],
-                    [
-                      {
-                        "eq": [
-                          "item.pattern.kind",
-                          "enumCase"
-                        ]
-                      },
-                      {
-                        "tmpl": [
-                          {
-                            "get": "item.pattern.enumType"
-                          },
-                          ".",
-                          {
-                            "get": "item.pattern.enumCase"
-                          }
-                        ]
-                      }
-                    ],
-                    [
-                      {
-                        "eq": [
-                          "item.pattern.binders.count",
-                          "0"
-                        ]
-                      },
-                      {
-                        "tmpl": [
-                          {
-                            "get": "item.pattern.ctorCase"
-                          },
-                          {
-                            "call": "typeArgsSuffix"
-                          },
-                          " _"
-                        ]
-                      }
-                    ]
-                  ],
-                  "else": {
-                    "tmpl": [
-                      {
-                        "get": "item.pattern.ctorCase"
-                      },
-                      {
-                        "call": "typeArgsSuffix"
-                      },
-                      "(",
-                      {
-                        "map": "item.pattern.binders",
-                        "sep": ", ",
-                        "item": {
-                          "tmpl": [
-                            "var ",
-                            {
-                              "fn": "ident",
-                              "args": [
-                                {
-                                  "get": "item.binding"
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      },
-                      ")"
-                    ]
-                  }
-                }
+                "call": "ktArmCond"
               },
+              " -> ",
               {
-                "case": {
-                  "when": [
-                    [
-                      {
-                        "eq": [
-                          "item.hasGuard",
-                          "true"
-                        ]
-                      },
-                      {
-                        "tmpl": [
-                          " when ",
-                          {
-                            "emit": "item.guard"
-                          }
-                        ]
-                      }
-                    ]
-                  ],
-                  "else": ""
-                }
+                "call": "ktArmValue"
               },
-              " => ",
-              {
-                "emit": "item.body"
-              }
+              "\n"
             ]
           }
         },
-        {
-          "case": {
-            "when": [
-              [
-                {
-                  "eq": [
-                    "node.hasCatchAll",
-                    "true"
-                  ]
-                },
-                ""
-              ]
-            ],
-            "else": ", _ => throw new global::System.InvalidOperationException()"
-          }
-        },
-        " }"
+        "  else -> throw RuntimeException()\n} }"
       ]
     },
     "Lambda": {
@@ -918,10 +770,7 @@
     "EnumDecl": {
       "line": {
         "tmpl": [
-          {
-            "fn": "access"
-          },
-          "enum ",
+          "enum class ",
           {
             "fn": "ident",
             "args": [
@@ -935,18 +784,10 @@
             "map": "decl.cases",
             "sep": ", ",
             "item": {
-              "tmpl": [
+              "fn": "ident",
+              "args": [
                 {
-                  "fn": "ident",
-                  "args": [
-                    {
-                      "get": "item.name"
-                    }
-                  ]
-                },
-                " = ",
-                {
-                  "get": "item.value"
+                  "get": "item.name"
                 }
               ]
             }
@@ -2578,6 +2419,288 @@
                 }
               }
             }
+          ]
+        }
+      }
+    },
+    "ktArmBase": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "literal"
+              ]
+            },
+            {
+              "tmpl": [
+                "_m == ",
+                {
+                  "emit": "item.pattern.literal"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "enumCase"
+              ]
+            },
+            {
+              "tmpl": [
+                "_m == ",
+                {
+                  "get": "item.pattern.enumType"
+                },
+                ".",
+                {
+                  "get": "item.pattern.enumCase"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "ctor"
+              ]
+            },
+            {
+              "tmpl": [
+                "_m is ",
+                {
+                  "get": "item.pattern.ctorCase"
+                }
+              ]
+            }
+          ]
+        ],
+        "else": "true"
+      }
+    },
+    "ktArmGuard": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "binding"
+              ]
+            },
+            {
+              "tmpl": [
+                "run { val ",
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.pattern.binding"
+                    }
+                  ]
+                },
+                " = _m; ",
+                {
+                  "emit": "item.guard"
+                },
+                " }"
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "ctor"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "item.pattern.binders.count",
+                      "0"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "run { ",
+                {
+                  "map": "item.pattern.binders",
+                  "sep": "",
+                  "item": {
+                    "tmpl": [
+                      "val ",
+                      {
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "item.binding"
+                          }
+                        ]
+                      },
+                      " = _m.",
+                      {
+                        "get": "item.field"
+                      },
+                      "; "
+                    ]
+                  }
+                },
+                {
+                  "emit": "item.guard"
+                },
+                " }"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "emit": "item.guard"
+        }
+      }
+    },
+    "ktArmValue": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "binding"
+              ]
+            },
+            {
+              "tmpl": [
+                "run { val ",
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item.pattern.binding"
+                    }
+                  ]
+                },
+                " = _m; ",
+                {
+                  "emit": "item.body"
+                },
+                " }"
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "ctor"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "item.pattern.binders.count",
+                      "0"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "run { ",
+                {
+                  "map": "item.pattern.binders",
+                  "sep": "",
+                  "item": {
+                    "tmpl": [
+                      "val ",
+                      {
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "item.binding"
+                          }
+                        ]
+                      },
+                      " = _m.",
+                      {
+                        "get": "item.field"
+                      },
+                      "; "
+                    ]
+                  }
+                },
+                {
+                  "emit": "item.body"
+                },
+                " }"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "emit": "item.body"
+        }
+      }
+    },
+    "ktArmCond": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.hasGuard",
+                "false"
+              ]
+            },
+            {
+              "call": "ktArmBase"
+            }
+          ],
+          [
+            {
+              "or": [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "wildcard"
+                  ]
+                },
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "binding"
+                  ]
+                }
+              ]
+            },
+            {
+              "call": "ktArmGuard"
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "(",
+            {
+              "call": "ktArmBase"
+            },
+            ") && (",
+            {
+              "call": "ktArmGuard"
+            },
+            ")"
           ]
         }
       }
