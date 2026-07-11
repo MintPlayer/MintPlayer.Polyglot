@@ -771,6 +771,102 @@ portability fixes land first, byte-identical on Windows. (8) The npm sibling is 
 pattern above) — NuGet-on-Linux is the driving need. (9) Deferred, recorded: win-arm64, linux-musl-x64,
 manylinux/zig-musl wider floor, `lipo` universal macOS binary, notarization, full CMake migration.
 
+### 4.15 Extension onboarding — bundle the CLI in the VSIX + branding (design — 2026-07-11; investigated by a 2-agent team; PLAN §P23)
+
+**The user need.** A user who installed the *released* VS Code extension from the marketplace and opened a
+`.pg` file got a dead end: `spawn polyglot ENOENT` — "could not start the language server". **Highlighting
+worked** (declarative TextMate grammar, no server), but every server-backed feature — diagnostics, hover,
+go-to-def, formatting, the live preview (§4.9), watch (§4.13) — was dead. The released extension is a
+client with no server to talk to. The bar the user set: **install the extension → open a `.pg` file →
+it just works**, zero manual setup. Plus two branding asks: a real marketplace **icon** (there is none),
+and a **rename** to "Polyglot language server".
+
+**Findings (per front).** *Launch path (root cause).* The extension is a single hand-written
+`editors/vscode/extension.js` (no build step). `resolveCli()` (`extension.js:30-38`) reads
+`polyglot.cliPath` with a **bare-string default of `polyglot`** (`package.json:120-124`), and — if the value
+has no slashes — returns it verbatim; that string is handed to `vscode-languageclient`'s `ServerOptions`
+with the fixed subcommand `lsp` over stdio (`extension.js:45-48`) and spawned by Node **with no shell**, so
+a bare word is resolved against the OS `PATH`. There is **zero discovery** — no bundled-binary lookup, no
+probe of `%LOCALAPPDATA%`, no source-checkout fallback; the only "search" is that PATH resolution. On a
+machine where the *separately distributed* CLI was never installed (the confirmed situation), PATH lookup
+fails → `spawn polyglot ENOENT`, surfaced as a plain warning (`extension.js:97-102`). The same
+`resolveCli()` also backs the watch task (`extension.js:271`), so watch fails identically. *Two correctness
+nits found in passing:* (a) the failure dialog tells the user to point `cliPath` at
+**`MintPlayer.Polyglot.Cli.exe`** — the *source-checkout* project name; the shipped/released binary is
+**`polyglot.exe`** (`extension.js:100`); (b) `polyglot.cliPath` defaulting to a non-empty `polyglot` means
+`resolveCli()` can't distinguish "user set it" from "unset" — an empty default is what a discovery ladder
+wants. *Distribution today.* The vsix bundles **no server** — `.vscodeignore` excludes only
+`.vscode/**`, `testbench/**`, `.gitignore`, `**/*.map`; there is no `bin/`. P22 ships the CLI on three
+channels (GitHub-Releases `polyglot-<rid>.{zip,tar.gz}` → `polyglot.exe`/`polyglot` + `plugins/`; the fat
+multi-RID NuGet; the npm sibling), all of which put the CLI *somewhere on disk* but none of which the
+extension knows how to find. Note the CLI is a **native C++ binary** (not .NET, despite the `.Cli.exe`
+name) — there is no `dotnet tool` global-install path. *Icon/branding.* **No icon asset exists anywhere in
+the repo** — `package.json` has no `icon` field, no `images/`, no `.png`/`.svg` under the extension; the
+marketplace shows the generic placeholder. The `.pg` language contribution (`package.json:102-109`) has no
+`icon` either (generic file icon in the explorer). The rename is surgical: **only `displayName`
+(`package.json:3`)** changes — `name` (`polyglot-lang`) + `publisher` (`mintplayer`) together form the
+**immutable extension ID `mintplayer.polyglot-lang`**; changing either mints a new listing and breaks every
+existing install + the marketplace URL. Marketplace-title caveat (CLAUDE.md:315): plain "Polyglot" was
+already taken — "Polyglot language server" is a distinct, presumably-free title. The MintPlayer brand mark
+is a **connected ti-ti** (two beamed eighth-notes), mint-green — the icon should be MintPlayer-brand-aware.
+
+**The chosen strategy — bundle the CLI per-platform in the VSIX (user decision, 2026-07-11).** VS Code's
+**platform-specific extension** mechanism is exactly this: `vsce package --target <target>` produces a vsix
+carrying a native payload, and the marketplace serves the matching vsix per user platform, falling back to a
+**platform-independent vsix** for everything else. So we publish one vsix per supported RID — each embedding
+that RID's `polyglot(.exe)` + its `plugins/` under `editors/vscode/bin/` — plus a **universal
+no-binary fallback vsix** (highlighting + `cliPath`/PATH) for unsupported platforms. This *pulls the setup
+complexity entirely downward* into packaging: the user installs and it works. Bundling was previously gated
+(PLAN P22 / §4.14 note) as future work behind "the same VS-2026-runner problem as per-RID packaging" — but
+that gate was about *building* the CLI on many RIDs, which **P22 already solved** (`release.yml` builds +
+provenance-attests win-x64, linux-x64, linux-arm64 and uploads them). The VSIX pipeline therefore does not
+rebuild anything: it **downloads P22's already-released, attested CLI artifacts** for a pinned CLI version
+and stages them — decoupling extension cadence from CLI cadence and pinning a known-good server. The RID set
+is **identical to P22 — win-x64, linux-x64, linux-arm64** (VS Code targets `win32-x64`, `linux-x64`,
+`linux-arm64`; a one-row dotnet-RID→VS-Code-target map, echoing P22's RID↔npm-token table); macOS, win-arm64
+and alpine get the **universal fallback vsix** (consistent with "macOS not planned"). Two Unix gotchas the
+investigation flagged and the design must handle: the vsix is a plain zip, so (1) the executable **+x bit**
+may be lost on extraction → the extension `chmod 0755`s the bundled binary on activation (rust-analyzer's
+belt-and-suspenders; P22's NuGet keeps an analogous chmod), and (2) the CLI finds its plugins **next to the
+binary** (P22 slice-1 `exe_path.hpp`), so `plugins/` must sit at `bin/plugins/`, not elsewhere.
+
+**The resolution ladder (replaces the bare-string spawn).** `resolveCli()` becomes an explicit, obvious
+ladder — *define the error out of existence by finding the CLI before failing*: (1) **`polyglot.cliPath`**
+if non-empty — the explicit dev/advanced override, absolute-or-relative-to-workspace, semantics unchanged
+(the default flips to `""` = auto); (2) the **bundled binary** `<extensionPath>/bin/polyglot(.exe)` if
+present (the happy path for the 3 supported RIDs; chmod +x on Unix); (3) **`polyglot` on `PATH`** (self-
+installed CLI / universal-fallback users); (4) the **source checkout** `<workspace>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe`
+(contributors working on this very repo — the dev testbench already points here); (5) **fail into an
+actionable modal**, not a dead end: buttons "Install the CLI" (open the Releases page), "Locate
+polyglot.exe…" (file picker → writes `polyglot.cliPath`), "Open Settings" — and the message names the
+correct binary. Watch mode inherits the ladder for free (shared `resolveCli`).
+
+**Branding.** *Marketplace icon:* a **256×256 PNG** at `editors/vscode/icon.png` (flat, non-transparent,
+no gradients per marketplace guidance), added as `"icon": "icon.png"` in `package.json`, plus an optional
+`galleryBanner`. Design direction (MintPlayer-brand-aware): the **connected ti-ti eighth-notes** wordmark
+in **MintPlayer mint** on a clean tile, carrying a light "many-targets" cue (e.g. the two noteheads reading
+as the two first-class targets) — recognizably MintPlayer, legible at 16 px. *Optional `.pg` file icon:* a
+light/dark SVG pair on the language contribution so `.pg` files get a branded explorer glyph. *Rename:*
+`displayName` → **"Polyglot language server"**; `name`/`publisher` **untouched**. *Version:* bump the
+extension (0.1.0 → **0.4.0** to sit with the ecosystem's 0.3.x line and mark the bundled-server milestone),
+so CI's `skipDuplicate` actually publishes; the vsixes **pin and bundle a specific CLI version** (0.3.1
+today), declared once in the workflow for reproducibility.
+
+**Decisions.** (1) **Bundle per-platform** via `vsce package --target`; publish win32-x64 + linux-x64 +
+linux-arm64 platform vsixes **plus a universal no-binary fallback** (macOS/win-arm64/alpine → fallback,
+matching P22's RID scope). (2) The VSIX pipeline **downloads P22's already-attested CLI release artifacts**
+for a pinned version and stages `bin/<one-rid>/…` → `bin/` (one RID per platform vsix, so no per-RID subdir
+at runtime); it never rebuilds the CLI. (3) `resolveCli()` becomes the 5-rung ladder above; `polyglot.cliPath`
+default flips to `""` (auto), staying the documented escape hatch. (4) Unix: **chmod +x on activation** +
+`plugins/` staged at `bin/plugins/` (next to the binary, per `exe_path.hpp`). (5) The dead-end warning
+becomes an **actionable modal**, and the wrong exe name (`MintPlayer.Polyglot.Cli.exe` → `polyglot.exe`) is
+corrected regardless of the rest. (6) Icon 256² PNG + `"icon"` field + optional `.pg` language icon +
+optional `galleryBanner`; **`displayName` only** for the rename, ID frozen. (7) Extension → 0.4.0, bundling
+CLI 0.3.1. (8) `publish-vscode.yml` reworks to a target matrix (each leg stages the matching CLI + `vsce
+--target`), publishing all vsixes for one version bump. (9) Deferred, recorded: macOS/win-arm64/alpine
+bundling (universal fallback covers them today), an in-extension one-click *downloader* (the bundle removes
+the need), and CLI-version auto-update inside the extension.
+
 ---
 
 ## 5. Testing strategy
@@ -909,6 +1005,13 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   + chmods + runs `tools/linux-x64/polyglot`, transpiles the `.pg`, and runs — no committed output.
   Remaining: the PHP runtime differential (slice 3) and the esbuild-pattern npm sibling (slice 6). Slice
   plan: PLAN §P22.
+- **P23 — VS Code extension: bundle the CLI (zero-setup) + branding.** 🚧 Designed (2026-07-11; §4.15, from
+  a 2-agent investigation). Make the *released* marketplace extension work out of the box — install it, open
+  a `.pg` file, the LSP starts — instead of failing `spawn polyglot ENOENT` (the vsix ships no server and
+  `resolveCli()` does zero discovery). Fix: **bundle the CLI per-platform in the vsix** via VS Code's
+  platform-specific-extension mechanism, reusing P22's already-attested CLI artifacts (win-x64/linux-x64/
+  linux-arm64 + a universal no-binary fallback), a 5-rung `resolveCli()` ladder, plus branding (marketplace
+  icon + rename to "Polyglot language server", ID frozen). Slice plan: PLAN §P23.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
