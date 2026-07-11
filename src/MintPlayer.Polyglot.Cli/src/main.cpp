@@ -1297,7 +1297,7 @@ int runLsp(const std::vector<std::string>&) {
                          "\"method\",\"property\",\"variable\",\"parameter\",\"enumMember\"],"
                          "\"tokenModifiers\":[\"declaration\"]},\"full\":true}},"
                          "\"serverInfo\":{\"name\":\"polyglot-lsp\",\"version\":\"" +
-                             std::string(kVersion) + "\"}}");
+                             Compiler::version() + "\"}}");
         } else if (method == "shutdown") {
             lspReply(id, "null");
         } else if (method == "exit") {

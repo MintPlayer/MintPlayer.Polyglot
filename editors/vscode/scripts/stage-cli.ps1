@@ -10,12 +10,16 @@
 # matrix (publish-vscode.yml), one invocation per platform leg.
 #
 # Usage:
-#   pwsh editors/vscode/scripts/stage-cli.ps1 -Target win32-x64 [-Version 0.3.1] [-Repo owner/name]
-#   pwsh editors/vscode/scripts/stage-cli.ps1 -Target universal          # empty bin/ (no-binary fallback vsix)
+#   pwsh editors/vscode/scripts/stage-cli.ps1 -Target win32-x64 -Tag v0.5.0 [-Repo owner/name]
+#   pwsh editors/vscode/scripts/stage-cli.ps1 -Target win32-x64 -Version 0.5.0     # -Tag = v$Version
+#   pwsh editors/vscode/scripts/stage-cli.ps1 -Target universal -Tag v0.5.0        # empty bin/ (no-binary fallback vsix)
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][ValidateSet('win32-x64', 'linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'universal')][string]$Target,
-  [string]$Version = '0.3.2',
+  # The CLI release to bundle. -Tag is the release tag (what Workflow C passes, from the release event); -Version
+  # is the bare number for local convenience (mapped to v$Version). -Tag wins if both are given.
+  [string]$Tag = '',
+  [string]$Version = '',
   [string]$Repo = 'MintPlayer/MintPlayer.Polyglot'
 )
 $ErrorActionPreference = 'Stop'
@@ -45,7 +49,7 @@ if ($Target -eq 'universal') {
 }
 
 $m = $map[$Target]
-$tag = "v$Version"
+if ($Tag) { $tag = $Tag } elseif ($Version) { $tag = "v$Version" } else { throw "stage-cli: pass -Tag <v-tag> (or -Version <number>)" }
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "polyglot-stage-$([System.Guid]::NewGuid().ToString('n'))"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 $archive = Join-Path $tmp $m.asset

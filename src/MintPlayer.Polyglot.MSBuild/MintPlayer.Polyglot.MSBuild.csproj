@@ -10,7 +10,9 @@
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
     <PackageId>MintPlayer.Polyglot.MSBuild</PackageId>
-    <Version>0.3.2</Version>
+    <!-- Dev placeholder (PRD §4.16 / PLAN §P24): the release pipeline packs with -p:Version=<tag>, which
+         overrides this. Kept a plain literal so tests/msbuild/run-nuget.ps1 can read it as the local pack version. -->
+    <Version>0.0.0-dev</Version>
     <Authors>MintPlayer</Authors>
     <Description>Transpiles .pg (Polyglot) sources to C# during dotnet build — drop .pg files into an ordinary C# project and build. Ships the self-contained native polyglot CLI; no extra SDK or runtime.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

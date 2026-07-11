@@ -41,9 +41,25 @@ foreach ($p in $projects) {
     }
 }
 
+# Version-injection parity (PRD §4.16 / PLAN §P24): the POLYGLOT_VERSION define must exist on the Core project
+# in BOTH build systems, or one build silently ships the dev-fallback version. The source-list check above
+# can't see a preprocessor define, so assert it explicitly here.
+$coreVcxproj = Get-Content (Join-Path $root "src/MintPlayer.Polyglot.Core/MintPlayer.Polyglot.Core.vcxproj") -Raw
+$cmake = Get-Content (Join-Path $root "CMakeLists.txt") -Raw
+if ($coreVcxproj -match 'POLYGLOT_VERSION=\$\(PolyglotVersion\)') {
+    Write-Host "[PASS] Version define: Core .vcxproj carries POLYGLOT_VERSION=`$(PolyglotVersion)"
+} else {
+    $fail++; Write-Host "[FAIL] Version define: Core .vcxproj is missing POLYGLOT_VERSION=`$(PolyglotVersion)"
+}
+if ($cmake -match 'target_compile_definitions\(polyglot-core[^)]*POLYGLOT_VERSION=') {
+    Write-Host "[PASS] Version define: CMakeLists.txt sets POLYGLOT_VERSION on polyglot-core"
+} else {
+    $fail++; Write-Host "[FAIL] Version define: CMakeLists.txt is missing POLYGLOT_VERSION on polyglot-core"
+}
+
 Write-Host ""
 if ($fail -eq 0) {
-    Write-Host "Build-file parity holds: CMake glob and the .vcxproj compile the same sources."
+    Write-Host "Build-file parity holds: CMake glob and the .vcxproj compile the same sources + agree on the version define."
     exit 0
 }
 Write-Host "$fail project(s) drifted — reconcile the .vcxproj <ClCompile> list with the .cpp files on disk."

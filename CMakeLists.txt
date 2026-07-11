@@ -40,11 +40,27 @@ set(TESTS_DIR ${REPO_ROOT}/tests/MintPlayer.Polyglot.Tests)
 
 find_package(Threads REQUIRED)           # watch.hpp uses std::thread → libpthread on Linux
 
+# Version injection (PRD §4.16 / PLAN §P24), single definition point: only polyglot.cpp reads POLYGLOT_VERSION.
+# CI passes -DPOLYGLOT_VERSION=<tag>; a bare local build defaults to `git describe` (honest untagged version),
+# falling back to 0.0.0-dev outside a git checkout. Unquoted token — stringized in polyglot.cpp. The Windows
+# .vcxproj mirrors this define on the Core project; scripts/check-buildfile-parity.ps1 guards the two agree.
+if(NOT POLYGLOT_VERSION)
+  execute_process(COMMAND git describe --tags --dirty --always
+    WORKING_DIRECTORY ${REPO_ROOT} OUTPUT_VARIABLE _pg_git_ver
+    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _pg_git_rc)
+  if(_pg_git_rc EQUAL 0 AND _pg_git_ver)
+    string(REGEX REPLACE "^v" "" POLYGLOT_VERSION "${_pg_git_ver}")
+  else()
+    set(POLYGLOT_VERSION "0.0.0-dev")
+  endif()
+endif()
+
 # --- Core: the compiler library (lexer→parser→sema→lower→IR→backend engine) ------------------------------
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS ${CORE_DIR}/src/*.cpp)
 add_library(polyglot-core STATIC ${CORE_SOURCES})
 target_include_directories(polyglot-core PUBLIC ${CORE_DIR}/include)
 target_link_libraries(polyglot-core PUBLIC Threads::Threads)
+target_compile_definitions(polyglot-core PRIVATE POLYGLOT_VERSION=${POLYGLOT_VERSION})
 
 # --- CLI: the `polyglot` executable (self-contained; shipped binary name) --------------------------------
 file(GLOB CLI_SOURCES CONFIGURE_DEPENDS ${CLI_DIR}/src/*.cpp)

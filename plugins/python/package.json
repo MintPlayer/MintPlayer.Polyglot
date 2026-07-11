@@ -1,6 +1,6 @@
 {
   "name": "@mintplayer/polyglot-target-python",
-  "version": "0.3.0",
+  "version": "0.0.0-dev",
   "description": "MintPlayer Polyglot Python target — a pure-JSON language plugin (spec + emission rules + capabilities + std bindings) for the polyglot transpiler.",
   "keywords": [
     "polyglot",

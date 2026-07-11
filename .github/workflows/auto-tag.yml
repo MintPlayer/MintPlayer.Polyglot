@@ -1,0 +1,83 @@
+name: Auto-tag release
+
+# WORKFLOW A (PRD §4.16 / PLAN §P24). Reacts to commits on master and cuts a release: reads the latest v* tag,
+# bumps it (patch by default; minor/major from the merged PR's release:minor / release:major label), creates +
+# pushes the tag, then triggers Workflow B (release.yml). EVERY merge cuts a release (user decision D2).
+#
+# LOAD-BEARING — do not "simplify": a tag pushed by the built-in GITHUB_TOKEN does NOT trigger a tag-listening
+# workflow (GitHub suppresses events raised by GITHUB_TOKEN to prevent recursion; this is NOT a permissions
+# setting). So we do NOT rely on the tag push to start B. Instead we `gh workflow run release.yml --ref <tag>`:
+# workflow_dispatch (and repository_dispatch) are the documented EXCEPTIONS to that rule, so the dispatch DOES
+# start B under GITHUB_TOKEN — no PAT, no GitHub App, nothing to rotate. B also keeps its `push: tags` trigger
+# for manual `git push origin <tag>`.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false   # a tag-cut must never be interrupted mid-push
+
+permissions:
+  contents: write   # push the tag ref
+  actions: write    # gh workflow run (dispatch B)
+  pull-requests: read  # read the merged PR's labels for the bump level
+
+env:
+  # One-time bootstrap floor (PRD §4.16 / PLAN §P24): the unified line starts at 0.5.0, ahead of every
+  # published artifact. next = max(bump(latest tag), FLOOR). Inert once the latest tag is >= it — leave it.
+  MIN_VERSION: '0.5.0'
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history + all tags
+
+      - name: Compute the next version + tag if new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Bump level from the merged PR's labels (default patch). The push's head commit maps to its PR.
+          labels="$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+                      --jq '.[0].labels[].name' 2>/dev/null || true)"
+          bump=patch
+          if   echo "$labels" | grep -qx 'release:major'; then bump=major
+          elif echo "$labels" | grep -qx 'release:minor'; then bump=minor; fi
+          echo "bump level: $bump (PR labels: ${labels//$'\n'/, })"
+
+          # Latest v* tag → components (strip any -prerelease).
+          latest="$(git tag -l 'v*' --sort=-v:refname | head -1)"
+          latest="${latest#v}"; [ -n "$latest" ] || latest="0.0.0"
+          core="${latest%%-*}"; IFS=. read -r MA MI PA <<< "$core"
+          case "$bump" in
+            major) MA=$((MA+1)); MI=0; PA=0;;
+            minor) MI=$((MI+1)); PA=0;;
+            patch) PA=$((PA+1));;
+          esac
+          next="$MA.$MI.$PA"
+
+          # Apply the bootstrap floor: next = max(next, MIN_VERSION).
+          next="$(printf '%s\n%s\n' "$next" "$MIN_VERSION" | sort -V | tail -1)"
+          tag="v$next"
+          echo "latest tag: v$latest → next: $tag"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists — nothing to cut"; exit 0
+          fi
+
+          git config user.name  "polyglot-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag" "${{ github.sha }}"
+          git push origin "$tag"          # GITHUB_TOKEN push — records the tag, but does NOT trigger B
+          echo "pushed $tag"
+
+          # Trigger Workflow B at the tag ref (the dispatch exception makes this fire under GITHUB_TOKEN).
+          gh workflow run release.yml --ref "$tag"
+          echo "dispatched release.yml @ $tag"
