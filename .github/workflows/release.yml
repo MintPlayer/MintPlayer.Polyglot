@@ -2,12 +2,13 @@ name: Release the CLI
 
 # Builds the native `polyglot` CLI for every shipped RID, publishes a GitHub Release with all archives,
 # and packs + pushes the multi-RID MintPlayer.Polyglot.MSBuild NuGet (which EMBEDS the CLI + plugins per
-# RID, so `dotnet build` transpiles .pg on Windows AND Linux CI). Shipping set: win-x64, linux-x64,
-# linux-arm64 (macOS is not planned — PRD §4.14 / PLAN §P22).
+# RID, so `dotnet build` transpiles .pg on Windows, Linux AND macOS CI). Shipping set: win-x64, linux-x64,
+# linux-arm64, osx-x64, osx-arm64 (PRD §4.14 / PLAN §P22).
 #
 # Topology:
 #   build-windows          MSBuild v145 (VS 2026) → polyglot-win-x64.zip     + provenance
 #   build-linux (matrix)   CMake/g++ on native runners → polyglot-<rid>.tar.gz + provenance
+#   build-macos (matrix)   CMake/clang on native runners → polyglot-osx-<arch>.tar.gz (ad-hoc signed) + provenance
 #   github-release (fan-in) attaches every archive to a GitHub Release
 #   nuget          (fan-in) lays out tools/<rid>/ from all artifacts, packs once, pushes
 #
@@ -170,8 +171,68 @@ jobs:
           path: polyglot-${{ matrix.rid }}.tar.gz
           if-no-files-found: error
 
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-x64
+            runs-on: macos-13     # Intel (x86_64)
+          - rid: osx-arm64
+            runs-on: macos-14     # Apple Silicon (arm64)
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # clang ships with the Xcode Command Line Tools (preinstalled); cmake is preinstalled on the images but
+      # install it if a future image drops it. CMakeLists.txt already pins CMAKE_OSX_DEPLOYMENT_TARGET=13.0.
+      - name: Ensure cmake
+        run: cmake --version || brew install cmake
+
+      - name: Build the native CLI (CMake, Release)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
+          ./build/polyglot --version
+
+      - name: Gate - unit tests
+        run: ./build/polyglot-tests
+
+      - name: Gate - smoke transpile (plugins found next to the binary, not cwd)
+        run: |
+          printf 'fn main() {\n  print(6 * 7)\n}\n' > /tmp/smoke.pg
+          (cd /tmp && "$GITHUB_WORKSPACE/build/polyglot" build /tmp/smoke.pg --target csharp --out /tmp/ --lib io)
+          grep -q 'print(6 \* 7)' /tmp/smoke.cs
+
+      # Apple Silicon refuses to run an unsigned binary; a native link is already ad-hoc signed, but re-sign
+      # explicitly so a downloaded/tar-extracted binary is guaranteed valid. The extension additionally strips
+      # the com.apple.quarantine xattr on activation (no Developer-ID cert / notarization — see PRD §4.14).
+      - name: Ad-hoc codesign
+        run: codesign --force --sign - build/polyglot
+
+      - name: Package (tar.gz preserves the +x bit and the signature)
+        run: tar czf "polyglot-${{ matrix.rid }}.tar.gz" -C build polyglot plugins
+
+      - name: Attest build provenance (tarball + binary)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            polyglot-${{ matrix.rid }}.tar.gz
+            build/polyglot
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: polyglot-${{ matrix.rid }}
+          path: polyglot-${{ matrix.rid }}.tar.gz
+          if-no-files-found: error
+
   github-release:
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write     # create the release (and, on dispatch, its tag)
@@ -209,7 +270,7 @@ jobs:
           gh release create "${{ steps.tag.outputs.tag }}" "${archives[@]}" "${args[@]}"
 
   nuget:
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
       packages: write     # push to GitHub Packages
@@ -228,7 +289,7 @@ jobs:
           set -euo pipefail
           mkdir -p staging/win-x64
           unzip -o dist/polyglot-win-x64/polyglot-win-x64.zip -d staging/win-x64
-          for rid in linux-x64 linux-arm64; do
+          for rid in linux-x64 linux-arm64 osx-x64 osx-arm64; do
             mkdir -p "staging/$rid"
             tar xzf "dist/polyglot-$rid/polyglot-$rid.tar.gz" -C "staging/$rid"
           done
