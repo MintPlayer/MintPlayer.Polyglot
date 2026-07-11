@@ -120,14 +120,102 @@ r['UnionDecl'] = {"seq": [
             {"map": "item.fields", "sep": ", ", "item": {"tmpl": ["val ", ident("item.name"), ": ", {"type": "item.type"}]}}, ")"]}}},
         " : ", ident("decl.name"), {"fn": "generics"}, "()"]}}}]}
 
+# ---- P26 slice 2 batch 2: control flow, exceptions, interpolation, class/method families ----
+s['binaryOp'] = {"<<": "shl", ">>": "shr", ">>>": "ushr", "&": "and", "|": "or", "^": "xor"}  # Kotlin infix bit ops
+# Kotlin keywords (hard + soft that bite as identifiers); escape with backticks.
+s['identifiers']['keywords'] = ["as", "break", "class", "continue", "do", "else", "false", "for", "fun", "if",
+    "in", "interface", "is", "null", "object", "package", "return", "super", "this", "throw", "true", "try",
+    "typealias", "typeof", "val", "var", "when", "while", "by", "catch", "constructor", "delegate", "dynamic",
+    "field", "file", "finally", "get", "import", "init", "param", "property", "receiver", "set", "setparam",
+    "value", "where", "it"]
+s['identifiers']['escape'] = {"strategy": "wrap", "with": "`"}
+
+r['Await'] = {"emit": "node.operand"}  # Kotlin suspend calls return the value directly; no `await` keyword
+r['With'] = {"tmpl": [{"emitChild": "node.base", "side": "recv"}, ".copy(",
+    {"map": "node.fields", "sep": ", ", "item": {"tmpl": [ident("item.name"), " = ", {"emit": "item.value"}]}}, ")"]}
+r['Interp'] = {"tmpl": ["\"", {"interleave": {"lits": "node.chunks", "holes": "node.holes",
+    "lit": {"fn": "escape", "args": ["interp", {"get": "item"}]},
+    "hole": {"case": {"when": [[{"eq": ["item.typeIsBool", "true"]}, {"tmpl": ["${if (", {"emit": "item"}, ") \"true\" else \"false\"}"]}]],
+        "else": {"tmpl": ["${", {"emit": "item"}, "}"]}}}}}, "\""]}
+r['ForStmt'] = {"case": {"when": [
+    [{"eq": ["stmt.isRange", "true"]}, {"block": {"head": {"tmpl": ["for (", ident("stmt.binding"), " in ",
+        {"emit": "stmt.rangeStart"}, {"case": {"when": [[{"eq": ["stmt.inclusive", "true"]}, ".."]], "else": " until "}},
+        {"emit": "stmt.rangeEnd"}, ")"]}, "body": [{"stmts": "stmt.body"}]}}],
+    [{"not": {"eq": ["stmt.tupleBindings.count", "0"]}}, {"block": {"head": {"tmpl": ["for ((",
+        {"map": "stmt.tupleBindings", "sep": ", ", "item": ident("item")}, ") in ", {"emit": "stmt.iterable"}, ")"]},
+        "body": [{"stmts": "stmt.body"}]}}]],
+  "else": {"block": {"head": {"tmpl": ["for (", ident("stmt.binding"), " in ", {"emit": "stmt.iterable"}, ")"]},
+    "body": [{"stmts": "stmt.body"}]}}}}
+# try/catch: Kotlin `catch (e: Type)`; a `when` guard lowers to `if (!(guard)) throw <e>` (no native catch guard).
+r['TryStmt'] = {"seq": [
+    {"block": {"head": "try", "body": [{"stmts": "stmt.body"}]}},
+    {"mapDecl": "stmt.catches", "each": {"block": {
+        "head": {"tmpl": ["catch (", {"case": {"when": [[{"eq": ["item.hasBinding", "true"]}, ident("item.binding")]], "else": "__e"}},
+            ": ", {"case": {"when": [[{"eq": ["item.hasType", "true"]}, {"type": "item.type"}]], "else": "Throwable"}}, ")"]},
+        "body": [
+            {"case": {"when": [[{"eq": ["item.hasGuard", "true"]}, {"line": {"tmpl": ["if (!(", {"emit": "item.guard"}, ")) throw ",
+                {"case": {"when": [[{"eq": ["item.hasBinding", "true"]}, ident("item.binding")]], "else": "__e"}}]}}]]}},
+            {"stmts": "item.body"}]}}},
+    {"case": {"when": [[{"eq": ["stmt.hasFinally", "true"]}, {"block": {"head": "finally", "body": [{"stmts": "stmt.finallyBody"}]}}]]}}]}
+# operator fun name mapping (Kotlin uses named operator functions).
+r['ktOpName'] = {"case": {"when": [
+    [{"eq": ["decl.opSymbol", "+"]}, "plus"], [{"eq": ["decl.opSymbol", "-"]}, "minus"],
+    [{"eq": ["decl.opSymbol", "*"]}, "times"], [{"eq": ["decl.opSymbol", "/"]}, "div"],
+    [{"eq": ["decl.opSymbol", "%"]}, "rem"], [{"eq": ["decl.opSymbol", "get"]}, "get"], [{"eq": ["decl.opSymbol", "set"]}, "set"]],
+  "else": {"get": "decl.opSymbol"}}}
+r['csMethodSig'] = {"tmpl": [{"case": {"when": [[{"eq": ["decl.isAsync", "true"]}, "suspend "]]}}, "fun ", {"fn": "generics"}, " ",
+    ident("decl.name"), "(", {"map": "decl.params", "sep": ", ", "item": {"call": "csParam"}}, ")",
+    {"case": {"when": [[{"eq": ["decl.returnsUnit", "true"]}, ""]], "else": {"tmpl": [": ", {"type": "decl.returnType"}]}}}]}
+r['csOperatorSig'] = {"tmpl": ["operator fun ", {"call": "ktOpName"}, "(", {"map": "decl.params", "sep": ", ", "item": {"call": "csParam"}}, ")",
+    {"case": {"when": [[{"eq": ["decl.returnsUnit", "true"]}, ""]], "else": {"tmpl": [": ", {"type": "decl.returnType"}]}}}]}
+def ktBody(sig):
+    return {"case": {"when": [[{"eq": ["decl.exprBodied", "true"]}, {"line": {"tmpl": [{"call": sig}, " = ", {"emit": "decl.exprBody"}]}}]],
+        "else": {"block": {"head": {"call": sig}, "body": [{"stmts": "decl.body"}]}}}}
+r['MethodDecl'] = {"case": {"when": [
+    [{"eq": ["decl.kind", "property"]}, {"seq": [
+        {"line": {"tmpl": ["val ", ident("decl.name"), ": ", {"type": "decl.returnType"}]}},
+        {"line": {"tmpl": ["    get() = ", {"emit": "decl.exprBody"}]}}]}],
+    [{"eq": ["decl.kind", "operator"]}, ktBody("csOperatorSig")]],
+  "else": ktBody("csMethodSig")}}
+# Extension: Kotlin `fun Recv.name(...)`; the receiver becomes the extension-fn receiver (params[0] is `self`).
+r['csExtSig'] = {"tmpl": ["fun ", {"fn": "generics"}, " ", {"type": "decl.params.0.type"}, ".", ident("decl.name"), "(",
+    {"map": "decl.paramsTail", "sep": ", ", "item": {"tmpl": [ident("item.name"), ": ", {"type": "item.type"}]}}, ")",
+    {"case": {"when": [[{"eq": ["decl.returnsUnit", "true"]}, ""]], "else": {"tmpl": [": ", {"type": "decl.returnType"}]}}}]}
+r['ExtensionDecl'] = {"case": {"when": [[{"eq": ["decl.exprBodied", "true"]},
+    {"line": {"tmpl": [{"call": "csExtSig"}, " = ", {"emit": "decl.exprBody"}]}}]],
+  "else": {"block": {"head": {"call": "csExtSig"}, "body": [{"stmts": "decl.body"}]}}}}
+# But extension bodies reference `this` (the receiver); in a Kotlin extension fn, `this` IS the receiver, so
+# `self` must map to `this`. Core rewrites this->self and names params[0] `self`; emit `self` as a value that
+# equals the receiver by aliasing at the top. Simplest: the extension fn takes no explicit self param and the
+# body uses `this`; but Core prepends `self`. So keep params[0]=self as the receiver TYPE (above) and alias
+# `val self = this` — handled by emitting the body after a self alias is unnecessary since we drop params[0].
+# ClassDecl: Kotlin `class Name[ : Base(super)][, Iface...] { fields; init/ctor; methods; companion { statics } }`.
+r['csClassHead'] = {"tmpl": ["class ", ident("decl.name"), {"fn": "generics"},
+    {"case": {"when": [[{"eq": ["decl.hasExtBase", "true"]}, {"tmpl": [" : ", {"type": "decl.extBase"},
+        {"case": {"when": [[{"eq": ["decl.hasSuper", "true"]}, {"tmpl": ["(", {"map": "decl.superArgs", "sep": ", ", "item": {"emit": "item"}}, ")"]}]], "else": "()"}}]}]]}},
+    {"case": {"when": [[{"not": {"eq": ["decl.ifaceBases.count", "0"]}}, {"tmpl": [
+        {"case": {"when": [[{"eq": ["decl.hasExtBase", "true"]}, ", "]], "else": " : "}},
+        {"map": "decl.ifaceBases", "sep": ", ", "item": {"type": "item"}}]}]]}}]}
+_ktFieldInit = {"case": {"when": [[{"eq": ["item.hasInit", "true"]}, {"tmpl": [" = ", {"emit": "item.init"}]}]], "else": " = TODO()"}}
+_ktMut = {"case": {"when": [[{"eq": ["item.isMutable", "true"]}, "var "]], "else": "val "}}
+_ktInstField = {"tmpl": [_ktMut, ident("item.name"), ": ", {"type": "item.type"}, _ktFieldInit]}
+_ktField = {"line": {"case": {"when": [[{"eq": ["item.isStatic", "true"]}, ""]], "else": _ktInstField}}}
+_ktCtor = {"case": {"when": [[{"eq": ["decl.hasInit", "true"]}, {"block": {
+    "head": {"tmpl": ["constructor(", {"map": "decl.initParams", "sep": ", ", "item": {"call": "csParam"}}, ")"]},
+    "body": [{"stmts": "decl.initBody"}]}}]]}}
+r['ClassDecl'] = {"block": {"head": {"call": "csClassHead"}, "body": [
+    {"mapDecl": "decl.fields", "each": _ktField},
+    _ktCtor,
+    {"mapMembers": "decl.methods", "rule": "MethodDecl"}]}}
+
 d['std'] = {
-  "std.collections": {"List.type": "MutableList<$0>", "List.init": "mutableListOf()", "List.count": "$this.size",
+  "std.collections": {"List.type": "MutableList<$0>", "List.init": "mutableListOf<$0>()", "List.count": "$this.size",
     "List.add": "$this.add($0)", "List.clear": "$this.clear()",
     "List.removeAll": "$this.removeAll { __e -> ($0)(__e) }", "List.removeAt": "$this.removeAt($0)"},
   "std.io": {"print": "println(x)"},
   "std.math": {"Math.PI": "kotlin.math.PI", "Math.E": "kotlin.math.E", "Math.sqrt": "kotlin.math.sqrt($0)",
     "Math.ln": "kotlin.math.ln($0)", "Math.log": "kotlin.math.ln($0)", "Math.log2": "kotlin.math.log2($0)",
-    "Math.log10": "kotlin.math.log10($0)", "Math.exp": "kotlin.math.exp($0)", "Math.pow": "$0.pow($1)",
+    "Math.log10": "kotlin.math.log10($0)", "Math.exp": "kotlin.math.exp($0)", "Math.pow": "kotlin.math.pow($0, $1)",
     "Math.sin": "kotlin.math.sin($0)", "Math.cos": "kotlin.math.cos($0)", "Math.tan": "kotlin.math.tan($0)",
     "Math.asin": "kotlin.math.asin($0)", "Math.acos": "kotlin.math.acos($0)", "Math.atan": "kotlin.math.atan($0)",
     "Math.atan2": "kotlin.math.atan2($0, $1)", "Math.sinh": "kotlin.math.sinh($0)", "Math.cosh": "kotlin.math.cosh($0)",

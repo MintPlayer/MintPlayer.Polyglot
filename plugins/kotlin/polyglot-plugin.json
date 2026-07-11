@@ -29,7 +29,14 @@
       "u16": "U",
       "u8": "U"
     },
-    "binaryOp": {},
+    "binaryOp": {
+      "<<": "shl",
+      ">>": "shr",
+      ">>>": "ushr",
+      "&": "and",
+      "|": "or",
+      "^": "xor"
+    },
     "wrapInt": {
       "i8": "($x).toByte()",
       "i16": "($x).toShort()",
@@ -102,87 +109,57 @@
     },
     "identifiers": {
       "keywords": [
-        "abstract",
         "as",
-        "base",
-        "bool",
         "break",
-        "byte",
-        "case",
-        "catch",
-        "char",
-        "checked",
         "class",
-        "const",
         "continue",
-        "decimal",
-        "default",
-        "delegate",
         "do",
-        "double",
         "else",
-        "enum",
-        "event",
-        "explicit",
-        "extern",
         "false",
-        "finally",
-        "fixed",
-        "float",
         "for",
-        "foreach",
-        "goto",
+        "fun",
         "if",
-        "implicit",
         "in",
-        "int",
         "interface",
-        "internal",
         "is",
-        "lock",
-        "long",
-        "namespace",
-        "new",
         "null",
         "object",
-        "operator",
-        "out",
-        "override",
-        "params",
-        "private",
-        "protected",
-        "public",
-        "readonly",
-        "ref",
+        "package",
         "return",
-        "sbyte",
-        "sealed",
-        "short",
-        "sizeof",
-        "stackalloc",
-        "static",
-        "string",
-        "struct",
-        "switch",
+        "super",
         "this",
         "throw",
         "true",
         "try",
+        "typealias",
         "typeof",
-        "uint",
-        "ulong",
-        "unchecked",
-        "unsafe",
-        "ushort",
-        "using",
-        "virtual",
-        "void",
-        "volatile",
-        "while"
+        "val",
+        "var",
+        "when",
+        "while",
+        "by",
+        "catch",
+        "constructor",
+        "delegate",
+        "dynamic",
+        "field",
+        "file",
+        "finally",
+        "get",
+        "import",
+        "init",
+        "param",
+        "property",
+        "receiver",
+        "set",
+        "setparam",
+        "value",
+        "where",
+        "it"
       ],
       "escape": {
-        "strategy": "prefix",
-        "with": "@"
+        "strategy": "wrap",
+        "with": "`"
       },
       "reserved": [
         "PolyglotProgram",
@@ -469,13 +446,7 @@
       "get": "node.code"
     },
     "Await": {
-      "tmpl": [
-        "await ",
-        {
-          "emitChild": "node.operand",
-          "side": "recv"
-        }
-      ]
+      "emit": "node.operand"
     },
     "With": {
       "tmpl": [
@@ -483,7 +454,7 @@
           "emitChild": "node.base",
           "side": "recv"
         },
-        " with { ",
+        ".copy(",
         {
           "map": "node.fields",
           "sep": ", ",
@@ -504,7 +475,7 @@
             ]
           }
         },
-        " }"
+        ")"
       ]
     },
     "Cast": {
@@ -533,7 +504,7 @@
     },
     "Interp": {
       "tmpl": [
-        "$\"",
+        "\"",
         {
           "interleave": {
             "lits": "node.chunks",
@@ -559,18 +530,18 @@
                     },
                     {
                       "tmpl": [
-                        "{(",
+                        "${if (",
                         {
                           "emit": "item"
                         },
-                        " ? \"true\" : \"false\")}"
+                        ") \"true\" else \"false\"}"
                       ]
                     }
                   ]
                 ],
                 "else": {
                   "tmpl": [
-                    "{",
+                    "${",
                     {
                       "emit": "item"
                     },
@@ -853,46 +824,42 @@
     },
     "csOperatorSig": {
       "tmpl": [
-        "public static ",
+        "operator fun ",
         {
-          "type": "decl.returnType"
-        },
-        " operator ",
-        {
-          "get": "decl.opSymbol"
+          "call": "ktOpName"
         },
         "(",
         {
-          "fn": "ident",
-          "args": [
-            {
-              "get": "decl.owner"
-            }
-          ]
-        },
-        " lhs",
-        {
           "map": "decl.params",
-          "sep": "",
+          "sep": ", ",
           "item": {
-            "tmpl": [
-              ", ",
-              {
-                "type": "item.type"
-              },
-              " ",
-              {
-                "fn": "ident",
-                "args": [
-                  {
-                    "get": "item.name"
-                  }
-                ]
-              }
-            ]
+            "call": "csParam"
           }
         },
-        ")"
+        ")",
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.returnsUnit",
+                    "true"
+                  ]
+                },
+                ""
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                ": ",
+                {
+                  "type": "decl.returnType"
+                }
+              ]
+            }
+          }
+        }
       ]
     },
     "csAsyncRet": {
@@ -921,22 +888,6 @@
     },
     "csMethodSig": {
       "tmpl": [
-        "public ",
-        {
-          "case": {
-            "when": [
-              [
-                {
-                  "eq": [
-                    "decl.isStatic",
-                    "true"
-                  ]
-                },
-                "static "
-              ]
-            ]
-          }
-        },
         {
           "case": {
             "when": [
@@ -947,30 +898,14 @@
                     "true"
                   ]
                 },
-                "async "
+                "suspend "
               ]
             ]
           }
         },
+        "fun ",
         {
-          "case": {
-            "when": [
-              [
-                {
-                  "eq": [
-                    "decl.isAsync",
-                    "true"
-                  ]
-                },
-                {
-                  "call": "csAsyncRet"
-                }
-              ]
-            ],
-            "else": {
-              "type": "decl.returnType"
-            }
-          }
+          "fn": "generics"
         },
         " ",
         {
@@ -980,9 +915,6 @@
               "get": "decl.name"
             }
           ]
-        },
-        {
-          "fn": "generics"
         },
         "(",
         {
@@ -994,7 +926,27 @@
         },
         ")",
         {
-          "fn": "where"
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.returnsUnit",
+                    "true"
+                  ]
+                },
+                ""
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                ": ",
+                {
+                  "type": "decl.returnType"
+                }
+              ]
+            }
+          }
         }
       ]
     },
@@ -1009,98 +961,37 @@
               ]
             },
             {
-              "line": {
-                "tmpl": [
-                  "public ",
-                  {
-                    "type": "decl.returnType"
-                  },
-                  " ",
-                  {
-                    "fn": "ident",
-                    "args": [
+              "seq": [
+                {
+                  "line": {
+                    "tmpl": [
+                      "val ",
                       {
-                        "get": "decl.name"
-                      }
-                    ]
-                  },
-                  " => ",
-                  {
-                    "emit": "decl.exprBody"
-                  },
-                  ";"
-                ]
-              }
-            }
-          ],
-          [
-            {
-              "and": [
-                {
-                  "eq": [
-                    "decl.kind",
-                    "operator"
-                  ]
-                },
-                {
-                  "eq": [
-                    "decl.opSymbol",
-                    "get"
-                  ]
-                }
-              ]
-            },
-            {
-              "case": {
-                "when": [
-                  [
-                    {
-                      "eq": [
-                        "decl.exprBodied",
-                        "true"
-                      ]
-                    },
-                    {
-                      "line": {
-                        "tmpl": [
+                        "fn": "ident",
+                        "args": [
                           {
-                            "call": "csIndexerSig"
-                          },
-                          " => ",
-                          {
-                            "emit": "decl.exprBody"
-                          },
-                          ";"
-                        ]
-                      }
-                    }
-                  ]
-                ],
-                "else": {
-                  "seq": [
-                    {
-                      "block": {
-                        "head": {
-                          "tmpl": [
-                            {
-                              "call": "csIndexerSig"
-                            },
-                            " { get"
-                          ]
-                        },
-                        "body": [
-                          {
-                            "stmts": "decl.body"
+                            "get": "decl.name"
                           }
                         ]
+                      },
+                      ": ",
+                      {
+                        "type": "decl.returnType"
                       }
-                    },
-                    {
-                      "line": "}"
-                    }
-                  ]
+                    ]
+                  }
+                },
+                {
+                  "line": {
+                    "tmpl": [
+                      "    get() = ",
+                      {
+                        "emit": "decl.exprBody"
+                      }
+                    ]
+                  }
                 }
-              }
+              ]
             }
           ],
           [
@@ -1126,11 +1017,10 @@
                           {
                             "call": "csOperatorSig"
                           },
-                          " => ",
+                          " = ",
                           {
                             "emit": "decl.exprBody"
-                          },
-                          ";"
+                          }
                         ]
                       }
                     }
@@ -1168,11 +1058,10 @@
                       {
                         "call": "csMethodSig"
                       },
-                      " => ",
+                      " = ",
                       {
                         "emit": "decl.exprBody"
-                      },
-                      ";"
+                      }
                     ]
                   }
                 }
@@ -1310,7 +1199,31 @@
             "block": {
               "head": {
                 "tmpl": [
-                  "catch",
+                  "catch (",
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.hasBinding",
+                              "true"
+                            ]
+                          },
+                          {
+                            "fn": "ident",
+                            "args": [
+                              {
+                                "get": "item.binding"
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": "__e"
+                    }
+                  },
+                  ": ",
                   {
                     "case": {
                       "when": [
@@ -1322,11 +1235,35 @@
                             ]
                           },
                           {
+                            "type": "item.type"
+                          }
+                        ]
+                      ],
+                      "else": "Throwable"
+                    }
+                  },
+                  ")"
+                ]
+              },
+              "body": [
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "item.hasGuard",
+                            "true"
+                          ]
+                        },
+                        {
+                          "line": {
                             "tmpl": [
-                              " (",
+                              "if (!(",
                               {
-                                "type": "item.type"
+                                "emit": "item.guard"
                               },
+                              ")) throw ",
                               {
                                 "case": {
                                   "when": [
@@ -1338,55 +1275,25 @@
                                         ]
                                       },
                                       {
-                                        "tmpl": [
-                                          " ",
+                                        "fn": "ident",
+                                        "args": [
                                           {
-                                            "fn": "ident",
-                                            "args": [
-                                              {
-                                                "get": "item.binding"
-                                              }
-                                            ]
+                                            "get": "item.binding"
                                           }
                                         ]
                                       }
                                     ]
-                                  ]
+                                  ],
+                                  "else": "__e"
                                 }
-                              },
-                              ")"
+                              }
                             ]
                           }
-                        ]
+                        }
                       ]
-                    }
-                  },
-                  {
-                    "case": {
-                      "when": [
-                        [
-                          {
-                            "eq": [
-                              "item.hasGuard",
-                              "true"
-                            ]
-                          },
-                          {
-                            "tmpl": [
-                              " when (",
-                              {
-                                "emit": "item.guard"
-                              },
-                              ")"
-                            ]
-                          }
-                        ]
-                      ]
-                    }
+                    ]
                   }
-                ]
-              },
-              "body": [
+                },
                 {
                   "stmts": "item.body"
                 }
@@ -1434,7 +1341,7 @@
               "block": {
                 "head": {
                   "tmpl": [
-                    "for (var ",
+                    "for (",
                     {
                       "fn": "ident",
                       "args": [
@@ -1443,18 +1350,9 @@
                         }
                       ]
                     },
-                    " = ",
+                    " in ",
                     {
                       "emit": "stmt.rangeStart"
-                    },
-                    "; ",
-                    {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "stmt.binding"
-                        }
-                      ]
                     },
                     {
                       "case": {
@@ -1466,25 +1364,16 @@
                                 "true"
                               ]
                             },
-                            " <= "
+                            ".."
                           ]
                         ],
-                        "else": " < "
+                        "else": " until "
                       }
                     },
                     {
                       "emit": "stmt.rangeEnd"
                     },
-                    "; ",
-                    {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "stmt.binding"
-                        }
-                      ]
-                    },
-                    "++)"
+                    ")"
                   ]
                 },
                 "body": [
@@ -1508,12 +1397,17 @@
               "block": {
                 "head": {
                   "tmpl": [
-                    "foreach (var (",
+                    "for ((",
                     {
                       "map": "stmt.tupleBindings",
                       "sep": ", ",
                       "item": {
-                        "get": "item"
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "item"
+                          }
+                        ]
                       }
                     },
                     ") in ",
@@ -1536,7 +1430,7 @@
           "block": {
             "head": {
               "tmpl": [
-                "foreach (var ",
+                "for (",
                 {
                   "fn": "ident",
                   "args": [
@@ -1716,11 +1610,15 @@
     },
     "csExtSig": {
       "tmpl": [
-        "public static ",
+        "fun ",
         {
-          "type": "decl.returnType"
+          "fn": "generics"
         },
         " ",
+        {
+          "type": "decl.params.0.type"
+        },
+        ".",
         {
           "fn": "ident",
           "args": [
@@ -1729,32 +1627,12 @@
             }
           ]
         },
-        {
-          "fn": "generics"
-        },
-        "(this ",
-        {
-          "type": "decl.params.0.type"
-        },
-        " ",
-        {
-          "fn": "ident",
-          "args": [
-            {
-              "get": "decl.params.0.name"
-            }
-          ]
-        },
+        "(",
         {
           "map": "decl.paramsTail",
-          "sep": "",
+          "sep": ", ",
           "item": {
             "tmpl": [
-              ", ",
-              {
-                "type": "item.type"
-              },
-              " ",
               {
                 "fn": "ident",
                 "args": [
@@ -1762,13 +1640,37 @@
                     "get": "item.name"
                   }
                 ]
+              },
+              ": ",
+              {
+                "type": "item.type"
               }
             ]
           }
         },
         ")",
         {
-          "fn": "where"
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.returnsUnit",
+                    "true"
+                  ]
+                },
+                ""
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                ": ",
+                {
+                  "type": "decl.returnType"
+                }
+              ]
+            }
+          }
         }
       ]
     },
@@ -1788,11 +1690,10 @@
                   {
                     "call": "csExtSig"
                   },
-                  " => ",
+                  " = ",
                   {
                     "emit": "decl.exprBody"
-                  },
-                  ";"
+                  }
                 ]
               }
             }
@@ -1814,9 +1715,6 @@
     },
     "csClassHead": {
       "tmpl": [
-        {
-          "fn": "access"
-        },
         "class ",
         {
           "fn": "ident",
@@ -1835,29 +1733,92 @@
               [
                 {
                   "eq": [
-                    "decl.bases.count",
-                    "0"
+                    "decl.hasExtBase",
+                    "true"
                   ]
                 },
-                ""
-              ]
-            ],
-            "else": {
-              "tmpl": [
-                " : ",
                 {
-                  "map": "decl.bases",
-                  "sep": ", ",
-                  "item": {
-                    "type": "item"
-                  }
+                  "tmpl": [
+                    " : ",
+                    {
+                      "type": "decl.extBase"
+                    },
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "decl.hasSuper",
+                                "true"
+                              ]
+                            },
+                            {
+                              "tmpl": [
+                                "(",
+                                {
+                                  "map": "decl.superArgs",
+                                  "sep": ", ",
+                                  "item": {
+                                    "emit": "item"
+                                  }
+                                },
+                                ")"
+                              ]
+                            }
+                          ]
+                        ],
+                        "else": "()"
+                      }
+                    }
+                  ]
                 }
               ]
-            }
+            ]
           }
         },
         {
-          "fn": "where"
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "decl.ifaceBases.count",
+                      "0"
+                    ]
+                  }
+                },
+                {
+                  "tmpl": [
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "decl.hasExtBase",
+                                "true"
+                              ]
+                            },
+                            ", "
+                          ]
+                        ],
+                        "else": " : "
+                      }
+                    },
+                    {
+                      "map": "decl.ifaceBases",
+                      "sep": ", ",
+                      "item": {
+                        "type": "item"
+                      }
+                    }
+                  ]
+                }
+              ]
+            ]
+          }
         }
       ]
     },
@@ -1871,88 +1832,74 @@
             "mapDecl": "decl.fields",
             "each": {
               "line": {
-                "tmpl": [
-                  "public ",
-                  {
-                    "case": {
-                      "when": [
-                        [
-                          {
-                            "and": [
-                              {
-                                "eq": [
-                                  "item.isStatic",
-                                  "true"
-                                ]
-                              },
+                "case": {
+                  "when": [
+                    [
+                      {
+                        "eq": [
+                          "item.isStatic",
+                          "true"
+                        ]
+                      },
+                      ""
+                    ]
+                  ],
+                  "else": {
+                    "tmpl": [
+                      {
+                        "case": {
+                          "when": [
+                            [
                               {
                                 "eq": [
                                   "item.isMutable",
                                   "true"
                                 ]
-                              }
+                              },
+                              "var "
                             ]
-                          },
-                          "static "
-                        ],
-                        [
-                          {
-                            "eq": [
-                              "item.isStatic",
-                              "true"
-                            ]
-                          },
-                          "static readonly "
-                        ],
-                        [
-                          {
-                            "eq": [
-                              "item.isMutable",
-                              "true"
-                            ]
-                          },
-                          ""
-                        ]
-                      ],
-                      "else": "readonly "
-                    }
-                  },
-                  {
-                    "type": "item.type"
-                  },
-                  " ",
-                  {
-                    "fn": "ident",
-                    "args": [
+                          ],
+                          "else": "val "
+                        }
+                      },
                       {
-                        "get": "item.name"
-                      }
-                    ]
-                  },
-                  {
-                    "case": {
-                      "when": [
-                        [
+                        "fn": "ident",
+                        "args": [
                           {
-                            "eq": [
-                              "item.hasInit",
-                              "true"
-                            ]
-                          },
-                          {
-                            "tmpl": [
-                              " = ",
-                              {
-                                "emit": "item.init"
-                              }
-                            ]
+                            "get": "item.name"
                           }
                         ]
-                      ]
-                    }
-                  },
-                  ";"
-                ]
+                      },
+                      ": ",
+                      {
+                        "type": "item.type"
+                      },
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "item.hasInit",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "tmpl": [
+                                  " = ",
+                                  {
+                                    "emit": "item.init"
+                                  }
+                                ]
+                              }
+                            ]
+                          ],
+                          "else": " = TODO()"
+                        }
+                      }
+                    ]
+                  }
+                }
               }
             }
           },
@@ -1970,16 +1917,7 @@
                     "block": {
                       "head": {
                         "tmpl": [
-                          "public ",
-                          {
-                            "fn": "ident",
-                            "args": [
-                              {
-                                "get": "decl.name"
-                              }
-                            ]
-                          },
-                          "(",
+                          "constructor(",
                           {
                             "map": "decl.initParams",
                             "sep": ", ",
@@ -1987,34 +1925,7 @@
                               "call": "csParam"
                             }
                           },
-                          ")",
-                          {
-                            "case": {
-                              "when": [
-                                [
-                                  {
-                                    "eq": [
-                                      "decl.hasSuper",
-                                      "true"
-                                    ]
-                                  },
-                                  {
-                                    "tmpl": [
-                                      " : base(",
-                                      {
-                                        "map": "decl.superArgs",
-                                        "sep": ", ",
-                                        "item": {
-                                          "emit": "item"
-                                        }
-                                      },
-                                      ")"
-                                    ]
-                                  }
-                                ]
-                              ]
-                            }
-                          }
+                          ")"
                         ]
                       },
                       "body": [
@@ -2704,12 +2615,84 @@
           ]
         }
       }
+    },
+    "ktOpName": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "+"
+              ]
+            },
+            "plus"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "-"
+              ]
+            },
+            "minus"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "*"
+              ]
+            },
+            "times"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "/"
+              ]
+            },
+            "div"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "%"
+              ]
+            },
+            "rem"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "get"
+              ]
+            },
+            "get"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "set"
+              ]
+            },
+            "set"
+          ]
+        ],
+        "else": {
+          "get": "decl.opSymbol"
+        }
+      }
     }
   },
   "std": {
     "std.collections": {
       "List.type": "MutableList<$0>",
-      "List.init": "mutableListOf()",
+      "List.init": "mutableListOf<$0>()",
       "List.count": "$this.size",
       "List.add": "$this.add($0)",
       "List.clear": "$this.clear()",
@@ -2728,7 +2711,7 @@
       "Math.log2": "kotlin.math.log2($0)",
       "Math.log10": "kotlin.math.log10($0)",
       "Math.exp": "kotlin.math.exp($0)",
-      "Math.pow": "$0.pow($1)",
+      "Math.pow": "kotlin.math.pow($0, $1)",
       "Math.sin": "kotlin.math.sin($0)",
       "Math.cos": "kotlin.math.cos($0)",
       "Math.tan": "kotlin.math.tan($0)",
