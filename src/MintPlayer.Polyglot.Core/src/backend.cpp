@@ -29,6 +29,9 @@ const char* featureName(Feature f) {
         case Feature::Async:               return "async";
         case Feature::BlockLambdas:        return "blockLambdas";
         case Feature::WithExpressions:     return "withExpressions";
+        case Feature::MutableRefClasses:   return "mutableRefClasses";
+        case Feature::FixedWidthIntegers:  return "fixedWidthIntegers";
+        case Feature::Utf16Strings:        return "utf16Strings";
     }
     return "?";
 }
@@ -53,13 +56,14 @@ public:
         return emitter.emit(m);
     }
 
-    // Tri-state capabilities (PRD §4.11): a feature absent from the map is supported; `"false"` gates it
-    // at compile time (§3.E — Python's `"blockLambdas": false`); `"native"`/`"emulated"` document HOW a
-    // covered feature emits (validation reads them; the gate only refuses on `"false"`).
-    bool supports(Feature f) const override {
+    // Tri-state capabilities (PRD §4.11): a feature absent from the map is `"native"` (supported); `"false"`
+    // gates it at compile time (§3.E); `"emulated"` is supported but warns (call-site rewrite). `supports()`
+    // is the coarse gate; `capabilityStance()` is the source of truth both read from.
+    std::string capabilityStance(Feature f) const override {
         auto it = capabilities_.find(featureName(f));
-        return it == capabilities_.end() || it->second != "false";
+        return it == capabilities_.end() ? "native" : it->second;
     }
+    bool supports(Feature f) const override { return capabilityStance(f) != "false"; }
 
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
@@ -183,8 +187,19 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
 
     std::unordered_map<std::string, std::string> caps;
     for (const auto& kv : doc["capabilities"].members) {
-        if (kv.second.kind == json::Value::Kind::Bool) caps[kv.first] = kv.second.boolean ? "native" : "false";
-        else if (kv.second.kind == json::Value::Kind::String) caps[kv.first] = kv.second.asString();
+        // Tri-state, strictly validated (P26 slice 0): a JSON bool normalizes (true→"native", false→"false");
+        // a string must be exactly one of the three stances. A typo like "emulted" used to pass silently and
+        // then read as "supported" (a silent miscompile risk) — reject it at load instead.
+        std::string stance;
+        if (kv.second.kind == json::Value::Kind::Bool) stance = kv.second.boolean ? "native" : "false";
+        else if (kv.second.kind == json::Value::Kind::String) stance = kv.second.asString();
+        else { error = "plugin '" + name + "': capability '" + kv.first + "' must be a bool or a string"; return nullptr; }
+        if (stance != "native" && stance != "emulated" && stance != "false") {
+            error = "plugin '" + name + "': capability '" + kv.first +
+                    "' must be \"native\", \"emulated\" or false (got '" + stance + "')";
+            return nullptr;
+        }
+        caps[kv.first] = stance;
     }
 
     // Anti-silent-drop coverage: every construct has a rule, or a declared "false"/"emulated" stance.

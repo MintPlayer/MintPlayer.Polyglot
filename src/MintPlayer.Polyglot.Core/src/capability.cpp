@@ -26,14 +26,20 @@ public:
     void run(const CompilationUnit& u) {
         for (const auto& e : u.extensions) {
             mark(Feature::ExtensionMethods, e.pos);
+            typeRef(e.receiver, e.pos);
+            params(e.params);
+            typeRef(e.returnType, e.pos);
             for (const auto& s : e.body) stmt(s.get());
             expr(e.exprBody.get());
         }
         for (const auto& f : u.functions) {
             if (f.isAsync) mark(Feature::Async, f.pos);
+            params(f.params);
+            typeRef(f.returnType, f.pos);
             for (const auto& s : f.body) stmt(s.get());
         }
-        for (const auto& d : u.records)    typeBody(d.members);
+        for (const auto& v : u.values) typeRef(v.type, v.pos);
+        for (const auto& d : u.records) { params(d.fields); typeBody(d.members); }
         for (const auto& d : u.interfaces) typeBody(d.members);
         for (const auto& d : u.classes) {
             // An `extern class` (e.g. the core prelude's Error/Iterable) is native-backed and not emitted —
@@ -41,6 +47,14 @@ public:
             // feature support. Skipping it keeps an always-linked prelude from tripping a target's gating.
             if (d.isExtern) continue;
             if (!d.bases.empty()) mark(Feature::Inheritance, d.pos);
+            // A mutable reference class = a non-extern class with a `var` field/property: assignable in place,
+            // observable identity. The functional-subset targets (Haskell/Elixir) can't model it, so they gate
+            // it via §3.E; C#/TS/Python/PHP support it, so this mark is inert for every current target.
+            for (const auto& m : d.members)
+                if ((m.kind == MemberKind::Field || m.kind == MemberKind::Property) && m.isMutable) {
+                    mark(Feature::MutableRefClasses, d.pos);
+                    break;
+                }
             typeBody(d.members);
         }
     }
@@ -55,11 +69,32 @@ private:
         uses.push_back({f, pos});
     }
 
+    // Fixed-width/unsigned integers and `char`/UTF-16 strings survive as syntactic TypeRef names even though
+    // the MVP scalar lattice (Ty) collapses them — so type annotations are where these two axes are detected.
+    // i64 is excluded (it's a full 64-bit width, native on the single-int targets that only emulate the rest).
+    void typeRef(const TypeRef& t, SourcePos pos) {
+        if (t.kind == TypeRef::Kind::Named) {
+            const std::string& n = t.name;
+            if (n == "i8" || n == "i16" || n == "i32" || n == "u8" || n == "u16" || n == "u32" || n == "u64")
+                mark(Feature::FixedWidthIntegers, pos);
+            else if (n == "char")
+                mark(Feature::Utf16Strings, pos);
+        }
+        for (const auto& a : t.args) typeRef(a, pos);
+        for (const auto& r : t.ret) typeRef(r, pos);
+    }
+    void params(const std::vector<Param>& ps) {
+        for (const auto& p : ps) typeRef(p.type, p.pos);
+    }
+
     void typeBody(const std::vector<Member>& members) {
         for (const auto& m : members) {
             if (m.kind == MemberKind::Operator) mark(Feature::OperatorOverloading, m.pos);
             if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
             if (m.isAsync) mark(Feature::Async, m.pos);
+            typeRef(m.type, m.pos);
+            typeRef(m.returnType, m.pos);
+            params(m.params);
             for (const auto& s : m.body) stmt(s.get());
             expr(m.exprBody.get());
             expr(m.init.get());
@@ -75,6 +110,7 @@ private:
             case StmtKind::Use:   mark(Feature::Disposal, s->pos); break;
             default: break;
         }
+        if (s->hasDeclType) typeRef(s->declType, s->pos); // `let x: u8` / `use r: T`
         expr(s->value.get());
         expr(s->target.get());
         for (const auto& st : s->thenBody) stmt(st.get());
@@ -92,6 +128,9 @@ private:
         }
         if (e->kind == ExprKind::With)   mark(Feature::WithExpressions, e->pos);
         if (e->kind == ExprKind::Await)  mark(Feature::Async, e->pos);
+        if (e->kind == ExprKind::CharLit) mark(Feature::Utf16Strings, e->pos);
+        if (e->kind == ExprKind::Cast)   typeRef(e->castType, e->pos);
+        for (const auto& ta : e->typeArgs) typeRef(ta, e->pos); // explicit generic args, e.g. List<u32>()
         if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name) {
             calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`
             memberUses.push_back({{e->lhs->text + ".init"}, e->pos}); // or a construction `Type(args)`
@@ -129,9 +168,14 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
     Collector c;
     c.run(unit);
     for (const auto& use : c.uses) {
-        if (!backend.supports(use.feature))
+        const std::string stance = backend.capabilityStance(use.feature);
+        if (stance == "false")
             diags.error(use.pos, std::string("target '") + backend.name() + "' does not support " +
                                       featureName(use.feature) + "; remove it or drop that target");
+        else if (stance == "emulated")
+            diags.warn(use.pos, std::string("target '") + backend.name() + "' emulates " +
+                                     featureName(use.feature) + " (runtime behavior is faithful, but the emitted "
+                                     "shape differs from a native construct)");
     }
 
     // §3.B / §4.4: a target-gated portable function (one with `actual` impls) must have an `actual` for THIS
