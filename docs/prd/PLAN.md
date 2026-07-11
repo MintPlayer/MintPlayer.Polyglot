@@ -2607,7 +2607,14 @@ built first; simplicity wins); extension pre-release channel (D5: none); a tag-k
 (D6 left the history in PRD/PLAN); the `editors/vs` Visual Studio VSIX (in no publish workflow today — folded
 in only if it ever ships).
 
-## P25 — Lambdas & closures: faithful capture across every target — 🚧 designed (2026-07-11; PRD §4.18, 3-agent investigation)
+## P25 — Lambdas & closures: faithful capture across every target — 🚧 slices 1 + 3 + 4 built (2026-07-11; PRD §4.18, 3-agent investigation)
+
+**Status (2026-07-11):** the capture-analysis foundation (slice 1) is in, and **three of the four current
+targets now have faithful lambdas**: C#/TS (slice 3, already native — verified) and PHP (slice 4, real
+closures with `use(&$x)`). Remaining: **slice 5** (Python block lambdas — the one hard slice; needs a new
+`ir::LocalFunc` nested-def node so block lambdas can hoist), **slice 6** (the `closures.pg` conformance
+program, once Python lands), and **slice 2** (the shared cell-lowering pass — **deferred**: no current target
+needs it, see its note). All four gates stay green.
 
 Support expression **and** block/statement lambdas — `(a, b) => expr` and `(a, b) => { stmts }` — **by
 default on every target**, preserving §3.A capture-**by-reference** semantics. Full design + per-target
@@ -2629,7 +2636,15 @@ loop-capture samples agree across targets) stay; there is no prior-output byte-i
   reused by Java/C++/Rust; native-by-ref targets ignore the cell and emit the plain variable.
 - **D4 — Python block lambdas** hoist to a named `def` (local tier); **PHP** is pure-JSON + a `useList` builtin.
 
-- **Slice 1 — the `analyzeCaptures` pass + IR fields + collision-aware gensym.** A dedicated target-neutral
+- **Slice 1 — the `analyzeCaptures` pass + IR fields — ✅ done (2026-07-11).** Built as an **IR-based** pass
+  (cleaner than the planned AST approach: since a global lowers to an `ir::Var` too, tracking local binder
+  scopes means a var bound in no enclosing local scope is simply a global — no symbol table needed). It runs
+  from `lower()` over the lowered IR; deterministic, so per-target runs can't diverge. Simplification found in
+  build: **`needsCell = the binder is an assignment target anywhere in its function OR self-referential`** — an
+  unassigned capture is *always* snapshot-safe, so the inside-vs-outside-timing split is only provenance, not
+  the decision. IR fields + `ir::dump` capture annotations + 7 unit tests (accumulator→cell, snapshot→no-cell,
+  loop-var, global-not-captured, nested propagation, this-capture) landed and green. The collision-aware
+  `Gensym` is deferred to slice 5 (its only consumer is the Python hoist). *(Original plan retained below.)* A dedicated target-neutral
   pass over the checked AST (reusing sema's scope stack), run after type-checking, transcribed onto the IR in
   `lower()` (pure transcription, no per-target re-derivation). Computes, per `ir::Lambda`: the free-variable
   set (deduped by *resolved binding*, not name — shadowing handled by resolution; nested lambdas propagate
@@ -2648,7 +2663,15 @@ loop-capture samples agree across targets) stay; there is no prior-output byte-i
   (self-ref → `needsCell`), a `this`-capturing method lambda (`capturesThis`, no cell), and a nested lambda
   (capture propagates); determinism (same result regardless of target); an escaping vs non-escaping closure.
 
-- **Slice 2 — the shared cell-lowering pass (parameterized by cell-kind).** One IR pre-pass that, driven by
+- **Slice 2 — the shared cell-lowering pass (parameterized by cell-kind) — ⏸ DEFERRED (no current target
+  needs it).** Discovery during slices 4–5: **none of the four current targets requires cells.** C#/TS/(Kotlin/
+  Swift/Dart/Go) capture by reference natively; PHP uses `use(&$x)` (a real shared binding, not a cell); and
+  **Python can use `nonlocal`** — because the capture pass never captures a module global (globals aren't
+  locals), every Python capture is a *function*-local that `nonlocal` reaches, sidestepping the "nonlocal can't
+  reach module globals" problem the cell-object form was meant to solve. So the shared cell pass is only needed
+  by the **boxing targets Java/C++/Rust**, and moves to **P26/P27** where those land. The `throughCell` /
+  `needsCell` stamps from slice 1 already sit on the IR, inert, ready for it. *(Original design retained below.)*
+  One IR pre-pass that, driven by
   the decl-site `needsCell` bits, rewrites a captured mutable variable's whole live range through a single-slot
   cell allocated at its declaration (per-iteration inside a loop for `For.needsCell`), consuming the
   `throughCell` access stamps. Parameterized by the target's cell-kind so Java/C++/Rust reuse it; **native-by-
@@ -2658,7 +2681,10 @@ loop-capture samples agree across targets) stay; there is no prior-output byte-i
   sample allocates a fresh cell per iteration and yields 1,2,3; native-by-ref targets are unaffected (emit the
   plain variable, sample still 55 via native capture).
 
-- **Slice 3 — C#/TS: verify + flag (mostly already done).** Both `Lambda` rules already emit expression *and*
+- **Slice 3 — C#/TS: verify + flag — ✅ done (2026-07-11, no code change).** Verified both already emit
+  expression *and* block lambdas, capture by reference natively (the accumulator prints 30 on both), and emit
+  `for (let i …)` per-iteration loop bindings; `closures`/`blockLambdas` default to native (absent = supported).
+  Nothing to fix. *(Original below.)* Both `Lambda` rules already emit expression *and*
   block forms via `inlineBlock` and capture natively by reference — so this asserts the capability flags
   (`closures`/`blockLambdas` = `native`), confirms the C#/TS paths **ignore** the cell (emit the plain
   variable), and closes the one real TS hazard: **loop bindings must emit `let`/`const`, never `var`** (ES6
@@ -2666,7 +2692,14 @@ loop-capture samples agree across targets) stay; there is no prior-output byte-i
   *Gate:* the block-lambda accumulator sample and a loop-capture sample (`for i … { fs.add(() => i) }`) run
   identically on C# and TS (55; and 1,2,3 — the latter proving the TS `let` binding).
 
-- **Slice 4 — PHP: real closures (`false → native`).** Add a `Lambda` rule to the PHP plugin and flip
+- **Slice 4 — PHP: real closures (`false → native`) — ✅ done (2026-07-11).** Shipped: the PHP `Lambda` rule
+  (`fn($p) => expr` for expr-bodied + all-by-value captures, else `function ($p) use (…) { … }`), `closures`/
+  `blockLambdas` flipped to `"native"`, the `&$x`-vs-`$x` use-list driven strictly off `needsCell`, and a fix
+  to the PHP `Call` rule to call a closure-valued local via `$f(...)` (keyed on `node.isFree`). Kept the engine
+  target-neutral: it gained generic lambda-capture accessors (`node.capturesThis`/`allCapturesByValue`/
+  `captures.<i>.{name,needsCell}`) so **all** PHP syntax stays in the plugin JSON. Verified by emission (no PHP
+  interpreter in this environment): accumulator → `use (&$total)` + `$add(…)`, mixed → `use (&$acc, $base)`,
+  pure expr → `fn(…)`. Unit tests + full gate green. *(Original below.)* Add a `Lambda` rule to the PHP plugin and flip
   `closures`/`blockLambdas` to `native`. Emit **`fn($a,$b) => expr`** iff `exprBodied` AND every non-`this`
   capture is SNAPSHOT; otherwise **`function ($a,$b) use (…) { … }`** (expr body → `{ return …; }`). The
   `use`-list (one new declarative builtin **`useList`** over `node.captures`): **`use($x)`** for SNAPSHOT,
@@ -2680,7 +2713,16 @@ loop-capture samples agree across targets) stay; there is no prior-output byte-i
   omits `$this` and works; the `docs/lang/samples/01_functions.pg` block lambda (today C#/TS-only) now runs on
   PHP.
 
-- **Slice 5 — Python: block lambdas (`false → emulated`).** A **local-tier IR lowering pass**
+- **Slice 5 — Python: block lambdas (`false → emulated`) — ⏳ next (the one hard slice).** **Design refinement
+  from slice 1/4 build:** the IR has *no nested-function statement node*, so a faithful hoist needs a new
+  **`ir::LocalFunc`** stmt (name, params, body, `nonlocal` names) that the Python plugin renders as
+  `def <name>(<params>):` — created *only* in Python lowering (other targets never see it, so it stays off the
+  `kCoverage` anti-silent-drop table). The hoist is a **mutable IR pass** over statement lists: for each
+  statement, rewrite block-`Lambda` expressions in its subtree to a `Var(fresh)` (via the slice-1 collision-
+  aware `Gensym`) and prepend the `LocalFunc` defs. **Mutated captures use `nonlocal`, not a cell** (slice-2
+  discovery: every Python capture is a function-local `nonlocal` reaches), so slice 5 does **not** depend on
+  slice 2. Python is in the differential gate, so the accumulator's `30`/loop-var `1,2,3` are *executed*, not
+  just inspected. *(Original sketch below.)* A **local-tier IR lowering pass**
   (`lowerPythonBlockLambdas`, before emit) rewrites each block `Lambda` → a hoisted synthesized `FunctionDecl`
   (named via the collision-aware `Gensym`) + a `Var` reference at the original site; the expression `Lambda`
   rule (`lambda a, b: …`) is unchanged. Hoist point = immediately before the lambda's nearest enclosing
