@@ -2439,7 +2439,7 @@ rebuild). RID set = P22's: **win-x64, linux-x64, linux-arm64** (→ VS Code targ
   `editors/vscode/extension.js` `resolveCli()` into the 5-rung ladder: (1) explicit non-empty
   `polyglot.cliPath` (absolute or workspace-relative, semantics unchanged); (2) bundled
   `<extensionPath>/bin/polyglot(.exe)` if present (chmod 0755 on Unix before use); (3) `polyglot` on PATH;
-  (4) source checkout `<ws>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe`; (5) fail → an **actionable
+  (4) source checkout (Windows `<ws>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe`, Unix `<ws>/build/polyglot`); (5) fail → an **actionable
   modal** (`showErrorMessage` with buttons: "Install the CLI" → open the Releases URL; "Locate polyglot.exe…"
   → `showOpenDialog` → write `polyglot.cliPath`; "Open Settings"). Flip the `polyglot.cliPath` **default to
   `""`** (`package.json:120-124`) so unset ⇒ auto-ladder; keep it documented as the override. Correct the

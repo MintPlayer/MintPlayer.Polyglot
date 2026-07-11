@@ -61,8 +61,9 @@ function polyglotOnPath() {
  *   2. the bundled binary `<extensionPath>/bin/polyglot(.exe)` — the happy path for the platform vsixes
  *      (chmod +x on Unix first, since the vsix is a plain zip that can drop the executable bit).
  *   3. `polyglot` on PATH — a self-installed CLI / universal-fallback users.
- *   4. the source checkout `<workspace>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe` — contributors on
- *      this very repo.
+ *   4. the source checkout — contributors on this very repo, per platform's build output: on Windows the
+ *      MSBuild `<workspace>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe`, on Unix the CMake
+ *      `<workspace>/build/polyglot`.
  * Returns the command to spawn, or null when nothing is found (→ the caller shows the actionable modal).
  */
 function resolveCli(context) {
@@ -94,13 +95,16 @@ function resolveCli(context) {
   const onPath = polyglotOnPath();
   if (onPath) return onPath;
 
-  // Rung 4 — source checkout of this repo.
+  // Rung 4 — source checkout of this repo (per platform's build output: MSBuild x64\ on Windows, CMake
+  // build/ on Unix — the .vcxproj stays the Windows source of truth, CMake mirrors it on Linux).
   const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
   if (ws) {
-    const checkout = firstExisting([
-      path.join(ws.uri.fsPath, 'x64', 'Release', 'MintPlayer.Polyglot.Cli.exe'),
-      path.join(ws.uri.fsPath, 'x64', 'Debug', 'MintPlayer.Polyglot.Cli.exe')
-    ]);
+    const root = ws.uri.fsPath;
+    const candidates = process.platform === 'win32'
+      ? [path.join(root, 'x64', 'Release', 'MintPlayer.Polyglot.Cli.exe'),
+         path.join(root, 'x64', 'Debug', 'MintPlayer.Polyglot.Cli.exe')]
+      : [path.join(root, 'build', 'polyglot')];
+    const checkout = firstExisting(candidates);
     if (checkout) return checkout;
   }
 

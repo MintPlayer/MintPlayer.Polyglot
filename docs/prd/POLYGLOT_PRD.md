@@ -835,7 +835,8 @@ ladder — *define the error out of existence by finding the CLI before failing*
 if non-empty — the explicit dev/advanced override, absolute-or-relative-to-workspace, semantics unchanged
 (the default flips to `""` = auto); (2) the **bundled binary** `<extensionPath>/bin/polyglot(.exe)` if
 present (the happy path for the 3 supported RIDs; chmod +x on Unix); (3) **`polyglot` on `PATH`** (self-
-installed CLI / universal-fallback users); (4) the **source checkout** `<workspace>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe`
+installed CLI / universal-fallback users); (4) the **source checkout** — per platform's build output:
+Windows `<workspace>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe`, Unix `<workspace>/build/polyglot`
 (contributors working on this very repo — the dev testbench already points here); (5) **fail into an
 actionable modal**, not a dead end: buttons "Install the CLI" (open the Releases page), "Locate
 polyglot.exe…" (file picker → writes `polyglot.cliPath`), "Open Settings" — and the message names the
