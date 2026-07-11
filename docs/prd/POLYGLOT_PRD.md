@@ -771,7 +771,7 @@ portability fixes land first, byte-identical on Windows. (8) The npm sibling is 
 pattern above) — NuGet-on-Linux is the driving need. (9) Deferred, recorded: win-arm64, linux-musl-x64,
 manylinux/zig-musl wider floor, `lipo` universal macOS binary, notarization, full CMake migration.
 
-### 4.15 Extension onboarding — bundle the CLI in the VSIX + branding (design — 2026-07-11; investigated by a 2-agent team; PLAN §P23)
+### 4.15 Extension onboarding — bundle the CLI in the VSIX + branding (design 2026-07-11; slices 1–4 built, PR #16; investigated by a 2-agent team; PLAN §P23)
 
 **The user need.** A user who installed the *released* VS Code extension from the marketplace and opened a
 `.pg` file got a dead end: `spawn polyglot ENOENT` — "could not start the language server". **Highlighting
@@ -1006,13 +1006,15 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   + chmods + runs `tools/linux-x64/polyglot`, transpiles the `.pg`, and runs — no committed output.
   Remaining: the PHP runtime differential (slice 3) and the esbuild-pattern npm sibling (slice 6). Slice
   plan: PLAN §P22.
-- **P23 — VS Code extension: bundle the CLI (zero-setup) + branding.** 🚧 Designed (2026-07-11; §4.15, from
-  a 2-agent investigation). Make the *released* marketplace extension work out of the box — install it, open
-  a `.pg` file, the LSP starts — instead of failing `spawn polyglot ENOENT` (the vsix ships no server and
-  `resolveCli()` does zero discovery). Fix: **bundle the CLI per-platform in the vsix** via VS Code's
-  platform-specific-extension mechanism, reusing P22's already-attested CLI artifacts (win-x64/linux-x64/
-  linux-arm64 + a universal no-binary fallback), a 5-rung `resolveCli()` ladder, plus branding (marketplace
-  icon + rename to "Polyglot language server", ID frozen). Slice plan: PLAN §P23.
+- **P23 — VS Code extension: bundle the CLI (zero-setup) + branding.** 🚧 Slices 1–4 built (2026-07-11,
+  PR #16; §4.15, from a 2-agent investigation). Make the *released* marketplace extension work out of the
+  box — install it, open a `.pg` file, the LSP starts — instead of failing `spawn polyglot ENOENT` (the vsix
+  ships no server and `resolveCli()` does zero discovery). Fix: **bundle the CLI per-platform in the vsix**
+  via VS Code's platform-specific-extension mechanism (one marketplace listing, ID `mintplayer.polyglot-lang`
+  frozen; the marketplace serves the matching vsix per platform), reusing P22's already-attested CLI
+  artifacts (win-x64/linux-x64/linux-arm64 + a universal no-binary fallback), a 5-rung `resolveCli()` ladder,
+  plus branding (marketplace icon + rename to "Polyglot language server", extension → 0.4.0). Extension + CI
+  only, no Core change. Pending: interactive vsix install + first live marketplace publish. Slice plan: PLAN §P23.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 

@@ -2424,7 +2424,18 @@ and emits every module `linked=true` (partial wrappers already exist); identical
 non-C# output byte-identical (the split gates on C# + multi-input). New run-nuget independent-multi-`.pg`
 fixture + unit tests. CLI + NuGet → **0.3.1**; plugins unchanged. Retires the "one C# entry per assembly" limit.
 
-## P23 — VS Code extension: bundle the CLI (zero-setup) + branding (icon + rename) — 🚧 designed (2026-07-11; PRD §4.15, 2-agent investigation)
+## P23 — VS Code extension: bundle the CLI (zero-setup) + branding (icon + rename) — 🚧 slices 1–4 built (2026-07-11; PRD §4.15, 2-agent investigation)
+
+**As built (2026-07-11, PR #16).** All four slices are implemented and locally verified: `resolveCli()` is
+the 5-rung ladder (rung 4 is platform-aware — MSBuild `x64\` on Windows, CMake `build/polyglot` on Unix);
+branding shipped (icon + `#30BF87` galleryBanner + `displayName` "Polyglot language server", ID frozen,
+extension → 0.4.0); `scripts/stage-cli.ps1` + `scripts/package-all.ps1` produce the four vsixes (each
+platform vsix carries exactly one RID's binary + all four plugins, verified by unzip; the bundled binary
+runs `--version` → 0.3.1 and resolves plugins next to itself); `publish-vscode.yml` is the 4-leg matrix
+(pinned CLI 0.3.1 via `POLYGLOT_CLI_VERSION`; the universal leg's empty `target` normalizes to no `--target`,
+confirmed from the action source). **Pending (structurally un-runnable from a Windows dev box, per each
+slice's gate):** an interactive clean-PATH vsix install proving the LSP starts from rung 2, and the first
+live marketplace publish. No Core/CLI change — extension + CI only.
 
 Make the *released* marketplace extension **work out of the box**: install it, open a `.pg` file, and the
 language server starts — no separate CLI install, no PATH fiddling. Today it fails `spawn polyglot ENOENT`
