@@ -91,6 +91,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.staticType") return m.staticType;
         if (path == "node.field")      return m.field;
         if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
+        if (path == "node.isProperty") return m.isProperty ? "true" : "false";
     }
     if (e_.kind == ir::ExprKind::MethodCall) {
         const auto& mc = static_cast<const ir::MethodCall&>(e_);
@@ -913,6 +914,10 @@ std::string FnDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")        return f_.name;
     if (path == "decl.mangledName") return f_.mangledName;
     if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
+    // A std/core/lib prelude function (originModule "<prelude>"), emitted into EVERY module. On a target
+    // with one global function namespace (PHP), that redeclares it across `require`d files — the plugin
+    // guards such a fn (e.g. `function_exists`). Inert for namespaced targets (C#/TS/Python) that don't read it.
+    if (path == "decl.isPrelude")   return f_.originModule == "<prelude>" ? "true" : "false";
     if (path == "decl.isAsync")     return f_.isAsync ? "true" : "false";
     if (path == "decl.isIterator")  return f_.isIterator ? "true" : "false";
     if (path == "decl.exprBodied")  return f_.exprBodied ? "true" : "false";
@@ -933,6 +938,11 @@ std::string FnDeclCtx::get(const std::string& path) const {
     if (path.rfind("decl.paramsTail.", 0) == 0 && splitIndexed(path, 16, i, f) && i + 1 < f_.params.size()) {
         if (f == "name")       return f_.params[i + 1].name;
         if (f == "hasDefault") return f_.params[i + 1].defaultValue ? "true" : "false";
+    }
+    if (path == "decl.globalRefs.count") return std::to_string(f_.globalRefs.size());
+    if (path.rfind("decl.globalRefs.", 0) == 0) {
+        const std::size_t gi = static_cast<std::size_t>(std::stoul(path.substr(16)));
+        if (gi < f_.globalRefs.size()) return f_.globalRefs[gi];
     }
     return "";
 }
@@ -1481,7 +1491,11 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
                 case BlockStyle::ColonIndent:  openBlock("finally");          break;
             }
             ++indent_;
-            line(u.binding + ".dispose()" + spec().stmtEnd);
+            // Emit the receiver via the target's own Var rule ($x on PHP, x elsewhere) and the target's
+            // member-access operator (`->` on PHP, `.` elsewhere) — not a hardcoded `.dispose()`. Byte-
+            // identical for C#/TS/Python (Var -> `x`, memberOp defaults to `.`).
+            ir::Var recv(u.pos, u.type, u.binding);
+            line(emitExpr(recv) + spec().memberOp + "dispose()" + spec().stmtEnd);
             --indent_;
             closeBlock();
             return;

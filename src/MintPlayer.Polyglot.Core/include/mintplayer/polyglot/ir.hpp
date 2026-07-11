@@ -131,6 +131,10 @@ struct Member : Expr { // field / property access `object.field` — or a static
     std::string field;
     std::string staticType;    // non-empty = static access `staticType.field` (object is null)
     bool nullSafe = false;
+    // The accessed member is a computed property (a getter). Native-property targets (C#/TS/Python) ignore
+    // this and emit a plain field access; a target that emulates properties as methods (PHP) emits a call
+    // `recv->field()`. A target-neutral fact stamped at lowering from the receiver type's members.
+    bool isProperty = false;
     Member(SourcePos p, Type t, ExprPtr o, std::string f, bool ns)
         : Expr(ExprKind::Member, p, std::move(t)), object(std::move(o)), field(std::move(f)), nullSafe(ns) {}
 };
@@ -402,6 +406,10 @@ struct Function {
     bool exprBodied = false; // `=> expr` vs block (extensions; regular fns always use a block today)
     ExprPtr exprBody;        // exprBodied
     std::string originModule; // module linking (§4.5): "" = entry-own, a canonical path = imported user module, "<prelude>" = std/core/lib
+    // Top-level module globals this function's body references (unshadowed), in first-use order. A
+    // target-neutral fact computed at lowering; consumed only where module globals aren't visible in
+    // function scope (PHP emits `global $x;`). Empty / ignored on C#/TS/Python.
+    std::vector<std::string> globalRefs;
 };
 struct RecordField {
     std::string name;

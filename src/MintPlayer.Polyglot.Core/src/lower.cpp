@@ -26,6 +26,55 @@ std::string stripNumericSuffix(const std::string& text) {
     return text;
 }
 
+// The top-level module globals a function body references but does not itself bind. This is the fact PHP
+// needs to emit `global $x;` (module globals aren't visible in a PHP function's scope). Target-neutral,
+// collected on the AST: referenced Names ∩ module globals, minus every name the function binds itself
+// (params + any let/use/for/lambda/catch/match binder). Conservative on shadowing — a locally-bound name is
+// never reported as a global ref, so we never emit a `global` that would wrongly alias a local; a genuinely
+// missed global surfaces as a loud runtime error the differential gate catches, never a silent miscompile.
+struct GlobalRefScan {
+    std::unordered_set<std::string> bound;
+    std::vector<std::string> used; // first-use order, for deterministic output
+    std::unordered_set<std::string> usedSeen;
+    void use_(const std::string& n) { if (!n.empty() && usedSeen.insert(n).second) used.push_back(n); }
+    void pat(const Pattern& p) {
+        if ((p.kind == PatKind::Binding || p.kind == PatKind::Ctor) && !p.name.empty()) bound.insert(p.name);
+        for (const auto& s : p.sub) pat(s);
+    }
+    void ex(const Expr* e) {
+        if (!e) return;
+        if (e->kind == ExprKind::Name) use_(e->text);
+        for (const auto& p : e->params) bound.insert(p.name); // lambda params
+        ex(e->lhs.get()); ex(e->rhs.get()); ex(e->extra.get());
+        for (const auto& a : e->args) ex(a.get());
+        for (const auto& s : e->block) st(s.get());
+        for (const auto& f : e->fields) ex(f.value.get());
+        for (const auto& a : e->arms) { pat(a.pattern); ex(a.guard.get()); ex(a.body.get()); for (const auto& s : a.block) st(s.get()); }
+    }
+    void st(const Stmt* s) {
+        if (!s) return;
+        if ((s->kind == StmtKind::Let || s->kind == StmtKind::Use) && !s->name.empty()) bound.insert(s->name);
+        if (s->kind == StmtKind::For) pat(s->forBinding);
+        ex(s->value.get()); ex(s->target.get());
+        for (const auto& t : s->thenBody) st(t.get());
+        for (const auto& t : s->elseBody) st(t.get());
+        for (const auto& c : s->catches) { if (!c.name.empty()) bound.insert(c.name); ex(c.guard.get()); for (const auto& t : c.body) st(t.get()); }
+        for (const auto& t : s->finallyBody) st(t.get());
+    }
+};
+std::vector<std::string> scanGlobalRefs(const std::unordered_set<std::string>& globals,
+                                        const std::vector<Param>& params,
+                                        const std::vector<StmtPtr>& body, const Expr* exprBody) {
+    GlobalRefScan s;
+    for (const auto& p : params) s.bound.insert(p.name);
+    for (const auto& st : body) s.st(st.get());
+    if (exprBody) s.ex(exprBody);
+    std::vector<std::string> refs;
+    for (const auto& n : s.used)
+        if (globals.count(n) && !s.bound.count(n)) refs.push_back(n);
+    return refs;
+}
+
 class Lowerer { // per-target since P19 slice 9: binding/extern-type arms are picked here, not at emit
 public:
     Lowerer(const CompilationUnit& unit, std::string target) : target_(std::move(target)) {
@@ -68,8 +117,12 @@ public:
         // declaring an `operator fn get` (a target without `[]` overloading calls `.get(i)`).
         for (const auto& r : unit.records) { recordNames_.insert(r.name); records_[r.name] = &r; }
         auto noteIndexer = [&](const std::string& name, const std::vector<Member>& ms) {
-            for (const auto& mem : ms)
+            for (const auto& mem : ms) {
                 if (mem.kind == MemberKind::Operator && mem.name == "get") indexerTypes_.insert(name);
+                // Computed properties (getters): a target that emulates them as methods (PHP) needs the
+                // access site to call `recv->name()`; native-property targets ignore the stamp.
+                if (mem.kind == MemberKind::Property) propertyMembers_[name].insert(mem.name);
+            }
         };
         for (const auto& r : unit.records) noteIndexer(r.name, r.members);
         for (const auto& c : unit.classes) noteIndexer(c.name, c.members);
@@ -151,6 +204,9 @@ public:
             g.originModule = v.originModule;
             m.globals.push_back(std::move(g));
         }
+        // Top-level global names — the set a function may reference from an outer scope (PHP `global $x;`).
+        std::unordered_set<std::string> globalNames;
+        for (const auto& v : unit.values) globalNames.insert(v.name);
         for (const auto& ext : unit.extensions) {
             if (!ext.bindings.empty()) continue; // a bound extension isn't emitted — it's a call-site template
             ir::Function f;
@@ -165,6 +221,7 @@ public:
             else f.body = block(ext.body);
             inExtension_ = false;
             f.originModule = ext.originModule;
+            f.globalRefs = scanGlobalRefs(globalNames, ext.params, ext.body, ext.exprBody.get());
             m.extensions.push_back(std::move(f));
         }
         for (const auto& fn : unit.functions) {
@@ -182,6 +239,7 @@ public:
             f.body = block(fn.body);
             f.isIterator = sawYield_;
             f.originModule = fn.originModule;
+            f.globalRefs = scanGlobalRefs(globalNames, fn.params, fn.body, nullptr);
             m.functions.push_back(std::move(f));
         }
         return m;
@@ -201,6 +259,7 @@ private:
     std::unordered_set<std::string> recordNames_;                    // user records (structural `==`)
     std::unordered_map<std::string, const RecordDecl*> records_;     // record name -> decl (field order for `with`)
     std::unordered_set<std::string> indexerTypes_;                   // types declaring `operator fn get`
+    std::unordered_map<std::string, std::unordered_set<std::string>> propertyMembers_; // type -> computed-property names
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
     std::unordered_map<std::string, std::vector<std::string>> caseFields_;         // case -> field names
@@ -451,11 +510,27 @@ private:
                     if (auto it = bindings_.find(e.lhs->text + "." + e.text); it != bindings_.end())
                         return makeBound(e.type, e.pos, nullptr, *it->second, nullptr);
                 }
+                // A static member of a type — an enum case `Color.Green`, or a static const/field
+                // `Owner.NAME`: the LHS is a *type name* (record/class in typeNames_, or an enum), not a
+                // value. Stamp `staticType` so the Member rule takes its static branch (`Type::field` on PHP,
+                // `Type.field` on C#/TS/Python — byte-identical to the value-receiver path there) instead of
+                // lowering the type name to a value receiver (which PHP would emit as `$Color->Green`).
+                if (e.lhs->kind == ExprKind::Name &&
+                    (typeNames_.count(e.lhs->text) || enumCases_.count(e.lhs->text))) {
+                    auto m = std::make_unique<ir::Member>(e.pos, e.type, nullptr, e.text, e.flag);
+                    m->staticType = e.lhs->text;
+                    return m;
+                }
                 if (e.lhs->type.kind == TypeRef::Kind::Named) { // bound std/core property (List.count, Error.message)
                     if (auto arms = findBinding(e.lhs->type.name, e.text))
                         return makeBound(e.type, e.pos, e.lhs.get(), *arms, nullptr);
                 }
-                return std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
+                auto mem = std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
+                if (e.lhs->type.kind == TypeRef::Kind::Named) { // is the accessed member a computed property?
+                    auto pit = propertyMembers_.find(e.lhs->type.name);
+                    if (pit != propertyMembers_.end() && pit->second.count(e.text)) mem->isProperty = true;
+                }
+                return mem;
             }
             case ExprKind::Match:     return matchExpr(e);
             case ExprKind::IfExpr:    return std::make_unique<ir::Cond>(e.pos, e.type, expr(*e.lhs), expr(*e.rhs), expr(*e.extra));
