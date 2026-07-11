@@ -7,9 +7,15 @@
 
 const vscode = require('vscode');
 const path = require('path');
+const fs = require('fs');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
 let client;
+
+// The released CLI binary's name (native C++, not .NET despite the source-project name), and where a user
+// installs it from when the discovery ladder comes up empty.
+const CLI_BASENAME = process.platform === 'win32' ? 'polyglot.exe' : 'polyglot';
+const RELEASES_URL = 'https://github.com/MintPlayer/MintPlayer.Polyglot/releases';
 
 // The three emit targets: display name, file extension (drives built-in language detection + tab title),
 // language id (belt-and-suspenders coloring), and line-comment prefix (for the stale banner).
@@ -22,26 +28,127 @@ const TARGETS = {
   python:     { name: 'Python',     ext: 'py', langId: 'python',     comment: '#'  }
 };
 
-/**
- * Resolve the CLI path. A bare command name (`polyglot`) is left for a PATH lookup; a relative path is
- * resolved against the workspace root (so a checkout can point at its built x64/Debug exe portably); an
- * absolute path is used as-is.
- */
-function resolveCli() {
-  const raw = vscode.workspace.getConfiguration('polyglot').get('cliPath', 'polyglot');
-  if (path.isAbsolute(raw)) return raw;
-  if (raw.includes('/') || raw.includes('\\')) {
-    const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
-    if (ws) return path.resolve(ws.uri.fsPath, raw);
+// First existing regular file among `candidates`, or null.
+function firstExisting(candidates) {
+  for (const p of candidates) {
+    try { if (fs.statSync(p).isFile()) return p; } catch (_e) { /* try next */ }
   }
-  return raw;
+  return null;
 }
 
-function activate(context) {
-  const cfg = vscode.workspace.getConfiguration('polyglot');
-  const command = resolveCli();
-  const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+// A `which`-style PATH probe for the bare `polyglot` command, so PATH becomes a *verifiable* rung (we can
+// tell "found" from "not found" before spawning, which is what lets the ladder fail into an actionable modal
+// instead of a dead-end ENOENT). Returns the resolved absolute path or null.
+function polyglotOnPath() {
+  const isWin = process.platform === 'win32';
+  const exts = isWin ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';') : [''];
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const full = path.join(dir, 'polyglot' + ext);
+      try { if (fs.statSync(full).isFile()) return full; } catch (_e) { /* try next */ }
+    }
+  }
+  return null;
+}
 
+/**
+ * Find the polyglot CLI via an explicit discovery ladder (PRD §4.15 / PLAN §P23) — define the ENOENT dead end
+ * out of existence by locating the binary before we ever spawn it:
+ *   1. `polyglot.cliPath` if non-empty — the explicit override. Bare name → PATH lookup; a relative path is
+ *      resolved against the workspace root; an absolute path is used as-is. (Semantics unchanged; not probed
+ *      for existence — it's the user's deliberate choice, and a wrong value still surfaces the modal on start.)
+ *   2. the bundled binary `<extensionPath>/bin/polyglot(.exe)` — the happy path for the platform vsixes
+ *      (chmod +x on Unix first, since the vsix is a plain zip that can drop the executable bit).
+ *   3. `polyglot` on PATH — a self-installed CLI / universal-fallback users.
+ *   4. the source checkout `<workspace>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe` — contributors on
+ *      this very repo.
+ * Returns the command to spawn, or null when nothing is found (→ the caller shows the actionable modal).
+ */
+function resolveCli(context) {
+  // Rung 1 — explicit override.
+  const raw = vscode.workspace.getConfiguration('polyglot').get('cliPath', '');
+  const p = raw && raw.trim();
+  if (p) {
+    if (path.isAbsolute(p)) return p;
+    if (p.includes('/') || p.includes('\\')) {
+      const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+      if (ws) return path.resolve(ws.uri.fsPath, p);
+    }
+    return p; // bare command → let PATH resolution handle it
+  }
+
+  // Rung 2 — bundled binary (the platform-specific vsix payload).
+  if (context && context.extensionPath) {
+    const bundled = path.join(context.extensionPath, 'bin', CLI_BASENAME);
+    try {
+      if (fs.statSync(bundled).isFile()) {
+        // The vsix is a zip; extraction can strip +x, so restore it before use (rust-analyzer does the same).
+        if (process.platform !== 'win32') { try { fs.chmodSync(bundled, 0o755); } catch (_e) { /* best effort */ } }
+        return bundled;
+      }
+    } catch (_e) { /* not a bundled vsix — fall through */ }
+  }
+
+  // Rung 3 — polyglot on PATH.
+  const onPath = polyglotOnPath();
+  if (onPath) return onPath;
+
+  // Rung 4 — source checkout of this repo.
+  const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+  if (ws) {
+    const checkout = firstExisting([
+      path.join(ws.uri.fsPath, 'x64', 'Release', 'MintPlayer.Polyglot.Cli.exe'),
+      path.join(ws.uri.fsPath, 'x64', 'Debug', 'MintPlayer.Polyglot.Cli.exe')
+    ]);
+    if (checkout) return checkout;
+  }
+
+  // Rung 5 — nothing found; caller surfaces the actionable modal.
+  return null;
+}
+
+// The rung-5 dead end, made actionable: instead of a plain warning the user can't act on, offer to install
+// the CLI, point cliPath at an existing binary, or open settings — then (on locate) start the server for real.
+async function promptCliMissing(context, detail) {
+  const INSTALL = 'Install the CLI';
+  const LOCATE = 'Locate polyglot.exe…';
+  const SETTINGS = 'Open Settings';
+  const choice = await vscode.window.showErrorMessage(
+    `Polyglot: could not start the language server ('polyglot lsp'). The polyglot CLI ('${CLI_BASENAME}') was ` +
+    `not found. Install it, or set "polyglot.cliPath" to your ${CLI_BASENAME}.` + (detail ? ` (${detail})` : ''),
+    { modal: true },
+    INSTALL, LOCATE, SETTINGS
+  );
+  if (choice === INSTALL) {
+    vscode.env.openExternal(vscode.Uri.parse(RELEASES_URL));
+  } else if (choice === LOCATE) {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      openLabel: 'Select polyglot executable',
+      title: 'Locate the polyglot CLI executable',
+      filters: process.platform === 'win32' ? { Executable: ['exe'] } : undefined
+    });
+    if (picked && picked[0]) {
+      await vscode.workspace.getConfiguration('polyglot')
+        .update('cliPath', picked[0].fsPath, vscode.ConfigurationTarget.Global);
+      try { if (client) await client.stop(); } catch (_e) { /* was never started */ }
+      client = undefined;
+      await startClient(context);
+    }
+  } else if (choice === SETTINGS) {
+    vscode.commands.executeCommand('workbench.action.openSettings', 'polyglot.cliPath');
+  }
+}
+
+// Create and start the language client against the resolved CLI. Extracted from activate() so it can be
+// re-run after the user locates the binary (promptCliMissing) without reloading the window.
+async function startClient(context) {
+  const command = resolveCli(context);
+  if (!command) { await promptCliMissing(context, 'spawn polyglot ENOENT'); return; }
+
+  const cfg = vscode.workspace.getConfiguration('polyglot');
+  const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
   const serverOptions = {
     run:   { command, args: ['lsp'], transport: TransportKind.stdio },
     debug: { command, args: ['lsp'], transport: TransportKind.stdio }
@@ -64,7 +171,14 @@ function activate(context) {
   };
 
   client = new LanguageClient('polyglot', 'Polyglot Language Server', serverOptions, clientOptions);
+  try {
+    await client.start();
+  } catch (err) {
+    await promptCliMissing(context, err && err.message ? err.message : String(err));
+  }
+}
 
+function activate(context) {
   // Serve `polyglot:<module>` virtual documents (embedded std sources) so go-to-definition can open a std
   // symbol's declaration read-only. The server returns the source via a custom `polyglot/moduleSource` request.
   context.subscriptions.push(
@@ -94,12 +208,7 @@ function activate(context) {
   setupGeneratedPreview(context);
   setupWatch(context);
 
-  client.start().catch((err) => {
-    vscode.window.showWarningMessage(
-      `Polyglot: could not start the language server ('${command} lsp'). ` +
-      `Set "polyglot.cliPath" to your built MintPlayer.Polyglot.Cli.exe. (${err && err.message ? err.message : err})`
-    );
-  });
+  startClient(context);
   // Stop defensively on dispose: if start() failed the client may be mid-'starting', where stop() throws.
   context.subscriptions.push({ dispose: () => { try { if (client) client.stop(); } catch (_e) { /* ignore */ } } });
 }
@@ -268,7 +377,7 @@ function setupWatch(context) {
       scope || vscode.TaskScope.Workspace,
       `watch ${path.basename(file)}${definition.target ? ` (${definition.target})` : ''}`,
       TASK_TYPE,
-      new vscode.ProcessExecution(resolveCli(), args),
+      new vscode.ProcessExecution(resolveCli(context) || 'polyglot', args),
       '$polyglot-watch'
     );
     task.isBackground = true;

@@ -119,8 +119,8 @@
       "properties": {
         "polyglot.cliPath": {
           "type": "string",
-          "default": "polyglot",
-          "description": "Path to the polyglot CLI executable (which hosts the language server via `polyglot lsp`). Defaults to 'polyglot' on PATH; a relative path is resolved against the workspace root; set it to the built x64/Debug/MintPlayer.Polyglot.Cli.exe for a source checkout."
+          "default": "",
+          "description": "Path to the polyglot CLI executable (which hosts the language server via `polyglot lsp`). Leave empty to auto-discover: the bundled CLI shipped in the extension, then 'polyglot' on PATH, then a source-checkout build (x64/Release|Debug/MintPlayer.Polyglot.Cli.exe). Set this only to override — a bare name is looked up on PATH, a relative path is resolved against the workspace root, an absolute path is used as-is."
         },
         "polyglot.lib": {
           "type": "string",
