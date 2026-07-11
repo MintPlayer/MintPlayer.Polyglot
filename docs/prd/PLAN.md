@@ -2532,31 +2532,34 @@ version numbers in sync) with **one action — a version bump — that releases 
 becomes the single source of truth; the version is injected at build time; three chained workflows do the
 rest. Full design + per-front findings: PRD §4.16.
 
-**Gate to start (decisions the user must confirm — these shape the slices):**
-- **D1 — first unified version.** Recommend **`v0.5.0`** (strictly ahead of ext 0.4.1 / CLI 0.3.1 / plugins
-  0.3.0; abandons the never-released 0.3.2). Alt: 0.4.2.
-- **D2 — how Workflow A picks the next version** (no committed constant to read): (a) **PR-label-driven**
-  (`semver:major|minor|patch` vs the latest tag, default patch, no label ⇒ no release) — the pure tag-driven
-  model, recommended; (b) a single committed **`VERSION` file** A reads (explicit, but a number the tag
-  mirrors).
-- **D3 — tag-push identity:** **GitHub App token** (no expiry, recommended) vs fine-grained PAT (live today,
-  expires). Required because a tag pushed by `GITHUB_TOKEN` will NOT trigger Workflow B.
-- **D4 — version-injection shape:** header-macro-in-3-projects + parity-guard (minimal churn) vs
-  single-definition-point (`kVersion` → `polyglot.cpp` only; touches `main.cpp` + the self-test; lower drift).
-- **D5 — extension pre-releases:** none, hold for stable tags (recommended) vs marketplace `--pre-release`.
-- **D6 — CLAUDE.md changelog** → tag-keyed `CHANGELOG.md` (optional).
+**Decisions locked (2026-07-11, user):**
+- **D1 — first unified version = `v0.5.0`** (strictly ahead of ext 0.4.1 / CLI 0.3.1 / plugins 0.3.0; abandons
+  the never-released 0.3.2). Lockstep across CLI + NuGet + extension + 4 plugins.
+- **D2 — every merge to master cuts a patch release**; a `release:minor` / `release:major` PR label overrides
+  the bump. A reads the latest tag, applies the bump, tags the new version.
+- **D3 — no token.** A pushes the tag with `GITHUB_TOKEN`, then `gh workflow run`s B (workflow_dispatch is the
+  documented exception to GitHub's no-recursion rule — this is NOT a permissions issue). Nothing to create or
+  rotate. B keeps `push: tags: v*` too for manual pushes.
+- **D4 — single-definition-point injection** (most robust): `kVersion` moves from the header into
+  `polyglot.cpp` (one TU takes `-DPOLYGLOT_VERSION`), the LSP `serverInfo` site calls `Compiler::version()`,
+  the self-test becomes a shape check. Per-project drift is designed out.
+- **D5 — no pre-releases.** Stable tags only.
+- **D6 — CLAUDE.md stays workspace/features/rules only**; per-change history lives in the PRD/PLAN.
 
-- **Slice 1 — version injection into the native build (no committed constant).** Replace `kVersion`'s literal
-  in `polyglot.hpp` with a `#ifndef POLYGLOT_VERSION` fallback (`0.0.0-dev`) + stringize macro; add a repo-root
-  `Directory.Build.props` (`$(PolyglotVersion)` default `0.0.0-dev`) + one `ItemDefinitionGroup` per `.vcxproj`
-  (Core/Cli/Tests) feeding `POLYGLOT_VERSION=$(PolyglotVersion)`; add a `POLYGLOT_VERSION` cache var +
-  `add_compile_definitions` to `CMakeLists.txt`; make the NuGet csproj `<Version>` dev-defaulted. Repurpose the
-  `Compiler::version() == kVersion` self-test (now catches per-project define drift) + add a shape assert.
-  **Extend `scripts/check-buildfile-parity.ps1`** to assert the define exists in all three `.vcxproj` AND CMake.
-  Local builds inject `git describe --tags --dirty`.
+- **Slice 1 — version injection into the native build (D4: single-definition-point).** **Remove `kVersion`
+  from the public header**; define the version string in ONE TU — `polyglot.cpp` — as `#ifndef POLYGLOT_VERSION`
+  fallback (`0.0.0-dev`) + stringize macro, so **only Core** needs the `-DPOLYGLOT_VERSION` define. Change the
+  LSP `serverInfo` site (`main.cpp:1300`) to call `Compiler::version()` instead of `kVersion`; rewrite the
+  self-test to a **shape check** (non-empty, starts with a digit, contains a `.`) since there's no longer a
+  second constant to compare against. Add a repo-root `Directory.Build.props` (`$(PolyglotVersion)` default
+  `0.0.0-dev`) + one `ItemDefinitionGroup` on the **Core** `.vcxproj` feeding `POLYGLOT_VERSION=$(PolyglotVersion)`;
+  add a `POLYGLOT_VERSION` cache var + `target_compile_definitions(polyglot-core …)` to `CMakeLists.txt`; make
+  the NuGet csproj `<Version>` dev-defaulted. **Extend `scripts/check-buildfile-parity.ps1`** to assert the
+  define exists on the Core project in both the `.vcxproj` AND CMake. Local builds inject
+  `git describe --tags --dirty`.
   *Gate:* `msbuild /p:PolyglotVersion=1.2.3` and `cmake -DPOLYGLOT_VERSION=1.2.3` both make `polyglot --version`
-  print `1.2.3` on Windows + Linux + macOS; a bare local build prints a `git describe`/`0.0.0-dev` value; the
-  parity guard fails if the define is dropped from any one project; `build-and-test.ps1` stays green.
+  AND the LSP `serverInfo` report `1.2.3` on Windows + Linux + macOS; a bare local build prints a `git describe`/
+  `0.0.0-dev` value; the parity guard fails if the define is dropped; `build-and-test.ps1` stays green.
 
 - **Slice 2 — Workflow B (`release.yml` → tag-injected build + publish CLI + NuGet + plugins).** On `push:
   tags: v*`: validate + strip the tag, thread `/p:PolyglotVersion` (MSBuild) and `-DPOLYGLOT_VERSION` (CMake)
@@ -2575,22 +2578,28 @@ rest. Full design + per-front findings: PRD §4.16.
   *Gate:* a `workflow_dispatch` with an existing tag stages that release's CLI + publishes the 6 legs at the
   tag version; no `POLYGLOT_CLI_VERSION` remains; the run cannot 404 on a missing release.
 
-- **Slice 4 — Workflow A (`auto-tag.yml`).** On `push: branches: [master]`: mint the tag-push token (App /
-  PAT per D3), determine the next version (per D2), and if `v<version>` doesn't exist, create + push it with
-  the non-`GITHUB_TOKEN` identity so Workflow B fires. `concurrency: auto-tag`, idempotent tag-existence check,
-  a load-bearing comment pinning the token requirement.
-  *Gate:* the release signal (a labeled PR / VERSION bump per D2) on master auto-creates the tag, and Workflow
-  B is observed to trigger from it (proving the token choice works); a no-signal merge cuts no tag.
+- **Slice 4 — Workflow A (`auto-tag.yml`).** On `push: branches: [master]`: read the latest `v*` tag, compute
+  the next version — **patch by default**, or minor/major from the merged PR's `release:minor`/`release:major`
+  label (D2) — create + push the tag with the built-in `GITHUB_TOKEN`, then **`gh workflow run release.yml`**
+  passing the version (D3: workflow_dispatch is exempt from the no-recursion rule, so this triggers B with no
+  App/PAT). `concurrency: auto-tag`, idempotent tag-existence check, a load-bearing comment pinning WHY the
+  dispatch (not the tag push) is what triggers B.
+  *Gate:* a merge to master auto-creates the next patch tag and Workflow B is observed to run from A's dispatch
+  (proving `GITHUB_TOKEN` + dispatch triggers B); a `release:minor`-labeled PR bumps the minor instead.
 
 - **Slice 5 — the cutover (one atomic commit) + `v0.5.0`.** One commit that, together: neutralizes the old
-  `on: push` auto-publish triggers in `publish-vscode.yml`/`publish-plugins.yml` (so merging it publishes
-  nothing — GitHub reads the trigger from the pushed commit), sets every committed version to `0.0.0-dev`,
-  deletes `POLYGLOT_CLI_VERSION`, and lands Workflows A/B/C. Then push **`v0.5.0`** (by hand once, or let A do
-  it).
-  *Gate:* merging the cutover publishes nothing; pushing `v0.5.0` → B releases CLI + NuGet + 4 plugins at
-  0.5.0, then C publishes the extension 0.5.0 bundling the 0.5.0 CLI; all registries show a single coherent
-  0.5.0; a subsequent no-bump master push is a clean no-op.
+  `on: push` auto-publish triggers in `publish-vscode.yml`/`publish-plugins.yml` (GitHub reads the trigger from
+  the pushed commit, so the *old* publishers don't fire on this merge), sets every committed version to
+  `0.0.0-dev`, deletes `POLYGLOT_CLI_VERSION`, and lands Workflows A/B/C. **Bootstrap the 0.5.0 jump with a
+  `MIN_VERSION=0.5.0` floor in A**: A computes `next = max(bump(latest tag), floor)`, so its first run (on the
+  cutover merge itself) yields `v0.5.0` — not `v0.3.2` (patch of the latest `v0.3.1` tag). The floor is inert
+  afterward (once `v0.5.0` is the latest, `bump` exceeds it). So **merging the cutover PR *is* the 0.5.0
+  release**, fully automatic — no hand-pushed tag.
+  *Gate:* merging the cutover fires A → tags `v0.5.0` → dispatches B → B releases CLI + NuGet + 4 plugins at
+  0.5.0 → C publishes the extension 0.5.0 bundling the 0.5.0 CLI; the old push-triggered publishers do NOT run;
+  all registries show a single coherent 0.5.0; the *next* merge auto-cuts `v0.5.1`.
 
-**Deferred, recorded:** per-leg "skip unchanged since last tag" diffing (D4 no-op churn — not built first;
-lockstep simplicity wins); extension pre-release channel (D5); the `CHANGELOG.md` split (D6); the `editors/vs`
-Visual Studio VSIX (in no publish workflow today — folded in only if it ever ships).
+**Deferred, recorded:** per-leg "skip unchanged since last tag" diffing (accept lockstep no-op churn — not
+built first; simplicity wins); extension pre-release channel (D5: none); a tag-keyed `CHANGELOG.md` split
+(D6 left the history in PRD/PLAN); the `editors/vs` Visual Studio VSIX (in no publish workflow today — folded
+in only if it ever ships).
