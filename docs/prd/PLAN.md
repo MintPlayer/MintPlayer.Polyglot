@@ -2707,3 +2707,152 @@ slice-2 shared cell pass (Java `Ref<T>`, C++ escape-driven `shared_ptr` — a `[
 dangling-ref UB, so `escapes` is mandatory; Rust `Rc<RefCell>`, inheriting its §3.C borrow-panic caveat at
 re-entrancy). No new capture machinery when those targets land — only their cell-kind + emission rules.
 
+## P26 — Second-wave targets: PHP uplift + Kotlin + Swift — 🚧 designed (2026-07-11; PRD §4.17, 4-agent investigation)
+
+The payoff of P18/P19: a language is a **JSON plugin**, so this milestone *authors plugins + honestly
+declares capabilities* rather than growing Core. Full design + the 15-candidate survey + the per-target
+fidelity tiers: PRD §4.17. The through-line — **priority by intersection cost, not popularity** (Kotlin ≪
+Java) — and the one bounded Core change is the three-flag capability-vocabulary growth (slice 0). Each
+new/uplifted target joins the differential conformance harness on the subset it declares; a used-but-gated
+feature is a clean §3.E refusal, never a miscompile.
+
+**Decisions locked (2026-07-11, user):**
+- **D1 — Kotlin is the recommended first *new* language** (reference JVM/Android target; P19 predicted zero
+  Core change). First choice was left free; Kotlin wins on lowest intersection cost + the mobile-matrix fit.
+- **D2 — PHP uplift is in-scope and ships first** (it's shipped-but-stubbed and already in the build +
+  conformance harness → the cheapest, lowest-risk exercise of the new tri-state vocabulary).
+- **D3 — capability vocabulary grows by exactly three tri-state flags** (`mutableRefClasses`,
+  `fixedWidthIntegers`, `utf16Strings`), additive + `requiresCore`-governed (§4.11). No per-feature growth.
+- **D4 — the Dart-vs-Go fork (slice 5) is the author's call at that point** — pick by the actual deployment
+  stack. Dart stays pure-JSON; Go drops to the local full-power tier (§P27 owns the Go rewrite mechanism).
+
+- **Slice 0 — capability-vocabulary growth (the one enabling Core change).** Add `mutableRefClasses`,
+  `fixedWidthIntegers`, `utf16Strings` to the closed `Feature` enum + `kAllFeatures[]` + `featureName()`
+  (the switch has no default — omitting a case silently yields `"?"`, so all three must be named). Make the
+  plugin `capabilities` parser **tri-state** (`"native" | "emulated" | false`, superseding the bare bool per
+  PRD §4.11 §5.1); `checkCapabilities` refuses on `false` (naming capability + target) and **warns on
+  `emulated`** (the "we changed your call site, here's why" surface). The Collector (`capability.cpp`) marks
+  a program as using `mutableRefClasses` when it sees a mutable `class` with field assignment / identity
+  compare, `fixedWidthIntegers` when a sub-64 or unsigned width is used, `utf16Strings` on `char`/UTF-16
+  string indexing. Bump `requiresCore`. C#/TS/Python declare all three `native`, so **nothing gates or warns
+  today** — the gate is in place before a target that lacks them ships (the no-retrofit discipline).
+  *Gate:* a StubBackend declaring each flag `false`/`emulated` refuses/warns with the right message; the
+  three current backends + all conformance programs are byte-unchanged (the additions are inert for them);
+  unit tests cover refuse-on-false, warn-on-emulated, and the Collector's marking of each axis.
+
+- **Slice 1 — PHP fidelity uplift (shipped stub → real PHP-8 target).** Flip the PHP plugin's stubbed-`false`
+  flags to their true PHP-8 reality with real `rules`: `patternMatching` (→ PHP `match`), `closures` +
+  `blockLambdas` (`fn`/`function` + `use`-captures — **delivered by §P25 slice 4**; this uplift just depends
+  on it), `exceptions` (`try/catch/finally`, typed catch →
+  `catch (T $e)`, `when` → catch+`if`+rethrow), `interfaces`, and enums (8.1 `enum`). Keep the honest limits:
+  `operatorOverloading` = `false`, `extensionMethods` = `emulated` (free-function `m($x)`), `async` = `false`
+  (Fibers aren't call-site-preserving — the §4.7 case). Extend the existing PHP `std` overlays as needed.
+  *Gate:* PHP joins `run-diff`-style differential conformance on every program in the new PHP-supported
+  subset with output matching the C# oracle (PHP `runCommand` from the manifest, §P19 §5); each still-gated
+  feature (operator overloading, async) yields a clean §3.E diagnostic on a program that uses it; the
+  FruitCake subset that fits the PHP surface runs identically.
+
+- **Slice 2 — Kotlin (the reference JVM/Android target).** A full `@polyglot/kotlin` JSON plugin: `spec`
+  (JVM scalar table with **UByte/UShort/UInt/ULong** — the unsigned win, `Long`-backed i64 with **no BigInt
+  tax**), `capabilities` all `native` **except** `usingDisposal`/`async`/`statics` which are `emulated`
+  (`.use{}`, `suspend`+`.await()`, `companion object`) and the inserted `.toX()` conversions (no implicit
+  widening). Extension functions, operator functions, `data class`, sealed-`when` exhaustiveness, `T?`
+  null-safety, `sequence{ yield }` all map `native`. Should need **zero Core change** beyond slice 0 (P19's
+  prediction — this slice *verifies* it).
+  *Gate:* Kotlin emitted for the conformance suite compiles under `kotlinc`, runs, and agrees with the C#
+  oracle (tolerance/behavioural per §3.D for the numeric programs, byte-identical where they already are);
+  no Core diff beyond slice 0; the `.toX()`/`.use`/`suspend` emulations warn, not miscompile.
+
+- **Slice 3 — Swift (iOS; the `utf16Strings` pioneer).** `@polyglot/swift`: `Int8…UInt64` native widths but
+  **arithmetic emits `&+ &- &*`** for faithful overflow masking (Swift traps by default); `char` → `UInt16`
+  + the `.utf16` view (the standout faithfulness hazard — grapheme `Character` ≠ UTF-16 code unit, so
+  `utf16Strings` = `emulated`); `throws`/`try` (call-site `try` prefix — `emulated`), `finally` → `defer`,
+  `using` → `defer { x.dispose() }`; `struct`/`class` selection (record → value `struct`, observationally
+  fine as records are immutable); `enum`-with-associated-values ADTs + exhaustive `switch` native; `async`/
+  `await` native (best syntactic match). Iterators/`yield` → a synthesized `IteratorProtocol` state machine
+  (the one construct needing local-tier logic — or `emulated`/gated if deferred).
+  *Gate:* Swift emitted for the suite compiles under `swiftc`, runs, agrees with the C# oracle; the
+  string/char UTF-16 handling is verified against a program that indexes/measures strings (the silent-
+  miscompile risk this slice exists to close); overflow `&`-ops verified against `int_overflow.pg`.
+
+- **Slice 4 — conformance-harness + distribution generalization.** Generalize the differential runner to **N
+  targets** (glob the configured backends, per-target `runCommand` from the manifest; today's cs/ts/python
+  `run-*.ps1` become one N-target `run-diff`), publish `@polyglot/kotlin` + `@polyglot/swift` through the
+  P24 tag-driven pipeline (they fold into Workflow B like the four first-party plugins), and confirm the LSP
+  `polyglot/targets` list + the P17 output preview pick up the new backends with **no client change** (the
+  registry-driven target list, closing `extension.js`'s `FIXME(P10)`).
+  *Gate:* `pwsh scripts/build-and-test.ps1` runs the differential suite across **all six** targets (cs, ts,
+  python, php, kotlin, swift) green; `polyglot install @polyglot/kotlin` into a fresh workspace transpiles a
+  `.pg` with no Core/CLI change; "Show Generated Output" lists all six targets from the registry.
+
+- **Slice 5 — the mobile/backend fork (author's call: Dart *or* Go).** Add one broader-reach target. **Dart**
+  (pure-JSON, stays in P26): Flutter → mobile+web+desktop in one plugin; `extension on`, `operator []`,
+  `sync*` iterators, `async`/`await`, patterns/records all `native`; **function overloading = `false`** (a
+  clean §3.E gate — Dart's defining gap) and the single-64-bit-`int` model (`fixedWidthIntegers` =
+  `emulated` via `& mask`; the web-JS-double i64 break handled like TS but with no BigInt default → a
+  documented §3.C caveat). **Go** (drops to §P27's local tier — record the choice here, build it there):
+  the `(T,error)` exception rewrite is non-local. *Gate (Dart):* `dart`/`flutter` compiles+runs the suite,
+  agrees; an overloaded-function program is refused naming Dart; the int-width emulation is verified +
+  its web-double limit documented in the relaxation list.
+
+**Deferred to §P27 (recorded):** Go (local-tier `(T,error)` rewrite), Rust (§3.C soundness caveat),
+Java (heaviest — iterator state-machines + unsigned emulation + checked-exception rooting), C++, Ruby, F#,
+Scala, Lua, and the functional-subset targets. P26 deliberately ships the **cheap, high-fidelity, mobile-
+matrix-completing** set first; the rest are demand-ordered.
+
+## P27 — Paradigm-distant & lower-priority targets — 🚦 deferred / demand-gated (2026-07-11; PRD §4.17)
+
+The targets that **don't fit the pure-JSON model** or that the second-wave investigation ranked below the
+P26 set. Not scheduled; each is picked up on real demand. The `.pg` grammar is **not frozen** (user,
+2026-07-11), so P27 may propose source-language additions rather than contorting a backend.
+
+- **Go / Java — the local full-power tier.** Go's `try/catch` → `(T, error)` + `if err != nil` is a
+  **non-local, whole-program** transform (rewrites callee signatures *and* every call site), and Java needs
+  synthesized iterator state-machines + unsigned emulation + `RuntimeException`-rooting to dodge checked
+  throws — neither is expressible as declarative templates, so both are **first-party/local plugins**, not
+  downloadable data-only ones (PRD §4.17's emit-tier boundary). Each still declares its honest capability
+  set (Go/Java both gate operator + function overloading; Go also gates ADT-exhaustiveness/properties/async).
+  *Gate (when built):* the local-tier plugin emits code that compiles + runs + agrees with the C# oracle on
+  the declared subset; every gated feature refuses cleanly; the exception-rewrite is proven on a program
+  with nested `try`/`finally` + typed catch across call boundaries.
+
+- **Rust — behind a *published* §3.C soundness caveat.** Richest feature match (native ADTs/`Option`/
+  traits-as-extensions/async/RAII-dispose/fixed widths), but the GC → `Rc<RefCell<T>>` shim **injects
+  runtime borrow panics + cycle leaks absent from the source semantics** — a silent *behavioural* divergence
+  that violates the prime directive unless made explicit. Admissible only by either (a) restricting the
+  source to ownership-friendly shapes (single-owner, no shared mutable aliasing — a compile-time check), or
+  (b) publishing the shim's runtime-safety caveat in the §3.C relaxation list ("Rust output may `panic!` on
+  aliased mutation; cycles leak"). *Gate:* the caveat is written into §3.C **before** any Rust output ships;
+  a differential run gates on tolerance + a documented panic-free program subset; the borrow-panic class is
+  reproduced in a test so the caveat is honest, not hand-waved.
+
+- **Haskell / Elixir — functional-subset targets (`mutableRefClasses = false`).** Highest fidelity of all
+  candidates for the immutable/ADT/record/pattern-match subset (exhaustiveness, `Maybe`/`Option`, `deriving
+  Eq`/structural equality, records-with-update = native `withExpressions`), but mutable classes with
+  reference identity are a **semantic wall** (Haskell purity forces whole-program IO threading + identity is
+  not observable; Elixir has no mutable state or identity at all — one process per object is absurd). So
+  they are offered as **functional-subset targets**: `mutableRefClasses` declared `false`, and a program
+  using a mutable class targeting them is refused naming the capability. **Candidate syntax evolution
+  (design-it-twice):** an opt-in `pure`/immutable module marker that lets the author *promise* immutability,
+  opening the gate per-module — weighed against the simpler "just gate the whole target." *Gate:* an
+  immutable-only `.pg` subset (records + ADTs + pure functions) transpiles to Haskell/Elixir, compiles,
+  runs, agrees; a mutable-class program is refused with the `mutableRefClasses` diagnostic.
+
+- **Zig — refused (§3.B-style).** Zig functions **cannot capture an environment (no closures)**, plus no
+  overloading, no GC/destructors, and pre-1.0 churn (async removed in 0.15, reworked ~mid-2026). The local
+  tier here would be a compiler-within-a-compiler (synthesize closure ABI + allocator threading + a GC).
+  Recorded as a **"Polyglot does not target Zig"** diagnostic with the reason; revisit only post-1.0 and
+  only if a Zig-shaped source subset is ever defined.
+
+- **Lower-priority-but-viable (demand-ordered).** **C++** (native exceptions + overloading — the strongest
+  *systems* target — at a contained `shared_ptr` tax; loses ADT-exhaustiveness + UTF-16); **Ruby** (dynamic,
+  gates nothing; faithfulness-only loss — widths/strings); **F#** (near-lossless, *higher* fidelity than C#
+  on the ADT subset, but **redundant** — same CLR as the C# target, so low niche value despite the cheap
+  win — a good pioneer to *exercise* the new capability flags); **Scala** (strong ADTs but JVM already
+  covered by Kotlin); **Lua** (metatables/coroutines cover it but the pervasive **1-based-indexing** hazard
+  + single number type make it the most local-tier-hungry). Each is a JSON plugin (except where a rewrite
+  forces the local tier) added when a concrete use case appears.
+
+- **Refused as redundant/pointless:** **VB.NET** (same CLR as C#), **Groovy** (JVM, overlaps Kotlin/Java),
+  **Objective-C** (superseded by Swift), **plain JS** (the TS target already compiles to JS). Recorded so
+  the question doesn't reopen without new information.

@@ -171,6 +171,22 @@ method-call vs free function, SPEC §6.3 — so the capability is precisely "cal
 methods"; a backend may instead opt into a documented free-function lowering rather than gate the feature
 out entirely. Tiers: native / idiomatic-with-import / free-function fallback.)
 
+**Vocabulary growth for the second target wave (2026-07-11, 4-agent investigation — §4.17).** The flag
+set above was calibrated to C#/TS/Python/PHP, which happen to share three properties that every *new*
+target stresses and that **none of the existing flags names**. A survey of 15 candidate targets found the
+intersection would **silently over-promise** without three additions, declared **tri-state**
+(`native | emulated | false`, per §4.11): **`mutableRefClasses`** (mutable objects with reference identity
+— Haskell and Elixir are pure / identity-free and would *pass* the old flag intersection yet cannot
+faithfully emit Polyglot's OO core, the single most important finding); **`fixedWidthIntegers`** (real
+i8…u64 with defined wrap — absent in JS/Dart/Python/Ruby/Lua/OCaml, which carry one arbitrary-precision or
+one 64-bit number); and **`utf16Strings`** (the §3.A UTF-16 char contract — Go, Rust, C++, Swift, Ruby,
+Lua, OCaml, Haskell use UTF-8, grapheme-cluster, or byte models instead). These are **additive to the
+*closed* vocabulary** (§4.11 governance: the pioneer of a new representational class pays one `requiresCore`
+bump; later targets in that class inherit it) — not a per-feature growth license, which is the scope-creep
+failure mode this whole clause exists to resist. The **`emulated` tier** is where faithful-but-non-idiomatic
+mappings live (extension methods as `m(x)`, integer widths as `& mask`, `match` as an if-chain): usable,
+surfaced as a warning, **never silent** — the seam between "we changed your call site, here's why" and the
+§3.B "we refuse" that keeps the never-miscompile law intact as the target set grows.
 
 ### F. Input surface — one authoring syntax, deliberately distinct (added 2026-07-02, §4.12)
 Polyglot has exactly **one** authoring syntax (`.pg`), intentionally *not* a clone of any target
@@ -893,6 +909,80 @@ the need), and CLI-version auto-update inside the extension.
 
 **Decisions locked (2026-07-11, user).** *(D1)* Unified **`v0.5.0`** (strictly ahead of every published artifact — ext 0.4.1 / CLI 0.3.1 / plugins 0.3.0; 1.0.0 would prematurely signal API stability). *(D2)* **Every merge to master cuts a patch release**; `release:minor` / `release:major` PR labels override the bump. *(D3)* **No token** — A dispatches B via `gh workflow run` (the `workflow_dispatch` exception), so `GITHUB_TOKEN` suffices; nothing to create or rotate. *(D4)* **Single-definition-point injection** (most robust): `kVersion` moves from the header into `polyglot.cpp` (one TU takes `-DPOLYGLOT_VERSION`), the LSP `serverInfo` site calls `Compiler::version()`, and the self-test becomes a shape check — the per-project-drift risk is designed out, not guarded. *(D5)* **No pre-releases** — stable tags only; if an RC is ever needed it ships CLI/NuGet/plugin `-rc.N` but holds the extension for the stable tag. *(D6)* **CLAUDE.md stays workspace/features/rules only**; the per-change "what/where" history lives in the PRD/PLAN. Implementation follows in PLAN §P24 slices.
 
+### 4.17 Language expansion — the second wave of targets (design — 2026-07-11; investigated by a 4-agent team; PLAN §P26/§P27)
+
+**The ask.** Grow past the four shipping targets (C#, TS, Python, PHP) to "many more languages." A
+4-agent investigation (a popularity/prioritization sweep + three per-language feature-fit deep dives over
+15 candidates: Java, Kotlin, Scala, Swift, Dart, Go, Rust, C++, Zig, Ruby, Lua, F#, OCaml, Haskell, Elixir)
+answered *which*, *in what order*, and *at what honest cost to the intersection*.
+
+**The reframing (the headline).** P18/P19 already turned a backend into a **100% JSON plugin** — a language
+is `capabilities` + `spec` + `std` overlays + `rules`, with *zero* Core change in the steady state (§4.11).
+So the second wave is **not new plumbing**; it is (a) picking targets by fidelity, not hype, (b) letting
+each honestly declare its capability set so §3.E gates the rest, and (c) a small, bounded growth of the
+capability *vocabulary* (§3.E) plus — where the DSL genuinely can't reach — the already-designed **local
+full-power tier**. The investigation confirmed P19's own prediction: Kotlin installs with zero Core change;
+the harder targets surface their mismatch as **loud §3.E refusals, not Core PRs**.
+
+**Priority — by intersection cost, not popularity.** Raw popularity and *fit to Polyglot's niche* (a real
+second deployment target for the *same* portable logic — the MintPlayer.AI physics solver on a .NET server
+**and** a JVM backend **and** both phones) point different ways, and the capability-intersection model is
+exactly what resolves the tension: **Kotlin is the reference JVM target — ~zero intersection cost — while
+Java, though higher-reach, is the *heaviest*** (it force-gates operator overloading, indexers, native
+extension methods, unsigned ints, *and* async from any project that includes it). The tiers, sorted by how
+much of §3.A a target *removes* from a mixed build:
+
+| Tier | Targets | Verdict |
+|---|---|---|
+| **Reference-quality — low cost, fits the JSON-plugin model directly** | **Kotlin** (0 Core change, native across §3.A incl. unsigned + null-safety), **F#** (native DUs/records-`with`/Option — *higher* fidelity than C# on the ADT subset), **Ruby** (dynamic → gates nothing at the capability layer), **PHP** (already shipped, but stubbed — §"PHP uplift" below) | Ship as pure-JSON plugins. |
+| **Strategic reach — moderate cost / one hazard each** | **Swift** (iOS; gates almost nothing, but grapheme-`Character` ≠ UTF-16 → the `utf16Strings` hazard, `&`-overflow ops, `try`/`defer` lowering), **Dart** (Flutter = mobile+web+desktop in *one* plugin; gates function overloading, weak int model — JS-double on web), **C++** (native exceptions *and* overloading — Polyglot's two hardest features — at a contained `shared_ptr<T>` ref-identity tax; loses ADT-exhaustiveness + UTF-16) | Mostly JSON; light local-tier support. |
+| **Reach with a whole-program rewrite (needs the local full-power tier — *cannot* be a pure-JSON downloadable plugin)** | **Go** (GC-free, so memory is a non-issue and interfaces are best-in-class, but exceptions → a pervasive `(T, error)` **non-local rewrite** of callee signatures + every call site; gates overloading/ADT-exhaustiveness/async), **Java** (iterator state-machines, unsigned emulation, checked-exception rooting) | Local-tier targets; not steady-state data-only. |
+| **Viable only with a *published* caveat (§3.C)** | **Rust** (richest feature match anywhere — ADTs, `Option`, traits-as-extensions, native async — but the GC → `Rc<RefCell<T>>` shim **injects runtime borrow panics + cycle leaks that don't exist in the source**, a silent *behavioural* divergence colliding with the prime directive) | §P27, behind a §3.C soundness-caveat + a restricted source shape. |
+| **Functional-subset-only (the new `mutableRefClasses=false` gate)** | **Haskell, Elixir** | §P27. Beautiful for the immutable/ADT/record subset (often the *highest*-fidelity target for it); mutable-OO with reference identity is a **semantic wall, not a syntax gap** — purity/actors have no faithful mapping. Offered as *functional-subset* targets, never full imperative ones. |
+| **Refuse** | **Zig** (functions **cannot capture** — no closures at all — plus no overloading, no GC/destructors, pre-1.0 churn: the "local tier" here would be a compiler-within-a-compiler), **VB.NET / Groovy / Objective-C** (redundant — same CLR/JVM, or superseded) | A §3.B-style "we don't target X" with the reason. |
+
+**Three emit-tiers, made explicit (a distribution consequence).** The investigation sharpens P19's
+"downloaded = declarative data / local = full-power" split into a per-target *fact*: **pure-JSON**
+(Kotlin, PHP, Ruby, F#, Dart, Swift — publishable as `@polyglot/<lang>`, no Core code) vs **local-full-power-tier-required**
+(Go's `(T,error)` and Rust's `Result`/`Rc<RefCell>` threading are *non-local, whole-program* transforms a
+template can't express). This means **Go and Rust are first-party/local plugins, not downloadable
+data-only ones** — a real design boundary, not a nicety, and the honest answer to "can any language be a
+JSON plugin?": no — the ones whose *error or memory model* forces a whole-program rewrite need the C++ tier.
+
+**PHP uplift (the user's explicit ask, 2026-07-11).** PHP ships today but its plugin declares nearly every
+capability **`false`** (`patternMatching, closures, exceptions, interfaces, blockLambdas, async,
+extensionMethods, operatorOverloading`) — a *stub* that gates most of §3.A out of any project including it.
+PHP 8+ in fact supports much of this natively: **`match` expressions** (→ `patternMatching`), **arrow
+functions + closures** (`fn`/`function`, `use`-captures → `closures`/`blockLambdas`), **`try/catch/finally`**
+(→ `exceptions`), **interfaces** and **enums (8.1)**. So the uplift flips those flags on with real rules,
+keeping only the genuine limits honest — `operatorOverloading` and call-site-preserving `extensionMethods`
+stay `false` (or `emulated` free-function), and `async` stays `false` (Fibers are library-level, not
+call-site-preserving — the §3.E case §4.7 already anticipated). Net: PHP moves from "shipped stub" to a
+real first-class target, and it is the **cheapest, lowest-risk exercise of the new tri-state vocabulary**
+(it's already wired into the build + conformance harness), which is why P26 does it first, before Kotlin.
+
+**Syntax-evolution latitude (user, 2026-07-11 — the `.pg` grammar is *not* frozen).** Two second-wave
+problems are best solved at the *source-language* layer, not per-backend: (1) the functional-subset targets
+(Haskell/Elixir) want a way for the author to *promise* immutability so the `mutableRefClasses` gate can
+*open* for a given module — a candidate opt-in `pure`/immutable marker (design-it-twice with "just gate the
+whole target"); (2) targets with real fixed widths reward, and lossy-int targets need, the explicit-width
+story §3.A already has (`i32` etc.) to be first-class in more positions. This latitude is recorded so P27
+may propose grammar/semantic additions rather than contorting a backend around a fixed surface — still
+always exposing exactly the §3.A contract, never a target's private semantics (§3.F holds).
+
+**Decisions (2026-07-11, user).** (D1) **First new language is free choice; Kotlin is the recommended
+reference target** (cheapest, zero-Core, JVM + Android — completing the "same solver on server + both
+phones" matrix with Swift). (D2) **PHP uplift is in-scope and goes first** (shipped-but-stubbed → full
+PHP-8 capability set). (D3) **The capability vocabulary grows by exactly three tri-state flags**
+(`mutableRefClasses`, `fixedWidthIntegers`, `utf16Strings`) — the enabling first slice; additive, governed
+by `requiresCore` (§4.11). (D4) **Go/Rust are local-full-power-tier targets, not downloadable data-only
+plugins** (their error/memory models force whole-program rewrites). (D5) **The paradigm-distant targets
+defer to §P27** (Rust behind a §3.C soundness caveat; Haskell/Elixir as functional-subset targets behind
+`mutableRefClasses=false`; **Zig refused** with a §3.B-style diagnostic), and P27 **may evolve the `.pg`
+syntax** (the grammar is not a hard-bind). Full slice plans: PLAN §P26 (PHP uplift + vocab growth + Kotlin
++ Swift + the Dart/Go fork) and §P27 (the hard targets).
+
+---
 
 ### 4.18 Lambdas & closures — faithful capture across every target (design — 2026-07-11; investigated by a 3-agent team; PLAN §P25)
 
@@ -1155,6 +1245,24 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   sidestep `nonlocal`); Java/C++/Rust `emulated` via the shared cell pass (C++ escape → `shared_ptr` or
   dangling-ref UB; Rust inherits its §3.C borrow-panic caveat). Prerequisite for §P26's PHP-closures uplift.
   Slice plan: PLAN §P25.
+- **P26 — Second-wave targets (PHP uplift + Kotlin + Swift).** 🚧 Designed (2026-07-11; §4.17, from a
+  4-agent investigation over 15 candidate languages). The payoff of the P18/P19 JSON-plugin engine: add
+  languages by *authoring plugins + honestly declaring capabilities*, not by touching Core. Grows the §3.E
+  capability vocabulary by **three tri-state flags** (`mutableRefClasses`, `fixedWidthIntegers`,
+  `utf16Strings` — the axes new targets stress that C#/TS/Python/PHP hid); **uplifts the shipped-but-stubbed
+  PHP** target to its real PHP-8 capability set (`match`/closures/exceptions/interfaces/enums on; overloading
+  + async honestly `false`); then ships **Kotlin** (the reference JVM/Android target — ~zero intersection
+  cost, zero Core change) and **Swift** (iOS; the `utf16Strings` hazard + `&`-overflow + `try`/`defer`
+  pioneer), completing the "same solver on .NET server + JVM + both phones" matrix. Chosen by *intersection
+  cost, not popularity* (Kotlin ≪ Java). Slice plan: PLAN §P26.
+- **P27 — Paradigm-distant targets (Go/Rust local tier, Haskell/Elixir functional-subset, Zig refusal).**
+  🚦 Deferred / demand-gated (2026-07-11; §4.17). The targets that don't fit the pure-JSON model: **Go** (and
+  the Dart/Go fork's Go leg) as a **local full-power tier** plugin — its exceptions→`(T,error)` is a
+  whole-program rewrite a template can't express; **Rust** behind a *published §3.C soundness caveat* (the
+  GC→`Rc<RefCell>` shim injects runtime borrow panics/leaks); **Haskell/Elixir** as **functional-subset**
+  targets behind `mutableRefClasses=false` (mutable-OO is a semantic wall — possibly unlocked per-module by a
+  new opt-in `pure`/immutable `.pg` marker, since the grammar is *not* frozen); **Zig refused** with a
+  §3.B-style diagnostic (no closures at all). Slice plan: PLAN §P27.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
