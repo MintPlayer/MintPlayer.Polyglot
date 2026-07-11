@@ -353,15 +353,15 @@
     },
     "Cond": {
       "tmpl": [
-        "(",
+        "(if (",
         {
           "emit": "node.cond"
         },
-        " ? ",
+        ") ",
         {
           "emit": "node.then"
         },
-        " : ",
+        " else ",
         {
           "emit": "node.els"
         },

@@ -37,6 +37,8 @@ r['csFnSig'] = {"tmpl": [
     {"case": {"when": [[{"eq": ["decl.returnsUnit", "true"]}, ""]], "else": {"tmpl": [": ", {"type": "decl.returnType"}]}}}]}
 r['FunctionDecl'] = {"block": {"head": {"call": "csFnSig"}, "body": [{"stmts": "decl.body"}]}}
 r['Call'] = {"tmpl": [ident("node.callee"), "(", {"map": "node.args", "sep": ", "}, ")"]}
+# Kotlin has no `?:` ternary; `if` is an expression.
+r['Cond'] = {"tmpl": ["(if (", {"emit": "node.cond"}, ") ", {"emit": "node.then"}, " else ", {"emit": "node.els"}, ")"]}
 # Kotlin has no C-style casts; every scalar conversion is a `to<TypeName>()` method (Int->toInt, Double->
 # toDouble, String->toString). The Type rule renders the target name, so `.to`+<name>+`()` is uniform.
 r['Cast'] = {"tmpl": ["(", {"emit": "node.operand"}, ").to", {"type": "node.type"}, "()"]}
