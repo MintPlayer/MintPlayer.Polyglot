@@ -1,10 +1,18 @@
 name: Publish VS Code extension
 
-# Publishes editors/vscode to the Visual Studio Marketplace, mirroring the org's
-# mintplayer-ng-bootstrap snippets pipeline (HaaLeo/publish-vscode-extension + a
-# publisher PAT). PUBLISH_SNIPPETS is the org-wide marketplace PAT for the
-# `mintplayer` publisher; rename here if this repo gets its own secret.
-# skipDuplicate makes the job a no-op until the extension version is bumped.
+# Publishes editors/vscode to the Visual Studio Marketplace as PLATFORM-SPECIFIC extensions that BUNDLE the
+# polyglot language server (PRD §4.15 / PLAN §P23), mirroring the org's mintplayer-ng-bootstrap snippets
+# pipeline (HaaLeo/publish-vscode-extension + a publisher PAT).
+#
+# The marketplace serves the most-specific vsix per user platform and falls back to the platform-independent
+# one otherwise, so we publish one vsix per supported RID (each embedding that RID's CLI + plugins under
+# editors/vscode/bin/) plus a universal no-binary fallback. Each matrix leg stages the pinned CLI from P22's
+# already-built, provenance-attested GitHub Release (it never rebuilds the CLI) and runs the same package+
+# publish action with its `target` set (empty for the universal leg → no --target → platform-independent).
+#
+# PUBLISH_SNIPPETS is the org-wide marketplace PAT for the `mintplayer` publisher; rename here if this repo
+# gets its own secret. skipDuplicate makes each leg a no-op until the extension version is bumped, so one
+# version bump in package.json publishes all four vsixes.
 
 on:
   push:
@@ -14,9 +22,29 @@ on:
       - '.github/workflows/publish-vscode.yml'
   workflow_dispatch:
 
+env:
+  # The polyglot CLI version bundled into the platform vsixes — a P22 GitHub Release tag is v<version>.
+  # Bump this (independently of the extension version) to ship a newer server.
+  POLYGLOT_CLI_VERSION: '0.3.1'
+
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # gh release download (stage-cli.ps1) reads this repo's releases
+    strategy:
+      fail-fast: false     # one platform's marketplace hiccup shouldn't block the others
+      matrix:
+        include:
+          - stage: win32-x64
+            vscodeTarget: win32-x64
+          - stage: linux-x64
+            vscodeTarget: linux-x64
+          - stage: linux-arm64
+            vscodeTarget: linux-arm64
+          - stage: universal          # no-binary fallback (macOS / win-arm64 / alpine / everything else)
+            vscodeTarget: ''           # empty → the action omits --target → platform-independent vsix
+    name: publish (${{ matrix.stage }})
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,6 +58,11 @@ jobs:
         working-directory: editors/vscode
         run: npm ci
 
+      - name: Stage the bundled CLI (${{ matrix.stage }})
+        env:
+          GH_TOKEN: ${{ github.token }}   # gh release download auth for this repo's P22 release
+        run: pwsh editors/vscode/scripts/stage-cli.ps1 -Target ${{ matrix.stage }} -Version ${{ env.POLYGLOT_CLI_VERSION }}
+
       - name: Publish to Visual Studio Marketplace
         uses: HaaLeo/publish-vscode-extension@v2
         with:
@@ -37,3 +70,4 @@ jobs:
           pat: ${{ secrets.PUBLISH_SNIPPETS }}
           skipDuplicate: true
           registryUrl: https://marketplace.visualstudio.com
+          target: ${{ matrix.vscodeTarget }}

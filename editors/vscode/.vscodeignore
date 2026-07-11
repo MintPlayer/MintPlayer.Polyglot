@@ -1,4 +1,8 @@
 .vscode/**
 testbench/**
+scripts/**
+dist/**
 .gitignore
+.vscodeignore
+**/*.vsix
 **/*.map

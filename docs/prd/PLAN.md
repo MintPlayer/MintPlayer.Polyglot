@@ -2423,3 +2423,78 @@ and emits every module `linked=true` (partial wrappers already exist); identical
 `writeDedup` collapses it to one file. MSBuild `_PolyglotAddGenerated` globs `*.cs`. Single-`.pg` + all
 non-C# output byte-identical (the split gates on C# + multi-input). New run-nuget independent-multi-`.pg`
 fixture + unit tests. CLI + NuGet → **0.3.1**; plugins unchanged. Retires the "one C# entry per assembly" limit.
+
+## P23 — VS Code extension: bundle the CLI (zero-setup) + branding (icon + rename) — 🚧 slices 1–4 built (2026-07-11; PRD §4.15, 2-agent investigation)
+
+**As built (2026-07-11, PR #16).** All four slices are implemented and locally verified: `resolveCli()` is
+the 5-rung ladder (rung 4 is platform-aware — MSBuild `x64\` on Windows, CMake `build/polyglot` on Unix);
+branding shipped (icon + `#30BF87` galleryBanner + `displayName` "Polyglot language server", ID frozen,
+extension → 0.4.0); `scripts/stage-cli.ps1` + `scripts/package-all.ps1` produce the four vsixes (each
+platform vsix carries exactly one RID's binary + all four plugins, verified by unzip; the bundled binary
+runs `--version` → 0.3.1 and resolves plugins next to itself); `publish-vscode.yml` is the 4-leg matrix
+(pinned CLI 0.3.1 via `POLYGLOT_CLI_VERSION`; the universal leg's empty `target` normalizes to no `--target`,
+confirmed from the action source). **Pending (structurally un-runnable from a Windows dev box, per each
+slice's gate):** an interactive clean-PATH vsix install proving the LSP starts from rung 2, and the first
+live marketplace publish. No Core/CLI change — extension + CI only.
+
+Make the *released* marketplace extension **work out of the box**: install it, open a `.pg` file, and the
+language server starts — no separate CLI install, no PATH fiddling. Today it fails `spawn polyglot ENOENT`
+because the vsix ships **no server** and `resolveCli()` does **zero discovery** — it spawns the bare word
+`polyglot` (PATH-only). Chosen fix (user decision): **bundle the CLI per-platform in the vsix** via VS Code's
+platform-specific-extension mechanism, reusing P22's already-built + provenance-attested CLI artifacts (no
+rebuild). RID set = P22's: **win-x64, linux-x64, linux-arm64** (→ VS Code targets `win32-x64`/`linux-x64`/
+`linux-arm64`); everything else (macOS, win-arm64, alpine) gets a **universal no-binary fallback vsix**
+(highlighting + `cliPath`/PATH). Full design + file:line findings: PRD §4.15.
+
+- **Slice 1 — resolution ladder + actionable UX + the wrong-exe-name fix (no bundling yet).** Rewrite
+  `editors/vscode/extension.js` `resolveCli()` into the 5-rung ladder: (1) explicit non-empty
+  `polyglot.cliPath` (absolute or workspace-relative, semantics unchanged); (2) bundled
+  `<extensionPath>/bin/polyglot(.exe)` if present (chmod 0755 on Unix before use); (3) `polyglot` on PATH;
+  (4) source checkout (Windows `<ws>/x64/{Release,Debug}/MintPlayer.Polyglot.Cli.exe`, Unix `<ws>/build/polyglot`); (5) fail → an **actionable
+  modal** (`showErrorMessage` with buttons: "Install the CLI" → open the Releases URL; "Locate polyglot.exe…"
+  → `showOpenDialog` → write `polyglot.cliPath`; "Open Settings"). Flip the `polyglot.cliPath` **default to
+  `""`** (`package.json:120-124`) so unset ⇒ auto-ladder; keep it documented as the override. Correct the
+  failure message to name **`polyglot.exe`** (not `MintPlayer.Polyglot.Cli.exe`). Watch mode inherits the
+  ladder automatically (shared `resolveCli`, `extension.js:271`).
+  *Gate:* with **nothing on PATH and no bundle**, opening a `.pg` file shows the actionable modal (not the
+  dead-end warning); "Locate…" wires `cliPath` and the LSP starts. With `polyglot` on PATH, it starts with no
+  prompt. With a source checkout open, rung 4 finds `x64\Release\...`. The message never says
+  `MintPlayer.Polyglot.Cli.exe`.
+
+- **Slice 2 — branding: icon + rename + version bump.** Add `editors/vscode/icon.png` (**256×256**, flat,
+  non-transparent; MintPlayer-brand-aware — connected ti-ti eighth-notes in mint green, legible at 16 px) and
+  `"icon": "icon.png"` in `package.json`; optional `galleryBanner` `{color, theme}`. Change **only**
+  `package.json:3` `displayName` → `"Polyglot language server"` (leave `name`/`publisher` — the ID
+  `mintplayer.polyglot-lang` is frozen). Optional sub-slice: a `.pg` language file icon (light/dark SVG on the
+  `contributes.languages[].icon`). Bump `version` **0.1.0 → 0.4.0**.
+  *Gate:* local `vsce package` succeeds with the icon embedded (vsce hard-fails if `icon` points at a missing
+  file); the installed extension shows the mint icon + the title "Polyglot language server"; `.pg` files show
+  the branded glyph if that sub-slice is done. Extension ID unchanged (existing installs upgrade in place).
+
+- **Slice 3 — per-platform VSIX bundling (local proof).** Stage a RID's CLI payload into
+  `editors/vscode/bin/` (`polyglot(.exe)` + `bin/plugins/` **next to the binary**, per `exe_path.hpp`), then
+  `vsce package --target <t>` for each of `win32-x64`, `linux-x64`, `linux-arm64`; also build the universal
+  (no `--target`, empty `bin/`) fallback vsix. Ensure `.vscodeignore` does **not** exclude `bin/` (it doesn't
+  today) and that each platform vsix contains exactly **one** RID's binary (clean `bin/` between legs). The
+  extension `chmod 0755`s the bundled binary on activation (Unix). Payloads come from P22's GitHub-Releases
+  artifacts for a **pinned CLI version (0.3.1)** — download + extract, do not rebuild.
+  *Gate:* on a clean machine with **nothing on PATH**, installing the matching platform vsix → open a `.pg`
+  file → LSP starts, diagnostics/hover/preview work (rung 2 wins). The universal vsix contains no `bin/`,
+  still highlights, and degrades to rungs 3–5. Verify the Unix +x bit works (install the linux vsix, confirm
+  the staged binary is executable after activation).
+
+- **Slice 4 — CI: `publish-vscode.yml` target matrix.** Rework the workflow into a matrix over
+  `{win32-x64→win-x64, linux-x64→linux-x64, linux-arm64→linux-arm64, universal→∅}`: each leg downloads the
+  pinned CLI release artifact for its RID (via `gh release download` on the P22 tag / a `POLYGLOT_CLI_VERSION`
+  env), stages `bin/` (universal stages nothing), and runs `HaaLeo/publish-vscode-extension@v2` with the
+  `target` input set (omitted for universal), `packagePath: editors/vscode`, the existing publisher PAT,
+  `skipDuplicate: true`. One version bump publishes all four vsixes; the marketplace serves the most-specific
+  per platform.
+  *Gate (CI-verifiable):* a push that bumps `version` publishes win32-x64/linux-x64/linux-arm64 + universal
+  vsixes for the one version; a fresh install on Windows/Linux pulls the bundled-CLI vsix and works with a
+  clean PATH; a macOS install pulls the universal fallback and highlights. The YAML parses; the download+stage
+  halves are proven locally in slice 3.
+
+**Deferred, recorded:** macOS / win-arm64 / alpine bundling (universal fallback covers them, matching P22's
+RID scope); an in-extension one-click CLI *downloader* (bundling removes the need); CLI-version auto-update
+inside the extension; the `.pg` file-icon sub-slice if not taken in slice 2.

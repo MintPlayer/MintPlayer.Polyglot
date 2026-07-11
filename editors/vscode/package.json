@@ -1,10 +1,15 @@
 {
   "name": "polyglot-lang",
-  "displayName": "MintPlayer Polyglot",
+  "displayName": "Polyglot language server",
   "description": "Language support for Polyglot (.pg): syntax highlighting + a language server (diagnostics, go-to-definition, hover, document symbols, formatting) + watch mode (rebuild emitted outputs on save).",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "publisher": "mintplayer",
   "license": "MIT",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#30BF87",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/MintPlayer/MintPlayer.Polyglot"
@@ -119,8 +124,8 @@
       "properties": {
         "polyglot.cliPath": {
           "type": "string",
-          "default": "polyglot",
-          "description": "Path to the polyglot CLI executable (which hosts the language server via `polyglot lsp`). Defaults to 'polyglot' on PATH; a relative path is resolved against the workspace root; set it to the built x64/Debug/MintPlayer.Polyglot.Cli.exe for a source checkout."
+          "default": "",
+          "description": "Path to the polyglot CLI executable (which hosts the language server via `polyglot lsp`). Leave empty to auto-discover: the bundled CLI shipped in the extension, then 'polyglot' on PATH, then a source-checkout build (x64/Release|Debug/MintPlayer.Polyglot.Cli.exe). Set this only to override — a bare name is looked up on PATH, a relative path is resolved against the workspace root, an absolute path is used as-is."
         },
         "polyglot.lib": {
           "type": "string",
