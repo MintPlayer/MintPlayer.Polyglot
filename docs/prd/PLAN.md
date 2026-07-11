@@ -2437,6 +2437,18 @@ confirmed from the action source). **Pending (structurally un-runnable from a Wi
 slice's gate):** an interactive clean-PATH vsix install proving the LSP starts from rung 2, and the first
 live marketplace publish. No Core/CLI change — extension + CI only.
 
+**CI fix (2026-07-11, PR #17 — first live publish run of the merged workflow).** The 4-leg matrix ran on
+merge to master: the **universal leg published 0.4.0** (confirming the empty-target fallback works), but the
+three platform legs failed — HaaLeo `publish-vscode-extension` **rejects `packagePath` + `target` together**
+(*"Both options not supported simultaneously… use `vsce package --target` then `vsce publish --packagePath`"*).
+Fix: the matrix now **packages** the vsix in a run step (`vsce package --target <t>`, empty target on the
+universal leg → platform-agnostic; the platform is baked into the vsix's `TargetPlatform`, verified locally)
+and hands the pre-built file to the action via **`extensionFile`** (no `packagePath`/`target` on the publish
+step). Bumped **0.4.0 → 0.4.1** so all four legs publish cleanly in one run (per the VS Marketplace docs,
+platform-specific + a universal fallback coexist at one version with no ordering constraint; the bump also
+sidesteps any `skipDuplicate` ambiguity against the already-live 0.4.0-universal). Packaging proven locally;
+the publish half is CI-only.
+
 Make the *released* marketplace extension **work out of the box**: install it, open a `.pg` file, and the
 language server starts — no separate CLI install, no PATH fiddling. Today it fails `spawn polyglot ENOENT`
 because the vsix ships **no server** and `resolveCli()` does **zero discovery** — it spawns the bare word

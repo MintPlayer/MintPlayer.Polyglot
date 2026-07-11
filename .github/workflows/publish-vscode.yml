@@ -7,8 +7,10 @@ name: Publish VS Code extension
 # The marketplace serves the most-specific vsix per user platform and falls back to the platform-independent
 # one otherwise, so we publish one vsix per supported RID (each embedding that RID's CLI + plugins under
 # editors/vscode/bin/) plus a universal no-binary fallback. Each matrix leg stages the pinned CLI from P22's
-# already-built, provenance-attested GitHub Release (it never rebuilds the CLI) and runs the same package+
-# publish action with its `target` set (empty for the universal leg → no --target → platform-independent).
+# already-built, provenance-attested GitHub Release (it never rebuilds the CLI), PACKAGES the vsix with
+# `vsce package --target <t>` (empty target on the universal leg → a platform-agnostic fallback), then hands
+# the pre-built file to the publish action. Two-step because HaaLeo rejects packagePath+target together —
+# the platform is baked into the vsix at package time, not passed as a publish flag.
 #
 # PUBLISH_SNIPPETS is the org-wide marketplace PAT for the `mintplayer` publisher; rename here if this repo
 # gets its own secret. skipDuplicate makes each leg a no-op until the extension version is bumped, so one
@@ -63,11 +65,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}   # gh release download auth for this repo's P22 release
         run: pwsh editors/vscode/scripts/stage-cli.ps1 -Target ${{ matrix.stage }} -Version ${{ env.POLYGLOT_CLI_VERSION }}
 
+      # vsce bakes the platform into the vsix at PACKAGE time (`--target`), and the marketplace serves it as
+      # the platform-specific package. HaaLeo rejects packagePath+target together, so we package here and hand
+      # it the pre-built file. The universal leg (empty target) packages with no --target = a platform-agnostic
+      # fallback vsix. `vsce package` respects .vscodeignore (keeps bin/, drops scripts/dist).
+      - name: Package the VSIX (${{ matrix.stage }})
+        shell: pwsh
+        run: |
+          $t = '${{ matrix.vscodeTarget }}'
+          Push-Location editors/vscode
+          try {
+            if ($t) { npx --yes @vscode/vsce package --target $t --out ext.vsix }
+            else    { npx --yes @vscode/vsce package --out ext.vsix }
+            if ($LASTEXITCODE -ne 0) { throw "vsce package failed for '$t'" }
+          } finally { Pop-Location }
+
       - name: Publish to Visual Studio Marketplace
         uses: HaaLeo/publish-vscode-extension@v2
         with:
-          packagePath: 'editors/vscode'
+          extensionFile: editors/vscode/ext.vsix   # pre-packaged; the platform is already baked in
           pat: ${{ secrets.PUBLISH_SNIPPETS }}
           skipDuplicate: true
           registryUrl: https://marketplace.visualstudio.com
-          target: ${{ matrix.vscodeTarget }}

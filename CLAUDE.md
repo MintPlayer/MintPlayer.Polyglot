@@ -75,7 +75,7 @@ docs/lang/                      # SPEC.md + grammar.ebnf + samples/*.pg  (P1 des
 ## Status & next step
 The full pipeline is built and shipping — this is a maturing project, not a skeleton. Current versions:
 **CLI + NuGet 0.3.1**, the four target plugins (**csharp / typescript / python / php**) at **0.3.0**, the
-VS Code extension at **0.4.0**.
+VS Code extension at **0.4.1**.
 
 What exists end-to-end today (per-milestone history + slice logs live in `docs/prd/PLAN.md`; roadmap
 summary in PRD §6 — this file does **not** track milestones):
