@@ -171,6 +171,7 @@ method-call vs free function, SPEC §6.3 — so the capability is precisely "cal
 methods"; a backend may instead opt into a documented free-function lowering rather than gate the feature
 out entirely. Tiers: native / idiomatic-with-import / free-function fallback.)
 
+
 ### F. Input surface — one authoring syntax, deliberately distinct (added 2026-07-02, §4.12)
 Polyglot has exactly **one** authoring syntax (`.pg`), intentionally *not* a clone of any target
 language, so the surface never implies target-specific semantics Polyglot refuses (§3.B) — the distinct
@@ -892,6 +893,95 @@ the need), and CLI-version auto-update inside the extension.
 
 **Decisions locked (2026-07-11, user).** *(D1)* Unified **`v0.5.0`** (strictly ahead of every published artifact — ext 0.4.1 / CLI 0.3.1 / plugins 0.3.0; 1.0.0 would prematurely signal API stability). *(D2)* **Every merge to master cuts a patch release**; `release:minor` / `release:major` PR labels override the bump. *(D3)* **No token** — A dispatches B via `gh workflow run` (the `workflow_dispatch` exception), so `GITHUB_TOKEN` suffices; nothing to create or rotate. *(D4)* **Single-definition-point injection** (most robust): `kVersion` moves from the header into `polyglot.cpp` (one TU takes `-DPOLYGLOT_VERSION`), the LSP `serverInfo` site calls `Compiler::version()`, and the self-test becomes a shape check — the per-project-drift risk is designed out, not guarded. *(D5)* **No pre-releases** — stable tags only; if an RC is ever needed it ships CLI/NuGet/plugin `-rc.N` but holds the extension for the stable tag. *(D6)* **CLAUDE.md stays workspace/features/rules only**; the per-change "what/where" history lives in the PRD/PLAN. Implementation follows in PLAN §P24 slices.
 
+
+### 4.18 Lambdas & closures — faithful capture across every target (design — 2026-07-11; investigated by a 3-agent team; PLAN §P25)
+
+**The ask (user).** Support lambda *expressions and* block/statement lambdas — `(a, b) => expr` **and**
+`(a, b) => { stmts }` — **by default, on every target**, with correct closure semantics. The motivating
+observation was PHP's explicit capture syntax (`function () use ($msg) { … }`), which is the visible tip of
+the real problem: **faithful closures require a capture-analysis pass**, not just a lambda pretty-printer.
+
+**Current state (verified in-tree).** Both lambda forms already *parse* (`parseLambda`/`parseBareLambda`,
+`ir::Lambda{params, exprBodied, body|block}`), and **C# and TS already emit both natively** (their `Lambda`
+rules end in an `inlineBlock` branch) because both capture the variable *binding by reference* — Polyglot's
+contract (§3.A). The gaps are the two targets that can't do it trivially: **Python** gates `blockLambdas:
+false` (its `lambda` is expression-only), and **PHP** has *no `Lambda` rule at all* (`closures: false`,
+`blockLambdas: false` — the stub §4.17 already flagged for uplift). So this is less "add lambdas" than
+"stand up the capture machinery so the awkward targets — and every future one — are faithful, and flip the
+gates off."
+
+**The load-bearing semantics — capture by reference (§3.A), preserved everywhere.** The real sample is
+`var total = 0; let add = (n) => { total += n }; … print(total) // 55` — a **mutated capture whose effect is
+visible after the call**. That must hold on targets whose *native* capture is by **value** (PHP `use($x)`
+snapshots; C++ `[=]`; Java's effectively-final rule). The unifying design:
+
+- **One capture-analysis pass, computed *once*** (not per-target — recomputing in each `lower()` run could
+  make C# and TS silently disagree, a divergence the differential gate can't catch). It attaches to each
+  `ir::Lambda` a **classified capture list** and one authoritative bit per capture:
+  **`needsCell = mutatedInside OR reassigned-outside-after-capture`** (+ a self-referential/recursive capture
+  forces it; `this` never needs it). Backends **consume `needsCell`, never re-derive it**. The conservative
+  default under any doubt is `needsCell = true` — a cell is always correct; a wrong by-value snapshot is a
+  silent miscompile, so the pass never emits one on doubt.
+- **Three emission classes** fall out: **SNAPSHOT** (`needsCell` false → by-value copy is faithful; the one
+  allowed optimization), **SHARED-RO** (outer reassigns later → must be by-reference), **SHARED-RW** (mutated
+  inside → must be by-reference; the sample). Plus two orthogonal bits every backend keys off: **`capturesThis`**
+  (drives TS-arrow-not-`function`, C++ `[this]`/`shared_from_this`, Python `self`-threading, PHP `$this`
+  auto-bind) and **`escapes`** (does the closure outlive its frame — *load-bearing* for C++ dangling-ref
+  soundness and Rust; conservative default = assume escape → box).
+- **The universal fallback — box into a shared cell.** A `needsCell` capture becomes a single-slot mutable
+  **cell allocated at the declaration site**; every read/write of that variable *inside and outside* the
+  lambda routes through the cell, and the closure captures the **cell** (by value, but the cell is a shared
+  reference, so the variable is shared by reference on *every* target). The pass makes this a **node-local
+  rewrite** for backends by stamping `throughCell` on the access nodes (`ir::Var.throughCell` /
+  `ir::Assign.targetThroughCell`) and `needsCell` on decl sites — exactly P19's precompute pattern
+  (`lhsIsRecord`/`receiverHasIndexer`). **A captured loop binding gets a *per-iteration* cell**
+  (`ir::For.needsCell`), so `() => i` over `1..=3` yields 1,2,3 (matching C#/JS `let`-per-iteration) while a
+  `var total` above the loop gets *one* cell (→ 55) — distinguished purely by declaration site, no special case.
+- **One shared cell-lowering pass, parameterized by cell-kind** — *not* three copies. Java (`Ref<T>` holder),
+  Rust (`Rc<RefCell<T>>`), and C++ (`shared_ptr` cell) are the *same* IR transform ("route a variable's live
+  range through a cell, driven by `needsCell`"); only the cell spelling differs. Native-by-reference targets
+  (C#, TS, Kotlin, Swift, Dart, Go) **ignore the cell** and emit the plain variable — the bit is *permission*
+  to box, not obligation, so they stay idiomatic for free.
+
+**Per-target outcome** (capability tri-state per §4.11; "cell?" = needs the shared cell-lowering pass):
+
+| Target | Verdict | SHARED-RW mechanism | Cell? / tier |
+|---|---|---|---|
+| **C#** | `native` | native by-ref binding capture | ignores cell — pure JSON, *already emits both forms* |
+| **TypeScript** | `native` | native by-ref (arrow, never `function`) | ignores cell — pure JSON, *already emits both forms*; invariant: loop bindings emit `let`/`const`, never `var` |
+| **Python** | expr `native`, block `emulated` | block → **hoisted named `def`** + close over the cell object (sidesteps `nonlocal`) | cell yes; block-hoist needs a **local-tier IR pass** (the template DSL can't restructure a statement list) |
+| **PHP** | `native` (both) | `function (…) use (&$total) { … }` — `&` driven **strictly** off `needsCell` | **no cell** — `use(&$x)` *is* a shared binding, so disable the boxing pass for PHP; pure JSON + one `useList` builtin |
+| **Kotlin / Swift / Dart / Go** | `native` | native by-ref (Kotlin auto-`Ref.*`, Swift default, Dart binding, Go closure) | ignores cell — pure JSON (Go stamps `go 1.22`+ for per-iteration loop scope) |
+| **Java** | `emulated` | box to `Ref<T>` holder (`total.v`), scope-wide access rewrite | cell yes — local tier |
+| **C++** | `emulated` | non-escaping `[&total]`; **escaping ⇒ `shared_ptr` cell** (a `[&]` that outlives the frame is dangling-ref UB — the headline hazard) | cell on escape — local tier |
+| **Rust** | `emulated` | `Rc<RefCell<T>>` + `borrow_mut` + per-closure `Rc::clone` | cell yes — local tier; inherits the §3.C borrow-panic caveat at re-entrancy |
+
+**PHP specifics (the user's question, resolved).** Emit **`fn($a,$b) => expr`** *iff* the body is a single
+expression **and** every non-`this` capture is SNAPSHOT (PHP arrow auto-captures by value = exactly SNAPSHOT);
+**otherwise `function ($a,$b) use (…) { … }`**. The `use`-list: **`use($x)`** for SNAPSHOT, **`use(&$x)`** for
+every `needsCell` capture (the sample's `total` → `use(&$total)`), `capturesThis` omitted (`$this` auto-binds),
+and the whole `use (…)` dropped when empty. Because forgetting the `&` on a mutated capture is a **silent
+miscompile** (PHP snapshots by value), the `&` is sourced *only* from `needsCell`, never from syntax. One new
+declarative builtin — **`useList`** over `node.captures` — is the only primitive PHP needs; the rest is
+`case`/`map`/`inlineBlock`.
+
+**No backward compatibility (user).** `blockLambdas` flips `false → native`/`emulated`, PHP gains a `Lambda`
+rule + `closures: native`, and emitted output changes wherever boxing/by-reference capture now applies — no
+compat shim, no byte-identity gate against today's (gap-ridden) output. The **correctness** gates stay: the
+accumulator + loop-capture samples run identically across every target.
+
+**Decisions (2026-07-11).** (D1) **One target-neutral `analyzeCaptures` pass** produces the classified
+capture list + `needsCell`/`capturesThis`/`escapes` + `throughCell` access stamps; backends never re-derive.
+(D2) **Capture-by-reference is the single portable semantics** (§3.A), preserved via native by-ref where it
+exists and the **shared-cell fallback** otherwise. (D3) **One shared cell-lowering pass** parameterized by
+cell-kind (`Ref<T>`/`Rc<RefCell>`/`shared_ptr`), reused by Java/Rust/C++; native-by-ref targets ignore it.
+(D4) **Python block lambdas** lower to a hoisted named `def` via a **local-tier pass** using a
+**collision-aware `fresh()`** (promote `lower.cpp`'s `tmpCounter_` to a gensym seeded from the unit symbol
+set — also hardens the existing `__opt`/`__w` desugars). (D5) **PHP** is pure-JSON (no cell) + the `useList`
+builtin; **C#/TS** are done bar the capability flag + the TS `let`-loop-binding check. (D6) **This is P25 — a
+prerequisite for §P26's PHP-closures uplift and a foundation every second-wave target reuses** (Kotlin/Swift/
+Dart native; Java/C++/Rust via the shared cell pass). Slice plan: PLAN §P25.
+
 ---
 
 ## 5. Testing strategy
@@ -1051,6 +1141,20 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   extension `on: release: published`, bundling the tag's attested assets. Single **lockstep version** across
   all five artifact families, first tag **`v0.5.0`** (abandons the stuck 0.3.2). Migration is one cutover
   commit that neutralizes the old push triggers + sets `0.0.0-dev` placeholders. Slice plan: PLAN §P24.
+- **P25 — Lambdas & closures: faithful capture across every target.** 🚧 Designed (2026-07-11; §4.18, from
+  a 3-agent investigation). Support expression *and* block lambdas (`(a,b) => expr` / `(a,b) => { stmts }`) by
+  default on all targets, preserving §3.A capture-*by-reference*. A single target-neutral `analyzeCaptures`
+  pass classifies each capture with an authoritative `needsCell` bit (mutated-inside OR outer-reassigned;
+  self-ref forces it; `this` never) + `capturesThis`/`escapes`, and stamps `throughCell` on access nodes so
+  cell get/set is a node-local rewrite. The universal fallback — box a mutable capture into a shared cell at
+  its declaration site — is **one shared lowering pass** parameterized by cell-kind (`Ref<T>` Java /
+  `Rc<RefCell>` Rust / `shared_ptr` C++); native-by-ref targets (C#/TS/Kotlin/Swift/Dart/Go) ignore it and
+  stay idiomatic. Outcomes: **C#/TS already native** (flag + TS `let`-loop check); **PHP → `native`** (adds a
+  `Lambda` rule: `fn`-vs-`function`, `use(&$x)` driven strictly off `needsCell`, one `useList` builtin — no
+  cell); **Python block → `emulated`** (hoisted named `def` via a local-tier pass, closing over the cell to
+  sidestep `nonlocal`); Java/C++/Rust `emulated` via the shared cell pass (C++ escape → `shared_ptr` or
+  dangling-ref UB; Rust inherits its §3.C borrow-panic caveat). Prerequisite for §P26's PHP-closures uplift.
+  Slice plan: PLAN §P25.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 
