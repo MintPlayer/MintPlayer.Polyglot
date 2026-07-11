@@ -2716,7 +2716,11 @@ loop-capture samples agree across targets) stay; there is no prior-output byte-i
   omits `$this` and works; the `docs/lang/samples/01_functions.pg` block lambda (today C#/TS-only) now runs on
   PHP.
 
-- **Slice 5 — Python: block lambdas (`false → emulated`) — ⏳ next (the one hard slice).** **Design refinement
+- **Slice 5 — Python: block lambdas (`false → native`) — ✅ done (2026-07-11).** Shipped as designed: a new
+  `ir::LocalFunc` nested-def node + a mutable hoist pass (`hoist_block_lambdas.cpp`, run from `lower()` for the
+  python target); each block `Lambda` becomes a hoisted `def` with mutated captures declared `nonlocal`. Python
+  is in the differential gate, so the accumulator's `30` / self-tick `3` / snapshot `105` are *executed*, not
+  just inspected. **Design refinement
   from slice 1/4 build:** the IR has *no nested-function statement node*, so a faithful hoist needs a new
   **`ir::LocalFunc`** stmt (name, params, body, `nonlocal` names) that the Python plugin renders as
   `def <name>(<params>):` — created *only* in Python lowering (other targets never see it, so it stays off the
@@ -2738,13 +2742,17 @@ loop-capture samples agree across targets) stay; there is no prior-output byte-i
   block lambda with a nested `if`/`for` mutating a capture works; no `nonlocal`/`global` is emitted for a
   celled capture; `01_functions.pg` runs on Python.
 
-- **Slice 6 — a dedicated closures conformance program.** Today block lambdas only ride in `01_functions.pg`.
-  Add `closures.pg` exercising: the mutating accumulator (SHARED-RW → 55), a read-only capture whose outer is
-  reassigned after capture (SHARED-RO), a pure SNAPSHOT capture, a per-iteration loop-var closure (1,2,3), a
-  recursive `let f` self-capture, a nested lambda capturing two levels up, and a `this`-capturing method
-  closure — run across **all four current targets** (cs, ts, python, php) with agreeing output.
-  *Gate:* `pwsh scripts/build-and-test.ps1` runs `closures.pg` green on all four targets; every §4.18 hazard
-  (PHP by-value trap, TS `var`-loop, Python late-binding) has a case that would fail without its fix.
+- **Slice 6 — a dedicated block-lambda conformance program — ✅ done (2026-07-11), scaled to the executable
+  targets.** Shipped `tests/conformance/programs/block_lambda.pg` — a mutating accumulator (SHARED-RW → `30`),
+  a self-tick closure (`3`), and a pure SNAPSHOT capture (`105`) — run across the **three differentially-
+  executed targets (cs, ts, python)** with agreeing output. (Expression lambdas / closures already ride in the
+  pre-existing `closures.pg`.) **Divergence from the original plan, called out honestly:** PHP is **not** in
+  any differential runner (there is no `run-php.ps1` yet — that is P22 slice 3, still unwritten, and the dev
+  box has no PHP interpreter), so PHP lambda emission is asserted by **unit tests** (`use (&$total)` / `fn(…)` /
+  `$f(…)` string checks), not executed. Executing PHP conformance — and the richer 7-case matrix (SHARED-RO
+  reassign-after-capture, recursive `let f` self-capture, nested two-level capture, `this`-capturing method
+  closure) — moves to **P26** (PHP uplift + `run-php.ps1`), where a real interpreter makes it meaningful.
+  *Gate (as shipped):* `pwsh scripts/build-and-test.ps1` runs `block_lambda.pg` green on cs/ts/python.
 
 **Second-wave targets (recorded, built in §P26/§P27):** Kotlin/Swift/Dart get closures **`native`** for free
 (they capture by reference; Go stamps `go 1.22`+ for per-iteration loop scope); **Java/C++/Rust** reuse the

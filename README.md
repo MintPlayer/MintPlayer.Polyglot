@@ -2,7 +2,8 @@
 
 > A **cross-SDK transpiler**: write logic once in a small, deliberately-scoped source language (`.pg`)
 > and emit idiomatic, readable code for multiple target SDKs — **C# / .NET**, **TypeScript / JavaScript**,
-> **Python**, and **PHP** today, with every target defined as a **pure-JSON plugin**.
+> and **Python** (full §3.A surface), plus **PHP** (a **partial** target today — see
+> [Targets are plugins](#targets-are-plugins)), with every target defined as a **pure-JSON plugin**.
 
 Polyglot exists to solve the "same logic, two languages, kept in sync by hand" problem (the concrete
 motivating case: a physics solver living as a hand-maintained twin in C# and TypeScript). Rather than a
@@ -119,12 +120,19 @@ tables + emission rules + capabilities + std bindings), validated at load so a m
 plugin is refused rather than silently miscompiling. The four first-party targets live in
 [`plugins/`](plugins/) and are published to npm:
 
-| Target | Package |
-|---|---|
-| C# | [`@mintplayer/polyglot-target-csharp`](https://www.npmjs.com/package/@mintplayer/polyglot-target-csharp) |
-| TypeScript | [`@mintplayer/polyglot-target-typescript`](https://www.npmjs.com/package/@mintplayer/polyglot-target-typescript) |
-| Python | [`@mintplayer/polyglot-target-python`](https://www.npmjs.com/package/@mintplayer/polyglot-target-python) |
-| PHP | [`@mintplayer/polyglot-target-php`](https://www.npmjs.com/package/@mintplayer/polyglot-target-php) |
+| Target | Package | Coverage |
+|---|---|---|
+| C# | [`@mintplayer/polyglot-target-csharp`](https://www.npmjs.com/package/@mintplayer/polyglot-target-csharp) | full §3.A |
+| TypeScript | [`@mintplayer/polyglot-target-typescript`](https://www.npmjs.com/package/@mintplayer/polyglot-target-typescript) | full §3.A |
+| Python | [`@mintplayer/polyglot-target-python`](https://www.npmjs.com/package/@mintplayer/polyglot-target-python) | full §3.A |
+| PHP | [`@mintplayer/polyglot-target-php`](https://www.npmjs.com/package/@mintplayer/polyglot-target-php) | **partial** |
+
+> **PHP is a partial target.** C#, TypeScript, and Python each pass the entire differential conformance
+> suite. PHP today covers the base surface plus closures/lambdas, but its plugin still declares several §3.A
+> capabilities unsupported — **exceptions, pattern matching, extension methods, operator overloading,
+> with-expressions, interfaces**, and a few std bindings — so a program using those is **refused with a clear
+> diagnostic** (never miscompiled). Full PHP parity, plus a `run-php.ps1` runtime gate, is milestone **P26
+> (“PHP uplift”)** — see [`docs/prd/PLAN.md`](docs/prd/PLAN.md) §P26.
 
 Resolution order: the `plugins/` folder next to the exe → a pgconfig `dependencies` entry
 (`{"mytarget": "file:<dir>"}`) → the user cache (`%LOCALAPPDATA%\polyglot\plugins\`) → a clean refusal
