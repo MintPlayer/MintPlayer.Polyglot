@@ -42,7 +42,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.3.1
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.3.2
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
@@ -56,12 +56,12 @@ VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. T
 
 VS 2019 BuildTools (v142) and VS 2022 (v143) are both **insufficient** for v145 — don't build with them.
 
-**POSIX build (Linux)** — P22 slice 2, the `.vcxproj` stays the Windows source of truth (macOS not
-planned; the CMake file still supports it if that changes): a root
-`CMakeLists.txt` mirrors the three projects (verified on WSL Ubuntu with g++/cmake). `cmake -S . -B build
--DCMAKE_BUILD_TYPE=Release && cmake --build build` → `build/polyglot` (the CLI, static-linked libstdc++) +
-`build/polyglot-tests`. `scripts/check-buildfile-parity.ps1` guards `.vcxproj`↔CMake source-list drift
-(first stage of `build-and-test.ps1`).
+**POSIX build (Linux + macOS)** — P22 slice 2, the `.vcxproj` stays the Windows source of truth: a root
+`CMakeLists.txt` mirrors the three projects (verified on WSL Ubuntu with g++/cmake; the macOS legs build via
+clang on `macos-13`/`macos-14` in `release.yml`). `cmake -S . -B build
+-DCMAKE_BUILD_TYPE=Release && cmake --build build` → `build/polyglot` (the CLI; static-linked libstdc++ on
+Linux, ad-hoc-signed on macOS) + `build/polyglot-tests`. `scripts/check-buildfile-parity.ps1` guards
+`.vcxproj`↔CMake source-list drift (first stage of `build-and-test.ps1`).
 
 ## Layout
 ```
@@ -74,7 +74,7 @@ docs/lang/                      # SPEC.md + grammar.ebnf + samples/*.pg  (P1 des
 
 ## Status & next step
 The full pipeline is built and shipping — this is a maturing project, not a skeleton. Current versions:
-**CLI + NuGet 0.3.1**, the four target plugins (**csharp / typescript / python / php**) at **0.3.0**, the
+**CLI + NuGet 0.3.2**, the four target plugins (**csharp / typescript / python / php**) at **0.3.0**, the
 VS Code extension at **0.4.1**.
 
 What exists end-to-end today (per-milestone history + slice logs live in `docs/prd/PLAN.md`; roadmap
@@ -88,7 +88,7 @@ summary in PRD §6 — this file does **not** track milestones):
   extension is on the marketplace (ID `mintplayer.polyglot-lang`, frozen).
 - **Distribution.** `polyglot install` + a plugin cache/registry, the npm target plugins, the `.pg`-aware
   **NuGet** (auto-transpiles before `dotnet build`, per-RID), a provenance-attested prebuilt-CLI release
-  channel, and a cross-platform CLI (Windows + Linux x64/arm64; macOS not planned).
+  channel, and a cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64).
 
 In flight / gated: **P23** (bundle the CLI in the VS Code extension for zero-setup install — built, pending
 an interactive vsix install + the first marketplace publish; PR #16), **P22** tail (PHP runtime differential +

@@ -2242,10 +2242,14 @@ CLI + NuGet → **0.2.0**, csharp plugin → **0.2.2** (typescript/python/php pl
 
 ## P22 — Cross-platform CLI (Linux) + multi-RID distribution — 🚧 slices 1–2 + 4–5 built, slices 3 & 6 remain (2026-07-04; PRD §4.14, 4-agent investigation)
 
-> **Scope: macOS is NOT planned** (user decision, 2026-07-04). The shipping RID set is **win-x64,
-> linux-x64, linux-arm64**. The `osx-x64`/`osx-arm64` design (native mac legs, ad-hoc codesign, the
-> `_NSGetExecutablePath` code branch) is left below **for reference only** in case that changes — it is not
-> on the roadmap, so ignore the macOS-specific steps in the slices.
+> **Scope update (2026-07-11): macOS is now IN the shipping set** (user decision — reverses the 2026-07-04
+> "not planned" call). The RID set is **win-x64, linux-x64, linux-arm64, osx-x64, osx-arm64**. The
+> `osx-x64`/`osx-arm64` design (native `macos-13`/`macos-14` CMake legs, ad-hoc `codesign`, the
+> `_NSGetExecutablePath` exe-path branch) is now BUILT: `release.yml` has a `build-macos` matrix feeding the
+> GitHub Release + the fat NuGet (CLI → **0.3.2**). Gatekeeper without an Apple Developer account — ad-hoc
+> signature + the extension stripping `com.apple.quarantine` on activation; Developer-ID notarization
+> deferred (PRD §4.14). The VS Code extension's `darwin-x64`/`darwin-arm64` bundling follows in P23 once a
+> macOS-inclusive CLI release exists.
 
 Make the native `polyglot` CLI build and ship for **linux-x64, linux-arm64** alongside win-x64, so the
 `MintPlayer.Polyglot.MSBuild` NuGet transpiles `.pg`→`.cs` during `dotnet build` on a Linux CI runner

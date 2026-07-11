@@ -10,7 +10,7 @@
     <NoWarn>$(NoWarn);NU5128</NoWarn>
 
     <PackageId>MintPlayer.Polyglot.MSBuild</PackageId>
-    <Version>0.3.1</Version>
+    <Version>0.3.2</Version>
     <Authors>MintPlayer</Authors>
     <Description>Transpiles .pg (Polyglot) sources to C# during dotnet build — drop .pg files into an ordinary C# project and build. Ships the self-contained native polyglot CLI; no extra SDK or runtime.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -32,7 +32,7 @@
   </ItemGroup>
 
   <!-- CI: pack the whole staged tools/<rid>/ tree verbatim (PackagePath ends in \ so %(RecursiveDir) —
-       the <rid>/… path — is preserved). Ships win-x64 + linux-x64 + linux-arm64 in one fat package. -->
+       the <rid>/… path — is preserved). Ships win-x64 + linux-x64 + linux-arm64 + osx-x64 + osx-arm64 in one fat package. -->
   <ItemGroup Condition="'$(PolyglotStageRoot)' != ''">
     <None Include="$(PolyglotStageRoot)\**\*" Pack="true" PackagePath="tools\" />
   </ItemGroup>
