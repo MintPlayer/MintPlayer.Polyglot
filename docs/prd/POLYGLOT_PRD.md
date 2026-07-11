@@ -101,6 +101,10 @@ a queryable tree); **bit-exact cross-target floating point** (see §3.D).
   caught unless an explicit `Int32` type is used (the Fable/Haxe leak — made explicit, not silent).
 - **int64 / long:** emit JS `BigInt` (ES2020) — correct, at a perf cost; the alternative two-word `Long`
   class is a later option if BigInt proves too slow.
+- **Dart `int` on the web runtime (P26 §4.17.2):** true 64-bit under AOT (Flutter mobile/desktop) but a
+  53-bit-safe JS `double` under dart2js/dartdevc (web) — values ≥2⁵³ lose precision, exactly like the TS
+  hazard above, but with **no `BigInt` default** (the P26 Dart decision). The web 53-bit limit is the
+  published relaxation; sub-64/unsigned widths mask via `& mask` on both legs (`fixedWidthIntegers = emulated`).
 - **float (32-bit) vs double:** default lets `float` ride a JS `double`; `Math.fround`-per-op strictness is
   **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity.
 - **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics use a real
@@ -1054,6 +1058,42 @@ share is invisible to the differential gate — the §4.11 "lowering bug both ba
 no second oracle); Rust's `RefCell` **runtime borrow panic is data-path-dependent and invisible to any finite
 conformance corpus** — only the sound-mode check or the explicit caveat makes it honest. Both mitigations are
 exactly why these two sit below the reference-quality plugins.
+
+#### 4.17.2 Dart / Flutter (added 2026-07-11)
+
+The counterpoint to §4.17.1: the target *assumed* to need special "Flutter support" that in fact needs none.
+**Flutter is not a language target — it is Dart's UI framework/runtime.** Polyglot transpiles logic, not UI
+(no widget IR, no `build()`), so the language target is **Dart**, and "Flutter support" means only that the
+emitted Dart — a `pub` **library**, not an app — is consumable from a hand-written Flutter app. The planned
+Dart plugin (PLAN §P26 slice 5) already covers everything; Flutter adds two documentation notes, no
+engineering.
+
+**Capability profile.** Dart gates exactly one §3.A feature and emulates exactly one flag — a high-fidelity,
+100%-pure-JSON target (reference-quality, like Kotlin):
+
+| Feature | Dart | Feature | Dart |
+|---|---|---|---|
+| pattern matching / ADTs / records / enums | native (Dart 3 patterns, exhaustive `switch`) | operators / indexers | native (`operator +`, `operator []`) |
+| extension methods | native (`extension on` — keeps `x.m()`) | properties | native (getters/setters) |
+| closures / block lambdas | native (by-ref) | exceptions / disposal | native (`try/catch/on T`, `try/finally`) |
+| iterators / `yield` | **native** (`sync*` — no state machine, unlike Swift) | async / await | native |
+| inheritance / with-expressions | native | **function overloading** | **false** (Dart's defining gap — clean §3.E refusal) |
+| `mutableRefClasses` | native | `fixedWidthIntegers` | **emulated** (single 64-bit `int`, `& mask`) |
+| `utf16Strings` | **native** (Dart `String` = UTF-16 code units — the UTF-16 side, with C#/TS/Kotlin) | | |
+
+**The three runtimes — the one Flutter-specific fact.** Dart compiles to native AOT (mobile/desktop: real
+64-bit `int`) and to JavaScript (web dart2js/dartdevc: `int` **is** a JS double, 53-bit-safe). The web leg is
+the only observable divergence, and it's a **§3.C relaxation** (see the Dart bullet in §3.C), not a §3.B
+refusal. Conformance runs on the VM/AOT leg (the oracle-matching path); the web 53-bit limit is documented,
+not differentially tested (as with §3.D floats).
+
+**Pure-JSON, no local-tier** — the clean counterpoint to Rust/Go: exceptions are native (no `(T,error)`
+rewrite), memory is GC'd with real identity (no `Rc<RefCell>`), iterators are native `sync*` (no synthesized
+state machine). The only Core dependency is slice 0's three flags, which Dart *consumes* (`fixedWidthIntegers
+= emulated`) but does not extend. Toolchain: the `dart` SDK is a headless portable Windows zip (grouped with
+PHP/Kotlin, not Swift); conformance needs only `dart run` (UI-free logic — no Flutter engine).
+**Recommendation:** no change to the slice-5 plan — Flutter's entire delta is "emit a `pub` library,
+consumable from Flutter" + the web-`int` §3.C caveat above.
 
 ---
 
