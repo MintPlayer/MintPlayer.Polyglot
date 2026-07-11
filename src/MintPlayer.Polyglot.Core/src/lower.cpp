@@ -4,6 +4,7 @@
 #include <unordered_set>
 
 #include "mintplayer/polyglot/capture_analysis.hpp"
+#include "mintplayer/polyglot/hoist_block_lambdas.hpp"
 
 namespace mintplayer::polyglot {
 
@@ -658,6 +659,9 @@ ir::Module lower(const CompilationUnit& unit, const std::string& target) {
     Lowerer lowerer(unit, target);
     ir::Module m = lowerer.run(unit);
     analyzeCaptures(m); // P25 §4.18: classify closure captures + stamp cell decisions onto the IR
+    // Python's `lambda` is expression-only, so block lambdas hoist to nested `def`s here (the local tier for
+    // an expression-only-lambda target). Every other target emits block lambdas inline.
+    if (target == "python") hoistBlockLambdas(m);
     return m;
 }
 

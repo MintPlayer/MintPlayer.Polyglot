@@ -524,10 +524,11 @@ int main() {
     // the exact §3.B silent-broken-output failure mode P9-V caught for break/continue.
     {
         const char* blockLambda = "fn main() { var total: i32 = 0\n  let add = (n: i32) => { total += n }\n  add(2)\n  print(total) }\n";
+        // P25 §4.18: python now SUPPORTS block lambdas by hoisting them to a nested `def` (Python `lambda` is
+        // expression-only) — this supersedes the P19 refusal. The mutated capture becomes a `nonlocal`.
         EmitResult py = compileStd(blockLambda, findTarget("python"));
-        bool named = false;
-        for (const auto& d : py.diagnostics) if (has(d.message, "blockLambdas")) named = true;
-        check(!py.ok && named, "P19: python refuses a statement-bodied lambda (expression-only lambdas)");
+        check(py.ok && has(py.code, "def ") && has(py.code, "nonlocal total"),
+              "P25: python emits a block lambda as a hoisted def with nonlocal");
         check(compileStd(blockLambda, findTarget("csharp")).ok && compileStd(blockLambda, findTarget("typescript")).ok,
               "P19: C#/TS still compile a statement-bodied lambda");
 

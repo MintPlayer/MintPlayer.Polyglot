@@ -192,6 +192,17 @@ private:
                 line("}");
                 break;
             }
+            case StmtKind::LocalFunc: { // P25 §4.18: a hoisted nested def (Python block-lambda lowering)
+                const auto& lf = static_cast<const LocalFunc&>(s);
+                std::string sig = "def " + lf.name + "(";
+                for (std::size_t i = 0; i < lf.params.size(); ++i) { if (i) sig += ", "; sig += lf.params[i].name; }
+                sig += ")";
+                for (std::size_t i = 0; i < lf.nonlocals.size(); ++i) sig += (i ? ", " : " nonlocal ") + lf.nonlocals[i];
+                line(sig + " {");
+                block(lf.body);
+                line("}");
+                break;
+            }
         }
     }
 

@@ -225,7 +225,7 @@ struct Match : Expr {
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue, Yield, Throw, Try, Use };
+enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue, Yield, Throw, Try, Use, LocalFunc };
 
 struct Stmt {
     StmtKind kind;
@@ -373,6 +373,19 @@ struct Lambda : Expr {
     bool capturesThis = false;
     bool escapes = true;
     Lambda(SourcePos p, Type t) : Expr(ExprKind::Lambda, p, std::move(t)) {}
+};
+// A hoisted nested function — the Python lowering of a **block lambda** (Python `lambda` is expression-only,
+// so `(a) => { stmts }` can't stay inline). Emitted as `def <name>(<params>):` with a `nonlocal <names>`
+// line for the captures it *mutates*. Created ONLY by the Python block-lambda hoist pass (§4.18); every other
+// target emits block lambdas inline and never sees this node — hence it stays off the anti-silent-drop
+// coverage table, and only the Python plugin needs a rule for it. Defined here (like `Lambda`) because it
+// needs `Param` + `StmtPtr`.
+struct LocalFunc : Stmt {
+    std::string name;
+    std::vector<Param> params;
+    std::vector<std::string> nonlocals; // captured variables assigned inside the body (need Python `nonlocal`)
+    std::vector<StmtPtr> body;
+    LocalFunc(SourcePos p, std::string n) : Stmt(StmtKind::LocalFunc, p), name(std::move(n)) {}
 };
 struct Function {
     std::string name;

@@ -2607,14 +2607,17 @@ built first; simplicity wins); extension pre-release channel (D5: none); a tag-k
 (D6 left the history in PRD/PLAN); the `editors/vs` Visual Studio VSIX (in no publish workflow today — folded
 in only if it ever ships).
 
-## P25 — Lambdas & closures: faithful capture across every target — 🚧 slices 1 + 3 + 4 built (2026-07-11; PRD §4.18, 3-agent investigation)
+## P25 — Lambdas & closures: faithful capture across every target — 🚧 slices 1 + 3–6 built; §3.A lambdas faithful on all 4 current targets (2026-07-11; PRD §4.18, 3-agent investigation)
 
-**Status (2026-07-11):** the capture-analysis foundation (slice 1) is in, and **three of the four current
-targets now have faithful lambdas**: C#/TS (slice 3, already native — verified) and PHP (slice 4, real
-closures with `use(&$x)`). Remaining: **slice 5** (Python block lambdas — the one hard slice; needs a new
-`ir::LocalFunc` nested-def node so block lambdas can hoist), **slice 6** (the `closures.pg` conformance
-program, once Python lands), and **slice 2** (the shared cell-lowering pass — **deferred**: no current target
-needs it, see its note). All four gates stay green.
+**Status (2026-07-11):** **all four current targets now have faithful expression *and* block lambdas** —
+C#/TS (slice 3, native), PHP (slice 4, `use(&$x)`), and Python (slice 5, block lambdas hoist to a nested
+`def` with `nonlocal`). The capture-analysis foundation (slice 1) drives all of them, and the new
+`block_lambda.pg` conformance program (slice 6) proves cs/ts/python agree (`30 | 3 | 105`) in the
+differential gate — with Python *executed*, not just inspected. **Slice 2** (the shared cell-lowering pass)
+stays **deferred** — no current target needs it (see its note); it lands with the boxing targets in P26/P27.
+Two known, documented follow-ups: a **value-returning block lambda** infers `unit` (pre-existing sema gap,
+independent of captures), and **loop-var-escape on Python** (expression-lambda late binding) needs a
+default-arg snapshot — both out of scope here, neither a silent miscompile in the covered surface.
 
 Support expression **and** block/statement lambdas — `(a, b) => expr` and `(a, b) => { stmts }` — **by
 default on every target**, preserving §3.A capture-**by-reference** semantics. Full design + per-target

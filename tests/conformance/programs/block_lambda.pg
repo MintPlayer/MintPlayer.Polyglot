@@ -1,0 +1,21 @@
+// P25 §4.18 — block (statement-bodied) lambdas & faithful capture, across every target.
+// A mutated capture (SHARED-RW: on Python the block lambda hoists to a nested def with
+// `nonlocal`; on PHP `use (&$x)`; C#/TS native by-ref) and a read-only capture (SNAPSHOT).
+fn main() {
+  var total = 0
+  let add = (n: i32) => { total += n }
+  add(10)
+  add(20)
+  print(total)                 // 30
+
+  var log = 0
+  let tick = () => { log += 1 }
+  tick()
+  tick()
+  tick()
+  print(log)                   // 3
+
+  let base = 100
+  let addBase = (x: i32) => x + base
+  print(addBase(5))            // 105
+}

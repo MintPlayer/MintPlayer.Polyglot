@@ -1060,6 +1060,22 @@ std::unique_ptr<IrDeclCtx> ModuleDeclCtx::memberCtx(const std::string& path, std
 }
 
 std::string StmtCtx::get(const std::string& path) const {
+    if (s_.kind == ir::StmtKind::LocalFunc) { // P25 §4.18: a hoisted nested def (Python block-lambda lowering)
+        const auto& lf = static_cast<const ir::LocalFunc&>(s_);
+        if (path == "stmt.name")            return lf.name;
+        if (path == "stmt.params.count")    return std::to_string(lf.params.size());
+        if (path == "stmt.body.count")      return std::to_string(lf.body.size());
+        if (path == "stmt.nonlocals.count") return std::to_string(lf.nonlocals.size());
+        if (path.rfind("stmt.params.", 0) == 0) {
+            std::size_t i = 0;
+            std::string f;
+            if (splitIndexed(path, 12, i, f) && i < lf.params.size() && f == "name") return lf.params[i].name;
+        }
+        if (path.rfind("stmt.nonlocals.", 0) == 0) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+            if (i < lf.nonlocals.size()) return lf.nonlocals[i];
+        }
+    }
     if (s_.kind == ir::StmtKind::For) {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
@@ -1138,6 +1154,8 @@ std::string StmtCtx::emitChild(const std::string& path, const std::string&) cons
 }
 
 const std::vector<ir::StmtPtr>* StmtCtx::stmtList(const std::string& path) const {
+    if (s_.kind == ir::StmtKind::LocalFunc && path == "stmt.body") // P25 §4.18
+        return &static_cast<const ir::LocalFunc&>(s_).body;
     if (s_.kind == ir::StmtKind::For && path == "stmt.body")
         return &static_cast<const ir::For&>(s_).body;
     if (s_.kind == ir::StmtKind::Try) {
@@ -1496,7 +1514,8 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             // A per-kind statement RULE, when the backend's table declares one (P19 slice 7): the shape
             // is data; only a kind with no rule falls back to the imperative emitStmtTarget.
             const char* key = s.kind == ir::StmtKind::For ? "ForStmt"
-                            : s.kind == ir::StmtKind::Try ? "TryStmt" : nullptr;
+                            : s.kind == ir::StmtKind::Try ? "TryStmt"
+                            : s.kind == ir::StmtKind::LocalFunc ? "LocalFunc" : nullptr;
             if (key) {
                 if (const engine::RuleTable* rules = ruleTable()) {
                     if (const DeclHooks* hooks = declHooks()) {
