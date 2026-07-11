@@ -101,6 +101,10 @@ a queryable tree); **bit-exact cross-target floating point** (see §3.D).
   caught unless an explicit `Int32` type is used (the Fable/Haxe leak — made explicit, not silent).
 - **int64 / long:** emit JS `BigInt` (ES2020) — correct, at a perf cost; the alternative two-word `Long`
   class is a later option if BigInt proves too slow.
+- **Dart `int` on the web runtime (P26 §4.17.2):** true 64-bit under AOT (Flutter mobile/desktop) but a
+  53-bit-safe JS `double` under dart2js/dartdevc (web) — values ≥2⁵³ lose precision, exactly like the TS
+  hazard above, but with **no `BigInt` default** (the P26 Dart decision). The web 53-bit limit is the
+  published relaxation; sub-64/unsigned widths mask via `& mask` on both legs (`fixedWidthIntegers = emulated`).
 - **float (32-bit) vs double:** default lets `float` ride a JS `double`; `Math.fround`-per-op strictness is
   **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity.
 - **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics use a real
@@ -981,6 +985,152 @@ defer to §P27** (Rust behind a §3.C soundness caveat; Haskell/Elixir as functi
 `mutableRefClasses=false`; **Zig refused** with a §3.B-style diagnostic), and P27 **may evolve the `.pg`
 syntax** (the grammar is not a hard-bind). Full slice plans: PLAN §P26 (PHP uplift + vocab growth + Kotlin
 + Swift + the Dart/Go fork) and §P27 (the hard targets).
+
+#### 4.17.1 Rust & Go deep-dive (added 2026-07-11; investigated by a 2-agent team)
+
+A focused follow-up on the two §P27 systems targets, because both are frequently *assumed* to be easy
+JSON-plugin wins and are not. The through-line: **each is the richest feature match on part of the surface
+yet forces a whole-program, non-local transform a declarative rule provably cannot express** — so both are
+**first-party / local-full-power-tier** targets (decision D4 above), not downloadable data-only plugins, and
+both stay in **§P27**. The investigation confirms and sharpens the existing slotting; it does not reopen it.
+
+**Capability profile (tri-state per §3.E/§4.11).**
+
+| Feature | Rust | Go |
+|---|---|---|
+| pattern matching / ADTs | **native** (best-in-class: `enum`+`match`+exhaustiveness) | **emulated** (type-switch/if-chain; **no** compile-time exhaustiveness) |
+| enums | native | emulated (`const`+`iota`) |
+| operators | native (`std::ops`) | **false** (no overloading, no method fallback) |
+| extension methods | native (extension trait + `use`) | emulated (free fn `m(x)`) |
+| properties/indexers | emulated (`x.prop()`; `Index`/`IndexMut`) | false |
+| disposal (`using`) | **native** (RAII `Drop`) | **native** (`defer`) |
+| closures | native (expr); **emulated** (shared-mutable → `Rc<RefCell>`) | **native** (capture by ref) |
+| with-expressions | native (`Foo { f, ..base }`) | native (struct copy) |
+| async/await | native (`impl Future` — needs an executor builddep) | **false** (goroutines aren't call-site-preserving `async`) |
+| exceptions | **emulated/local-tier** (`Result` threading or `panic`) | **native *via local-tier rewrite*** (`(T,error)`) |
+| iterators / `yield` | emulated/local-tier (synthesized `impl Iterator`) | emulated/local-tier (goroutine+chan / 1.23 range-over-func) |
+| overloading | emulated (name-mangling, as TS) | false |
+| inheritance | **false** (no classical inheritance/`super`) | false (embedding, not inheritance) |
+| `mutableRefClasses` | **emulated** (`Rc<RefCell<T>>` — unsound by default, see below) | **native** (pointers to mutable structs) |
+| `fixedWidthIntegers` | native (`i8..i128`/`u8..u128`; emit `wrapping_*` per §3.C) | native (`int8..uint64`, defined wrap) |
+| `utf16Strings` | **false** (UTF-8 `String`, 4-byte `char`) | **false** (UTF-8 bytes + runes) |
+
+**The hard problem, per target.**
+- **Go — exceptions → `(T, error)`.** The faithful emission threads `(T, error)` through the *whole call
+  graph*: every function that can (transitively) throw gains an `error` return; every call site becomes
+  `v, err := f(); if err != nil { return <zero>, err }`; `try/catch/finally` decompose into inline error
+  checks + `errors.As` dispatch + `defer`. This rewrites *callee signatures from a caller's context* and
+  synthesizes `err`/zero-value plumbing across nodes — provably outside the declarative DSL (which sees one
+  node with node-local context and cannot compute the transitive throw-set). This is the first *non-local,
+  call-graph-wide* lowering Polyglot would own.
+- **Rust — GC → `Rc<RefCell<T>>`.** A shared mutable object (the `mutableRefClasses` core) has no GC to map
+  to, so it becomes `Rc<RefCell<T>>`: shared ownership + a **runtime** borrow check. This injects two
+  behaviours *absent from the source* — `RefCell` **panics** on aliased/re-entrant `borrow_mut()` (legal
+  under GC/C# semantics), and `Rc` **leaks reference cycles** a GC would collect. Rust's exceptions (`Result`
+  threading) and `yield` (state machine) are the same local-tier shapes as Go/Java.
+
+**Pure-JSON vs local-tier.** Both are **hybrids**: a large declarative JSON plugin (ADTs/`match`, operators,
+extension traits, `Drop`/`defer` disposal, `..`/struct-copy update, async *signatures*, fixed-width ints via
+one additive `intRepr=wrapping` value) **plus** a small set of first-party C++ local-tier passes — the
+`Result`/error rewrite, the shared cell-lowering pass (§4.18 D3), and the `yield` state-machine — **most of
+which are shared with Java/C++ and not target-specific**. A **gated pure-JSON MVP is viable for Go** (declare
+`exceptions:false` + `iterators:false` and it rides the ordinary interpreter with zero Core code, covering
+its genuine strengths — structural interfaces, closures, `defer`, unsigned/fixed-width ints, struct-update);
+it defers only throwing/yielding programs and is a plausible early FruitCake passer. Rust's MVP is narrower
+because its memory model, not just error handling, needs the cell pass.
+
+**Toolchain / conformance.** A `run-rust.ps1` / `run-go.ps1` mirrors `run-php.ps1` (emit to target **and** to
+C# the oracle, run both, diff stdout; a clean §3.E refusal is an expected PASS), with the target compiler
+under `%LOCALAPPDATA%\polyglot-toolchains\` and a conformance-only `runCommand` in the manifest. **Go** ships a
+single self-contained Windows `go.exe` (fits the convention; **not currently installed**). **Rust** needs
+`rustup` + the MSVC linker (present on this VS-2026 box) — heavier than an interpreter; and conformance **must
+build with `wrapping_*` (or release)** so an overflow reflects §3.C defined-wrap, not a debug-build panic.
+
+**Recommendations.** Keep **both in §P27**; neither meets the P26 bar (cheap, high-fidelity, pure-JSON,
+mobile-matrix). **Go:** ship the gated pure-JSON MVP first (real value, exercises the harness + the three new
+flags on a UTF-8/fixed-width target), then the local-tier `(T,error)` rewrite as its own slice gated on a
+nested-try/typed-catch conformance test. **Rust:** admit only on concrete demand, under the admissibility
+gate — the §3.C soundness caveat authored **before the first Rust byte ships**, with the borrow-panic + cycle-
+leak classes each **reproduced in a committed test**; offer **both** an opt-in "sound mode" (compile-time
+single-owner/no-shared-aliasing check) *and* the published caveat. **Biggest risks:** Go's `(T,error)` is a
+new *class* of Core machinery (non-local; a wrong throw-closure/zero-value both a buggy pass and its consumer
+share is invisible to the differential gate — the §4.11 "lowering bug both backends consume" hazard, here with
+no second oracle); Rust's `RefCell` **runtime borrow panic is data-path-dependent and invisible to any finite
+conformance corpus** — only the sound-mode check or the explicit caveat makes it honest. Both mitigations are
+exactly why these two sit below the reference-quality plugins.
+
+#### 4.17.2 Dart / Flutter (added 2026-07-11)
+
+The counterpoint to §4.17.1: the target *assumed* to need special "Flutter support" that in fact needs none.
+**Flutter is not a language target — it is Dart's UI framework/runtime.** Polyglot transpiles logic, not UI
+(no widget IR, no `build()`), so the language target is **Dart**, and "Flutter support" means only that the
+emitted Dart — a `pub` **library**, not an app — is consumable from a hand-written Flutter app. The planned
+Dart plugin (PLAN §P26 slice 5) already covers everything; Flutter adds two documentation notes, no
+engineering.
+
+**Capability profile.** Dart gates exactly one §3.A feature and emulates exactly one flag — a high-fidelity,
+100%-pure-JSON target (reference-quality, like Kotlin):
+
+| Feature | Dart | Feature | Dart |
+|---|---|---|---|
+| pattern matching / ADTs / records / enums | native (Dart 3 patterns, exhaustive `switch`) | operators / indexers | native (`operator +`, `operator []`) |
+| extension methods | native (`extension on` — keeps `x.m()`) | properties | native (getters/setters) |
+| closures / block lambdas | native (by-ref) | exceptions / disposal | native (`try/catch/on T`, `try/finally`) |
+| iterators / `yield` | **native** (`sync*` — no state machine, unlike Swift) | async / await | native |
+| inheritance / with-expressions | native | **function overloading** | **false** (Dart's defining gap — clean §3.E refusal) |
+| `mutableRefClasses` | native | `fixedWidthIntegers` | **emulated** (single 64-bit `int`, `& mask`) |
+| `utf16Strings` | **native** (Dart `String` = UTF-16 code units — the UTF-16 side, with C#/TS/Kotlin) | | |
+
+**The three runtimes — the one Flutter-specific fact.** Dart compiles to native AOT (mobile/desktop: real
+64-bit `int`) and to JavaScript (web dart2js/dartdevc: `int` **is** a JS double, 53-bit-safe). The web leg is
+the only observable divergence, and it's a **§3.C relaxation** (see the Dart bullet in §3.C), not a §3.B
+refusal. Conformance runs on the VM/AOT leg (the oracle-matching path); the web 53-bit limit is documented,
+not differentially tested (as with §3.D floats).
+
+**Pure-JSON, no local-tier** — the clean counterpoint to Rust/Go: exceptions are native (no `(T,error)`
+rewrite), memory is GC'd with real identity (no `Rc<RefCell>`), iterators are native `sync*` (no synthesized
+state machine). The only Core dependency is slice 0's three flags, which Dart *consumes* (`fixedWidthIntegers
+= emulated`) but does not extend. Toolchain: the `dart` SDK is a headless portable Windows zip (grouped with
+PHP/Kotlin, not Swift); conformance needs only `dart run` (UI-free logic — no Flutter engine).
+**Recommendation:** no change to the slice-5 plan — Flutter's entire delta is "emit a `pub` library,
+consumable from Flutter" + the web-`int` §3.C caveat above.
+
+#### 4.17.3 Kotlin (added 2026-07-11)
+
+The positive bookend to §4.17.1: where Rust/Go are "assumed-easy targets that aren't," **Kotlin is the target
+the JSON-plugin model was built for** — the P26 first-new-target (decision D1), **100% pure-JSON, zero Core
+change beyond slice 0**, and strictly higher-fidelity than any target that needs a local tier.
+
+**Capability profile** — every §3.A feature and all three flags **native except three emulations**:
+
+| Feature | Kotlin | Feature | Kotlin |
+|---|---|---|---|
+| pattern matching / ADTs | native (`sealed` + exhaustive `when`) | enums | native (`enum class` — see risk) |
+| operators / properties / indexers | native (`operator fun`, `val/var` + `get()/set()`) | extension methods | native (`fun T.m()` — keeps `x.m()`) |
+| exceptions | native (unchecked — no checked-throw tax) | closures / with | native (by-ref; `data class .copy()`) |
+| iterators / `yield` | **native** (`sequence{ yield }` — no state machine, the edge over Swift/Java/Go) | overloading | **native** (real JVM overloading — no mangling) |
+| inheritance | native (`open`/`override`) | `mutableRefClasses` | native |
+| `fixedWidthIntegers` | **native** (`Byte…Long` **+ `UByte…ULong`**; i64 = real `Long`, **no BigInt tax**) | `utf16Strings` | **native** (JVM `String`/`Char` = UTF-16 — the C#/TS match) |
+| disposal (`using`) | **emulated** (`.use{}` — block form) | async | **emulated** (`suspend`/`.await()` + `kotlinx.coroutines` builddep) |
+| statics | **emulated** (`companion object`) | | |
+
+**The one hazard — no implicit numeric widening — is de-risked by an existing Core fact.** Kotlin rejects
+`val x: Long = anInt` (needs `anInt.toLong()`), so the plugin must insert `.toX()` at implicit-widening
+sites. The finding: **sema already materializes every implicit widening as a real `ir::Cast` node** (`coerce()`
+wraps the expr in a `Cast` whose result-type is the target and whose operand keeps its source type). So the
+Kotlin **`Cast` rule** — the same slot C# fills with `($T)($x)` — has both from- and to-type in hand and
+emits `($x).toLong()`; implicit and explicit casts flow through one node. **No new Core fact needed** — only a
+per-target `(fromClass,toClass)→method` table (pure data). This is the Kotlin analogue of Swift's `&+` ops
+but cheaper (reuses a materialized node vs. changing `spec.binaryOp`).
+
+**Pure-JSON, no local-tier** — the clean counterpoint to Rust/Go: native exceptions (no `(T,error)`), native
+mutable-ref classes (the `analyzeCaptures` cell bit is *ignored*, §4.18), native `sequence{ yield }` (the one
+construct that drops Swift/Java/Go/C++ into local-tier). Publishable as `@polyglot/kotlin`, downloadable data.
+Toolchain: `kotlinc` is a headless portable zip (JDK already present — `java 24`); joins the N-target harness
+via `kotlinc … -d foo.jar` → `java -jar` → diff vs the C# oracle. **Biggest risk (not the `.toX()` widening —
+that's de-risked): the enum integer-value contract** — `.pg` enums carry `i32` values, but a native `enum
+class` exposes `.ordinal`/entry objects, so the `Match`/`enumCase` arm must compare the declared integer and
+enum arithmetic must be verified against the oracle (the same trap PHP's D6 handled by keeping const-class).
 
 ---
 

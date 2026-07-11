@@ -63,6 +63,7 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     r.spec.stmtEnd      = strOr("stmtEnd", ";");
     r.spec.throwKeyword = strOr("throwKeyword", "throw");
     r.spec.rethrow      = strOr("rethrow", "throw;");
+    r.spec.memberOp     = strOr("memberOp", ".");
     r.spec.trueLit      = strOr("trueLit", "true");
     r.spec.falseLit     = strOr("falseLit", "false");
     r.spec.nullLit      = strOr("nullLit", "null");
@@ -219,6 +220,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"stmtEnd\":" + json::quote(spec.stmtEnd) +
            ",\"throwKeyword\":" + json::quote(spec.throwKeyword) +
            ",\"rethrow\":" + json::quote(spec.rethrow) +
+           ",\"memberOp\":" + json::quote(spec.memberOp) +
            ",\"trueLit\":" + json::quote(spec.trueLit) +
            ",\"falseLit\":" + json::quote(spec.falseLit) +
            ",\"nullLit\":" + json::quote(spec.nullLit) + gen + wa + tbls + escs + ids + "}";

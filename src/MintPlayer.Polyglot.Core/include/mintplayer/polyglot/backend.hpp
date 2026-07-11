@@ -34,6 +34,12 @@ enum class Feature {
     Async,               // `async fn` + `await` (single-threaded coroutines); a future PHP-like target may lack it
     BlockLambdas,        // statement-bodied lambdas `x => { … }` (Python lambdas are expression-only)
     WithExpressions,     // record update `expr with { f = v }` (until a target has a ctor-rebuild emission)
+    // P26 slice 0 — the second-wave capability vocabulary (PRD §3.E / §4.11). All three are `native` (or
+    // absent) on C#/TS/Python, so they gate/warn nothing today; they exist so a second-wave target that
+    // lacks one refuses or warns instead of silently miscompiling — the no-retrofit discipline.
+    MutableRefClasses,   // a mutable reference class (`var` field / object identity) — absent on Haskell/Elixir
+    FixedWidthIntegers,  // sub-64-bit or unsigned int widths (i8/i16/i32/u8/u16/u32/u64) — emulated on Dart's single int
+    Utf16Strings,        // `char` / UTF-16 code-unit strings — emulated on grapheme-string targets (Swift)
 };
 const char* featureName(Feature f); // stable lowerCamel id for diagnostics, e.g. "extensionMethods"
 
@@ -41,6 +47,7 @@ inline constexpr Feature kAllFeatures[] = {
     Feature::ExtensionMethods, Feature::OperatorOverloading, Feature::Properties, Feature::Iterators,
     Feature::PatternMatching, Feature::Closures, Feature::Exceptions, Feature::Disposal, Feature::Inheritance,
     Feature::Async, Feature::BlockLambdas, Feature::WithExpressions,
+    Feature::MutableRefClasses, Feature::FixedWidthIntegers, Feature::Utf16Strings,
 };
 
 class Backend {
@@ -50,6 +57,11 @@ public:
     virtual std::string emit(const ir::Module& module) const = 0;
     // Whether this backend can emit the given §3.A feature on its target (PRD §3.E capability flag).
     virtual bool supports(Feature f) const = 0;
+    // The tri-state stance behind supports() (PRD §4.11): "native" | "emulated" | "false". supports() is the
+    // coarse gate (anything but "false"); the stance additionally lets the compiler WARN on "emulated" — the
+    // "we rewrote your call site, here's why" surface. Default derives from supports(), so a backend that only
+    // overrides supports() keeps working unchanged.
+    virtual std::string capabilityStance(Feature f) const { return supports(f) ? "native" : "false"; }
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }

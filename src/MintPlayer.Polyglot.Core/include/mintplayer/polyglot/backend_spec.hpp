@@ -63,6 +63,10 @@ struct BackendSpec {
     // two statement spellings — the local-declaration keyword and the yield forms — are `tables` rows
     // (`localDecl`: mutable/const, `yield`: value/empty) applied by the shared statement walk.
     std::string rethrow = "throw;";
+    // Instance member-access operator (`.` for C#/TS/Python; `->` for PHP). Used by the shared statement
+    // walk where it must synthesize a member access itself (the `use`-disposal `x.dispose()` call); ordinary
+    // member/method expressions carry their own operator in the plugin's Member/MethodCall rules.
+    std::string memberOp = ".";
 
     // Boolean / null literal spellings (C#/TS `true`/`false`/`null`; Python `True`/`False`/`None`). Read by
     // each backend's expression walk. (`this`/`self` is NOT here — C# rebinds it in a `with`-copy IIFE, so it

@@ -63,6 +63,10 @@ if (-not $SkipConformance) {
     & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-python.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
     if ($LASTEXITCODE -ne 0) { Write-Host "`nPYTHON CONFORMANCE FAILED."; exit 1 }
 
+    Write-Host "`n==> Differential conformance (C# vs PHP)"
+    & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-php.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+    if ($LASTEXITCODE -ne 0) { Write-Host "`nPHP CONFORMANCE FAILED."; exit 1 }
+
     Write-Host "`n==> Sample emit gate (each sample's C# compiles + TS runs)"
     & pwsh -NoProfile -File (Join-Path $repo "tests\samples\run-emit.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
     if ($LASTEXITCODE -ne 0) { Write-Host "`nSAMPLE EMIT GATE FAILED."; exit 1 }

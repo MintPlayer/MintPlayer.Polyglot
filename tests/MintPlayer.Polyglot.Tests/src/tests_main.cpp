@@ -58,14 +58,23 @@ EmitResult compileStd(const std::string& src, const BackendHandle& target) {
 }
 
 // A backend that supports the whole §3.A surface except one feature — used to prove §3.E gating bites.
+// The two-arg form additionally marks one feature "emulated", to exercise the warn-on-emulated path (slice 0).
 class StubBackend : public Backend {
 public:
     explicit StubBackend(Feature missing) : missing_(missing) {}
+    StubBackend(Feature missing, Feature emulated) : missing_(missing), emulated_(emulated), hasEmulated_(true) {}
     std::string name() const override { return "stub"; }
     std::string emit(const ir::Module&) const override { return ""; }
     bool supports(Feature f) const override { return f != missing_; }
+    std::string capabilityStance(Feature f) const override {
+        if (f == missing_) return "false";
+        if (hasEmulated_ && f == emulated_) return "emulated";
+        return "native";
+    }
 private:
     Feature missing_;
+    Feature emulated_ = Feature::ExtensionMethods;
+    bool hasEmulated_ = false;
 };
 
 // A stand-in EvalContext for the P18 emission-DSL interpreter: field values + present-keys from maps, and a
@@ -1499,6 +1508,45 @@ int main() {
                                         "fn main() {\n  let base = 10\n  print(apply((n: i32) => n + base, 5))\n}\n",
                                         findTarget("php"));
         check(phpSnap.ok && has(phpSnap.code, "fn("), "P25/PHP: a pure expression lambda emits the fn(...) form");
+    }
+
+    // P26 slice 0 — the tri-state capability vocabulary. The three new flags detect from the syntactic
+    // surface and gate-on-`false` / warn-on-`emulated`; they are inert for the current native backends.
+    {
+        auto parseOf = [](const char* src) { DiagnosticBag d; return parse(lex(src, d), d); };
+        auto usesFeature = [](const CompilationUnit& u, Feature f) {
+            for (const auto& use : collectFeatureUses(u)) if (use.feature == f) return true;
+            return false;
+        };
+
+        // Detection: each new axis is marked from a type annotation / a mutable class field.
+        auto width = parseOf("fn f(x: u8): i32 { return x }\n");
+        check(usesFeature(width, Feature::FixedWidthIntegers), "P26 s0: a sub-64/unsigned width marks fixedWidthIntegers");
+        auto ch = parseOf("fn f(c: char): char { return c }\n");
+        check(usesFeature(ch, Feature::Utf16Strings), "P26 s0: a `char` type marks utf16Strings");
+        auto mref = parseOf("class Box { var v: i32\n  init() { this.v = 0 } }\n");
+        check(usesFeature(mref, Feature::MutableRefClasses), "P26 s0: a mutable-field class marks mutableRefClasses");
+        auto immut = parseOf("record P(x: i32)\nfn f(): i32 { let p = P(1)\n  return p.x }\n");
+        check(!usesFeature(immut, Feature::MutableRefClasses), "P26 s0: a record (no var field) does not mark mutableRefClasses");
+
+        // Refuse-on-false: a target lacking the flag refuses a program that uses it, naming the feature + target.
+        StubBackend noWidth(Feature::FixedWidthIntegers);
+        DiagnosticBag dw; checkCapabilities(width, noWidth, dw);
+        bool namedW = false;
+        for (const auto& it : dw.items()) if (has(it.message, "fixedWidthIntegers") && has(it.message, "stub")) namedW = true;
+        check(dw.hasErrors() && namedW, "P26 s0: a target lacking fixedWidthIntegers refuses + names it");
+
+        // Warn-on-emulated: a used emulated feature warns (no error); an unused gated feature stays clean.
+        StubBackend emuWidth(Feature::Async /* unused by the program */, Feature::FixedWidthIntegers);
+        DiagnosticBag de; checkCapabilities(width, emuWidth, de);
+        bool warned = false;
+        for (const auto& it : de.items())
+            if (it.severity == Severity::Warning && has(it.message, "emulates") && has(it.message, "fixedWidthIntegers")) warned = true;
+        check(!de.hasErrors() && warned, "P26 s0: an emulated feature warns, does not error");
+
+        // Inert for the current backends: C# declares these native/absent, so a width program is not gated.
+        DiagnosticBag dcs; checkCapabilities(width, *findBackend("csharp"), dcs);
+        check(!dcs.hasErrors(), "P26 s0: csharp (native) does not gate a fixed-width program");
     }
 
     if (g_failures == 0) {
