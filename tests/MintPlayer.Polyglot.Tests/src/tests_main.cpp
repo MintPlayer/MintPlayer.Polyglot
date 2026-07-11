@@ -150,7 +150,7 @@ int main() {
     {
         namespace fs = std::filesystem;
         const fs::path exe = cli::executablePath();
-        for (const char* t : {"csharp", "typescript", "python"}) {
+        for (const char* t : {"csharp", "typescript", "python", "php"}) {
             const fs::path manifest = exe.parent_path() / "plugins" / t / "polyglot-plugin.json";
             std::ifstream in(manifest, std::ios::binary);
             std::stringstream ss;
@@ -1486,6 +1486,18 @@ int main() {
         // `init` body, which `ir::dump` renders (method bodies aren't dumped, but the flag is set the same way).
         std::string self = capIr("class C {\n  let v: i32\n  init() {\n    this.v = 0\n    let f = () => this.v\n  }\n}\n");
         check(has(self, "[caps this]"), "P25: a lambda referencing `this` sets capturesThis");
+
+        // Slice 4 — PHP real closures. PHP has no interpreter in this environment, so the differential gate
+        // can't run it; assert the emission directly: a mutated capture -> `use (&$x)` (driven off needsCell,
+        // never syntax); a closure-valued local is called via `$f(...)`; a pure expression lambda -> `fn(…)`.
+        EmitResult phpAcc = compileStd("fn main() {\n  var total = 0\n  let add = (n: i32) => { total += n }\n"
+                                       "  add(10)\n  print(total)\n}\n", findTarget("php"));
+        check(phpAcc.ok && has(phpAcc.code, "use (&$total)"), "P25/PHP: a mutated capture emits use(&$total)");
+        check(phpAcc.ok && has(phpAcc.code, "$add("), "P25/PHP: a closure-valued local is called via $f(...)");
+        EmitResult phpSnap = compileStd("fn apply(f: (i32) => i32, x: i32): i32 => f(x)\n"
+                                        "fn main() {\n  let base = 10\n  print(apply((n: i32) => n + base, 5))\n}\n",
+                                        findTarget("php"));
+        check(phpSnap.ok && has(phpSnap.code, "fn("), "P25/PHP: a pure expression lambda emits the fn(...) form");
     }
 
     if (g_failures == 0) {

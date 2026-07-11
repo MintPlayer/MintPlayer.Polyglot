@@ -103,6 +103,23 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& l = static_cast<const ir::Lambda&>(e_);
         if (path == "node.exprBodied")   return l.exprBodied ? "true" : "false";
         if (path == "node.params.count") return std::to_string(l.params.size());
+        // Capture facts (P25 §4.18) — for targets with explicit capture lists (PHP `use (…)`). Captures never
+        // include `this` (that is `capturesThis`); `allCapturesByValue` is true when nothing needs a cell.
+        if (path == "node.capturesThis")      return l.capturesThis ? "true" : "false";
+        if (path == "node.allCapturesByValue") {
+            for (const auto& c : l.captures) if (c.needsCell) return "false";
+            return "true";
+        }
+        if (path == "node.captures.count")    return std::to_string(l.captures.size());
+        if (path.rfind("node.captures.", 0) == 0) { // node.captures.<i>.{name|needsCell}
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(14)));
+            const std::size_t dot = path.find('.', 14);
+            if (i < l.captures.size() && dot != std::string::npos) {
+                const std::string rest = path.substr(dot + 1);
+                if (rest == "name")      return l.captures[i].name;
+                if (rest == "needsCell") return l.captures[i].needsCell ? "true" : "false";
+            }
+        }
         if (path.rfind("node.params.", 0) == 0) { // node.params.<i>.{name|hasType}
             const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
             const std::size_t dot = path.find('.', 12);
