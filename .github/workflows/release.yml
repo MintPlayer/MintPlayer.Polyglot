@@ -1,35 +1,66 @@
 name: Release the CLI
 
-# Builds the native `polyglot` CLI for every shipped RID, publishes a GitHub Release with all archives,
-# and packs + pushes the multi-RID MintPlayer.Polyglot.MSBuild NuGet (which EMBEDS the CLI + plugins per
-# RID, so `dotnet build` transpiles .pg on Windows, Linux AND macOS CI). Shipping set: win-x64, linux-x64,
-# linux-arm64, osx-x64, osx-arm64 (PRD §4.14 / PLAN §P22).
+# WORKFLOW B (PRD §4.16 / PLAN §P24). Reacts to a version TAG; the tag name is INJECTED as the version at
+# build time (no committed version constant), then builds the native CLI for every shipped RID, publishes a
+# GitHub Release with all archives, packs + pushes the multi-RID MintPlayer.Polyglot.MSBuild NuGet, and
+# publishes the four target plugins to npm — all at the tag version. Shipping set: win-x64, linux-x64,
+# linux-arm64, osx-x64, osx-arm64 (PRD §4.14).
 #
 # Topology:
-#   build-windows          MSBuild v145 (VS 2026) → polyglot-win-x64.zip     + provenance
-#   build-linux (matrix)   CMake/g++ on native runners → polyglot-<rid>.tar.gz + provenance
-#   build-macos (matrix)   CMake/clang on native runners → polyglot-osx-<arch>.tar.gz (ad-hoc signed) + provenance
-#   github-release (fan-in) attaches every archive to a GitHub Release
-#   nuget          (fan-in) lays out tools/<rid>/ from all artifacts, packs once, pushes
+#   version                computes ver/tag from the tag ref (or the dispatch input) + validates the shape
+#   build-windows          MSBuild v145 (VS 2026), /p:PolyglotVersion → polyglot-win-x64.zip + provenance
+#   build-linux (matrix)   CMake/g++, -DPOLYGLOT_VERSION → polyglot-<rid>.tar.gz + provenance
+#   build-macos (matrix)   CMake/clang, -DPOLYGLOT_VERSION → polyglot-osx-<arch>.tar.gz (ad-hoc signed) + provenance
+#   github-release (fan-in) attaches every archive to a GitHub Release at the tag
+#   nuget          (fan-in) lays out tools/<rid>/, packs with -p:Version, pushes
+#   plugins                 stamps each @mintplayer/polyglot-target-* to the tag version + publishes to npm
 #
 # Provenance: actions/attest-build-provenance binds each artifact's sha256 to THIS repo/workflow/run/commit
 # (Sigstore/SLSA). Verify: gh attestation verify <archive-or-binary> --repo MintPlayer/MintPlayer.Polyglot.
 #
-# Trigger: push a version tag (`git tag v0.1.2 && git push origin v0.1.2`), or run manually —
-# workflow_dispatch derives the tag from the linux-x64 CLI's own --version and creates it at this commit.
-# NuGet push is skip-duplicate, so it is a no-op until the csproj <Version> is bumped.
+# Trigger: a version tag push (`git tag v0.5.0 && git push origin v0.5.0`), OR — the normal path — Workflow A
+# (auto-tag.yml) `gh workflow run`s this with --ref <tag> (workflow_dispatch is the exception to GitHub's
+# GITHUB_TOKEN no-recursion rule, so A needs no PAT/App). A manual UI dispatch on a branch must pass `version`.
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.5.0 (only needed when dispatching on a branch, not with --ref <tag>)'
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.v.outputs.ver }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - name: Resolve + validate the release version
+        id: v
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ver="${GITHUB_REF_NAME#v}"                       # tag push, or A's dispatch with --ref <tag>
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            ver="${{ inputs.version }}"; ver="${ver#v}"      # manual branch dispatch
+          else
+            echo "::error::dispatched on a branch without a 'version' input (or use --ref <tag>)"; exit 1
+          fi
+          if ! echo "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::invalid version '$ver' — want MAJOR.MINOR.PATCH[-prerelease], no +build"; exit 1
+          fi
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+          echo "Releasing $ver (tag v$ver)"
+
   build-windows:
+    needs: version
     runs-on: windows-latest
     permissions:
       id-token: write     # Sigstore OIDC identity for signing the attestation
@@ -47,13 +78,14 @@ jobs:
           if (-not $msbuild) { Write-Error "No VS 2026 (v145-capable) MSBuild on this runner."; exit 1 }
           "path=$msbuild" >> $env:GITHUB_OUTPUT
 
-      - name: Build the native CLI (Release x64)
+      - name: Build the native CLI (Release x64, version injected)
         shell: pwsh
         run: |
-          & "${{ steps.msbuild.outputs.path }}" MintPlayer.Polyglot.sln /p:Configuration=Release /p:Platform=x64 /m
+          & "${{ steps.msbuild.outputs.path }}" MintPlayer.Polyglot.sln /p:Configuration=Release /p:Platform=x64 /p:PolyglotVersion=${{ needs.version.outputs.ver }} /m
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          # MSBuild exit codes have lied before - prove the exe runs.
-          x64\Release\MintPlayer.Polyglot.Cli.exe --version
+          # MSBuild exit codes have lied before - prove the exe runs AND reports the injected version.
+          $v = (x64\Release\MintPlayer.Polyglot.Cli.exe --version).Trim()
+          if ($v -ne "${{ needs.version.outputs.ver }}") { Write-Error "version injection failed: got '$v'"; exit 1 }
 
       - name: Gate - unit tests
         shell: pwsh
@@ -102,6 +134,7 @@ jobs:
           if-no-files-found: error
 
   build-linux:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -123,11 +156,12 @@ jobs:
       - name: Install toolchain (cmake, g++)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++
 
-      - name: Build the native CLI (CMake, Release)
+      - name: Build the native CLI (CMake, Release, version injected)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOLYGLOT_VERSION=${{ needs.version.outputs.ver }}
           cmake --build build -j"$(nproc)"
-          ./build/polyglot --version
+          v="$(./build/polyglot --version | tr -d '[:space:]')"
+          [ "$v" = "${{ needs.version.outputs.ver }}" ] || { echo "::error::version injection failed: got '$v'"; exit 1; }
 
       - name: Gate - unit tests
         run: ./build/polyglot-tests
@@ -172,6 +206,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -193,11 +228,12 @@ jobs:
       - name: Ensure cmake
         run: cmake --version || brew install cmake
 
-      - name: Build the native CLI (CMake, Release)
+      - name: Build the native CLI (CMake, Release, version injected)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOLYGLOT_VERSION=${{ needs.version.outputs.ver }}
           cmake --build build -j"$(sysctl -n hw.ncpu)"
-          ./build/polyglot --version
+          v="$(./build/polyglot --version | tr -d '[:space:]')"
+          [ "$v" = "${{ needs.version.outputs.ver }}" ] || { echo "::error::version injection failed: got '$v'"; exit 1; }
 
       - name: Gate - unit tests
         run: ./build/polyglot-tests
@@ -232,10 +268,10 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [version, build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: write     # create the release (and, on dispatch, its tag)
+      contents: write     # create the release (and, on a branch dispatch, its tag)
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -243,34 +279,23 @@ jobs:
           path: dist
           pattern: polyglot-*
 
-      - name: Determine tag
-        id: tag
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            # dispatch: derive from the linux-x64 binary we just built (this runner is linux-x64).
-            mkdir -p /tmp/ver && tar xzf dist/polyglot-linux-x64/polyglot-linux-x64.tar.gz -C /tmp/ver
-            ver="$(/tmp/ver/polyglot --version | tr -d '[:space:]')"
-            echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           shopt -s globstar nullglob
           archives=(dist/**/polyglot-*.zip dist/**/polyglot-*.tar.gz)
           if [[ ${#archives[@]} -eq 0 ]]; then echo "::error::no archives to release"; exit 1; fi
-          # --repo is required: this job downloads artifacts only (no checkout), so gh has no git remote
-          # to infer the repo from — without it gh errors "not a git repository". --generate-notes and
-          # --target both resolve server-side via the API, so no local clone is needed.
-          args=(--repo "${{ github.repository }}" --title "polyglot ${{ steps.tag.outputs.tag }}" --generate-notes)
+          # --repo is required: this job downloads artifacts only (no checkout), so gh has no git remote.
+          args=(--repo "${{ github.repository }}" --title "polyglot $TAG" --generate-notes)
+          # When dispatched on a branch the tag doesn't exist yet — create it at this SHA. When run at a tag
+          # ref (tag push, or A's --ref <tag> dispatch) the tag already exists and gh uses it.
           if [[ "${{ github.ref }}" != refs/tags/* ]]; then args+=(--target "${{ github.sha }}"); fi
-          gh release create "${{ steps.tag.outputs.tag }}" "${archives[@]}" "${args[@]}"
+          gh release create "$TAG" "${archives[@]}" "${args[@]}"
 
   nuget:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [version, build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
       packages: write     # push to GitHub Packages
@@ -295,11 +320,80 @@ jobs:
           done
           echo "== staged tree ==" && find staging -maxdepth 2 -type d | sort
 
-      - name: Pack the multi-RID NuGet
-        run: dotnet pack src/MintPlayer.Polyglot.MSBuild -c Release -o artifacts "-p:PolyglotStageRoot=$GITHUB_WORKSPACE/staging"
+      - name: Pack the multi-RID NuGet (version injected)
+        run: dotnet pack src/MintPlayer.Polyglot.MSBuild -c Release -o artifacts -p:Version=${{ needs.version.outputs.ver }} "-p:PolyglotStageRoot=$GITHUB_WORKSPACE/staging"
 
       - name: Push to nuget.org
         run: dotnet nuget push artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.PUBLISH_TO_NUGET_ORG }}" --skip-duplicate
 
       - name: Push to GitHub Packages
         run: dotnet nuget push artifacts/*.nupkg --source https://nuget.pkg.github.com/MintPlayer/index.json --api-key "${{ github.token }}" --skip-duplicate
+
+  plugins:
+    # The npm target plugins ship at the SAME version as the CLI that bundles them (lockstep, PRD §4.16) —
+    # so `polyglot install <target>` resolves a plugin byte-equal to the one inside the CLI release archive.
+    # (Formerly publish-plugins.yml on push-to-master; that cadence is retired in the P24 cutover.)
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # A plugin that fails strict JSON parsing or misses its required blocks must never publish —
+      # the CLI's loadBackend enforces the full contract at install/load; this is the cheap pre-gate.
+      - name: Validate plugin manifests
+        run: |
+          node -e '
+            const fs = require("fs");
+            let bad = 0;
+            for (const t of fs.readdirSync("plugins")) {
+              const f = `plugins/${t}/polyglot-plugin.json`;
+              try {
+                const m = JSON.parse(fs.readFileSync(f, "utf8"));
+                for (const key of ["name", "spec", "rules"])
+                  if (!(key in m)) throw new Error(`missing ${key}`);
+                if (!("Program" in m.rules) || !("Type" in m.rules)) throw new Error("missing Program/Type rule");
+                console.log(`${f}: ok (${Object.keys(m.rules).length} rules)`);
+              } catch (e) { bad++; console.error(`INVALID ${f}: ${e.message}`); }
+            }
+            process.exit(bad ? 1 : 0);
+          '
+
+      - name: Stamp each plugin to the release version
+        run: |
+          for d in plugins/*/; do
+            (cd "$d" && npm version "${{ needs.version.outputs.ver }}" --no-git-tag-version --allow-same-version)
+          done
+
+      # npmjs is published DIRECTLY: the shared publish action swallowed npmjs errors (diagnosed 2026-07-04);
+      # a plain `npm publish` with the same token succeeds. Skips versions already live.
+      - name: Publish target plugins to npmjs
+        env:
+          TOKEN: ${{ secrets.PUBLISH_TO_NPMJS }}
+        run: |
+          if [ -z "$TOKEN" ]; then echo "::error::PUBLISH_TO_NPMJS resolves EMPTY in this repo"; exit 1; fi
+          echo "//registry.npmjs.org/:_authToken=$TOKEN" > ~/.npmrc
+          fail=0
+          for d in plugins/*/; do
+            name=$(node -p "require('./$d/package.json').name")
+            ver=$(node -p "require('./$d/package.json').version")
+            if npm view "$name@$ver" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "skip: $name@$ver already on npmjs"
+              continue
+            fi
+            (cd "$d" && npm publish --access public --registry=https://registry.npmjs.org) \
+              || { echo "::error::npm publish failed for $name@$ver"; fail=1; }
+          done
+          exit $fail
+
+      - name: Publish target plugins to GitHub Packages
+        uses: MintPlayer/github-actions/publish-npm-packages@b08fbddf0b285a8633ac138b89d79ceb8cc8c888
+        with:
+          folder: plugins
+          registries: |
+            [
+              { "url": "https://npm.pkg.github.com", "token": "${{ github.token }}" }
+            ]
