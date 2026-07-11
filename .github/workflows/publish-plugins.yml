@@ -1,38 +1,31 @@
-# Publish the target-language plugins (P19: a language is a JSON file) as npm packages —
-# @mintplayer/polyglot-target-{csharp,typescript,python,php} — to npmjs.org and GitHub Packages.
-# `polyglot install <target>` resolves these by name. Mirrors the org publishing pattern;
-# PUBLISH_TO_NPMJS is an org-wide secret.
-#
-# The MintPlayer.Polyglot.MSBuild NuGet is NO LONGER published here: it now embeds the native CLI for
-# EVERY shipped RID (win-x64 + linux-x64 + linux-arm64), which only exist together in the release matrix,
-# so it is packed + pushed by the `nuget` fan-in job in release.yml — i.e. NuGet is now tag-gated
-# (package cadence = CLI release cadence). See PLAN §P22 slice 5.
-name: publish-plugins
+name: Validate plugins
+
+# Plugin manifest PRE-GATE (PRD §4.16 / PLAN §P24). PUBLISHING moved to release.yml (Workflow B): the npm
+# target plugins @mintplayer/polyglot-target-* now ship at the CLI's TAG version, in lockstep, so
+# `polyglot install <target>` resolves a plugin byte-equal to the one inside the CLI release archive. The old
+# push-to-master publish cadence is retired (it let npm drift ahead of the last CLI release). This workflow
+# only VALIDATES the manifests so a broken plugin JSON is caught before merge — it never publishes.
 
 on:
-  push:
-    branches: [master]
+  pull_request:
     paths:
       - 'plugins/**'
       - 'src/**'
       - '.github/workflows/publish-plugins.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'plugins/**'
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # A plugin that fails strict JSON parsing or misses its required blocks must never publish —
+      # A plugin that fails strict JSON parsing or misses its required blocks must never merge —
       # the CLI's loadBackend enforces the full contract at install/load; this is the cheap pre-gate.
       - name: Validate plugin manifests
         run: |
@@ -51,34 +44,3 @@ jobs:
             }
             process.exit(bad ? 1 : 0);
           '
-
-      # npmjs is published DIRECTLY: the shared publish action failed all npmjs publishes with its
-      # error output swallowed, while a plain `npm publish` with the same token succeeds (diagnosed
-      # 2026-07-04 — token valid, publishConfig.access already public). Skips versions already live.
-      - name: Publish target plugins to npmjs
-        env:
-          TOKEN: ${{ secrets.PUBLISH_TO_NPMJS }}
-        run: |
-          if [ -z "$TOKEN" ]; then echo "::error::PUBLISH_TO_NPMJS resolves EMPTY in this repo"; exit 1; fi
-          echo "//registry.npmjs.org/:_authToken=$TOKEN" > ~/.npmrc
-          fail=0
-          for d in plugins/*/; do
-            name=$(node -p "require('./$d/package.json').name")
-            ver=$(node -p "require('./$d/package.json').version")
-            if npm view "$name@$ver" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-              echo "skip: $name@$ver already on npmjs"
-              continue
-            fi
-            (cd "$d" && npm publish --access public --registry=https://registry.npmjs.org) \
-              || { echo "::error::npm publish failed for $name@$ver"; fail=1; }
-          done
-          exit $fail
-
-      - name: Publish target plugins to GitHub Packages
-        uses: MintPlayer/github-actions/publish-npm-packages@b08fbddf0b285a8633ac138b89d79ceb8cc8c888
-        with:
-          folder: plugins
-          registries: |
-            [
-              { "url": "https://npm.pkg.github.com", "token": "${{ github.token }}" }
-            ]
