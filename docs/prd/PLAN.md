@@ -2881,7 +2881,21 @@ refuses cleanly. **Commit cadence: one commit per slice (0→5)**, plus this pla
   three current backends + all conformance programs are byte-unchanged (the additions are inert for them);
   unit tests cover refuse-on-false, warn-on-emulated, and the Collector's marking of each axis.
 
-- **Slice 1 — PHP fidelity uplift (shipped stub → real PHP-8 target).** Flip the PHP plugin's stubbed-`false`
+- **Slice 1 — PHP fidelity uplift (shipped stub → real PHP-8 target) — ✅ done (2026-07-11; commit `6c0d7e1`).**
+  PHP now passes the **full 50/50 differential conformance** suite against the C# oracle (fruitcake, the
+  north-star, included; 4 programs refuse by design — vec2/async_await/expect_actual/extern_ffi), with C#/TS/
+  Python **byte-unregressed**. `patternMatching`/`exceptions`/`interfaces`/`withExpressions` → `native`,
+  `extensionMethods` + `properties` → `emulated`, `operatorOverloading`/`async` → `false`. Added `run-php.ps1`
+  (refusal-aware) wired into `build-and-test.ps1`. **Correction to the investigation's "100% pure-JSON"
+  prediction:** the prediction was reasoned from the reference plugins and was *wrong* — because PHP output had
+  **never been executed**, first-ever execution exposed six latent bugs that needed **target-neutral Core
+  fixes**, not just plugin rules: (1) enum/type `Type::Case` access (`lower.cpp` stamps `Member.staticType`);
+  (2) `use`-disposal `$x->dispose()` (a `memberOp` spec field + Var-rule receiver); (3) multi-module prelude
+  redeclaration in PHP's single function namespace (`decl.isPrelude` + `function_exists` guard); (4) module
+  globals invisible in function scope (`ir::Function.globalRefs` scan → `global $x;`); (5) computed properties
+  (`ir::Member.isProperty` → getter method + `$recv->name()` rewrite); (6) `FunctionDecl` `=> expr` bodies +
+  class `const` emission. **Lesson: a target's fidelity is unproven until its output actually runs** — the same
+  discipline the differential gate enforces. *(Original slice plan retained below.)* Flip the PHP plugin's stubbed-`false`
   flags to their true PHP-8 reality with real `rules`: `patternMatching` (→ PHP `match`), `closures` +
   `blockLambdas` (`fn`/`function` + `use`-captures — **delivered by §P25 slice 4**; this uplift just depends
   on it), `exceptions` (`try/catch/finally`, typed catch →
