@@ -2524,3 +2524,73 @@ rebuild). RID set = P22's: **win-x64, linux-x64, linux-arm64** (→ VS Code targ
 **Deferred, recorded:** macOS / win-arm64 / alpine bundling (universal fallback covers them, matching P22's
 RID scope); an in-extension one-click CLI *downloader* (bundling removes the need); CLI-version auto-update
 inside the extension; the `.pg` file-icon sub-slice if not taken in slice 2.
+
+## P24 — Tag-driven release automation (A→B→C) + lockstep versioning — 🚧 designed (2026-07-11; PRD §4.16, 4-agent investigation)
+
+Replace the manual release glue (hand-push a tag, hand-re-run the extension publish, keep four committed
+version numbers in sync) with **one action — a version bump — that releases everything in order**. The tag
+becomes the single source of truth; the version is injected at build time; three chained workflows do the
+rest. Full design + per-front findings: PRD §4.16.
+
+**Gate to start (decisions the user must confirm — these shape the slices):**
+- **D1 — first unified version.** Recommend **`v0.5.0`** (strictly ahead of ext 0.4.1 / CLI 0.3.1 / plugins
+  0.3.0; abandons the never-released 0.3.2). Alt: 0.4.2.
+- **D2 — how Workflow A picks the next version** (no committed constant to read): (a) **PR-label-driven**
+  (`semver:major|minor|patch` vs the latest tag, default patch, no label ⇒ no release) — the pure tag-driven
+  model, recommended; (b) a single committed **`VERSION` file** A reads (explicit, but a number the tag
+  mirrors).
+- **D3 — tag-push identity:** **GitHub App token** (no expiry, recommended) vs fine-grained PAT (live today,
+  expires). Required because a tag pushed by `GITHUB_TOKEN` will NOT trigger Workflow B.
+- **D4 — version-injection shape:** header-macro-in-3-projects + parity-guard (minimal churn) vs
+  single-definition-point (`kVersion` → `polyglot.cpp` only; touches `main.cpp` + the self-test; lower drift).
+- **D5 — extension pre-releases:** none, hold for stable tags (recommended) vs marketplace `--pre-release`.
+- **D6 — CLAUDE.md changelog** → tag-keyed `CHANGELOG.md` (optional).
+
+- **Slice 1 — version injection into the native build (no committed constant).** Replace `kVersion`'s literal
+  in `polyglot.hpp` with a `#ifndef POLYGLOT_VERSION` fallback (`0.0.0-dev`) + stringize macro; add a repo-root
+  `Directory.Build.props` (`$(PolyglotVersion)` default `0.0.0-dev`) + one `ItemDefinitionGroup` per `.vcxproj`
+  (Core/Cli/Tests) feeding `POLYGLOT_VERSION=$(PolyglotVersion)`; add a `POLYGLOT_VERSION` cache var +
+  `add_compile_definitions` to `CMakeLists.txt`; make the NuGet csproj `<Version>` dev-defaulted. Repurpose the
+  `Compiler::version() == kVersion` self-test (now catches per-project define drift) + add a shape assert.
+  **Extend `scripts/check-buildfile-parity.ps1`** to assert the define exists in all three `.vcxproj` AND CMake.
+  Local builds inject `git describe --tags --dirty`.
+  *Gate:* `msbuild /p:PolyglotVersion=1.2.3` and `cmake -DPOLYGLOT_VERSION=1.2.3` both make `polyglot --version`
+  print `1.2.3` on Windows + Linux + macOS; a bare local build prints a `git describe`/`0.0.0-dev` value; the
+  parity guard fails if the define is dropped from any one project; `build-and-test.ps1` stays green.
+
+- **Slice 2 — Workflow B (`release.yml` → tag-injected build + publish CLI + NuGet + plugins).** On `push:
+  tags: v*`: validate + strip the tag, thread `/p:PolyglotVersion` (MSBuild) and `-DPOLYGLOT_VERSION` (CMake)
+  into every build leg, `dotnet pack -p:Version=<tag>`, and **fold the plugin publish in** (`npm version <tag>`
+  + publish each `@mintplayer/polyglot-target-*` at the tag version). Fix the now-circular `workflow_dispatch`
+  tag derivation (explicit `version` input). The GitHub Release + attestation are unchanged.
+  *Gate:* a throwaway pre-cutover tag (e.g. `v0.4.99-test`) on a branch builds all 5 RIDs reporting the
+  injected version, packs the NuGet + 4 plugins at that version; `--version` end-to-end matches the tag.
+
+- **Slice 3 — Workflow C (`publish-vscode.yml` → release-triggered).** Trigger `on: release: types:
+  [published]` (+ `workflow_dispatch` with a `tag` input); delete `POLYGLOT_CLI_VERSION`; derive the version
+  from `github.event.release.tag_name`; `stage-cli.ps1` gains `-Tag` (uses the release tag directly); stamp
+  `package.json` via `npm version <tag> --no-git-tag-version` before packaging. Everything else — two-step
+  `vsce package --target` → `extensionFile` publish, 6-leg matrix + universal, macOS sign/quarantine-strip,
+  `skipDuplicate`, frozen ID — unchanged.
+  *Gate:* a `workflow_dispatch` with an existing tag stages that release's CLI + publishes the 6 legs at the
+  tag version; no `POLYGLOT_CLI_VERSION` remains; the run cannot 404 on a missing release.
+
+- **Slice 4 — Workflow A (`auto-tag.yml`).** On `push: branches: [master]`: mint the tag-push token (App /
+  PAT per D3), determine the next version (per D2), and if `v<version>` doesn't exist, create + push it with
+  the non-`GITHUB_TOKEN` identity so Workflow B fires. `concurrency: auto-tag`, idempotent tag-existence check,
+  a load-bearing comment pinning the token requirement.
+  *Gate:* the release signal (a labeled PR / VERSION bump per D2) on master auto-creates the tag, and Workflow
+  B is observed to trigger from it (proving the token choice works); a no-signal merge cuts no tag.
+
+- **Slice 5 — the cutover (one atomic commit) + `v0.5.0`.** One commit that, together: neutralizes the old
+  `on: push` auto-publish triggers in `publish-vscode.yml`/`publish-plugins.yml` (so merging it publishes
+  nothing — GitHub reads the trigger from the pushed commit), sets every committed version to `0.0.0-dev`,
+  deletes `POLYGLOT_CLI_VERSION`, and lands Workflows A/B/C. Then push **`v0.5.0`** (by hand once, or let A do
+  it).
+  *Gate:* merging the cutover publishes nothing; pushing `v0.5.0` → B releases CLI + NuGet + 4 plugins at
+  0.5.0, then C publishes the extension 0.5.0 bundling the 0.5.0 CLI; all registries show a single coherent
+  0.5.0; a subsequent no-bump master push is a clean no-op.
+
+**Deferred, recorded:** per-leg "skip unchanged since last tag" diffing (D4 no-op churn — not built first;
+lockstep simplicity wins); extension pre-release channel (D5); the `CHANGELOG.md` split (D6); the `editors/vs`
+Visual Studio VSIX (in no publish workflow today — folded in only if it ever ships).
