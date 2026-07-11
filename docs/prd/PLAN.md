@@ -2760,7 +2760,7 @@ slice-2 shared cell pass (Java `Ref<T>`, C++ escape-driven `shared_ptr` — a `[
 dangling-ref UB, so `escapes` is mandatory; Rust `Rc<RefCell>`, inheriting its §3.C borrow-panic caveat at
 re-entrancy). No new capture machinery when those targets land — only their cell-kind + emission rules.
 
-## P26 — Second-wave targets: PHP uplift + Kotlin + Swift — 🚧 designed (2026-07-11; PRD §4.17, 4-agent investigation)
+## P26 — Second-wave targets: PHP uplift + Kotlin + Swift — 🚧 implementation-ready (design 2026-07-11 + 4-front code investigation 2026-07-11; PRD §4.17)
 
 The payoff of P18/P19: a language is a **JSON plugin**, so this milestone *authors plugins + honestly
 declares capabilities* rather than growing Core. Full design + the 15-candidate survey + the per-target
@@ -2778,6 +2778,94 @@ feature is a clean §3.E refusal, never a miscompile.
   `fixedWidthIntegers`, `utf16Strings`), additive + `requiresCore`-governed (§4.11). No per-feature growth.
 - **D4 — the Dart-vs-Go fork (slice 5) is the author's call at that point** — pick by the actual deployment
   stack. Dart stays pure-JSON; Go drops to the local full-power tier (§P27 owns the Go rewrite mechanism).
+
+### Implementation grounding (2026-07-11, four-front read-only code investigation)
+
+The design above is confirmed against the real code; this section makes the slices below **implementation-
+ready** (concrete touchpoints + the residual decisions locked). The load-bearing finding: **the whole
+milestone is pure-JSON plugin authoring except two Core touchpoints** — slice 0's three flags, and (deferred)
+Swift's iterator state machine. Every fact each PHP/Kotlin/Dart feature needs (`node.isExtension`, the
+pre-lowered extension `self` param, `decl.ifaceBases`, the `With` ctor-rebuild facts, all `Match`/pattern
+bits, `item.hasGuard`) is **already fabricated by Core lowering and read by the C#/Python reference plugins** —
+a rule only *selects among* and *substitutes into* templates, it never computes, so "pure-JSON" holds only
+because the fact already exists. A complete plugin is one ~2800-line JSON (`schema/name/capabilities/spec/
+rules/std/fileExtension`); C# (`plugins/csharp/polyglot-plugin.json`) + Python are the templates.
+
+**Slice 0 — exact touchpoints.** `Feature` enum `backend.hpp:24-37` (12 values; append the 3, keep indices
+stable); `kAllFeatures[]` `backend.hpp:40-44`; `featureName()` `backend.cpp:18-34` (a `switch` with **no
+`default`** + trailing `"?"` — the 3 `case`s are mandatory). The caps parser (`buildBackend`,
+`backend.cpp:184-188`) is **already tri-state in storage** (`map<string,string>`, bool→`"native"`/`"false"`,
+string verbatim) but (a) does not validate the string and (b) only ever gates on `"false"` — `supports()`
+`backend.cpp:59-62` has no `emulated`/warn path. So slice 0 adds: (1) **validate** the stance ∈
+`{native,emulated,false}` at load (reject otherwise); (2) a `Backend::capabilityStance(Feature)` virtual with
+`supports()` = `stance!="false"`; (3) **warn-on-`emulated`** in the gate loop `capability.cpp:131-135` via
+`DiagnosticBag::warn` (already exists `diagnostics.hpp:38-40`, already rendered by the CLI
+`main.cpp:230-235,342` and non-fatal to `hasErrors()`). The **real work** is three new detection heuristics in
+the `Collector` (`capability.cpp:17-118`, AST-structural, `seen_[32]` fits 15): `fixedWidthIntegers` and
+`utf16Strings` need **new type-annotation-visiting** the Collector lacks today; `mutableRefClasses` needs
+class-mutability + field-assignment/identity inspection (confirm the AST field shapes in `ast.hpp` first).
+The 3 flags do **not** go in `kCoverage[]` (they are program-feature gates, not IR-construct rule-coverage).
+C#/TS/Python/PHP omit them ⇒ inert, byte-unchanged. `requiresCore` has no code hook today (docs-only) — no
+enforcement to add. *Verify:* a `StubBackend` (`tests_main.cpp:61-69`) declaring each flag `false`/`emulated`
+refuses/warns with the right message; the four shipped plugins + all conformance programs stay byte-identical.
+
+**Slice 1 — PHP: all six features are pure-JSON; model on Python's rules.** `TryStmt` (Python `when`→`if …:
+raise` lowering, `python:764-787`); `Match` as a `match(true){ <cond> => <val> }` fold (Python's ternary
+fold is the shape, `python:2193`) + author `MakeCase`/`UnionDecl` as associative arrays; extension methods via
+the `MethodCall` `node.isExtension` arm (`python:2101`, emit `m($self,…)`) + `module.extensions`→`FunctionDecl`
+in `Program`; `With` ctor-rebuild (`python:2023`, non-simple base → arrow-fn IIFE); `InterfaceDecl` authored
+fresh + `decl.ifaceBases` (Core-split, `emitter_base.cpp:807`) added to the `ClassDecl` head + `module.
+interfaces` mapped in `Program`. Residual decisions **locked**:
+  - **D5 — PHP `List` is a native PHP array.** `List.add`→`$this[] = $0`, `List.count`→`count($this)`,
+    `List.clear`→`$this = []` (the `$this = …` receiver-assignment overlay form), index→`$this[$i]`. Reconcile
+    the existing PHP `Index` rule's `receiverHasIndexer`→`->get()` branch (php:380-419) — that path is for
+    user `operator[]`/`Properties`, not `List`; verify during impl it doesn't fire for `List`.
+  - **D6 — PHP enums keep the const-class form** (php:1184-1225), **not** native 8.1 `enum`. `.pg` enums carry
+    integer values and interop as `i32`; a native PHP `enum` yields case *objects* (arithmetic/int-compare
+    break) — a fidelity regression. The `Match` `enumCase` arm must keep comparing the integer.
+  - Exceptions hazards: a **guarded catch binds the exception to `$__e`** (PHP rethrow is `throw $__e;`, not a
+    bare `raise`); an **untyped catch defaults to `\Throwable`**.
+  - std overlays are sparse today (php:151-187): add `std.collections`, `std.strings`, `Error`, `Iterable`,
+    and the missing `*.parse` arms (a used std member with no PHP arm already refuses at the call site).
+  *Verify:* install PHP (portable NTS zip, headless) and add PHP to the N-target harness (slice 4 lands the
+  harness; slice 1 may land an interim `run-php.ps1` mirroring `run-python.ps1` and fold it into slice 4).
+
+**Slice 2 — Kotlin: 100% pure-JSON** (verifies P19's zero-Core prediction). Unsigned widths + `Long`-backed
+i64 + inserted `.toX()` in `spec.scalarType`/`Cast`; `data class`/sealed-`when`/`T?` native; `.use{}`/`suspend`
+`.await()`/`companion object` declared `emulated` (warn). *Verify:* `kotlinc` (portable compiler zip; JDK
+already present — `java 24`) compiles + runs the emitted Kotlin, agrees with the C# oracle.
+
+**Slice 3 — Swift: pure-JSON except iterators.** `&+ &- &*` via `spec.binaryOp`/`wrapInt`; `char`→`UInt16` +
+`.utf16` view with `utf16Strings=emulated` (the silent-miscompile hazard the flag exists to surface);
+`throws`/`try` prefix + `defer` for `finally`/`using`; record→`struct`, mutable class→`class`; enum-with-
+associated-values + exhaustive `switch` native; `async`/`await` native. **D7 — the first Swift plugin gates
+`iterators` (`yield`)**: a synthesized `IteratorProtocol` state machine is a non-local transform no template
+can express, so declare it `false` (clean §3.E refusal) or `emulated`; full support is local-tier work
+deferred to §P27. *Verify:* `swiftc` (winget `Swift.Toolchain`) — **needs one elevated `winget install` the
+user runs** (`! winget install Swift.Toolchain`); if unavailable, slice 3 ships **emit-only with a documented
+"not yet differentially executed" note** (the honest PHP-style stopgap), never a silent skip.
+
+**Slice 4 — harness = a manifest `conformance` block + one runner.** **D8 — add a harness-only `conformance`
+block to each `polyglot-plugin.json`** (`{ "build": [...], "run": [...], "postEmit": ... }` with
+`$dir/$stem/$ext/$entry` placeholders). **Core ignores it** — the PowerShell harness reads the manifest JSON
+directly (`ConvertFrom-Json`), so no C++/`loadBackend` change is needed for conformance. One
+`tests/conformance/run-conformance.ps1` **replaces** `run-diff.ps1` + `run-python.ps1`: factor out the shared
+C# oracle (build+run+the issue-#9 compile guard) and the single/multi-file program enumeration; keep C# as the
+fixed oracle; run each other target's `build`(if any)+`run` recipe and diff stdout. Fix the latent bug that
+`run-diff.ps1` is called without `-Cli` (`build-and-test.ps1:59`). CLI needs **nothing** — output naming is
+already uniform (`<stem><fileExtension>`) and every loaded plugin is a valid `--target`. The LSP
+`polyglot/targets` request + the `extension.js` `FIXME(P10)` hardcoded `TARGETS` are a **sub-task of slice 4**:
+add a `polyglot/targets` request (Core has `backendNames()`+`fileExtension()`; `displayName`/`langId`/`comment`
+either join the manifest+`Backend` or are derived client-side from the extension) and make `extension.js`
+fetch instead of hardcode. *Verify:* `build-and-test.ps1` runs the differential suite across **all six** targets
+green; the preview lists six targets from the registry.
+
+**Toolchain & verification strategy (cross-cutting).** PHP / Kotlin / Dart install **headlessly via portable
+zips** extracted to a local toolchain dir and invoked by absolute path from the harness (no admin). **Swift**
+needs an elevated `winget install Swift.Toolchain` the **user** runs once (`! winget install …`) — flagged in
+slice 3. Every new/uplifted target joins `run-conformance` on the subset it declares; a used-but-gated feature
+refuses cleanly. **Commit cadence: one commit per slice (0→5)**, plus this planning commit; each slice is only
+"done" when its `build-and-test` leg is green (or, for an un-runnable toolchain, explicitly emit-only-with-note).
 
 - **Slice 0 — capability-vocabulary growth (the one enabling Core change).** Add `mutableRefClasses`,
   `fixedWidthIntegers`, `utf16Strings` to the closed `Feature` enum + `kAllFeatures[]` + `featureName()`

@@ -80,8 +80,30 @@ verification output names the exact commit and workflow run that produced the bi
 3. The self-contained CLI lands at `x64\Debug\MintPlayer.Polyglot.Cli.exe` with its target plugins in
    the `plugins\` folder beside it. Put it on your `PATH` as `polyglot` if you like.
 
-One-shot verification (build → unit tests → watch gate → differential conformance; needs `dotnet` +
-`node`): `pwsh scripts/build-and-test.ps1`.
+One-shot verification (build → unit tests → watch gate → differential conformance): `pwsh
+scripts/build-and-test.ps1`. This runs each target's generated output against the C# oracle, so it needs
+the SDKs of the targets it exercises (at minimum `dotnet` + `node` + `python3` — see below).
+
+## Toolchains & SDKs
+
+The `polyglot` CLI itself is a **self-contained native binary with zero runtime dependencies** — you do
+not need any of the toolchains below just to *transpile*. You only need a target's SDK to **compile/run
+the code emitted for that target** (and to run that target's leg of the differential conformance suite).
+
+| For | Toolchain / SDK | Official download |
+|---|---|---|
+| **Building the CLI from source** | Visual Studio 2026 — *Desktop development with C++* workload (platform toolset v145) | <https://visualstudio.microsoft.com/> |
+| **C# / .NET** output | .NET SDK 10+ | <https://dotnet.microsoft.com/download> |
+| **TypeScript / JS** output | Node.js (LTS) | <https://nodejs.org/en/download> |
+| **Python** output | Python 3 | <https://www.python.org/downloads/> |
+| **PHP** output | PHP 8 (Windows builds: the NTS x64 zip) | <https://www.php.net/downloads> · Windows: <https://windows.php.net/download/> |
+| **Kotlin** output *(P26, in progress)* | Kotlin command-line compiler `kotlinc` + a JDK 17+ | <https://kotlinlang.org/docs/command-line.html> · JDK: <https://adoptium.net/> |
+| **Swift** output *(P26, in progress)* | Swift toolchain (Windows/Linux/macOS) | <https://www.swift.org/install/> |
+| **Dart** output *(P26, in progress)* | Dart SDK | <https://dart.dev/get-dart> |
+
+Targets marked *(P26, in progress)* are being added on the `p26-second-wave-targets` branch and are not
+in a shipped release yet; C# / TypeScript / Python are full targets, PHP is a partial target (see
+[Targets are plugins](#targets-are-plugins)).
 
 ## Using the CLI
 
