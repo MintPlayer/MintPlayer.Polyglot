@@ -164,8 +164,13 @@ int main() {
         }
     }
 
-    check(!Compiler::version().empty(), "version is non-empty");
-    check(Compiler::version() == std::string(kVersion), "version matches the kVersion constant");
+    // The version is injected at build time (PRD §4.16 / -DPOLYGLOT_VERSION); there's no committed constant to
+    // compare against, so assert its SHAPE: non-empty, digit-led, dot-bearing (e.g. "0.5.0" or "0.0.0-dev").
+    {
+        const std::string v = Compiler::version();
+        check(v.size() >= 3 && v[0] >= '0' && v[0] <= '9' && v.find('.') != std::string::npos,
+              "version has a semver-ish shape (digit-led, contains a dot)");
+    }
 
     // Lexer.
     {

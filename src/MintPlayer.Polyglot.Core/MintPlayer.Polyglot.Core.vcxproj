@@ -55,6 +55,15 @@
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
   </ItemDefinitionGroup>
+  <!-- Version injection (PRD §4.16 / PLAN §P24), single definition point: polyglot.cpp reads POLYGLOT_VERSION.
+       Unconditional (applies to Debug + Release). $(PolyglotVersion) comes from Directory.Build.props (dev
+       default) or /p:PolyglotVersion=<tag> in the release build. Unquoted token — stringized in polyglot.cpp.
+       check-buildfile-parity.ps1 asserts this stays mirrored in CMakeLists.txt. -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>POLYGLOT_VERSION=$(PolyglotVersion);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\mintplayer\polyglot\polyglot.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\diagnostics.hpp" />

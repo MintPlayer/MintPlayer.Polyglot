@@ -1,0 +1,10 @@
+<Project>
+  <!-- Injected toolchain version (PRD 4.16 / PLAN P24). The release pipeline passes /p:PolyglotVersion=<tag>;
+       a bare local build gets the dev sentinel so the CLI version self-describes as untagged rather than lying.
+       Consumed by Core's .vcxproj as the POLYGLOT_VERSION preprocessor define (the single definition point).
+       Deliberately NOT a global Version property here: that would version the VSIX/other projects; the NuGet
+       sets its own. -->
+  <PropertyGroup>
+    <PolyglotVersion Condition="'$(PolyglotVersion)' == ''">0.0.0-dev</PolyglotVersion>
+  </PropertyGroup>
+</Project>

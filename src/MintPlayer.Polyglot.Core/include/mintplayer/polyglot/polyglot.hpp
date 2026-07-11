@@ -16,10 +16,10 @@
 
 namespace mintplayer::polyglot {
 
-// Semantic version of the Polyglot toolchain.
-inline constexpr const char* kVersion = "0.3.2";
-
-// The compiler facade. Kept for the version entry point; the pipeline is exposed via compile() below.
+// The compiler facade. `version()` returns the toolchain's semantic version — injected at build time by the
+// release pipeline (see polyglot.cpp / -DPOLYGLOT_VERSION), NOT a committed constant. This is the single
+// definition point (PRD §4.16): only Core's polyglot.cpp compiles the version in; everything else calls
+// version(). The pipeline is exposed via compile() below.
 class Compiler {
 public:
     static std::string version();
