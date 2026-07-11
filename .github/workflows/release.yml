@@ -284,6 +284,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write     # create the release (and, on a branch dispatch, its tag)
+      actions: write      # dispatch Workflow C (the extension publish)
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -305,6 +306,16 @@ jobs:
           # ref (tag push, or A's --ref <tag> dispatch) the tag already exists and gh uses it.
           if [[ "${{ github.ref }}" != refs/tags/* ]]; then args+=(--target "${{ github.sha }}"); fi
           gh release create "$TAG" "${archives[@]}" "${args[@]}"
+
+      # LOAD-BEARING (same gotcha as A→B): a release created with GITHUB_TOKEN does NOT fire the
+      # `release: published` event (GitHub suppresses GITHUB_TOKEN-raised events to prevent recursion — not a
+      # permissions setting). So we do NOT rely on that event to start Workflow C; we `gh workflow run`-dispatch
+      # it (workflow_dispatch is the documented exception, so it fires under GITHUB_TOKEN — no PAT/App). C keeps
+      # its `release: published` trigger only as a fallback for a human-created (UI) release.
+      - name: Dispatch the extension publish (Workflow C)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish-vscode.yml --repo "${{ github.repository }}" -f tag="${{ needs.version.outputs.tag }}"
 
   nuget:
     needs: [version, build-windows, build-linux, build-macos]

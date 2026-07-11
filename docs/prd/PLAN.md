@@ -2569,14 +2569,17 @@ rest. Full design + per-front findings: PRD §4.16.
   *Gate:* a throwaway pre-cutover tag (e.g. `v0.4.99-test`) on a branch builds all 5 RIDs reporting the
   injected version, packs the NuGet + 4 plugins at that version; `--version` end-to-end matches the tag.
 
-- **Slice 3 — Workflow C (`publish-vscode.yml` → release-triggered).** Trigger `on: release: types:
-  [published]` (+ `workflow_dispatch` with a `tag` input); delete `POLYGLOT_CLI_VERSION`; derive the version
-  from `github.event.release.tag_name`; `stage-cli.ps1` gains `-Tag` (uses the release tag directly); stamp
-  `package.json` via `npm version <tag> --no-git-tag-version` before packaging. Everything else — two-step
-  `vsce package --target` → `extensionFile` publish, 6-leg matrix + universal, macOS sign/quarantine-strip,
-  `skipDuplicate`, frozen ID — unchanged.
+- **Slice 3 — Workflow C (`publish-vscode.yml` → dispatched by B).** `workflow_dispatch` with a `tag` input
+  (+ an `on: release: published` fallback for a human UI release); delete `POLYGLOT_CLI_VERSION`; derive the
+  version from the tag; `stage-cli.ps1` gains `-Tag` (uses the release tag directly); stamp `package.json` via
+  `npm version <tag> --no-git-tag-version` before packaging. Everything else — two-step `vsce package --target`
+  → `extensionFile` publish, 6-leg matrix + universal, macOS sign/quarantine-strip, `skipDuplicate`, frozen ID —
+  unchanged. **B's github-release job `gh workflow run`-dispatches C** after `gh release create` (a
+  `GITHUB_TOKEN`-created release doesn't fire `release: published` — same no-recursion gotcha as A→B; found on
+  the first live v0.5.0 run, where the release shipped but the extension silently didn't).
   *Gate:* a `workflow_dispatch` with an existing tag stages that release's CLI + publishes the 6 legs at the
-  tag version; no `POLYGLOT_CLI_VERSION` remains; the run cannot 404 on a missing release.
+  tag version; no `POLYGLOT_CLI_VERSION` remains; the run cannot 404 on a missing release; a real B run
+  dispatches C and the extension publishes without any manual step.
 
 - **Slice 4 — Workflow A (`auto-tag.yml`).** On `push: branches: [master]`: read the latest `v*` tag, compute
   the next version — **patch by default**, or minor/major from the merged PR's `release:minor`/`release:major`

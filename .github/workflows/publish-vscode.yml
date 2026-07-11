@@ -1,9 +1,11 @@
 name: Publish VS Code extension
 
 # WORKFLOW C (PRD §4.16 / PLAN §P24). Publishes editors/vscode to the Visual Studio Marketplace AFTER a CLI
-# release exists — it triggers on the GitHub Release published by Workflow B (release.yml), reads the version
-# from the release TAG, and bundles that release's already-built, provenance-attested CLI. This kills the
-# "referenced a tag before it existed" 404: the release event IS the guarantee the assets are there.
+# release exists — Workflow B `gh workflow run`-DISPATCHES this once it has created the release (with the tag as
+# input), so the release's assets are guaranteed present and the "referenced a tag before it existed" 404 is
+# gone. NOTE: B dispatches instead of relying on `release: published` because a release created with
+# GITHUB_TOKEN does NOT fire that event (GitHub's no-recursion rule — same gotcha as A→B). The
+# `release: published` trigger below is kept only as a fallback for a human-created (UI) release.
 #
 # Platform-specific extensions: one vsix per supported RID (each embedding that RID's CLI + plugins under
 # editors/vscode/bin/) plus a universal no-binary fallback; the marketplace serves the most-specific per user.
