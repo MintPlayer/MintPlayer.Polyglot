@@ -69,6 +69,10 @@ struct Cond : Expr { // `if c { a } else { b }` as a value -> ternary `c ? a : b
 };
 struct Var : Expr { // reference to a local or parameter
     std::string name;
+    // Capture analysis (P25 §4.18): this reference is to a variable boxed into a shared cell (its declaration
+    // is `needsCell`). A value-capture target (Python cell object) reads/writes through the cell; a
+    // native-by-reference target (C#/TS) ignores it and emits the plain name. Node-local, like `lhsIsRecord`.
+    bool throughCell = false;
     Var(SourcePos p, Type t, std::string n) : Expr(ExprKind::Var, p, std::move(t)), name(std::move(n)) {}
 };
 struct This : Expr {
@@ -237,6 +241,11 @@ struct Let : Stmt {
     bool isMutable;
     Type type;
     ExprPtr init;
+    // Capture analysis (P25 §4.18): this local is captured by a lambda, and `needsCell` means at least one
+    // capture requires a shared mutable binding (mutated through the closure, or reassigned while a closure
+    // holds it) — so a value-capture target allocates a cell here instead of a plain variable.
+    bool captured = false;
+    bool needsCell = false;
     Let(SourcePos p, std::string n, bool m, Type t, ExprPtr i)
         : Stmt(StmtKind::Let, p), name(std::move(n)), isMutable(m), type(std::move(t)), init(std::move(i)) {}
 };
@@ -244,6 +253,9 @@ struct Assign : Stmt {
     ExprPtr target;
     std::string op;
     ExprPtr value;
+    // Capture analysis (P25 §4.18): the assignment target is a variable boxed into a shared cell — a
+    // value-capture target writes through the cell (mirrors ir::Var.throughCell for the write side).
+    bool targetThroughCell = false;
     Assign(SourcePos p, ExprPtr t, std::string o, ExprPtr v)
         : Stmt(StmtKind::Assign, p), target(std::move(t)), op(std::move(o)), value(std::move(v)) {}
 };
@@ -270,6 +282,11 @@ struct For : Stmt { // `for binding in <seq>`: either an integer range or an arb
     bool inclusive = false;       // range form: `..=` (true) vs `..` (false)
     ExprPtr iterable;             // iterable form: the sequence expression
     std::vector<StmtPtr> body;
+    // Capture analysis (P25 §4.18): the loop binding is captured by a lambda created in the body. `needsCell`
+    // means the cell is allocated **per iteration** (inside the loop body), so each closure closes over its
+    // own binding — matching C#/JS `let`/`foreach` per-iteration semantics (`() => i` over 1..=3 → 1,2,3).
+    bool captured = false;
+    bool needsCell = false;
     For(SourcePos p, std::string b) : Stmt(StmtKind::For, p), binding(std::move(b)) {}
 };
 struct Return : Stmt {
@@ -317,6 +334,10 @@ struct Param {
     std::string name;
     Type type;
     ExprPtr defaultValue;   // optional `= expr` default; null = required parameter
+    // Capture analysis (P25 §4.18): this parameter is captured by a nested lambda; `needsCell` if that
+    // capture needs a shared mutable binding (the param is assigned somewhere its closures can observe).
+    bool captured = false;
+    bool needsCell = false;
 };
 struct GenericParam {
     std::string name;
@@ -326,11 +347,31 @@ struct GenericParam {
 // A lambda / closure: `(params) => expr` or `=> { block }`. Both targets emit a native arrow function;
 // a param's type is omitted from the emit when absent (the bare `x => …` form relies on target typing).
 // Defined here (not with the other Expr nodes) because it needs Param + StmtPtr.
+// One captured variable of a lambda (P25 §4.18), classified by the capture-analysis pass. `needsCell` is the
+// authoritative decision backends consume (never re-derive): true = the variable must be a shared
+// reference/cell (mutated through a closure, reassigned while a closure holds it, or self-referential);
+// false = SNAPSHOT, a by-value copy is faithful. `mutatedInside`/`reassignedOutside` are provenance for the
+// SHARED-RW vs SHARED-RO distinction some targets tune on. `isThis` never needs a cell (identity capture).
+struct Capture {
+    std::string name;
+    Type declType;
+    bool isThis = false;
+    bool needsCell = false;
+    bool mutatedInside = false;     // written through this (or a nested) lambda
+    bool reassignedOutside = false; // the source variable is assigned somewhere outside this lambda
+};
 struct Lambda : Expr {
     std::vector<Param> params;
     bool exprBodied = true;     // `=> expr` vs `=> { block }`
     ExprPtr body;               // exprBodied
     std::vector<StmtPtr> block; // block body
+    // Capture analysis (P25 §4.18): the classified free variables this lambda captures (deduped by binding,
+    // first-use order); `capturesThis` forces the lexical-receiver form (TS arrow not `function`, PHP `$this`,
+    // C++ `[this]`); `escapes` (the closure outlives its frame) is the load-bearing input for C++/Rust cell
+    // decisions — conservatively true until precise escape analysis lands with those targets.
+    std::vector<Capture> captures;
+    bool capturesThis = false;
+    bool escapes = true;
     Lambda(SourcePos p, Type t) : Expr(ExprKind::Lambda, p, std::move(t)) {}
 };
 struct Function {

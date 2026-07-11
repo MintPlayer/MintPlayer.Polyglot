@@ -118,7 +118,8 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 const auto& l = static_cast<const Let&>(s);
-                line(std::string(l.isMutable ? "var " : "let ") + l.name + ": " + typeName(l.type) + " = " + expr(*l.init));
+                std::string suffix = l.needsCell ? " [cell]" : (l.captured ? " [captured]" : ""); // P25 §4.18
+                line(std::string(l.isMutable ? "var " : "let ") + l.name + ": " + typeName(l.type) + " = " + expr(*l.init) + suffix);
                 break;
             }
             case StmtKind::Assign: {
@@ -254,7 +255,14 @@ private:
                     repr += l.params[i].name;
                     if (!l.params[i].type.absent()) repr += ": " + typeName(l.params[i].type);
                 }
-                repr += ") => ";
+                repr += ")";
+                if (!l.captures.empty() || l.capturesThis) { // P25 §4.18 capture facts
+                    repr += " [caps";
+                    for (const auto& c : l.captures) repr += " " + c.name + (c.needsCell ? "(cell)" : "");
+                    if (l.capturesThis) repr += " this";
+                    repr += "]";
+                }
+                repr += " => ";
                 repr += l.exprBodied ? expr(*l.body) : "{ ... }";
                 break;
             }

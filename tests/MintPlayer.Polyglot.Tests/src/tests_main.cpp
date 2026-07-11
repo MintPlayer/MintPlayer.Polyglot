@@ -1448,6 +1448,46 @@ int main() {
               "P21: compile through a RecordingResolver captures the import closure");
     }
 
+    // P25 §4.18 — capture analysis: the pass classifies each lambda's captures and stamps needsCell.
+    // Asserted on the typed IR dump: a lambda shows `[caps <name>(cell)? … this?]`; a celled local shows
+    // `[cell]`, a captured-but-snapshot local `[captured]`.
+    {
+        auto capIr = [&](const char* src) -> std::string {
+            DiagnosticBag d;
+            auto unit = parse(lex(src, d), d);
+            mintplayer::polyglot::check(unit, d);
+            if (d.hasErrors()) return "<type error>";
+            return ir::dump(lower(unit, "csharp"));
+        };
+        // Accumulator: `total` is mutated through the closure -> SHARED-RW -> needsCell (the golden sample).
+        std::string acc = capIr("fn f(): i32 {\n  var total = 0\n  let add = (n: i32) => { total += n }\n"
+                                "  add(10)\n  add(20)\n  return total\n}\n");
+        check(has(acc, "[caps total(cell)]"), "P25: mutated capture is classified needsCell");
+        check(has(acc, "var total: i32 = 0:i32 [cell]"), "P25: the mutated local's declaration is celled");
+
+        // Pure read of an immutable local -> SNAPSHOT -> captured but NO cell.
+        std::string snap = capIr("fn f(): i32 {\n  let base = 10\n  let g = (x: i32) => x + base\n  return g(5)\n}\n");
+        check(has(snap, "[caps base]") && !has(snap, "base(cell)"), "P25: unmutated capture is snapshot (no cell)");
+        check(has(snap, "let base: i32 = 10:i32 [captured]"), "P25: snapshot local is captured but not celled");
+
+        // Loop-variable capture: `i` is read-only -> snapshot per iteration, no cell.
+        std::string loop = capIr("fn f() {\n  for i in 1..=3 {\n    let g = () => i\n  }\n}\n");
+        check(has(loop, "[caps i]") && !has(loop, "i(cell)"), "P25: read-only loop-var capture is snapshot");
+
+        // A global is not a local binding -> never a capture.
+        std::string glob = capIr("let base = 5\nfn f(): i32 {\n  let rd = () => base\n  return rd()\n}\n");
+        check(!has(glob, "[caps"), "P25: a module global is not captured");
+
+        // Nested lambdas: a variable two levels up is captured by BOTH inner lambdas (propagation).
+        std::string nest = capIr("fn f(): i32 {\n  let x = 5\n  let g = () => {\n    let h = () => x\n    return h()\n  }\n  return g()\n}\n");
+        check(has(nest, "[caps x]"), "P25: nested lambda propagates the capture to each level");
+
+        // `this` inside a lambda sets capturesThis (drives TS-arrow / PHP $this / C++ [this]). Asserted in an
+        // `init` body, which `ir::dump` renders (method bodies aren't dumped, but the flag is set the same way).
+        std::string self = capIr("class C {\n  let v: i32\n  init() {\n    this.v = 0\n    let f = () => this.v\n  }\n}\n");
+        check(has(self, "[caps this]"), "P25: a lambda referencing `this` sets capturesThis");
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;
