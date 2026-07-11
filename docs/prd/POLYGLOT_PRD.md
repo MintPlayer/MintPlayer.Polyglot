@@ -1095,6 +1095,43 @@ PHP/Kotlin, not Swift); conformance needs only `dart run` (UI-free logic — no 
 **Recommendation:** no change to the slice-5 plan — Flutter's entire delta is "emit a `pub` library,
 consumable from Flutter" + the web-`int` §3.C caveat above.
 
+#### 4.17.3 Kotlin (added 2026-07-11)
+
+The positive bookend to §4.17.1: where Rust/Go are "assumed-easy targets that aren't," **Kotlin is the target
+the JSON-plugin model was built for** — the P26 first-new-target (decision D1), **100% pure-JSON, zero Core
+change beyond slice 0**, and strictly higher-fidelity than any target that needs a local tier.
+
+**Capability profile** — every §3.A feature and all three flags **native except three emulations**:
+
+| Feature | Kotlin | Feature | Kotlin |
+|---|---|---|---|
+| pattern matching / ADTs | native (`sealed` + exhaustive `when`) | enums | native (`enum class` — see risk) |
+| operators / properties / indexers | native (`operator fun`, `val/var` + `get()/set()`) | extension methods | native (`fun T.m()` — keeps `x.m()`) |
+| exceptions | native (unchecked — no checked-throw tax) | closures / with | native (by-ref; `data class .copy()`) |
+| iterators / `yield` | **native** (`sequence{ yield }` — no state machine, the edge over Swift/Java/Go) | overloading | **native** (real JVM overloading — no mangling) |
+| inheritance | native (`open`/`override`) | `mutableRefClasses` | native |
+| `fixedWidthIntegers` | **native** (`Byte…Long` **+ `UByte…ULong`**; i64 = real `Long`, **no BigInt tax**) | `utf16Strings` | **native** (JVM `String`/`Char` = UTF-16 — the C#/TS match) |
+| disposal (`using`) | **emulated** (`.use{}` — block form) | async | **emulated** (`suspend`/`.await()` + `kotlinx.coroutines` builddep) |
+| statics | **emulated** (`companion object`) | | |
+
+**The one hazard — no implicit numeric widening — is de-risked by an existing Core fact.** Kotlin rejects
+`val x: Long = anInt` (needs `anInt.toLong()`), so the plugin must insert `.toX()` at implicit-widening
+sites. The finding: **sema already materializes every implicit widening as a real `ir::Cast` node** (`coerce()`
+wraps the expr in a `Cast` whose result-type is the target and whose operand keeps its source type). So the
+Kotlin **`Cast` rule** — the same slot C# fills with `($T)($x)` — has both from- and to-type in hand and
+emits `($x).toLong()`; implicit and explicit casts flow through one node. **No new Core fact needed** — only a
+per-target `(fromClass,toClass)→method` table (pure data). This is the Kotlin analogue of Swift's `&+` ops
+but cheaper (reuses a materialized node vs. changing `spec.binaryOp`).
+
+**Pure-JSON, no local-tier** — the clean counterpoint to Rust/Go: native exceptions (no `(T,error)`), native
+mutable-ref classes (the `analyzeCaptures` cell bit is *ignored*, §4.18), native `sequence{ yield }` (the one
+construct that drops Swift/Java/Go/C++ into local-tier). Publishable as `@polyglot/kotlin`, downloadable data.
+Toolchain: `kotlinc` is a headless portable zip (JDK already present — `java 24`); joins the N-target harness
+via `kotlinc … -d foo.jar` → `java -jar` → diff vs the C# oracle. **Biggest risk (not the `.toX()` widening —
+that's de-risked): the enum integer-value contract** — `.pg` enums carry `i32` values, but a native `enum
+class` exposes `.ordinal`/entry objects, so the `Match`/`enumCase` arm must compare the declared integer and
+enum arithmetic must be verified against the oracle (the same trap PHP's D6 handled by keeping const-class).
+
 ---
 
 ### 4.18 Lambdas & closures — faithful capture across every target (design — 2026-07-11; investigated by a 3-agent team; PLAN §P25)
