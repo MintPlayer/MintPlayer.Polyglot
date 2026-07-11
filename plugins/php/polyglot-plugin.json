@@ -5,10 +5,10 @@
     "patternMatching": false,
     "withExpressions": false,
     "async": false,
-    "closures": false,
+    "closures": "native",
     "exceptions": false,
     "interfaces": false,
-    "blockLambdas": false,
+    "blockLambdas": "native",
     "extensionMethods": false,
     "operatorOverloading": false
   },
@@ -245,6 +245,12 @@
     "Call": {
       "tmpl": [
         {
+          "case": {
+            "when": [ [ { "eq": ["node.isFree", "true"] }, "" ] ],
+            "else": "$"
+          }
+        },
+        {
           "fn": "ident",
           "args": [
             {
@@ -447,6 +453,48 @@
         },
         "]"
       ]
+    },
+    "Lambda": {
+      "case": {
+        "when": [
+          [
+            { "and": [ { "eq": ["node.exprBodied", "true"] }, { "eq": ["node.allCapturesByValue", "true"] } ] },
+            { "tmpl": [
+                "fn(",
+                { "map": "node.params", "sep": ", ", "item": { "tmpl": ["$", { "fn": "ident", "args": [ { "get": "item.name" } ] } ] } },
+                ") => ",
+                { "emit": "node.body" }
+            ] }
+          ]
+        ],
+        "else": { "tmpl": [
+            "function (",
+            { "map": "node.params", "sep": ", ", "item": { "tmpl": ["$", { "fn": "ident", "args": [ { "get": "item.name" } ] } ] } },
+            ")",
+            { "case": {
+                "when": [
+                  [
+                    { "not": { "eq": ["node.captures.count", "0"] } },
+                    { "tmpl": [
+                        " use (",
+                        { "map": "node.captures", "sep": ", ", "item": { "tmpl": [
+                            { "case": { "when": [ [ { "eq": ["item.needsCell", "true"] }, "&$" ] ], "else": "$" } },
+                            { "fn": "ident", "args": [ { "get": "item.name" } ] }
+                        ] } },
+                        ")"
+                    ] }
+                  ]
+                ],
+                "else": ""
+            } },
+            " { ",
+            { "case": {
+                "when": [ [ { "eq": ["node.exprBodied", "true"] }, { "tmpl": ["return ", { "emit": "node.body" }, ";"] } ] ],
+                "else": { "fn": "inlineBlock" }
+            } },
+            " }"
+        ] }
+      }
     },
     "New": {
       "tmpl": [

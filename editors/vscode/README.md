@@ -61,6 +61,6 @@ reserved-name squiggles). `forbiddenIdentifiers` can ban names project-wide or p
 
 ## Learn the language
 
-- [Language specification](https://github.com/MintPlayer/MintPlayer.Polyglot/blob/main/docs/lang/SPEC.md)
-- [Polyglot for C# developers](https://github.com/MintPlayer/MintPlayer.Polyglot/blob/main/docs/lang/for-csharp-devs.md)
-- [Polyglot for TypeScript developers](https://github.com/MintPlayer/MintPlayer.Polyglot/blob/main/docs/lang/for-typescript-devs.md)
+- [Language specification](https://github.com/MintPlayer/MintPlayer.Polyglot/blob/master/docs/lang/SPEC.md)
+- [Polyglot for C# developers](https://github.com/MintPlayer/MintPlayer.Polyglot/blob/master/docs/lang/for-csharp-devs.md)
+- [Polyglot for TypeScript developers](https://github.com/MintPlayer/MintPlayer.Polyglot/blob/master/docs/lang/for-typescript-devs.md)

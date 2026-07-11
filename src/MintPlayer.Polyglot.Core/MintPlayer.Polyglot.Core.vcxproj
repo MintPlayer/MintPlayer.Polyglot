@@ -75,6 +75,8 @@
     <ClInclude Include="include\mintplayer\polyglot\pg_printer.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\ir.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\lower.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\capture_analysis.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\hoist_block_lambdas.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend_engine.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend_spec.hpp" />
@@ -92,6 +94,8 @@
     <ClCompile Include="src\pg_printer.cpp" />
     <ClCompile Include="src\ir.cpp" />
     <ClCompile Include="src\lower.cpp" />
+    <ClCompile Include="src\capture_analysis.cpp" />
+    <ClCompile Include="src\hoist_block_lambdas.cpp" />
     <ClCompile Include="src\backend.cpp" />
     <ClCompile Include="src\backend_engine.cpp" />
     <ClCompile Include="src\backend_spec_json.cpp" />

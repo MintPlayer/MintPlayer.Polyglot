@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "python",
   "capabilities": {
-    "blockLambdas": false,
+    "blockLambdas": "emulated",
     "interfaces": "emulated"
   },
   "spec": {
@@ -1153,6 +1153,33 @@
         },
         ")"
       ]
+    },
+    "LocalFunc": {
+      "block": {
+        "head": {
+          "tmpl": [
+            "def ",
+            { "fn": "ident", "args": [ { "get": "stmt.name" } ] },
+            "(",
+            { "map": "stmt.params", "sep": ", ", "item": { "fn": "ident", "args": [ { "get": "item.name" } ] } },
+            ")"
+          ]
+        },
+        "body": [
+          {
+            "case": {
+              "when": [
+                [
+                  { "not": { "eq": ["stmt.nonlocals.count", "0"] } },
+                  { "line": { "tmpl": [ "nonlocal ", { "map": "stmt.nonlocals", "sep": ", ", "item": { "fn": "ident", "args": [ { "get": "item" } ] } } ] } }
+                ]
+              ],
+              "else": ""
+            }
+          },
+          { "stmts": "stmt.body" }
+        ]
+      }
     },
     "FunctionDecl": {
       "case": {

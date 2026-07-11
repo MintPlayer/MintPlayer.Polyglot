@@ -118,7 +118,8 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 const auto& l = static_cast<const Let&>(s);
-                line(std::string(l.isMutable ? "var " : "let ") + l.name + ": " + typeName(l.type) + " = " + expr(*l.init));
+                std::string suffix = l.needsCell ? " [cell]" : (l.captured ? " [captured]" : ""); // P25 §4.18
+                line(std::string(l.isMutable ? "var " : "let ") + l.name + ": " + typeName(l.type) + " = " + expr(*l.init) + suffix);
                 break;
             }
             case StmtKind::Assign: {
@@ -191,6 +192,17 @@ private:
                 line("}");
                 break;
             }
+            case StmtKind::LocalFunc: { // P25 §4.18: a hoisted nested def (Python block-lambda lowering)
+                const auto& lf = static_cast<const LocalFunc&>(s);
+                std::string sig = "def " + lf.name + "(";
+                for (std::size_t i = 0; i < lf.params.size(); ++i) { if (i) sig += ", "; sig += lf.params[i].name; }
+                sig += ")";
+                for (std::size_t i = 0; i < lf.nonlocals.size(); ++i) sig += (i ? ", " : " nonlocal ") + lf.nonlocals[i];
+                line(sig + " {");
+                block(lf.body);
+                line("}");
+                break;
+            }
         }
     }
 
@@ -254,7 +266,14 @@ private:
                     repr += l.params[i].name;
                     if (!l.params[i].type.absent()) repr += ": " + typeName(l.params[i].type);
                 }
-                repr += ") => ";
+                repr += ")";
+                if (!l.captures.empty() || l.capturesThis) { // P25 §4.18 capture facts
+                    repr += " [caps";
+                    for (const auto& c : l.captures) repr += " " + c.name + (c.needsCell ? "(cell)" : "");
+                    if (l.capturesThis) repr += " this";
+                    repr += "]";
+                }
+                repr += " => ";
                 repr += l.exprBodied ? expr(*l.body) : "{ ... }";
                 break;
             }

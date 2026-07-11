@@ -150,7 +150,7 @@ int main() {
     {
         namespace fs = std::filesystem;
         const fs::path exe = cli::executablePath();
-        for (const char* t : {"csharp", "typescript", "python"}) {
+        for (const char* t : {"csharp", "typescript", "python", "php"}) {
             const fs::path manifest = exe.parent_path() / "plugins" / t / "polyglot-plugin.json";
             std::ifstream in(manifest, std::ios::binary);
             std::stringstream ss;
@@ -524,10 +524,11 @@ int main() {
     // the exact §3.B silent-broken-output failure mode P9-V caught for break/continue.
     {
         const char* blockLambda = "fn main() { var total: i32 = 0\n  let add = (n: i32) => { total += n }\n  add(2)\n  print(total) }\n";
+        // P25 §4.18: python now SUPPORTS block lambdas by hoisting them to a nested `def` (Python `lambda` is
+        // expression-only) — this supersedes the P19 refusal. The mutated capture becomes a `nonlocal`.
         EmitResult py = compileStd(blockLambda, findTarget("python"));
-        bool named = false;
-        for (const auto& d : py.diagnostics) if (has(d.message, "blockLambdas")) named = true;
-        check(!py.ok && named, "P19: python refuses a statement-bodied lambda (expression-only lambdas)");
+        check(py.ok && has(py.code, "def ") && has(py.code, "nonlocal total"),
+              "P25: python emits a block lambda as a hoisted def with nonlocal");
         check(compileStd(blockLambda, findTarget("csharp")).ok && compileStd(blockLambda, findTarget("typescript")).ok,
               "P19: C#/TS still compile a statement-bodied lambda");
 
@@ -1446,6 +1447,58 @@ int main() {
                                findTarget("csharp"), &rec, LibConfig{{"io"}});
         check(r.ok && rec.loaded().count("geometry") == 1,
               "P21: compile through a RecordingResolver captures the import closure");
+    }
+
+    // P25 §4.18 — capture analysis: the pass classifies each lambda's captures and stamps needsCell.
+    // Asserted on the typed IR dump: a lambda shows `[caps <name>(cell)? … this?]`; a celled local shows
+    // `[cell]`, a captured-but-snapshot local `[captured]`.
+    {
+        auto capIr = [&](const char* src) -> std::string {
+            DiagnosticBag d;
+            auto unit = parse(lex(src, d), d);
+            mintplayer::polyglot::check(unit, d);
+            if (d.hasErrors()) return "<type error>";
+            return ir::dump(lower(unit, "csharp"));
+        };
+        // Accumulator: `total` is mutated through the closure -> SHARED-RW -> needsCell (the golden sample).
+        std::string acc = capIr("fn f(): i32 {\n  var total = 0\n  let add = (n: i32) => { total += n }\n"
+                                "  add(10)\n  add(20)\n  return total\n}\n");
+        check(has(acc, "[caps total(cell)]"), "P25: mutated capture is classified needsCell");
+        check(has(acc, "var total: i32 = 0:i32 [cell]"), "P25: the mutated local's declaration is celled");
+
+        // Pure read of an immutable local -> SNAPSHOT -> captured but NO cell.
+        std::string snap = capIr("fn f(): i32 {\n  let base = 10\n  let g = (x: i32) => x + base\n  return g(5)\n}\n");
+        check(has(snap, "[caps base]") && !has(snap, "base(cell)"), "P25: unmutated capture is snapshot (no cell)");
+        check(has(snap, "let base: i32 = 10:i32 [captured]"), "P25: snapshot local is captured but not celled");
+
+        // Loop-variable capture: `i` is read-only -> snapshot per iteration, no cell.
+        std::string loop = capIr("fn f() {\n  for i in 1..=3 {\n    let g = () => i\n  }\n}\n");
+        check(has(loop, "[caps i]") && !has(loop, "i(cell)"), "P25: read-only loop-var capture is snapshot");
+
+        // A global is not a local binding -> never a capture.
+        std::string glob = capIr("let base = 5\nfn f(): i32 {\n  let rd = () => base\n  return rd()\n}\n");
+        check(!has(glob, "[caps"), "P25: a module global is not captured");
+
+        // Nested lambdas: a variable two levels up is captured by BOTH inner lambdas (propagation).
+        std::string nest = capIr("fn f(): i32 {\n  let x = 5\n  let g = () => {\n    let h = () => x\n    return h()\n  }\n  return g()\n}\n");
+        check(has(nest, "[caps x]"), "P25: nested lambda propagates the capture to each level");
+
+        // `this` inside a lambda sets capturesThis (drives TS-arrow / PHP $this / C++ [this]). Asserted in an
+        // `init` body, which `ir::dump` renders (method bodies aren't dumped, but the flag is set the same way).
+        std::string self = capIr("class C {\n  let v: i32\n  init() {\n    this.v = 0\n    let f = () => this.v\n  }\n}\n");
+        check(has(self, "[caps this]"), "P25: a lambda referencing `this` sets capturesThis");
+
+        // Slice 4 — PHP real closures. PHP has no interpreter in this environment, so the differential gate
+        // can't run it; assert the emission directly: a mutated capture -> `use (&$x)` (driven off needsCell,
+        // never syntax); a closure-valued local is called via `$f(...)`; a pure expression lambda -> `fn(…)`.
+        EmitResult phpAcc = compileStd("fn main() {\n  var total = 0\n  let add = (n: i32) => { total += n }\n"
+                                       "  add(10)\n  print(total)\n}\n", findTarget("php"));
+        check(phpAcc.ok && has(phpAcc.code, "use (&$total)"), "P25/PHP: a mutated capture emits use(&$total)");
+        check(phpAcc.ok && has(phpAcc.code, "$add("), "P25/PHP: a closure-valued local is called via $f(...)");
+        EmitResult phpSnap = compileStd("fn apply(f: (i32) => i32, x: i32): i32 => f(x)\n"
+                                        "fn main() {\n  let base = 10\n  print(apply((n: i32) => n + base, 5))\n}\n",
+                                        findTarget("php"));
+        check(phpSnap.ok && has(phpSnap.code, "fn("), "P25/PHP: a pure expression lambda emits the fn(...) form");
     }
 
     if (g_failures == 0) {
