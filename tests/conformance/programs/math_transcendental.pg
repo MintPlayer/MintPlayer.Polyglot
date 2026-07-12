@@ -23,6 +23,11 @@ fn main() {
   print(q(Math.cosh(1.0)))       // 154308
   print(q(Math.tanh(1.0)))       // 76159
 
+  // inverse hyperbolic (P28) — inputs chosen so the scaled value clears any integer boundary
+  print(q(Math.asinh(1.0)))      // 88137    (ln(1+sqrt2))
+  print(q(Math.acosh(2.0)))      // 131695   (ln(2+sqrt3))
+  print(q(Math.atanh(0.5)))      // 54930    (0.5*ln3)
+
   // exp / log / pow
   print(q(Math.exp(1.0)))        // 271828
   print(q(Math.log(10.0)))       // 230258   (natural log)

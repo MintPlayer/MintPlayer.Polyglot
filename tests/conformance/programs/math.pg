@@ -26,4 +26,14 @@ fn main() {
   print(Math.abs(-5))                // 5
   print(Math.max(10i64, 20i64))      // 20   (i64 -> BigInt: operator compare in TS)
   print(Math.abs(-9i64))             // 9
+
+  // sign / clamp (P28) — also type-preserving, and reproducible (built from - and compare only, §3.D).
+  print(Math.sign(-5))               // -1   (i32 -> i32)
+  print(Math.sign(12))               // 1
+  print(Math.sign(0))                // 0
+  print(Math.sign(-7i64))            // -1   (i64 -> BigInt in TS)
+  print(Math.clamp(15, 0, 10))       // 10   (above hi)
+  print(Math.clamp(-3, 0, 10))       // 0    (below lo)
+  print(Math.clamp(7, 0, 10))        // 7    (in range)
+  print(Math.clamp(5i64, 0i64, 3i64))// 3    (i64, generic)
 }

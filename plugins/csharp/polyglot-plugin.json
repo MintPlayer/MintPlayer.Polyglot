@@ -2772,12 +2772,17 @@
       "Math.sinh": "global::System.Math.Sinh($0)",
       "Math.cosh": "global::System.Math.Cosh($0)",
       "Math.tanh": "global::System.Math.Tanh($0)",
+      "Math.asinh": "global::System.Math.Asinh($0)",
+      "Math.acosh": "global::System.Math.Acosh($0)",
+      "Math.atanh": "global::System.Math.Atanh($0)",
       "Math.trunc": "global::System.Math.Truncate($0)",
       "Math.floor": "global::System.Math.Floor($0)",
       "Math.ceil": "global::System.Math.Ceiling($0)",
       "Math.min": "global::System.Math.Min($0, $1)",
       "Math.max": "global::System.Math.Max($0, $1)",
       "Math.abs": "global::System.Math.Abs($0)",
+      "Math.sign": "((global::System.Func<$T, $T>)(a => a > 0 ? ($T)1 : a < 0 ? ($T)(-1) : a - a))($0)",
+      "Math.clamp": "((global::System.Func<$T, $T, $T, $T>)((x, lo, hi) => x < lo ? lo : (x > hi ? hi : x)))($0, $1, $2)",
       "Math.round": "(($T) global::System.Math.Round($0))"
     },
     "std.strings": {

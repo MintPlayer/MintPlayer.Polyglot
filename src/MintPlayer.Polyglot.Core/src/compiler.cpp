@@ -70,9 +70,12 @@ expect fn deleteFile(path: string)
 // (sin/cos/tan/asin/acos/atan/atan2, sinh/cosh/tanh, exp/log/ln/log2/log10, pow) is a documented
 // BEST-EFFORT tier — available on every target, but results may differ by <=1 ULP across the .NET JIT and a
 // JS/Python/PHP runtime. Code that needs cross-target identity must use + - * / sqrt (or a future fixed-point
-// std type), NOT these. Every member is a plain 1:1 bound static (no emulation); cbrt/sign are intentionally
-// omitted (not uniformly available as a clean binding — cbrt is absent on PHP and Python<3.11; sign diverges,
-// C# Math.Sign throws on NaN while JS returns NaN).
+// std type), NOT these. Most members are plain 1:1 bound statics (no emulation). `sign` and `clamp` are the
+// exception (P28): they are NOT 1:1 to any native primitive — `sign` is emitted from a type-preserving
+// operator template (x>0 ? 1 : x<0 ? -1 : x-x) precisely because the natives diverge (C# Math.Sign throws on
+// NaN, JS returns NaN, Python/PHP have none), and `clamp` from min(max(..)) — so both live in the reproducible
+// + - * / sqrt tier (only subtraction + comparison), integer-in/integer-out. `cbrt` stays omitted (absent on
+// PHP and Python<3.11 — a faithful add would need §3.C-documented emulation).
 const char* STD_MATH = R"PG(
 extern class Math {
   const PI: f64 {
@@ -113,6 +116,12 @@ extern class Math {
   }
   static fn tanh(x: f64): f64 {
   }
+  static fn asinh(x: f64): f64 {
+  }
+  static fn acosh(x: f64): f64 {
+  }
+  static fn atanh(x: f64): f64 {
+  }
   static fn trunc(x: f64): f64 {
   }
   static fn floor(x: f64): f64 {
@@ -124,6 +133,15 @@ extern class Math {
   static fn max<T: INumber>(a: T, b: T): T {
   }
   static fn abs<T: INumber>(x: T): T {
+  }
+  // signum, type-preserving (i32 in -> i32 out, f64 -> f64). Emitted from an operator template, NOT each
+  // target's native `sign` (which returns int and/or diverges on NaN) — so it stays in the reproducible tier
+  // and NaN -> NaN (via the x-x identity) on every target. See §3.D.
+  static fn sign<T: INumber>(x: T): T {
+  }
+  // clamp x into [lo, hi], type-preserving. min(max(x, lo), hi); reproducible (comparison only). Assumes
+  // lo <= hi (caller's contract — no runtime check, following C#'s Math.Clamp which throws only on lo > hi).
+  static fn clamp<T: INumber>(x: T, lo: T, hi: T): T {
   }
   // round-to-nearest, type-preserving (f32 in -> f32 out, f64 -> f64). Generic covers both float widths, so
   // no overload is needed. C# `Math.Round` has only a `double` overload, so the result is cast back to `$T`
