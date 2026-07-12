@@ -196,17 +196,29 @@ r['csClassHead'] = {"tmpl": ["class ", ident("decl.name"), {"fn": "generics"},
     {"case": {"when": [[{"not": {"eq": ["decl.ifaceBases.count", "0"]}}, {"tmpl": [
         {"case": {"when": [[{"eq": ["decl.hasExtBase", "true"]}, ", "]], "else": " : "}},
         {"map": "decl.ifaceBases", "sep": ", ", "item": {"type": "item"}}]}]]}}]}
-_ktFieldInit = {"case": {"when": [[{"eq": ["item.hasInit", "true"]}, {"tmpl": [" = ", {"emit": "item.init"}]}]], "else": " = TODO()"}}
+# Kotlin init model: fields are bare `var/val name: Type` (or inline `= init`), the primary constructor
+# takes the init params, and an `init {}` block runs the init body (which assigns the bare fields).
+_ktFieldInit = {"case": {"when": [[{"eq": ["item.hasInit", "true"]}, {"tmpl": [" = ", {"emit": "item.init"}]}]], "else": ""}}
 _ktMut = {"case": {"when": [[{"eq": ["item.isMutable", "true"]}, "var "]], "else": "val "}}
 _ktInstField = {"tmpl": [_ktMut, ident("item.name"), ": ", {"type": "item.type"}, _ktFieldInit]}
 _ktField = {"line": {"case": {"when": [[{"eq": ["item.isStatic", "true"]}, ""]], "else": _ktInstField}}}
-_ktCtor = {"case": {"when": [[{"eq": ["decl.hasInit", "true"]}, {"block": {
-    "head": {"tmpl": ["constructor(", {"map": "decl.initParams", "sep": ", ", "item": {"call": "csParam"}}, ")"]},
-    "body": [{"stmts": "decl.initBody"}]}}]]}}
+_ktInit = {"case": {"when": [[{"eq": ["decl.hasInit", "true"]}, {"block": {"head": "init", "body": [{"stmts": "decl.initBody"}]}}]]}}
+r['csClassHead'] = {"tmpl": ["class ", ident("decl.name"), {"fn": "generics"},
+    {"case": {"when": [[{"eq": ["decl.hasInit", "true"]}, {"tmpl": ["(", {"map": "decl.initParams", "sep": ", ", "item": {"call": "csParam"}}, ")"]}]]}},
+    {"case": {"when": [[{"eq": ["decl.hasExtBase", "true"]}, {"tmpl": [" : ", {"type": "decl.extBase"},
+        {"case": {"when": [[{"eq": ["decl.hasSuper", "true"]}, {"tmpl": ["(", {"map": "decl.superArgs", "sep": ", ", "item": {"emit": "item"}}, ")"]}]], "else": "()"}}]}]]}},
+    {"case": {"when": [[{"not": {"eq": ["decl.ifaceBases.count", "0"]}}, {"tmpl": [
+        {"case": {"when": [[{"eq": ["decl.hasExtBase", "true"]}, ", "]], "else": " : "}},
+        {"map": "decl.ifaceBases", "sep": ", ", "item": {"type": "item"}}]}]]}}]}
 r['ClassDecl'] = {"block": {"head": {"call": "csClassHead"}, "body": [
     {"mapDecl": "decl.fields", "each": _ktField},
-    _ktCtor,
+    _ktInit,
     {"mapMembers": "decl.methods", "rule": "MethodDecl"}]}}
+# Extension: Core rewrites `this`->`self` and prepends params[0]=self; in a Kotlin extension fn the receiver
+# IS `this`, so alias `val self = this` at the top of a (forced) block body.
+r['ExtensionDecl'] = {"block": {"head": {"call": "csExtSig"}, "body": [
+    {"line": "val self = this"},
+    {"case": {"when": [[{"eq": ["decl.exprBodied", "true"]}, {"line": {"tmpl": ["return ", {"emit": "decl.exprBody"}]}}]], "else": {"stmts": "decl.body"}}}]}}
 
 d['std'] = {
   "std.collections": {"List.type": "MutableList<$0>", "List.init": "mutableListOf<$0>()", "List.count": "$this.size",
