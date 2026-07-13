@@ -433,18 +433,46 @@
       }
     },
     "ListLit": {
-      "tmpl": [
-        "new global::System.Collections.Generic.List<",
-        {
-          "type": "node.elem"
-        },
-        "> { ",
-        {
-          "map": "node.elements",
-          "sep": ", "
-        },
-        " }"
-      ]
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.isArray",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                "new ",
+                {
+                  "type": "node.elem"
+                },
+                "[] { ",
+                {
+                  "map": "node.elements",
+                  "sep": ", "
+                },
+                " }"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "new global::System.Collections.Generic.List<",
+            {
+              "type": "node.elem"
+            },
+            "> { ",
+            {
+              "map": "node.elements",
+              "sep": ", "
+            },
+            " }"
+          ]
+        }
+      }
     },
     "New": {
       "tmpl": [
@@ -2799,6 +2827,9 @@
       "Error.init": "new $T($0)",
       "Error.message": "$this.Message",
       "Iterable.type": "global::System.Collections.Generic.IEnumerable<$0>",
+      "Array.type": "$0[]",
+      "Array.init": "global::System.Array.Empty<$0>()",
+      "Array.count": "$this.Length",
       "i8.parse": "sbyte.Parse($0)",
       "i16.parse": "short.Parse($0)",
       "i32.parse": "int.Parse($0)",

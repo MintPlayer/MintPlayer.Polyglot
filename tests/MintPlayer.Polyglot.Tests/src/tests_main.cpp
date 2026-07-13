@@ -1151,6 +1151,127 @@ int main() {
               "P14b: empty list literal takes its element type from the target (List<int>, not List<object>)");
     }
 
+    // Issue #27 Bug 2 — a collection spelled with a POSTFIX operator must parenthesize a union element type,
+    // or the target mis-parses it. TS `List<T>` is `$0[]`, and `[]` binds tighter than the `|` of a nullable
+    // union: `List<Node?>` must render `(Node | null)[]`, never `Node | null[]` (which TS reads as
+    // `Node | (null[])`). C# is safe — its `List<…>` is angle-bracketed and self-delimiting. This is the
+    // general "collections compose with union element types" invariant. (Issue #27 Bug 1 — un-inferable
+    // initializers like `[]`/`null` losing their element type — is addressed at the source language level by
+    // the explicit-typing spec change, see docs/prd/issue-27-explicit-typing/.)
+    {
+        const char* prog =
+            "import { List } from \"std.collections\"\n"
+            "class Node {\n  var next: List<Node?>\n  init() { this.next = List<Node?>() }\n}\n"
+            "fn deltas(): List<(i32, i32)> {\n"
+            "  var d: List<(i32, i32)> = List<(i32, i32)>()\n"
+            "  d.add((1, 2))\n"
+            "  return d\n"
+            "}\n"
+            "fn main() {}\n";
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok, "issue#27: repro program transpiles to TS");
+        // The nullable-union element is parenthesized inside the postfix array; the mis-parenthesized form is gone.
+        check(has(ts.code, "next: (Node | null)[];") && !has(ts.code, "Node | null[]"),
+              "issue#27 Bug2: List<T?> field renders as (Node | null)[]");
+        // Non-nullable arrays stay clean — no stray parens leak in from the nullable fix.
+        check(has(ts.code, "deltas(): [number, number][]") && !has(ts.code, "([number, number])[]"),
+              "issue#27 Bug2: non-nullable array element types keep no stray parentheses");
+        // Bug 1 (Slice 2) — the `List<(i32,i32)>()` construction spells no element type on TS (`List.init` is
+        // `[]`), so the DECLARATION carries it: `let d: [number, number][] = [];` (not the evolving-any `let d = [];`).
+        check(has(ts.code, "let d: [number, number][] = [];") && !has(ts.code, "let d = [];"),
+              "issue#27 Bug1: type-erased List<T>() construction carries its type on the declaration (TS)");
+        // C# is unaffected — its angle-bracketed List<…> is self-delimiting, and `new List<…>()` carries the
+        // element type in the initializer, so `var d = new …List<(int, int)>();` stays as-is (no annotation churn).
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "global::System.Collections.Generic.List<Node?>"),
+              "issue#27 Bug2: C# nullable list element is self-delimiting (List<Node?>)");
+        check(has(cs.code, "var d = new global::System.Collections.Generic.List<(int, int)>();"),
+              "issue#27 Bug1: C# List construction is unchanged (its `new $T()` carries the type)");
+    }
+
+    // Issue #27 Bug 1 (root-cause language rule) — a `let`/`var` whose initializer is UN-INFERABLE must
+    // carry an explicit type annotation; otherwise no target can reconstruct the declared type and it would
+    // silently degrade (C# `List<object>` / TS evolving-`any`). The un-inferable forms are an empty list
+    // literal, a bare `null`, and a lambda with un-annotated parameters. Every UNAMBIGUOUS initializer keeps
+    // inferring with no annotation. (docs/prd/issue-27-explicit-typing/)
+    {
+        auto rejectsStd = [&](const char* src, const std::string& name) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            check(!r.ok && !r.diagnostics.empty(), name);
+        };
+        auto acceptsStd = [&](const char* src, const std::string& name) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            check(r.ok, name);
+        };
+        // Rejected — un-inferable initializer, no annotation.
+        rejectsStd("fn main() { var d = [] }\n",            "issue#27 Bug1: empty list literal without annotation is rejected");
+        rejectsStd("fn main() { var x = null }\n",          "issue#27 Bug1: bare null without annotation is rejected");
+        rejectsStd("fn main() { let f = (x) => x }\n",      "issue#27 Bug1: lambda with un-annotated params without annotation is rejected");
+        // The diagnostic is the fixit-shaped 'cannot infer the type' message (not some unrelated error).
+        {
+            EmitResult r = compileStd("fn main() { var d = [] }\n", findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, "cannot infer the type of 'd'")) named = true;
+            check(named, "issue#27 Bug1: diagnostic names the binding and asks for an annotation");
+        }
+        // Accepted — annotated, or an unambiguous initializer that infers precisely.
+        acceptsStd("fn main() { var d: List<i32> = [] }\n", "issue#27 Bug1: empty list WITH annotation is accepted");
+        acceptsStd("fn main() { let e = [1, 2, 3] }\n",     "issue#27 Bug1: non-empty list infers without annotation");
+        acceptsStd("fn main() { var d = List<i32>() }\n",   "issue#27 Bug1: List<i32>() constructor infers without annotation");
+        acceptsStd("fn main() { var x: i32? = null }\n",    "issue#27 Bug1: null WITH annotation is accepted");
+    }
+
+    // Issue #27 Bug 1 (Slice 2, emission) — for a type-erased construction or a bare `null`, the emitter puts
+    // the type on the declaration via `localDeclTyped`. This is target-driven: it fires only where the bound
+    // template is a bare constant (TS `List.init` == `[]`) or the init is `null`, and only on targets that
+    // declare a `localDeclTyped` row (C#/TS). No `as`-cast is synthesized.
+    {
+        // A constructor local with no source annotation (inferred List<i32>) still carries its type on TS.
+        EmitResult ts = compileStd("fn main() { var d = List<i32>()\n  d.add(1) }\n", findTarget("typescript"));
+        check(ts.ok && has(ts.code, "let d: number[] = [];") && !has(ts.code, "let d = [];"),
+              "issue#27 Bug1: inferred List<i32>() local carries its type on the declaration (TS)");
+        // A null local keeps its declared (parenthesized nullable) type on TS.
+        EmitResult tn = compileStd("class Node {\n  var v: i32\n  init() { this.v = 0 }\n}\n"
+                                   "fn main() { var x: Node? = null\n  x = Node() }\n", findTarget("typescript"));
+        check(tn.ok && has(tn.code, "let x: (Node | null) = null;") && !has(tn.code, "let x = null;"),
+              "issue#27 Bug1: null local keeps its declared type on TS");
+        // A non-empty literal local is unchanged — its type is inferable from the initializer (no annotation added).
+        EmitResult te = compileStd("fn main() { let e = [1, 2, 3] }\n", findTarget("typescript"));
+        check(te.ok && has(te.code, "const e = [1, 2, 3];"),
+              "issue#27 Bug1: inferable local keeps the idiomatic inferred form (no annotation churn)");
+    }
+
+    // Issue #27 (Slice 3) — the fixed-size array type `T[]` (sugar for the core `Array<T>`). Both an array and
+    // a `List<T>` transpile to a JS array on TS; on C# the array is a distinct `T[]` (vs `List<T>`). Element
+    // get, `.count`, iteration, and a nullable array element compose; size-mutation (`.add`) is a type error.
+    {
+        const char* prog =
+            "fn nums(): i32[] { var a: i32[] = [1, 2, 3]\n  return a }\n"
+            "fn nullables(): Node?[] { var xs: Node?[] = []\n  return xs }\n"
+            "fn firstNum(): i32 => nums()[0]\n"
+            "fn n(): i32 => nums().count\n"
+            "class Node { var v: i32\n  init() { this.v = 0 } }\n"
+            "fn main() {}\n";
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "int[] nums()") && has(cs.code, "new int[] { 1, 2, 3 }")
+                    && has(cs.code, "Node?[] nullables()") && has(cs.code, ".Length"),
+              "issue#27 Slice3: C# array is a distinct T[] (int[], new int[]{…}, Node?[], .Length)");
+        // C# must NOT emit a List for an array-typed literal.
+        check(cs.ok && !has(cs.code, "new global::System.Collections.Generic.List<int> { 1, 2, 3 }"),
+              "issue#27 Slice3: C# array literal is not a List<int>");
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok && has(ts.code, "nums(): number[]") && has(ts.code, "nullables(): (Node | null)[]")
+                    && has(ts.code, ".length"),
+              "issue#27 Slice3: TS array is a JS array (number[]), nullable element parenthesizes ((Node|null)[])");
+        EmitResult py = compileStd(prog, findTarget("python"));
+        check(py.ok, "issue#27 Slice3: array program transpiles to Python");
+        EmitResult php = compileStd(prog, findTarget("php"));
+        check(php.ok, "issue#27 Slice3: array program transpiles to PHP");
+        // Fixed-size contract: size-mutation is rejected (Array declares no `add`).
+        EmitResult bad = compileStd("fn main() { var a: i32[] = [1, 2]\n  a.add(3) }\n", findTarget("csharp"));
+        check(!bad.ok && !bad.diagnostics.empty(), "issue#27 Slice3: .add on a fixed-size array is rejected");
+    }
+
     // P14b — interfaces are emitted (were dropped at lowering), a record's `: Interface` base/implements
     // clause is carried, and `operator fn get` is a real indexer (C# `this[]`, TS `get(i)` method + `.get()`).
     {

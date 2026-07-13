@@ -83,6 +83,9 @@ summary in PRD §6 — this file does **not** track milestones):
   Backends are **100% JSON plugins** (P18–P19): zero backends compiled in — a language is a
   `plugins/<target>/polyglot-plugin.json` the Core loads + validates (anti-silent-drop coverage contract).
   The §3.A surface is complete, with §3.B refusals, §3.C faithfulness, and single-threaded async/await (P15).
+  Collections come in two spellings — growable `List<T>` and fixed-size `T[]` arrays (both erase to a JS
+  array on TS; C# keeps `T[]` vs `List<T>`); an un-inferable initializer (`[]`/`null`) must be annotated,
+  and a union element parenthesizes inside a postfix array — `(Node | null)[]` (P29, issue #27).
 - **Editor tooling.** A zero-dep `polyglot lsp` (diagnostics / go-to-def / hover / symbols / semantic tokens /
   rename / completion), live generated-output preview, and watch mode (P16 / P17 / P21). The VS Code
   extension is on the marketplace (ID `mintplayer.polyglot-lang`, frozen).

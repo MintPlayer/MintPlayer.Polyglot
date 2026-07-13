@@ -195,6 +195,18 @@ extern class Iterable<T> {
   type {
   }
 }
+// The fixed-size array `T[]` (surface sugar parses to `Array<T>`). Always linked, like `Iterable` — `[]` is
+// core syntax, not a std import. It deliberately declares NO add/remove/clear: an array is fixed-size (maps
+// to a C# `T[]`), so mutating its size is a type error. Element get/set (`a[i]`), `count`, and `for x in a`
+// are compiler-handled (same as List); construction and the element-type spelling come from the bindings.
+extern class Array<T> {
+  type {
+  }
+  init() {
+  }
+  let count: i32 {
+  }
+}
 // A marker constraint for numeric type parameters, like .NET's System.Numerics.INumber<T>: the numeric
 // scalars (i8..u64, f32, f64) satisfy it. Used only as a generic bound (`<T: INumber>`) so a non-numeric
 // type argument to a numeric-generic (Math.min/max/abs/round, or user code) is rejected at Polyglot compile

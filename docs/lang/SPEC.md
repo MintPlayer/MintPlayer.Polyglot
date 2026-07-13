@@ -92,6 +92,19 @@ const Width: f32 = 620f   // compile-time constant (module- or type-level)
 `let` → cannot be reassigned (C# `var` + no reassignment / TS `const`); `var` → mutable (C# `var` /
 TS `let`). `const` is a true compile-time scalar constant.
 
+The type annotation is **optional when the initializer determines the type** (`let x = 41`, `let e = [1,2,3]`,
+`var d = List<i32>()`) and **required when it does not**. An *un-inferable* initializer — an empty list
+literal `[]`, a bare `null`, or a lambda with un-annotated parameters — conveys no type for the compiler to
+reconstruct, so it must be annotated; otherwise it is a compile error (rather than a silent per-target
+guess). This is the same discipline Swift and Go enforce, and it guarantees every target is handed a
+concrete type:
+
+```pg
+var d: List<i32> = []      // required: `[]` alone has no element type
+var x: Node? = null        // required: bare `null` has no underlying type
+let e = [1, 2, 3]          // fine: element type inferred from the members
+```
+
 `let` and `const` may also appear at **module scope** (top-level). A top-level `const` is a compile-time
 scalar; a top-level `let` is an immutable binding initialized at module-init time and may hold an aggregate
 (→ C# `static readonly` / TS module-level `const`). A **list literal** `[a, b, c]` builds a `List<T>`
@@ -100,6 +113,21 @@ scalar; a top-level `let` is an immutable binding initialized at module-init tim
 ```pg
 let catalog: List<i32> = [ 16, 22, 30, 40 ]   // module-level immutable list
 ```
+
+**Arrays vs lists.** There are two sequence types, split by whether the size can change:
+
+| Source | Semantics | C# | TypeScript | Python | PHP |
+|---|---|---|---|---|---|
+| `T[]` (array) | fixed-size: element get/set, `.count`; **no** add/remove | `T[]` | `T[]` | `list` | `array` |
+| `List<T>` (list) | growable: `.add` / `.removeAt` / … | `List<T>` | `T[]` | `list` | `array` |
+
+Both spell a **JavaScript array** on the TS target (a JS array already has push/pop/splice), so a `T[]` and a
+`List<T>` are indistinguishable at runtime there; on C# the array stays a distinct `T[]`. `T[]` is surface
+sugar for the core `Array<T>` type (no import); the fixed-size contract is enforced by the type checker
+(`a.add(…)` on a `T[]` is a compile error). A list literal takes the type of its declared slot, so
+`var a: i32[] = [1, 2, 3]` is an array while `var xs: List<i32> = [1, 2, 3]` is a list. A collection of a
+**union** element composes safely on every target — e.g. `Node?[]` is C# `Node?[]` and TS `(Node | null)[]`
+(the union is parenthesized so the postfix `[]` binds correctly).
 
 ### 4.2 The two aggregate kinds — `class` and `record`
 

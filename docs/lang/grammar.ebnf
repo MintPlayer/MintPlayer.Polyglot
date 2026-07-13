@@ -182,7 +182,9 @@ type_bound     = type , { "&" , type } ;        (* multiple bounds: T: A & B *)
 
 (* ---- 4. Types ------------------------------------------------------------ *)
 
-type = union_free_type , [ "?" ] ;              (* trailing ? = nullable      *)
+type = union_free_type , { "?" | "[" , "]" } ; (* postfix modifiers, left-to-right:
+                                                   ? = nullable, [] = fixed-size array (sugar for Array<T>).
+                                                   Node?[] = Array<Node?>, i32[]? = nullable array. *)
 
 union_free_type =
       named_type
