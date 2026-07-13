@@ -18,6 +18,42 @@ TypeRef tUnknown() { return TypeRef{}; }
 TypeRef tNamed(std::string n) { return namedType(std::move(n)); }
 TypeRef tNullableUnknown() { TypeRef t; t.nullable = true; return t; }
 
+// A type every component of which is concrete (no empty-name / unconstrained hole anywhere). Used to
+// decide whether a declaration's initializer conveyed enough to reconstruct the declared type on every
+// target. A nullable-with-no-underlying-type (bare `null`) is NOT fully known.
+bool typeFullyKnown(const TypeRef& t) {
+    if (t.kind == TypeRef::Kind::Named && t.name.empty()) return false;
+    for (const auto& a : t.args) if (!typeFullyKnown(a)) return false;
+    for (const auto& r : t.ret)  if (!typeFullyKnown(r)) return false;
+    return true;
+}
+
+// Does an *un-annotated* binding's initializer leave the type un-inferable — i.e. would the missing type
+// reach a backend as a placeholder (C# `object` / TS evolving-`any`) rather than the author's intent?
+// (issue #27 root cause). Precisely the forms that lose type information to emission — an empty/unknown-
+// element list literal (`[]`), a bare `null`, and a lambda with un-annotated parameters. Deliberately NOT
+// a bare unconstrained `tUnknown()` from an unmodeled generic/std call: the checker stays lenient there
+// (see the note above `tUnknown`), so flagging it would be a false positive.
+bool uninferableInit(const Expr& value, const TypeRef& inferred) {
+    if (value.kind == ExprKind::Lambda) {           // a lambda's type is reconstructible iff every param is typed
+        for (const auto& p : value.params) if (p.type.absent()) return true;
+        return false;
+    }
+    if (inferred.kind == TypeRef::Kind::Named && inferred.name == "List" &&
+        (inferred.args.empty() || !typeFullyKnown(inferred.args[0]))) return true;   // `[]` -> List<unknown>
+    if (inferred.nullable && inferred.name.empty() && inferred.args.empty()) return true; // bare `null`
+    return false;
+}
+
+// The fix-it example for the "add an explicit type" diagnostic, tailored to which un-inferable form it is.
+std::string annotationHint(const std::string& name, const Expr& value) {
+    if (value.kind == ExprKind::Lambda)
+        return "annotate the lambda's parameter types, e.g. '(x: i32) => …'";
+    if (value.kind == ExprKind::NullLit)
+        return "add an explicit type annotation, e.g. 'var " + name + ": T? = null'";
+    return "add an explicit type annotation, e.g. 'var " + name + ": List<i32> = []'";
+}
+
 bool isNumeric(Ty t) { return t == Ty::I32 || t == Ty::F64; }
 
 // The MVP scalar lattice (Ty) only tracks i32/f64; the other numeric widths (i64/u64/i8/i16/u8/u16/u32/
@@ -292,8 +328,10 @@ public:
         }
         for (auto& v : unit.values) { // type-check top-level const/let initializers (so their types propagate)
             if (!v.init) continue;
-            checkExpr(*v.init);
+            TypeRef it = checkExpr(*v.init);
             if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
+            else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
+                diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
         }
     }
 
@@ -741,8 +779,11 @@ private:
         }
         if (target.kind == TypeRef::Kind::Named && target.name == "Option" && !target.args.empty()) { coerceToOptional(slot, target); return; }
         // A list literal takes its element type from the target — so `[]` is `List<i32>`, not `List<unknown>`
-        // (which emits invalid C# `List<object>`), and elements widen to the target element type.
-        if (target.kind == TypeRef::Kind::Named && target.name == "List" && !target.args.empty() && slot->kind == ExprKind::ListLit) {
+        // (which emits invalid C# `List<object>`), and elements widen to the target element type. The same
+        // literal coerces to a fixed-size `Array<T>` target (`var a: i32[] = [1, 2]`), which the emitter then
+        // spells as an array (C# `new int[]{…}`) instead of a List.
+        if (target.kind == TypeRef::Kind::Named && (target.name == "List" || target.name == "Array") &&
+            !target.args.empty() && slot->kind == ExprKind::ListLit) {
             for (auto& el : slot->args) checkConvert(el, target.args[0], ctx);
             slot->type = target;
             return;
@@ -822,6 +863,8 @@ private:
             case StmtKind::Let: {
                 TypeRef init = checkExpr(*s.value);
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
+                else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
+                    diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value));
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
                 break;
             }
@@ -908,7 +951,7 @@ private:
     // The element type of an iterable/collection: List<T> and Iterable<T> -> T; anything else -> unknown.
     // Used to type `lst[i]` and the `for x in lst` binding.
     TypeRef elementType(const TypeRef& t) {
-        if (t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Iterable") && !t.args.empty())
+        if (t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Array" || t.name == "Iterable") && !t.args.empty())
             return t.args[0];
         // A user type with an `operator fn get(index): R` indexer: `recv[i]` is R, with the type's generics
         // substituted from `t`'s args (e.g. RingBuffer<string>[i] -> string).

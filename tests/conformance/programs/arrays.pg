@@ -1,0 +1,24 @@
+// issue #27 — the fixed-size array type `T[]` (surface sugar for the core `Array<T>`). Both an array and a
+// `List<T>` transpile to a JS array on TS; on C# the array stays a distinct `T[]` (vs `List<T>`). Element
+// get, `.count`, and `for x in a` all compose; arrays are core (no import). Differential across C#/TS/Python.
+
+fn sum(xs: i32[]): i32 {
+  var total = 0
+  for x in xs {
+    total = total + x
+  }
+  return total
+}
+
+fn firstOr(xs: i32[], d: i32): i32 => if xs.count >= 1 { xs[0] } else { d }
+
+fn main() {
+  var a: i32[] = [10, 20, 30]
+  print(a.count)          // 3
+  print(a[1])             // 20
+  print(sum(a))           // 60
+  print(firstOr(a, -1))   // 10
+  var empty: i32[] = []
+  print(empty.count)      // 0
+  print(firstOr(empty, -1)) // -1
+}

@@ -94,6 +94,10 @@
         "mutable": "let $x",
         "const": "const $x"
       },
+      "localDeclTyped": {
+        "mutable": "let $x: $T",
+        "const": "const $x: $T"
+      },
       "yield": {
         "value": "yield $x;",
         "empty": "return;"
@@ -3051,10 +3055,11 @@
             },
             {
               "tmpl": [
+                "(",
                 {
                   "type": "type.base"
                 },
-                " | null"
+                " | null)"
               ]
             }
           ],
@@ -3534,6 +3539,9 @@
       "Error.init": "new $T($0)",
       "Error.message": "$this.message",
       "Iterable.type": "Iterable<$0>",
+      "Array.type": "$0[]",
+      "Array.init": "[]",
+      "Array.count": "$this.length",
       "i8.parse": "(Number.parseInt($0, 10) << 24 >> 24)",
       "i16.parse": "(Number.parseInt($0, 10) << 16 >> 16)",
       "i32.parse": "(Number.parseInt($0, 10) | 0)",

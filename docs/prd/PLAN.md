@@ -3082,3 +3082,38 @@ design + verified root cause: PRD §4.19.
 miss a native primitive on ≥1 target, so a faithful add is emulation that changes precision/NaN/overflow
 behaviour, i.e. a **§3.C relaxation decision**, not a free fill; picked up on real demand. `gcd`/`lcm`/
 `degrees`/`radians` are niche, out of the "important operations" line.
+
+## P29 — Explicit element types, `T[]` arrays & union-in-collection composition — ✅ built + gated (2026-07-13; issue #27, PRD `docs/prd/issue-27-explicit-typing/`, 3-agent investigation)
+
+Root-cause language fix for **issue #27** (two TypeScript miscompiles found single-sourcing an AlphaZero
+chess engine: local `List<T>` declarations losing their element type, and `List<T?>` rendering the
+mis-parenthesized `Node | null[]`). Rather than patch each backend to guess, the requirement moves into the
+source language, so every target is always handed a concrete type. Full design + investigation:
+`docs/prd/issue-27-explicit-typing/{PRD,PLAN}.md`.
+
+**As built (2026-07-13), four slices, all gated (build + unit + differential C#/TS/Python conformance +
+strict-`tsc`):**
+- **Slice 0 — union-in-collection invariant (TS).** The `Type` rule's nullable arm parenthesizes the union
+  (`(base | null)`) so a postfix `$0[]` composes correctly: `List<Node?>` → `(Node | null)[]`, never
+  `Node | null[]`. General rule: a **postfix** collection spelling must delimit a union element; angle-
+  bracket/subscript constructors (C# `List<…>`) self-delimit. (`plugins/typescript/polyglot-plugin.json`.)
+- **Slice 1 — the source rule (sema).** A `let`/`var`/module-`let` whose initializer is *un-inferable* — an
+  empty list literal `[]`, a bare `null`, or a lambda with un-annotated params — now **requires** an explicit
+  type; otherwise a fixit-shaped diagnostic ("cannot infer the type of 'x' …"). Unambiguous initializers
+  (`[1,2,3]`, `List<i32>()`, typed exprs) still infer. Precise predicate avoids the lenient-`tUnknown()` from
+  unmodeled generic/std calls (no false positives). (`sema.cpp`.)
+- **Slice 2 — emit the declared type (emitter).** For a `null` or a type-erased construction (a `Bound` whose
+  template is a bare constant — TS `List.init` is `[]`, while C#'s `new $T()` carries the type and is *not*
+  constant), the declaration carries the type via `localDeclTyped` (re-added the TS row). This is the
+  idiomatic replacement for the reverted `[] as $T` cast — `let d: [number, number][] = []`, no `as`.
+  (`emitter_base.cpp` + `plugins/typescript`.)
+- **Slice 3 — the `T[]` array type.** Postfix `[]` parses as sugar for a core `extern class Array<T>`
+  (`Node?[]` = `Array<Node?>`). Both an array and a `List<T>` erase to a **JS array** on TS; C# keeps `T[]`
+  distinct from `List<T>` (the C# `ListLit` rule branches on `node.isArray` → `new int[]{…}` vs
+  `new List<int>{…}`). Fixed-size contract enforced by the type checker — `Array` declares no `add`, so
+  `a.add(…)` is a compile error. Per-target `Array` bindings in all four plugins; `+1` conformance program
+  (`arrays`). (`parser.cpp`, `compiler.cpp`, `sema.cpp`, `emitter_base.cpp`, all four plugins.)
+
+**Blast radius:** zero migration — every existing `[]`/`null` declaration in the corpus was already
+annotated (only non-empty literals relied on inference, which the rule keeps). Precedent: Swift/Go require
+the same. **Versioning:** lockstep, tag-driven (P24) — no source bump; the PR carries `release:minor`.

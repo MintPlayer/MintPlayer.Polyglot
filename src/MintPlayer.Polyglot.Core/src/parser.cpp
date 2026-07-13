@@ -443,7 +443,22 @@ private:
 
     TypeRef parseType() {
         TypeRef t = parseTypeCore();
-        if (accept(TokKind::Question)) t.nullable = true;
+        // Postfix type modifiers, applied left-to-right: `?` (nullable) and `[]` (fixed-size array, sugar for
+        // the core `Array<T>`). So `Node?[]` is `Array<Node?>` (array of nullable) and `i32[]?` is a nullable
+        // array — the position of each modifier is preserved by wrapping/flagging in order.
+        for (;;) {
+            if (accept(TokKind::Question)) { t.nullable = true; continue; }
+            if (at(TokKind::LBracket) && peek(1).kind == TokKind::RBracket) {
+                advance(); advance();
+                TypeRef arr;
+                arr.kind = TypeRef::Kind::Named;
+                arr.name = "Array";
+                arr.args.push_back(std::move(t));
+                t = std::move(arr);
+                continue;
+            }
+            break;
+        }
         return t;
     }
     TypeRef parseTypeCore() {

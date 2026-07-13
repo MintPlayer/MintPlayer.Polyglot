@@ -152,6 +152,11 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
         if (e_.kind == ir::ExprKind::Tuple)   return std::to_string(static_cast<const ir::Tuple&>(e_).elements.size());
     }
+    if (path == "node.isArray") { // a list literal whose target type is the fixed-size Array<T> (vs growable List<T>)
+        const bool isArray = e_.kind == ir::ExprKind::ListLit &&
+                             static_cast<const ir::ListLit&>(e_).type.name == "Array";
+        return isArray ? "true" : "false";
+    }
     if (e_.kind == ir::ExprKind::Match) {
         const auto& m = static_cast<const ir::Match&>(e_);
         if (path == "node.arms.count")  return std::to_string(m.arms.size());
@@ -1440,6 +1445,19 @@ std::string EmitterBase::inlineBlock(const std::vector<ir::StmtPtr>& body) {
     return flat;
 }
 
+// A bound template that references neither the receiver (`$this`), the mapped type (`$T`), nor any argument
+// (`$0`..`$9`) spells a fixed, type-blind value — e.g. TS/Python/PHP `List.init` is `[]`. A construction with
+// such a template cannot convey its own type, so the enclosing declaration must carry it (see StmtKind::Let).
+static bool boundTemplateIsConstant(const std::string& tmpl) {
+    for (std::size_t i = 0; i + 1 < tmpl.size(); ++i) {
+        if (tmpl[i] != '$') continue;
+        const char c = tmpl[i + 1];
+        if (c == 'T' || std::isdigit(static_cast<unsigned char>(c)) || tmpl.compare(i, 5, "$this") == 0)
+            return false;
+    }
+    return true;
+}
+
 void EmitterBase::emitStmt(const ir::Stmt& s) {
     switch (s.kind) {
         case ir::StmtKind::Assign: {
@@ -1452,12 +1470,19 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             return;
         case ir::StmtKind::Let: {
             const auto& l = static_cast<const ir::Let&>(s);
-            // A bare `null` initializer gives the target no type to infer (C# `var x = null` is CS0815;
-            // issue #9 Bug 2). When the local has a declared type, emit it explicitly via localDeclTyped;
-            // else keep the idiomatic inferred form. Only C# declares a `localDeclTyped` row — TS/Python/PHP
-            // get "" back and fall through to `localDecl`, so their output is byte-unchanged.
+            // Some initializers give the target no type to reconstruct, so the DECLARATION must carry it
+            // (issue #27; C# `var x = null` is also CS0815, issue #9). Two such forms:
+            //   • a bare `null` (no underlying type), and
+            //   • a construction whose bound template is a bare constant — e.g. TS `List.init` is `[]`, which
+            //     spells no element type (C#'s `new $T()` carries `$T`, so it is NOT constant and won't fire).
+            // For these, emit the declared type via localDeclTyped. Only C#/TS declare a `localDeclTyped` row —
+            // Python/PHP get "" back and fall through to `localDecl` (dynamic, byte-unchanged). An empty list
+            // *literal* is handled separately by the ListLit rule's ` as T[]` suffix, so it is not listed here.
             std::string decl = localDecl(l.name, l.isMutable);
-            if (l.init && l.init->kind == ir::ExprKind::Null) {
+            const bool uninferable = l.init && (l.init->kind == ir::ExprKind::Null ||
+                (l.init->kind == ir::ExprKind::Bound &&
+                 boundTemplateIsConstant(static_cast<const ir::Bound&>(*l.init).tmpl)));
+            if (uninferable) {
                 std::string ty = renderType(l.type);
                 if (!ty.empty()) {
                     std::string typed = localDeclTyped(l.name, l.isMutable, ty);
