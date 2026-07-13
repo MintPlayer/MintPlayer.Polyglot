@@ -38,13 +38,24 @@
        links cross-module imports into references (each type/function defined once) and emits one flat .cs per
        .pg module — so compiling them all into one assembly no longer hits CS0101. A per-file invocation would
        double-emit shared library modules and clash on the C# `partial` wrapper. Output is flat (basename.cs),
-       so .pg filenames must be unique across the project (v1 — see PRD §3.B). -->
+       so .pg filenames must be unique across the project (v1 — see PRD §3.B).
+
+       Incrementality is keyed on a single STATIC stamp, NOT a per-file Outputs map (PRD §4.19 / PLAN P28).
+       Why: with a per-file `Outputs="@(PolyglotFile->'…%(Filename).cs')"` map, MSBuild's up-to-date check
+       runs this target with @(PolyglotFile) FILTERED to just the stale file(s) — so the Exec below calls the
+       CLI with a SUBSET. The CLI keys standalone-vs-project emit on input COUNT (one input → a non-`partial`
+       PolyglotProgram + inline prelude; many → the shared __polyglot_prelude.cs + `partial` wrapper), so a
+       one-file incremental rebuild regenerates that unit STANDALONE and it collides with its siblings + the
+       retained prelude → CS0101/CS0260/CS8863 (a miscompile). A single stamp Output makes the target
+       un-batchable and all-or-nothing: any stale .pg (or a new one, or a tool upgrade — Inputs is unchanged)
+       re-runs the CLI over the FULL set, so it always sees inputs.size()>1 and emits in project mode.
+       RemoveDir wipes the generated obj subfolder first so a removed/renamed .pg leaves no orphan .cs. -->
   <Target Name="PolyglotTranspile"
           BeforeTargets="CoreCompile"
           DependsOnTargets="_PolyglotVerifyTool"
           Condition="'@(PolyglotFile)' != ''"
           Inputs="@(PolyglotFile);$(PolyglotTool)"
-          Outputs="@(PolyglotFile->'$(PolyglotOutDir)%(Filename).cs')">
+          Outputs="$(PolyglotOutDir)__polyglot.stamp">
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>
       <_PolyglotLibArg Condition="'$(PolyglotLib)' != ''"> --lib &quot;$(PolyglotLib)&quot;</_PolyglotLibArg>
@@ -53,8 +64,10 @@
       <_PolyglotAccessArg></_PolyglotAccessArg>
       <_PolyglotAccessArg Condition="'$(PolyglotAccess)' != ''"> --access &quot;$(PolyglotAccess)&quot;</_PolyglotAccessArg>
     </PropertyGroup>
+    <RemoveDir Directories="$(PolyglotOutDir)" />
     <MakeDir Directories="$(PolyglotOutDir)" />
     <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --target csharp --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)" />
+    <Touch Files="$(PolyglotOutDir)__polyglot.stamp" AlwaysCreate="true" />
   </Target>
 
   <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler still
@@ -69,6 +82,8 @@
       <_PolyglotGenerated Include="$(PolyglotOutDir)*.cs" />
       <Compile Include="@(_PolyglotGenerated)" />
       <FileWrites Include="@(_PolyglotGenerated)" />
+      <!-- The incrementality stamp (not a .cs, so never compiled) — register it so `dotnet clean` removes it. -->
+      <FileWrites Include="$(PolyglotOutDir)__polyglot.stamp" />
     </ItemGroup>
   </Target>
 

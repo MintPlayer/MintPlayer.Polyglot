@@ -3011,3 +3011,74 @@ P26 set. Not scheduled; each is picked up on real demand. The `.pg` grammar is *
 - **Refused as redundant/pointless:** **VB.NET** (same CLR as C#), **Groovy** (JVM, overlaps Kotlin/Java),
   **Objective-C** (superseded by Swift), **plain JS** (the TS target already compiles to JS). Recorded so
   the question doesn't reopen without new information.
+
+## P28 — MSBuild incremental-transpile fix + `std.math` completeness — 🚧 slices 1–2 done (2026-07-13); slice 3 cross-repo (2026-07-12; PRD §4.19, 3-agent investigation)
+
+**As built (2026-07-13).** Slices 1 and 2 shipped and verified. Slice 1: the stamp-based `.targets` fix
+(commit `7f4a1fc`) — verified end-to-end against a 2-`.pg` harness importing the source `.props`/`.targets`,
+all four states green (clean build project-mode; no-op skips up-to-date; touching one `.pg` retranspiles the
+**full set**, all `partial`, no CS0101/CS0260/CS8863; `dotnet clean` removes the generated set + stamp).
+Slice 2: `sign`/`clamp` (operator templates, reproducible tier, type-preserving) + `asinh`/`acosh`/`atanh`
+(1:1 native, ≤1 ULP tier) across all four plugins (commit `6d41754`) — full green on build + unit tests +
+differential C#/TS/Python/PHP conformance. Slice 3 is a **sibling-repo** edit (MintPlayer.AI) and is not part
+of this repo's change. *(Original plan retained below.)*
+
+Two small gaps found while dogfooding the FruitCake/chess solvers in the sibling repo (MintPlayer.AI): a
+**miscompile** in the NuGet integration's incremental build, and three **clean fills** missing from
+`std.math`. They ride together because they were found together; neither warrants its own milestone. Full
+design + verified root cause: PRD §4.19.
+
+**Decisions locked (2026-07-12, user):**
+- **D1 — scope = everything surfaced in the handoff:** the MSBuild fix (Slice 1) **plus** the `std.math`
+  additions (Slice 2) **plus** the consumer-side helper cleanup (Slice 3). "Be as complete as possible" on
+  the math side — so Slice 2 is a completeness pass, not just `sign`.
+- **D2 — placement:** this master PLAN entry + a PRD §4.19 design note + a §3.D amendment (`sign` moves from
+  "intentionally omitted" to supported). No per-issue folder.
+- **D3 — hold the scope line on math:** add only what is **clean, uniform, and faithful** across all four
+  targets; anything needing emulation that changes precision/semantics is a §3.C decision and is deferred
+  with its reason recorded, not silently added.
+
+- **Slice 1 — MSBuild incremental-transpile fix (the NuGet `.targets`) — ✅ done (2026-07-13, commit `7f4a1fc`).** The `PolyglotTranspile` target used
+  a **per-file `Outputs` map**, so MSBuild's up-to-date filtering ran it over a **single** stale `.pg` on an
+  incremental build; the CLI keys standalone-vs-project emit on input **count** (`main.cpp` `inputs.size()==1`
+  → non-`partial` `PolyglotProgram` + inline prelude), so the regenerated unit collided with its siblings +
+  the retained `__polyglot_prelude.cs` → **CS0101/CS0260/CS8863** (a miscompile, not a refusal). Fix (4
+  functional lines, root-cause, verified in a 2-`.pg` harness against the source `.props`/`.targets`): swap
+  the per-file `Outputs` for one static `$(PolyglotOutDir)__polyglot.stamp`, add `RemoveDir` before + `Touch`
+  after + a `@(FileWrites)` stamp entry — making the target **un-batchable and all-or-nothing** while keeping
+  `Inputs` (so incrementality survives: a stale/new `.pg` re-runs over the whole set → `inputs.size()>1` →
+  shared-prelude/partial emit). Rejected alternative — cleaning `--out` alone — is insufficient *and*
+  harmful (deletes siblings' `.cs`). Then **retire the consumer-side `_PolyglotForceFullRetranspile`
+  mitigation** in MintPlayer.AI's `…Environments.csproj` (a cross-repo follow-up — see Slice 3).
+  *Gate:* against the patched `.targets`, four states are green — touch one `.pg` and `dotnet build` succeeds
+  (was failing); a no-op rebuild logs `Skipping target PolyglotTranspile … up-to-date`; a touch logs
+  `Touching …/__polyglot.stamp`; a clean build is green — and `dotnet clean` still removes the generated set
+  (the stamp is in `@(FileWrites)`, the `.cs` glob unchanged).
+
+- **Slice 2 — `std.math` completeness (`sign`, `clamp`, `asinh`/`acosh`/`atanh`) — ✅ done (2026-07-13, commit `6d41754`).** Add to the `STD_MATH`
+  skeleton (`compiler.cpp`) + all four plugin JSONs (`plugins/{csharp,typescript,python,php}/…json` `std.math`
+  block), mirroring the existing generic (`abs`) and transcendental (`sinh`) shapes. **`sign<T:INumber>(x:T):T`**
+  and **`clamp<T:INumber>(x,lo,hi):T`** emit from **type-preserving operator/composition templates** (`sign` =
+  `x>0 ? 1 : x<0 ? −1 : x−x`; `clamp` = `min(max(x,lo),hi)`), so both are integer-in/integer-out and land in
+  the **reproducible `+−×÷√` tier** — deliberately *not* each runtime's native `sign` (which diverges: C#
+  throws on NaN, JS returns NaN, Python/PHP have none). **`asinh`/`acosh`/`atanh`** bind 1:1 to the native
+  primitive on every target (`Math.Asinh`/`Math.asinh`/`math.asinh`/`asinh`), joining the existing **≤1 ULP
+  best-effort transcendental tier**. Amend **PRD §3.D** (`sign` no longer omitted; `cbrt` stays). Extend
+  `tests/conformance/programs/math.pg` (integer type-preservation for `sign`/`clamp`; quantized-equality for
+  the inverse-hyperbolics) + the `tests_main.cpp` resolve/`INumber`-refuse assertions.
+  *Gate:* `build-and-test.ps1` differential suite green across all targets with the new calls — `sign(-5)`/
+  `sign(3)`/`clamp(7,0,5)` print integers with no cast (type-preserving), `sign(0)`→`0`, NaN→NaN on `f64`;
+  the inverse-hyperbolics agree under quantized equality; `sign("a")`/`clamp` on a non-`INumber` refuse.
+
+- **Slice 3 — retire the redundant hand-rolled int helpers (cross-repo, MintPlayer.AI).** In that repo's
+  `chess_solver.pg`, `iabs`/`imax` are redundant now that `Math.abs`/`Math.max` are proven type-preserving on
+  i32 (conformance `math.pg`) — drop them for `Math.abs`/`Math.max` (add `import { Math } from "std.math"`).
+  Once Slice 2 ships, `isign` likewise collapses to `Math.sign`. **This is a sibling-repo edit, recorded here
+  for completeness of "everything mentioned"; it lands in MintPlayer.AI, not this repo**, and pairs with the
+  Slice 1 mitigation-retirement there. *Gate:* MintPlayer.AI's suite stays green (chess perft unchanged) with
+  the helpers removed.
+
+**Deferred, recorded:** the non-uniform math functions — `cbrt`, `hypot`, `expm1`, `log1p`, `copysign` — each
+miss a native primitive on ≥1 target, so a faithful add is emulation that changes precision/NaN/overflow
+behaviour, i.e. a **§3.C relaxation decision**, not a free fill; picked up on real demand. `gcd`/`lcm`/
+`degrees`/`radians` are niche, out of the "important operations" line.

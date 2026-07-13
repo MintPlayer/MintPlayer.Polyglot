@@ -217,12 +217,17 @@
       "Math.sinh": "sinh($0)",
       "Math.cosh": "cosh($0)",
       "Math.tanh": "tanh($0)",
+      "Math.asinh": "asinh($0)",
+      "Math.acosh": "acosh($0)",
+      "Math.atanh": "atanh($0)",
       "Math.trunc": "(float)(int)($0)",
       "Math.floor": "floor($0)",
       "Math.ceil": "ceil($0)",
       "Math.min": "min($0, $1)",
       "Math.max": "max($0, $1)",
       "Math.abs": "abs($0)",
+      "Math.sign": "(fn($a) => $a > 0 ? 1 : ($a < 0 ? -1 : $a - $a))($0)",
+      "Math.clamp": "(fn($x, $lo, $hi) => $x < $lo ? $lo : ($x > $hi ? $hi : $x))($0, $1, $2)",
       "Math.round": "round($0)"
     }
   },

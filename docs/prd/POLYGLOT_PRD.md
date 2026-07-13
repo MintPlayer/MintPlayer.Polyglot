@@ -128,8 +128,16 @@ test gates on **tolerance + behavioural equality**, never bit-equality — see t
   target (plain 1:1 bindings to each runtime's `Math`/`math`), but results may differ by ≤1 ULP across the
   .NET JIT and a JS/Python/PHP runtime. Authors opt in knowingly; code needing cross-target identity uses
   `+ − × ÷ √` (or the planned fixed-point type), never these. Their conformance program gates on **quantized
-  equality** (scale + truncate), not bit-equality. `cbrt`/`sign` are intentionally omitted — not uniformly a
-  clean 1:1 binding (cbrt absent on PHP / Python<3.11; C# `Math.Sign` throws on NaN where JS returns NaN).
+  equality** (scale + truncate), not bit-equality. `cbrt` is intentionally omitted — not uniformly a
+  clean 1:1 binding (absent on PHP / Python<3.11). **`sign` is supported as of P28 (2026-07-12)** — but
+  *not* as one of these best-effort transcendentals and *not* via each runtime's native `sign`. It is
+  emitted from a single **type-preserving operator template** (`x>0 ? 1 : x<0 ? −1 : x−x`, one shape across
+  all four targets), so `sign(i32)→i32` (integer in, integer out, like `abs`/`min`/`max`) and, being built
+  only from `−` and comparison, it lands in the **reproducible `+ − × ÷ √` tier — not the ≤1 ULP tier**.
+  This is exactly what had kept `sign` out: the native primitives diverge (C# `Math.Sign` *throws* on NaN
+  where JS `Math.sign` returns NaN, and Python/PHP have no builtin). The operator template sidesteps all of
+  it and gives one honest, deterministic semantics on every target — including NaN → NaN on `f64` via the
+  `x−x` identity (documented, not the C#-throw behaviour).
 
 ### E. Per-target capability negotiation (the multi-target generalization)
 §3.A is written against C# and TS, which both happen to support the **entire** supported surface. That
@@ -1221,6 +1229,57 @@ set — also hardens the existing `__opt`/`__w` desugars). (D5) **PHP** is pure-
 builtin; **C#/TS** are done bar the capability flag + the TS `let`-loop-binding check. (D6) **This is P25 — a
 prerequisite for §P26's PHP-closures uplift and a foundation every second-wave target reuses** (Kotlin/Swift/
 Dart native; Java/C++/Rust via the shared cell pass). Slice plan: PLAN §P25.
+
+### 4.19 MSBuild incremental correctness + `std.math` completeness (design — 2026-07-12; slices 1–2 built + verified 2026-07-13; investigated by a 3-agent team; PLAN §P28)
+
+Two independent gaps surfaced while dogfooding the FruitCake/chess solvers in the sibling repo
+(MintPlayer.AI). Both are small; one is a **correctness** bug in the NuGet integration, the other a
+**completeness** fill in `std.math`. They ride together as P28 because they were found together and neither
+warrants its own milestone.
+
+**The MSBuild bug — a miscompile hiding in the `.targets` incrementality, not the CLI.** The NuGet package's
+`PolyglotTranspile` target (`src/MintPlayer.Polyglot.MSBuild/build/…targets`) declared a **per-file `Outputs`
+map** (`@(PolyglotFile->'$(PolyglotOutDir)%(Filename).cs')`). MSBuild uses that map for up-to-date filtering:
+when *one* `.pg` is stale it runs the target with `@(PolyglotFile)` **filtered to just that file**, so the
+`Exec` invokes the CLI with a **single** source. And the CLI's whole-project vs standalone decision keys on
+input **count**, not content — `main.cpp` takes the `inputs.size()==1` standalone path (inline prelude, a
+*non-`partial`* `PolyglotProgram`), while `>1` sets `lib.sharedPrelude` → the partitioned `__polyglot_prelude.cs`
++ `static partial class PolyglotProgram` emit (`compiler.cpp` §`splitPrelude`). So an incremental rebuild of a
+multi-`.pg` project regenerates one unit **standalone**, and it collides with the other units' `.cs` and the
+retained shared prelude → **CS0101 / CS0260 / CS8863**. This is a genuine miscompile (bad output, no
+diagnostic), not a refusal — exactly the failure mode the prime directive forbids. It is **version-independent**
+(reproduced across package 0.3.1→0.5.3): the fault is in the `.targets`, not the compiler.
+
+*Design-it-twice.* **Option A (rejected) — clean the `--out` dir before each transpile.** Insufficient *and*
+harmful: MSBuild would still hand the CLI a **subset**, so cleaning would delete the other solvers' `.cs` and
+trade the duplicate-type error for a "type not found" one. **Option B (chosen) — make the target
+un-batchable and all-or-nothing** via a single static **stamp** output. Replace the per-file `Outputs` map
+with one `$(PolyglotOutDir)__polyglot.stamp`; add `RemoveDir` (wipe the generated obj subfolder) before the
+run, `Touch` the stamp after, and add the stamp to `@(FileWrites)` for `dotnet clean`. `Inputs` stays
+`@(PolyglotFile);$(PolyglotTool)`, so **incrementality is preserved** — any stale `.pg` (or a new one, or a
+tool upgrade) re-runs the target over the **whole set** → `inputs.size()>1` → shared-prelude/partial emit; a
+no-op build still skips (`Skipping target … up-to-date`). The cost — touching one `.pg` re-transpiles all of
+them — is correctness-over-speed, and acceptable: `.pg` sets are small, and top-level-program semantics make
+whole-set the only correct unit. The stamp is per-config/per-RID for free (`$(IntermediateOutputPath)` already
+expands to `obj/<Config>/<TFM>/<RID>/…`). The consumer-side mitigation currently carried in
+MintPlayer.AI (`_PolyglotForceFullRetranspile`) is retired once this ships.
+
+**`std.math` completeness.** Today's module is missing three clean fills (verified against all four plugins):
+- **`sign`** — see §3.D. Emitted from a **type-preserving operator template** (`x>0 ? 1 : x<0 ? −1 : x−x`,
+  one shape on every target), so `sign(i32)→i32` and, built only from `−`+compare, it lands in the
+  **reproducible tier**, not the ≤1 ULP tier. This is what lets it in despite the native-primitive
+  divergence (C# `Math.Sign` throws on NaN; JS returns NaN; Python/PHP have none) that had kept it out.
+- **`clamp<T:INumber>(x,lo,hi):T`** — `min(max(x,lo),hi)`, reusing the existing type-preserving `min`/`max`
+  templates. Type-preserving, reproducible, and one of the most-reached-for numeric helpers.
+- **`asinh` / `acosh` / `atanh`** — the inverse-hyperbolic gap next to the already-bound `sinh`/`cosh`/`tanh`.
+  Clean 1:1 native on all four (`Math.Asinh` / `Math.asinh` / `math.asinh` / `asinh`), so they join the
+  existing **≤1 ULP best-effort transcendental tier** with no new semantics.
+
+*Deliberately deferred (recorded so the question doesn't reopen blind):* `cbrt`, `hypot`, `expm1`, `log1p`,
+`copysign` each lack a native primitive on **at least one** target, so a faithful add means emulation that
+changes their precision or NaN/overflow behaviour — a **§3.C relaxation decision**, not a free fill, so it
+waits for real demand. `gcd`/`lcm`/`degrees`/`radians` are niche and out of the "important operations" line.
+Slice plan: PLAN §P28.
 
 ---
 

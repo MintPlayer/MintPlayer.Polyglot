@@ -2754,12 +2754,17 @@
       "Math.sinh": "__import__('math').sinh($0)",
       "Math.cosh": "__import__('math').cosh($0)",
       "Math.tanh": "__import__('math').tanh($0)",
+      "Math.asinh": "__import__('math').asinh($0)",
+      "Math.acosh": "__import__('math').acosh($0)",
+      "Math.atanh": "__import__('math').atanh($0)",
       "Math.trunc": "float(__import__('math').trunc($0))",
       "Math.floor": "float(__import__('math').floor($0))",
       "Math.ceil": "float(__import__('math').ceil($0))",
       "Math.min": "min($0, $1)",
       "Math.max": "max($0, $1)",
       "Math.abs": "abs($0)",
+      "Math.sign": "(lambda a: type(a)(1) if a > 0 else (type(a)(-1) if a < 0 else a - a))($0)",
+      "Math.clamp": "(lambda x, lo, hi: lo if x < lo else (hi if x > hi else x))($0, $1, $2)",
       "Math.round": "float(round($0))"
     },
     "std.strings": {

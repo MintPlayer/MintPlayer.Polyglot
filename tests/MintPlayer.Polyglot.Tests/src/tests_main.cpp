@@ -573,6 +573,10 @@ int main() {
         refusesNum("fn main() { print(Math.abs(true)) }\n", "INumber: Math.abs on bool is refused");
         resolvesStd("fn main() { print(Math.max(3, 8))\n print((i32)Math.round(2.7)) }\n",
                     "INumber: Math.max/round on numbers still resolve");
+        // P28 — sign/clamp are generic <T: INumber> like abs/max, so the same constraint applies.
+        refusesNum("fn main() { print(Math.sign(\"x\")) }\n", "INumber: Math.sign on strings is refused");
+        resolvesStd("fn main() { print(Math.sign(-5))\n print(Math.clamp(7, 0, 10)) }\n",
+                    "P28: Math.sign/clamp on numbers resolve");
         // The constraint is general, not Math-specific: a user `<T: INumber>` fn enforces it too.
         refusesNum("fn twice<T: INumber>(x: T): T => x\nfn main() { print(twice(\"hi\")) }\n",
                    "INumber: a user <T: INumber> fn rejects a non-numeric arg");
