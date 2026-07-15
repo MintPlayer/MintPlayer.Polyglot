@@ -133,7 +133,7 @@ inline bool resolvePluginDependency(const HttpGet& http, const std::string& npmN
     // Lock-first: a satisfying pin resolves from the verified cache with zero network I/O.
     if (!update) {
         if (const auto it = lock.packages.find(npmName); it != lock.packages.end()) {
-            const LockEntry& pin = it->second;
+            LockEntry& pin = it->second;
             if (const auto pinned = parseSemVer(pin.version); pinned && satisfies(*pinned, *range)) {
                 std::string manifest, cacheErr;
                 if (cacheLoad(npmName, pin.version, pin.integrity, manifest, cacheErr)) {
@@ -141,8 +141,24 @@ inline bool resolvePluginDependency(const HttpGet& http, const std::string& npmN
                     out = {json::parse(manifest)["name"].asString(), pin.version, pin.resolved, pin.integrity, false};
                     return true;
                 }
-                // Cache miss (or refused-with-reason): re-fetch the EXACT pinned artifact.
-                if (detail::installTarball(http, npmName, pin.version, pin.resolved, pin.integrity, err)) {
+                // Cache miss (or refused-with-reason): re-fetch the EXACT pinned artifact. The
+                // `resolved` URL is a hint, not the trust root — if it moved (registry migration),
+                // re-locate the pinned VERSION via the current registry; the lock's integrity
+                // still gates what is accepted, so a different host cannot substitute content.
+                bool healed = detail::installTarball(http, npmName, pin.version, pin.resolved, pin.integrity, err);
+                if (!healed) {
+                    Packument pk;
+                    std::string pkErr;
+                    if (fetchPackument(http, registryBaseFor(npmName, configDir), npmName, pk, pkErr))
+                        for (const auto& v : pk.versions)
+                            if (v.version == pin.version && v.tarball != pin.resolved) {
+                                healed = detail::installTarball(http, npmName, pin.version, v.tarball,
+                                                                pin.integrity, err);
+                                if (healed) pin.resolved = v.tarball;
+                                break;
+                            }
+                }
+                if (healed) {
                     std::string reload;
                     cacheLoad(npmName, pin.version, pin.integrity, reload, cacheErr);
                     out = {json::parse(reload)["name"].asString(), pin.version, pin.resolved, pin.integrity, true};
@@ -265,6 +281,29 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
                                " (resolution succeeded; the build is not pinned)");
     }
     return res;
+}
+
+// The frontend reference backend (`check` / watch-check / LSP diagnostics compile against it so
+// the full §3.A surface passes and nothing gates or warns spuriously) — DERIVED from the loaded
+// set, never a hard-bound name (P30 slice 4). Ladder: the first backend (name order, so the
+// choice is stable across platforms' directory-iteration orders) whose every capability stance is
+// `native`; else the first that at least supports everything (an `emulated` stance warns, which a
+// pure frontend gate shouldn't); else none — the caller reports what was expected.
+inline const Backend* referenceBackend() {
+    const Backend* native = nullptr;
+    const Backend* supported = nullptr;
+    for (const auto& name : backendNames()) {
+        const Backend* b = findBackend(name);
+        bool allNative = true, allSupported = true;
+        for (const Feature f : kAllFeatures) {
+            const std::string s = b->capabilityStance(f);
+            allNative &= s == "native";
+            allSupported &= s != "false";
+        }
+        if (allNative && (!native || name < native->name())) native = b;
+        if (allSupported && (!supported || name < supported->name())) supported = b;
+    }
+    return native ? native : supported;
 }
 
 } // namespace mintplayer::polyglot::cli

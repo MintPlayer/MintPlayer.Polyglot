@@ -2279,6 +2279,19 @@ int main() {
         fs::remove_all(base, ec);
     }
 
+    // ---- P30 slice 4: the derived reference backend (no hard-bound "csharp") -----------------
+    {
+        // Among the loaded fixture set, python/php carry `emulated` stances; csharp and typescript
+        // are all-native, and name order breaks the tie — so the DERIVATION lands on csharp. The
+        // assertion pins the derivation over this known set, not a hard-bound name in the product.
+        const Backend* ref = cli::referenceBackend();
+        check(ref != nullptr && ref->name() == "csharp",
+              "P30 s4: referenceBackend derives the all-native, name-first backend");
+        bool allNative = true;
+        for (const Feature f : kAllFeatures) allNative &= ref->capabilityStance(f) == "native";
+        check(allNative, "P30 s4: the derived reference backend is all-native (never warns spuriously)");
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;

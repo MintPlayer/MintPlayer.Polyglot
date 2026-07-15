@@ -62,7 +62,9 @@ void printUsage() {
         << "  polyglot lsp\n"
         << "  polyglot install <plugin-dir | npm-package>\n"
         << "\n"
-        << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
+        << "  build  Transpiles <input.pg> for every language in pgconfig.json `targets` (--target\n"
+        << "         overrides; missing plugin dependencies download from the npm registry into the\n"
+        << "         user cache, pinned by pgconfig.lock.json).\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
         << "         --watch rebuilds whenever the input, an imported .pg, or pgconfig.json changes\n"
         << "         (a failed rebuild keeps watching and never touches the last good outputs).\n"
@@ -71,6 +73,13 @@ void printUsage() {
         << "         array (line/col/severity/message) for editor tooling.\n"
         << "  lsp    Runs the Language Server over stdio (JSON-RPC): diagnostics, go-to-definition,\n"
         << "         document symbols, hover. Spawned by the editor extensions; not for interactive use.\n";
+}
+
+// Comma-join a target-name list for "loaded targets: ..." diagnostics.
+std::string joinNames(const std::vector<std::string>& names) {
+    std::string out;
+    for (const auto& n : names) { if (!out.empty()) out += ", "; out += n; }
+    return out.empty() ? "none" : out;
 }
 
 // Split a comma-separated lib list ("io,math") into a LibConfig, trimming blank entries.
@@ -297,16 +306,22 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 
     resolveConfiguredTargets(pc); // safe per-cycle: already-registered names are skipped
 
-    // The target set mirrors runBuild's resolution; `check --watch` uses the reference target only.
+    // The target set mirrors runBuild's resolution; `check --watch` uses the derived reference
+    // target only. No config + no --target refuses per cycle (P30 slice 4) — adding a
+    // pgconfig.json is watched, so the next save recovers.
     std::vector<std::string> targets;
-    if (checkOnly)
-        targets.push_back("csharp");
-    else if (!targetArg.empty())
+    if (checkOnly) {
+        if (const Backend* ref = cli::referenceBackend()) targets.push_back(ref->name());
+        else { emitTopLevel("no full-coverage reference target is loaded (no plugins found?)"); return c; }
+    } else if (!targetArg.empty()) {
         targets.push_back(targetArg);
-    else if (!pc.targets.empty())
+    } else if (!pc.targets.empty()) {
         targets = pc.targets;
-    else
-        targets = {"csharp", "typescript"};
+    } else {
+        emitTopLevel("no --target given and no pgconfig.json declares `targets` (loaded targets: " +
+                     joinNames(backendNames()) + ")");
+        return c;
+    }
 
     for (const auto& t : targets) {
         BackendHandle h = findTarget(t); // resolveConfiguredTargets above already ran the P30 pipeline
@@ -445,9 +460,11 @@ int runBuild(const std::vector<std::string>& args) {
             if (!h.ok()) { std::cerr << "polyglot: " << h.error() << "\n"; return 64; }
             targets.emplace_back(h, h.backend()->fileExtension());
         }
-    } else if (target.empty()) { // no config: the historical default pair
-        targets.emplace_back(findTarget("csharp"), ".cs");
-        targets.emplace_back(findTarget("typescript"), ".ts");
+    } else if (target.empty()) { // no config + no --target: refuse — the plugin set is config-sourced (P30)
+        std::cerr << "polyglot: no --target given and no pgconfig.json declares `targets` (loaded targets: "
+                  << joinNames(backendNames())
+                  << "); pass --target <name> or add \"targets\": [...] to pgconfig.json\n";
+        return 64;
     } else { // ANY loaded plugin is a valid --target; its manifest names the output extension (P19)
         BackendHandle h = findTarget(target); // in-box, file:, or P30-resolved — never a bare-name probe
 
@@ -586,7 +603,14 @@ int runCheck(const std::vector<std::string>& args) {
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
 
-    EmitResult result = compile(source, findTarget("csharp"), &resolver, lib);
+    // The reference target carries the full §3.A surface so a pure frontend gate never refuses
+    // spuriously — derived from capabilities (P30 slice 4), not the name "csharp".
+    const Backend* ref = cli::referenceBackend();
+    if (!ref) {
+        std::cerr << "polyglot: no full-coverage reference target is loaded (no plugins found?)\n";
+        return 69;
+    }
+    EmitResult result = compile(source, findTarget(ref->name()), &resolver, lib);
 
     if (json) {
         std::cout << diagnosticsToJson(result.diagnostics) << "\n";
@@ -839,9 +863,10 @@ struct LspServer {
         PgConfig pc = loadPgConfig(entryDir);
         fs::path root = pc.found && !pc.root.empty() ? fs::path(pc.root)
                       : (root_.empty() ? entryDir : fs::path(root_));
-        resolveConfiguredTargets(pc); // plugin targets (file: deps / cache) resolve for squiggles too
-        std::vector<std::string> targets = pc.targets.empty()
-            ? std::vector<std::string>{"csharp", "typescript"} : pc.targets;
+        resolveConfiguredTargets(pc); // plugin targets (file: deps / cache / registry) resolve for squiggles too
+        // No config: reserved-name squiggles run against EVERY loaded target (a superset squiggle
+        // is safe; an invented default pair is not — P30 slice 4).
+        std::vector<std::string> targets = pc.targets.empty() ? backendNames() : pc.targets;
         return { root, entryDir, pc.found ? pc.lib : lib_, std::move(targets), pc.forbiddenIdentifiers };
     }
 
