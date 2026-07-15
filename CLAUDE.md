@@ -48,6 +48,11 @@ x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
 — or invoke the **`/build-and-test`** skill (`.claude/skills/build-and-test/`). Needs `dotnet` + `node`
 for the conformance stage.
+
+**Do NOT run intermediary builds/tests between phases/slices.** The full gate takes ~15 minutes; running
+it per slice multiplies that into hours of waiting. Implement EVERYTHING first, then build + run the full
+gate **once** at the end. (If a slice really needs a mid-flight sanity check, the cheap unit-test exe run
+is the ceiling — never the full gate, and never speculative extra legs like WSL/CMake builds.)
 TOOLCHAIN: the projects target PlatformToolset **v145** / VCProjectVersion **18.0**, so they **require
 VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. The build is **VS 18
 "Insiders"** (v145 → MSVC 14.51):
