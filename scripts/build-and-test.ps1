@@ -54,6 +54,10 @@ Write-Host "`n==> Watch-mode protocol gate (--watch)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\watch\run-watch.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nWATCH GATE FAILED."; exit 1 }
 
+Write-Host "`n==> Plugin auto-download gate (fake npm registry: download/lock/offline/tamper — P30)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\registry\run-registry.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nREGISTRY GATE FAILED."; exit 1 }
+
 if (-not $SkipConformance) {
     Write-Host "`n==> Differential conformance (C# vs TS)"
     & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-diff.ps1")
