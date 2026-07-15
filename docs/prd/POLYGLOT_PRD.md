@@ -1281,6 +1281,44 @@ changes their precision or NaN/overflow behaviour — a **§3.C relaxation decis
 waits for real demand. `gcd`/`lcm`/`degrees`/`radians` are niche and out of the "important operations" line.
 Slice plan: PLAN §P28.
 
+### 4.20 Build-time plugin auto-download from `pgconfig.json` (built 2026-07-16; issue #30; PLAN §P30)
+
+Cashes the unbuilt half of the P10 §6 promise (`docs/design/plugins-and-targets.md`): `polyglot build` —
+and `check`, watch, and the LSP, which share the same choke point — now **downloads missing plugin
+dependencies itself**, sourced entirely from `pgconfig.json`. Full PRD + investigation:
+`docs/prd/issue-30-plugin-autodownload/{PRD,PLAN}.md`. The load-bearing decisions:
+
+- **In-exe npm client, not an npm shell-out.** One abbreviated-packument GET (scope slash `%2F`-encoded,
+  `Accept: application/vnd.npm.install-v1+json`) + one tarball GET; a minimal node-semver subset
+  (exact / `^` / `~` / `>=` / `latest`, prerelease-excluded `maxSatisfying`) picks the version client-side.
+  SRI `sha512` verified over the tarball bytes **before** extraction; gunzip + ustar/pax untar are vendored
+  in-exe (bounded, zip-slip-refusing); `validateBackend` gates before caching; **no lifecycle scripts, no
+  npm, no system tar — ever**. The `npm pack` shell-out died with this change; `polyglot install` is a thin
+  wrapper over the same pipeline (an optional pre-warmer / lock-writer; `--update` re-resolves).
+- **Transport ladder, no vendored TLS.** Windows WinHTTP → macOS/Linux `dlopen(libcurl)` → `curl`
+  subprocess → a diagnostic naming the alternatives. The injectable `HttpGet` seam keeps everything above
+  it unit-testable offline. Vendoring mbedTLS/BoringSSL is the recorded fork if the ladder proves flaky.
+- **Lock-first determinism.** `pgconfig.lock.json` (flat: name → `{version, resolved, integrity}`) is
+  written on every fetch and consulted first: a lock-satisfied build with a verified cache does **zero
+  network I/O**. `resolved` is a hint, not the trust root — if the URL moved (registry migration), the
+  pinned *version* re-locates via the current registry and the pinned *integrity* still gates acceptance.
+- **Versioned, self-verifying cache.** `<cache>/<npm-name>/<version>/{polyglot-plugin.json, meta.json}`
+  with atomic tmp+rename writes; `meta.json` re-verifies the manifest hash and the lock's integrity on
+  every load — a tampered or torn entry reads as absent and heals on the next fetch. This **supersedes**
+  §6.1's separate global `registry.json` index (a second source of truth with no consumer) and the old
+  flat bare-name cache keying.
+- **The plugin set is fully config-sourced.** The in-box copy wins when the CLI's lockstep version (P24)
+  satisfies the range (dev builds always prefer it); a config-pinned different version **shadows** the
+  in-box registration (`loadBackend(…, replaceExisting)`). The historical no-config `{csharp, typescript}`
+  default pair, the bare-name cache probes, and the literal `"csharp"` check/LSP reference target are all
+  gone — `check`/LSP derive a reference backend by capability stance (all-`native`, name tie-break), and a
+  no-config, no-`--target` build refuses with the loaded-target list.
+- **Gate.** `tests/registry/run-registry.ps1` (in `build-and-test.ps1`): a fake npm registry proves
+  cold-cache download→lock→emit (byte-equal to the in-box twin — the P24 lockstep invariant), a fully
+  offline rebuild, tamper refusal + healing, a lying packument refused, and the `--target` override.
+  MSBuild multi-target (dropping the `.targets`' `--target csharp`) is the recorded follow-up (issue #30's
+  own framing); P30 keeps the NuGet path byte-identical.
+
 ---
 
 ## 5. Testing strategy

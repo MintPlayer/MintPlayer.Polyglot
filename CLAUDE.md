@@ -89,9 +89,13 @@ summary in PRD §6 — this file does **not** track milestones):
 - **Editor tooling.** A zero-dep `polyglot lsp` (diagnostics / go-to-def / hover / symbols / semantic tokens /
   rename / completion), live generated-output preview, and watch mode (P16 / P17 / P21). The VS Code
   extension is on the marketplace (ID `mintplayer.polyglot-lang`, frozen).
-- **Distribution.** `polyglot install` + a plugin cache/registry, the npm target plugins, the `.pg`-aware
-  **NuGet** (auto-transpiles before `dotnet build`, per-RID), a provenance-attested prebuilt-CLI release
-  channel, and a cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64).
+- **Distribution.** Build-time **plugin auto-download** (P30, issue #30): `pgconfig.json` `dependencies`
+  resolve inside the exe — in-box → lockfile-pinned verified cache (offline, zero network) → the npm
+  registry HTTP API (SRI-verified, data-only, no npm/tar processes) — pinned in a committed
+  `pgconfig.lock.json`; `polyglot install` is an optional cache pre-warmer. Plus the npm target plugins,
+  the `.pg`-aware **NuGet** (auto-transpiles before `dotnet build`, per-RID), a provenance-attested
+  prebuilt-CLI release channel, and a cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64).
+  A no-config, no-`--target` build now refuses (the plugin set is fully config-sourced).
 
 In flight / gated: **P23** (bundle the CLI in the VS Code extension for zero-setup install — built, pending
 an interactive vsix install + the first marketplace publish; PR #16), **P22** tail (PHP runtime differential +

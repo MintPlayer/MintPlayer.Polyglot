@@ -197,14 +197,16 @@ in `preludes` and land in the `program` rule; externTypes/std arms reference dec
 (forward-compat), unknown *rule primitives* refuse. Emit-time residue is only the program-dependent §3.E
 gate (used feature/member lacking support) — still a clean refusal before lowering.
 
-**5.4 CLI/LSP.** `--target <name>` (and the default = pgconfig `targets`) resolves through pgconfig
-`dependencies` — local `file:` path → lockfile-pinned cache → registry; a miss says "run
-`polyglot install @polyglot/<name>`". No compiled-in tier. The LSP gains **`polyglot/targets`** (returns
-the workspace's resolved `{id, displayName, fileExtension}` set), closing `extension.js`'s hardcoded
-`TARGETS` (`FIXME(P10)`) with no client change. `polyglot install` stays the single trusted registry
-writer: npm HTTP API data-only, SHA-512 `dist.integrity` verify, zip-slip-safe extract, never runs
-lifecycle scripts, **validates via `loadBackend` at install time**, records into `registry.json` +
-`pgconfig.lock.json`.
+**5.4 CLI/LSP.** *(Built at P30 — issue #30.)* `--target <name>` (and the default = pgconfig `targets`)
+resolves through pgconfig `dependencies` — local `file:` path → in-box (lockstep version) →
+lockfile-pinned verified cache → **the registry, fetched by the build itself** (the "run
+`polyglot install`" stop is gone; `install` remains as an optional pre-warmer/lock-writer). No
+compiled-in tier. The npm path is exactly the promised shape: registry HTTP API data-only (abbreviated
+packument), SHA-512 `dist.integrity` verify **before** extraction, zip-slip-safe in-exe untar, never
+runs lifecycle scripts, **validates via `validateBackend` before caching**, pins into
+`pgconfig.lock.json` (the separate `registry.json` index was superseded — see plugins-and-targets §6.1).
+The LSP's **`polyglot/targets`** request (closing `extension.js`'s `FIXME(P10)` `TARGETS`) remains open —
+it rides P26 slice 4, not P30.
 
 **5.5 Trust.** The data-only stance covers every new section. The honest residual is unchanged and now
 concentrated: **std overlays + preludes contain raw target-code templates** — zero transpile-time

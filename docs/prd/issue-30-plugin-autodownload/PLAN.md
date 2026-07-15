@@ -10,7 +10,10 @@ Build: **VS 18 Insiders MSBuild (v145)** — see root `CLAUDE.md`. New sources m
 (`scripts/check-buildfile-parity.ps1` is the first stage of the gate). Core stays IO-free — every new
 download/lockfile/cache unit lives in the **CLI layer**.
 
-Status: **planned** (2026-07-16, 3-agent investigation).
+Status: **built + gated** (2026-07-16; slices 0–6 landed as commits on `p30-plugin-autodownload`, one
+commit per slice; slice 7 remains follow-up-gated per issue #30). Post-plan finding recorded in the
+master PLAN P30 entry: the lock's `resolved` URL is treated as a hint — a moved registry re-locates the
+pinned version and the pinned integrity still gates acceptance.
 
 ---
 
