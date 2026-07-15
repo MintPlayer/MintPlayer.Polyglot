@@ -31,11 +31,21 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 
 #include "exe_path.hpp"
+#include "pgconfig.hpp"
 #include "watch.hpp"
 
 using namespace mintplayer::polyglot;
 
 namespace fs = std::filesystem;
+
+// The workspace-config/cache glue lives in pgconfig.hpp (P30 slice 0) so tests can link it; the
+// unqualified names below keep the call sites unchanged.
+using cli::PgConfig;
+using cli::loadPgConfig;
+using cli::loadPluginFile;
+using cli::pluginCacheDir;
+using cli::readFile;
+using cli::writeFile;
 
 namespace {
 
@@ -62,25 +72,6 @@ void printUsage() {
         << "         document symbols, hover. Spawned by the editor extensions; not for interactive use.\n";
 }
 
-// Read an entire file into a string. Returns false if it could not be opened.
-bool readFile(const fs::path& path, std::string& out) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
-}
-
-bool writeFile(const fs::path& path, const std::string& content) {
-    std::error_code ec;
-    if (path.has_parent_path()) fs::create_directories(path.parent_path(), ec); // `--out newdir` just works
-    std::ofstream os(path, std::ios::binary);
-    if (!os) return false;
-    os << content;
-    return true;
-}
-
 // Split a comma-separated lib list ("io,math") into a LibConfig, trimming blank entries.
 LibConfig parseLibList(const std::string& libArg) {
     LibConfig lib;
@@ -91,85 +82,6 @@ LibConfig parseLibList(const std::string& libArg) {
         if (!name.empty()) lib.libs.push_back(name);
     }
     return lib;
-}
-
-// The minimal project manifest (PRD §4.8): `{ "root": <dir>, "lib": ["io","math"] }`. `root` is resolved
-// against the pgconfig.json that declares it; `lib` is the ambient prelude. Found by walking up from a start
-// directory to the first pgconfig.json. Parsed with the Core JSON reader — Core stays IO-free; this is
-// CLI/LSP glue that produces the same `root`/`lib` the compiler already accepts. A precursor of P10's file.
-struct PgConfig {
-    bool found = false;
-    std::string root; // absolute, resolved against the config's directory
-    std::string lib;  // comma-joined lib names
-    std::string access; // emitted C# accessibility ("public"/"internal"); empty = target default
-    std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
-    std::vector<std::pair<std::string, std::string>> dependencies; // target -> source spec ("file:<dir>")
-    // project-policy identifier bans (P19 slices 13-15): (target-or-"*", name) fed to checkReservedNames.
-    // JSON shape: `"forbiddenIdentifiers": {"*": ["temp"], "python": ["data"]}` — or a bare array = all targets.
-    std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;
-    fs::path dir; // where the config was found (file: deps resolve against it)
-};
-PgConfig loadPgConfig(const fs::path& startDir) {
-    for (fs::path d = startDir;; d = d.parent_path()) {
-        std::string src;
-        if (readFile(d / "pgconfig.json", src)) {
-            json::Value v = json::parse(src);
-            PgConfig pc;
-            pc.found = true;
-            pc.dir = d;
-            std::string r = v["root"].asString();
-            pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
-            for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
-            pc.access = v["access"].asString();
-            for (const auto& e : v["targets"].items())
-                if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
-            for (const auto& kv : v["dependencies"].members)
-                if (kv.second.kind == json::Value::Kind::String) pc.dependencies.push_back({kv.first, kv.second.asString()});
-            const json::Value& fi = v["forbiddenIdentifiers"];
-            if (fi.kind == json::Value::Kind::Array) { // bare array = every target
-                for (const auto& e : fi.items())
-                    if (e.kind == json::Value::Kind::String) pc.forbiddenIdentifiers.push_back({"*", e.asString()});
-            } else if (fi.kind == json::Value::Kind::Object) {
-                for (const auto& kv : fi.members)
-                    for (const auto& e : kv.second.items())
-                        if (e.kind == json::Value::Kind::String) pc.forbiddenIdentifiers.push_back({kv.first, e.asString()});
-            }
-            return pc;
-        }
-        if (!d.has_parent_path() || d.parent_path() == d) return {};
-    }
-}
-
-// The user-level plugin cache `polyglot install` populates: %LOCALAPPDATA%\polyglot\plugins on Windows,
-// the XDG data dir on Linux, ~/Library/Application Support on macOS — a DURABLE per-user location so
-// installed plugins survive a reboot. temp_directory_path() is only the last resort (never fail here).
-fs::path pluginCacheDir() {
-#ifdef _WIN32
-    char buf[4096];
-    const unsigned long n = GetEnvironmentVariableA("LOCALAPPDATA", buf, sizeof(buf));
-    if (n > 0 && n < sizeof(buf)) return fs::path(std::string(buf, n)) / "polyglot" / "plugins";
-#elif defined(__APPLE__)
-    if (const char* home = std::getenv("HOME"); home && *home)
-        return fs::path(home) / "Library" / "Application Support" / "polyglot" / "plugins";
-#else
-    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
-        return fs::path(xdg) / "polyglot" / "plugins";
-    if (const char* home = std::getenv("HOME"); home && *home)
-        return fs::path(home) / ".local" / "share" / "polyglot" / "plugins";
-#endif
-    return fs::temp_directory_path() / "polyglot" / "plugins";
-}
-
-// Load one plugin manifest file into the registry; reports (but does not throw on) failures.
-bool loadPluginFile(const fs::path& manifest) {
-    std::string src;
-    if (!readFile(manifest, src)) return false;
-    std::string err;
-    if (!loadBackend(src, err)) {
-        std::cerr << "polyglot: " << manifest.string() << ": " << err << "\n";
-        return false;
-    }
-    return true;
 }
 
 // Resolve a target that is not yet registered (P19 slices 10-11): pgconfig `dependencies` `file:` paths

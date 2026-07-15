@@ -31,6 +31,15 @@
 #include "exe_path.hpp" // the CLI's portable executable-path lookup; tests add Cli/src to their includes
 #include "watch.hpp"    // the CLI's watch-mode support (P21); same include path
 
+#include "inflate.hpp"  // P30 slice 0: the auto-download primitives (same include path as watch.hpp)
+#include "pgconfig.hpp"
+#include "sha.hpp"
+#include "tar.hpp"
+
+#include "gzip_fixtures.hpp" // generated golden gzip/SRI vectors (Node zlib/crypto — independent impl)
+
+#include <cstring>
+
 // A deliberately tiny, zero-dependency assert harness. The cross-process differential conformance suite
 // (compile+run the emitted C# and TS, compare stdout) lives in tests/conformance/ (PLAN P2 gate); these
 // in-process tests cover the passes and golden emission.
@@ -1672,6 +1681,196 @@ int main() {
         // Inert for the current backends: C# declares these native/absent, so a width program is not gated.
         DiagnosticBag dcs; checkCapabilities(width, *findBackend("csharp"), dcs);
         check(!dcs.hasErrors(), "P26 s0: csharp (native) does not gate a fixed-width program");
+    }
+
+    // ---- P30 slice 0: auto-download primitives (sha / SRI / gzip / tar / pgconfig glue) ------
+
+    // SHA-512 / SHA-1 against the NIST FIPS 180-4 vectors — these pin the generated K/H tables.
+    {
+        check(cli::toHex(cli::sha512(std::string("abc"))) ==
+                  "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+                  "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+              "P30 s0: sha512('abc') matches NIST");
+        check(cli::toHex(cli::sha512(std::string())) ==
+                  "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce"
+                  "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
+              "P30 s0: sha512('') matches NIST");
+        check(cli::toHex(cli::sha512(std::string(
+                  "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno"
+                  "ijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"))) ==
+                  "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018"
+                  "501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909",
+              "P30 s0: sha512(two-block vector) matches NIST");
+        check(cli::toHex(cli::sha1(std::string("abc"))) == "a9993e364706816aba3e25717850c26c9cd0d89d",
+              "P30 s0: sha1('abc') matches NIST");
+        check(cli::toHex(cli::sha1(std::string(1000000, 'a'))) == "34aa973cd4c4daa4f61eeb2bdbad27316534016f",
+              "P30 s0: sha1(million 'a') matches NIST (multi-block path)");
+
+        // SRI: npm's dist.integrity form. The reference string was produced by Node crypto.
+        const std::string sri = cli::sriSha512("polyglot");
+        check(sri == "sha512-CQa4A4lIW4ghrXVECgs3HAWEbMqpb5YHPlBw+nU+4pYViS88L5Hyh8OYBdfevZNSqElzL9ZJRpONx94rrPQDPQ==",
+              "P30 s0: sriSha512 renders npm's base64 form");
+        std::string err;
+        check(cli::verifySri(sri, "polyglot", err), "P30 s0: verifySri accepts the right payload");
+        check(!cli::verifySri(sri, "Polyglot", err) && has(err, "integrity mismatch"),
+              "P30 s0: verifySri refuses a tampered payload naming the mismatch");
+        check(!cli::verifySri("sha384-AAAA", "x", err) && has(err, "unsupported integrity algorithm 'sha384'"),
+              "P30 s0: verifySri refuses an algorithm it cannot check (never a silent pass)");
+        check(!cli::verifySri("garbage", "x", err) && has(err, "malformed integrity"),
+              "P30 s0: verifySri refuses a malformed SRI string");
+    }
+
+    // CRC-32 (gzip trailer): the classic check value.
+    {
+        check(cli::crc32("123456789", 9) == 0xCBF43926u, "P30 s0: crc32 check value");
+    }
+
+    // gunzip against Node-zlib golden vectors: fixed-Huffman, FNAME header, dynamic-Huffman,
+    // incompressible/stored — plus the corruption and zip-bomb-cap refusals.
+    {
+        std::string out, err;
+        check(cli::gunzip(gzfix::kP1Gz, gzfix::kP1GzLen, out, 1 << 20, err) && out == gzfix::kP1,
+              "P30 s0: gunzip decodes a fixed-Huffman member");
+        out.clear();
+        check(cli::gunzip(gzfix::kP1GzName, gzfix::kP1GzNameLen, out, 1 << 20, err) && out == gzfix::kP1,
+              "P30 s0: gunzip skips an FNAME header field");
+        out.clear();
+        check(cli::gunzip(gzfix::kP2Gz, gzfix::kP2GzLen, out, 1 << 20, err) && out == gzfix::kP2,
+              "P30 s0: gunzip decodes a dynamic-Huffman member");
+        out.clear();
+        check(cli::gunzip(gzfix::kP3Gz, gzfix::kP3GzLen, out, 1 << 20, err) &&
+                  out.size() == gzfix::kP3Len && std::memcmp(out.data(), gzfix::kP3, gzfix::kP3Len) == 0,
+              "P30 s0: gunzip decodes an incompressible (stored) member");
+        check(cli::toHex(cli::sha512(out)) == gzfix::kP3Sha512Hex,
+              "P30 s0: sha512 of the inflated payload matches Node crypto (binary input)");
+        check(cli::verifySri(gzfix::kP3Sri, out, err),
+              "P30 s0: verifySri agrees with an npm-shaped integrity for binary bytes");
+
+        // Corruption: flip one payload byte — the CRC32 trailer must catch it.
+        std::string bad(reinterpret_cast<const char*>(gzfix::kP2Gz), gzfix::kP2GzLen);
+        bad[bad.size() / 2] ^= 0x40;
+        out.clear();
+        check(!cli::gunzip(reinterpret_cast<const std::uint8_t*>(bad.data()), bad.size(), out, 1 << 20, err),
+              "P30 s0: gunzip refuses a corrupted stream");
+        // Zip-bomb guard: a cap below the payload size fails BEFORE unbounded growth.
+        out.clear();
+        check(!cli::gunzip(gzfix::kP2Gz, gzfix::kP2GzLen, out, 16, err) && has(err, "size cap"),
+              "P30 s0: gunzip enforces the output size cap");
+        out.clear();
+        check(!cli::gunzip(reinterpret_cast<const std::uint8_t*>("nope"), 4, out, 16, err),
+              "P30 s0: gunzip refuses a non-gzip buffer");
+    }
+
+    // tar: ustar + pax reading with the zip-slip refusals. Archives are built in-test.
+    {
+        auto oct = [](std::string& h, std::size_t at, std::size_t width, unsigned long long v) {
+            for (std::size_t i = width - 1; i-- > 0;) { h[at + i] = static_cast<char>('0' + (v & 7)); v >>= 3; }
+            h[at + width - 1] = '\0';
+        };
+        auto hdr = [&](const std::string& name, std::size_t size, char type, const std::string& prefix = "") {
+            std::string h(512, '\0');
+            std::memcpy(&h[0], name.data(), name.size());
+            oct(h, 100, 8, 0644); oct(h, 108, 8, 0); oct(h, 116, 8, 0);
+            oct(h, 124, 12, size); oct(h, 136, 12, 0);
+            std::memset(&h[148], ' ', 8);
+            h[156] = type;
+            std::memcpy(&h[257], "ustar", 6); h[263] = '0'; h[264] = '0';
+            if (!prefix.empty()) std::memcpy(&h[345], prefix.data(), prefix.size());
+            unsigned sum = 0;
+            for (unsigned char c : h) sum += c;
+            for (int i = 5; i >= 0; --i) { h[148 + i] = static_cast<char>('0' + (sum & 7)); sum >>= 3; }
+            h[154] = '\0'; h[155] = ' ';
+            return h;
+        };
+        auto pad512 = [](std::string s) { s.resize((s.size() + 511) & ~std::size_t(511), '\0'); return s; };
+        const std::string endMark(1024, '\0');
+
+        // A plain npm-shaped archive: dir + manifest under package/.
+        const std::string manifest = "{ \"schema\": 1, \"name\": \"demo\" }";
+        std::string ar = hdr("package/", 0, '5') +
+                         hdr("package/polyglot-plugin.json", manifest.size(), '0') + pad512(manifest) + endMark;
+        std::vector<cli::TarEntry> es;
+        std::string err;
+        check(cli::tarRead(ar, es, err) && es.size() == 2 && es[0].isDir && es[0].path == "package" &&
+                  es[1].path == "package/polyglot-plugin.json" && es[1].data == manifest,
+              "P30 s0: tar reads an npm-shaped ustar archive");
+
+        // pax extended header overrides the (truncated) name field of the entry that follows.
+        const std::string longPath = "package/deeply/nested/dirs/going/on/for/quite/a/while/to/exceed/"
+                                     "the/ustar/name/field/limit/of/one/hundred/characters/manifest.json";
+        std::string rec = " path=" + longPath + "\n";
+        std::size_t recLen = rec.size() + 2; // 2-digit guess, then fix up
+        recLen = std::to_string(recLen).size() + rec.size();
+        rec = std::to_string(recLen) + rec;
+        std::string ar2 = hdr("PaxHeader/manifest.json", rec.size(), 'x') + pad512(rec) +
+                          hdr("package/short-name", 3, '0') + pad512("hey") + endMark;
+        es.clear();
+        check(cli::tarRead(ar2, es, err) && es.size() == 1 && es[0].path == longPath && es[0].data == "hey",
+              "P30 s0: tar honors a pax path override");
+
+        // The ustar prefix field joins ahead of name.
+        std::string ar3 = hdr("file.json", 2, '0', "package/pfx") + pad512("{}") + endMark;
+        es.clear();
+        check(cli::tarRead(ar3, es, err) && es.size() == 1 && es[0].path == "package/pfx/file.json",
+              "P30 s0: tar joins the ustar prefix field");
+
+        // Zip-slip refusals: traversal, absolute, backslash, and link entries all fail the READ.
+        for (const auto& evil : {std::string("package/../evil"), std::string("/abs"), std::string("a\\b")}) {
+            std::string bad = hdr(evil, 1, '0') + pad512("x") + endMark;
+            es.clear();
+            check(!cli::tarRead(bad, es, err) && has(err, "unsafe path") && es.empty(),
+                  "P30 s0: tar refuses unsafe path '" + evil + "'");
+        }
+        std::string link = hdr("package/link", 0, '2') + endMark;
+        es.clear();
+        check(!cli::tarRead(link, es, err) && has(err, "unsupported entry type"),
+              "P30 s0: tar refuses a symlink entry");
+
+        // A corrupted header checksum fails loudly.
+        std::string badSum = ar;
+        badSum[0] ^= 1;
+        es.clear();
+        check(!cli::tarRead(badSum, es, err) && has(err, "checksum"),
+              "P30 s0: tar refuses a header checksum mismatch");
+
+        // Truncation (entry claims more data than the buffer holds) fails loudly.
+        std::string trunc = hdr("package/big", 100000, '0') + pad512("tiny");
+        es.clear();
+        check(!cli::tarRead(trunc, es, err) && has(err, "overruns"),
+              "P30 s0: tar refuses an entry that overruns the archive");
+    }
+
+    // pgconfig glue: the walk-up loader and the POLYGLOT_CACHE override (P30's test seam).
+    {
+        namespace fs = std::filesystem;
+        const fs::path base = fs::temp_directory_path() / "polyglot-p30-s0-test";
+        std::error_code ec;
+        fs::remove_all(base, ec);
+        fs::create_directories(base / "sub" / "inner");
+        cli::writeFile(base / "pgconfig.json",
+                       "{ \"root\": \"src\", \"targets\": [\"python\"],"
+                       " \"dependencies\": { \"python\": \"^0.3.0\" } }");
+        const cli::PgConfig pc = cli::loadPgConfig(base / "sub" / "inner");
+        check(pc.found && pc.dir == base, "P30 s0: loadPgConfig walks up to the config");
+        check(pc.targets.size() == 1 && pc.targets[0] == "python", "P30 s0: pgconfig targets parsed");
+        check(pc.dependencies.size() == 1 && pc.dependencies[0].first == "python" &&
+                  pc.dependencies[0].second == "^0.3.0",
+              "P30 s0: pgconfig versioned dependency spec parsed verbatim");
+
+        const fs::path cacheOverride = base / "cache";
+#ifdef _WIN32
+        _putenv_s("POLYGLOT_CACHE", cacheOverride.string().c_str());
+#else
+        setenv("POLYGLOT_CACHE", cacheOverride.string().c_str(), 1);
+#endif
+        check(cli::pluginCacheDir() == cacheOverride, "P30 s0: POLYGLOT_CACHE overrides the plugin cache dir");
+#ifdef _WIN32
+        _putenv_s("POLYGLOT_CACHE", "");
+#else
+        unsetenv("POLYGLOT_CACHE");
+#endif
+        check(cli::pluginCacheDir() != cacheOverride, "P30 s0: clearing POLYGLOT_CACHE restores the default");
+        fs::remove_all(base, ec);
     }
 
     if (g_failures == 0) {
