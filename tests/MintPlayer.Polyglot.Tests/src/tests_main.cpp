@@ -32,7 +32,9 @@
 #include "watch.hpp"    // the CLI's watch-mode support (P21); same include path
 
 #include "inflate.hpp"  // P30 slice 0: the auto-download primitives (same include path as watch.hpp)
+#include "lockfile.hpp" // P30 slice 2: the pgconfig.lock.json pin + the versioned plugin cache
 #include "pgconfig.hpp"
+#include "plugincache.hpp"
 #include "registry.hpp" // P30 slice 1: semver subset + the npm-registry client
 #include "semver.hpp"
 #include "sha.hpp"
@@ -1986,6 +1988,91 @@ int main() {
         unsetenv("POLYGLOT_REGISTRY");
 #endif
         fs::remove_all(base, ec);
+    }
+
+    // ---- P30 slice 2: pgconfig.lock.json + the versioned plugin cache ------------------------
+
+    // Lockfile round-trip, stable emission, and the ignore-unknown-versions rule.
+    {
+        namespace fs = std::filesystem;
+        const fs::path base = fs::temp_directory_path() / "polyglot-p30-s2-lock";
+        std::error_code ec;
+        fs::remove_all(base, ec);
+        fs::create_directories(base);
+
+        check(!cli::loadLockfile(base).found, "P30 s2: a missing lockfile reads as not-found");
+
+        cli::Lockfile lf;
+        lf.packages["@mintplayer/polyglot-target-python"] = {"0.3.1",
+            "https://registry.npmjs.org/@mintplayer/polyglot-target-python/-/polyglot-target-python-0.3.1.tgz",
+            "sha512-abc"};
+        lf.packages["@mintplayer/polyglot-target-php"] = {"0.3.0", "https://x/php-0.3.0.tgz", "sha512-def"};
+        check(cli::saveLockfile(base, lf), "P30 s2: saveLockfile writes");
+        const cli::Lockfile rt = cli::loadLockfile(base);
+        check(rt.found && rt.packages.size() == 2 &&
+                  rt.packages.at("@mintplayer/polyglot-target-python").version == "0.3.1" &&
+                  rt.packages.at("@mintplayer/polyglot-target-python").integrity == "sha512-abc" &&
+                  has(rt.packages.at("@mintplayer/polyglot-target-php").resolved, "php-0.3.0.tgz"),
+              "P30 s2: lockfile round-trips");
+        std::string emitted1, emitted2;
+        cli::readFile(cli::lockfilePath(base), emitted1);
+        cli::saveLockfile(base, rt);
+        cli::readFile(cli::lockfilePath(base), emitted2);
+        check(emitted1 == emitted2 && has(emitted1, "\"lockfileVersion\": 1"),
+              "P30 s2: lockfile emission is byte-stable (committed diffs stay quiet)");
+
+        cli::writeFile(cli::lockfilePath(base), "{ \"lockfileVersion\": 99, \"packages\": {} }");
+        check(!cli::loadLockfile(base).found, "P30 s2: an unknown future lockfileVersion is ignored");
+        fs::remove_all(base, ec);
+    }
+
+    // Versioned cache: store/load, tamper refusal, lock-integrity cross-check, atomic layout.
+    {
+        namespace fs = std::filesystem;
+        const fs::path cache = fs::temp_directory_path() / "polyglot-p30-s2-cache";
+        std::error_code ec;
+        fs::remove_all(cache, ec);
+#ifdef _WIN32
+        _putenv_s("POLYGLOT_CACHE", cache.string().c_str());
+#else
+        setenv("POLYGLOT_CACHE", cache.string().c_str(), 1);
+#endif
+        const std::string name = "@mintplayer/polyglot-target-python";
+        const std::string manifest = "{ \"schema\": 1, \"name\": \"python\" }";
+        std::string err, loaded;
+
+        check(!cli::cacheLoad(name, "0.3.1", "", loaded, err) && has(err, "no entry"),
+              "P30 s2: a cold cache misses cleanly");
+        check(cli::cacheStore(name, "0.3.1", "https://x/py-0.3.1.tgz", "sha512-abc", manifest, err),
+              "P30 s2: cacheStore writes a versioned entry");
+        check(fs::exists(cache / "@mintplayer" / "polyglot-target-python" / "0.3.1" / "polyglot-plugin.json"),
+              "P30 s2: the cache layout is <name>/<version>/ (scoped names nest)");
+        loaded.clear();
+        check(cli::cacheLoad(name, "0.3.1", "sha512-abc", loaded, err) && loaded == manifest,
+              "P30 s2: cacheLoad verifies and returns the manifest");
+        check(!cli::cacheLoad(name, "0.3.1", "sha512-OTHER", loaded, err) && has(err, "lockfile pins"),
+              "P30 s2: a lock-integrity mismatch refuses the entry");
+
+        // Tamper with the cached manifest on disk: the re-hash refuses it.
+        cli::writeFile(cache / "@mintplayer" / "polyglot-target-python" / "0.3.1" / "polyglot-plugin.json",
+                       "{ \"schema\": 1, \"name\": \"python\", \"evil\": true }");
+        check(!cli::cacheLoad(name, "0.3.1", "sha512-abc", loaded, err) && has(err, "hash mismatch"),
+              "P30 s2: a tampered cache entry reads as absent-with-reason");
+        // And a fresh store over the refused entry heals it.
+        check(cli::cacheStore(name, "0.3.1", "https://x/py-0.3.1.tgz", "sha512-abc", manifest, err) &&
+                  cli::cacheLoad(name, "0.3.1", "sha512-abc", loaded, err),
+              "P30 s2: re-storing over a refused entry heals the cache");
+
+        check(!cli::cacheStore("../evil", "1.0.0", "u", "i", manifest, err) && has(err, "unsafe"),
+              "P30 s2: a path-hostile package name is refused outright");
+        check(!cli::cacheStore("a/b/c", "1.0.0", "u", "i", manifest, err),
+              "P30 s2: more than one scope slash is refused");
+#ifdef _WIN32
+        _putenv_s("POLYGLOT_CACHE", "");
+#else
+        unsetenv("POLYGLOT_CACHE");
+#endif
+        fs::remove_all(cache, ec);
     }
 
     if (g_failures == 0) {
