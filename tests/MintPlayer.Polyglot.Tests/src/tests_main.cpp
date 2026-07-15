@@ -33,6 +33,8 @@
 
 #include "inflate.hpp"  // P30 slice 0: the auto-download primitives (same include path as watch.hpp)
 #include "pgconfig.hpp"
+#include "registry.hpp" // P30 slice 1: semver subset + the npm-registry client
+#include "semver.hpp"
 #include "sha.hpp"
 #include "tar.hpp"
 
@@ -1870,6 +1872,119 @@ int main() {
         unsetenv("POLYGLOT_CACHE");
 #endif
         check(cli::pluginCacheDir() != cacheOverride, "P30 s0: clearing POLYGLOT_CACHE restores the default");
+        fs::remove_all(base, ec);
+    }
+
+    // ---- P30 slice 1: semver subset + registry client ----------------------------------------
+
+    // Version parsing + precedence (semver spec §11, incl. the classic prerelease ordering chain).
+    {
+        auto v = [](const char* s) { return *cli::parseSemVer(s); };
+        check(cli::parseSemVer("1.2.3") && v("1.2.3").major == 1 && v("1.2.3").patch == 3,
+              "P30 s1: parseSemVer parses a release version");
+        check(cli::parseSemVer("v0.3.1") && !v("v0.3.1").isPrerelease(), "P30 s1: leading 'v' tolerated");
+        check(v("1.2.3-rc.1").prerelease.size() == 2, "P30 s1: prerelease identifiers split");
+        check(cli::parseSemVer("1.2.3+build.5") && !v("1.2.3+build.5").isPrerelease(),
+              "P30 s1: build metadata parsed and ignored");
+        check(!cli::parseSemVer("1.2") && !cli::parseSemVer("1.x") && !cli::parseSemVer(""),
+              "P30 s1: partial/x-range versions are refused");
+
+        const char* chain[] = {"1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta",
+                               "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"};
+        bool ordered = true;
+        for (int i = 0; i + 1 < 8; ++i)
+            ordered &= cli::compareSemVer(v(chain[i]), v(chain[i + 1])) < 0;
+        check(ordered, "P30 s1: the spec's prerelease precedence chain orders correctly");
+    }
+
+    // Range semantics: caret/tilde desugar, prerelease exclusion, maxSatisfying.
+    {
+        std::string err;
+        auto sat = [&](const char* range, const char* ver) {
+            return cli::satisfies(*cli::parseSemVer(ver), *cli::parseRange(range, err));
+        };
+        check(sat("^1.2.3", "1.2.3") && sat("^1.2.3", "1.9.9") && !sat("^1.2.3", "2.0.0") && !sat("^1.2.3", "1.2.2"),
+              "P30 s1: ^1.2.3 = >=1.2.3 <2.0.0");
+        check(sat("^0.2.3", "0.2.9") && !sat("^0.2.3", "0.3.0"), "P30 s1: ^0.2.3 = >=0.2.3 <0.3.0");
+        check(sat("^0.0.3", "0.0.3") && !sat("^0.0.3", "0.0.4"), "P30 s1: ^0.0.3 pins the patch");
+        check(sat("~1.2.3", "1.2.9") && !sat("~1.2.3", "1.3.0"), "P30 s1: ~1.2.3 allows patch drift only");
+        check(sat(">=1.2.3", "2.5.0") && !sat(">=1.2.3", "1.2.2"), "P30 s1: >= has an open upper bound");
+        check(sat("1.2.3", "1.2.3") && !sat("1.2.3", "1.2.4"), "P30 s1: a bare version is exact");
+        check(!sat("^1.2.3", "1.3.0-rc.1"), "P30 s1: prereleases are invisible to a release range");
+        check(sat("^1.2.3-rc.1", "1.2.3-rc.2") && !sat("^1.2.3-rc.1", "1.2.4-rc.1") && sat("^1.2.3-rc.1", "1.2.4"),
+              "P30 s1: a prerelease anchor admits prereleases of its own core tuple only");
+        check(!cli::parseRange("1.x", err) && has(err, "unsupported version spec"),
+              "P30 s1: outside-the-grammar ranges are refused with the supported list");
+
+        const std::vector<std::string> vers = {"0.2.9", "0.3.0", "0.3.1", "0.4.0-rc.1", "0.4.0"};
+        check(cli::maxSatisfying(vers, *cli::parseRange("^0.3.0", err), "") == std::optional<std::string>("0.3.1"),
+              "P30 s1: maxSatisfying picks the highest in-range version");
+        check(cli::maxSatisfying(vers, *cli::parseRange(">=0.2.0", err), "") == std::optional<std::string>("0.4.0"),
+              "P30 s1: maxSatisfying skips prereleases even at the top");
+        check(cli::maxSatisfying(vers, *cli::parseRange("latest", err), "0.3.1") == std::optional<std::string>("0.3.1"),
+              "P30 s1: 'latest' resolves through the dist-tag");
+        check(!cli::maxSatisfying(vers, *cli::parseRange("^1.0.0", err), ""),
+              "P30 s1: an unsatisfiable range resolves to nothing");
+    }
+
+    // Registry client: URL encoding, packument parsing (abbreviated shape), error responses.
+    {
+        check(cli::packumentUrl("https://registry.npmjs.org", "@mintplayer/polyglot-target-python") ==
+                  "https://registry.npmjs.org/@mintplayer%2Fpolyglot-target-python",
+              "P30 s1: the packument URL encodes the scope slash");
+
+        const std::string fixture = R"({
+            "name": "@mintplayer/polyglot-target-python",
+            "dist-tags": { "latest": "0.3.1" },
+            "versions": {
+                "0.3.0": { "version": "0.3.0", "dist": {
+                    "tarball": "https://registry.npmjs.org/@mintplayer/polyglot-target-python/-/polyglot-target-python-0.3.0.tgz",
+                    "integrity": "sha512-AAAA" } },
+                "0.3.1": { "version": "0.3.1", "dist": {
+                    "tarball": "https://registry.npmjs.org/@mintplayer/polyglot-target-python/-/polyglot-target-python-0.3.1.tgz",
+                    "integrity": "sha512-BBBB", "shasum": "abc123" } }
+            }
+        })";
+        cli::Packument pk;
+        std::string err;
+        check(cli::parsePackument(fixture, pk, err) && pk.versions.size() == 2 &&
+                  pk.distTags["latest"] == "0.3.1" && pk.versions[1].integrity == "sha512-BBBB" &&
+                  has(pk.versions[0].tarball, "-0.3.0.tgz"),
+              "P30 s1: parsePackument reads the abbreviated shape");
+        cli::Packument none;
+        check(!cli::parsePackument(R"({"error":"Not found"})", none, err) && has(err, "Not found"),
+              "P30 s1: a registry error body becomes a clean diagnostic");
+    }
+
+    // Registry selection: POLYGLOT_REGISTRY env, then .npmrc (scoped beats unscoped), then npmjs.
+    {
+        namespace fs = std::filesystem;
+        const fs::path base = fs::temp_directory_path() / "polyglot-p30-s1-test";
+        std::error_code ec;
+        fs::remove_all(base, ec);
+        fs::create_directories(base / "proj");
+        check(cli::registryBaseFor("@x/y", base / "proj") == "https://registry.npmjs.org",
+              "P30 s1: the public registry is the default");
+        cli::writeFile(base / ".npmrc",
+                       "# comment\nregistry=https://mirror.example/npm/\n"
+                       "@mintplayer:registry=https://plugins.example/registry\n");
+        check(cli::registryBaseFor("@mintplayer/polyglot-target-python", base / "proj") ==
+                  "https://plugins.example/registry",
+              "P30 s1: a scoped .npmrc registry wins for its scope");
+        check(cli::registryBaseFor("left-pad", base / "proj") == "https://mirror.example/npm",
+              "P30 s1: the unscoped .npmrc registry applies otherwise (trailing '/' trimmed)");
+#ifdef _WIN32
+        _putenv_s("POLYGLOT_REGISTRY", "http://127.0.0.1:9999/");
+#else
+        setenv("POLYGLOT_REGISTRY", "http://127.0.0.1:9999/", 1);
+#endif
+        check(cli::registryBaseFor("@mintplayer/polyglot-target-python", base / "proj") == "http://127.0.0.1:9999",
+              "P30 s1: POLYGLOT_REGISTRY overrides everything (the test-harness seam)");
+#ifdef _WIN32
+        _putenv_s("POLYGLOT_REGISTRY", "");
+#else
+        unsetenv("POLYGLOT_REGISTRY");
+#endif
         fs::remove_all(base, ec);
     }
 
