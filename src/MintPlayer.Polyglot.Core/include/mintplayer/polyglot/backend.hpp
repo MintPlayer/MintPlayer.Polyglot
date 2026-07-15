@@ -98,7 +98,10 @@ std::vector<std::string> backendNames();
 // the spec + rule tables interpreted by the shared emitter, plus the capability map `supports` answers
 // from (a feature absent from the map is supported; `"blockLambdas": false` gates). Returns false and
 // fills `error` on a malformed artifact — a plugin that fails validation is never partially registered.
-bool loadBackend(const std::string& artifactJson, std::string& error);
+// `replaceExisting` lets a config-pinned plugin SHADOW a same-named registration (P30: a pgconfig
+// dependency wins over the in-box copy). The displaced backend stays alive for the process lifetime —
+// BackendHandle holds raw pointers — but findBackend()/backendNames() see only the replacement.
+bool loadBackend(const std::string& artifactJson, std::string& error, bool replaceExisting = false);
 
 // Validate an artifact WITHOUT registering it (`polyglot install` checks a manifest before caching it —
 // possibly for a target already loaded in this process). Same checks as loadBackend minus the name clash.

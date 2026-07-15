@@ -32,6 +32,7 @@
 
 #include "exe_path.hpp"
 #include "pgconfig.hpp"
+#include "pluginresolve.hpp"
 #include "watch.hpp"
 
 using namespace mintplayer::polyglot;
@@ -84,20 +85,21 @@ LibConfig parseLibList(const std::string& libArg) {
     return lib;
 }
 
-// Resolve a target that is not yet registered (P19 slices 10-11): pgconfig `dependencies` `file:` paths
-// (relative to the config's directory), then the user cache. The in-box `plugins/` dir next to the exe was
-// loaded at startup; an unresolved name ends up at findTarget's error, which names the channels.
+// Resolve every pgconfig dependency (P19 slices 10-11, download half built at P30 slice 3):
+// `file:` in place; in-box when the CLI's lockstep version satisfies the range; the verified
+// versioned cache when the lockfile pins; else fetched from the npm registry inside the exe
+// (packument -> maxSatisfying -> SRI verify -> extract -> validate -> cache -> lock). Shared by
+// build, watch, and the LSP — the static ResolveState memoizes successes AND failures per config
+// generation, so a long-lived host retries on pgconfig change instead of hammering the network.
 void resolveConfiguredTargets(const PgConfig& pc) {
-    for (const auto& [name, spec] : pc.dependencies) {
-        if (findTarget(name).ok()) continue;
-        if (spec.rfind("file:", 0) == 0)
-            loadPluginFile((pc.dir / spec.substr(5) / "polyglot-plugin.json").lexically_normal());
-        else
-            std::cerr << "polyglot: dependency '" << name << "': unsupported spec '" << spec
-                      << "' (only file:<dir> resolves in-place; use `polyglot install " << name << "`)\n";
-    }
+    static cli::ResolveState state;
+    const cli::ResolveResult res =
+        cli::resolvePluginDependencies(pc, cli::defaultHttpGet(), /*update=*/false, &state);
+    for (const auto& m : res.messages) std::cerr << "polyglot: " << m << "\n";
     for (const auto& t : pc.targets)
-        if (!findTarget(t).ok()) loadPluginFile(pluginCacheDir() / t / "polyglot-plugin.json");
+        if (!findTarget(t).ok())
+            std::cerr << "polyglot: target '" << t << "' is neither bundled nor provided by a pgconfig "
+                      << "dependency; add one, e.g. \"dependencies\": { \"" << t << "\": \"latest\" }\n";
 }
 
 // Resolves a cross-`.pg` import to a file. A bare specifier ("a.b.c") is a logical module name resolved
@@ -307,8 +309,7 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         targets = {"csharp", "typescript"};
 
     for (const auto& t : targets) {
-        if (!findTarget(t).ok()) loadPluginFile(pluginCacheDir() / t / "polyglot-plugin.json");
-        BackendHandle h = findTarget(t);
+        BackendHandle h = findTarget(t); // resolveConfiguredTargets above already ran the P30 pipeline
         if (!h.ok()) {
             emitTopLevel(h.error());
             continue;
@@ -448,8 +449,8 @@ int runBuild(const std::vector<std::string>& args) {
         targets.emplace_back(findTarget("csharp"), ".cs");
         targets.emplace_back(findTarget("typescript"), ".ts");
     } else { // ANY loaded plugin is a valid --target; its manifest names the output extension (P19)
-        if (!findTarget(target).ok()) loadPluginFile(pluginCacheDir() / target / "polyglot-plugin.json");
-        BackendHandle h = findTarget(target);
+        BackendHandle h = findTarget(target); // in-box, file:, or P30-resolved — never a bare-name probe
+
         if (!h.ok()) { std::cerr << "polyglot: " << h.error() << "\n"; return 64; }
         targets.emplace_back(h, h.backend()->fileExtension());
     }
@@ -1266,76 +1267,70 @@ int runLsp(const std::vector<std::string>&) {
     return 0;
 }
 
-// `polyglot install <dir-or-npm-name>` (P19 slice 11): validate a plugin artifact and place it in the
-// user cache, where target resolution finds it. A DIRECTORY containing polyglot-plugin.json installs
-// locally; a bare name shells out to `npm pack` (targets publish as npm packages wrapping the manifest)
-// and extracts `package/polyglot-plugin.json` with the system tar.
+// `polyglot install <dir | name[@spec]> [--update]` (P19 slice 11, rebuilt at P30 slice 3): warm
+// the versioned plugin cache through the SAME in-exe pipeline `polyglot build` auto-resolves with
+// (registry HTTP API, SRI verify, in-exe extract — no npm, no system tar). Run inside a project it
+// also writes the pgconfig.lock.json pin; `--update` re-resolves a range past a satisfied lock.
+// A DIRECTORY argument validates a local manifest and points at the `file:` dependency form (local
+// plugins resolve in place — no install step to forget).
 int runInstall(const std::vector<std::string>& args) {
-    if (args.size() < 2) {
+    std::string spec;
+    bool update = false;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--update") update = true;
+        else if (spec.empty()) spec = args[i];
+        else { std::cerr << "polyglot: install takes one package (got '" << args[i] << "' too)\n"; return 64; }
+    }
+    if (spec.empty()) {
         std::cerr << "polyglot: install needs a plugin directory or npm package name\n";
         return 64;
     }
-    std::string spec = args[1];
-    fs::path manifestPath;
+
     std::error_code ec;
     if (fs::is_directory(spec, ec)) {
-        manifestPath = fs::path(spec) / "polyglot-plugin.json";
-    } else {
-        // A bare target name resolves to the first-party npm naming convention; full package
-        // specs (@scope/name, name@version) pass through untouched.
-        if (spec.find('@') == std::string::npos && spec.find('/') == std::string::npos)
-            spec = "@mintplayer/polyglot-target-" + spec;
-        const fs::path tmp = fs::temp_directory_path() / "polyglot-install";
-        fs::remove_all(tmp, ec);
-        fs::create_directories(tmp, ec);
-        // Silence npm's own chatter (we print our own diagnostic on failure). `>nul` is a cmd.exe-ism —
-        // on /bin/sh it would create a real file named `nul` and discard nothing.
-#ifdef _WIN32
-        const char* quiet = " >nul 2>nul";
-#else
-        const char* quiet = " >/dev/null 2>&1";
-#endif
-        const std::string cmd = "npm pack \"" + spec + "\" --pack-destination \"" + tmp.string() + "\"" + quiet;
-        if (std::system(cmd.c_str()) != 0) {
-            std::cerr << "polyglot: npm pack '" << spec << "' failed (is npm on PATH and the package published?)\n";
+        const fs::path manifestPath = fs::path(spec) / "polyglot-plugin.json";
+        std::string manifest, err;
+        if (!readFile(manifestPath, manifest)) {
+            std::cerr << "polyglot: no polyglot-plugin.json at " << manifestPath.string() << "\n";
             return 1;
         }
-        fs::path tgz;
-        for (const auto& e : fs::directory_iterator(tmp, ec))
-            if (e.path().extension() == ".tgz") tgz = e.path();
-        // Extract from INSIDE the temp dir with a bare filename: a "C:\..." argument makes GNU tar
-        // (common on PATH via Git for Windows) treat the drive letter as a remote host and fail.
-#ifdef _WIN32
-        const std::string extract = "cd /d \"" + tmp.string() + "\" && tar -xzf \"" + tgz.filename().string() + "\"";
-#else
-        const std::string extract = "cd \"" + tmp.string() + "\" && tar -xzf \"" + tgz.filename().string() + "\"";
-#endif
-        if (tgz.empty() || std::system(extract.c_str()) != 0) {
-            std::cerr << "polyglot: could not extract the npm package\n";
+        if (!validateBackend(manifest, err)) {
+            std::cerr << "polyglot: invalid plugin: " << err << "\n";
             return 1;
         }
-        manifestPath = tmp / "package" / "polyglot-plugin.json";
+        const std::string name = json::parse(manifest)["name"].asString();
+        std::cout << "plugin '" << name << "' is valid; local plugins resolve in place - declare it in "
+                  << "pgconfig.json:\n  \"dependencies\": { \"" << name << "\": \"file:" << spec << "\" }\n";
+        return 0;
     }
 
-    std::string manifest;
-    if (!readFile(manifestPath, manifest)) {
-        std::cerr << "polyglot: no polyglot-plugin.json at " << manifestPath.string() << "\n";
-        return 1;
+    // name[@range]: split a trailing @ (position > 0, so a scope's leading @ survives).
+    std::string name = spec, range = "latest";
+    if (const std::size_t at = spec.rfind('@'); at != std::string::npos && at > 0) {
+        name = spec.substr(0, at);
+        range = spec.substr(at + 1);
     }
+    name = cli::normalizePluginPackageName(name);
+
+    // Inside a project, install pins the lock; outside one, it only warms the machine cache.
+    const PgConfig pc = loadPgConfig(fs::current_path());
+    cli::Lockfile lock = pc.found ? cli::loadLockfile(pc.dir) : cli::Lockfile{};
+
+    cli::ResolvedPlugin rp;
     std::string err;
-    if (!validateBackend(manifest, err)) { // a plugin that fails validation is never cached
-        std::cerr << "polyglot: invalid plugin: " << err << "\n";
+    if (!cli::resolvePluginDependency(cli::defaultHttpGet(), name, range, pc.found ? pc.dir : fs::current_path(),
+                                      lock, update, rp, err)) {
+        std::cerr << "polyglot: " << err << "\n";
         return 1;
     }
-    const std::string name = json::parse(manifest)["name"].asString();
-    const fs::path dest = pluginCacheDir() / name;
-    fs::create_directories(dest, ec);
-    fs::copy_file(manifestPath, dest / "polyglot-plugin.json", fs::copy_options::overwrite_existing, ec);
-    if (ec) {
-        std::cerr << "polyglot: could not write " << (dest / "polyglot-plugin.json").string() << "\n";
-        return 1;
+    if (rp.fetched && pc.found) {
+        lock.packages[name] = {rp.version, rp.resolvedUrl, rp.integrity};
+        if (!cli::saveLockfile(pc.dir, lock))
+            std::cerr << "polyglot: warning: could not write " << cli::lockfilePath(pc.dir).string() << "\n";
     }
-    std::cout << "installed target '" << name << "' -> " << dest.string() << "\n";
+    std::cout << "installed target '" << rp.targetName << "' (" << name << "@" << rp.version << ")"
+              << (rp.fetched ? "" : " [already available]") << " -> "
+              << cli::cacheEntryDir(name, rp.version).string() << "\n";
     return 0;
 }
 

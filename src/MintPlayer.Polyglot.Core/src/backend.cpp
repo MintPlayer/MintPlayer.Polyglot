@@ -253,14 +253,27 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
 
 } // namespace
 
-bool loadBackend(const std::string& artifactJson, std::string& error) {
+bool loadBackend(const std::string& artifactJson, std::string& error, bool replaceExisting) {
     const std::string name = json::parse(artifactJson)["name"].asString();
-    if (!name.empty() && findBackend(name)) { // checked first: the clearer error for a re-load
+    if (!name.empty() && findBackend(name) && !replaceExisting) { // checked first: the clearer error for a re-load
         error = "plugin '" + name + "' is already loaded";
         return false;
     }
     std::unique_ptr<LoadedBackend> b = buildBackend(artifactJson, error);
     if (!b) return false;
+    if (replaceExisting && !name.empty()) {
+        // Shadow, don't destroy: outstanding BackendHandles point into the displaced entry, so it
+        // moves to a process-lifetime graveyard and only the lookups forget it.
+        static std::vector<std::unique_ptr<LoadedBackend>> graveyard;
+        auto& reg = registry();
+        for (auto it = reg.begin(); it != reg.end(); ++it) {
+            if ((*it)->name() == name) {
+                graveyard.push_back(std::move(*it));
+                reg.erase(it);
+                break;
+            }
+        }
+    }
     registry().push_back(std::move(b));
     return true;
 }
