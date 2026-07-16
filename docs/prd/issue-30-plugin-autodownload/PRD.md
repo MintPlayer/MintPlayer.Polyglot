@@ -219,18 +219,90 @@ pre-warms the shared cache (CI, offline prep) and, when run inside a project, wr
 (`pluginCacheDir()/t/…`) dies: a `targets` entry not covered by in-box or `dependencies` is a diagnostic
 telling the user to add the dependency — everything sourced from `pgconfig.json`.
 
+### D7 — Per-target `outputs` routing in `pgconfig.json` (slice 7, second-wave investigation 2026-07-16)
+
+A new manifest field routes each emitted language to its own directory:
+
+```jsonc
+{
+  "targets": ["csharp", "typescript"],
+  "outputs": { "typescript": "../../../RLDemo.Web/ClientApp/src/app/fruit-cake" }
+}
+```
+
+- **Shape:** object, target name → directory. Relative paths resolve against **the config's directory**
+  (`pc.dir`) — the established base for everything path-like in the manifest (`root`, `file:` deps, the
+  lockfile); pre-resolved in `loadPgConfig` exactly like `root`.
+- **Precedence** (keeps the flags-win convention AND today's behavior byte-identical wherever `outputs`
+  is absent):
+  1. Explicit `--target X` **+** `--out` → X emits to `--out`; `outputs` is ignored for the explicitly
+     flagged target (today's MSBuild invocation and every existing test script take this form).
+  2. Config-driven targets (no `--target`) → each target uses its `outputs` entry if present, else the
+     `--out` fallback sink, else the input's directory (today's default).
+- **Write discipline:** the CLI **never deletes or clears an `outputs` directory** (it may be a shared
+  src folder — e.g. an Angular app dir the dev server watches); it writes specific files only, and all
+  emission becomes **write-if-changed** (byte-compare before write) so an unchanged twin never churns a
+  file watcher or an mtime.
+- Emission paths stay flat (`<dir>/<stem><ext>`, linked modules by basename) — `outputs` picks the
+  directory, never renames. `check`/LSP are untouched (they never write).
+
+### D8 — Per-root config resolution in multi-input builds
+
+The dogfood consumer (MintPlayer.AI) settles this: five `.pg` solvers, each needing its TypeScript twin
+in a **different, non-derivable** Angular folder (`FruitCake/polyglot` → `app/fruit-cake` — kebab-cased,
+while the other four lowercase; any convention would silently misplace it). So output destinations are
+per-source facts, and the natural home is **one `pgconfig.json` next to each solver** — which requires
+the multi-input build (MSBuild's single Exec over every `.pg` in the project, P28) to stop assuming one
+config per invocation:
+
+`runBuild` groups inputs by their **nearest `pgconfig.json`** (the same walk-up the single-input path
+and the LSP's per-file `contextFor` already do) and runs the existing §4.5 link-and-emit pipeline per
+group, with each group's `targets`/`outputs`/`lib` from its own config. Explicit flags still win
+globally (`--target`, `--out`, `--root`, `--lib`, `--access`), so a flag-driven invocation behaves
+exactly as today regardless of grouping. This aligns build semantics with what the LSP already promises:
+the nearest config governs each source file.
+
+### D9 — MSBuild goes config-sourced (the `.targets` edit + freshness/clean semantics)
+
+- **The one-line edit:** `MintPlayer.Polyglot.MSBuild.targets:69` drops ` --target csharp`. Everything
+  else stays: the single Exec + single `__polyglot.stamp` (the P28 all-or-nothing invariant — per-file
+  batching miscompiled and must never return), `RemoveDir`+`MakeDir` on the obj sink,
+  `_PolyglotVerifyTool`, and the `$(PolyglotOutDir)*.cs` glob into `@(Compile)` + `@(FileWrites)`.
+- **C# keeps landing in obj** via D7 rule 2: the consumer's `csharp` target has no `outputs` entry, so
+  it falls back to the passed `--out "$(PolyglotOutDir)."` and compiles exactly as today. A project
+  whose pgconfig doesn't even list `csharp` simply contributes no `.cs` (the glob yields nothing —
+  already safe).
+- **External twins are source-tree artifacts, deliberately committed** (that's the MintPlayer.AI model —
+  the Angular app imports them by relative path). Therefore they are **NOT** added to `@(FileWrites)`
+  (`dotnet clean` must never delete files from the user's src tree) and **NOT** to
+  `@(UpToDateCheckOutput)` (VS's fast up-to-date check stays obj-scoped). Freshness is carried by the
+  existing stamp: any `.pg`/tool change re-runs the CLI over the **full** input set, which rewrites
+  every external twin (write-if-changed). A hand-deleted external twin with untouched `.pg` sources
+  stays absent until the next `.pg` change or an explicit Rebuild — the same class of staleness as
+  deleting any committed generated file, and git makes it visible. Orphaned twins after a `.pg`
+  rename/delete are likewise a git-visible cleanup, not a build concern. (Recorded, not hidden.)
+- **NuGet consumers now need a `pgconfig.json`** declaring at least `"targets": ["csharp"]` — the
+  config-sourced principle applied to the last host (clean cutover; the CLI's refusal names exactly
+  this fix, and the walk-up means one config at the project root covers every `.pg` under it).
+- Deferred within D9: a `checkTargets`-style "gate against it but don't emit it" list (every `targets`
+  entry emits today); revisit on demand.
+
 ## 4. Scope contract
 
 **In scope:** the in-exe npm fetch pipeline (D1); lockfile (D2); versioned cache + on-load re-verification
 (D3); semver subset + spec grammar (D4); removal of all CLI hardcoded target fallbacks (D5); registry/proxy
 config subset (D6); `install` rewrite; the fake-registry script gate; doc updates (§6/§6.1/§6.3,
-json-plugins §5.4, PRD §4.20 design record).
+json-plugins §5.4, PRD §4.20 design record); **and (second wave, same PR — decision 2026-07-16) the
+MSBuild multi-target completion: pgconfig `outputs` routing (D7), per-root config grouping (D8), and the
+`.targets` dropping `--target csharp` (D9), with the run-nuget gate extended to cover it.** The original
+"possibly its own issue" framing is superseded — the CLI work above made the remainder small enough to
+finish here, and it's what actually kills the MintPlayer.AI stale-twin drift the issue opened with.
 
-**Follow-up-gated (issue #30 marks it "possibly its own issue"):** `MintPlayer.Polyglot.MSBuild` dropping
-`--target csharp` for pgconfig-driven multi-target emission. It needs its own design (where non-`.cs`
-outputs land in a csproj build, an `outputs` mapping in pgconfig, preserving the P28 single-Exec/
-single-stamp incrementality). P30 keeps the `.targets` behavior byte-identical; the CLI work makes the
-follow-up possible. Sketch in PLAN.md slice 7.
+**Out of scope:** `environments` gating (§6 — parsed nowhere today, separate feature); auth/private
+registries; a vendored TLS stack on Linux (recorded fork); generic URL/file-hosting feeds (§6.1 fallback
+feed — the npm feed is the shipped one); plugin signing beyond SRI integrity; a `checkTargets` split (D9,
+demand-gated); NX/Vite/Gradle host adapters (same thin-trigger shape as the NuGet package — a host passes
+files and paths and wires outputs into its own graph — but nothing is planned).
 
 **Out of scope:** `environments` gating (§6 — parsed nowhere today, separate feature); auth/private
 registries; a vendored TLS stack on Linux (recorded fork); generic URL/file-hosting feeds (§6.1 fallback
@@ -278,7 +350,10 @@ lockfile and re-verified on load. This implements the §6 trust-model checklist 
 - Manually-installed-cache users: the bare-name cache probe dies — add the `dependencies` entry (clean
   cutover, per project convention; the diagnostic says exactly this).
 - Bare `polyglot build foo.pg` with no config and no `--target`: now errors (was: silent csharp+ts pair).
-- NuGet/MSBuild consumers: byte-identical behavior (`--target csharp` untouched until the follow-up).
+- NuGet/MSBuild consumers (slice 7): the `.targets` no longer passes `--target csharp`, so a consumer
+  needs a `pgconfig.json` declaring at least `"targets": ["csharp"]` (clean cutover; the refusal names
+  the fix; one root config covers every `.pg` under it via the walk-up). With only that minimal config,
+  behavior is output-identical to today; adding `outputs` entries is what unlocks the multi-target twins.
 - VS Code extension: no change required (LSP path gains auto-download transparently; lock+cache keep it
   network-free in steady state).
 - **Versioning:** lockstep, tag-driven (P24) — no source bump; the PR carries `release:minor`. One PR,

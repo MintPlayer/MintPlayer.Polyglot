@@ -10,10 +10,11 @@ Build: **VS 18 Insiders MSBuild (v145)** — see root `CLAUDE.md`. New sources m
 (`scripts/check-buildfile-parity.ps1` is the first stage of the gate). Core stays IO-free — every new
 download/lockfile/cache unit lives in the **CLI layer**.
 
-Status: **built + gated** (2026-07-16; slices 0–6 landed as commits on `p30-plugin-autodownload`, one
-commit per slice; slice 7 remains follow-up-gated per issue #30). Post-plan finding recorded in the
-master PLAN P30 entry: the lock's `resolved` URL is treated as a hint — a moved registry re-locates the
-pinned version and the pinned integrity still gates acceptance.
+Status: **slices 0–6 built + gated** (2026-07-16; landed as commits on `p30-plugin-autodownload`, one
+commit per slice, PR #31); **slice 7 (MSBuild multi-target) pulled into the same PR** — designed
+2026-07-16 via a 3-agent second-wave investigation, implementation next (slices 7a–7c below). Post-plan
+finding recorded in the master PLAN P30 entry: the lock's `resolved` URL is treated as a hint — a moved
+registry re-locates the pinned version and the pinned integrity still gates acceptance.
 
 ---
 
@@ -147,16 +148,54 @@ abbreviated packuments, integrity computed by the fixture builder). Wired into `
 `pgconfig.json` declaring `@mintplayer/polyglot-target-python@<latest tag>` → `polyglot build` emits
 Python with no npm/node on PATH (the real issue-#30 acceptance).
 
-## Slice 7 — MSBuild multi-target (**follow-up-gated** — likely its own issue, per issue #30)
+## Slice 7 — MSBuild multi-target: pgconfig `outputs` + per-root configs (**in scope, this PR** — decision 2026-07-16; PRD D7–D9; 3-agent second-wave investigation: MSBuild internals · MintPlayer.AI consumer · CLI output semantics)
 
-Design sketch only, so the follow-up starts warm: drop `--target csharp`
-(`MintPlayer.Polyglot.MSBuild.targets:69`) in favor of pgconfig-driven targets; keep the single-Exec /
-single-stamp shape (the P28 incrementality fix is load-bearing — per-file batching caused CS0101
-miscompiles); `.cs` outputs keep flowing into `@(Compile)` via the existing glob; non-`.cs` outputs need a
-home — an `outputs: { <target>: <dir> }` mapping in `pgconfig.json` (relative to the config) that the CLI
-honors directly, so MSBuild never learns about languages (the "hosts pass files and paths, never
-languages" intent). Open questions to settle in that issue: default non-C# out dir, `@(FileWrites)`/clean
-semantics for outputs escaping `obj/`, and whether `check`-only targets belong in `targets`.
+The open questions from the original sketch are settled (PRD D7–D9): `outputs: { <target>: <dir> }`
+resolved against `pc.dir` with flags-win precedence (explicit `--target X` + `--out` → `--out` wins for X,
+so every existing invocation is byte-identical); external twins are committed source artifacts — **never**
+in `@(FileWrites)`/`@(UpToDateCheckOutput)`, freshness rides the P28 single stamp + full-set re-transpile
+with write-if-changed; `checkTargets` deferred. Key consumer fact forcing D8: MintPlayer.AI's five solvers
+map to five **non-derivable** Angular folders (`FruitCake` → `fruit-cake`), so each `polyglot/` dir gets
+its own pgconfig and the multi-input build groups inputs by nearest config (the LSP's per-file semantics,
+now in `build`).
+
+### 7a — CLI: `outputs` field + per-target routing + per-root grouping
+
+- `pgconfig.hpp`: `PgConfig.outputs` (target → dir, raw string kept + pre-resolved against `pc.dir` like
+  `root`); parse in `loadPgConfig`.
+- `main.cpp` `runBuild`: resolve the effective out dir **per target** at the two emit-loop call sites
+  (single-input ~:484, multi-file ~:512) per the D7 precedence; group multi-input builds by nearest
+  pgconfig (D8) — each group runs the existing §4.5 pipeline with its own config (flags win globally).
+- `watchBuildOnce` (~:340): the write block DUPLICATES emitOne's derivation — patch it identically (or
+  unify; check the last-good-outputs semantics before merging them).
+- `writeFile`/emit writes become **write-if-changed**; the CLI never removes/clears an `outputs` dir.
+- *Gate:* unit tests — `outputs` parse (absent field stays empty; relative resolution against `pc.dir`);
+  script assertions in the existing gates (see 7c). Existing `--out` scripts stay green by construction
+  (all take the flag-driven or no-`outputs` path).
+
+### 7b — MSBuild: drop `--target csharp`; consumers declare a pgconfig
+
+- `MintPlayer.Polyglot.MSBuild.targets:69`: delete ` --target csharp`; update the header comment (the
+  package invokes "build these files, config decides languages"). Single Exec + single stamp +
+  `RemoveDir` on the obj sink + the `*.cs` glob into `@(Compile)`/`@(FileWrites)` all stay (P28).
+- Consumer contract change (clean cutover): a `pgconfig.json` with at least `"targets": ["csharp"]` is
+  required; the CLI's refusal message names the fix.
+- *Gate:* `tests/msbuild/run-nuget.ps1` — existing fixtures gain the minimal root pgconfig (asserting
+  output-identical C# behavior), plus a **multi-target fixture**: pgconfig `targets: [csharp, typescript]`
+  + `outputs.typescript` pointing outside obj → `dotnet build` alone compiles the `.cs` from obj AND lands
+  the `.ts` twin at the configured dir; incremental skip leaves the twin untouched (mtime); an unchanged
+  re-transpile doesn't rewrite it (write-if-changed); `dotnet clean` removes the obj `.cs` but **not** the
+  external twin; a no-pgconfig fixture asserts the guided refusal.
+
+### 7c — Gate + docs wrap-up
+
+- `tests/registry/run-registry.ps1`: one added case — the fake-registry project gains an
+  `outputs.pyfixture` entry; assert the `.py` lands there (config-driven path) while `--target python
+  --out` still lands in `--out` (flag-driven path).
+- Docs as-built: PRD §4.20 tail + master PLAN P30 + `plugins-and-targets.md` §6.3 pgconfig shape gain the
+  `outputs` field; MSBuild package README/comment documents the consumer contract; CLAUDE.md status line.
+- MintPlayer.AI adoption (the five per-solver pgconfigs from the PRD D8 table) happens in THAT repo after
+  this ships — recorded here so the twin-drift kill is traceable end-to-end.
 
 ---
 

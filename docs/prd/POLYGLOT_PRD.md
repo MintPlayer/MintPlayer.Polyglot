@@ -1316,8 +1316,14 @@ dependencies itself**, sourced entirely from `pgconfig.json`. Full PRD + investi
 - **Gate.** `tests/registry/run-registry.ps1` (in `build-and-test.ps1`): a fake npm registry proves
   cold-cache download→lock→emit (byte-equal to the in-box twin — the P24 lockstep invariant), a fully
   offline rebuild, tamper refusal + healing, a lying packument refused, and the `--target` override.
-  MSBuild multi-target (dropping the `.targets`' `--target csharp`) is the recorded follow-up (issue #30's
-  own framing); P30 keeps the NuGet path byte-identical.
+- **MSBuild multi-target (slice 7 — pulled into the same PR, 2026-07-16).** A pgconfig
+  `outputs: { <target>: <dir> }` map (resolved against the config dir; flags-win precedence keeps every
+  explicit `--target`+`--out` invocation byte-identical) routes each language to its own directory;
+  multi-input builds group by **nearest pgconfig** (the LSP's per-file semantics, forced by the dogfood
+  consumer's non-derivable `.pg`→twin folder mapping); the `.targets` drops `--target csharp` (consumers
+  declare `"targets": ["csharp"]` minimum). External twins are committed source artifacts — never in
+  `@(FileWrites)`/FUTDC; freshness rides the P28 single stamp + full-set re-transpile, write-if-changed.
+  Design record: issue-30 PRD D7–D9.
 
 ---
 

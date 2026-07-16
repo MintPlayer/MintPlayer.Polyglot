@@ -3118,7 +3118,7 @@ strict-`tsc`):**
 annotated (only non-empty literals relied on inference, which the rule keeps). Precedent: Swift/Go require
 the same. **Versioning:** lockstep, tag-driven (P24) — no source bump; the PR carries `release:minor`.
 
-## P30 — Build-time plugin auto-download from `pgconfig.json` — ✅ built + gated (2026-07-16; issue #30, PRD `docs/prd/issue-30-plugin-autodownload/`, 3-agent investigation, PRD §4.20)
+## P30 — Build-time plugin auto-download from `pgconfig.json` — 🚧 slices 0–6 built + gated, slice 7 (MSBuild multi-target) in flight in the same PR #31 (2026-07-16; issue #30, PRD `docs/prd/issue-30-plugin-autodownload/`, 3+3-agent investigations, PRD §4.20)
 
 Cashes the unbuilt half of the P10 §6 promise (`docs/design/plugins-and-targets.md`: *"From it the CLI
 resolves and **downloads** the named plugins into a shared cache, then emits"*). Today
@@ -3161,8 +3161,15 @@ capability-derived `referenceTarget()`). MSBuild multi-target (dropping `--targe
   from the repo's own `plugins/`): download→lock→emit, offline rebuild, tampered tarball/cache refused.
 - **Slice 6 — docs + release** (design docs §6/§6.1/§6.3 + json-plugins §5.4 as-built, PRD §4.20,
   CLAUDE.md status).
-- **Slice 7 — MSBuild multi-target** — follow-up-gated (likely its own issue); design sketch in the plan
-  (pgconfig `outputs` mapping, preserve the P28 single-Exec/single-stamp incrementality).
+- **Slice 7 — MSBuild multi-target** — pulled into the same PR (decision 2026-07-16, 3-agent second-wave
+  investigation; PRD D7–D9): pgconfig `outputs: { <target>: <dir> }` resolved against the config dir with
+  flags-win precedence (explicit `--target` + `--out` stays byte-identical — every existing script and
+  today's MSBuild form); multi-input builds group by **nearest pgconfig** (MintPlayer.AI's five solvers
+  map to five non-derivable Angular folders — `FruitCake` → `fruit-cake` — so per-solver configs are the
+  only honest shape; the LSP's per-file semantics come to `build`); `.targets:69` drops `--target csharp`
+  (consumers declare `"targets": ["csharp"]` minimum — clean cutover, guided refusal); external twins are
+  committed source artifacts — never in `@(FileWrites)`/FUTDC, freshness = the P28 single stamp +
+  full-set re-transpile with write-if-changed, and the CLI never clears an `outputs` dir.
 
 *Gate:* on a machine with an empty plugin cache and **no npm/node on PATH**, a `pgconfig.json` declaring
 `@mintplayer/polyglot-target-python` builds Python via `polyglot build` alone; `pgconfig.lock.json` pins
