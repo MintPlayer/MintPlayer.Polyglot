@@ -27,8 +27,11 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++
 
       - name: Build (CMake, Release)
+        # POLYGLOT_VERSION pinned to the dev placeholder: the shallow PR checkout has no tags, so
+        # CMake's `git describe --always` fallback would inject a bare commit SHA and fail the
+        # version-shape unit test. A PR check has no version — say so explicitly.
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOLYGLOT_VERSION=0.0.0-dev
           cmake --build build -j"$(nproc)"
 
       - name: Unit tests
