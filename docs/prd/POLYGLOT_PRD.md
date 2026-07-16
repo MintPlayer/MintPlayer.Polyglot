@@ -1328,7 +1328,12 @@ dependencies itself**, sourced entirely from `pgconfig.json`. Full PRD + investi
   recorded unlock). Core: `ModuleFile` gains its source path. The `.targets` drops `--target csharp`
   (consumers declare `"targets": ["csharp"]` minimum). External twins are committed source artifacts —
   never in `@(FileWrites)`/FUTDC; freshness rides the P28 single stamp + full-set re-transpile,
-  write-if-changed. Design record: issue-30 PRD D7–D9.
+  write-if-changed. **Slice 8 (same PR)** then lifted the closure rule per target: a plugin manifest
+  declaring `crossDirImports: true` (TS does) gets real relative import specifiers computed from the
+  routed output dirs (Core stays IO-free — the CLI injects an origin→dir router, one routing truth
+  with the output resolution; flat layouts stay byte-identical), so one closure may span directories
+  and `%(RecursiveDir)` mirroring is fully general there; non-declaring targets (Python/PHP/C#)
+  keep the loud refusal. Design record: issue-30 PRD D7–D9.
 
 ---
 

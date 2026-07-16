@@ -196,11 +196,33 @@ bool writeDedup(const fs::path& out, const std::string& content,
 // (P30 slice 7, PRD D7) with `fallbackDir` (--out / the input's dir) for unmatched files;
 // `flagRouted` (explicit --target + --out) bypasses the rules wholesale. `seen` (optional) dedups
 // shared modules across a multi-root project build. Returns false on any failure.
+// Build the LibConfig the compiler sees for one (closure, target): on a `crossDirImports` target
+// with include rules in play, it carries the output-dir router so emitted import specifiers span
+// directories correctly (P30 slice 8); otherwise it's the caller's lib unchanged (flat "./<name>").
+LibConfig libForTarget(const LibConfig& lib, const BackendHandle& target, const PgConfig& pc,
+                       bool flagRouted, const fs::path& input, const fs::path& fallbackDir) {
+    LibConfig out = lib;
+    if (flagRouted || !target.backend()->crossDirImports() || !pc.found || pc.include.empty()) return out;
+    std::error_code ec;
+    const std::string tname = target.backend()->name();
+    const fs::path inputAbs = fs::absolute(input, ec);
+    const fs::path fbAbs = fs::absolute(fallbackDir, ec);
+    out.moduleOutputDir = [&pc, tname, inputAbs, fbAbs](const std::string& origin) {
+        const fs::path src = origin.empty() ? inputAbs : fs::path(origin);
+        std::string terr;
+        if (auto r = cli::routeIncludeOutput(pc, src, tname, terr))
+            return cli::normalizedDirKey(r->parent_path());
+        return cli::normalizedDirKey(fbAbs); // no match (or a template error the output resolution refuses)
+    };
+    return out;
+}
+
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& fallbackDir,
              const BackendHandle& target, const char* ext, ModuleResolver* resolver, const LibConfig& lib,
              const PgConfig& pc, bool flagRouted,
              std::map<std::string, std::string>* seen = nullptr) {
-    EmitResult result = compile(source, target, resolver, lib);
+    EmitResult result = compile(source, target, resolver,
+                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir));
     if (!result.ok) {
         reportDiagnostics(input, result);
         return false;
@@ -208,7 +230,7 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
     std::vector<fs::path> outs;
     std::string rerr;
     if (!cli::resolveClosureOutputs(pc, flagRouted, input, result, target.backend()->name(), ext,
-                                    fallbackDir, outs, rerr)) {
+                                    fallbackDir, outs, rerr, target.backend()->crossDirImports())) {
         std::cerr << "polyglot: " << rerr << "\n";
         return false;
     }
@@ -348,7 +370,8 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
             emitTopLevel(h.error());
             continue;
         }
-        EmitResult result = compile(source, h, &resolver, lib);
+        EmitResult result = compile(source, h, &resolver,
+                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg));
         if (!result.ok) {
             for (const auto& d : result.diagnostics) emitDiagAt(d);
             if (result.diagnostics.empty()) emitTopLevel("compilation failed for target '" + t + "'");
@@ -359,7 +382,8 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         // P30 slice 7: outputs route through the config's include rules — same resolution as build.
         std::vector<fs::path> outs;
         std::string rerr;
-        if (!cli::resolveClosureOutputs(pc, flagRouted, input, result, t, ext.c_str(), outDirArg, outs, rerr)) {
+        if (!cli::resolveClosureOutputs(pc, flagRouted, input, result, t, ext.c_str(), outDirArg, outs, rerr,
+                                        h.backend()->crossDirImports())) {
             emitTopLevel(rerr);
             continue;
         }

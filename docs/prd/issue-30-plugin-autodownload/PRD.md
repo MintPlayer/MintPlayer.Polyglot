@@ -262,13 +262,18 @@ destinations, which one-dir-per-target cannot express from one config. `include`
   MSBuild form; ad-hoc one-offs).
 - **Collisions:** two sources resolving to one output path with different content = hard build error
   naming both sources (the existing `writeDedup` guard, verbatim).
-- **The closure rule (correctness constraint):** emitted TS/Python cross-module imports are FLAT
-  `./basename` (the emitter never computes relative paths), so **all modules of one import closure
-  must route to the same output directory per target**; the CLI refuses with a diagnostic naming the
-  split modules if rules would separate them (never a silent miscompile). C# is exempt (emits no
-  imports; the csproj glob links). Path-aware specifier recomputation (flow each module's routed dir
-  into `buildImports`, emit real relative specifiers) is the recorded principled follow-up that lifts
-  this constraint and makes `%(RecursiveDir)` mirroring fully general.
+- **The closure rule — per-target, capability-gated (slice 8, built 2026-07-16):** a plugin manifest
+  declares **`crossDirImports: true`** when its emitted import specifiers may span directories. For
+  such a target (TypeScript declares it) the compiler computes **real relative specifiers**: the CLI
+  hands `compile()` an output-dir router (`LibConfig::moduleOutputDir`, an opaque normalized key —
+  Core stays IO-free and does only lexical arithmetic), and `buildImports` emits `./name`,
+  `../shared/name`, or `./sub/name` (a non-climbing specifier keeps the `./` prefix so ESM never
+  reads it as a package name); the TS plugin's import templates dropped their hardcoded `"./"`, and
+  a flat layout stays byte-identical. For a target WITHOUT the flag (Python's relative imports are
+  dot-package semantics, PHP differs again; C# emits no imports but the csproj glob is obj-scoped),
+  **all modules of one closure must still route to one directory** — the CLI refuses with the split
+  named, never a silent miscompile. This makes `%(RecursiveDir)` tree-mirroring fully general on
+  crossDirImports targets.
 - **Discovery:** when a host passes files (MSBuild, harnesses), rules only **route** — they never
   expand the input set (MSBuild's glob stays authoritative; no two sources of truth). A bare
   `polyglot build` with **no** file args uses the `include` patterns as discovery (the tsc model, as a
@@ -343,13 +348,16 @@ closure rule, and `ModuleFile` source-path surfacing (D7), nearest-config groupi
 "possibly its own issue" framing is superseded — the CLI work above made the remainder small enough to
 finish here, and it's what actually kills the MintPlayer.AI stale-twin drift the issue opened with.
 
+**Also in scope (third wave, same PR — 2026-07-16):** path-aware import-specifier recomputation (slice 8)
+— the D7 closure-rule unlock, capability-gated per target via the `crossDirImports` manifest flag.
+
 **Out of scope:** `environments` gating (§6 — parsed nowhere today, separate feature); auth/private
 registries; a vendored TLS stack on Linux (recorded fork); generic URL/file-hosting feeds (§6.1 fallback
 feed — the npm feed is the shipped one); plugin signing beyond SRI integrity; a `checkTargets` split (D9,
-demand-gated); path-aware import-specifier recomputation (the D7 closure-rule unlock — recorded principled
-follow-up); `%(Foldername)` and further placeholders (demand-gated); NX/Vite/Gradle host adapters (same
-thin-trigger shape as the NuGet package — a host passes files and paths and wires outputs into its own
-graph — but nothing is planned).
+demand-gated); `crossDirImports` for Python/PHP (dot-package / include semantics need their own design —
+the closure rule keeps guarding them); `%(Foldername)` and further placeholders (demand-gated);
+NX/Vite/Gradle host adapters (same thin-trigger shape as the NuGet package — a host passes files and
+paths and wires outputs into its own graph — but nothing is planned).
 
 ## 5. Failure modes & diagnostics (never a miscompile, never a hang)
 

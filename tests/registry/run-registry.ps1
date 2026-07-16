@@ -132,6 +132,32 @@ try {
     & $Cli build (Join-Path $proj3 "main.pg") --target pyfixture --out $proj3 *> $null
     Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $proj3 "main.py"))) `
         "explicit --target + --out bypasses the include rules (flag semantics)"
+
+    # --- cross-dir specifiers (P30 slice 8): TS closures may split; others still refuse -----------
+    $proj4 = Join-Path $work "proj4"
+    New-Item -ItemType Directory -Force (Join-Path $proj4 "lib") | Out-Null
+    Set-Content (Join-Path $proj4 "lib\util.pg") "fn three(): i32 {`n  return 3`n}" -NoNewline
+    Set-Content (Join-Path $proj4 "main.pg") "import { three } from `"./lib/util`"`nimport { print } from `"std.io`"`nfn main() {`n  print(three())`n}" -NoNewline
+    Set-Content (Join-Path $proj4 "pgconfig.json") ("{ `"targets`": [`"typescript`"], `"include`": [ " +
+        "{ `"pattern`": `"main.pg`", `"target`": `"typescript`", `"output`": `"app/%(Filename)`" }, " +
+        "{ `"pattern`": `"lib/*.pg`", `"target`": `"typescript`", `"output`": `"shared/%(Filename)`" } ] }") -NoNewline
+    & $Cli build (Join-Path $proj4 "main.pg") *> $null
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $proj4 "app/main.ts")) -and (Test-Path (Join-Path $proj4 "shared/util.ts"))) `
+        "a TS closure splits across routed dirs (crossDirImports)"
+    Assert ((Get-Content (Join-Path $proj4 "app/main.ts") -Raw) -match 'from "\.\./shared/util"') `
+        "the emitted TS import climbs with a real relative specifier"
+
+    $proj5 = Join-Path $work "proj5"
+    New-Item -ItemType Directory -Force (Join-Path $proj5 "lib") | Out-Null
+    Set-Content (Join-Path $proj5 "lib\util.pg") "fn three(): i32 {`n  return 3`n}" -NoNewline
+    Set-Content (Join-Path $proj5 "main.pg") "import { three } from `"./lib/util`"`nimport { print } from `"std.io`"`nfn main() {`n  print(three())`n}" -NoNewline
+    Set-Content (Join-Path $proj5 "pgconfig.json") ("{ `"targets`": [`"pyfixture`"], " +
+        "`"dependencies`": { `"pyfixture`": `"^1.2.0`" }, `"include`": [ " +
+        "{ `"pattern`": `"main.pg`", `"target`": `"pyfixture`", `"output`": `"app/%(Filename)`" }, " +
+        "{ `"pattern`": `"lib/*.pg`", `"target`": `"pyfixture`", `"output`": `"shared/%(Filename)`" } ] }") -NoNewline
+    $out8 = & $Cli build (Join-Path $proj5 "main.pg") 2>&1 | Out-String
+    Assert ($LASTEXITCODE -ne 0 -and $out8 -match 'split the import closure') `
+        "a non-crossDirImports target still refuses a split closure (never a miscompile)"
     $noCfg = Join-Path $work "nocfg"
     New-Item -ItemType Directory -Force $noCfg | Out-Null
     Set-Content (Join-Path $noCfg "main.pg") "fn main() {`n}`n" -NoNewline

@@ -2422,6 +2422,64 @@ int main() {
         fs::remove_all(base, ec);
     }
 
+    // ---- P30 slice 8: cross-directory import specifiers (crossDirImports) ---------------------
+    {
+        // The manifest flag round-trips: TS declares it, Python/C# don't (their module systems make
+        // cross-dir imports non-trivial — the closure rule stays for them).
+        check(findBackend("typescript")->crossDirImports() && !findBackend("python")->crossDirImports() &&
+                  !findBackend("csharp")->crossDirImports(),
+              "P30 s8: crossDirImports parses from the manifest (TS yes, Python/C# no)");
+
+        // Flat (no router): the emitted specifier is byte-identical to the historical "./<name>".
+        MapModuleResolver res({{"lib", "fn dbl(x: i32): i32 { return x * 2 }\n"}});
+        const std::string src = "import { dbl } from \"lib\"\nfn f(): i32 {\n  return dbl(2)\n}\n";
+        EmitResult flat = compile(src, findTarget("typescript"), &res, LibConfig{});
+        check(flat.ok && has(flat.code, "from \"./lib\""),
+              "P30 s8: without a router the TS specifier stays ./<name> (byte-identical)");
+
+        // Routed apart: a real relative specifier climbs and descends between the routed dirs.
+        LibConfig up;
+        up.moduleOutputDir = [](const std::string& origin) {
+            return origin.empty() ? std::string("C:/o/app") : std::string("C:/o/shared/geom");
+        };
+        EmitResult cross = compile(src, findTarget("typescript"), &res, up);
+        check(cross.ok && has(cross.code, "from \"../shared/geom/lib\""),
+              "P30 s8: a routed-apart module gets a climbing relative specifier");
+
+        LibConfig down;
+        down.moduleOutputDir = [](const std::string& origin) {
+            return origin.empty() ? std::string("C:/o") : std::string("C:/o/sub");
+        };
+        EmitResult below = compile(src, findTarget("typescript"), &res, down);
+        check(below.ok && has(below.code, "from \"./sub/lib\""),
+              "P30 s8: a below-tree module gets a ./-prefixed specifier (never a bare package name)");
+
+        // A non-crossDirImports target ignores the router entirely (flag-gated, never half-applied).
+        EmitResult py = compile(src, findTarget("python"), &res, up);
+        check(py.ok && has(py.code, "from lib import") && !has(py.code, "../"),
+              "P30 s8: python ignores the router (bare basename, closure rule still guards it)");
+
+        // The closure check permits a split for a crossDirImports target (allowSplit).
+        namespace fs = std::filesystem;
+        cli::PgConfig pc;
+        pc.found = true;
+        pc.dir = fs::path("C:/proj");
+        pc.include.push_back({"main.pg", {"typescript"}, "app/%(Filename)"});
+        EmitResult fake;
+        fake.ok = true;
+        fake.code = "entry";
+        fake.modules.push_back({"util", "code", (fs::path("C:/proj") / "lib/util.pg").string()});
+        std::vector<fs::path> outs;
+        std::string err;
+        check(!cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
+                                          fs::path("C:/proj"), outs, err, /*allowSplit=*/false),
+              "P30 s8: (control) the split still refuses without the capability");
+        check(cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
+                                         fs::path("C:/proj"), outs, err, /*allowSplit=*/true) &&
+                  outs[0] == fs::path("C:/proj/app/main.ts") && outs[1] == fs::path("C:/proj/util.ts"),
+              "P30 s8: allowSplit routes a closure across directories (entry routed, module fallback)");
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;

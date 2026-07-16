@@ -546,21 +546,55 @@ static std::string moduleBasename(const std::string& canon) {
     return f;
 }
 
+// P30 slice 8: the relative import specifier from one emitted file's directory to another's — pure
+// lexical arithmetic over the host-provided (already normalized, '/'-separated) dir keys; Core does
+// no filesystem IO. Same dir → "./<base>" (the historical flat shape, byte-identical); a specifier
+// that doesn't climb gets a "./" prefix (a bare "sub/mod" would read as a package import in ESM).
+static std::string relativeSpecifier(const std::string& fromDir, const std::string& toDir,
+                                     const std::string& base) {
+    if (fromDir == toDir) return "./" + base;
+    auto split = [](const std::string& s) {
+        std::vector<std::string> v;
+        std::size_t b = 0;
+        while (b <= s.size()) {
+            std::size_t e = s.find('/', b);
+            if (e == std::string::npos) e = s.size();
+            if (e > b) v.push_back(s.substr(b, e - b));
+            b = e + 1;
+        }
+        return v;
+    };
+    const auto f = split(fromDir), t = split(toDir);
+    std::size_t i = 0;
+    while (i < f.size() && i < t.size() && f[i] == t[i]) ++i;
+    std::string rel;
+    for (std::size_t k = i; k < f.size(); ++k) rel += "../";
+    for (std::size_t k = i; k < t.size(); ++k) rel += t[k] + "/";
+    if (rel.rfind("../", 0) != 0) rel = "./" + rel;
+    return rel + base;
+}
+
 // §4.5: the cross-module import list a given file emits. C# needs none (global-namespace types + `partial`
 // wrappers in one assembly). Other targets get one entry per user import, keyed to the imported module's
 // emitted basename; the selective group is pre-joined ("a, b as c") since TS and Python share that spelling.
+// For a `crossDirImports` target (P30 slice 8) `mi.path` is the FULL relative specifier, computed from the
+// host's routed output dirs (no router = flat = "./<base>"); otherwise it stays the bare basename.
 static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, const std::string& fileOrigin,
                                                   const std::map<std::string, std::string>& baseByCanon,
-                                                  const std::string& target) {
+                                                  const std::string& target, bool crossDir,
+                                                  const std::function<std::string(const std::string&)>& outDirOf) {
     std::vector<ir::ModuleImport> out;
     if (target == "csharp") return out;
     auto it = graph.find(fileOrigin);
     if (it == graph.end()) return out;
+    const std::string fromDir = (crossDir && outDirOf) ? outDirOf(fileOrigin) : std::string();
     for (const auto& ri : it->second) {
         auto b = baseByCanon.find(ri.fromCanon);
         if (b == baseByCanon.end()) continue; // imported module contributed no emitted decls
         ir::ModuleImport mi;
-        mi.path = b->second;
+        mi.path = crossDir ? relativeSpecifier(fromDir, outDirOf ? outDirOf(ri.fromCanon) : std::string(),
+                                               b->second)
+                           : b->second;
         if (ri.isNamespace) { mi.isNamespace = true; mi.ns = ri.nsAlias; }
         else {
             std::string joined;
@@ -663,7 +697,8 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         m.linked = true;
         m.access = lib.access;
-        m.imports = buildImports(importGraph, importOrigin, baseByCanon, target.name());
+        m.imports = buildImports(importGraph, importOrigin, baseByCanon, target.name(),
+                                 target.backend()->crossDirImports(), lib.moduleOutputDir);
         return target.backend()->emit(m);
     };
     auto emitFile = [&](const std::string& fileOrigin) -> std::string {

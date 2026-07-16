@@ -131,7 +131,9 @@ portable std + the bundled C#/TS backend specs**. Beyond that:
 > `fileExtension()` always auto-appended) route each emitted file — e.g. TypeScript twins into an
 > Angular app — while unmatched (file, target) pairs fall to `--out`; a bare `polyglot build`
 > discovers its inputs from the same patterns, and the MSBuild package no longer passes any language
-> flag (consumers declare `"targets": ["csharp"]` minimum). `environments` gating (below) remains
+> flag (consumers declare `"targets": ["csharp"]` minimum). A target whose manifest declares
+> `crossDirImports: true` (TS) gets real relative import specifiers computed from the routed dirs,
+> so one import closure may span directories; other targets refuse a split loudly. `environments` gating (below) remains
 > future work. Design details that changed in the building are annotated in §6.1/§6.3; full record:
 > `docs/prd/issue-30-plugin-autodownload/` (D7–D9 for the routing).
 

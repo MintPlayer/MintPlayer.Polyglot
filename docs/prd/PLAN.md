@@ -3161,6 +3161,13 @@ capability-derived `referenceTarget()`). MSBuild multi-target (dropping `--targe
   from the repo's own `plugins/`): download→lock→emit, offline rebuild, tampered tarball/cache refused.
 - **Slice 6 — docs + release** (design docs §6/§6.1/§6.3 + json-plugins §5.4 as-built, PRD §4.20,
   CLAUDE.md status).
+- **Slice 8 — cross-directory import specifiers** (the closure-rule unlock; same PR, 2026-07-16):
+  a plugin manifest declares **`crossDirImports: true`** (TS does; Python/PHP/C# keep the closure
+  rule) → the CLI injects an origin→output-dir router (`LibConfig::moduleOutputDir`, same routing
+  truth as the output resolution) and Core's `buildImports` emits real relative specifiers
+  (`./name` flat — byte-identical; `../shared/name`; `./sub/name`, always `./`-prefixed for ESM);
+  the TS import templates dropped their hardcoded `"./"`. `%(RecursiveDir)` tree-mirroring is now
+  fully general on crossDirImports targets; a split on any other target still refuses loudly.
 - **Slice 7 — MSBuild multi-target via `include` file-mapping rules** — pulled into the same PR
   (decision 2026-07-16; two 3-agent investigations: MSBuild/consumer/CLI, then feasibility/precedent/
   scenarios for the maintainer-proposed `include` schema; PRD D7–D9). pgconfig gains

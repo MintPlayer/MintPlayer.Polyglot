@@ -65,6 +65,12 @@ public:
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }
+    // Whether this target's emitted cross-module import specifiers may span directories (plugin
+    // manifest `crossDirImports`, P30 slice 8). True: the compiler hands the import rule a FULL
+    // relative specifier ("./name" or "../shared/name") computed from routed output dirs, and the
+    // host may spread one closure across directories. False (default): specifiers are bare
+    // basenames and the host must keep a closure in one directory (the CLI refuses a split).
+    virtual bool crossDirImports() const { return false; }
     // The names this target's GENERATED code claims (`identifiers.reserved` — scaffolding, synthesized
     // temps; trailing `*` = prefix family) and its runtime globals (`identifiers.globals`). A user
     // identifier colliding with either refuses at compile time (checkReservedNames, P19 §7).

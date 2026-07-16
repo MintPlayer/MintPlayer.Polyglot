@@ -167,17 +167,31 @@ inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& p
     return std::nullopt;
 }
 
+// Trailing-separator-insensitive directory identity ("obj/x/." == "obj/x/" == "obj/x") — MSBuild's
+// quoting guard passes `--out "<dir>\."`, which must not read as a different directory. Also the
+// normalized '/'-separated key handed to Core's relative-specifier arithmetic (P30 slice 8).
+inline std::string normalizedDirKey(const std::filesystem::path& p) {
+    std::string s = p.lexically_normal().generic_string();
+    while (s.size() > 1 && (s.back() == '/' || s.back() == '.')) {
+        if (s.back() == '.' && (s.size() < 2 || s[s.size() - 2] != '/')) break; // keep "dir/name."
+        s.pop_back();
+    }
+    return s;
+}
+
 // Resolve the OUTPUT PATHS for one compiled closure (entry + linked modules) for one target
 // (PRD D7). `outs` is filled parallel to [entry, result.modules...]:
 //  * include-rule routing per file (skipped entirely under `flagRouted` — explicit --target+--out),
 //  * the fallback dir for unmatched files (--out, or the input's directory),
 //  * the synthesized prelude (empty sourcePath) follows the ENTRY's directory,
-//  * the closure rule: every file must land in ONE directory — emitted TS/Python imports are flat
-//    "./<name>", so a split closure would miscompile; refuse with the split named instead.
+//  * the closure rule: every file must land in ONE directory — emitted flat "./<name>" imports would
+//    miscompile across a split, so refuse with the split named — UNLESS the target declares
+//    `crossDirImports` (`allowSplit`, P30 slice 8: the compiler then emits real relative specifiers).
 inline bool resolveClosureOutputs(const PgConfig& pc, bool flagRouted, const std::filesystem::path& input,
                                   const EmitResult& result, const std::string& targetName, const char* ext,
                                   const std::filesystem::path& fallbackDir,
-                                  std::vector<std::filesystem::path>& outs, std::string& err) {
+                                  std::vector<std::filesystem::path>& outs, std::string& err,
+                                  bool allowSplit = false) {
     namespace fs = std::filesystem;
     outs.clear();
     auto route = [&](const fs::path& sourceAbs, const std::string& stem, bool preludeLike,
@@ -201,28 +215,17 @@ inline bool resolveClosureOutputs(const PgConfig& pc, bool flagRouted, const std
         return true;
     };
 
-    // Trailing-separator-insensitive dir identity ("obj/x/." == "obj/x/" == "obj/x") — MSBuild's
-    // quoting guard passes `--out "<dir>\."`, which must not read as a different directory.
-    auto dirKey = [](const fs::path& p) {
-        std::string s = p.lexically_normal().generic_string();
-        while (s.size() > 1 && (s.back() == '/' || s.back() == '.')) {
-            if (s.back() == '.' && (s.size() < 2 || s[s.size() - 2] != '/')) break; // keep "dir/name."
-            s.pop_back();
-        }
-        return s;
-    };
-
     fs::path entryOut;
     std::error_code ec;
     if (!route(fs::absolute(input, ec), input.stem().string(), false, {}, entryOut)) return false;
     outs.push_back(entryOut);
     const fs::path entryDir = entryOut.parent_path();
-    const std::string entryDirKey = dirKey(entryDir);
+    const std::string entryDirKey = normalizedDirKey(entryDir);
 
     for (const auto& mf : result.modules) {
         fs::path mout;
         if (!route(fs::path(mf.sourcePath), mf.basename, mf.sourcePath.empty(), entryDir, mout)) return false;
-        if (dirKey(mout.parent_path()) != entryDirKey) {
+        if (!allowSplit && normalizedDirKey(mout.parent_path()) != entryDirKey) {
             err = "include rules split the import closure of '" + input.string() + "' for target '" +
                   targetName + "': module '" + mf.sourcePath + "' would emit to '" +
                   mout.parent_path().string() + "' but its entry emits to '" + entryDir.string() +

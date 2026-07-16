@@ -45,9 +45,10 @@ class LoadedBackend : public Backend {
 public:
     LoadedBackend(std::string name, std::string fileExtension, BackendSpec spec, engine::RuleTable rules,
                   std::unordered_map<std::string, std::string> capabilities,
-                  std::unordered_map<std::string, std::string> overlays)
+                  std::unordered_map<std::string, std::string> overlays, bool crossDirImports = false)
         : name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
-          rules_(std::move(rules)), capabilities_(std::move(capabilities)), overlays_(std::move(overlays)) {}
+          rules_(std::move(rules)), capabilities_(std::move(capabilities)), overlays_(std::move(overlays)),
+          crossDirImports_(crossDirImports) {}
 
     std::string name() const override { return name_; }
 
@@ -67,10 +68,12 @@ public:
 
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
+    bool crossDirImports() const override { return crossDirImports_; }
     const std::vector<std::string>& reservedIdentifiers() const override { return spec_.reservedNames; }
     const std::vector<std::string>& globalIdentifiers() const override { return spec_.globalNames; }
 
 private:
+    bool crossDirImports_ = false;
     std::string name_;
     std::string ext_;
     BackendSpec spec_;
@@ -247,8 +250,12 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     std::string ext = doc["fileExtension"].asString();
     if (ext.empty()) ext = "." + name; // a reasonable default; first-party plugins declare theirs
 
+    // P30 slice 8: whether this target's emitted import specifiers may span directories (the
+    // compiler then hands the import rule a full relative specifier instead of a bare basename).
+    const bool crossDir = doc["crossDirImports"].asBool(false);
+
     return std::make_unique<LoadedBackend>(name, std::move(ext), std::move(spec.spec), std::move(rules),
-                                           std::move(caps), std::move(overlays));
+                                           std::move(caps), std::move(overlays), crossDir);
 }
 
 } // namespace

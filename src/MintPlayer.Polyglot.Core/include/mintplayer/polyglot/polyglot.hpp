@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -100,6 +101,12 @@ public:
 // Sourced by the CLI (a `--lib` flag now, `pgconfig.json` "lib" later); the Core just receives the names.
 struct LibConfig {
     std::vector<std::string> libs;
+    // P30 slice 8: routes a module ORIGIN ("" = the entry file, else its canonical source path) to
+    // its emitted output DIRECTORY — an opaque, consistently normalized key the compiler only ever
+    // compares and diffs lexically (Core stays IO-free). Set by the CLI when include rules may
+    // spread a closure across directories on a `crossDirImports` target; unset = flat layout
+    // (specifiers stay "./<basename>", byte-identical).
+    std::function<std::string(const std::string& origin)> moduleOutputDir;
     // pgconfig `forbiddenIdentifiers` (P19 design note 7): (target-or-"*", name) pairs refused by checkReservedNames
     // when compiling for a matching target. Project policy, carried with the lib config for plumbing economy.
     std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;

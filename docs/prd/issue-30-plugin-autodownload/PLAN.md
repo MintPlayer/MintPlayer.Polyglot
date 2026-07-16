@@ -10,13 +10,14 @@ Build: **VS 18 Insiders MSBuild (v145)** — see root `CLAUDE.md`. New sources m
 (`scripts/check-buildfile-parity.ps1` is the first stage of the gate). Core stays IO-free — every new
 download/lockfile/cache unit lives in the **CLI layer**.
 
-Status: **built + gated** (2026-07-16; slices 0–7 landed as commits on `p30-plugin-autodownload`,
+Status: **built + gated** (2026-07-16; slices 0–8 landed as commits on `p30-plugin-autodownload`,
 PR #31; slice 7 = the maintainer-proposed `include` schema, designed via a second 3-agent
-investigation and implemented as 7a–7d below). Post-plan findings recorded in the master PLAN P30
-entry: the lock's `resolved` URL is treated as a hint (a moved registry re-locates the pinned version;
-the pinned integrity still gates acceptance), and directory identity in the closure check is
-trailing-separator-insensitive (MSBuild's `--out "<dir>\."` quoting guard must not read as a different
-directory — caught by the run-nuget gate).
+investigation and implemented as 7a–7d below; slice 8 = the specifier-recomputation unlock, see
+below). Post-plan findings recorded in the master PLAN P30 entry: the lock's `resolved` URL is
+treated as a hint (a moved registry re-locates the pinned version; the pinned integrity still gates
+acceptance), and directory identity in the closure check is trailing-separator-insensitive
+(MSBuild's `--out "<dir>\."` quoting guard must not read as a different directory — caught by the
+run-nuget gate).
 
 ---
 
@@ -205,6 +206,21 @@ source-less `__polyglot_prelude` keeps an empty source path (its routing follows
   obj AND lands the `.ts` twin at the routed dir; incremental skip leaves the twin untouched (mtime); an
   unchanged re-transpile doesn't rewrite it (write-if-changed); `dotnet clean` removes the obj `.cs` but
   **not** the external twin; a no-pgconfig fixture asserts the guided refusal.
+
+### Slice 8 — cross-directory import specifiers (the closure-rule unlock; built 2026-07-16, same PR)
+
+Capability-gated per target: a plugin manifest declares **`crossDirImports: true`** (TypeScript does;
+Python/PHP/C# don't — their module linkage makes cross-dir non-trivial, so the closure rule keeps
+guarding them). Core: `Backend::crossDirImports()` (manifest-parsed), `LibConfig::moduleOutputDir`
+(an origin→output-dir router the CLI injects; "" = the entry), and `buildImports` computing pure-lexical
+relative specifiers (`./name` same-dir — byte-identical; `../shared/name` climbing; `./sub/name`
+descending, always `./`-prefixed so ESM never reads a package name). The TS plugin's three import
+template arms dropped their hardcoded `"./"` (the specifier now arrives whole). CLI: `libForTarget`
+builds the router from the same `routeIncludeOutput` the output resolution uses (one routing truth);
+`resolveClosureOutputs` gains `allowSplit` = the target's flag. *Gate:* unit goldens (flat/climb/descend,
+python ignoring the router, allowSplit control pair); registry-gate cases — a TS closure split across
+`app/`+`shared/` emits `from "../shared/util"` and builds, the same layout on a non-crossDirImports
+target still refuses with the split named.
 
 ### 7d — Gate + docs wrap-up
 

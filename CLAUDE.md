@@ -101,8 +101,9 @@ summary in PRD §6 — this file does **not** track milestones):
   config-sourced too: pgconfig **`include` rules** (`{ pattern, target, output-template }`,
   `%(Filename)`/`%(Directory)`/`%(RecursiveDir)`/`%(TargetLanguage)`, extension auto-appended from the
   plugin manifest) route each emitted file — TS twins into an Angular app while C# stays in obj — and a
-  bare `polyglot build` discovers inputs from the same patterns; a closure split across dirs refuses
-  (emitted imports are `./<name>`). Plus the npm target plugins, the `.pg`-aware **NuGet**
+  bare `polyglot build` discovers inputs from the same patterns; a closure split across dirs emits
+  real relative specifiers on a `crossDirImports` target (TS declares it) and refuses loudly on the
+  rest (Python/PHP/C#). Plus the npm target plugins, the `.pg`-aware **NuGet**
   (auto-transpiles before `dotnet build`, per-RID, **no language flag — the consumer's pgconfig decides;
   minimum `"targets": ["csharp"]`**), a provenance-attested prebuilt-CLI release channel, and a
   cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64). A no-config, no-`--target` build
