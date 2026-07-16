@@ -3118,7 +3118,7 @@ strict-`tsc`):**
 annotated (only non-empty literals relied on inference, which the rule keeps). Precedent: Swift/Go require
 the same. **Versioning:** lockstep, tag-driven (P24) — no source bump; the PR carries `release:minor`.
 
-## P30 — Build-time plugin auto-download from `pgconfig.json` — 🚧 slices 0–6 built + gated, slice 7 (MSBuild multi-target) in flight in the same PR #31 (2026-07-16; issue #30, PRD `docs/prd/issue-30-plugin-autodownload/`, 3+3-agent investigations, PRD §4.20)
+## P30 — Build-time plugin auto-download from `pgconfig.json` — ✅ built + gated (2026-07-16; issue #30, PR #31, PRD `docs/prd/issue-30-plugin-autodownload/`, 3+3-agent investigations, PRD §4.20)
 
 Cashes the unbuilt half of the P10 §6 promise (`docs/design/plugins-and-targets.md`: *"From it the CLI
 resolves and **downloads** the named plugins into a shared cache, then emits"*). Today

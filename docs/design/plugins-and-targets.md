@@ -125,8 +125,15 @@ portable std + the bundled C#/TS backend specs**. Beyond that:
 > `file:` in place → in-box when the CLI's lockstep version satisfies the range → the verified
 > versioned cache when `pgconfig.lock.json` pins → the npm registry HTTP API (abbreviated packument,
 > `maxSatisfying`, SRI verify, in-exe gunzip+untar, `validateBackend`) — no npm process, no system
-> tar, no lifecycle scripts. `environments` gating (below) remains future work. Design details that
-> changed in the building are annotated in §6.1/§6.3; full record: `docs/prd/issue-30-plugin-autodownload/`.
+> tar, no lifecycle scripts. Output routing is config-sourced too (slice 7): `include` file-mapping
+> rules (`{ pattern, target, output-template }`, glob relative to the config, first-match-wins,
+> `%(Filename)`/`%(Directory)`/`%(RecursiveDir)`/`%(TargetLanguage)` with the target's manifest
+> `fileExtension()` always auto-appended) route each emitted file — e.g. TypeScript twins into an
+> Angular app — while unmatched (file, target) pairs fall to `--out`; a bare `polyglot build`
+> discovers its inputs from the same patterns, and the MSBuild package no longer passes any language
+> flag (consumers declare `"targets": ["csharp"]` minimum). `environments` gating (below) remains
+> future work. Design details that changed in the building are annotated in §6.1/§6.3; full record:
+> `docs/prd/issue-30-plugin-autodownload/` (D7–D9 for the routing).
 
 `pg` reads a workspace config (`pgconfig.json`) from the cwd. It declares the **target
 environments** (desktop/web/mobile/…) and the **plugins + versions** in use. From it the CLI resolves and

@@ -10,11 +10,13 @@ Build: **VS 18 Insiders MSBuild (v145)** — see root `CLAUDE.md`. New sources m
 (`scripts/check-buildfile-parity.ps1` is the first stage of the gate). Core stays IO-free — every new
 download/lockfile/cache unit lives in the **CLI layer**.
 
-Status: **slices 0–6 built + gated** (2026-07-16; landed as commits on `p30-plugin-autodownload`, one
-commit per slice, PR #31); **slice 7 (MSBuild multi-target) pulled into the same PR** — designed
-2026-07-16 via a 3-agent second-wave investigation, implementation next (slices 7a–7c below). Post-plan
-finding recorded in the master PLAN P30 entry: the lock's `resolved` URL is treated as a hint — a moved
-registry re-locates the pinned version and the pinned integrity still gates acceptance.
+Status: **built + gated** (2026-07-16; slices 0–7 landed as commits on `p30-plugin-autodownload`,
+PR #31; slice 7 = the maintainer-proposed `include` schema, designed via a second 3-agent
+investigation and implemented as 7a–7d below). Post-plan findings recorded in the master PLAN P30
+entry: the lock's `resolved` URL is treated as a hint (a moved registry re-locates the pinned version;
+the pinned integrity still gates acceptance), and directory identity in the closure check is
+trailing-separator-insensitive (MSBuild's `--out "<dir>\."` quoting guard must not read as a different
+directory — caught by the run-nuget gate).
 
 ---
 

@@ -97,10 +97,16 @@ summary in PRD §6 — this file does **not** track milestones):
 - **Distribution.** Build-time **plugin auto-download** (P30, issue #30): `pgconfig.json` `dependencies`
   resolve inside the exe — in-box → lockfile-pinned verified cache (offline, zero network) → the npm
   registry HTTP API (SRI-verified, data-only, no npm/tar processes) — pinned in a committed
-  `pgconfig.lock.json`; `polyglot install` is an optional cache pre-warmer. Plus the npm target plugins,
-  the `.pg`-aware **NuGet** (auto-transpiles before `dotnet build`, per-RID), a provenance-attested
-  prebuilt-CLI release channel, and a cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64).
-  A no-config, no-`--target` build now refuses (the plugin set is fully config-sourced).
+  `pgconfig.lock.json`; `polyglot install` is an optional cache pre-warmer. Output routing is
+  config-sourced too: pgconfig **`include` rules** (`{ pattern, target, output-template }`,
+  `%(Filename)`/`%(Directory)`/`%(RecursiveDir)`/`%(TargetLanguage)`, extension auto-appended from the
+  plugin manifest) route each emitted file — TS twins into an Angular app while C# stays in obj — and a
+  bare `polyglot build` discovers inputs from the same patterns; a closure split across dirs refuses
+  (emitted imports are `./<name>`). Plus the npm target plugins, the `.pg`-aware **NuGet**
+  (auto-transpiles before `dotnet build`, per-RID, **no language flag — the consumer's pgconfig decides;
+  minimum `"targets": ["csharp"]`**), a provenance-attested prebuilt-CLI release channel, and a
+  cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64). A no-config, no-`--target` build
+  refuses (the plugin set is fully config-sourced).
 
 In flight / gated: **P23** (bundle the CLI in the VS Code extension for zero-setup install — built, pending
 an interactive vsix install + the first marketplace publish; PR #16), **P22** tail (PHP runtime differential +

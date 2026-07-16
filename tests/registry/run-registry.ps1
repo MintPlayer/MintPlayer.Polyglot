@@ -118,6 +118,20 @@ try {
     & $Cli build (Join-Path $proj "main.pg") --target csharp --out $proj *> $null
     Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $proj "main.cs"))) `
         "--target overrides the pgconfig target set"
+
+    # --- include routing (P30 slice 7): rules route the twin; explicit flags keep flag semantics ---
+    $proj3 = Join-Path $work "proj3"
+    New-Item -ItemType Directory -Force $proj3 | Out-Null
+    Set-Content (Join-Path $proj3 "main.pg") "import { print } from `"std.io`"`nfn main() {`n  print(7)`n}`n" -NoNewline
+    Set-Content (Join-Path $proj3 "pgconfig.json") ("{ `"targets`": [`"pyfixture`"], " +
+        "`"dependencies`": { `"pyfixture`": `"^1.2.0`" }, " +
+        "`"include`": [ { `"pattern`": `"*.pg`", `"target`": `"pyfixture`", `"output`": `"twins/py/%(Filename)`" } ] }") -NoNewline
+    & $Cli build (Join-Path $proj3 "main.pg") *> $null
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $proj3 "twins/py/main.py"))) `
+        "an include rule routes the emitted twin (config-driven, extension auto-appended)"
+    & $Cli build (Join-Path $proj3 "main.pg") --target pyfixture --out $proj3 *> $null
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $proj3 "main.py"))) `
+        "explicit --target + --out bypasses the include rules (flag semantics)"
     $noCfg = Join-Path $work "nocfg"
     New-Item -ItemType Directory -Force $noCfg | Out-Null
     Set-Content (Join-Path $noCfg "main.pg") "fn main() {`n}`n" -NoNewline
