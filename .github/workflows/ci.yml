@@ -1,0 +1,44 @@
+name: PR checks (Linux build + unit tests)
+# The PR-level compile gate this repo was missing (added after the P30 squash broke every POSIX
+# release leg post-merge — run 29485382814): a single ubuntu cmake/g++ build + the unit suite,
+# so platform-forked code (#ifdef transport, dlopen/popen, chrono/filesystem quirks) is compiled
+# by a second toolchain BEFORE merge instead of first meeting g++ in the tag-triggered release.
+# Deliberately ONE cheap leg (no macOS/Windows runners, no differential conformance — Windows is
+# the local gate, the release run stays the full cross-platform proof). Same toolchain floor as
+# release.yml's linux-x64 (ubuntu-22.04 = glibc 2.35, PRD §4.14).
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'plugins/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+jobs:
+  linux-build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain (cmake, g++)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++
+
+      - name: Build (CMake, Release)
+        # POLYGLOT_VERSION pinned to the dev placeholder: the shallow PR checkout has no tags, so
+        # CMake's `git describe --always` fallback would inject a bare commit SHA and fail the
+        # version-shape unit test. A PR check has no version — say so explicitly.
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOLYGLOT_VERSION=0.0.0-dev
+          cmake --build build -j"$(nproc)"
+
+      - name: Unit tests
+        run: ./build/polyglot-tests
+
+      - name: Smoke transpile (plugins found next to the binary, not cwd)
+        run: |
+          printf 'fn main() {\n  print(6 * 7)\n}\n' > /tmp/smoke.pg
+          (cd /tmp && "$GITHUB_WORKSPACE/build/polyglot" build /tmp/smoke.pg --target csharp --out /tmp/ --lib io)
+          grep -q 'print(6 \* 7)' /tmp/smoke.cs
