@@ -2329,64 +2329,69 @@ int main() {
     }
 
     // Rule routing: first-match-wins, target filtering, fallback, config-relative resolution.
+    // (Fixture paths are temp-dir-based so they are genuinely ABSOLUTE on POSIX too — a literal
+    // "C:/proj" is a relative path there, and the fs arithmetic diverges: the linux CI catch.)
     {
         namespace fs = std::filesystem;
+        const fs::path proj = (fs::temp_directory_path() / "p30-s7-route" / "proj").lexically_normal();
         cli::PgConfig pc;
         pc.found = true;
-        pc.dir = fs::path("C:/proj");
+        pc.dir = proj;
         pc.include.push_back({"FruitCake/polyglot/*.pg", {"typescript"}, "../web/app/fruit-cake/%(Filename)"});
         pc.include.push_back({"**/*.pg", {"typescript"}, "gen/%(RecursiveDir)%(Filename)"});
         std::string err;
 
-        auto r1 = cli::routeIncludeOutput(pc, fs::path("C:/proj/FruitCake/polyglot/fruitcake_solver.pg"),
+        auto r1 = cli::routeIncludeOutput(pc, proj / "FruitCake/polyglot/fruitcake_solver.pg",
                                           "typescript", err);
-        check(r1 && *r1 == fs::path("C:/web/app/fruit-cake/fruitcake_solver").lexically_normal(),
+        check(r1 && *r1 == (proj.parent_path() / "web/app/fruit-cake/fruitcake_solver").lexically_normal(),
               "P30 s7: the FIRST matching rule wins (narrow above broad)");
-        auto r2 = cli::routeIncludeOutput(pc, fs::path("C:/proj/Snake/polyglot/snake_solver.pg"),
+        auto r2 = cli::routeIncludeOutput(pc, proj / "Snake/polyglot/snake_solver.pg",
                                           "typescript", err);
-        check(r2 && *r2 == fs::path("C:/proj/gen/Snake/polyglot/snake_solver").lexically_normal(),
+        check(r2 && *r2 == (proj / "gen/Snake/polyglot/snake_solver").lexically_normal(),
               "P30 s7: the broad rule mirrors the tree via %(RecursiveDir)");
-        check(!cli::routeIncludeOutput(pc, fs::path("C:/proj/Snake/polyglot/snake_solver.pg"), "csharp", err) &&
+        check(!cli::routeIncludeOutput(pc, proj / "Snake/polyglot/snake_solver.pg", "csharp", err) &&
                   err.empty(),
               "P30 s7: a target no rule names falls through cleanly (no match, no error)");
-        check(!cli::routeIncludeOutput(pc, fs::path("C:/elsewhere/a.pg"), "typescript", err),
+        check(!cli::routeIncludeOutput(pc, proj.parent_path() / "elsewhere/a.pg", "typescript", err),
               "P30 s7: a source outside the config's tree never routes");
     }
 
     // Closure outputs: prelude follows the entry; a split closure is refused, never miscompiled.
     {
         namespace fs = std::filesystem;
+        const fs::path proj = (fs::temp_directory_path() / "p30-s7-closure" / "proj").lexically_normal();
+        const fs::path outAlt = (fs::temp_directory_path() / "p30-s7-closure" / "out").lexically_normal();
         cli::PgConfig pc;
         pc.found = true;
-        pc.dir = fs::path("C:/proj");
+        pc.dir = proj;
         pc.include.push_back({"main.pg", {"typescript"}, "web/%(Filename)"});
         EmitResult fake;
         fake.ok = true;
         fake.code = "entry";
-        fake.modules.push_back({"util", "code", (fs::path("C:/proj") / "util.pg").string()});
+        fake.modules.push_back({"util", "code", (proj / "util.pg").string()});
         fake.modules.push_back({"__polyglot_prelude", "prelude", ""});
         std::vector<fs::path> outs;
         std::string err;
 
         // Entry routed to web/, util unmatched -> fallback dir: a SPLIT closure must refuse.
-        check(!cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
-                                          fs::path("C:/proj"), outs, err) &&
+        check(!cli::resolveClosureOutputs(pc, false, proj / "main.pg", fake, "typescript", ".ts",
+                                          proj, outs, err) &&
                   has(err, "split the import closure"),
               "P30 s7: include rules splitting a closure are refused with the split named");
 
         // A rule covering the whole closure routes everything together; the prelude follows the entry.
         pc.include.clear();
         pc.include.push_back({"**/*.pg", {"typescript"}, "web/%(Filename)"});
-        check(cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
-                                         fs::path("C:/proj"), outs, err) &&
-                  outs.size() == 3 && outs[0] == fs::path("C:/proj/web/main.ts") &&
-                  outs[1] == fs::path("C:/proj/web/util.ts") && outs[2] == fs::path("C:/proj/web/__polyglot_prelude.ts"),
+        check(cli::resolveClosureOutputs(pc, false, proj / "main.pg", fake, "typescript", ".ts",
+                                         proj, outs, err) &&
+                  outs.size() == 3 && outs[0] == proj / "web/main.ts" &&
+                  outs[1] == proj / "web/util.ts" && outs[2] == proj / "web/__polyglot_prelude.ts",
               "P30 s7: a closure-covering rule routes entry+modules together, prelude follows the entry");
 
         // flagRouted (explicit --target + --out) bypasses the rules wholesale.
-        check(cli::resolveClosureOutputs(pc, true, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
-                                         fs::path("C:/out"), outs, err) &&
-                  outs[0] == fs::path("C:/out/main.ts") && outs[2] == fs::path("C:/out/__polyglot_prelude.ts"),
+        check(cli::resolveClosureOutputs(pc, true, proj / "main.pg", fake, "typescript", ".ts",
+                                         outAlt, outs, err) &&
+                  outs[0] == outAlt / "main.ts" && outs[2] == outAlt / "__polyglot_prelude.ts",
               "P30 s7: explicit --target + --out keeps flag semantics (rules bypassed)");
     }
 
@@ -2461,22 +2466,23 @@ int main() {
 
         // The closure check permits a split for a crossDirImports target (allowSplit).
         namespace fs = std::filesystem;
+        const fs::path proj = (fs::temp_directory_path() / "p30-s8-split" / "proj").lexically_normal();
         cli::PgConfig pc;
         pc.found = true;
-        pc.dir = fs::path("C:/proj");
+        pc.dir = proj;
         pc.include.push_back({"main.pg", {"typescript"}, "app/%(Filename)"});
         EmitResult fake;
         fake.ok = true;
         fake.code = "entry";
-        fake.modules.push_back({"util", "code", (fs::path("C:/proj") / "lib/util.pg").string()});
+        fake.modules.push_back({"util", "code", (proj / "lib/util.pg").string()});
         std::vector<fs::path> outs;
         std::string err;
-        check(!cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
-                                          fs::path("C:/proj"), outs, err, /*allowSplit=*/false),
+        check(!cli::resolveClosureOutputs(pc, false, proj / "main.pg", fake, "typescript", ".ts",
+                                          proj, outs, err, /*allowSplit=*/false),
               "P30 s8: (control) the split still refuses without the capability");
-        check(cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
-                                         fs::path("C:/proj"), outs, err, /*allowSplit=*/true) &&
-                  outs[0] == fs::path("C:/proj/app/main.ts") && outs[1] == fs::path("C:/proj/util.ts"),
+        check(cli::resolveClosureOutputs(pc, false, proj / "main.pg", fake, "typescript", ".ts",
+                                         proj, outs, err, /*allowSplit=*/true) &&
+                  outs[0] == proj / "app/main.ts" && outs[1] == proj / "util.ts",
               "P30 s8: allowSplit routes a closure across directories (entry routed, module fallback)");
     }
 

@@ -227,7 +227,8 @@ struct ResolveResult {
 inline std::string configStamp(const PgConfig& pc) {
     std::error_code ec;
     const auto t = std::filesystem::last_write_time(pc.dir / "pgconfig.json", ec);
-    return ec ? std::string("?") : std::to_string(t.time_since_epoch().count());
+    // Explicit cast: libc++'s file-clock rep has no exact to_string overload (ambiguous on macOS).
+    return ec ? std::string("?") : std::to_string(static_cast<long long>(t.time_since_epoch().count()));
 }
 
 // Resolve every dependency in a pgconfig (the `resolveConfiguredTargets` engine). `state` may be
