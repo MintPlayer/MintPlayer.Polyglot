@@ -53,6 +53,11 @@ for the conformance stage.
 it per slice multiplies that into hours of waiting. Implement EVERYTHING first, then build + run the full
 gate **once** at the end. (If a slice really needs a mid-flight sanity check, the cheap unit-test exe run
 is the ceiling — never the full gate, and never speculative extra legs like WSL/CMake builds.)
+**Exception:** when a change touches platform-forked code (`#ifdef _WIN32`/POSIX branches, dlopen/popen,
+chrono/filesystem edges), one POSIX compile+unit run (WSL `cmake`, or the PR's Linux check) is part of
+the required end gate, not an extra leg — MSVC accepting the code proves nothing about g++/clang (the
+P30 release run broke on every POSIX leg post-merge; PRs now run `ci.yml` = one ubuntu build as the
+pre-merge floor).
 TOOLCHAIN: the projects target PlatformToolset **v145** / VCProjectVersion **18.0**, so they **require
 VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. The build is **VS 18
 "Insiders"** (v145 → MSVC 14.51):
