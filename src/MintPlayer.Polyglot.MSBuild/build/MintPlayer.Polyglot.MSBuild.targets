@@ -66,7 +66,13 @@
     </PropertyGroup>
     <RemoveDir Directories="$(PolyglotOutDir)" />
     <MakeDir Directories="$(PolyglotOutDir)" />
-    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --target csharp --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)" />
+    <!-- P30 slice 7: no language flag — the consumer's pgconfig.json decides the target set (it must
+         declare at least "targets": ["csharp"]; the CLI's refusal names that fix). MSBuild passes files
+         and paths, never languages. The `out` flag below is the DEFAULT sink: csharp (no include rule)
+         lands in obj/ and compiles exactly as before; other targets route through the pgconfig `include`
+         rules (e.g. TypeScript twins into a web app's src) and are deliberately NOT in @(FileWrites) —
+         they are committed source artifacts `dotnet clean` must never delete. -->
+    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)" />
     <Touch Files="$(PolyglotOutDir)__polyglot.stamp" AlwaysCreate="true" />
   </Target>
 
