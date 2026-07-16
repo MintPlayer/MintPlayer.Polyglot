@@ -48,6 +48,11 @@ x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 **One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
 — or invoke the **`/build-and-test`** skill (`.claude/skills/build-and-test/`). Needs `dotnet` + `node`
 for the conformance stage.
+
+**Do NOT run intermediary builds/tests between phases/slices.** The full gate takes ~15 minutes; running
+it per slice multiplies that into hours of waiting. Implement EVERYTHING first, then build + run the full
+gate **once** at the end. (If a slice really needs a mid-flight sanity check, the cheap unit-test exe run
+is the ceiling — never the full gate, and never speculative extra legs like WSL/CMake builds.)
 TOOLCHAIN: the projects target PlatformToolset **v145** / VCProjectVersion **18.0**, so they **require
 VS 2026 (the "18" generation)** — by design; this is a VS-2026-only project. The build is **VS 18
 "Insiders"** (v145 → MSVC 14.51):
@@ -89,9 +94,20 @@ summary in PRD §6 — this file does **not** track milestones):
 - **Editor tooling.** A zero-dep `polyglot lsp` (diagnostics / go-to-def / hover / symbols / semantic tokens /
   rename / completion), live generated-output preview, and watch mode (P16 / P17 / P21). The VS Code
   extension is on the marketplace (ID `mintplayer.polyglot-lang`, frozen).
-- **Distribution.** `polyglot install` + a plugin cache/registry, the npm target plugins, the `.pg`-aware
-  **NuGet** (auto-transpiles before `dotnet build`, per-RID), a provenance-attested prebuilt-CLI release
-  channel, and a cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64).
+- **Distribution.** Build-time **plugin auto-download** (P30, issue #30): `pgconfig.json` `dependencies`
+  resolve inside the exe — in-box → lockfile-pinned verified cache (offline, zero network) → the npm
+  registry HTTP API (SRI-verified, data-only, no npm/tar processes) — pinned in a committed
+  `pgconfig.lock.json`; `polyglot install` is an optional cache pre-warmer. Output routing is
+  config-sourced too: pgconfig **`include` rules** (`{ pattern, target, output-template }`,
+  `%(Filename)`/`%(Directory)`/`%(RecursiveDir)`/`%(TargetLanguage)`, extension auto-appended from the
+  plugin manifest) route each emitted file — TS twins into an Angular app while C# stays in obj — and a
+  bare `polyglot build` discovers inputs from the same patterns; a closure split across dirs emits
+  real relative specifiers on a `crossDirImports` target (TS declares it) and refuses loudly on the
+  rest (Python/PHP/C#). Plus the npm target plugins, the `.pg`-aware **NuGet**
+  (auto-transpiles before `dotnet build`, per-RID, **no language flag — the consumer's pgconfig decides;
+  minimum `"targets": ["csharp"]`**), a provenance-attested prebuilt-CLI release channel, and a
+  cross-platform CLI (Windows + Linux x64/arm64 + macOS x64/arm64). A no-config, no-`--target` build
+  refuses (the plugin set is fully config-sourced).
 
 In flight / gated: **P23** (bundle the CLI in the VS Code extension for zero-setup install — built, pending
 an interactive vsix install + the first marketplace publish; PR #16), **P22** tail (PHP runtime differential +

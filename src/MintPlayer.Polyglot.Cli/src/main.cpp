@@ -31,11 +31,22 @@
 #include "mintplayer/polyglot/polyglot.hpp"
 
 #include "exe_path.hpp"
+#include "pgconfig.hpp"
+#include "pluginresolve.hpp"
 #include "watch.hpp"
 
 using namespace mintplayer::polyglot;
 
 namespace fs = std::filesystem;
+
+// The workspace-config/cache glue lives in pgconfig.hpp (P30 slice 0) so tests can link it; the
+// unqualified names below keep the call sites unchanged.
+using cli::PgConfig;
+using cli::loadPgConfig;
+using cli::loadPluginFile;
+using cli::pluginCacheDir;
+using cli::readFile;
+using cli::writeFile;
 
 namespace {
 
@@ -51,7 +62,11 @@ void printUsage() {
         << "  polyglot lsp\n"
         << "  polyglot install <plugin-dir | npm-package>\n"
         << "\n"
-        << "  build  Transpiles <input.pg>. With no --target, emits BOTH <name>.cs and <name>.ts.\n"
+        << "  build  Transpiles <input.pg> for every language in pgconfig.json `targets` (--target\n"
+        << "         overrides; missing plugin dependencies download from the npm registry into the\n"
+        << "         user cache, pinned by pgconfig.lock.json). pgconfig `include` rules route each\n"
+        << "         emitted file (glob -> output template; the target extension is appended); with\n"
+        << "         no input args, build discovers its inputs from those patterns.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
         << "         --watch rebuilds whenever the input, an imported .pg, or pgconfig.json changes\n"
         << "         (a failed rebuild keeps watching and never touches the last good outputs).\n"
@@ -62,23 +77,11 @@ void printUsage() {
         << "         document symbols, hover. Spawned by the editor extensions; not for interactive use.\n";
 }
 
-// Read an entire file into a string. Returns false if it could not be opened.
-bool readFile(const fs::path& path, std::string& out) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
-}
-
-bool writeFile(const fs::path& path, const std::string& content) {
-    std::error_code ec;
-    if (path.has_parent_path()) fs::create_directories(path.parent_path(), ec); // `--out newdir` just works
-    std::ofstream os(path, std::ios::binary);
-    if (!os) return false;
-    os << content;
-    return true;
+// Comma-join a target-name list for "loaded targets: ..." diagnostics.
+std::string joinNames(const std::vector<std::string>& names) {
+    std::string out;
+    for (const auto& n : names) { if (!out.empty()) out += ", "; out += n; }
+    return out.empty() ? "none" : out;
 }
 
 // Split a comma-separated lib list ("io,math") into a LibConfig, trimming blank entries.
@@ -93,99 +96,21 @@ LibConfig parseLibList(const std::string& libArg) {
     return lib;
 }
 
-// The minimal project manifest (PRD §4.8): `{ "root": <dir>, "lib": ["io","math"] }`. `root` is resolved
-// against the pgconfig.json that declares it; `lib` is the ambient prelude. Found by walking up from a start
-// directory to the first pgconfig.json. Parsed with the Core JSON reader — Core stays IO-free; this is
-// CLI/LSP glue that produces the same `root`/`lib` the compiler already accepts. A precursor of P10's file.
-struct PgConfig {
-    bool found = false;
-    std::string root; // absolute, resolved against the config's directory
-    std::string lib;  // comma-joined lib names
-    std::string access; // emitted C# accessibility ("public"/"internal"); empty = target default
-    std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
-    std::vector<std::pair<std::string, std::string>> dependencies; // target -> source spec ("file:<dir>")
-    // project-policy identifier bans (P19 slices 13-15): (target-or-"*", name) fed to checkReservedNames.
-    // JSON shape: `"forbiddenIdentifiers": {"*": ["temp"], "python": ["data"]}` — or a bare array = all targets.
-    std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;
-    fs::path dir; // where the config was found (file: deps resolve against it)
-};
-PgConfig loadPgConfig(const fs::path& startDir) {
-    for (fs::path d = startDir;; d = d.parent_path()) {
-        std::string src;
-        if (readFile(d / "pgconfig.json", src)) {
-            json::Value v = json::parse(src);
-            PgConfig pc;
-            pc.found = true;
-            pc.dir = d;
-            std::string r = v["root"].asString();
-            pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
-            for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
-            pc.access = v["access"].asString();
-            for (const auto& e : v["targets"].items())
-                if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
-            for (const auto& kv : v["dependencies"].members)
-                if (kv.second.kind == json::Value::Kind::String) pc.dependencies.push_back({kv.first, kv.second.asString()});
-            const json::Value& fi = v["forbiddenIdentifiers"];
-            if (fi.kind == json::Value::Kind::Array) { // bare array = every target
-                for (const auto& e : fi.items())
-                    if (e.kind == json::Value::Kind::String) pc.forbiddenIdentifiers.push_back({"*", e.asString()});
-            } else if (fi.kind == json::Value::Kind::Object) {
-                for (const auto& kv : fi.members)
-                    for (const auto& e : kv.second.items())
-                        if (e.kind == json::Value::Kind::String) pc.forbiddenIdentifiers.push_back({kv.first, e.asString()});
-            }
-            return pc;
-        }
-        if (!d.has_parent_path() || d.parent_path() == d) return {};
-    }
-}
-
-// The user-level plugin cache `polyglot install` populates: %LOCALAPPDATA%\polyglot\plugins on Windows,
-// the XDG data dir on Linux, ~/Library/Application Support on macOS — a DURABLE per-user location so
-// installed plugins survive a reboot. temp_directory_path() is only the last resort (never fail here).
-fs::path pluginCacheDir() {
-#ifdef _WIN32
-    char buf[4096];
-    const unsigned long n = GetEnvironmentVariableA("LOCALAPPDATA", buf, sizeof(buf));
-    if (n > 0 && n < sizeof(buf)) return fs::path(std::string(buf, n)) / "polyglot" / "plugins";
-#elif defined(__APPLE__)
-    if (const char* home = std::getenv("HOME"); home && *home)
-        return fs::path(home) / "Library" / "Application Support" / "polyglot" / "plugins";
-#else
-    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
-        return fs::path(xdg) / "polyglot" / "plugins";
-    if (const char* home = std::getenv("HOME"); home && *home)
-        return fs::path(home) / ".local" / "share" / "polyglot" / "plugins";
-#endif
-    return fs::temp_directory_path() / "polyglot" / "plugins";
-}
-
-// Load one plugin manifest file into the registry; reports (but does not throw on) failures.
-bool loadPluginFile(const fs::path& manifest) {
-    std::string src;
-    if (!readFile(manifest, src)) return false;
-    std::string err;
-    if (!loadBackend(src, err)) {
-        std::cerr << "polyglot: " << manifest.string() << ": " << err << "\n";
-        return false;
-    }
-    return true;
-}
-
-// Resolve a target that is not yet registered (P19 slices 10-11): pgconfig `dependencies` `file:` paths
-// (relative to the config's directory), then the user cache. The in-box `plugins/` dir next to the exe was
-// loaded at startup; an unresolved name ends up at findTarget's error, which names the channels.
+// Resolve every pgconfig dependency (P19 slices 10-11, download half built at P30 slice 3):
+// `file:` in place; in-box when the CLI's lockstep version satisfies the range; the verified
+// versioned cache when the lockfile pins; else fetched from the npm registry inside the exe
+// (packument -> maxSatisfying -> SRI verify -> extract -> validate -> cache -> lock). Shared by
+// build, watch, and the LSP — the static ResolveState memoizes successes AND failures per config
+// generation, so a long-lived host retries on pgconfig change instead of hammering the network.
 void resolveConfiguredTargets(const PgConfig& pc) {
-    for (const auto& [name, spec] : pc.dependencies) {
-        if (findTarget(name).ok()) continue;
-        if (spec.rfind("file:", 0) == 0)
-            loadPluginFile((pc.dir / spec.substr(5) / "polyglot-plugin.json").lexically_normal());
-        else
-            std::cerr << "polyglot: dependency '" << name << "': unsupported spec '" << spec
-                      << "' (only file:<dir> resolves in-place; use `polyglot install " << name << "`)\n";
-    }
+    static cli::ResolveState state;
+    const cli::ResolveResult res =
+        cli::resolvePluginDependencies(pc, cli::defaultHttpGet(), /*update=*/false, &state);
+    for (const auto& m : res.messages) std::cerr << "polyglot: " << m << "\n";
     for (const auto& t : pc.targets)
-        if (!findTarget(t).ok()) loadPluginFile(pluginCacheDir() / t / "polyglot-plugin.json");
+        if (!findTarget(t).ok())
+            std::cerr << "polyglot: target '" << t << "' is neither bundled nor provided by a pgconfig "
+                      << "dependency; add one, e.g. \"dependencies\": { \"" << t << "\": \"latest\" }\n";
 }
 
 // Resolves a cross-`.pg` import to a file. A bare specifier ("a.b.c") is a logical module name resolved
@@ -252,6 +177,13 @@ bool writeDedup(const fs::path& out, const std::string& content,
         }
         (*seen)[key] = content;
     }
+    // Write-if-changed (P30 slice 7): an unchanged output keeps its mtime and never churns a file
+    // watcher — routed twins may live inside a live dev server's src tree.
+    std::string existing;
+    if (readFile(out, existing) && existing == content) {
+        std::cout << "  -> " << out.string() << "\n";
+        return true;
+    }
     if (!writeFile(out, content)) {
         std::cerr << "polyglot: cannot write '" << out.string() << "'\n";
         return false;
@@ -260,25 +192,52 @@ bool writeDedup(const fs::path& out, const std::string& content,
     return true;
 }
 
-// Emit one target next to (or under --out of) the input. `seen` (optional) dedups shared modules across a
-// multi-root project build. Returns false on any failure.
-bool emitOne(const std::string& source, const fs::path& input, const fs::path& outDir,
+// Emit one target for one closure. Output paths route through the config's `include` rules
+// (P30 slice 7, PRD D7) with `fallbackDir` (--out / the input's dir) for unmatched files;
+// `flagRouted` (explicit --target + --out) bypasses the rules wholesale. `seen` (optional) dedups
+// shared modules across a multi-root project build. Returns false on any failure.
+// Build the LibConfig the compiler sees for one (closure, target): on a `crossDirImports` target
+// with include rules in play, it carries the output-dir router so emitted import specifiers span
+// directories correctly (P30 slice 8); otherwise it's the caller's lib unchanged (flat "./<name>").
+LibConfig libForTarget(const LibConfig& lib, const BackendHandle& target, const PgConfig& pc,
+                       bool flagRouted, const fs::path& input, const fs::path& fallbackDir) {
+    LibConfig out = lib;
+    if (flagRouted || !target.backend()->crossDirImports() || !pc.found || pc.include.empty()) return out;
+    std::error_code ec;
+    const std::string tname = target.backend()->name();
+    const fs::path inputAbs = fs::absolute(input, ec);
+    const fs::path fbAbs = fs::absolute(fallbackDir, ec);
+    out.moduleOutputDir = [&pc, tname, inputAbs, fbAbs](const std::string& origin) {
+        const fs::path src = origin.empty() ? inputAbs : fs::path(origin);
+        std::string terr;
+        if (auto r = cli::routeIncludeOutput(pc, src, tname, terr))
+            return cli::normalizedDirKey(r->parent_path());
+        return cli::normalizedDirKey(fbAbs); // no match (or a template error the output resolution refuses)
+    };
+    return out;
+}
+
+bool emitOne(const std::string& source, const fs::path& input, const fs::path& fallbackDir,
              const BackendHandle& target, const char* ext, ModuleResolver* resolver, const LibConfig& lib,
+             const PgConfig& pc, bool flagRouted,
              std::map<std::string, std::string>* seen = nullptr) {
-    EmitResult result = compile(source, target, resolver, lib);
+    EmitResult result = compile(source, target, resolver,
+                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir));
     if (!result.ok) {
         reportDiagnostics(input, result);
         return false;
     }
-    fs::path out = outDir / input.stem();
-    out += ext;
-    if (!writeDedup(out, result.code, seen)) return false;
-    // §4.5 module linking: a multi-module program emits one file per imported user module alongside the entry.
-    for (const auto& mf : result.modules) {
-        fs::path mout = outDir / mf.basename;
-        mout += ext;
-        if (!writeDedup(mout, mf.code, seen)) return false;
+    std::vector<fs::path> outs;
+    std::string rerr;
+    if (!cli::resolveClosureOutputs(pc, flagRouted, input, result, target.backend()->name(), ext,
+                                    fallbackDir, outs, rerr, target.backend()->crossDirImports())) {
+        std::cerr << "polyglot: " << rerr << "\n";
+        return false;
     }
+    if (!writeDedup(outs[0], result.code, seen)) return false;
+    // §4.5 module linking: a multi-module program emits one file per imported user module alongside the entry.
+    for (std::size_t i = 0; i < result.modules.size(); ++i)
+        if (!writeDedup(outs[i + 1], result.modules[i].code, seen)) return false;
     return true;
 }
 
@@ -330,7 +289,8 @@ struct WatchCycle {
 };
 
 WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, const fs::path& rootArg,
-                          const std::string& targetArg, const std::string& libArgIn, bool checkOnly) {
+                          const std::string& targetArg, const std::string& libArgIn, bool checkOnly,
+                          bool flagRouted) {
     WatchCycle c;
     const fs::path absInput = fs::absolute(input).lexically_normal();
     c.watched.push_back(absInput);
@@ -369,6 +329,10 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         if (pc.found && d == pc.dir) break;
         if (!d.has_parent_path() || d.parent_path() == d) break;
     }
+    if (!pc.errors.empty()) { // a broken manifest refuses the cycle; the config is watched, so a fix recovers
+        for (const auto& m : pc.errors) emitTopLevel(m);
+        return c;
+    }
 
     fs::path root = rootArg;
     std::string libArg = libArgIn;
@@ -383,25 +347,31 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 
     resolveConfiguredTargets(pc); // safe per-cycle: already-registered names are skipped
 
-    // The target set mirrors runBuild's resolution; `check --watch` uses the reference target only.
+    // The target set mirrors runBuild's resolution; `check --watch` uses the derived reference
+    // target only. No config + no --target refuses per cycle (P30 slice 4) — adding a
+    // pgconfig.json is watched, so the next save recovers.
     std::vector<std::string> targets;
-    if (checkOnly)
-        targets.push_back("csharp");
-    else if (!targetArg.empty())
+    if (checkOnly) {
+        if (const Backend* ref = cli::referenceBackend()) targets.push_back(ref->name());
+        else { emitTopLevel("no full-coverage reference target is loaded (no plugins found?)"); return c; }
+    } else if (!targetArg.empty()) {
         targets.push_back(targetArg);
-    else if (!pc.targets.empty())
+    } else if (!pc.targets.empty()) {
         targets = pc.targets;
-    else
-        targets = {"csharp", "typescript"};
+    } else {
+        emitTopLevel("no --target given and no pgconfig.json declares `targets` (loaded targets: " +
+                     joinNames(backendNames()) + ")");
+        return c;
+    }
 
     for (const auto& t : targets) {
-        if (!findTarget(t).ok()) loadPluginFile(pluginCacheDir() / t / "polyglot-plugin.json");
-        BackendHandle h = findTarget(t);
+        BackendHandle h = findTarget(t); // resolveConfiguredTargets above already ran the P30 pipeline
         if (!h.ok()) {
             emitTopLevel(h.error());
             continue;
         }
-        EmitResult result = compile(source, h, &resolver, lib);
+        EmitResult result = compile(source, h, &resolver,
+                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg));
         if (!result.ok) {
             for (const auto& d : result.diagnostics) emitDiagAt(d);
             if (result.diagnostics.empty()) emitTopLevel("compilation failed for target '" + t + "'");
@@ -409,18 +379,27 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         }
         if (checkOnly) continue;
         const std::string ext = h.backend()->fileExtension();
-        fs::path out = outDirArg / input.stem();
-        out += ext;
-        if (!writeFile(out, result.code)) { emitTopLevel("cannot write '" + out.string() + "'"); continue; }
-        std::cout << "  -> " << out.string() << "\n";
+        // P30 slice 7: outputs route through the config's include rules — same resolution as build.
+        std::vector<fs::path> outs;
+        std::string rerr;
+        if (!cli::resolveClosureOutputs(pc, flagRouted, input, result, t, ext.c_str(), outDirArg, outs, rerr,
+                                        h.backend()->crossDirImports())) {
+            emitTopLevel(rerr);
+            continue;
+        }
+        // Write-if-changed: an untouched twin keeps its mtime (twins may live in a watched src tree).
+        auto writeOut = [&](const fs::path& out, const std::string& content) {
+            std::string existing;
+            if (readFile(out, existing) && existing == content) { std::cout << "  -> " << out.string() << "\n"; return true; }
+            if (!writeFile(out, content)) { emitTopLevel("cannot write '" + out.string() + "'"); return false; }
+            std::cout << "  -> " << out.string() << "\n";
+            return true;
+        };
+        bool wrote = writeOut(outs[0], result.code);
         // §4.5 module linking: also (re)write each imported user module's file, so editing an imported .pg
         // refreshes its own output — the entry file no longer inlines it.
-        for (const auto& mf : result.modules) {
-            fs::path mout = outDirArg / mf.basename;
-            mout += ext;
-            if (!writeFile(mout, mf.code)) { emitTopLevel("cannot write '" + mout.string() + "'"); continue; }
-            std::cout << "  -> " << mout.string() << "\n";
-        }
+        for (std::size_t i = 0; wrote && i < result.modules.size(); ++i)
+            wrote = writeOut(outs[i + 1], result.modules[i].code);
     }
 
     for (const auto& p : resolver.loaded()) c.watched.push_back(p);
@@ -431,7 +410,7 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 }
 
 int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root,
-             const std::string& target, const std::string& libArg, bool checkOnly) {
+             const std::string& target, const std::string& libArg, bool checkOnly, bool flagRouted) {
     cli::PollingFileWatcher watcher;
 #ifdef _WIN32
     g_watchStopTarget = &watcher;
@@ -441,7 +420,7 @@ int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root
     const char* verb = "building";
     for (;;) {
         std::cout << clockStamp() << " polyglot watch: " << verb << " " << absInput.string() << "\n";
-        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly);
+        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted);
         std::cout << clockStamp() << " polyglot watch: " << c.errors
                   << " error(s) - watching for changes\n";
         std::cout.flush();
@@ -464,52 +443,44 @@ int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root
     return 0;
 }
 
-int runBuild(const std::vector<std::string>& args) {
-    std::vector<fs::path> inputs; // one or more .pg files (a multi-file project passes them all — §4.5)
-    fs::path outDir;
-    fs::path root;      // workspace root for logical-name imports; empty => input's parent dir
-    std::string target; // empty => both
-    std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
-    std::string accessArg; // --access public|internal (C# emitted-type accessibility)
-    bool watch = false;
-
-    for (std::size_t i = 1; i < args.size(); ++i) {
-        const std::string& a = args[i];
-        if (a == "--target" && i + 1 < args.size()) {
-            target = args[++i];
-        } else if (a == "--out" && i + 1 < args.size()) {
-            outDir = args[++i];
-        } else if (a == "--root" && i + 1 < args.size()) {
-            root = args[++i];
-        } else if (a == "--lib" && i + 1 < args.size()) {
-            libArg = args[++i];
-        } else if (a == "--access" && i + 1 < args.size()) {
-            accessArg = args[++i];
-        } else if (a == "--watch") {
-            watch = true;
-        } else if (!a.empty() && a[0] == '-') {
-            std::cerr << "polyglot: unknown option '" << a << "'\n";
-            return 64;
-        } else {
-            inputs.push_back(a);
+// P30 slice 7 discovery: a bare `polyglot build` builds every .pg the config's `include` patterns
+// match (deterministic order). Dot-dirs and the usual dependency/output trees are pruned — a
+// `**/*.pg` pattern should not wander into node_modules or bin/obj.
+std::vector<fs::path> discoverIncludeInputs(const PgConfig& pc) {
+    std::vector<fs::path> found;
+    if (!pc.found || pc.include.empty()) return found;
+    std::error_code ec;
+    fs::recursive_directory_iterator it(pc.dir, fs::directory_options::skip_permission_denied, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const fs::path& p = it->path();
+        const std::string name = p.filename().string();
+        std::error_code tec;
+        if (it->is_directory(tec)) {
+            if (!name.empty() && (name[0] == '.' || name == "node_modules" || name == "bin" || name == "obj"))
+                it.disable_recursion_pending();
+            continue;
         }
+        if (p.extension() != ".pg") continue;
+        const std::string rel = fs::relative(p, pc.dir, tec).generic_string();
+        for (const auto& rule : pc.include)
+            if (cli::globMatch(rule.pattern, rel).matched) { found.push_back(p); break; }
     }
+    std::sort(found.begin(), found.end());
+    return found;
+}
 
-    if (inputs.empty()) {
-        std::cerr << "polyglot: 'build' needs an input file\n";
-        return 64;
-    }
+// Build one nearest-config group (P30 slice 7 / PRD D8): the whole per-config pipeline — flag/config
+// merging, dependency resolution, target-set selection, and the single- or multi-file (§4.5) emit,
+// with outputs routed through the group's `include` rules.
+int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::string& target,
+               const fs::path& outDir, bool outDirGiven, fs::path root, std::string libArg,
+               const std::string& accessArg) {
+    for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
+    if (!pc.errors.empty()) return 64;
+
     const fs::path firstInput = inputs.front();
-    if (outDir.empty()) outDir = firstInput.has_parent_path() ? firstInput.parent_path() : fs::path(".");
-
-    if (watch) {
-        if (inputs.size() > 1) { std::cerr << "polyglot: --watch takes a single input file\n"; return 64; }
-        return runWatch(firstInput, outDir, root, target, libArg, /*checkOnly=*/false);
-    }
-
-    fs::path entryDir = firstInput.has_parent_path() ? firstInput.parent_path() : fs::path(".");
-    // A pgconfig.json near the (first) input fills in root/lib the user didn't pass explicitly (flags win).
-    PgConfig pc = loadPgConfig(entryDir);
+    const fs::path entryDir = firstInput.has_parent_path() ? firstInput.parent_path() : fs::path(".");
+    // The pgconfig fills in root/lib the user didn't pass explicitly (flags win).
     if (root.empty() && pc.found && !pc.root.empty()) root = pc.root;
     if (libArg.empty() && pc.found) libArg = pc.lib;
     if (root.empty()) root = entryDir;
@@ -522,7 +493,7 @@ int runBuild(const std::vector<std::string>& args) {
         return 64;
     }
 
-    resolveConfiguredTargets(pc); // pgconfig `dependencies` (file:) + the install cache (P19 slices 10-11)
+    resolveConfiguredTargets(pc); // pgconfig `dependencies` + lock-first cache + registry (P30)
 
     // The target set to emit, each paired with its output extension.
     std::vector<std::pair<BackendHandle, std::string>> targets;
@@ -532,19 +503,18 @@ int runBuild(const std::vector<std::string>& args) {
             if (!h.ok()) { std::cerr << "polyglot: " << h.error() << "\n"; return 64; }
             targets.emplace_back(h, h.backend()->fileExtension());
         }
-    } else if (target.empty()) { // no config: the historical default pair
-        targets.emplace_back(findTarget("csharp"), ".cs");
-        targets.emplace_back(findTarget("typescript"), ".ts");
+    } else if (target.empty()) { // no config + no --target: refuse — the plugin set is config-sourced (P30)
+        std::cerr << "polyglot: no --target given and no pgconfig.json declares `targets` (loaded targets: "
+                  << joinNames(backendNames())
+                  << "); pass --target <name> or add \"targets\": [...] to pgconfig.json\n";
+        return 64;
     } else { // ANY loaded plugin is a valid --target; its manifest names the output extension (P19)
-        if (!findTarget(target).ok()) loadPluginFile(pluginCacheDir() / target / "polyglot-plugin.json");
-        BackendHandle h = findTarget(target);
+        BackendHandle h = findTarget(target); // in-box, file:, or P30-resolved — never a bare-name probe
         if (!h.ok()) { std::cerr << "polyglot: " << h.error() << "\n"; return 64; }
         targets.emplace_back(h, h.backend()->fileExtension());
     }
 
-    std::cout << "polyglot build";
-    for (const auto& in : inputs) std::cout << " " << in.string();
-    std::cout << "\n";
+    const bool flagRouted = !target.empty() && outDirGiven; // D7: explicit --target+--out bypasses rules
 
     bool ok = true;
     if (inputs.size() == 1) { // single input: emit its closure (entry + any imported user modules)
@@ -552,7 +522,7 @@ int runBuild(const std::vector<std::string>& args) {
         if (!readFile(firstInput, source)) { std::cerr << "polyglot: cannot open '" << firstInput.string() << "'\n"; return 66; }
         FileModuleResolver resolver(root, entryDir);
         for (const auto& t : targets)
-            ok &= emitOne(source, firstInput, outDir, t.first, t.second.c_str(), &resolver, lib);
+            ok &= emitOne(source, firstInput, outDir, t.first, t.second.c_str(), &resolver, lib, pc, flagRouted);
         return ok ? 0 : 1;
     }
 
@@ -585,10 +555,90 @@ int runBuild(const std::vector<std::string>& args) {
             if (importedCanons.count(e.canon)) continue; // imported by another input — emitted in its closure
             fs::path edir = e.path.has_parent_path() ? e.path.parent_path() : fs::path(".");
             FileModuleResolver r(root, edir);
-            ok &= emitOne(e.source, e.path, outDir, t.first, t.second.c_str(), &r, lib, &seen);
+            ok &= emitOne(e.source, e.path, outDir, t.first, t.second.c_str(), &r, lib, pc, flagRouted, &seen);
         }
     }
     return ok ? 0 : 1;
+}
+
+int runBuild(const std::vector<std::string>& args) {
+    std::vector<fs::path> inputs; // one or more .pg files (a multi-file project passes them all — §4.5)
+    fs::path outDir;
+    fs::path root;      // workspace root for logical-name imports; empty => input's parent dir
+    std::string target; // empty => the pgconfig `targets` set
+    std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
+    std::string accessArg; // --access public|internal (C# emitted-type accessibility)
+    bool watch = false;
+
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (a == "--target" && i + 1 < args.size()) {
+            target = args[++i];
+        } else if (a == "--out" && i + 1 < args.size()) {
+            outDir = args[++i];
+        } else if (a == "--root" && i + 1 < args.size()) {
+            root = args[++i];
+        } else if (a == "--lib" && i + 1 < args.size()) {
+            libArg = args[++i];
+        } else if (a == "--access" && i + 1 < args.size()) {
+            accessArg = args[++i];
+        } else if (a == "--watch") {
+            watch = true;
+        } else if (!a.empty() && a[0] == '-') {
+            std::cerr << "polyglot: unknown option '" << a << "'\n";
+            return 64;
+        } else {
+            inputs.push_back(a);
+        }
+    }
+
+    // P30 slice 7: a bare `polyglot build` discovers its inputs from the config's `include`
+    // patterns (the tsc model, as a fallback — passed files always win as the input set).
+    if (inputs.empty()) {
+        const PgConfig pc0 = loadPgConfig(fs::current_path());
+        for (const auto& m : pc0.errors) std::cerr << "polyglot: " << m << "\n";
+        if (!pc0.errors.empty()) return 64;
+        inputs = discoverIncludeInputs(pc0);
+        if (inputs.empty()) {
+            std::cerr << "polyglot: 'build' needs an input file (or a pgconfig.json whose `include` "
+                         "patterns match some .pg sources)\n";
+            return 64;
+        }
+    }
+    const fs::path firstInput = inputs.front();
+    const bool outDirGiven = !outDir.empty(); // D7: explicit --target + --out bypasses include rules
+    if (outDir.empty()) outDir = firstInput.has_parent_path() ? firstInput.parent_path() : fs::path(".");
+
+    if (watch) {
+        if (inputs.size() > 1) { std::cerr << "polyglot: --watch takes a single input file\n"; return 64; }
+        return runWatch(firstInput, outDir, root, target, libArg, /*checkOnly=*/false,
+                        !target.empty() && outDirGiven);
+    }
+
+    std::cout << "polyglot build";
+    for (const auto& in : inputs) std::cout << " " << in.string();
+    std::cout << "\n";
+
+    // Group inputs by their NEAREST pgconfig.json (P30 slice 7, PRD D8): nested configs must not
+    // silently inherit the wrong targets/lib/routing. One root config (the recommended shape)
+    // degenerates to a single group.
+    std::map<std::string, std::pair<PgConfig, std::vector<fs::path>>> groups; // key: pc.dir ("" = none)
+    for (const auto& in : inputs) {
+        const fs::path inDir = in.has_parent_path() ? in.parent_path() : fs::path(".");
+        PgConfig pcIn = loadPgConfig(inDir);
+        const std::string key = pcIn.found ? pcIn.dir.string() : std::string();
+        auto& g = groups[key];
+        if (g.second.empty()) g.first = std::move(pcIn);
+        g.second.push_back(in);
+    }
+
+    int worst = 0;
+    for (auto& [key, group] : groups) {
+        const int rc = buildGroup(group.first, group.second, target, outDir, outDirGiven, root, libArg,
+                                  accessArg);
+        if (rc > worst) worst = rc;
+    }
+    return worst;
 }
 
 // Escape a string for embedding in a JSON double-quoted value.
@@ -655,7 +705,8 @@ int runCheck(const std::vector<std::string>& args) {
     }
     if (input.empty()) { std::cerr << "polyglot: 'check' needs an input file\n"; return 64; }
     if (watch && json) { std::cerr << "polyglot: --json and --watch cannot be combined\n"; return 64; }
-    if (watch) return runWatch(input, /*outDir=*/{}, root, /*target=*/{}, libArg, /*checkOnly=*/true);
+    if (watch) return runWatch(input, /*outDir=*/{}, root, /*target=*/{}, libArg, /*checkOnly=*/true,
+                               /*flagRouted=*/false);
 
     std::string source;
     if (!readFile(input, source)) {
@@ -673,7 +724,14 @@ int runCheck(const std::vector<std::string>& args) {
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
 
-    EmitResult result = compile(source, findTarget("csharp"), &resolver, lib);
+    // The reference target carries the full §3.A surface so a pure frontend gate never refuses
+    // spuriously — derived from capabilities (P30 slice 4), not the name "csharp".
+    const Backend* ref = cli::referenceBackend();
+    if (!ref) {
+        std::cerr << "polyglot: no full-coverage reference target is loaded (no plugins found?)\n";
+        return 69;
+    }
+    EmitResult result = compile(source, findTarget(ref->name()), &resolver, lib);
 
     if (json) {
         std::cout << diagnosticsToJson(result.diagnostics) << "\n";
@@ -926,9 +984,10 @@ struct LspServer {
         PgConfig pc = loadPgConfig(entryDir);
         fs::path root = pc.found && !pc.root.empty() ? fs::path(pc.root)
                       : (root_.empty() ? entryDir : fs::path(root_));
-        resolveConfiguredTargets(pc); // plugin targets (file: deps / cache) resolve for squiggles too
-        std::vector<std::string> targets = pc.targets.empty()
-            ? std::vector<std::string>{"csharp", "typescript"} : pc.targets;
+        resolveConfiguredTargets(pc); // plugin targets (file: deps / cache / registry) resolve for squiggles too
+        // No config: reserved-name squiggles run against EVERY loaded target (a superset squiggle
+        // is safe; an invented default pair is not — P30 slice 4).
+        std::vector<std::string> targets = pc.targets.empty() ? backendNames() : pc.targets;
         return { root, entryDir, pc.found ? pc.lib : lib_, std::move(targets), pc.forbiddenIdentifiers };
     }
 
@@ -1354,76 +1413,70 @@ int runLsp(const std::vector<std::string>&) {
     return 0;
 }
 
-// `polyglot install <dir-or-npm-name>` (P19 slice 11): validate a plugin artifact and place it in the
-// user cache, where target resolution finds it. A DIRECTORY containing polyglot-plugin.json installs
-// locally; a bare name shells out to `npm pack` (targets publish as npm packages wrapping the manifest)
-// and extracts `package/polyglot-plugin.json` with the system tar.
+// `polyglot install <dir | name[@spec]> [--update]` (P19 slice 11, rebuilt at P30 slice 3): warm
+// the versioned plugin cache through the SAME in-exe pipeline `polyglot build` auto-resolves with
+// (registry HTTP API, SRI verify, in-exe extract — no npm, no system tar). Run inside a project it
+// also writes the pgconfig.lock.json pin; `--update` re-resolves a range past a satisfied lock.
+// A DIRECTORY argument validates a local manifest and points at the `file:` dependency form (local
+// plugins resolve in place — no install step to forget).
 int runInstall(const std::vector<std::string>& args) {
-    if (args.size() < 2) {
+    std::string spec;
+    bool update = false;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--update") update = true;
+        else if (spec.empty()) spec = args[i];
+        else { std::cerr << "polyglot: install takes one package (got '" << args[i] << "' too)\n"; return 64; }
+    }
+    if (spec.empty()) {
         std::cerr << "polyglot: install needs a plugin directory or npm package name\n";
         return 64;
     }
-    std::string spec = args[1];
-    fs::path manifestPath;
+
     std::error_code ec;
     if (fs::is_directory(spec, ec)) {
-        manifestPath = fs::path(spec) / "polyglot-plugin.json";
-    } else {
-        // A bare target name resolves to the first-party npm naming convention; full package
-        // specs (@scope/name, name@version) pass through untouched.
-        if (spec.find('@') == std::string::npos && spec.find('/') == std::string::npos)
-            spec = "@mintplayer/polyglot-target-" + spec;
-        const fs::path tmp = fs::temp_directory_path() / "polyglot-install";
-        fs::remove_all(tmp, ec);
-        fs::create_directories(tmp, ec);
-        // Silence npm's own chatter (we print our own diagnostic on failure). `>nul` is a cmd.exe-ism —
-        // on /bin/sh it would create a real file named `nul` and discard nothing.
-#ifdef _WIN32
-        const char* quiet = " >nul 2>nul";
-#else
-        const char* quiet = " >/dev/null 2>&1";
-#endif
-        const std::string cmd = "npm pack \"" + spec + "\" --pack-destination \"" + tmp.string() + "\"" + quiet;
-        if (std::system(cmd.c_str()) != 0) {
-            std::cerr << "polyglot: npm pack '" << spec << "' failed (is npm on PATH and the package published?)\n";
+        const fs::path manifestPath = fs::path(spec) / "polyglot-plugin.json";
+        std::string manifest, err;
+        if (!readFile(manifestPath, manifest)) {
+            std::cerr << "polyglot: no polyglot-plugin.json at " << manifestPath.string() << "\n";
             return 1;
         }
-        fs::path tgz;
-        for (const auto& e : fs::directory_iterator(tmp, ec))
-            if (e.path().extension() == ".tgz") tgz = e.path();
-        // Extract from INSIDE the temp dir with a bare filename: a "C:\..." argument makes GNU tar
-        // (common on PATH via Git for Windows) treat the drive letter as a remote host and fail.
-#ifdef _WIN32
-        const std::string extract = "cd /d \"" + tmp.string() + "\" && tar -xzf \"" + tgz.filename().string() + "\"";
-#else
-        const std::string extract = "cd \"" + tmp.string() + "\" && tar -xzf \"" + tgz.filename().string() + "\"";
-#endif
-        if (tgz.empty() || std::system(extract.c_str()) != 0) {
-            std::cerr << "polyglot: could not extract the npm package\n";
+        if (!validateBackend(manifest, err)) {
+            std::cerr << "polyglot: invalid plugin: " << err << "\n";
             return 1;
         }
-        manifestPath = tmp / "package" / "polyglot-plugin.json";
+        const std::string name = json::parse(manifest)["name"].asString();
+        std::cout << "plugin '" << name << "' is valid; local plugins resolve in place - declare it in "
+                  << "pgconfig.json:\n  \"dependencies\": { \"" << name << "\": \"file:" << spec << "\" }\n";
+        return 0;
     }
 
-    std::string manifest;
-    if (!readFile(manifestPath, manifest)) {
-        std::cerr << "polyglot: no polyglot-plugin.json at " << manifestPath.string() << "\n";
-        return 1;
+    // name[@range]: split a trailing @ (position > 0, so a scope's leading @ survives).
+    std::string name = spec, range = "latest";
+    if (const std::size_t at = spec.rfind('@'); at != std::string::npos && at > 0) {
+        name = spec.substr(0, at);
+        range = spec.substr(at + 1);
     }
+    name = cli::normalizePluginPackageName(name);
+
+    // Inside a project, install pins the lock; outside one, it only warms the machine cache.
+    const PgConfig pc = loadPgConfig(fs::current_path());
+    cli::Lockfile lock = pc.found ? cli::loadLockfile(pc.dir) : cli::Lockfile{};
+
+    cli::ResolvedPlugin rp;
     std::string err;
-    if (!validateBackend(manifest, err)) { // a plugin that fails validation is never cached
-        std::cerr << "polyglot: invalid plugin: " << err << "\n";
+    if (!cli::resolvePluginDependency(cli::defaultHttpGet(), name, range, pc.found ? pc.dir : fs::current_path(),
+                                      lock, update, rp, err)) {
+        std::cerr << "polyglot: " << err << "\n";
         return 1;
     }
-    const std::string name = json::parse(manifest)["name"].asString();
-    const fs::path dest = pluginCacheDir() / name;
-    fs::create_directories(dest, ec);
-    fs::copy_file(manifestPath, dest / "polyglot-plugin.json", fs::copy_options::overwrite_existing, ec);
-    if (ec) {
-        std::cerr << "polyglot: could not write " << (dest / "polyglot-plugin.json").string() << "\n";
-        return 1;
+    if (rp.fetched && pc.found) {
+        lock.packages[name] = {rp.version, rp.resolvedUrl, rp.integrity};
+        if (!cli::saveLockfile(pc.dir, lock))
+            std::cerr << "polyglot: warning: could not write " << cli::lockfilePath(pc.dir).string() << "\n";
     }
-    std::cout << "installed target '" << name << "' -> " << dest.string() << "\n";
+    std::cout << "installed target '" << rp.targetName << "' (" << name << "@" << rp.version << ")"
+              << (rp.fetched ? "" : " [already available]") << " -> "
+              << cli::cacheEntryDir(name, rp.version).string() << "\n";
     return 0;
 }
 

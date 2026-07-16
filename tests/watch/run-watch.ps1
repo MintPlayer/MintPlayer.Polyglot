@@ -46,6 +46,8 @@ $log   = Join-Path $work "watch.log"
 
 Set-Content -Path $util -Value "fn area(w: i32, h: i32): i32 {`n  return w * h`n}`n" -NoNewline
 Set-Content -Path $entry -Value "import { area } from `"./util`"`nimport { print } from `"std.io`"`nfn main() {`n  print(area(3, 4))`n}`n" -NoNewline
+# P30: the target set is config-sourced — no pgconfig + no --target refuses, so the workspace declares it.
+Set-Content -Path (Join-Path $work "pgconfig.json") -Value "{ `"targets`": [`"csharp`", `"typescript`"] }" -NoNewline
 
 # Wait until the watch log contains at least $n end sentinels (i.e. $n completed cycles).
 function Wait-Cycles([int]$n, [int]$timeoutSec = 20) {

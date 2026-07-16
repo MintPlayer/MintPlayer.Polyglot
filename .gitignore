@@ -23,5 +23,9 @@ artifacts/
 *.exe
 *.lib
 
+# CMake build trees (the POSIX leg, PLAN §P22; build-p30 was a scratch configure)
+/build/
+/build-*/
+
 # The MSBuild package ships its NuGet build/ assets (P11) - not build output
 !src/MintPlayer.Polyglot.MSBuild/build/

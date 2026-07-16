@@ -37,6 +37,7 @@ The manifest's top-level keys (all of them):
 | `std` | as needed | Per-target bodies for the std library skeletons (`print`, `List`, `Math`, …). |
 | `rules` | yes | The emission rule tables; `Program` and `Type` are mandatory. |
 | `fileExtension` | no | Output extension; defaults to `.<name>`. |
+| `crossDirImports` | no | `true` when the target's emitted import specifiers may span directories (the compiler then hands the import rules a full relative specifier like `../shared/name` instead of a bare basename, and a pgconfig `include` layout may split an import closure across directories). Default `false`: all files of one closure must share an output directory — the CLI refuses a split. TS declares it; Python/PHP don't (dot-package / include semantics). |
 
 Plugins register through `loadBackend()`, which strictly parses and validates the whole artifact
 (§5) — a malformed plugin fails to load with a named error, never degrades output.

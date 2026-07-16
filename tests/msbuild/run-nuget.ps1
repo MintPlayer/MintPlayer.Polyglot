@@ -2,6 +2,9 @@
 # `dotnet build` alone; a second build skips transpilation; `dotnet clean` removes the generated files;
 # and a project referencing the first does NOT inherit the transpile behavior or the package dependency.
 # Packs the package from the working tree first (Debug CLI), so this validates current sources.
+# P30 slice 7: the package no longer passes `--target csharp` — consumers declare a pgconfig.json with
+# at least "targets": ["csharp"] (fixtures 1-6), `include` rules route extra targets outside obj
+# (fixture 7), and a missing config is a guided refusal (fixture 8).
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $work = Join-Path ([IO.Path]::GetTempPath()) "polyglot-nuget-gate"
@@ -47,6 +50,8 @@ fn makeOrigin(): Point {
   return Point(0, 0)
 }
 "@ | Set-Content (Join-Path $app "shapes.pg")
+# P30: the plugin/target set is config-sourced — the consumer contract is a minimal pgconfig.json.
+'{ "targets": ["csharp"] }' | Set-Content (Join-Path $app "pgconfig.json")
 
 # Top-level statements deliberately: the generated wrapper is `static class PolyglotProgram`
 # precisely so it can coexist with the implicit `Program` class every modern console app has
@@ -118,6 +123,7 @@ fn compute(): i32 {
   return twice(t.v)
 }
 "@ | Set-Content (Join-Path $shared "game.pg")
+'{ "targets": ["csharp"] }' | Set-Content (Join-Path $shared "pgconfig.json")
 @"
 System.Console.WriteLine(PolyglotProgram.compute());
 "@ | Set-Content (Join-Path $shared "Program.cs")
@@ -138,6 +144,7 @@ dotnet new console -o $multi --framework net8.0 | Out-Null
 Copy-Item (Join-Path $work "nuget.config") (Join-Path $multi "nuget.config")
 "fn step(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $multi "phys.pg")
 "fn tick(): i32 {`n  return 2`n}`n" | Set-Content (Join-Path $multi "snake.pg")
+'{ "targets": ["csharp"] }' | Set-Content (Join-Path $multi "pgconfig.json")
 @"
 System.Console.WriteLine(PolyglotProgram.step() + PolyglotProgram.tick());
 "@ | Set-Content (Join-Path $multi "Program.cs")
@@ -149,6 +156,55 @@ $multiRun = dotnet run --project $multi --no-build 2>&1
 Check ("$multiRun".Trim() -eq "3") "independent multi-.pg project runs (prints 3)"
 Check (Test-Path (Join-Path $multi "obj/Debug/net8.0/polyglot/__polyglot_prelude.cs")) `
     "the shared runtime prelude is emitted once as __polyglot_prelude.cs"
+
+# 7. P30 slice 7 — pgconfig-driven multi-target: `dotnet build` alone compiles the C# from obj AND
+# routes the TypeScript twin outside the project via an `include` rule; the twin is a committed
+# source artifact (write-if-changed, survives clean, never in FileWrites).
+$twin = Join-Path $work "Twin"
+dotnet new console -o $twin --framework net8.0 | Out-Null
+Copy-Item (Join-Path $work "nuget.config") (Join-Path $twin "nuget.config")
+"fn answer(): i32 {`n  return 42`n}`n" | Set-Content (Join-Path $twin "calc.pg")
+@"
+{
+  "targets": ["csharp", "typescript"],
+  "include": [
+    { "pattern": "*.pg", "target": "typescript", "output": "../web/gen/%(Filename)" }
+  ]
+}
+"@ | Set-Content (Join-Path $twin "pgconfig.json")
+"System.Console.WriteLine(PolyglotProgram.answer());" | Set-Content (Join-Path $twin "Program.cs")
+dotnet add $twin package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+dotnet build $twin --nologo -v q 2>&1 | Out-Null
+$twinCs = Join-Path $twin "obj/Debug/net8.0/polyglot/calc.cs"
+$twinTs = Join-Path $work "web/gen/calc.ts"
+Check (Test-Path $twinCs) "multi-target: the C# leg still lands in obj and compiles"
+Check (Test-Path $twinTs) "multi-target: the include rule routes the .ts twin outside the project"
+$twinRun = dotnet run --project $twin --no-build 2>&1
+Check ("$twinRun".Trim() -eq "42") "multi-target project runs (prints 42)"
+$tsStamp = (Get-Item $twinTs).LastWriteTimeUtc
+Start-Sleep -Milliseconds 300
+dotnet build $twin --nologo -v q 2>&1 | Out-Null
+Check ((Get-Item $twinTs).LastWriteTimeUtc -eq $tsStamp) "incremental build leaves the twin untouched"
+(Get-Item (Join-Path $twin "calc.pg")).LastWriteTime = Get-Date
+dotnet build $twin --nologo -v q 2>&1 | Out-Null
+Check ((Get-Item $twinTs).LastWriteTimeUtc -eq $tsStamp) `
+    "an unchanged re-transpile does not rewrite the twin (write-if-changed)"
+"fn answer(): i32 {`n  return 43`n}`n" | Set-Content (Join-Path $twin "calc.pg")
+dotnet build $twin --nologo -v q 2>&1 | Out-Null
+Check ((Get-Content $twinTs -Raw) -match '43') "a real .pg change refreshes the twin's content"
+dotnet clean $twin --nologo -v q 2>&1 | Out-Null
+Check ((-not (Test-Path $twinCs)) -and (Test-Path $twinTs)) `
+    "dotnet clean removes the obj .cs but NEVER the external twin"
+
+# 8. No pgconfig.json: the build refuses with the guided message (the config-sourced contract).
+$nocfg = Join-Path $work "NoCfg"
+dotnet new console -o $nocfg --framework net8.0 | Out-Null
+Copy-Item (Join-Path $work "nuget.config") (Join-Path $nocfg "nuget.config")
+"fn x(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $nocfg "x.pg")
+dotnet add $nocfg package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+$nocfgBuild = dotnet build $nocfg --nologo 2>&1 | Out-String
+Check ($LASTEXITCODE -ne 0 -and $nocfgBuild -match 'no --target given and no pgconfig\.json') `
+    "a consumer without a pgconfig.json gets the guided refusal"
 
 if ($failures -eq 0) { Write-Host "`nP11 gate: all checks passed."; exit 0 }
 Write-Host "`nP11 gate: $failures check(s) FAILED." -ForegroundColor Red

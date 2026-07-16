@@ -65,6 +65,12 @@ public:
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }
+    // Whether this target's emitted cross-module import specifiers may span directories (plugin
+    // manifest `crossDirImports`, P30 slice 8). True: the compiler hands the import rule a FULL
+    // relative specifier ("./name" or "../shared/name") computed from routed output dirs, and the
+    // host may spread one closure across directories. False (default): specifiers are bare
+    // basenames and the host must keep a closure in one directory (the CLI refuses a split).
+    virtual bool crossDirImports() const { return false; }
     // The names this target's GENERATED code claims (`identifiers.reserved` — scaffolding, synthesized
     // temps; trailing `*` = prefix family) and its runtime globals (`identifiers.globals`). A user
     // identifier colliding with either refuses at compile time (checkReservedNames, P19 §7).
@@ -98,7 +104,10 @@ std::vector<std::string> backendNames();
 // the spec + rule tables interpreted by the shared emitter, plus the capability map `supports` answers
 // from (a feature absent from the map is supported; `"blockLambdas": false` gates). Returns false and
 // fills `error` on a malformed artifact — a plugin that fails validation is never partially registered.
-bool loadBackend(const std::string& artifactJson, std::string& error);
+// `replaceExisting` lets a config-pinned plugin SHADOW a same-named registration (P30: a pgconfig
+// dependency wins over the in-box copy). The displaced backend stays alive for the process lifetime —
+// BackendHandle holds raw pointers — but findBackend()/backendNames() see only the replacement.
+bool loadBackend(const std::string& artifactJson, std::string& error, bool replaceExisting = false);
 
 // Validate an artifact WITHOUT registering it (`polyglot install` checks a manifest before caching it —
 // possibly for a target already loaded in this process). Same checks as loadBackend minus the name clash.

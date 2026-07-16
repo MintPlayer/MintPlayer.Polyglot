@@ -120,6 +120,23 @@ portable std + the bundled C#/TS backend specs**. Beyond that:
 
 ## 6. Workspace config, download & the trust model
 
+> **As built (P30, 2026-07-16 — issue #30):** the download half of this promise is now real.
+> `polyglot build`/`check`/watch/LSP auto-resolve every `pgconfig.json` dependency inside the exe —
+> `file:` in place → in-box when the CLI's lockstep version satisfies the range → the verified
+> versioned cache when `pgconfig.lock.json` pins → the npm registry HTTP API (abbreviated packument,
+> `maxSatisfying`, SRI verify, in-exe gunzip+untar, `validateBackend`) — no npm process, no system
+> tar, no lifecycle scripts. Output routing is config-sourced too (slice 7): `include` file-mapping
+> rules (`{ pattern, target, output-template }`, glob relative to the config, first-match-wins,
+> `%(Filename)`/`%(Directory)`/`%(RecursiveDir)`/`%(TargetLanguage)` with the target's manifest
+> `fileExtension()` always auto-appended) route each emitted file — e.g. TypeScript twins into an
+> Angular app — while unmatched (file, target) pairs fall to `--out`; a bare `polyglot build`
+> discovers its inputs from the same patterns, and the MSBuild package no longer passes any language
+> flag (consumers declare `"targets": ["csharp"]` minimum). A target whose manifest declares
+> `crossDirImports: true` (TS) gets real relative import specifiers computed from the routed dirs,
+> so one import closure may span directories; other targets refuse a split loudly. `environments` gating (below) remains
+> future work. Design details that changed in the building are annotated in §6.1/§6.3; full record:
+> `docs/prd/issue-30-plugin-autodownload/` (D7–D9 for the routing).
+
 `pg` reads a workspace config (`pgconfig.json`) from the cwd. It declares the **target
 environments** (desktop/web/mobile/…) and the **plugins + versions** in use. From it the CLI resolves and
 **downloads** the named plugins into a **shared cache**, then emits. **Availability** is resolved from the
@@ -168,14 +185,20 @@ letting every plugin scribble the shared registry invites concurrent-write/corru
 Instead:
 
 - **`polyglot install <plugin>[@version]` is the single trusted writer.** It resolves the plugin from the
-  feed, verifies integrity, extracts it zip-slip-safe into the **shared cache**, and records it in a
-  **global per-user registry** — `%APPDATA%\polyglot\registry.json` (Windows) / `$XDG_CONFIG_HOME/polyglot/
-  registry.json` (else). Core stays IO-free; the CLI/LSP layer reads it, exactly like `pgconfig.json`. The
-  registry indexes each installed plugin's id, version, declared targets, capability set, cache path, and
-  integrity hash.
-- **Two-level resolution.** The global registry is the machine-wide *installed* set; the per-project
-  `pgconfig.json` pins *which* plugins + versions a workspace actually uses. A project resolves against the
-  cache the registry points at; `pgconfig.lock.json` pins integrity per §6.
+  feed, verifies integrity, extracts it zip-slip-safe into the **shared cache**, and records it there.
+  Core stays IO-free; the CLI/LSP layer reads it, exactly like `pgconfig.json`.
+  > **Superseded at P30:** the separate global `registry.json` index was **not built** — the versioned
+  > cache directory (`<cache>/<npm-name>/<version>/{polyglot-plugin.json, meta.json}`, where `meta.json`
+  > carries resolved URL + SRI integrity + a manifest hash re-verified on every load) *is* the machine-wide
+  > installed set, and the per-project lockfile carries the pins; a second index would be a second source
+  > of truth with no consumer. Cache location as implemented: `%LOCALAPPDATA%\polyglot\plugins` (Windows) /
+  > `$XDG_DATA_HOME` or `~/.local/share/polyglot/plugins` (Linux) / `~/Library/Application Support/polyglot/
+  > plugins` (macOS), overridable wholesale via `POLYGLOT_CACHE`. And since build-time resolution now
+  > downloads by itself, `install` is an optional cache pre-warmer / lock writer (`--update` re-resolves
+  > past the lock), no longer a required manual step.
+- **Two-level resolution.** The versioned cache is the machine-wide *installed* set; the per-project
+  `pgconfig.json` pins *which* plugins + versions a workspace actually uses; `pgconfig.lock.json` pins
+  integrity per §6.
 - **Feed — leading candidate is an existing package registry (npm).** Reusing npmjs.com buys versioning,
   immutable integrity hashes, and a global CDN for free; a plugin is just a package whose payload is the
   declarative bundle. **Consumed as data only** — Polyglot fetches+extracts the tarball via the registry
@@ -268,10 +291,12 @@ shipped at P16 to the full form below at P10/P18 — additively, so today's file
   interpolation chunks, comments, or `extern("…")` templates (the check runs over sema's symbol tables, not source
   text). Example: `{ "*": ["temp"], "csharp": ["Program"] }`.
 
-**Two-level resolution:** the **global registry** (`polyglot install`'s output, §6.1) = the machine-wide *installed*
-set; **`pgconfig.json` `dependencies`** = which of them (+ versions) *this* project uses; **`pgconfig.lock.json`**
-pins the integrity hash per dependency (re-verified on load). A dependency named but not installed → "run
-`polyglot install <name>@<version>`".
+**Two-level resolution (as built at P30):** the **versioned cache** (§6.1) = the machine-wide *installed* set;
+**`pgconfig.json` `dependencies`** = which packages (+ version ranges: exact / `^` / `~` / `>=` / `latest` /
+`file:`) *this* project uses; **`pgconfig.lock.json`** pins `version` + `resolved` URL + SRI `integrity` per
+dependency (re-verified on load; lock-satisfied builds do **zero** network I/O). A dependency named but not
+cached is **downloaded at build time** — the old "run `polyglot install <name>@<version>`" stop is gone; a
+`targets` entry no dependency provides gets a diagnostic naming the `dependencies` fix.
 
 **The load-bearing invariant (why this is RCE-safe):** a plugin — language or library — is **data the trusted Core
 interprets**, never an executable the toolchain runs. The developer writes `.pg`; the CLI resolves the chosen
