@@ -3161,15 +3161,24 @@ capability-derived `referenceTarget()`). MSBuild multi-target (dropping `--targe
   from the repo's own `plugins/`): download→lock→emit, offline rebuild, tampered tarball/cache refused.
 - **Slice 6 — docs + release** (design docs §6/§6.1/§6.3 + json-plugins §5.4 as-built, PRD §4.20,
   CLAUDE.md status).
-- **Slice 7 — MSBuild multi-target** — pulled into the same PR (decision 2026-07-16, 3-agent second-wave
-  investigation; PRD D7–D9): pgconfig `outputs: { <target>: <dir> }` resolved against the config dir with
-  flags-win precedence (explicit `--target` + `--out` stays byte-identical — every existing script and
-  today's MSBuild form); multi-input builds group by **nearest pgconfig** (MintPlayer.AI's five solvers
-  map to five non-derivable Angular folders — `FruitCake` → `fruit-cake` — so per-solver configs are the
-  only honest shape; the LSP's per-file semantics come to `build`); `.targets:69` drops `--target csharp`
-  (consumers declare `"targets": ["csharp"]` minimum — clean cutover, guided refusal); external twins are
-  committed source artifacts — never in `@(FileWrites)`/FUTDC, freshness = the P28 single stamp +
-  full-set re-transpile with write-if-changed, and the CLI never clears an `outputs` dir.
+- **Slice 7 — MSBuild multi-target via `include` file-mapping rules** — pulled into the same PR
+  (decision 2026-07-16; two 3-agent investigations: MSBuild/consumer/CLI, then feasibility/precedent/
+  scenarios for the maintainer-proposed `include` schema; PRD D7–D9). pgconfig gains
+  `include: [{ pattern, target, output-template }]` — glob relative to the config, first-match-wins per
+  (file, target), templates name the **stem** (`%(Filename)` / `%(Directory)` / `%(RecursiveDir)` /
+  `%(TargetLanguage)`) with the target's `fileExtension()` **always auto-appended** (no extension
+  tokens — the collision footgun is defined out of existence), unmatched pairs fall to `--out`/input-dir
+  (absence = byte-identical today), explicit `--target`+`--out` keeps flag semantics. This supersedes
+  the interim per-target `outputs` map, which cannot express the dogfood case (five solvers → five
+  non-derivable Angular folders, `FruitCake` → `fruit-cake`) from one config — ONE root pgconfig with
+  five explicit rules can, centralizing deps + lockfile (nearest-config grouping stays for nested
+  configs). **Closure rule:** emitted TS/Python imports are flat `./basename`, so a closure's modules
+  must route to one dir per target — refused loudly otherwise; specifier recomputation is the recorded
+  unlock. Core change: `ModuleFile` gains its source path. Discovery: passed files are only routed;
+  a bare `polyglot build` uses the patterns as discovery. `.targets:69` drops `--target csharp`
+  (consumers declare `"targets": ["csharp"]` minimum — clean cutover, guided refusal); external twins
+  are committed source artifacts — never in `@(FileWrites)`/FUTDC, freshness = the P28 single stamp +
+  full-set re-transpile with write-if-changed, and the CLI never clears an output dir.
 
 *Gate:* on a machine with an empty plugin cache and **no npm/node on PATH**, a `pgconfig.json` declaring
 `@mintplayer/polyglot-target-python` builds Python via `polyglot build` alone; `pgconfig.lock.json` pins

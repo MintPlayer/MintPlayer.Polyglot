@@ -150,30 +150,47 @@ Python with no npm/node on PATH (the real issue-#30 acceptance).
 
 ## Slice 7 — MSBuild multi-target: pgconfig `outputs` + per-root configs (**in scope, this PR** — decision 2026-07-16; PRD D7–D9; 3-agent second-wave investigation: MSBuild internals · MintPlayer.AI consumer · CLI output semantics)
 
-The open questions from the original sketch are settled (PRD D7–D9): `outputs: { <target>: <dir> }`
-resolved against `pc.dir` with flags-win precedence (explicit `--target X` + `--out` → `--out` wins for X,
-so every existing invocation is byte-identical); external twins are committed source artifacts — **never**
-in `@(FileWrites)`/`@(UpToDateCheckOutput)`, freshness rides the P28 single stamp + full-set re-transpile
-with write-if-changed; `checkTargets` deferred. Key consumer fact forcing D8: MintPlayer.AI's five solvers
-map to five **non-derivable** Angular folders (`FruitCake` → `fruit-cake`), so each `polyglot/` dir gets
-its own pgconfig and the multi-input build groups inputs by nearest config (the LSP's per-file semantics,
-now in `build`).
+The open questions from the original sketch are settled (PRD D7–D9), and the routing schema was upgraded
+2026-07-16 from the interim `outputs: { <target>: <dir> }` map to the maintainer-proposed **`include`
+file-mapping rules** after a second 3-agent investigation (feasibility vs the code · tool-precedent survey ·
+scenario validation) showed the map cannot express the dogfood case from one config: five solvers, five
+**non-derivable** TypeScript destinations (`FruitCake` → `fruit-cake`). One root config with five explicit
+rules expresses it, centralizes deps + the lockfile, and fits MSBuild's single Exec (P28) — nearest-config
+grouping (D8) stays as the correctness rule for nested configs but degenerates to a no-op. External twins
+remain committed source artifacts — **never** in `@(FileWrites)`/`@(UpToDateCheckOutput)`, freshness rides
+the P28 single stamp + full-set re-transpile with write-if-changed; `checkTargets` deferred. Full schema,
+placeholder set, matching/collision/closure rules: PRD D7.
 
-### 7a — CLI: `outputs` field + per-target routing + per-root grouping
+### 7a — Core: `ModuleFile` source path (the one Core change)
 
-- `pgconfig.hpp`: `PgConfig.outputs` (target → dir, raw string kept + pre-resolved against `pc.dir` like
-  `root`); parse in `loadPgConfig`.
-- `main.cpp` `runBuild`: resolve the effective out dir **per target** at the two emit-loop call sites
-  (single-input ~:484, multi-file ~:512) per the D7 precedence; group multi-input builds by nearest
-  pgconfig (D8) — each group runs the existing §4.5 pipeline with its own config (flags win globally).
-- `watchBuildOnce` (~:340): the write block DUPLICATES emitOne's derivation — patch it identically (or
-  unify; check the last-good-outputs semantics before merging them).
-- `writeFile`/emit writes become **write-if-changed**; the CLI never removes/clears an `outputs` dir.
-- *Gate:* unit tests — `outputs` parse (absent field stays empty; relative resolution against `pc.dir`);
-  script assertions in the existing gates (see 7c). Existing `--out` scripts stay green by construction
-  (all take the flag-driven or no-`outputs` path).
+`EmitResult`'s `ModuleFile` (polyglot.hpp ~:58) gains the module's canonical **source path** — the value
+exists in the compiler's emit loop (`canon`, compiler.cpp ~:678) and is currently discarded down to a
+basename. Per-file rule matching for linked modules and the D7 closure-rule check both need it. The
+source-less `__polyglot_prelude` keeps an empty source path (its routing follows the group's csharp dir).
+*Gate:* unit assertion that a multi-file compile surfaces each module's source path.
 
-### 7b — MSBuild: drop `--target csharp`; consumers declare a pgconfig
+### 7b — CLI: glob matcher + placeholder expander + `include` routing
+
+- `glob.hpp` (new, header-only like the P30 units): `**`/`*`/`?` matcher over config-relative paths
+  (`**` = zero-or-more segments — pinned by table tests; the repo has no globbing today).
+- `pgconfig.hpp`: parse `include` (pattern / `target` string-or-array-or-absent / `output` template);
+  raw strings kept, resolution against `pc.dir` at expansion time.
+- `main.cpp`: a `routeOutput(sourcePath, targetName, ext, pc, outDirFallback)` helper implementing D7 —
+  first-match-wins per (file, target), template expansion (`%(Filename)`, `%(Directory)`,
+  `%(RecursiveDir)`, `%(TargetLanguage)`), **auto-appended `fileExtension()`** (no extension tokens),
+  fallback ladder (`--out` → input dir) for unmatched pairs, flags-win for explicit `--target`+`--out`.
+  Wired at the two runBuild emit sites (~:484, ~:512) **and** the duplicated watch write block (~:340).
+- **Closure rule**: after routing, every module of one closure (per target) must land in ONE dir —
+  refuse with the split modules named (TS/Python flat `./basename` imports; C# exempt).
+- **Discovery fallback**: bare `polyglot build` with no file args + a config with `include` → the
+  patterns discover the input set (recursive walk from `pc.dir`); when files are passed, rules only
+  route. Nearest-config grouping (D8) for input sets spanning configs.
+- Write-if-changed everywhere; the CLI never removes/clears an output dir.
+- *Gate:* unit tests — glob table (incl. `**` zero-segment), template expansion, first-match-wins,
+  collision error, closure-rule refusal, discovery-vs-routing modes, `include` parse (absent = today).
+  Existing `--out` scripts stay green by construction (no `include` in their configs).
+
+### 7c — MSBuild: drop `--target csharp`; consumers declare a pgconfig
 
 - `MintPlayer.Polyglot.MSBuild.targets:69`: delete ` --target csharp`; update the header comment (the
   package invokes "build these files, config decides languages"). Single Exec + single stamp +
@@ -182,20 +199,20 @@ now in `build`).
   required; the CLI's refusal message names the fix.
 - *Gate:* `tests/msbuild/run-nuget.ps1` — existing fixtures gain the minimal root pgconfig (asserting
   output-identical C# behavior), plus a **multi-target fixture**: pgconfig `targets: [csharp, typescript]`
-  + `outputs.typescript` pointing outside obj → `dotnet build` alone compiles the `.cs` from obj AND lands
-  the `.ts` twin at the configured dir; incremental skip leaves the twin untouched (mtime); an unchanged
-  re-transpile doesn't rewrite it (write-if-changed); `dotnet clean` removes the obj `.cs` but **not** the
-  external twin; a no-pgconfig fixture asserts the guided refusal.
+  + an `include` rule routing the `.ts` twin outside obj → `dotnet build` alone compiles the `.cs` from
+  obj AND lands the `.ts` twin at the routed dir; incremental skip leaves the twin untouched (mtime); an
+  unchanged re-transpile doesn't rewrite it (write-if-changed); `dotnet clean` removes the obj `.cs` but
+  **not** the external twin; a no-pgconfig fixture asserts the guided refusal.
 
-### 7c — Gate + docs wrap-up
+### 7d — Gate + docs wrap-up
 
-- `tests/registry/run-registry.ps1`: one added case — the fake-registry project gains an
-  `outputs.pyfixture` entry; assert the `.py` lands there (config-driven path) while `--target python
-  --out` still lands in `--out` (flag-driven path).
+- `tests/registry/run-registry.ps1`: one added case — the fake-registry project gains an `include` rule
+  for the `pyfixture` target; assert the `.py` lands at the routed path (config-driven) while
+  `--target python --out` still lands in `--out` (flag-driven).
 - Docs as-built: PRD §4.20 tail + master PLAN P30 + `plugins-and-targets.md` §6.3 pgconfig shape gain the
-  `outputs` field; MSBuild package README/comment documents the consumer contract; CLAUDE.md status line.
-- MintPlayer.AI adoption (the five per-solver pgconfigs from the PRD D8 table) happens in THAT repo after
-  this ships — recorded here so the twin-drift kill is traceable end-to-end.
+  `include` field; MSBuild package README/comment documents the consumer contract; CLAUDE.md status line.
+- MintPlayer.AI adoption (ONE root pgconfig with the five explicit rules from PRD D7/D8) happens in THAT
+  repo after this ships — recorded here so the twin-drift kill is traceable end-to-end.
 
 ---
 
@@ -210,3 +227,11 @@ now in `build`).
   diagnostic rather than blocking.
 - **Behavior changes** (no-config default pair, bare-name cache probe) — deliberate clean cutovers,
   documented in PRD §8 with exact diagnostics guiding users to the new shape.
+- **Slice 7 — glob matcher subtleties** (`**` zero-segment matching, trailing separators) — pinned by a
+  table-test suite; semantics documented in PRD D7 so engine drift is a test failure, not a surprise.
+- **Slice 7 — closure splitting** — the schema can EXPRESS a broken routing (a closure's modules to
+  different dirs while emitted imports stay `./basename`); the closure-rule check turns that miscompile
+  into a named refusal. Lifting it (specifier recomputation) is recorded, not attempted here.
+- **Slice 7 — corpora configs must stay `include`-free** — adding a rule to
+  `tests/conformance/programs/pgconfig.json` would route TS away from the harness's `--out` and break
+  `run-diff.ps1` (it passes no `--target`); the gates assert the fallback path stays exercised.

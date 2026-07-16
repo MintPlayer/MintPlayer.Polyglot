@@ -219,48 +219,92 @@ pre-warms the shared cache (CI, offline prep) and, when run inside a project, wr
 (`pluginCacheDir()/t/…`) dies: a `targets` entry not covered by in-box or `dependencies` is a diagnostic
 telling the user to add the dependency — everything sourced from `pgconfig.json`.
 
-### D7 — Per-target `outputs` routing in `pgconfig.json` (slice 7, second-wave investigation 2026-07-16)
+### D7 — `include` file-mapping rules in `pgconfig.json` (maintainer proposal 2026-07-16, refined by a 3-agent investigation; supersedes the earlier per-target `outputs` map, which was never implemented)
 
-A new manifest field routes each emitted language to its own directory:
+Per-file routing rules, glob-matched and template-routed. The dogfood consumer proves the simpler
+`outputs: { <target>: <dir> }` map insufficient: five solvers need five different TypeScript
+destinations, which one-dir-per-target cannot express from one config. `include` can:
 
 ```jsonc
 {
   "targets": ["csharp", "typescript"],
-  "outputs": { "typescript": "../../../RLDemo.Web/ClientApp/src/app/fruit-cake" }
+  "include": [
+    { "pattern": "FruitCake/polyglot/*.pg",   "target": "typescript",
+      "output": "../RLDemo.Web/ClientApp/src/app/fruit-cake/%(Filename)" },
+    { "pattern": "MountainCar/polyglot/*.pg", "target": "typescript",
+      "output": "../RLDemo.Web/ClientApp/src/app/mountaincar/%(Filename)" }
+    // … one rule per destination; csharp matches no rule → falls through to --out (obj)
+  ]
 }
 ```
 
-- **Shape:** object, target name → directory. Relative paths resolve against **the config's directory**
-  (`pc.dir`) — the established base for everything path-like in the manifest (`root`, `file:` deps, the
-  lockfile); pre-resolved in `loadPgConfig` exactly like `root`.
-- **Precedence** (keeps the flags-win convention AND today's behavior byte-identical wherever `outputs`
-  is absent):
-  1. Explicit `--target X` **+** `--out` → X emits to `--out`; `outputs` is ignored for the explicitly
-     flagged target (today's MSBuild invocation and every existing test script take this form).
-  2. Config-driven targets (no `--target`) → each target uses its `outputs` entry if present, else the
-     `--out` fallback sink, else the input's directory (today's default).
-- **Write discipline:** the CLI **never deletes or clears an `outputs` directory** (it may be a shared
-  src folder — e.g. an Angular app dir the dev server watches); it writes specific files only, and all
-  emission becomes **write-if-changed** (byte-compare before write) so an unchanged twin never churns a
-  file watcher or an mtime.
-- Emission paths stay flat (`<dir>/<stem><ext>`, linked modules by basename) — `outputs` picks the
-  directory, never renames. `check`/LSP are untouched (they never write).
+- **`pattern`** — glob relative to the config's directory (`**` = zero-or-more segments, `*`/`?`
+  single-segment; pinned by tests — glob engines differ subtly). **`target`** — target name, array of
+  names, or absent = all targets (renamed from the proposed `targetLanguageCondition`: same semantics,
+  honest name — it's a filter, not a predicate engine). **`output`** — a template for the emitted
+  file's **path stem**, resolved against the config's directory (the `root`/`file:`/lockfile base).
+- **The CLI always appends the target's `fileExtension()`** (from the plugin manifest — works for any
+  downloaded plugin). There are deliberately **no extension placeholders**: every surveyed tool
+  (esbuild, rollup, tsc, protoc, Sass) keeps the extension tool-owned, because a template that forgets
+  it collides every target on one path — the error is defined out of existence. (The proposed
+  `%(TargetExtension)`/ambiguous `%(Extension)` are recorded as considered-and-dropped.)
+- **Placeholders (v1, deliberately tiny):** `%(Filename)` (stem), `%(Directory)` (the matched file's
+  dir, config-relative — "next to the source" = `%(Directory)/%(Filename)`), `%(RecursiveDir)` (the
+  part `**` matched, MSBuild semantics, trailing separator, empty without `**` — the tree-mirroring
+  hinge; only sound under the closure rule below), `%(TargetLanguage)` (e.g.
+  `dist/%(TargetLanguage)/…`). `%(Foldername)` deferred (the dogfood mapping is non-derivable anyway —
+  explicit per-destination rules are the honest shape).
+- **Matching:** first-match-wins per (file, target), top to bottom (the webpack-`oneOf`/routing-table
+  model — narrow overrides above broad defaults). A (file, target) matching **no** rule uses the
+  existing ladder: `--out` when given, else the input's directory — so a config without `include` is
+  byte-identical to today, and every existing harness stays green.
+- **Flags win:** explicit `--target X` + `--out` → X emits to `--out`, rules ignored for it (today's
+  MSBuild form; ad-hoc one-offs).
+- **Collisions:** two sources resolving to one output path with different content = hard build error
+  naming both sources (the existing `writeDedup` guard, verbatim).
+- **The closure rule (correctness constraint):** emitted TS/Python cross-module imports are FLAT
+  `./basename` (the emitter never computes relative paths), so **all modules of one import closure
+  must route to the same output directory per target**; the CLI refuses with a diagnostic naming the
+  split modules if rules would separate them (never a silent miscompile). C# is exempt (emits no
+  imports; the csproj glob links). Path-aware specifier recomputation (flow each module's routed dir
+  into `buildImports`, emit real relative specifiers) is the recorded principled follow-up that lifts
+  this constraint and makes `%(RecursiveDir)` mirroring fully general.
+- **Discovery:** when a host passes files (MSBuild, harnesses), rules only **route** — they never
+  expand the input set (MSBuild's glob stays authoritative; no two sources of truth). A bare
+  `polyglot build` with **no** file args uses the `include` patterns as discovery (the tsc model, as a
+  fallback) — enabling host-less workspaces (Angular-first, no .NET build).
+- **Write discipline:** write-if-changed (byte-compare) so unchanged twins never churn a file watcher
+  or mtime; the CLI never deletes or clears an output directory.
+- **Named net-new machinery** (so nothing lands silently): a hand-rolled `**`/`*`/`?` glob matcher (no
+  globbing exists in the repo), the placeholder expander, and one small Core change —
+  `EmitResult`'s `ModuleFile` gains its **source path** (the canonical path exists in the compiler's
+  emit loop and is currently discarded down to a basename; per-file routing of linked modules and the
+  closure-rule check both need it). The source-less `__polyglot_prelude` (a C#-only file with no
+  imports) follows its group's csharp-routed directory, exempt from pattern matching.
+- `check`/LSP are untouched (they never write; routing is build/watch-only).
 
-### D8 — Per-root config resolution in multi-input builds
+*Design-it-twice, recorded:* the alternative shape keys outputs by target inside each rule
+(`{ "pattern", "outputs": { "csharp": tmpl, "typescript": tmpl } }` — the graphql-codegen/protoc
+lineage). Rejected for the filter-field shape: the dominant real case routes ONE target while C# falls
+through to `--out`, so most rules would carry a one-key map; the filter reads flatter and matches the
+maintainer's proposal.
 
-The dogfood consumer (MintPlayer.AI) settles this: five `.pg` solvers, each needing its TypeScript twin
-in a **different, non-derivable** Angular folder (`FruitCake/polyglot` → `app/fruit-cake` — kebab-cased,
-while the other four lowercase; any convention would silently misplace it). So output destinations are
-per-source facts, and the natural home is **one `pgconfig.json` next to each solver** — which requires
-the multi-input build (MSBuild's single Exec over every `.pg` in the project, P28) to stop assuming one
-config per invocation:
+### D8 — One root config is the recommended shape; nearest-config grouping stays for correctness
 
-`runBuild` groups inputs by their **nearest `pgconfig.json`** (the same walk-up the single-input path
-and the LSP's per-file `contextFor` already do) and runs the existing §4.5 link-and-emit pipeline per
-group, with each group's `targets`/`outputs`/`lib` from its own config. Explicit flags still win
-globally (`--target`, `--out`, `--root`, `--lib`, `--access`), so a flag-driven invocation behaves
-exactly as today regardless of grouping. This aligns build semantics with what the LSP already promises:
-the nearest config governs each source file.
+The dogfood consumer settles the shape question: five `.pg` solvers, each needing its TypeScript twin
+in a **different, non-derivable** Angular folder (`FruitCake/polyglot` → `app/fruit-cake` —
+kebab-cased, while `MountainCar` → `mountaincar` merely lowercases; any convention would silently
+misplace one). With `include` rules (D7), **one `pgconfig.json` at the project root** expresses all
+five destinations explicitly — and beats the five-per-solver-configs alternative on every axis the
+scenario validation scored: one lockfile and one `dependencies` block instead of five duplicates, the
+natural fit for MSBuild's single Exec over every `.pg` (P28), and the same single config the LSP's
+walk-up finds.
+
+Grouping by **nearest `pgconfig.json`** is still the resolution rule for a multi-input build whose
+inputs span several configs (nested configs must not silently inherit the wrong `targets`/`lib` — the
+LSP's per-file `contextFor` semantics, kept honest in `build`), but it degenerates to a no-op in the
+recommended one-root-config shape. Explicit flags still win globally (`--target`, `--out`, `--root`,
+`--lib`, `--access`).
 
 ### D9 — MSBuild goes config-sourced (the `.targets` edit + freshness/clean semantics)
 
@@ -268,10 +312,10 @@ the nearest config governs each source file.
   else stays: the single Exec + single `__polyglot.stamp` (the P28 all-or-nothing invariant — per-file
   batching miscompiled and must never return), `RemoveDir`+`MakeDir` on the obj sink,
   `_PolyglotVerifyTool`, and the `$(PolyglotOutDir)*.cs` glob into `@(Compile)` + `@(FileWrites)`.
-- **C# keeps landing in obj** via D7 rule 2: the consumer's `csharp` target has no `outputs` entry, so
-  it falls back to the passed `--out "$(PolyglotOutDir)."` and compiles exactly as today. A project
-  whose pgconfig doesn't even list `csharp` simply contributes no `.cs` (the glob yields nothing —
-  already safe).
+- **C# keeps landing in obj** via D7's fallback: the consumer writes no `include` rule for `csharp`,
+  so it matches nothing and falls to the passed `--out "$(PolyglotOutDir)."`, compiling exactly as
+  today. A project whose pgconfig doesn't even list `csharp` simply contributes no `.cs` (the glob
+  yields nothing — already safe).
 - **External twins are source-tree artifacts, deliberately committed** (that's the MintPlayer.AI model —
   the Angular app imports them by relative path). Therefore they are **NOT** added to `@(FileWrites)`
   (`dotnet clean` must never delete files from the user's src tree) and **NOT** to
@@ -292,8 +336,9 @@ the nearest config governs each source file.
 **In scope:** the in-exe npm fetch pipeline (D1); lockfile (D2); versioned cache + on-load re-verification
 (D3); semver subset + spec grammar (D4); removal of all CLI hardcoded target fallbacks (D5); registry/proxy
 config subset (D6); `install` rewrite; the fake-registry script gate; doc updates (§6/§6.1/§6.3,
-json-plugins §5.4, PRD §4.20 design record); **and (second wave, same PR — decision 2026-07-16) the
-MSBuild multi-target completion: pgconfig `outputs` routing (D7), per-root config grouping (D8), and the
+json-plugins §5.4, PRD §4.20 design record); **and (second wave, same PR — decisions 2026-07-16) the
+MSBuild multi-target completion: `include` file-mapping rules with the glob matcher, placeholder expander,
+closure rule, and `ModuleFile` source-path surfacing (D7), nearest-config grouping (D8), and the
 `.targets` dropping `--target csharp` (D9), with the run-nuget gate extended to cover it.** The original
 "possibly its own issue" framing is superseded — the CLI work above made the remainder small enough to
 finish here, and it's what actually kills the MintPlayer.AI stale-twin drift the issue opened with.
@@ -301,12 +346,10 @@ finish here, and it's what actually kills the MintPlayer.AI stale-twin drift the
 **Out of scope:** `environments` gating (§6 — parsed nowhere today, separate feature); auth/private
 registries; a vendored TLS stack on Linux (recorded fork); generic URL/file-hosting feeds (§6.1 fallback
 feed — the npm feed is the shipped one); plugin signing beyond SRI integrity; a `checkTargets` split (D9,
-demand-gated); NX/Vite/Gradle host adapters (same thin-trigger shape as the NuGet package — a host passes
-files and paths and wires outputs into its own graph — but nothing is planned).
-
-**Out of scope:** `environments` gating (§6 — parsed nowhere today, separate feature); auth/private
-registries; a vendored TLS stack on Linux (recorded fork); generic URL/file-hosting feeds (§6.1 fallback
-feed — the npm feed is the shipped one); plugin signing beyond SRI integrity.
+demand-gated); path-aware import-specifier recomputation (the D7 closure-rule unlock — recorded principled
+follow-up); `%(Foldername)` and further placeholders (demand-gated); NX/Vite/Gradle host adapters (same
+thin-trigger shape as the NuGet package — a host passes files and paths and wires outputs into its own
+graph — but nothing is planned).
 
 ## 5. Failure modes & diagnostics (never a miscompile, never a hang)
 
