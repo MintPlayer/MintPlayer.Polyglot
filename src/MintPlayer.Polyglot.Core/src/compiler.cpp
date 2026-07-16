@@ -676,9 +676,9 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
 
     result.code = emitFile(""); // the entry file (the CLI names it after the input)
     for (const auto& canon : userOrigins)
-        result.modules.push_back({baseByCanon[canon], emitFile(canon)});
+        result.modules.push_back({baseByCanon[canon], emitFile(canon), canon});
     if (splitPrelude) // the shared runtime prelude, emitted once (identical across roots -> CLI writeDedup collapses it)
-        result.modules.push_back({kPreludeBasename, emitKeep({kPreludeOrigin}, kPreludeBasename)});
+        result.modules.push_back({kPreludeBasename, emitKeep({kPreludeOrigin}, kPreludeBasename), ""});
     result.ok = true;
     return result;
 }

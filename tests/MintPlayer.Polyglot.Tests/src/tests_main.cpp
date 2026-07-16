@@ -2292,6 +2292,136 @@ int main() {
         check(allNative, "P30 s4: the derived reference backend is all-native (never warns spuriously)");
     }
 
+    // ---- P30 slice 7: include file-mapping rules (glob / templates / routing / closure rule) --
+
+    // Glob semantics table (`**` = zero-or-more segments, captured as RecursiveDir; `*`/`?` stay
+    // within one segment) — pinned here so engine drift is a test failure, not a surprise.
+    {
+        auto m = [](const char* pat, const char* path) { return cli::globMatch(pat, path); };
+        check(m("**/*.pg", "a.pg").matched && m("**/*.pg", "a.pg").recursiveDir.empty(),
+              "P30 s7: ** matches zero segments (empty RecursiveDir)");
+        check(m("**/*.pg", "x/y/a.pg").matched && m("**/*.pg", "x/y/a.pg").recursiveDir == "x/y/",
+              "P30 s7: ** captures the matched span as RecursiveDir (trailing '/')");
+        check(m("./**/*.pg", "x/a.pg").matched, "P30 s7: a leading ./ is tolerated on patterns");
+        check(m("src/*.pg", "src/a.pg").matched && !m("src/*.pg", "src/sub/a.pg").matched,
+              "P30 s7: * stays within one segment");
+        check(m("FruitCake/polyglot/*.pg", "FruitCake/polyglot/fruitcake_solver.pg").matched &&
+                  !m("FruitCake/polyglot/*.pg", "Snake/polyglot/snake_solver.pg").matched,
+              "P30 s7: the dogfood per-destination rule shape matches exactly");
+        check(m("a?c.pg", "abc.pg").matched && !m("a?c.pg", "abbc.pg").matched, "P30 s7: ? is one char");
+        check(m("src/**/gen/*.pg", "src/a/b/gen/x.pg").recursiveDir == "a/b/",
+              "P30 s7: RecursiveDir is only the **-matched span");
+    }
+
+    // Output templates: expansion + the unknown-placeholder refusal (extension is auto-appended).
+    {
+        cli::TemplateValues v{"solver", "FruitCake/polyglot", "x/y/", "typescript"};
+        std::string out, err;
+        check(cli::expandOutputTemplate("dist/%(TargetLanguage)/%(RecursiveDir)%(Filename)", v, out, err) &&
+                  out == "dist/typescript/x/y/solver",
+              "P30 s7: template placeholders expand");
+        check(cli::expandOutputTemplate("%(Directory)/%(Filename)", v, out, err) &&
+                  out == "FruitCake/polyglot/solver",
+              "P30 s7: %(Directory)/%(Filename) is the next-to-source shape");
+        check(!cli::expandOutputTemplate("%(TargetExtension)/x", v, out, err) &&
+                  has(err, "unknown placeholder") && has(err, "appended automatically"),
+              "P30 s7: an unknown placeholder is refused, naming the auto-appended extension");
+    }
+
+    // Rule routing: first-match-wins, target filtering, fallback, config-relative resolution.
+    {
+        namespace fs = std::filesystem;
+        cli::PgConfig pc;
+        pc.found = true;
+        pc.dir = fs::path("C:/proj");
+        pc.include.push_back({"FruitCake/polyglot/*.pg", {"typescript"}, "../web/app/fruit-cake/%(Filename)"});
+        pc.include.push_back({"**/*.pg", {"typescript"}, "gen/%(RecursiveDir)%(Filename)"});
+        std::string err;
+
+        auto r1 = cli::routeIncludeOutput(pc, fs::path("C:/proj/FruitCake/polyglot/fruitcake_solver.pg"),
+                                          "typescript", err);
+        check(r1 && *r1 == fs::path("C:/web/app/fruit-cake/fruitcake_solver").lexically_normal(),
+              "P30 s7: the FIRST matching rule wins (narrow above broad)");
+        auto r2 = cli::routeIncludeOutput(pc, fs::path("C:/proj/Snake/polyglot/snake_solver.pg"),
+                                          "typescript", err);
+        check(r2 && *r2 == fs::path("C:/proj/gen/Snake/polyglot/snake_solver").lexically_normal(),
+              "P30 s7: the broad rule mirrors the tree via %(RecursiveDir)");
+        check(!cli::routeIncludeOutput(pc, fs::path("C:/proj/Snake/polyglot/snake_solver.pg"), "csharp", err) &&
+                  err.empty(),
+              "P30 s7: a target no rule names falls through cleanly (no match, no error)");
+        check(!cli::routeIncludeOutput(pc, fs::path("C:/elsewhere/a.pg"), "typescript", err),
+              "P30 s7: a source outside the config's tree never routes");
+    }
+
+    // Closure outputs: prelude follows the entry; a split closure is refused, never miscompiled.
+    {
+        namespace fs = std::filesystem;
+        cli::PgConfig pc;
+        pc.found = true;
+        pc.dir = fs::path("C:/proj");
+        pc.include.push_back({"main.pg", {"typescript"}, "web/%(Filename)"});
+        EmitResult fake;
+        fake.ok = true;
+        fake.code = "entry";
+        fake.modules.push_back({"util", "code", (fs::path("C:/proj") / "util.pg").string()});
+        fake.modules.push_back({"__polyglot_prelude", "prelude", ""});
+        std::vector<fs::path> outs;
+        std::string err;
+
+        // Entry routed to web/, util unmatched -> fallback dir: a SPLIT closure must refuse.
+        check(!cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
+                                          fs::path("C:/proj"), outs, err) &&
+                  has(err, "split the import closure"),
+              "P30 s7: include rules splitting a closure are refused with the split named");
+
+        // A rule covering the whole closure routes everything together; the prelude follows the entry.
+        pc.include.clear();
+        pc.include.push_back({"**/*.pg", {"typescript"}, "web/%(Filename)"});
+        check(cli::resolveClosureOutputs(pc, false, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
+                                         fs::path("C:/proj"), outs, err) &&
+                  outs.size() == 3 && outs[0] == fs::path("C:/proj/web/main.ts") &&
+                  outs[1] == fs::path("C:/proj/web/util.ts") && outs[2] == fs::path("C:/proj/web/__polyglot_prelude.ts"),
+              "P30 s7: a closure-covering rule routes entry+modules together, prelude follows the entry");
+
+        // flagRouted (explicit --target + --out) bypasses the rules wholesale.
+        check(cli::resolveClosureOutputs(pc, true, fs::path("C:/proj/main.pg"), fake, "typescript", ".ts",
+                                         fs::path("C:/out"), outs, err) &&
+                  outs[0] == fs::path("C:/out/main.ts") && outs[2] == fs::path("C:/out/__polyglot_prelude.ts"),
+              "P30 s7: explicit --target + --out keeps flag semantics (rules bypassed)");
+    }
+
+    // Core: ModuleFile carries its source path (per-file routing needs to attribute linked modules).
+    {
+        MapModuleResolver res({{"lib", "fn dbl(x: i32): i32 { return x * 2 }\n"}});
+        EmitResult r = compile("import { dbl } from \"lib\"\nfn f(): i32 {\n  return dbl(2)\n}\n",
+                               findTarget("csharp"), &res, LibConfig{});
+        check(r.ok && r.modules.size() == 1 && r.modules[0].sourcePath == "lib",
+              "P30 s7: a linked module surfaces its canonical source path");
+    }
+
+    // pgconfig parse: include rules round-trip; a malformed rule is an ERROR, never a silent no-op.
+    {
+        namespace fs = std::filesystem;
+        const fs::path base = fs::temp_directory_path() / "polyglot-p30-s7-cfg";
+        std::error_code ec;
+        fs::remove_all(base, ec);
+        fs::create_directories(base);
+        cli::writeFile(base / "pgconfig.json",
+                       "{ \"targets\": [\"csharp\", \"typescript\"], \"include\": ["
+                       "{ \"pattern\": \"**/*.pg\", \"target\": [\"typescript\", \"python\"], \"output\": \"gen/%(Filename)\" },"
+                       "{ \"pattern\": \"a/*.pg\", \"output\": \"b/%(Filename)\" } ] }");
+        const cli::PgConfig pc = cli::loadPgConfig(base);
+        check(pc.errors.empty() && pc.include.size() == 2 && pc.include[0].targets.size() == 2 &&
+                  pc.include[0].targets[1] == "python" && pc.include[1].targets.empty() &&
+                  pc.include[1].output == "b/%(Filename)",
+              "P30 s7: include rules parse (target string-array and absent forms)");
+        cli::writeFile(base / "pgconfig.json", "{ \"include\": [ { \"pattern\": \"**/*.pg\" } ] }");
+        const cli::PgConfig bad = cli::loadPgConfig(base);
+        check(!bad.errors.empty() && has(bad.errors[0], "pattern") && has(bad.errors[0], "output"),
+              "P30 s7: an include rule missing pattern/output is a manifest error, not a silent no-op");
+        fs::remove_all(base, ec);
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;

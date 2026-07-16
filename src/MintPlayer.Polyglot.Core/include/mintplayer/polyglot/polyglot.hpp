@@ -54,10 +54,13 @@ BackendHandle findTarget(const std::string& name);
 
 // One emitted output file of a multi-module build (§4.5): `basename` is the file's stem (its imported
 // module's canonical basename), `code` its emitted source. `basename` is empty for the entry file (the CLI
-// names it after the input).
+// names it after the input). `sourcePath` is the module's canonical origin (an absolute file path for
+// disk-resolved modules) — the host routes per-file outputs by it (P30 slice 7); empty for the synthesized
+// `__polyglot_prelude` file, which has no source.
 struct ModuleFile {
     std::string basename;
     std::string code;
+    std::string sourcePath;
 };
 
 // Result of compiling one source to one target. On success `ok` is true and `code` holds the emitted
