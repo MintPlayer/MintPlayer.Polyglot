@@ -6,11 +6,15 @@
 > (`docs/design/plugins-and-targets.md`): *"From it the CLI resolves and **downloads** the named plugins
 > into a shared cache, then emits."*
 
-- **Status:** Draft v1.0 · 2026-07-16 · ships as a lockstep **minor** (new CLI behavior + lockfile) — the
-  PR carries `release:minor`; versions stay build-injected `0.0.0-dev` placeholders in-tree (P24).
+- **Status:** As built v1.2 · 2026-07-16 · slices 0–8 built + gated on PR #31 (v1.0 designed the
+  auto-download, D1–D6; v1.1 pulled MSBuild multi-target in via the `include` schema, D7–D9; v1.2
+  lifted the closure rule per target, `crossDirImports`). Ships as a lockstep **minor** (new CLI
+  behavior + lockfile) — the PR carries `release:minor`; versions stay build-injected `0.0.0-dev`
+  placeholders in-tree (P24).
 - **Author:** Pieterjan (with Claude Code).
-- **Provenance:** 3-agent investigation (CLI resolution/install/cache code · design-docs + host
-  integrations · npm registry protocol + zero-dep C++ implementation options), verified against source.
+- **Provenance:** two 3-agent investigations, verified against source — first CLI resolution/install/
+  cache code · design-docs + host integrations · npm registry protocol + zero-dep C++ options; then,
+  for the `include` schema, feasibility vs the code · tool-precedent survey · scenario validation.
   Findings folded in below with `file:line`.
 - **Design-of-record being implemented:** `docs/design/plugins-and-targets.md` §6/§6.1/§6.3 and
   `docs/design/json-plugins.md` §5.4 ("npm HTTP API data-only, SHA-512 `dist.integrity` verify,

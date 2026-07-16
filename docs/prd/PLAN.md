@@ -3140,7 +3140,8 @@ global index is recorded as superseded), and `polyglot install` rewritten over t
 shell-outs deleted). All hardcoded target fallbacks die: `runBuild`/watch's `{csharp,typescript}` default
 pair, the bare-name cache probes, and the literal `"csharp"` check/LSP reference target (replaced by a
 capability-derived `referenceTarget()`). MSBuild multi-target (dropping `--target csharp`,
-`MSBuild.targets:69`) stays **follow-up-gated** per the issue — P30 keeps `.targets` byte-identical.
+`MSBuild.targets:69`) was initially follow-up-gated per the issue, then pulled into the same PR and
+built — see the slice 7 and slice 8 bullets below.
 
 - **Slice 0 — testable units + primitives (CLI layer, Core stays IO-free).** `src/pkg/{sha,inflate,tar,
   config}` — vendored single-file SHA-512/SHA-1 + SRI, public-domain inflate, hand-rolled ustar+pax
