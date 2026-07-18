@@ -1291,7 +1291,7 @@ int main() {
     {
         const char* prog =
             "interface Shrinkable { fn shrink(): i32 }\n"
-            "record Box(n: i32) : Shrinkable {\n  override fn shrink(): i32 => this.n - 1\n}\n"
+            "record Box(n: i32) : Shrinkable {\n  fn shrink(): i32 => this.n - 1\n}\n"
             "class Bag {\n  operator fn get(i: i32): i32 => i\n}\n"
             "fn at(b: Bag): i32 => b[3]\n"
             "fn main() {}\n";
@@ -2484,6 +2484,168 @@ int main() {
                                          proj, outs, err, /*allowSplit=*/true) &&
                   outs[0] == proj / "app/main.ts" && outs[1] == proj / "util.ts",
               "P30 s8: allowSplit routes a closure across directories (entry routed, module fallback)");
+    }
+
+    // issue #33 — hex literals: real radix lexing + radix-aware suffix stripping. The trailing lowercase
+    // 'f'/'d' of a hex literal was eaten by the float-suffix strip (`0xff` -> `0xf`, `0x11d` -> `0x11`),
+    // and a `f32`/`f64` tail stripped THREE digits (`0xf32` -> invalid `0x`).
+    {
+        DiagnosticBag d;
+        auto t = lex("0xff 0x11d 0xf32 0xFF 0xffi64 0x1D", d);
+        check(!d.hasErrors(), "issue#33: hex literals lex clean");
+        auto textAt = [&](std::size_t i) { return i < t.size() ? t[i].text : std::string(); };
+        check(t[0].kind == TokKind::IntLit && textAt(0) == "0xff", "issue#33: 0xff keeps its digits");
+        check(textAt(1) == "0x11d", "issue#33: 0x11d keeps its trailing 'd'");
+        check(textAt(2) == "0xf32", "issue#33: 0xf32 is three hex digits, not a float suffix");
+        check(textAt(3) == "0xFF", "issue#33: uppercase hex unchanged");
+        check(textAt(4) == "0xffi64", "issue#33: integer width suffix still accepted on hex");
+        DiagnosticBag bad;
+        lex("0xffz", bad);
+        check(bad.hasErrors(), "issue#33: unknown suffix on a hex literal is a diagnostic");
+        DiagnosticBag bare;
+        lex("0x + 1", bare);
+        check(bare.hasErrors(), "issue#33: '0x' with no digits is a diagnostic");
+        // End-to-end: the emitted code carries the intact literal on every target (lowering was the
+        // truncation site — stripNumericSuffix ran suffix rules on radix literals).
+        const char* prog = "fn main() {\n  print(0xff)\n  print(0x11d)\n}\n";
+        for (const char* tgt : {"csharp", "typescript", "python", "php"}) {
+            EmitResult r = compileStd(prog, findTarget(tgt));
+            check(r.ok && has(r.code, "0xff") && has(r.code, "0x11d"),
+                  std::string("issue#33: emitted ") + tgt + " keeps 0xff/0x11d intact");
+        }
+    }
+
+    // issue #34 — the portable char→ordinal path: std.strings codePointAt maps per target, and the
+    // silently-miscompiling `(i32)char` is a diagnostic naming the fix ((int)'A' was 65 on C# but 0 on
+    // TS/PHP and the cast was dropped on Python).
+    {
+        const char* prog = "import \"std.strings\"\nfn main() {\n  print(\"A\".codePointAt(0))\n}\n";
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "char.ConvertToUtf32("), "issue#34: C# codePointAt -> char.ConvertToUtf32");
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok && has(ts.code, ".codePointAt(0)!"), "issue#34: TS codePointAt -> .codePointAt()!");
+        EmitResult py = compileStd(prog, findTarget("python"));
+        check(py.ok && has(py.code, "ord("), "issue#34: Python codePointAt -> ord()");
+        EmitResult php = compileStd(prog, findTarget("php"));
+        check(php.ok && has(php.code, "ord(substr("), "issue#34: PHP codePointAt -> ord(substr()) (byte-consistent, no mbstring)");
+        EmitResult castChar = compileStd("fn main() {\n  var c = 'A'\n  print((i32)c)\n}\n", findTarget("csharp"));
+        check(!castChar.ok, "issue#34: (i32) on a char is rejected");
+        bool named = false;
+        for (const auto& dg : castChar.diagnostics) if (has(dg.message, "codePointAt")) named = true;
+        check(named, "issue#34: the char-cast diagnostic names codePointAt");
+        EmitResult callCast = compileStd("fn main() {\n  var c = 'A'\n  print(i32(c))\n}\n", findTarget("csharp"));
+        check(!callCast.ok, "issue#34: call-syntax i32(char) is rejected too");
+        EmitResult castStr = compileStd("fn main() {\n  var s = \"x\"\n  print((i32)s)\n}\n", findTarget("csharp"));
+        check(!castStr.ok, "issue#34: (i32) on a string stays rejected (regression)");
+    }
+
+    // issue #35 — PHP: module globals must be visible inside methods and property getters, not just free
+    // functions (ir::Method now carries globalRefs; the PHP MethodDecl emits the `global $…;` prologue).
+    {
+        auto phpOf = [&](const char* src) { return compileStd(src, findTarget("php")); };
+        EmitResult method = phpOf("let TABLE: i32[] = [10, 20, 30]\n"
+                                  "class Box {\n  fn lookup(i: i32): i32 => TABLE[i]\n}\nfn main() {}\n");
+        check(method.ok && has(method.code, "global $TABLE;"), "issue#35: PHP class method gets `global`");
+        EmitResult getter = phpOf("const LIMIT: i32 = 7\n"
+                                  "record Vec(x: i32) {\n  let cap: i32 => LIMIT\n}\nfn main() {}\n");
+        check(getter.ok && has(getter.code, "global $LIMIT;"), "issue#35: PHP property getter gets `global`");
+        EmitResult lambda = phpOf("let BASE: i32 = 5\n"
+                                  "class Box {\n  fn all(): i32 {\n    let f = (x: i32) => x + BASE\n    return f(1)\n  }\n}\nfn main() {}\n");
+        check(lambda.ok && has(lambda.code, "global $BASE;"), "issue#35: closure inside a method reaches the global");
+        EmitResult shadow = phpOf("let TABLE: i32[] = [1]\n"
+                                  "class Box {\n  fn own(TABLE: i32): i32 => TABLE\n}\nfn main() {}\n");
+        check(shadow.ok && !has(shadow.code, "global $TABLE;"), "issue#35: a shadowing param suppresses `global`");
+        EmitResult freeFn = phpOf("let TABLE: i32[] = [10, 20]\nfn readIt(): i32 => TABLE[1]\nfn main() {}\n");
+        check(freeFn.ok && has(freeFn.code, "global $TABLE;"), "issue#35: free-function path unchanged (regression)");
+        // The C# leg (found by module_globals.pg): globals are fields of PolyglotProgram, so a member of
+        // ANOTHER type referencing one bare didn't compile. `using static PolyglotProgram;` (emitted only
+        // when globals exist) + `internal` fields make them reachable with correct shadowing semantics.
+        EmitResult cs = compileStd("let TABLE: i32[] = [10, 20]\n"
+                                   "class Box {\n  fn lookup(i: i32): i32 => TABLE[i]\n}\nfn main() {}\n",
+                                   findTarget("csharp"));
+        check(cs.ok && has(cs.code, "using static PolyglotProgram;") && has(cs.code, "internal static readonly"),
+              "issue#35: C# type members reach module globals (using static + internal fields)");
+        EmitResult csNone = compileStd("fn main() {}\n", findTarget("csharp"));
+        check(csNone.ok && !has(csNone.code, "using static"),
+              "issue#35: no globals -> no using-static line (byte-gate)");
+    }
+
+    // issue #36 — PHP List<T>/T[] are \ArrayObject (true reference semantics): construction boxes, and
+    // clear/removeAll/removeAt mutate in place through the handle instead of reassigning a copied array.
+    {
+        const char* prog =
+            "fn mutate(xs: List<i32>) {\n  xs.add(99)\n}\n"
+            "fn main() {\n  var ys: List<i32> = [1]\n  mutate(ys)\n  print(ys.count)\n"
+            "  ys.removeAt(0)\n  ys.clear()\n  ys.removeAll((v) => v > 0)\n}\n";
+        EmitResult php = compileStd(prog, findTarget("php"));
+        check(php.ok && has(php.code, "new \\ArrayObject([1])"), "issue#36: PHP list literal boxes into \\ArrayObject");
+        check(php.ok && has(php.code, "->exchangeArray("), "issue#36: PHP size-mutation goes through exchangeArray");
+        check(php.ok && !has(php.code, "$ys = ["), "issue#36: no value-typed array reassignment remains");
+        EmitResult arr = compileStd("fn main() {\n  var a: i32[] = [1, 2]\n  a[0] = 9\n  print(a[0])\n}\n",
+                                    findTarget("php"));
+        check(arr.ok && has(arr.code, "new \\ArrayObject([1, 2])"), "issue#36: PHP T[] array boxes too");
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok && !has(ts.code, "ArrayObject"), "issue#36: TS output untouched by the PHP boxing");
+    }
+
+    // issue #29 — interfaces made honest: implements-conformance + nominal assignability + the
+    // C#-convention override rule in the checker, abc.ABC emission on Python, and the fake typed-pattern
+    // narrowing refused.
+    {
+        const std::string iface = "interface IPgNet {\n  fn forward(x: i32): i32\n}\n";
+        EmitResult missing = compileStd(iface + "class Net : IPgNet {\n  fn other(): i32 => 1\n}\nfn main() {}\n",
+                                        findTarget("csharp"));
+        check(!missing.ok, "issue#29: missing interface method is a diagnostic");
+        EmitResult wrongSig = compileStd(iface + "class Net : IPgNet {\n  fn forward(x: string): i32 => 1\n}\nfn main() {}\n",
+                                         findTarget("csharp"));
+        check(!wrongSig.ok, "issue#29: wrong implementing signature is a diagnostic");
+        EmitResult okImpl = compileStd(iface +
+            "class Net : IPgNet {\n  fn forward(x: i32): i32 => x + 1\n}\n"
+            "fn drive(net: IPgNet): i32 => net.forward(1)\n"
+            "fn feed(n: Net): i32 => drive(n)\nfn main() {}\n", findTarget("csharp"));
+        check(okImpl.ok, "issue#29: conforming class widens into an interface-typed param");
+        EmitResult badAssign = compileStd(iface +
+            "class Other {\n  fn forward(x: i32): i32 => x\n}\n"
+            "fn drive(net: IPgNet): i32 => net.forward(1)\n"
+            "fn feed(o: Other): i32 => drive(o)\nfn main() {}\n", findTarget("csharp"));
+        check(!badAssign.ok, "issue#29: non-implementing class refused at an interface-typed slot (nominal)");
+        // Generic interface + record implementer (the sample-04 shape) stays green.
+        EmitResult generic = compileStd(
+            "interface Comparable<T> {\n  fn compareTo(other: T): i32\n}\n"
+            "record Version(major: i32) : Comparable<Version> {\n  fn compareTo(o: Version): i32 => this.major - o.major\n}\n"
+            "fn main() {}\n", findTarget("csharp"));
+        check(generic.ok, "issue#29: generic interface conformance (type-arg substitution) accepts sample-04 shape");
+        // `override` follows C# conventions: base-class open members only, never interface implementations.
+        EmitResult strayOverride = compileStd(iface +
+            "class Net : IPgNet {\n  override fn forward(x: i32): i32 => x\n}\nfn main() {}\n", findTarget("csharp"));
+        check(!strayOverride.ok, "issue#29: 'override' on an interface implementation is a diagnostic");
+        EmitResult baseOverride = compileStd(
+            "open class Shape {\n  open fn area(): f64 => 0.0\n}\n"
+            "class Disk : Shape {\n  override fn area(): f64 => 1.0\n}\nfn main() {}\n", findTarget("csharp"));
+        check(baseOverride.ok, "issue#29: 'override' of an open base-class member stays valid");
+        EmitResult noBase = compileStd("class Lone {\n  override fn area(): f64 => 1.0\n}\nfn main() {}\n",
+                                       findTarget("csharp"));
+        check(!noBase.ok, "issue#29: 'override' with no base-class member is a diagnostic");
+        // Interface bodies are bodiless, non-static signatures only (previously accepted + silently dropped).
+        EmitResult bodied = compileStd("interface I {\n  fn f(): i32 => 1\n}\nfn main() {}\n", findTarget("csharp"));
+        check(!bodied.ok, "issue#29: a bodied interface method is a diagnostic");
+        EmitResult field = compileStd("interface I {\n  let x: i32\n}\nfn main() {}\n", findTarget("csharp"));
+        check(!field.ok, "issue#29: a field in an interface is a diagnostic");
+        // Python: the interface exists as an abc.ABC class, so the implements clause resolves at import.
+        EmitResult py = compileStd(iface +
+            "class Net : IPgNet {\n  fn forward(x: i32): i32 => x + 1\n}\nfn main() {}\n", findTarget("python"));
+        check(py.ok && has(py.code, "import abc") && has(py.code, "class IPgNet(abc.ABC):") &&
+                  has(py.code, "@abc.abstractmethod") && has(py.code, "class Net(IPgNet):"),
+              "issue#29: Python emits the interface as an abc.ABC base");
+        // A typed match binding is NOT a runtime type test — refuse instead of first-arm-always-wins.
+        EmitResult typedPat = compileStd(
+            "open class Shape {\n  open fn kind(): i32 => 0\n}\n"
+            "class Disk : Shape {\n  override fn kind(): i32 => 1\n}\n"
+            "fn f(s: Shape): i32 => match s { d: Disk => 1, _ => 0 }\nfn main() {}\n", findTarget("csharp"));
+        check(!typedPat.ok, "issue#29: typed 'match' binding (fake narrowing) is refused");
+        bool namedPat = false;
+        for (const auto& dg : typedPat.diagnostics) if (has(dg.message, "not a runtime type test")) namedPat = true;
+        check(namedPat, "issue#29: the typed-pattern diagnostic explains itself");
     }
 
     if (g_failures == 0) {

@@ -96,6 +96,10 @@ summary in PRD §6 — this file does **not** track milestones):
   Collections come in two spellings — growable `List<T>` and fixed-size `T[]` arrays (both erase to a JS
   array on TS; C# keeps `T[]` vs `List<T>`); an un-inferable initializer (`[]`/`null`) must be annotated,
   and a union element parenthesizes inside a postfix array — `(Node | null)[]` (P29, issue #27).
+  Interfaces are checker-enforced (implements-conformance, C#-convention `override`, nominal
+  assignability) and emit on all four targets incl. Python ABC; `std.strings.codePointAt` is the
+  char→ordinal path (hex literals lex correctly); PHP lists/arrays are reference-semantic
+  `\ArrayObject` and module globals reach methods/getters (P31, issues #29 + #33–#36).
 - **Editor tooling.** A zero-dep `polyglot lsp` (diagnostics / go-to-def / hover / symbols / semantic tokens /
   rename / completion), live generated-output preview, and watch mode (P16 / P17 / P21). The VS Code
   extension is on the marketplace (ID `mintplayer.polyglot-lang`, frozen).

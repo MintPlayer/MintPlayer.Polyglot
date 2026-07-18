@@ -156,6 +156,9 @@ extern class Math {
 // std.strings — string methods as bound extension methods (a method on the builtin `string`). Each arm maps
 // `s.method(args)` to the target's idiom (C# `.ToUpper()` / JS `.toUpperCase()`). Both targets are UTF-16
 // (SPEC §8) so `len`/`charAt` are code-unit operations; `codePoints` iterates code points (surrogate-aware).
+// `codePointAt` yields the code point starting at the index — the portable char→ordinal path. Surrogate-aware
+// on C#/TS; Python indexes by code point (charAt's existing caveat); PHP stays byte-oriented like its charAt
+// (`ord(substr(...))` — mb_ord would demand the mbstring extension), so cross-target parity is exact on ASCII.
 const char* STD_STRINGS = R"PG(
 extension fn string.isEmpty(): bool {
 }
@@ -166,6 +169,8 @@ extension fn string.toUpper(): string {
 extension fn string.toLower(): string {
 }
 extension fn string.charAt(index: i32): string {
+}
+extension fn string.codePointAt(index: i32): i32 {
 }
 extension fn string.codePoints(): Iterable<string> {
 }

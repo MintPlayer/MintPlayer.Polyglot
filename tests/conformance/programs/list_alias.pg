@@ -1,0 +1,15 @@
+// issue #36: plain assignment ALIASES a list on every target — `var b = a` shares one list, so a
+// mutation through either name is visible through both (the case a by-ref-parameter fix would miss).
+
+import { List } from "std.collections"
+
+fn main() {
+  var a: List<i32> = [1, 2, 3]
+  var b = a
+  b.add(4)
+  print(a.count)   // 4
+  a[0] = 9
+  print(b[0])      // 9
+  b.removeAt(3)
+  print(a.count)   // 3
+}

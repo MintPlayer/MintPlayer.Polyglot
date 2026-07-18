@@ -1,0 +1,50 @@
+// issue #29: the reporter's shape — two implementations behind one interface, driven through an
+// interface-typed parameter (an MCTS over two neural nets, reduced to integers). Exercises interface
+// decl, `class X : I`, interface-typed params/locals/fields/returns, and virtual dispatch — on every
+// target (Python previously emitted the implements clause with NO interface class -> NameError).
+
+import { List } from "std.collections"
+
+interface INet {
+  fn forward(obs: i32): i32
+}
+
+class FlatNet : INet {
+  fn forward(obs: i32): i32 => obs * 2
+}
+
+class ConvNet : INet {
+  var depth: i32
+  init(depth: i32) { this.depth = depth }
+  fn forward(obs: i32): i32 => obs * this.depth + 1
+}
+
+class Driver {
+  var net: INet
+  init(net: INet) { this.net = net }
+
+  fn pick(): INet => this.net
+
+  fn search(sims: i32): i32 {
+    var total = 0
+    var i = 0
+    while i < sims {
+      total += this.net.forward(i)
+      i += 1
+    }
+    return total
+  }
+}
+
+fn evaluate(net: INet, obs: i32): i32 => net.forward(obs)
+
+fn main() {
+  var nets: List<INet> = [FlatNet(), ConvNet(3)]
+  print(evaluate(nets[0], 5))       // 10
+  print(evaluate(nets[1], 5))       // 16
+  let d1 = Driver(FlatNet())
+  print(d1.search(4))               // 0+2+4+6 = 12
+  let d2 = Driver(ConvNet(2))
+  print(d2.search(4))               // 1+3+5+7 = 16
+  print(d2.pick().forward(10))      // 21
+}

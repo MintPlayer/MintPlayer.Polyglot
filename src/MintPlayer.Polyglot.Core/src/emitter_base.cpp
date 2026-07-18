@@ -720,6 +720,11 @@ std::string MethodDeclCtx::get(const std::string& path) const {
             if (rest == "hasDefault") return m_.params[i].defaultValue ? "true" : "false";
         }
     }
+    if (path == "decl.globalRefs.count") return std::to_string(m_.globalRefs.size());
+    if (path.rfind("decl.globalRefs.", 0) == 0) {
+        const std::size_t gi = static_cast<std::size_t>(std::stoul(path.substr(16)));
+        if (gi < m_.globalRefs.size()) return m_.globalRefs[gi];
+    }
     return "";
 }
 

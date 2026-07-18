@@ -76,6 +76,12 @@ Converting `string`↔number is **not** a cast — text parsing can fail (and C#
 so it is a fallible **static method on the type**: `i32.parse(s)` / `f64.parse(s)` (throwing) and
 `tryParse(s): T?` (nullable). A std API (§7/P7), separate from casts.
 
+Converting `char`→number is **not** a cast either — a char is a native char only on C# but a
+one-character string on TS/Python/PHP, so `(i32)c` cannot be honored uniformly (it printed 65 on C#, 0 on
+TS/PHP, and dropped the cast on Python before it was refused — issue #34). The portable ordinal accessor
+is **`s.codePointAt(i): i32`** in `std.strings` (C# `char.ConvertToUtf32` / TS `codePointAt` / Python
+`ord` / PHP `ord(substr(…))`, byte-oriented like the rest of PHP's string std — exact parity on ASCII).
+
 ---
 
 ## 4. Declarations & types
@@ -202,10 +208,20 @@ fn maxOf<T: Comparable<T>>(a: T, b: T): T => if a.compareTo(b) >= 0 { a } else {
 
 A class has **at most one base class** and any number of interfaces, all after the `:` (C# and TS both
 allow this shape; single implementation inheritance keeps lowering trivial). Methods are non-virtual unless
-marked `open` (→ C# `virtual`; TS is structurally virtual anyway). `override` is required **both** when
-overriding an `open` base method **and** when implementing an interface method (Kotlin's rule — intent is
-always explicit; the backend emits C# `override` / explicit interface impl / a plain TS method as
-appropriate). Generic bounds use `<T: Bound>`, multiple via `<T: A & B>` (C# `where`; TS intersection /
+marked `open` (→ C# `virtual`; TS is structurally virtual anyway). **`override` follows C# conventions**:
+it marks only an override of an `open`/`abstract` **base-class** member — implementing an interface method
+takes **no** `override`, and writing one there is an error (as is `override` with no base-class member).
+
+An **interface body holds bodiless, non-static method signatures only** — no fields, properties,
+initializers, operators, or default method bodies (express field-like needs as a getter method). The
+checker **enforces conformance**: a class or record declaring `: I` must implement every method `I` (and
+its base interfaces) declares, with matching signatures — generic interfaces substitute their type args
+(`record Version : Comparable<Version>` must implement `compareTo(Version): i32`) — and a value of a
+class type converts to an interface type only when the class declares it implements it (nominal, not
+structural). Per-target lowering: C#/TS/PHP `interface` + implements clause; Python emits
+`class I(abc.ABC)` with `@abc.abstractmethod` stubs (nominal ABC, not a structural `Protocol`).
+
+Generic bounds use `<T: Bound>`, multiple via `<T: A & B>` (C# `where`; TS intersection /
 structural). One built-in bound is **`INumber`** — a core marker constraint (like .NET's
 `System.Numerics.INumber<T>`) satisfied by the numeric scalars (`i8`..`u64`, `f32`, `f64`); `std.math`'s
 `min`/`max`/`abs`/`round` use it, and a non-numeric type argument is rejected at Polyglot compile time. It is

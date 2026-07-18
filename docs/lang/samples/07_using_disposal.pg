@@ -20,7 +20,7 @@ class ScopedTimer : Disposable {
 
   fn tick() { print("tick ${this.label}") }
 
-  override fn dispose() {
+  fn dispose() {
     if this.disposed { return }          // idempotent dispose
     this.disposed = true
     print("stop ${this.label}")
