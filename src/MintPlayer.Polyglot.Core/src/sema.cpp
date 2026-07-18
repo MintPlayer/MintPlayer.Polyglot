@@ -169,6 +169,7 @@ struct MemberInfo {
     std::vector<TypeRef> params;  // Method/Operator/Init
     TypeRef type;                 // field/property type, or method/operator return type
     bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
+    bool isOpen = false;          // `open`/`abstract` — overridable from a subclass (C#-convention `override`)
     bool isAsync = false;         // an `async` method — its call result is `Awaitable<ret>` (§4.7)
     std::size_t required = 0;     // leading params with no default — the minimum a call must supply
     std::vector<std::string> generics; // the method's own type-param names (for TypeArg inference)
@@ -209,6 +210,25 @@ std::size_t requiredCount(const std::vector<Param>& ps) {
     std::size_t n = 0;
     for (const auto& p : ps) { if (p.hasDefault) break; ++n; }
     return n;
+}
+
+// Render a TypeRef for a diagnostic (author-facing, loose): `name<args>?`, tuples parenthesized,
+// function types elided. An empty name reads as `unit`.
+std::string sigTypeName(const TypeRef& t) {
+    if (t.kind == TypeRef::Kind::Tuple) {
+        std::string s = "(";
+        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += sigTypeName(t.args[i]); }
+        return s + ")";
+    }
+    if (t.kind == TypeRef::Kind::Function) return "fn";
+    std::string s = t.name.empty() ? "unit" : t.name;
+    if (!t.args.empty()) {
+        s += "<";
+        for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += sigTypeName(t.args[i]); }
+        s += ">";
+    }
+    if (t.nullable) s += "?";
+    return s;
 }
 
 // Two parameter lists denote the same overload signature (a true duplicate): same arity and each position
@@ -279,6 +299,7 @@ public:
         normalizeOptionalGenerics(unit); // `T?` (generic T) -> Option<T>, before tables read the types
         buildTables(unit);
         resolveAllTypes(unit);
+        checkImplements(unit); // issue #29: implements-conformance, override rule, interface-body shape
 
         // Pre-register file-local definitions (functions, types + members, values) so a reference from any
         // user body resolves to one. The linker APPENDS merged std/import decls, so indices [0, userX) are
@@ -340,6 +361,8 @@ private:
     std::unordered_map<std::string, std::vector<FnSig>> fns_; // name -> overload set
     std::unordered_map<std::string, TypeInfo> types_;
     std::unordered_set<std::string> typeNames_;
+    std::unordered_set<std::string> interfaceNames_;                       // declared `interface` names
+    std::unordered_map<std::string, const InterfaceDecl*> interfaceDecls_; // for base type-args (conformance)
     std::unordered_set<std::string> enumNames_;
     std::unordered_map<std::string, TypeRef> values_;          // top-level const/let
     std::unordered_map<std::string, FnSig> unionCtors_;        // union case name -> ctor sig
@@ -525,7 +548,10 @@ private:
         mi.required = requiredCount(m.params);
         mi.type = (m.kind == MemberKind::Field || m.kind == MemberKind::Const ||
                    m.kind == MemberKind::Property) ? m.type : m.returnType;
-        for (const auto& mod : m.modifiers) if (mod == "static") mi.isStatic = true;
+        for (const auto& mod : m.modifiers) {
+            if (mod == "static") mi.isStatic = true;
+            if (mod == "open" || mod == "abstract") mi.isOpen = true;
+        }
         mi.isAsync = m.isAsync;
         return mi;
     }
@@ -546,7 +572,12 @@ private:
             types_[d.name] = std::move(ti);
         }
         for (const auto& d : u.classes)    { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases); types_[d.name] = std::move(ti); }
-        for (const auto& d : u.interfaces) { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases); types_[d.name] = std::move(ti); }
+        for (const auto& d : u.interfaces) {
+            TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases);
+            types_[d.name] = std::move(ti);
+            interfaceNames_.insert(d.name);
+            interfaceDecls_[d.name] = &d; // base TypeRefs with their generic args (TypeInfo.bases keeps names only)
+        }
         for (const auto& d : u.unions) {
             for (const auto& c : d.cases) {
                 // A union case name must be unique across the program (it's a global constructor). Two
@@ -611,6 +642,175 @@ private:
     }
     bool knownType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && !t.name.empty() && types_.count(t.name) != 0;
+    }
+
+    // ---- interface conformance + `override` validation (issue #29) ----
+    // The contract behind `class X : IFoo` is checked at the SOURCE: every method the interface (and its
+    // base interfaces) declares must be implemented with a matching signature, so a breach is a Polyglot
+    // diagnostic — never an error surfacing later in one target's generated code. `override` follows C#
+    // conventions: it marks only an override of an `open`/`abstract` base-CLASS member; implementing an
+    // interface method takes no `override`.
+    bool inheritsFrom(const std::string& sub, const std::string& super) const {
+        auto it = types_.find(sub);
+        if (it == types_.end()) return false;
+        for (const auto& b : it->second.bases)
+            if (b == super || inheritsFrom(b, super)) return true;
+        return false;
+    }
+    bool interfaceHasMethod(const std::string& iface, const std::string& name) const {
+        auto it = types_.find(iface);
+        if (it == types_.end()) return false;
+        for (const auto& m : it->second.members) if (m.name == name) return true;
+        for (const auto& b : it->second.bases) if (interfaceHasMethod(b, name)) return true;
+        return false;
+    }
+    // Methods named `name` on the type or its base-CLASS chain. Interface bases are excluded — an
+    // interface's own signature must never satisfy (or be overridden as) a class member.
+    void gatherMethods(const std::string& typeName, const std::string& name, std::vector<const MemberInfo*>& out) const {
+        auto it = types_.find(typeName);
+        if (it == types_.end()) return;
+        for (const auto& m : it->second.members)
+            if (m.name == name && (m.kind == MemberKind::Method || m.kind == MemberKind::Operator)) out.push_back(&m);
+        for (const auto& b : it->second.bases)
+            if (!interfaceNames_.count(b)) gatherMethods(b, name, out);
+    }
+    // Like sameNamedType but signature-position: nullability must AGREE (not be absent), so an interface's
+    // `Node?` is satisfied by an implementing `Node?`.
+    static bool sameSigType(const TypeRef& a, const TypeRef& b) {
+        if (a.kind == TypeRef::Kind::Named && b.kind == TypeRef::Kind::Named &&
+            a.name == b.name && a.nullable == b.nullable) return true;
+        Ty sa = scalarTyOf(a);
+        return sa != Ty::Unknown && sa == scalarTyOf(b);
+    }
+    static bool sameSigParams(const std::vector<TypeRef>& a, const std::vector<TypeRef>& b) {
+        if (a.size() != b.size()) return false;
+        for (std::size_t i = 0; i < a.size(); ++i) if (!sameSigType(a[i], b[i])) return false;
+        return true;
+    }
+    static bool sameRetType(TypeRef a, TypeRef b) {
+        if (a.kind == TypeRef::Kind::Named && a.name.empty()) a.name = "unit";
+        if (b.kind == TypeRef::Kind::Named && b.name.empty()) b.name = "unit";
+        return sameSigType(a, b);
+    }
+    struct RequiredMethod { std::string iface; std::string name; std::vector<TypeRef> params; TypeRef ret; };
+    static std::string describeRequired(const RequiredMethod& r) {
+        std::string s = "fn " + r.name + "(";
+        for (std::size_t i = 0; i < r.params.size(); ++i) { if (i) s += ", "; s += sigTypeName(r.params[i]); }
+        s += ")";
+        std::string ret = sigTypeName(r.ret);
+        if (ret != "unit") s += ": " + ret;
+        return s;
+    }
+    // Every method the interface demands of an implementer, with the interface's type params substituted
+    // from the implements-clause type args (`Comparable<Version>` demands `compareTo(Version)`), incl.
+    // transitively inherited interface methods (args composed through each hop).
+    void collectRequired(const std::string& iface, const std::vector<TypeRef>& args,
+                         std::vector<RequiredMethod>& out, std::unordered_set<std::string>& seen) {
+        if (!seen.insert(iface).second) return; // repeated/diamond base — first visit wins
+        auto ti = types_.find(iface);
+        if (ti == types_.end()) return;
+        std::unordered_set<std::string> gen;
+        std::unordered_map<std::string, TypeRef> binds;
+        for (std::size_t i = 0; i < ti->second.generics.size(); ++i) {
+            gen.insert(ti->second.generics[i].name);
+            if (i < args.size()) binds[ti->second.generics[i].name] = args[i];
+        }
+        for (const auto& m : ti->second.members) {
+            if (m.kind != MemberKind::Method) continue;
+            RequiredMethod r{iface, m.name, {}, substGeneric(m.type, gen, binds)};
+            for (const auto& p : m.params) r.params.push_back(substGeneric(p, gen, binds));
+            out.push_back(std::move(r));
+        }
+        if (auto di = interfaceDecls_.find(iface); di != interfaceDecls_.end())
+            for (const auto& b : di->second->bases) {
+                if (b.kind != TypeRef::Kind::Named || !interfaceNames_.count(b.name)) continue;
+                std::vector<TypeRef> subArgs;
+                for (const auto& a : b.args) subArgs.push_back(substGeneric(a, gen, binds));
+                collectRequired(b.name, subArgs, out, seen);
+            }
+    }
+    void checkImplements(const CompilationUnit& u) {
+        // Interface bodies: bodiless, non-static method signatures only (issue #29 v1 scope). Anything
+        // else used to be accepted and silently DROPPED at lowering — refuse it instead.
+        for (const auto& d : u.interfaces) {
+            for (const auto& m : d.members) {
+                const char* what = m.kind == MemberKind::Field ? "a field"
+                                 : m.kind == MemberKind::Const ? "a const"
+                                 : m.kind == MemberKind::Property ? "a property"
+                                 : m.kind == MemberKind::Init ? "an initializer" : nullptr;
+                if (what) {
+                    diags_.error(m.pos, "an interface declares method signatures only — " + std::string(what) +
+                                            " is not allowed in 'interface " + d.name + "' (express it as a method)");
+                    continue;
+                }
+                if (m.kind == MemberKind::Operator) {
+                    diags_.error(m.pos, "an interface cannot declare an operator — operator contracts are not "
+                                        "portable across targets; declare a named method instead");
+                    continue;
+                }
+                if (m.hasBody)
+                    diags_.error(m.pos, "interface method '" + m.name + "' must be a bodiless signature "
+                                        "(default method bodies are not supported)");
+                for (const auto& mod : m.modifiers)
+                    if (mod == "static")
+                        diags_.error(m.pos, "interface method '" + m.name + "' cannot be static");
+            }
+        }
+        auto checkType = [&](const std::string& name, SourcePos namePos, const std::vector<TypeRef>& bases,
+                             const std::vector<Member>& members, const char* what) {
+            for (const auto& b : bases) {
+                if (b.kind != TypeRef::Kind::Named || !interfaceNames_.count(b.name)) continue;
+                std::vector<RequiredMethod> reqs;
+                std::unordered_set<std::string> seen;
+                collectRequired(b.name, b.args, reqs, seen);
+                for (const auto& r : reqs) {
+                    std::vector<const MemberInfo*> cands;
+                    gatherMethods(name, r.name, cands);
+                    bool ok = false, nameExists = false;
+                    for (const MemberInfo* c : cands) {
+                        if (c->isStatic) continue;
+                        nameExists = true;
+                        if (sameSigParams(c->params, r.params) && sameRetType(c->type, r.ret)) { ok = true; break; }
+                    }
+                    if (ok) continue;
+                    if (nameExists)
+                        diags_.error(namePos, std::string(what) + " '" + name + "' implements '" + r.iface +
+                                                  "' but its '" + r.name + "' does not match the interface signature '" +
+                                                  describeRequired(r) + "'");
+                    else
+                        diags_.error(namePos, std::string(what) + " '" + name + "' does not implement '" +
+                                                  describeRequired(r) + "' declared by interface '" + r.iface + "'");
+                }
+            }
+            for (const auto& m : members) {
+                bool hasOverride = false;
+                for (const auto& mod : m.modifiers) if (mod == "override") hasOverride = true;
+                if (!hasOverride) continue;
+                bool inBaseClass = false, baseOpen = false, inInterface = false;
+                for (const auto& b : bases) {
+                    if (b.kind != TypeRef::Kind::Named || b.name.empty()) continue;
+                    if (interfaceNames_.count(b.name)) {
+                        if (interfaceHasMethod(b.name, m.name)) inInterface = true;
+                    } else {
+                        std::vector<const MemberInfo*> cands;
+                        gatherMethods(b.name, m.name, cands);
+                        for (const MemberInfo* c : cands) { inBaseClass = true; if (c->isOpen) baseOpen = true; }
+                    }
+                }
+                if (inBaseClass) {
+                    if (!baseOpen)
+                        diags_.error(m.namePos, "'" + m.name + "' overrides a base-class member that is not "
+                                                "'open'/'abstract'");
+                } else if (inInterface) {
+                    diags_.error(m.namePos, "implementing an interface method takes no 'override' — remove it "
+                                            "('override' marks only an override of an open/abstract base-class member)");
+                } else {
+                    diags_.error(m.namePos, "'override' on '" + m.name + "' has no base-class member to override");
+                }
+            }
+        };
+        for (const auto& d : u.records) checkType(d.name, d.namePos, d.bases, d.members, "record");
+        for (const auto& d : u.classes) if (!d.isExtern) checkType(d.name, d.namePos, d.bases, d.members, "class");
     }
 
     // `Awaitable<T>` — the type of an in-flight async result. Compile-time-only (§4.7): the author never
@@ -799,6 +999,26 @@ private:
         Ty a = scalarTyOf(target), i = scalarTyOf(from);
         if (a != Ty::Unknown && i != Ty::Unknown && a != i)
             diags_.error(slot->pos, std::string("type mismatch (") + ctx + "): expected " + tyName(a) + ", found " + tyName(i));
+        // Nominal subtyping (issue #29): a known user type flowing into a differently-named known user-type
+        // slot is valid only when the source extends/implements the target — previously ANY named-type
+        // mismatch passed silently and failed (or dispatched wrongly) in the generated target code.
+        // Conservative: both names must be declared types (scalars, unions, enums, generic params excluded);
+        // an `Iterable` target stays open (every collection/iterator flows into it).
+        if (a == Ty::Unknown && i == Ty::Unknown && nominalKnown(from) && nominalKnown(target) &&
+            from.name != target.name && target.name != "Iterable" && !inheritsFrom(from.name, target.name)) {
+            std::string why = interfaceNames_.count(target.name)
+                                  ? " — '" + from.name + "' does not declare that it implements '" + target.name + "'"
+                                  : "";
+            diags_.error(slot->pos, "cannot convert '" + from.name + "' to '" + target.name + "' (" + ctx + ")" + why);
+        }
+    }
+
+    // A named type declared in the program (class/record/interface/extern class) — the nominal-subtyping
+    // domain. Scalars and generic type params are excluded even when a member-carrier extern class (e.g.
+    // `extern class i32`) puts their name in types_.
+    bool nominalKnown(const TypeRef& t) const {
+        return t.kind == TypeRef::Kind::Named && !t.name.empty() && types_.count(t.name) != 0 &&
+               scalarTyOf(t) == Ty::Unknown && !genericsInScope_.count(t.name);
     }
 
     // Reconcile two numeric binary operands, widening the narrower to the wider. Returns the common type
@@ -818,6 +1038,14 @@ private:
     void declarePattern(const Pattern& p, const TypeRef& scrut) {
         switch (p.kind) {
             case PatKind::Binding:
+                // §3.B never-miscompile: a type-annotated binding LOOKS like a runtime type test, but no
+                // test is lowered — the arm would match unconditionally on every target. Until real
+                // type-test patterns exist, only the scrutinee's own static type may be (redundantly) named.
+                if (p.hasType && !(p.type.kind == TypeRef::Kind::Named && scrut.kind == TypeRef::Kind::Named &&
+                                   p.type.name == scrut.name && p.type.nullable == scrut.nullable))
+                    diags_.error(p.pos, "a typed 'match' binding ('" + p.name + ": " + sigTypeName(p.type) +
+                                            "') is not a runtime type test and would match unconditionally; " +
+                                            "match on a union, or branch without type narrowing");
                 declare(p.name, p.hasType ? p.type : scrut, false, p.pos);
                 break;
             case PatKind::Ctor: {
@@ -1074,15 +1302,20 @@ private:
         return tUnknown();
     }
 
-    // An explicit numeric conversion `(T)expr`. v0.1 casts are numeric<->numeric (incl. char as a code
-    // unit); the result is the target type. Narrowing/lossy conversions are allowed *because* they're
-    // explicit. String/bool are not numerically castable (string->number is std parsing, a separate thing).
+    // An explicit numeric conversion `(T)expr`. v0.1 casts are numeric<->numeric; the result is the
+    // target type. Narrowing/lossy conversions are allowed *because* they're explicit. String/bool/char
+    // are not numerically castable: string->number is std parsing, and char->ordinal is
+    // `s.codePointAt(i)` (std.strings) — a char is a native char only on C# but a string on TS/Python/PHP,
+    // so `(i32)c` cannot be honored uniformly and must refuse instead of miscompile (issue #34).
     TypeRef checkCast(Expr& e) {
         TypeRef from = checkExpr(*e.lhs);
         resolveTypeRef(e.castType, e.pos);
         Ty fs = scalarTyOf(from);
         if (isNumericTypeName(e.castType) && (fs == Ty::Bool || fs == Ty::String))
             diags_.error(e.pos, std::string("cannot cast ") + tyName(fs) + " to numeric type '" + e.castType.name + "'");
+        if (isNumericTypeName(e.castType) && from.kind == TypeRef::Kind::Named && from.name == "char")
+            diags_.error(e.pos, "cannot cast char to numeric type '" + e.castType.name +
+                                    "' — use s.codePointAt(i) from std.strings for the ordinal");
         return e.castType;
     }
 
@@ -1318,6 +1551,9 @@ private:
             Ty fs = scalarTyOf(argTypes[0]);
             if (fs == Ty::Bool || fs == Ty::String)
                 diags_.error(e.pos, std::string("cannot cast ") + tyName(fs) + " to numeric type '" + name + "'");
+            if (argTypes[0].kind == TypeRef::Kind::Named && argTypes[0].name == "char")
+                diags_.error(e.pos, "cannot cast char to numeric type '" + name +
+                                        "' — use s.codePointAt(i) from std.strings for the ordinal");
             TypeRef target = tNamed(name);
             resolveTypeRef(target, e.pos);
             e.castType = target;

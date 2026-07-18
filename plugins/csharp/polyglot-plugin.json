@@ -1774,6 +1774,25 @@
           "line": "#nullable enable"
         },
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "module.globals.count",
+                      "0"
+                    ]
+                  }
+                },
+                {
+                  "line": "using static PolyglotProgram;"
+                }
+              ]
+            ]
+          }
+        },
+        {
           "line": ""
         },
         {
@@ -1887,7 +1906,7 @@
                 "each": {
                   "line": {
                     "tmpl": [
-                      "static readonly ",
+                      "internal static readonly ",
                       {
                         "type": "item.type"
                       },
@@ -2819,6 +2838,7 @@
       "string.toUpper": "$this.ToUpper()",
       "string.toLower": "$this.ToLower()",
       "string.charAt": "$this[$0].ToString()",
+      "string.codePointAt": "char.ConvertToUtf32($this, $0)",
       "string.codePoints": "$this.EnumerateRunes()",
       "string.toI32": "global::System.Int32.Parse($this)"
     },

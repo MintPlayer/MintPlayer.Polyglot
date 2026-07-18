@@ -992,6 +992,29 @@
           }
         },
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "module.interfaces.count",
+                      "0"
+                    ]
+                  }
+                },
+                {
+                  "line": "import abc"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "mapMembers": "module.interfaces",
+          "rule": "InterfaceDecl"
+        },
+        {
           "mapMembers": "module.enums",
           "rule": "EnumDecl"
         },
@@ -1302,6 +1325,93 @@
           }
         }
       ]
+    },
+    "InterfaceDecl": {
+      "block": {
+        "head": {
+          "tmpl": [
+            "class ",
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
+            },
+            "(",
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "decl.bases.count",
+                        "0"
+                      ]
+                    },
+                    ""
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    {
+                      "map": "decl.bases",
+                      "sep": ", ",
+                      "item": {
+                        "type": "item"
+                      }
+                    },
+                    ", "
+                  ]
+                }
+              }
+            },
+            "abc.ABC)"
+          ]
+        },
+        "body": [
+          {
+            "mapDecl": "decl.methods",
+            "each": {
+              "seq": [
+                {
+                  "line": "@abc.abstractmethod"
+                },
+                {
+                  "line": {
+                    "tmpl": [
+                      "def ",
+                      {
+                        "fn": "ident",
+                        "args": [
+                          {
+                            "get": "item.name"
+                          }
+                        ]
+                      },
+                      "(self",
+                      {
+                        "map": "item.params",
+                        "sep": "",
+                        "item": {
+                          "tmpl": [
+                            ", ",
+                            {
+                              "call": "pyParam"
+                            }
+                          ]
+                        }
+                      },
+                      "): ..."
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
     },
     "ClassDecl": {
       "block": {
@@ -2773,6 +2883,7 @@
       "string.toUpper": "$this.upper()",
       "string.toLower": "$this.lower()",
       "string.charAt": "$this[$0]",
+      "string.codePointAt": "ord($this[$0])",
       "string.codePoints": "list($this)",
       "string.toI32": "int($this)"
     },

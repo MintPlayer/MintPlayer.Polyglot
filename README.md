@@ -14,6 +14,9 @@ floats). A differential conformance suite keeps every target's *runtime output* 
 program.
 
 - **Why the name:** a *polyglot* writes in many languages — exactly what the emitter does.
+- **See it in action:** [qrcode-demo](https://github.com/PieterjanDeClippel/qrcode-demo) — a QR-code
+  encoder written once in `.pg` and emitted to all four targets (the real-world dogfood project behind
+  several fixed issues).
 - **Read first:** [`docs/prd/POLYGLOT_PRD.md`](docs/prd/POLYGLOT_PRD.md) (vision, scope contract,
   architecture) and [`docs/prd/PLAN.md`](docs/prd/PLAN.md) (the milestone log).
 - **Coming from C# or TypeScript?** Side-by-side construct maps:
@@ -150,11 +153,12 @@ plugin is refused rather than silently miscompiling. The four first-party target
 | PHP | [`@mintplayer/polyglot-target-php`](https://www.npmjs.com/package/@mintplayer/polyglot-target-php) | **partial** |
 
 > **PHP is a partial target.** C#, TypeScript, and Python each pass the entire differential conformance
-> suite. PHP today covers the base surface plus closures/lambdas, but its plugin still declares several §3.A
-> capabilities unsupported — **exceptions, pattern matching, extension methods, operator overloading,
-> with-expressions, interfaces**, and a few std bindings — so a program using those is **refused with a clear
-> diagnostic** (never miscompiled). Full PHP parity, plus a `run-php.ps1` runtime gate, is milestone **P26
-> (“PHP uplift”)** — see [`docs/prd/PLAN.md`](docs/prd/PLAN.md) §P26.
+> suite; PHP runs its own `run-php.ps1` leg of it. PHP today covers nearly the whole §3.A surface —
+> exceptions, pattern matching, interfaces, closures, with-expressions, extension methods, reference-
+> semantics collections (`\ArrayObject`) — but its plugin still declares **operator overloading** and
+> **async/await** unsupported, so a program using those is **refused with a clear diagnostic** (never
+> miscompiled). The remaining parity work is milestone **P26 ("PHP uplift")** — see
+> [`docs/prd/PLAN.md`](docs/prd/PLAN.md) §P26.
 
 Resolution order: the `plugins/` folder next to the exe → a pgconfig `dependencies` entry
 (`{"mytarget": "file:<dir>"}`) → the user cache (`%LOCALAPPDATA%\polyglot\plugins\`) → a clean refusal

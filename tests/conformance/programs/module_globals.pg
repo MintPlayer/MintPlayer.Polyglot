@@ -1,0 +1,28 @@
+// issue #35: module-level let/const bindings must be readable from EVERY body kind on every target —
+// free functions (fixed in P26), class methods, record methods, and property getters (fixed here; PHP
+// needs a `global $x;` prologue in each).
+
+let TABLE: i32[] = [10, 20, 30]
+const LIMIT: i32 = 7
+
+fn readIt(): i32 => TABLE[1]
+
+record Vec(x: i32) {
+  fn shifted(): i32 => this.x + TABLE[0]
+  let cap: i32 => LIMIT
+}
+
+class Box {
+  var n: i32
+  init(n: i32) { this.n = n }
+  fn lookup(): i32 => TABLE[this.n] + LIMIT
+}
+
+fn main() {
+  print(readIt())        // 20
+  let v = Vec(2)
+  print(v.shifted())     // 12
+  print(v.cap)           // 7
+  let b = Box(1)
+  print(b.lookup())      // 27
+}

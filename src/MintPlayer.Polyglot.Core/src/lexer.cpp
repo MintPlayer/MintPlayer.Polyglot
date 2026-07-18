@@ -165,6 +165,30 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags, int file
         // Numbers: integer unless a '.' fraction or exponent makes it a float. '_' separators dropped.
         if (std::isdigit(static_cast<unsigned char>(c))) {
             std::string text;
+            // Hex literal: its digit alphabet overlaps the float suffix letters ('f'/'d'), so the
+            // generic width-suffix scan below must never run on it — after the digits only an integer
+            // width suffix is legal, and a trailing 'f'/'d' is a digit, never a suffix.
+            if (c == '0' && (cur.peek(1) == 'x' || cur.peek(1) == 'X')) {
+                text += cur.advance();
+                text += cur.advance();
+                bool anyDigit = false;
+                while (!cur.eof() && (std::isxdigit(static_cast<unsigned char>(cur.peek())) || cur.peek() == '_')) {
+                    char d = cur.advance();
+                    if (d != '_') { text += d; anyDigit = true; }
+                }
+                if (!anyDigit) diags.error(start, "hex literal has no digits");
+                if (isIdentStart(cur.peek())) {
+                    std::string suffix;
+                    while (!cur.eof() && isIdentPart(cur.peek())) suffix += cur.advance();
+                    static const char* kIntSuffixes[] = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"};
+                    bool known = false;
+                    for (const char* s : kIntSuffixes) if (suffix == s) { known = true; break; }
+                    if (known) text += suffix;
+                    else diags.error(start, "invalid suffix '" + suffix + "' on hex literal");
+                }
+                push(TokKind::IntLit, std::move(text), start);
+                continue;
+            }
             bool isFloat = false;
             auto readDigits = [&]() {
                 while (!cur.eof() && (std::isdigit(static_cast<unsigned char>(cur.peek())) || cur.peek() == '_')) {

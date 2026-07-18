@@ -1,0 +1,16 @@
+// issue #36: T[] fixed-size arrays share List's reference semantics — an element write through a
+// parameter is visible to the caller on every target (same PHP copy-on-write root cause as List).
+
+fn stamp(a: i32[]) {
+  a[1] = 42
+}
+
+fn main() {
+  var xs: i32[] = [10, 20, 30]
+  stamp(xs)
+  print(xs[1])       // 42
+  print(xs.count)    // 3
+  var ys = xs
+  ys[0] = 7
+  print(xs[0])       // 7
+}

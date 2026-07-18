@@ -3195,3 +3195,58 @@ with a clear diagnostic; the whole existing suite (conformance, MSBuild, watch) 
 **Blast radius:** no-config bare builds now error usefully (was: silent csharp+ts pair); manually-installed
 bare-name cache entries require a `dependencies` entry (the diagnostic says so). **Versioning:** lockstep,
 tag-driven (P24) — no source bump; the PR carries `release:minor`.
+
+## P31 — Open-issue batch: interfaces made honest + hex lexing + char ordinal + PHP globals/list semantics — ✅ built (2026-07-18; issues #29 #33 #34 #35 #36, PRD `docs/prd/issue-29-36-batch/`, 6-agent investigation, one PR)
+
+All five open issues resolved in **one PR** (maintainer decision), plus the README link to the
+[qrcode-demo](https://github.com/PieterjanDeClippel/qrcode-demo) downstream project that surfaced
+#33–#36. A 6-agent read-only team investigation (one per issue + a test-infra survey) preceded the
+design; **three issues shifted materially once verified against HEAD** (the PRD §1 table): #34's
+"charAt unmapped on Python" was stale and the real bug was `(i32)` on *char* (no `Ty::Char`, so both
+cast guards never fired); #35's literal repro was already fixed by P26 and the live gap was
+**methods + property getters**; #29's requested feature was ~70% already shipped (P14b/P19) — the real
+gaps were a Python miscompile and a checker that never verified anything.
+
+- **#33 (Core):** real hex lexing (`0x` branch, integer-only suffixes, digit validation) + radix-aware
+  `stripNumericSuffix` — `0xff`/`0x11d` no longer truncate, and the worse unreported `0xf32 → 0x` class
+  is gone (`lexer.cpp`, `lower.cpp:20`). The grammar had always specified this; the lexer now implements it.
+- **#34 (std + sema):** `string.codePointAt(i): i32` added to std.strings with per-target arms
+  (C# `char.ConvertToUtf32` / TS `.codePointAt()!` / Python `ord` / PHP `ord(substr(…))` — byte-oriented
+  like PHP's charAt because mbstring isn't a dependable floor); `(i32)char` (both cast spellings) is now
+  a diagnostic naming `codePointAt` (was 65/0/dropped/0 across the four targets).
+- **#35 (IR + PHP + C#):** `ir::Method.globalRefs` + the module-global name-set hoisted to a `Lowerer`
+  member (scanned in `method()`, `exprBody` included so getters are covered), `MethodDeclCtx` exposure, and
+  the PHP `global $…;` prologue factored into a shared `phpGlobalsPrologue` macro used by `phpFnBody` AND
+  `MethodDecl`. The new `module_globals.pg` conformance program then exposed a **C# leg nobody had hit**:
+  globals are private fields of `PolyglotProgram`, so a member of another type referencing one didn't
+  compile — fixed with a conditional `using static PolyglotProgram;` (emitted only when globals exist,
+  byte-gate-neutral otherwise) + `internal` global fields, which keeps shadowing semantics for free.
+  Python/TS need nothing (module scope is naturally visible); module bindings are `let`/`const` (no
+  writes exist anywhere).
+- **#36 (PHP plugin):** `List<T>` and `T[]` map to **`\ArrayObject`** (true reference type) — parameter
+  mutation, plain-assignment aliasing, and field mutation now match C#/TS/Python. Index/append/count/
+  foreach ride ArrayObject's interfaces unchanged; `clear`/`removeAll`/`removeAt` became in-place
+  `exchangeArray` rewrites. Rejected: `&$` by-ref params (fixes only the parameter symptom — aliasing
+  still diverged — and PHP fatals on non-variable by-ref args). Knock-on found by the fruitcake
+  conformance run: PHP forbids `new` in **property defaults**, so instance-field initializers moved from
+  property defaults into a `__construct` prologue (`decl.instanceInitFields`, mirroring the Python
+  plugin's `__init__` order: parent ctor → field inits → init body); a class with field defaults but no
+  `init` now synthesizes the ctor (`decl.needsCtor`).
+- **#29 (sema + Python plugin):** `checkImplements` pass — implements-conformance for classes AND records
+  (transitive interface closure, generic substitution via `substGeneric`), interface bodies restricted to
+  bodiless non-static signatures (were accepted + silently dropped), **nominal assignability** in
+  `checkConvert` (a non-implementing class no longer flows silently into an interface slot), and the
+  **C#-convention `override` rule** (maintainer decision: `override` only on `open`/`abstract` base-class
+  overrides; an interface implementation takes none — SPEC's Kotlin rule replaced, sample 04/07 updated).
+  Python gained a real `InterfaceDecl` rule (`class I(abc.ABC):` + `@abc.abstractmethod`, nominal ABC over
+  structural Protocol) + a conditional `import abc` — the implements clause no longer references an
+  undefined name (`NameError`). Adjacent: the typed `match` binding miscompile (first-arm-always-wins on
+  all four targets) is refused; real `is`/type-test narrowing is a filed follow-up, `is` removed from the
+  grammar's comparison rule (reserved).
+
+*Tests:* 43 new `issue#N:`-named unit asserts (lexer, per-target golden substrings, `rejects` diagnostics)
++ **7 new conformance programs** (`codepoints`, `module_globals`, `list_param_mutation`, `list_alias`,
+`array_param_mutation`, `list_in_class_field`, `interfaces_mcts`) auto-picked-up by the C#↔TS / C#↔Python /
+C#↔PHP differential legs. *Blast radius:* corpus stayed green under the tightened checker (only sample
+04/07 + one P14b unit test dropped their now-invalid interface-impl `override`). *Versioning:* lockstep,
+tag-driven (P24) — no source bump; the PR carries `release:minor`.

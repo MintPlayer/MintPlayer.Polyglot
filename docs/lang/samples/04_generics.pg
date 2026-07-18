@@ -12,7 +12,7 @@ interface Comparable<T> {
 fn maxOf<T: Comparable<T>>(a: T, b: T): T => if a.compareTo(b) >= 0 { a } else { b }
 
 record Version(major: i32, minor: i32) : Comparable<Version> {
-  override fn compareTo(o: Version): i32 =>
+  fn compareTo(o: Version): i32 =>
     if this.major != o.major { this.major - o.major } else { this.minor - o.minor }
 }
 

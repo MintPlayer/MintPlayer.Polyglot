@@ -1,0 +1,24 @@
+// issue #36: a List<T> is a REFERENCE on every target — mutation through a parameter is visible to
+// the caller (PHP used to map lists to copy-on-write native arrays, silently diverging).
+
+import { List } from "std.collections"
+
+fn mutate(xs: List<i32>) {
+  xs.add(99)
+  xs[0] = 5
+}
+
+fn drain(xs: List<i32>) {
+  xs.removeAt(0)
+}
+
+fn main() {
+  var ys: List<i32> = [1, 2]
+  mutate(ys)
+  print(ys.count)   // 3
+  print(ys[0])      // 5
+  print(ys[2])      // 99
+  drain(ys)
+  print(ys.count)   // 2
+  print(ys[0])      // 2
+}

@@ -1,0 +1,12 @@
+// issue #34: string.codePointAt — the portable char→ordinal path. ASCII-only so all four targets
+// (incl. PHP's byte-oriented string std) print identical bytes.
+
+import "std.strings"
+
+fn main() {
+  print("A".codePointAt(0))      // 65
+  print("Az9".codePointAt(1))    // 122
+  print("Az9".codePointAt(2))    // 57
+  print(" ".codePointAt(0))      // 32
+  print("~".codePointAt(0))      // 126
+}

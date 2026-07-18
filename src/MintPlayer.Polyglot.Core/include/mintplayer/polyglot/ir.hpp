@@ -428,6 +428,9 @@ struct Method {
     bool isAsync = false;         // `async` method — return wrapped in Task/Promise/async def (§4.7)
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
+    // Top-level module globals this member's body (incl. a property getter's expr) references — same
+    // fact as ir::Function.globalRefs; consumed only by PHP (`global $x;`), empty/ignored elsewhere.
+    std::vector<std::string> globalRefs;
 };
 struct Record { // an immutable data type (record)
     std::string name;

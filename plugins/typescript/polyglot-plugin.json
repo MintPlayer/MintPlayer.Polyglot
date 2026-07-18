@@ -3532,6 +3532,7 @@
       "string.toUpper": "$this.toUpperCase()",
       "string.toLower": "$this.toLowerCase()",
       "string.charAt": "$this.charAt($0)",
+      "string.codePointAt": "$this.codePointAt($0)!",
       "string.codePoints": "Array.from($this)",
       "string.toI32": "parseInt($this, 10)"
     },

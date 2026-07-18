@@ -156,13 +156,13 @@
   },
   "std": {
     "std.collections": {
-      "List.type": "array",
-      "List.init": "[]",
+      "List.type": "\\ArrayObject",
+      "List.init": "new \\ArrayObject()",
       "List.count": "count($this)",
       "List.add": "$this[] = $0",
-      "List.clear": "$this = []",
-      "List.removeAll": "$this = array_values(array_filter($this, fn($__e) => !(($0)($__e))))",
-      "List.removeAt": "array_splice($this, $0, 1)"
+      "List.clear": "$this->exchangeArray([])",
+      "List.removeAll": "$this->exchangeArray(array_values(array_filter($this->getArrayCopy(), fn($__e) => !(($0)($__e)))))",
+      "List.removeAt": "$this->exchangeArray((function ($__a, $__i) { array_splice($__a, $__i, 1); return $__a; })($this->getArrayCopy(), $0))"
     },
     "std.io": {
       "print": "echo is_bool($x) ? ($x ? \"true\" : \"false\") : $x, \"\\n\"",
@@ -178,6 +178,7 @@
       "string.toUpper": "strtoupper($this)",
       "string.toLower": "strtolower($this)",
       "string.charAt": "substr($this, $0, 1)",
+      "string.codePointAt": "ord(substr($this, $0, 1))",
       "string.codePoints": "str_split($this)",
       "string.toI32": "intval($this)"
     },
@@ -186,8 +187,8 @@
       "Error.init": "new $T($0)",
       "Error.message": "$this->getMessage()",
       "Iterable.type": "iterable",
-      "Array.type": "array",
-      "Array.init": "[]",
+      "Array.type": "\\ArrayObject",
+      "Array.init": "new \\ArrayObject()",
       "Array.count": "count($this)",
       "i8.parse": "intval($0)",
       "i16.parse": "intval($0)",
@@ -554,12 +555,12 @@
     },
     "ListLit": {
       "tmpl": [
-        "[",
+        "new \\ArrayObject([",
         {
           "map": "node.elements",
           "sep": ", "
         },
-        "]"
+        "])"
       ]
     },
     "Tuple": {
@@ -1860,43 +1861,46 @@
         ")"
       ]
     },
+    "phpGlobalsPrologue": {
+      "case": {
+        "when": [
+          [
+            {
+              "not": {
+                "eq": [
+                  "decl.globalRefs.count",
+                  "0"
+                ]
+              }
+            },
+            {
+              "line": {
+                "tmpl": [
+                  "global ",
+                  {
+                    "map": "decl.globalRefs",
+                    "sep": ", ",
+                    "item": {
+                      "tmpl": [
+                        "$",
+                        {
+                          "get": "item"
+                        }
+                      ]
+                    }
+                  },
+                  ";"
+                ]
+              }
+            }
+          ]
+        ]
+      }
+    },
     "phpFnBody": {
       "seq": [
         {
-          "case": {
-            "when": [
-              [
-                {
-                  "not": {
-                    "eq": [
-                      "decl.globalRefs.count",
-                      "0"
-                    ]
-                  }
-                },
-                {
-                  "line": {
-                    "tmpl": [
-                      "global ",
-                      {
-                        "map": "decl.globalRefs",
-                        "sep": ", ",
-                        "item": {
-                          "tmpl": [
-                            "$",
-                            {
-                              "get": "item"
-                            }
-                          ]
-                        }
-                      },
-                      ";"
-                    ]
-                  }
-                }
-              ]
-            ]
-          }
+          "call": "phpGlobalsPrologue"
         },
         {
           "case": {
@@ -2030,6 +2034,9 @@
           "call": "phpMethodSig"
         },
         "body": [
+          {
+            "call": "phpGlobalsPrologue"
+          },
           {
             "case": {
               "when": [
@@ -2343,9 +2350,19 @@
                           "when": [
                             [
                               {
-                                "eq": [
-                                  "item.hasInit",
-                                  "true"
+                                "and": [
+                                  {
+                                    "eq": [
+                                      "item.hasInit",
+                                      "true"
+                                    ]
+                                  },
+                                  {
+                                    "eq": [
+                                      "item.isStatic",
+                                      "true"
+                                    ]
+                                  }
                                 ]
                               },
                               {
@@ -2373,7 +2390,7 @@
                 [
                   {
                     "eq": [
-                      "decl.hasInit",
+                      "decl.needsCtor",
                       "true"
                     ]
                   },
@@ -2420,6 +2437,29 @@
                                 }
                               ]
                             ]
+                          }
+                        },
+                        {
+                          "mapDecl": "decl.instanceInitFields",
+                          "each": {
+                            "line": {
+                              "tmpl": [
+                                "$this->",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.name"
+                                    }
+                                  ]
+                                },
+                                " = ",
+                                {
+                                  "emit": "item.init"
+                                },
+                                ";"
+                              ]
+                            }
                           }
                         },
                         {

@@ -18,10 +18,24 @@ bool isPrimitiveTypeName(const std::string& n) {
 }
 
 std::string stripNumericSuffix(const std::string& text) {
-    static const char* sfx[] = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "f", "d"};
-    for (const char* s : sfx) {
-        std::size_t n = std::char_traits<char>::length(s);
-        if (text.size() > n && text.compare(text.size() - n, n, s) == 0) return text.substr(0, text.size() - n);
+    static const char* intSfx[] = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"};
+    static const char* fltSfx[] = {"f32", "f64", "f", "d"};
+    auto strip = [&](const char* const* sfx, std::size_t count) -> std::string {
+        for (std::size_t i = 0; i < count; ++i) {
+            std::size_t n = std::char_traits<char>::length(sfx[i]);
+            if (text.size() > n && text.compare(text.size() - n, n, sfx[i]) == 0)
+                return text.substr(0, text.size() - n);
+        }
+        return {};
+    };
+    if (std::string s = strip(intSfx, std::size(intSfx)); !s.empty()) return s;
+    // 'f'/'d' (and the f32/f64 tails) are hex digits: a radix literal never carries a float suffix,
+    // so stripping one would truncate its digits (`0xff` -> `0xf`).
+    const bool radix = text.size() > 1 && text[0] == '0' &&
+                       (text[1] == 'x' || text[1] == 'X' || text[1] == 'b' || text[1] == 'B' ||
+                        text[1] == 'o' || text[1] == 'O');
+    if (!radix) {
+        if (std::string s = strip(fltSfx, std::size(fltSfx)); !s.empty()) return s;
     }
     return text;
 }
@@ -142,6 +156,10 @@ public:
 
     ir::Module run(const CompilationUnit& unit) {
         ir::Module m;
+        // Top-level global names — the set a function or member body may reference from an outer scope
+        // (PHP `global $x;`). A member, because the record/class loops below lower methods before the
+        // globals themselves are lowered.
+        for (const auto& v : unit.values) moduleGlobals_.insert(v.name);
         for (const auto& e : unit.enums) {
             ir::Enum ie;
             ie.name = e.name;
@@ -204,9 +222,6 @@ public:
             g.originModule = v.originModule;
             m.globals.push_back(std::move(g));
         }
-        // Top-level global names — the set a function may reference from an outer scope (PHP `global $x;`).
-        std::unordered_set<std::string> globalNames;
-        for (const auto& v : unit.values) globalNames.insert(v.name);
         for (const auto& ext : unit.extensions) {
             if (!ext.bindings.empty()) continue; // a bound extension isn't emitted — it's a call-site template
             ir::Function f;
@@ -221,7 +236,7 @@ public:
             else f.body = block(ext.body);
             inExtension_ = false;
             f.originModule = ext.originModule;
-            f.globalRefs = scanGlobalRefs(globalNames, ext.params, ext.body, ext.exprBody.get());
+            f.globalRefs = scanGlobalRefs(moduleGlobals_, ext.params, ext.body, ext.exprBody.get());
             m.extensions.push_back(std::move(f));
         }
         for (const auto& fn : unit.functions) {
@@ -239,7 +254,7 @@ public:
             f.body = block(fn.body);
             f.isIterator = sawYield_;
             f.originModule = fn.originModule;
-            f.globalRefs = scanGlobalRefs(globalNames, fn.params, fn.body, nullptr);
+            f.globalRefs = scanGlobalRefs(moduleGlobals_, fn.params, fn.body, nullptr);
             m.functions.push_back(std::move(f));
         }
         return m;
@@ -251,6 +266,7 @@ private:
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
     bool inOperator_ = false;   // set while lowering a (non-indexer) operator body; stamps This.insideOperator
+    std::unordered_set<std::string> moduleGlobals_; // top-level let/const names (PHP `global` fact)
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
     std::unordered_map<std::string, const std::vector<TargetBinding>*> bindings_; // "Type.member" -> FFI arms
     std::unordered_map<std::string, const std::vector<TargetBinding>*> ctorBindings_; // "Type" -> ctor FFI arms
@@ -433,6 +449,9 @@ private:
         im.isAsync = m.isAsync;
         for (const auto& mod : m.modifiers) if (mod == "static") im.isStatic = true;
         im.generics = generics(m.generics);
+        // Same module-global fact as on ir::Function — a property getter's expr counts as its body.
+        im.globalRefs = scanGlobalRefs(moduleGlobals_, m.params, m.body,
+                                       m.kind == MemberKind::Property ? m.init.get() : m.exprBody.get());
         if (m.kind == MemberKind::Property) {
             im.kind = ir::MethodKind::Property;
             im.returnType = m.type;

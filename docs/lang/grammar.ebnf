@@ -110,10 +110,11 @@ interface_decl =
       [ ":" , type_list ] ,
       "{" , { interface_member } , "}" ;
 
+(* Bodiless, non-static method signatures ONLY (issue #29): no fields/properties/initializers/
+   operators/default bodies — express a field-like need as a getter method. *)
 interface_member =
       "fn" , IDENT , [ generic_params ] , "(" , [ param_list ] , ")" ,
-          [ ":" , type ] , ";"
-    | ( "let" | "var" ) , IDENT , ":" , type , ";" ;   (* required property *)
+          [ ":" , type ] , ";" ;
 
 
 (* 2.5 Enums (simple named constants — NOT data-carrying; see unions) *)
@@ -272,7 +273,8 @@ coalesce_expr   = or_expr , { "??" , or_expr } ;
 or_expr         = and_expr , { "||" , and_expr } ;
 and_expr        = equality_expr , { "&&" , equality_expr } ;
 equality_expr   = comparison_expr , { ( "==" | "!=" ) , comparison_expr } ;
-comparison_expr = bitor_expr , { ( "<" | "<=" | ">" | ">=" | "is" ) , bitor_expr } ;
+(* `is` (runtime type test) is reserved for a future type-narrowing feature — not lexed today. *)
+comparison_expr = bitor_expr , { ( "<" | "<=" | ">" | ">=" ) , bitor_expr } ;
 bitor_expr      = bitxor_expr , { ( "|" ) , bitxor_expr } ;
 bitxor_expr     = bitand_expr , { ( "^" ) , bitand_expr } ;
 bitand_expr     = shift_expr , { ( "&" ) , shift_expr } ;
