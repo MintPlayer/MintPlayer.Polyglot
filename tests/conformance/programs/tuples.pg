@@ -1,0 +1,30 @@
+// Scenario: tuples in isolation — construction, tuple returns threaded through calls, tuples as
+// list elements, and for-loop destructuring (the ONE implemented destructuring site).
+// NOTE: `let (a, b) = t` is in the grammar but not implemented (issue #39) — not used here.
+
+import { List } from "std.collections"
+
+fn swap(t: (i32, i32)): (i32, i32) {
+  var out: List<(i32, i32)> = []
+  out.add(t)
+  var a = 0
+  var b = 0
+  for (x, y) in out {
+    a = x
+    b = y
+  }
+  return (b, a)
+}
+
+fn main() {
+  var pairs: List<(i32, string)> = [(1, "one"), (2, "two")]
+  for (n, s) in pairs {
+    print("${n}=${s}")   // 1=one / 2=two
+  }
+  var swapped: List<(i32, i32)> = []
+  swapped.add(swap((3, 9)))
+  for (p, q) in swapped {
+    print(p)             // 9
+    print(q)             // 3
+  }
+}

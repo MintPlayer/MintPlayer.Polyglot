@@ -1,0 +1,29 @@
+// Scenario: a user-defined READ indexer executed at runtime on every target (only a 1-arg unit
+// test existed; none ever ran). Targets without native indexers lower `g[i]` to `.get(i)`.
+// Deliberately narrowed to ONE index argument and read-only access: the write half emits invalid
+// C# (issue #40) and a multi-arg read DROPS every argument after the first on all targets
+// (issue #42). Un-narrowing this program is those issues' acceptance test.
+
+import { List } from "std.collections"
+
+class Row {
+  var cells: List<i32>
+
+  init(n: i32) {
+    this.cells = List<i32>()
+    for i in 0..n { this.cells.add(i * 3) }
+  }
+
+  fn put(i: i32, v: i32) { this.cells[i] = v }
+
+  operator fn get(i: i32): i32 => this.cells[i]
+}
+
+fn main() {
+  let r = Row(4)
+  print(r[0])       // 0
+  print(r[2])       // 6
+  print(r[3])       // 9
+  r.put(2, 41)
+  print(r[2] + 1)   // 42 — indexer read inside an expression
+}

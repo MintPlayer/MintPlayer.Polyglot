@@ -1,0 +1,28 @@
+// Scenario: && / || short-circuit and evaluation order, observed through side-effect counters.
+// Python spells these `and`/`or` (value-returning), the rest are native — the call COUNTS prove the
+// right-hand side is skipped exactly when it should be, on every target.
+
+class Probe {
+  var calls: i32
+  init() { this.calls = 0 }
+  fn yes(): bool {
+    this.calls += 1
+    return true
+  }
+  fn no(): bool {
+    this.calls += 1
+    return false
+  }
+}
+
+fn main() {
+  let p = Probe()
+  print(p.no() && p.yes())    // false — right side must NOT run
+  print(p.calls)              // 1
+  print(p.yes() || p.no())    // true — right side must NOT run
+  print(p.calls)              // 2
+  print(p.yes() && p.no())    // false — both run
+  print(p.calls)              // 4
+  print(p.no() || p.yes())    // true — both run
+  print(p.calls)              // 6
+}

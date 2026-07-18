@@ -1,0 +1,25 @@
+// Scenario: enums with EXPLICIT values (and implicit continuation after one) — enums.pg used only
+// implicit ordinals. Identity, equality, and match dispatch must agree everywhere.
+
+enum HttpCode {
+  Ok = 200,
+  NotFound = 404,
+  Teapot = 418,
+  Next,             // continues from the previous explicit value -> 419
+}
+
+fn label(c: HttpCode): string => match c {
+  Ok       => "ok",
+  NotFound => "missing",
+  Teapot   => "teapot",
+  _        => "other",
+}
+
+fn main() {
+  print(label(HttpCode.Ok))          // ok
+  print(label(HttpCode.NotFound))    // missing
+  print(label(HttpCode.Teapot))      // teapot
+  print(label(HttpCode.Next))        // other
+  print(HttpCode.Ok == HttpCode.Ok)      // true
+  print(HttpCode.Ok == HttpCode.Teapot)  // false
+}

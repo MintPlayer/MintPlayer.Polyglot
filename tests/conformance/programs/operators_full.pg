@@ -1,0 +1,25 @@
+// Scenario: the operator-overload set beyond `plus` — minus/times and the four comparisons on a
+// record. PHP declares operatorOverloading unsupported, so its leg counts the refusal as an
+// expected pass; C#/TS/Python must agree at runtime.
+
+record Money(cents: i32) {
+  operator fn plus(o: Money): Money => Money(this.cents + o.cents)
+  operator fn minus(o: Money): Money => Money(this.cents - o.cents)
+  operator fn times(k: i32): Money => Money(this.cents * k)
+  operator fn lt(o: Money): bool => this.cents < o.cents
+  operator fn le(o: Money): bool => this.cents <= o.cents
+  operator fn gt(o: Money): bool => this.cents > o.cents
+  operator fn ge(o: Money): bool => this.cents >= o.cents
+}
+
+fn main() {
+  let a = Money(250)
+  let b = Money(100)
+  print((a + b).cents)   // 350
+  print((a - b).cents)   // 150
+  print((b * 3).cents)   // 300
+  print(a < b)           // false
+  print(b <= a)          // true
+  print(a > b)           // true
+  print(a >= a)          // true
+}

@@ -1,0 +1,35 @@
+// Scenario: match beyond the flat single binder — multi-arg ctor patterns, top-level literal arms
+// with guards, arm order, and match-as-expression feeding arithmetic.
+// Deliberately narrowed: guards on CTOR arms don't parse (issue #39), and a LITERAL sub-pattern
+// inside a ctor (`Leaf(0)`) is silently dropped at lowering (issue #43) — un-narrowing this
+// program is those issues' acceptance test.
+
+union Node {
+  Leaf(v: i32)
+  Pair(a: i32, b: i32)
+  Nil
+}
+
+fn describe(n: Node): i32 => match n {
+  Leaf(v)    => v,
+  Pair(a, b) => a * 10 + b,
+  Nil        => 0,
+}
+
+fn classify(n: i32): string => match n {
+  0          => "zero",
+  x if x < 0 => "neg",
+  7          => "lucky",
+  _          => "many",
+}
+
+fn main() {
+  print(describe(Leaf(9)))              // 9
+  print(describe(Pair(2, 3)))           // 23
+  print(describe(Nil))                  // 0
+  print(describe(Pair(4, 5)) * 2)       // 90 — match expression in arithmetic
+  print(classify(0))                    // zero
+  print(classify(-3))                   // neg
+  print(classify(7))                    // lucky
+  print(classify(8))                    // many
+}

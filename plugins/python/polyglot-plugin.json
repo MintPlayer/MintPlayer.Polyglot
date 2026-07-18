@@ -294,17 +294,44 @@
       }
     },
     "Index": {
-      "tmpl": [
-        {
-          "emitChild": "node.receiver",
-          "side": "recv"
-        },
-        "[",
-        {
-          "emit": "node.index"
-        },
-        "]"
-      ]
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.receiverHasIndexer",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "emitChild": "node.receiver",
+                  "side": "recv"
+                },
+                ".get(",
+                {
+                  "emit": "node.index"
+                },
+                ")"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "emitChild": "node.receiver",
+              "side": "recv"
+            },
+            "[",
+            {
+              "emit": "node.index"
+            },
+            "]"
+          ]
+        }
+      }
     },
     "Cond": {
       "tmpl": [
@@ -2842,7 +2869,12 @@
       "List.removeAt": "$this.pop($0)"
     },
     "std.io": {
-      "print": "__builtins__.print((\"true\" if x else \"false\") if isinstance(x, bool) else (str(int(x)) if isinstance(x, float) and x.is_integer() and abs(x) < 1e16 else x))"
+      "print": "__builtins__.print((\"true\" if x else \"false\") if isinstance(x, bool) else (str(int(x)) if isinstance(x, float) and x.is_integer() and abs(x) < 1e16 else x))",
+      "readText": "__import__('pathlib').Path(path).read_text()",
+      "writeText": "__import__('pathlib').Path(path).write_text(content)",
+      "appendText": "open(path, 'a').write(content)",
+      "fileExists": "__import__('os').path.exists(path)",
+      "deleteFile": "__import__('os').remove(path)"
     },
     "std.math": {
       "Math.PI": "__import__('math').pi",

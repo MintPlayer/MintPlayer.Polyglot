@@ -1,0 +1,21 @@
+// Scenario: a USER generic bound (<T: Comparable<T>>) dispatching through the bound's method —
+// SPEC §4.4's own example, never executed end-to-end (only the built-in INumber bound ran).
+// Also exercises the P31 implements-conformance checker + Python's abc.ABC interface emission.
+
+interface Comparable<T> {
+  fn compareTo(other: T): i32
+}
+
+record Version(major: i32, minor: i32) : Comparable<Version> {
+  fn compareTo(o: Version): i32 =>
+    if this.major != o.major { this.major - o.major } else { this.minor - o.minor }
+}
+
+fn maxOf<T: Comparable<T>>(a: T, b: T): T => if a.compareTo(b) >= 0 { a } else { b }
+
+fn main() {
+  print(maxOf(Version(3, 0), Version(1, 9)).major)   // 3
+  print(maxOf(Version(1, 4), Version(1, 9)).minor)   // 9
+  print(Version(2, 1).compareTo(Version(2, 1)))      // 0
+  print(maxOf(Version(2, 5), Version(2, 5)).minor)   // 5 (>= keeps the left)
+}
