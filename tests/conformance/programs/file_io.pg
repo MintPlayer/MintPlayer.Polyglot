@@ -1,0 +1,13 @@
+// Scenario: the std.io file surface — write, append, read back, exists, delete — as a round-trip
+// in the per-program working directory. Only `print` had ever executed; the Python arms were added
+// alongside this program (they were missing entirely).
+
+fn main() {
+  let path = "pg_io_scratch.txt"
+  writeText(path, "alpha")
+  appendText(path, "-beta")
+  print(readText(path))     // alpha-beta
+  print(fileExists(path))   // true
+  deleteFile(path)
+  print(fileExists(path))   // false
+}

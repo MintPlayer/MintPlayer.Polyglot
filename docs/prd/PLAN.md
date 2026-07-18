@@ -3250,3 +3250,33 @@ gaps were a Python miscompile and a checker that never verified anything.
 C#↔PHP differential legs. *Blast radius:* corpus stayed green under the tightened checker (only sample
 04/07 + one P14b unit test dropped their now-invalid interface-impl `override`). *Versioning:* lockstep,
 tag-driven (P24) — no source bump; the PR carries `release:minor`.
+
+## P32 — E2E codegen-scenario coverage expansion — ✅ built (2026-07-18; maintainer request, PRD `docs/prd/e2e-scenario-coverage/`, coverage-gap investigation)
+
+The differential conformance suite grew bottom-up out of milestones, so coverage followed where bugs
+already happened, not the SPEC surface. A feature-by-feature gap map (58 programs vs SPEC §3.A) drove
+**13 new scenario programs + 1 extension** (58 → **71**, all green on C#↔TS / C#↔Python / C#↔PHP):
+`neg_divmod` (the highest-risk untested divergence — C# trunc vs Python floor vs JS `%` vs PHP intdiv;
+the `_pg_idiv`/`_pg_irem` preludes had never executed), `logical_shortcircuit` (side-effect-counted
+`&&`/`||`), `catch_when`, `indexer_grid`, `operators_full` (comparison overloads; PHP refuses by
+design), `char_escapes`, `loop_control`, `generic_bound` (SPEC §4.4's own `Comparable<T>` example,
+never executed), `enum_values`, `match_nested`, `tuples`, `file_io`, `compound_assign`, and
+`collections.pg` + `removeAt`.
+
+**Authoring them surfaced seven defects/gaps** — the PR's purpose (each filed + cross-referenced from
+the narrowed program; two small ones fixed in-PR):
+- #39 — five grammar/SPEC-documented features the front-end doesn't implement (do…while, `let (a,b)`
+  destructuring, property `set(v)` accessor blocks, guards on ctor patterns, namespace/renaming
+  imports — the last parse but never resolve).
+- #40 — `operator fn set` emits invalid C# (`static void operator set`); #42 — a multi-arg index READ
+  drops every argument after the first on ALL targets (silent on the dynamic ones).
+- #41 — reusing a for-binding's name for a later local emits C# CS0136 (valid .pg, invalid C#).
+- #43 — literal sub-patterns inside ctor patterns are silently dropped (`Leaf(0)` matches every Leaf).
+- #44 — a FALSE catch-when guard re-raises out of the whole try on Python/PHP instead of falling to
+  the next same-type arm (sample 06 has this exact shape and never ran there).
+- Fixed in-PR: the Python Index rule lacked TS's `receiverHasIndexer` arm (user read-indexers emitted
+  unsubscriptable `r[0]`), and Python had NO std.io file arms at all (readText/writeText/appendText/
+  fileExists/deleteFile added — `file_io.pg` now runs them everywhere).
+
+`tryParse` (SPEC §7) turned out to be unimplemented in every plugin — dropped from scope as a std gap.
+Test-only otherwise; no version-visible behavior change beyond the two Python plugin fills.

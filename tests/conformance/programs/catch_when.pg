@@ -1,0 +1,47 @@
+// Scenario: typed catch with a `when` guard (TRUE path), an unmatched exception type propagating
+// out to an enclosing try, and finally ordering. Spec'd since P1, never executed.
+// Deliberately narrowed: a FALSE guard must fall through to the next same-type catch arm, but on
+// Python/PHP the re-raise escapes the whole try (issue #44) — that case (and sample 06's identical
+// shape) is excluded until fixed; un-narrowing is the acceptance test.
+
+class AppError : Error {
+  let code: i32
+  init(message: string, code: i32) {
+    super(message)
+    this.code = code
+  }
+}
+
+class OtherError : Error {
+  init(message: string) { super(message) }
+}
+
+fn boom(code: i32) {
+  if code < 0 { throw OtherError("other") }
+  throw AppError("app", code)
+}
+
+fn classify(code: i32): string {
+  try {
+    boom(code)
+    return "none"
+  } catch (e: AppError) when (e.code == 1) {
+    return "guarded-one"
+  } catch (e: OtherError) {
+    return "other-kind"
+  }
+}
+
+fn main() {
+  print(classify(1))     // guarded-one   (guard true)
+  print(classify(-1))    // other-kind    (second arm, different type)
+  try {
+    // AppError with the guard false and NO second AppError arm inside classify: the exception
+    // must escape classify and land here.
+    print(classify(2))
+  } catch (e: AppError) {
+    print("outer: ${e.message}-${e.code}")   // outer: app-2
+  } finally {
+    print("done")
+  }
+}

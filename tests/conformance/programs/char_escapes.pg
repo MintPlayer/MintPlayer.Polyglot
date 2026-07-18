@@ -1,0 +1,18 @@
+// Scenario: char literals, string escapes (\n, \t, \"), codePoints() iteration, and string value
+// equality — ASCII only (PHP's string std is byte-oriented, the documented caveat).
+
+import "std.strings"
+
+fn main() {
+  var c = 'A'
+  print(c)                      // A
+  print("tab:\there")           // tab:<TAB>here
+  print("line1\nline2")         // two lines
+  print("quote:\"q\"")          // quote:"q"
+  var n = 0
+  for cp in "abc".codePoints() { n += 1 }
+  print(n)                      // 3
+  print("abc" == "abc")         // true
+  print("abc" == "abd")         // false
+  print("x".charAt(0) == "x")   // true
+}

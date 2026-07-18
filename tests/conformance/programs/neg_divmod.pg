@@ -1,0 +1,17 @@
+// Scenario: negative integer division/modulo — the highest-risk cross-target divergence.
+// C# truncates toward zero; Python's native // and % FLOOR (the _pg_idiv/_pg_irem preludes exist to
+// repair that); JS % takes the dividend's sign; PHP intdiv truncates. Nothing pinned this before.
+
+fn main() {
+  print(-7 / 2)      // -3 (truncate toward zero, NOT floor's -4)
+  print(-7 % 2)      // -1 (dividend's sign, NOT floor's 1)
+  print(7 / -2)      // -3
+  print(7 % -2)      // 1
+  print(-8 / 2)      // -4
+  print(-9 % 3)      // 0
+  print(-1 / 2)      // 0 (floor would say -1)
+  var a: i64 = -7
+  var b: i64 = 2
+  print(a / b)       // -3 (TS BigInt leg)
+  print(a % b)       // -1
+}

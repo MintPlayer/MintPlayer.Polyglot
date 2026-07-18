@@ -1,0 +1,29 @@
+// Scenario: compound assignment on every lvalue kind — locals, fields, and indexed slots (the
+// last exercises PHP's ArrayObject offsetGet+offsetSet read-modify-write path).
+
+import { List } from "std.collections"
+
+class Acc {
+  var total: i32
+  init() { this.total = 0 }
+}
+
+fn main() {
+  var x = 10
+  x += 5
+  x -= 3
+  x *= 4
+  x /= 6
+  print(x)          // ((10 + 5 - 3) * 4) / 6 = 8
+
+  let a = Acc()
+  a.total += 7
+  a.total *= 3
+  print(a.total)    // 21
+
+  var xs: List<i32> = [1, 2, 3]
+  xs[1] += 10
+  xs[2] *= 5
+  print(xs[1])      // 12
+  print(xs[2])      // 15
+}

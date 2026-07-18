@@ -24,6 +24,11 @@ fn main() {
   print(xs[0])                 // 30
   print(sumOf(xs))             // 120
 
+  xs.removeAt(1)               // drop 40 -> keep 30, 50 (indices shift)
+  print(xs.count)              // 2
+  print(xs[1])                 // 50
+  print(sumOf(xs))             // 80
+
   xs.clear()
   print(xs.count)              // 0
 }
