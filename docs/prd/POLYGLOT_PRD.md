@@ -214,6 +214,9 @@ where the faithfulness machinery lives (one `number` can't express integer width
 the `.pg` grammar freezes, and `convert` demonstrates real sustained demand; always a compiled-in
 front-end over the shared AST (never a data plugin — §4.12), always a distinct extension + dialect
 framing, still exposing exactly the §3.A surface. Design + evidence: `docs/design/frontend-skins.md`.
+Re-examined 2026-07-18 under a *source-language* framing (`@mintplayer/polyglot-source-*` packages,
+real-language dialects with source-side capability negotiation) and **declined** — this contract is
+unchanged; decision record: `docs/prd/source-languages/PRD.md` (PLAN §P33).
 
 ---
 

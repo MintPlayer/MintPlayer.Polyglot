@@ -1922,6 +1922,14 @@ unanimous), and prior art (Reason's 3-way fork, CoffeeScript's fade) says don't 
 speculatively. Kotlin/Swift prove syntax familiarity is not the adoption lever; tooling is — and P17's
 live preview already shows a dev "their" language beside `.pg` as they type.
 
+> **2026-07-18 — re-investigated under the source-language framing (P33) and declined**
+> (`docs/prd/source-languages/PRD.md`, 5-agent team): `@mintplayer/polyglot-source-*` packaging and a
+> dual-compilable C# subset were found feasible, but the maintainer declined the direction for the
+> foreseeable future — `.pg` stays the single authoring surface. This section's gates stand
+> unchanged; the P33 record updates the *rationale* where the framings differ (the TS refusal rests
+> on cost/benefit + dual-runnable honesty, not soundness; the C#-skin design is upgraded to an
+> emission-image subset with union recognition + a fixpoint gate, should the gate ever open).
+
 **Gate to open this phase at all:** P19 shipped + editor extensions published + *observed* external
 demand (real users, not speculation) + `.pg` grammar frozen. Until then only slice 0 (docs) may land.
 
@@ -3280,3 +3288,33 @@ the narrowed program; two small ones fixed in-PR):
 
 `tryParse` (SPEC §7) turned out to be unimplemented in every plugin — dropped from scope as a std gap.
 Test-only otherwise; no version-visible behavior change beyond the two Python plugin fills.
+
+## P33 — Real-language source inputs (`@mintplayer/polyglot-source-*`) — 🚫 investigated & declined (2026-07-18; maintainer decision; decision record `docs/prd/source-languages/PRD.md`, 5-agent investigation)
+
+**The ask:** author in real languages (C#/TS/Python/…) instead of `.pg`, via
+`@mintplayer/polyglot-source-<lang>` npm packages symmetric to the target packages, with **source-side
+capability negotiation**: `usable = expressible(source) ∩ ⋂ coverage(targets)` — §3.E pointed backward.
+
+**The finding:** feasible for exactly one language, in exactly one honest shape — a **dual-compilable
+C# subset** (`.pgcs`, never bare `.cs`; the subset ≙ the C# backend's own emission image, giving a
+mechanical fixpoint gate; sealed-record-hierarchy → `union` *recognition* overturns P20's "too lossy"
+call; every accepted file also compiles under Roslyn). TS: only as an explicitly-subset dialect —
+dual-checkable, never dual-runnable (widths inexpressible; node execution diverges on the §3 surface);
+the P20 refusal's *rationale* is narrowed (cost/benefit + honesty, not soundness), the refusal itself
+stands. Python: refused — the divergence is in the core operators (`//` floors where `.pg` truncates;
+ban → not Python, accept → miscompile-class lie, honor → the IR's arithmetic forks per source). The
+general law: **a language works as a source only if its designers' semantic decisions embed into
+`.pg`'s** — targets are the opposite case (emitted code implements `.pg` semantics on any runtime).
+
+**The decision: declined for the foreseeable future.** `.pg` stays the single authoring surface;
+§3.F and the P20 gates unchanged; no `.pg` grammar changes either (companion decision: statement
+syntax stays — braces are already mandatory, and C-style `if (cond) { }` already parses, verified
+against the CLI). Cost was the decider even for the feasible case: ~2–3 wk infra + ≈5–6 wk for a C#
+frontend at ≈3× the `.pg` parser (quality refusals require parsing the refused grammar — the
+NRefactory lesson), plus a permanent yearly-triage/docs/recovery tax on the one layer JSON plugins
+can't make data-driven, on a one-person project — while the P17 preview + Rosetta docs already cover
+the "see it in my language" need. The decision record preserves what's worth keeping for any future
+revisit: the manifest-activates-compiled-in-parser packaging (dylibs refused on the P30 trust model;
+WASM recorded as the sole third-party escape hatch), the negotiation formula, the in-code
+parser-version handshake, the C# fixpoint/dual-compile design, and `polyglot convert` as the honest
+first demand probe if authoring-in-C# demand ever materializes.
