@@ -66,23 +66,37 @@ Independent fixtures (Shared/MultiPg/Twin/NoCfg) run parallel, OVERLAPPING the s
 chain (fixtures 0–4: pack→mutate→clean). One serial fixture warms the freshly-packed nupkg first
 (the one real NuGet race). Budget honestly: ~45 s (35 only if the overlap schedule is perfect).
 
-## Slice 6 — `scripts/gate-cache.psm1`: the NX layer (M) — .pg dev loop → ~25–40 s
+## Slice 6 — NX orchestration + remote cache, per-leg (M) — decision in [NX-EVALUATION.md](./NX-EVALUATION.md)
 
-L1 program key = SHA256(program bytes ∥ exe-adjacent plugin manifests — ALL of them ∥ CLI exe ∥
-discovered pgconfig+lock ∥ runner script bytes ∥ cliArgs ∥ `.expected` bytes ∥ toolchain fingerprint
-incl. tsc). Per-run **snapshot of exe + plugins** (hash and execute the same frozen bytes — closes
-xcopy drift AND the concurrent-sibling-agent relink race). Value = verified stdout per target, PASS
-only. **FAIL is never written; comparisons/goldens always execute; CI (`$env:CI`) always cold;
-`-NoCache`/`POLYGLOT_NO_CACHE=1`; audit line per leg** ("82 cached (L1), 9 (L2), 4 executed").
-In-process SHA256 (no per-file `Get-FileHash`), atomic temp+`Move-Item -Force`, LastWriteTime 30-day
-eviction, schema-versioned root at `%LOCALAPPDATA%` (`POLYGLOT_GATE_CACHE` override). Before quoting
-warm numbers: verify a no-op MSBuild run does NOT relink the exe. Declined: caching the unit exe (3.2 s).
+*(Supersedes the originally-planned hand-rolled `gate-cache.psm1` — the maintainer already operates
+nx-cache.mintplayer.com and standardizes on NX elsewhere.)*
 
-## Slice 7 (optional) — L2 emitted-bytes key (S–M): C++ rebuild loop → ~3.5 min
+- Scaffold: private `package.json` (devDep `nx@^21`), `nx.json`, root `project.json` with ~13
+  `nx:run-commands` targets wrapping the EXISTING runners verbatim (`pwsh -NoProfile -File …`). The
+  runners stay directly invocable — release.yml's POSIX legs and `build-and-test.ps1` never require NX;
+  `nx run-many` is the cached path.
+- `build` target: `cache: false`, but **declares outputs** (`x64/Debug/*.Cli.exe`,
+  `x64/Debug/plugins/**`) so every leg's `inputs` can include
+  `{ "dependentTasksOutputFiles": "**/*" }` — the exe + plugins enter each cache key as file hashes.
+- Leg inputs: program/fixture globs, `.expected` goldens, the runner's own script, pgconfig(+lock),
+  `scripts/lib/OracleCompile.ps1`, plus `runtime` toolchain inputs in `sharedGlobals`
+  (`dotnet --version`, `node --version`, `npx tsc --version`, python/php).
+- Remote: `NX_SELF_HOSTED_REMOTE_CACHE_SERVER=https://nx-cache.mintplayer.com` + bearer token —
+  the OpenAPI HTTP interface ONLY (the deprecated bucket plugins are barred: CVE-2025-36852).
+  **Locals read+write; CI runs cold (no remote read or write).** FAIL-never-served is NX-native
+  (exit-0 entries only).
+- **Keep the per-program L1 inside `run-conformance.ps1`** (per the original design): per-program NX
+  targets would spawn 95 processes and defeat the shared `csc /shared` pool. Warm loop = NX leg hits
+  × in-runner program skips.
+- Verify empirically before trusting warm numbers: `dependentTasksOutputFiles` moves the hash on a
+  relink (keep the native hasher ON — nrwl/nx#22253), and a no-op MSBuild does not relink the exe.
 
-Key = emitted bytes + names + rsp/csproj text + toolchain + runner hash. The transpile ALWAYS
-re-executes (so "did the compiler change?" is never answered by a hash); only compile/run are
-skipped. Strictly stronger than L1; correctness argument in ANALYSIS.md §4.
+## Slice 7 (optional) — in-runner L2 emitted-bytes key (S–M): C++ rebuild loop → ~3.5 min
+
+Unchanged from the original design, and still in-runner (NX's `dependentTasksOutputFiles` gives the
+LEG-level equivalent free, but not per-program granularity): key = emitted bytes + names + rsp text +
+toolchain + runner hash. The transpile ALWAYS re-executes; only compile/run are skipped. Correctness
+argument in ANALYSIS.md §4.
 
 ## Gate & docs
 

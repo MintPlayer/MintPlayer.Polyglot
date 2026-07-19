@@ -40,12 +40,21 @@ restructure eliminates by construction most of what a cache would have had to me
    parallel `csc /shared` verified contention-free), plus overlapping the NuGet gate's independent
    fixtures against its serial pack chain. Ships one commit AFTER the sequential merged runner, so
    correctness fallout is attributable.
-3. **NX-style cache, reduced to its surviving core** (`scripts/gate-cache.psm1`): an L1 content key
-   (program bytes + exe-adjacent plugin manifests + CLI exe + pgconfig/lock + runner script + `.expected`
-   + toolchain fingerprint incl. tsc) that skips a program's compile/run when nothing it depends on
-   changed, and an optional L2 emitted-bytes key that survives C++ rebuilds (transpile always
-   re-executes; only compile/run are skipped). **FAIL is never cached, comparisons always execute,
-   CI always runs cold, `-NoCache` end-to-end** — the full false-green analysis is ANALYSIS.md §4.
+3. **Caching = NX per-leg + in-runner per-program L1** (decision 2026-07-19, follow-up evaluation in
+   [NX-EVALUATION.md](./NX-EVALUATION.md) — supersedes the originally-planned hand-rolled
+   `gate-cache.psm1`): ~13 `nx:run-commands` targets wrap the existing runners (which stay directly
+   invocable — release.yml never sees NX); each leg's cache key natively covers the built CLI exe +
+   plugins (`dependentTasksOutputFiles` off a `cache:false` build target), program/golden/runner/
+   pgconfig globs, and toolchain versions (`runtime` inputs). The **remote cache is the maintainer's
+   existing nx-cache.mintplayer.com** (the NX OpenAPI HTTP interface — the one self-hosted path NOT
+   deprecated by CVE-2025-36852; the bucket plugins are off-limits). **Locals read+write; CI always
+   runs cold** (never touches the remote — the un-keyed-dependency backstop and the complete CREEP
+   sidestep). FAIL is never served (NX only reads exit-0 entries); an edited `.expected` golden
+   invalidates its leg's hash immediately. The **per-program L1 skip stays inside
+   `run-conformance.ps1`** (95 NX targets would mean 95 processes, defeating the shared `csc /shared`
+   pool) — the ~25–40 s warm loop comes from the two layers composing, and NX's unique add is
+   cross-machine/remote hits. An optional in-runner L2 emitted-bytes key still covers the
+   C++-rebuild loop at per-program granularity.
 4. **Tiered gate**: `build-and-test.ps1 -Tier fast|full` — fast = parity→build→unit→smoke→refusals→LSP
    ≈ 18 s (codifies CLAUDE.md's "cheap mid-slice ceiling"); full stays the only pre-merge bar.
    `-SkipConformance` is deleted; the registry leg gets an explicit local-only skip opt-in

@@ -3361,6 +3361,6 @@ full transpile sweep in the library gate. Recommended architecture (skeptic-adju
 verified by experiment): **restructure → parallelize → cache** — one merged 4-target single-pass
 conformance runner with a `csc /shared` oracle (kills all 278 dotnet builds; byte-identical output
 verified), bounded `ForEach-Object -Parallel` batching, a tiered gate (`-Tier fast` ≈ 18 s), and an
-L1/L2 content-addressed result cache (FAIL never cached, comparisons always run, CI always cold).
+caching layer — decided 2026-07-19 follow-up: NX per-leg targets + the maintainer's existing nx-cache.mintplayer.com remote (OpenAPI HTTP interface; locals R/W, CI cold) composing with an in-runner per-program L1 (docs/prd/gate-speedup/NX-EVALUATION.md).
 Projected honestly: **full gate ~5× (~3–3.5 min), one-.pg dev loop ~25–40 s**. Seven ordered slices in
 `docs/prd/gate-speedup/PLAN.md`; slices 0–5 need no C++ changes and no new dependencies.
