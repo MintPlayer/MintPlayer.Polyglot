@@ -85,9 +85,19 @@ nx-cache.mintplayer.com and standardizes on NX elsewhere.)*
   CVE-2025-36852). **Already configured on the dev machine** (verified 2026-07-19):
   `NX_SELF_HOSTED_REMOTE_CACHE_SERVER=https://nx-cache.mintplayer.com` and
   `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN` are set as machine env vars — NX picks both up with
-  zero repo config, so nothing token-shaped ever enters the repo. **Locals read+write; CI runs cold**
-  (no remote read or write — do NOT add these vars to any workflow). FAIL-never-served is NX-native
+  zero repo config, so nothing token-shaped ever enters the repo. FAIL-never-served is NX-native
   (exit-0 entries only).
+- **CI policy — default COLD** (no cache vars in any workflow): the cold run is the backstop against
+  any un-keyed dependency and sidesteps CVE-2025-36852 entirely. Org-wide GitHub secrets DO exist
+  (`NX_CACHE_SERVER`, `NX_CACHE_RO_TOKEN` read-only, `NX_CACHE_RW_TOKEN` read-write), so two opt-in
+  upgrades are available later, each with its recorded tradeoff:
+  (a) **CI as warmer** — `NX_CACHE_RW_TOKEN` on the ubuntu gate job: dev machines start getting
+      remote hits produced by CI. Cost: an RW token also READS, so CI would consume entries written
+      by dev machines — the cold backstop is gone unless the server can hand out a write-only role.
+  (b) **CI read-only** — `NX_CACHE_RO_TOKEN`: faster CI, but it trusts locally-produced entries and
+      neither warms nor backstops. Weakest option; avoid.
+  Decision stands: cold until the merged runner + cache have soaked; revisit (a) once server-side
+  roles can express write-without-read.
 - **Keep the per-program L1 inside `run-conformance.ps1`** (per the original design): per-program NX
   targets would spawn 95 processes and defeat the shared `csc /shared` pool. Warm loop = NX leg hits
   × in-runner program skips.
