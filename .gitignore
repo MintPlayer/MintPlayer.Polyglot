@@ -29,3 +29,9 @@ artifacts/
 
 # The MSBuild package ships its NuGet build/ assets (P11) - not build output
 !src/MintPlayer.Polyglot.MSBuild/build/
+
+# NX gate orchestration (P35 slice 6) — the toolchain, never the config
+node_modules/
+.nx/
+.nx-libstage/
+

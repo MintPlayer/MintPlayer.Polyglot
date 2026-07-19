@@ -1,0 +1,130 @@
+{
+  "$schema": "./node_modules/nx/schemas/project-schema.json",
+  "name": "polyglot",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "pwsh -NoProfile -File scripts/msbuild-solution.ps1",
+        "cwd": "{workspaceRoot}"
+      },
+      "outputs": [
+        "{workspaceRoot}/x64/Debug/MintPlayer.Polyglot.Cli.exe",
+        "{workspaceRoot}/x64/Debug/MintPlayer.Polyglot.Tests.exe",
+        "{workspaceRoot}/x64/Debug/plugins/**"
+      ]
+    },
+    "parity": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "options": { "command": "pwsh -NoProfile -File scripts/check-buildfile-parity.ps1", "cwd": "{workspaceRoot}" },
+      "inputs": [
+        "{workspaceRoot}/scripts/check-buildfile-parity.ps1",
+        "{workspaceRoot}/CMakeLists.txt",
+        "{workspaceRoot}/src/**/*.vcxproj",
+        "{workspaceRoot}/tests/**/*.vcxproj"
+      ],
+      "outputs": []
+    },
+    "unit": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": ["build"],
+      "options": { "command": "x64/Debug/MintPlayer.Polyglot.Tests.exe", "cwd": "{workspaceRoot}" }
+    },
+    "cli-smoke": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/cli/run-cli-smoke.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/cli/**/*", "{workspaceRoot}/tests/conformance/programs/counter.pg", "{workspaceRoot}/tests/conformance/programs/modular/**", "{workspaceRoot}/tests/conformance/programs/operators_full.pg", "cliBinary", "sharedGlobals"],
+      "outputs": []
+    },
+    "refusals": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/refusals/run-refusals.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/refusals/**/*", "cliBinary", "sharedGlobals"],
+      "outputs": []
+    },
+    "lsp": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/lsp/run-lsp.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/lsp/**/*", "cliBinary", "sharedGlobals"],
+      "outputs": []
+    },
+    "fidelity": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/fidelity/run-roundtrip.ps1", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/fidelity/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "cliBinary", "sharedGlobals"],
+      "outputs": []
+    },
+    "watch": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/watch/run-watch.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/watch/**/*", "cliBinary", "sharedGlobals"],
+      "outputs": []
+    },
+    "registry": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/registry/run-registry.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" }
+    },
+    "conformance": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": {
+        "commands": [
+          "pwsh -NoProfile -File tests/conformance/run-conformance.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe -StagingOut .nx-libstage",
+          "pwsh -NoProfile -File tests/library/run-library.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe -Staged .nx-libstage",
+          "pwsh -NoProfile -Command \"Remove-Item -Recurse -Force .nx-libstage -ErrorAction SilentlyContinue\""
+        ],
+        "parallel": false,
+        "cwd": "{workspaceRoot}"
+      },
+      "inputs": [
+        "{workspaceRoot}/tests/conformance/**/*",
+        "{workspaceRoot}/tests/library/**/*",
+        "{workspaceRoot}/scripts/lib/OracleCompile.ps1",
+        "cliBinary",
+        "sharedGlobals",
+        { "runtime": "python --version" },
+        { "runtime": "php --version" },
+        { "runtime": "tsc --version" }
+      ],
+      "outputs": []
+    },
+    "samples": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/samples/run-emit.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/samples/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "cliBinary", "sharedGlobals"],
+      "outputs": []
+    },
+    "nullable": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/nullable/run-nullable.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "cliBinary", "sharedGlobals"],
+      "outputs": []
+    },
+    "nuget": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File tests/msbuild/run-nuget.ps1", "cwd": "{workspaceRoot}" }
+    }
+  }
+}

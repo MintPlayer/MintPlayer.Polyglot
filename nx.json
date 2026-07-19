@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "namedInputs": {
+    "sharedGlobals": [
+      { "runtime": "dotnet --version" },
+      { "runtime": "node --version" }
+    ],
+    "cliBinary": [
+      { "dependentTasksOutputFiles": "**/*", "transitive": false }
+    ]
+  },
+  "targetDefaults": {
+    "cache": false
+  }
+}

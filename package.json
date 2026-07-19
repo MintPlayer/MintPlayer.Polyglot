@@ -1,0 +1,8 @@
+{
+  "name": "mintplayer-polyglot-gate",
+  "private": true,
+  "description": "NX orchestration for the test gate ONLY (P35 slice 6) — the compiler itself is C++ with zero runtime deps. Every runner stays directly invocable without NX; `npx nx run-many -t <targets>` is the cached path.",
+  "devDependencies": {
+    "nx": "^21.0.0"
+  }
+}
