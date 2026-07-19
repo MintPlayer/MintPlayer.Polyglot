@@ -3352,3 +3352,15 @@ in `docs/prd/e2e-coverage-wave2/ANALYSIS.md`) followed by the implementation in 
   demand-gated follow-up).
 - **SPEC §9 decisions**: round half-even, shift rules, fmod, record-field equality, PHP 64-bit-wrap
   caveat, non-ASCII caveats (+ lexer warning), `INT_MIN / -1` + out-of-range float→int/parse as §3.D.
+
+## P35 — Gate speed-up: merged conformance runner + parallelism + NX-style cache — 📐 investigated, plan ready (2026-07-19; maintainer request, PRD `docs/prd/gate-speedup/`, 8-agent measured investigation)
+
+The full local gate measures ~958 s, 80% of it the three conformance legs — dominated by `dotnet build`
+of the SAME C# oracle ~2 s × 95 programs × 3 legs (the legs re-compile identical code), plus a fourth
+full transpile sweep in the library gate. Recommended architecture (skeptic-adjusted, all mechanisms
+verified by experiment): **restructure → parallelize → cache** — one merged 4-target single-pass
+conformance runner with a `csc /shared` oracle (kills all 278 dotnet builds; byte-identical output
+verified), bounded `ForEach-Object -Parallel` batching, a tiered gate (`-Tier fast` ≈ 18 s), and an
+L1/L2 content-addressed result cache (FAIL never cached, comparisons always run, CI always cold).
+Projected honestly: **full gate ~5× (~3–3.5 min), one-.pg dev loop ~25–40 s**. Seven ordered slices in
+`docs/prd/gate-speedup/PLAN.md`; slices 0–5 need no C++ changes and no new dependencies.
