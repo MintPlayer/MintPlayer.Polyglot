@@ -1,0 +1,5 @@
+// A clean program — `polyglot check` must report no problems and exit 0.
+import { print } from "std.io"
+fn main() {
+  print(42)
+}

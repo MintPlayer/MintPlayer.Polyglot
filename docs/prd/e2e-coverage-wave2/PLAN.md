@@ -138,3 +138,36 @@ D3→#49, D4→#50, D5→#51, D6→#52, D7→#53, D8→#54. Two probe claims cor
 (recorded in ANALYSIS.md §4): D1's PHP leg is per-creation capture (`1/11/21`, like TS), and D3's TS
 prints `0/0`. Baseline health re-confirmed the same day: unit suite green, all 71 conformance
 programs agree C#↔TS.
+
+**2026-07-19 — Slices 1–7 implemented (one branch, one PR).** Authoring the programs surfaced
+**five MORE defects beyond the analysis** — each fixed in-wave or filed:
+
+- **f32.pg caught a general paren-dropping miscompile**: a textless identity cast (f32→f64 on the
+  dynamic targets) swallowed its operand's precedence parens — `(a + b) * 100` emitted `a + b * 100`
+  on TS/Python/PHP (26 vs C#'s 175). Fixed in `emitChild` (precedence judged through Cast nodes).
+- **scale.pg caught a compiler stack overflow**: `p1 + … + p32` (32-term sum!) killed the Debug
+  Python/PHP emit with 0xC00000FD and empty stderr. Fixed three ways (G45 pulled forward): parser
+  nesting guard (256), emitter depth guard (400, clean error), 16 MB stack reserve (vcxproj + CMake
+  MSVC/macOS), plus a CLI-wide exception boundary (also de-fangs G42's stoll abort).
+- **i64_boundaries.pg caught Python's missing narrowing casts**: `(i32)` of an i64 emitted nothing
+  (printed the unwrapped value). Fixed: Python Cast int→smaller-int / 64↔64 wrap arms.
+- **shift authoring caught the C# shift-count rule**: operand reconciliation widened counts
+  (`long << long` is invalid C#). Fixed in sema: shift counts stay i32, result takes the shiftee's
+  type (the C# rule, all targets).
+- **union probe confirmed TS `==` on unions is reference equality** (0/0 vs C#/Py 1/0) → filed #57;
+  plus #55 (PHP built-in name collisions: `fn explode`), #56 (unbound member calls emit verbatim —
+  found twice: missing import, and generic-instantiated lambda params).
+- **null_falsy.pg caught the C# dropped-annotation family live** (`var n: i32? = 0` → `var n = 0`,
+  CS0037 on `n = null`). Fixed generally: a declared type that differs from the initializer's own
+  type always emits (also the principled fix for #47's second half).
+
+Spec decisions recorded in SPEC.md §9: round half-to-even everywhere; shift count masking + i32
+counts; float `%` = fmod; record-field equality (strict leaves, reference lists); PHP 64-bit-wrap
+caveat; non-ASCII string caveat (+ lexer warning); `INT_MIN / -1`, out-of-range float→int, and
+out-of-range parse documented as §3.D. G11 resolved as the checker diagnostic ("field never
+initialized"), G8's ±2⁶³ half as the PHP caveat. Program count 71 → **87** (+16), plus 9 `.expected`
+goldens closing the correlated-wrongness blind spot. New gate legs: cli-smoke, refusals, LSP;
+run-nuget wired in; runners hardened (timeouts, unique temp roots, loud cleanup, pinned PHP refuser
+set: async_await, async_compose, expect_actual, extern_ffi, indexer_grid, operators_full, vec2).
+Coverage: ci.yml gcovr job (report-only) + scripts/coverage.ps1 (OpenCppCoverage); the plugin
+template-arm tracer stays demand-gated (follow-up candidate).

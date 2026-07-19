@@ -18,8 +18,55 @@ if (-not (Test-Path $Cli)) {
     exit 2
 }
 
+# Resolve the runtimes once; ProcessStartInfo (Invoke-WithTimeout) wants a concrete path, not a PATH lookup.
+$dotnet = (Get-Command dotnet -ErrorAction SilentlyContinue)?.Source; if (-not $dotnet) { $dotnet = "dotnet" }
+$node = (Get-Command node -ErrorAction SilentlyContinue)?.Source; if (-not $node) { $node = "node" }
+
+# G30 per-program timeout: run a generated program under a wall-clock cap. Reads stdout/stderr async BEFORE
+# WaitForExit (the classic pipe-deadlock trap — a chatty child fills the pipe buffer and blocks forever if
+# we wait first), and on timeout kills the whole process tree. Returns the raw stdout, the exit code, and a
+# TimedOut flag; stderr is discarded unless -MergeStdErr (so build/runtime noise never pollutes program stdout,
+# preserving the `& dotnet $dll 2>$null` property this gate has always relied on). Duplicated per runner by
+# design — the conformance scripts are self-contained.
+function Invoke-WithTimeout {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [int]$TimeoutSec = 60,
+        [switch]$MergeStdErr
+    )
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $FilePath
+    foreach ($a in $Arguments) { $psi.ArgumentList.Add($a) }
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        try { $p.Kill($true) } catch {}
+        try { $p.WaitForExit(5000) | Out-Null } catch {}
+        return [pscustomobject]@{ Stdout = ""; ExitCode = -1; TimedOut = $true }
+    }
+    $out = $outTask.GetAwaiter().GetResult()
+    $err = $errTask.GetAwaiter().GetResult()
+    if ($MergeStdErr) { $out = $out + $err }
+    return [pscustomobject]@{ Stdout = $out; ExitCode = $p.ExitCode; TimedOut = $false }
+}
+
+# G32 golden normalization: CRLF -> LF, then strip trailing whitespace/newlines. Applied to both the program
+# output and the .expected file before comparing, so a committed golden is line-ending- and trailer-agnostic.
+function Format-Golden([string]$s) {
+    if ($null -eq $s) { return "" }
+    return ($s -replace "`r`n", "`n").TrimEnd("`r", "`n", " ", "`t")
+}
+
 $progDir = Join-Path $PSScriptRoot "programs"
-$work = Join-Path ([System.IO.Path]::GetTempPath()) "polyglot-conformance"
+# G31: a per-run unique work root (fixed prefix + short GUID), removed loudly at script end — parallel runs
+# never collide and a crashed prior run never leaves a poisoned fixed dir behind.
+$work = Join-Path ([System.IO.Path]::GetTempPath()) ("polyglot-conformance-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
 
 $csproj = @'
 <Project Sdk="Microsoft.NET.Sdk">
@@ -57,8 +104,12 @@ function Test-Program($name, $stem, $cliArgs) {
         Write-Host "[FAIL] $name : generated C# did not compile"
         return $false
     }
-    $cs = (& dotnet $dll 2>$null | Out-String).TrimEnd("`r","`n")
-    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $LASTEXITCODE)"; return $false }
+    $csr = Invoke-WithTimeout -FilePath $dotnet -Arguments @($dll)
+    if ($csr.TimedOut) { Write-Host "[FAIL] $name : timed out after 60s"; return $false }
+    # Fold CRLF->LF (C# emits CRLF on Windows, node LF) and trim the trailer, so the compare is line-ending
+    # agnostic — the normalization PowerShell's Out-String used to do implicitly before the timeout rewrite.
+    $cs = Format-Golden $csr.Stdout
+    if ($csr.ExitCode -ne 0) { Write-Host "[FAIL] $name : generated C# crashed at runtime (exit $($csr.ExitCode))"; return $false }
 
     # §4.5 module linking: a multi-module program emits several .ts files with extensionless cross-imports
     # (`import { X } from "./dep"`) — bundler-idiomatic, but Node's ESM loader can't resolve an extensionless
@@ -74,32 +125,51 @@ function Test-Program($name, $stem, $cliArgs) {
             Set-Content $f.FullName -Value $c -NoNewline
         }
     }
-    $ts = (& node (Join-Path $dir "$stem.ts") 2>$null | Out-String).TrimEnd("`r","`n")
-    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $name : generated TS crashed at runtime (exit $LASTEXITCODE)"; return $false }
+    $tsr = Invoke-WithTimeout -FilePath $node -Arguments @((Join-Path $dir "$stem.ts"))
+    if ($tsr.TimedOut) { Write-Host "[FAIL] $name : timed out after 60s"; return $false }
+    $ts = Format-Golden $tsr.Stdout
+    if ($tsr.ExitCode -ne 0) { Write-Host "[FAIL] $name : generated TS crashed at runtime (exit $($tsr.ExitCode))"; return $false }
 
-    if ($cs -eq $ts) {
-        Write-Host "[PASS] $name  ->  $($cs -replace "`r?`n", ' | ')"
-        return $true
+    if ($cs -ne $ts) {
+        Write-Host "[FAIL] $name : C# and TS diverged"
+        Write-Host "        C#: $($cs -replace "`r?`n", ' | ')"
+        Write-Host "        TS: $($ts -replace "`r?`n", ' | ')"
+        return $false
     }
-    Write-Host "[FAIL] $name : C# and TS diverged"
-    Write-Host "        C#: $($cs -replace "`r?`n", ' | ')"
-    Write-Host "        TS: $($ts -replace "`r?`n", ' | ')"
-    return $false
+
+    # G32: an optional committed golden pins the exact stdout (not just C#<->TS agreement). Both targets are
+    # asserted against it; either differing is a failure naming the offending target.
+    $golden = Join-Path $progDir "$name.expected"
+    if (Test-Path $golden) {
+        $exp = Format-Golden (Get-Content $golden -Raw)
+        if ((Format-Golden $cs) -ne $exp) { Write-Host "[FAIL] $name : csharp output differs from $name.expected"; return $false }
+        if ((Format-Golden $ts) -ne $exp) { Write-Host "[FAIL] $name : typescript output differs from $name.expected"; return $false }
+    }
+
+    Write-Host "[PASS] $name  ->  $($cs -replace "`r?`n", ' | ')"
+    return $true
 }
 
-# Single-file programs: each top-level programs/*.pg (non-recursive, so multi-file dirs are skipped here).
-foreach ($pg in Get-ChildItem $progDir -Filter *.pg | Sort-Object Name) {
-    $count++
-    if (-not (Test-Program $pg.BaseName $pg.BaseName @("build", $pg.FullName))) { $fail++ }
-}
+try {
+    # Single-file programs: each top-level programs/*.pg (non-recursive, so multi-file dirs are skipped here).
+    foreach ($pg in Get-ChildItem $progDir -Filter *.pg | Sort-Object Name) {
+        $count++
+        if (-not (Test-Program $pg.BaseName $pg.BaseName @("build", $pg.FullName))) { $fail++ }
+    }
 
-# Multi-file programs (P12 modules): each programs/<dir>/ with an entry.pg, built with --root <dir> so its
-# `import … from "…"` (logical + relative) resolve via the CLI's filesystem module resolver.
-foreach ($d in Get-ChildItem $progDir -Directory | Sort-Object Name) {
-    $entry = Join-Path $d.FullName "entry.pg"
-    if (-not (Test-Path $entry)) { continue }
-    $count++
-    if (-not (Test-Program $d.Name "entry" @("build", $entry, "--root", $d.FullName))) { $fail++ }
+    # Multi-file programs (P12 modules): each programs/<dir>/ with an entry.pg, built with --root <dir> so its
+    # `import … from "…"` (logical + relative) resolve via the CLI's filesystem module resolver.
+    foreach ($d in Get-ChildItem $progDir -Directory | Sort-Object Name) {
+        $entry = Join-Path $d.FullName "entry.pg"
+        if (-not (Test-Path $entry)) { continue }
+        $count++
+        if (-not (Test-Program $d.Name "entry" @("build", $entry, "--root", $d.FullName))) { $fail++ }
+    }
+}
+finally {
+    # G31 loud cleanup: remove the whole per-run root; a failure to delete is announced, never swallowed.
+    Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    if (Test-Path $work) { Write-Host "WARNING: could not remove conformance work dir '$work' — clean it up manually." }
 }
 
 Write-Host ""

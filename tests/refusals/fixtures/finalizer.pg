@@ -1,0 +1,7 @@
+// REFUSED (PRD §3.B): a finalizer (`~Foo`) inside a class. Today this surfaces as TWO raw parse
+// errors rather than a targeted "Polyglot refuses finalizers" diagnostic — issue #54 tracks the
+// targeted message. This fixture only asserts nonzero exit + no output written, NOT the message.
+class Foo {
+  ~Foo() {
+  }
+}

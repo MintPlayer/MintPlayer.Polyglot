@@ -43,6 +43,18 @@ jobs:
           (cd /tmp && "$GITHUB_WORKSPACE/build/polyglot" build /tmp/smoke.pg --target csharp --out /tmp/ --lib io)
           grep -q 'print(6 \* 7)' /tmp/smoke.cs
 
+      # The two PowerShell harness legs freeze the `#ifdef`-forked CLI code that broke every P30 POSIX
+      # release leg (watch-mode polling + the registry auto-download HTTP transport) — exercised here on
+      # g++/Linux BEFORE merge, not first in the tag-triggered release. pwsh + node are preinstalled on the
+      # GitHub-hosted ubuntu runners; each runner takes -Cli so it targets the Linux binary.
+      - name: Watch-mode protocol gate
+        shell: pwsh
+        run: ./tests/watch/run-watch.ps1 -Cli "$env:GITHUB_WORKSPACE/build/polyglot"
+
+      - name: Registry auto-download gate (needs node — preinstalled)
+        shell: pwsh
+        run: ./tests/registry/run-registry.ps1 -Cli "$env:GITHUB_WORKSPACE/build/polyglot"
+
   # Wave-2 slice 7: C++ line coverage of the Core/CLI, report-only (no threshold until a baseline
   # exists). Unit suite + a four-target CLI transpile sweep of the conformance programs, so both the
   # front-end AND the emitter/rule-interpreter paths accumulate .gcda. What this deliberately does NOT

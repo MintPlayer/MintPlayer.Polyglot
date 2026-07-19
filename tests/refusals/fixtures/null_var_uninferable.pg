@@ -1,0 +1,4 @@
+// REFUSED (checker): an un-annotated `null` initializer — the type cannot be inferred.
+fn main() {
+  var x = null
+}

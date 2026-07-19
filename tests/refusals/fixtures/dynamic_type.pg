@@ -1,0 +1,2 @@
+// REFUSED (PRD §3.B): the `dynamic` type — no runtime code generation / late binding.
+fn box(x: dynamic): i32 => 0

@@ -1,0 +1,5 @@
+// THREE distinct refusals on three distinct lines — asserts every diagnostic position is reported,
+// not just the first (the checker does not stop at the first error).
+fn run(t: Thread): i32 => 0
+fn make(a: Activator): i32 => 0
+fn tax(amount: decimal): i32 => 0

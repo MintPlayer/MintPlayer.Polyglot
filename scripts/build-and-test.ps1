@@ -46,6 +46,18 @@ Write-Host "`n==> Unit / golden tests"
 & $testsExe
 if ($LASTEXITCODE -ne 0) { Write-Host "`nUNIT TESTS FAILED."; exit 1 }
 
+Write-Host "`n==> CLI-surface smoke (--version / -h / bad input / four-target single build)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\cli\run-cli-smoke.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nCLI SMOKE FAILED."; exit 1 }
+
+Write-Host "`n==> Refusal gate (PRD paragraph 3.B: loud diagnostics, no output on refusal, check --json)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\refusals\run-refusals.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nREFUSAL GATE FAILED."; exit 1 }
+
+Write-Host "`n==> LSP protocol gate (framed JSON-RPC lifecycle over stdio)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\lsp\run-lsp.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nLSP GATE FAILED."; exit 1 }
+
 Write-Host "`n==> Parser-fidelity round-trip (all samples)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\fidelity\run-roundtrip.ps1")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nROUND-TRIP FAILED."; exit 1 }
@@ -82,6 +94,17 @@ if (-not $SkipConformance) {
     Write-Host "`n==> Library-consumption gate (emitted TS is an importable, strict-clean ES module)"
     & pwsh -NoProfile -File (Join-Path $repo "tests\library\run-library.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
     if ($LASTEXITCODE -ne 0) { Write-Host "`nLIBRARY GATE FAILED."; exit 1 }
+}
+
+# MSBuild/NuGet integration gate — the .pg-aware package auto-transpiling inside a consuming project (P11/P30).
+# Needs the dotnet SDK (packs + restores + several fixture builds); guarded so a dotnet-less environment skips
+# rather than fails, mirroring the conformance legs' dotnet dependency.
+Write-Host "`n==> MSBuild / NuGet integration gate (.pg auto-transpile in a consuming project)"
+if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+    & pwsh -NoProfile -File (Join-Path $repo "tests\msbuild\run-nuget.ps1")
+    if ($LASTEXITCODE -ne 0) { Write-Host "`nNUGET GATE FAILED."; exit 1 }
+} else {
+    Write-Host "   (skipped: dotnet not found on PATH)"
 }
 
 Write-Host "`nAll green: build + unit tests$(if (-not $SkipConformance) { ' + conformance' })."

@@ -1,0 +1,7 @@
+// REFUSED (PRD §3.B): an `unsafe` block — no unsafe/pointers/stackalloc.
+import { print } from "std.io"
+fn main() {
+  unsafe {
+    print(1)
+  }
+}

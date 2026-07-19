@@ -40,7 +40,7 @@ $env:POLYGLOT_CACHE = $cache
 $serverLog = Join-Path $work "server.log"
 function Start-Registry {
     $p = Start-Process -FilePath "node" `
-        -ArgumentList (Join-Path $PSScriptRoot "registry-server.js"), (Join-Path $repo "plugins\python\polyglot-plugin.json") `
+        -ArgumentList (Join-Path $PSScriptRoot "registry-server.js"), (Join-Path $repo "plugins/python/polyglot-plugin.json") `
         -RedirectStandardOutput $serverLog -RedirectStandardError (Join-Path $work "server.err") `
         -NoNewWindow -PassThru
     $deadline = (Get-Date).AddSeconds(15)
@@ -65,7 +65,7 @@ try {
     $pin = $lock.packages.'@mintplayer/polyglot-target-pyfixture'
     Assert ($lock.lockfileVersion -eq 1 -and $pin.version -eq '1.2.3' -and $pin.integrity -like 'sha512-*') `
         "the lock pins version 1.2.3 + SRI sha512 integrity"
-    $entryDir = Join-Path $cache "@mintplayer\polyglot-target-pyfixture\1.2.3"
+    $entryDir = Join-Path $cache "@mintplayer/polyglot-target-pyfixture/1.2.3"
     Assert ((Test-Path (Join-Path $entryDir "polyglot-plugin.json")) -and (Test-Path (Join-Path $entryDir "meta.json"))) `
         "the versioned cache entry (<name>/<version>/manifest+meta) exists"
 
@@ -109,7 +109,7 @@ try {
     $out5 = & $Cli build (Join-Path $proj2 "main.pg") --out $proj2 2>&1 | Out-String
     Assert ($LASTEXITCODE -ne 0 -and $out5 -match 'integrity mismatch') `
         "a tarball failing the packument's SRI is refused with the mismatch named"
-    Assert (-not (Test-Path (Join-Path $cache "@mintplayer\polyglot-target-pyfixture2"))) `
+    Assert (-not (Test-Path (Join-Path $cache "@mintplayer/polyglot-target-pyfixture2"))) `
         "nothing from the refused tarball reaches the cache"
     Assert (-not (Test-Path (Join-Path $proj2 "pgconfig.lock.json"))) `
         "no lock entry is written for a refused dependency"
@@ -136,7 +136,7 @@ try {
     # --- cross-dir specifiers (P30 slice 8): TS closures may split; others still refuse -----------
     $proj4 = Join-Path $work "proj4"
     New-Item -ItemType Directory -Force (Join-Path $proj4 "lib") | Out-Null
-    Set-Content (Join-Path $proj4 "lib\util.pg") "fn three(): i32 {`n  return 3`n}" -NoNewline
+    Set-Content (Join-Path $proj4 "lib/util.pg") "fn three(): i32 {`n  return 3`n}" -NoNewline
     Set-Content (Join-Path $proj4 "main.pg") "import { three } from `"./lib/util`"`nimport { print } from `"std.io`"`nfn main() {`n  print(three())`n}" -NoNewline
     Set-Content (Join-Path $proj4 "pgconfig.json") ("{ `"targets`": [`"typescript`"], `"include`": [ " +
         "{ `"pattern`": `"main.pg`", `"target`": `"typescript`", `"output`": `"app/%(Filename)`" }, " +
@@ -149,7 +149,7 @@ try {
 
     $proj5 = Join-Path $work "proj5"
     New-Item -ItemType Directory -Force (Join-Path $proj5 "lib") | Out-Null
-    Set-Content (Join-Path $proj5 "lib\util.pg") "fn three(): i32 {`n  return 3`n}" -NoNewline
+    Set-Content (Join-Path $proj5 "lib/util.pg") "fn three(): i32 {`n  return 3`n}" -NoNewline
     Set-Content (Join-Path $proj5 "main.pg") "import { three } from `"./lib/util`"`nimport { print } from `"std.io`"`nfn main() {`n  print(three())`n}" -NoNewline
     Set-Content (Join-Path $proj5 "pgconfig.json") ("{ `"targets`": [`"pyfixture`"], " +
         "`"dependencies`": { `"pyfixture`": `"^1.2.0`" }, `"include`": [ " +
@@ -164,6 +164,94 @@ try {
     $out7 = & $Cli build (Join-Path $noCfg "main.pg") --out $noCfg 2>&1 | Out-String
     Assert ($LASTEXITCODE -ne 0 -and $out7 -match 'no --target given and no pgconfig\.json' -and $out7 -match 'csharp') `
         "no config + no --target refuses, listing the loaded targets"
+
+    # === wave-2 extensions (G34/G35/G40) =========================================================
+    # These use in-box targets and `file:` dependencies, so (unlike stages 1-7) they need no live
+    # registry — they hold even on a machine where the loopback registry is flaky (MEMORY.md).
+
+    # --- G40a: bare `polyglot build` discovers inputs from include patterns (match: every file emits) ---
+    # `%(RecursiveDir)` places a nested source at the mirrored output path.
+    $disc = Join-Path $work "discover"
+    New-Item -ItemType Directory -Force (Join-Path $disc "sub") | Out-Null
+    Set-Content (Join-Path $disc "main.pg") "import { print } from `"std.io`"`nfn main() {`n  print(1)`n}`n" -NoNewline
+    Set-Content (Join-Path $disc "sub/helper.pg") "fn helper(): i32 => 2`n" -NoNewline
+    Set-Content (Join-Path $disc "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"include`": [ " +
+        "{ `"pattern`": `"**/*.pg`", `"target`": `"csharp`", `"output`": `"gen/%(RecursiveDir)%(Filename)`" } ] }") -NoNewline
+    Push-Location $disc
+    & $Cli build *> $null   # no input arg: discovery from the include patterns
+    $discExit = $LASTEXITCODE
+    Pop-Location
+    Assert ($discExit -eq 0 -and (Test-Path (Join-Path $disc "gen/main.cs")) -and (Test-Path (Join-Path $disc "gen/sub/helper.cs"))) `
+        "bare 'build' discovers every matched input and emits at the %(RecursiveDir) paths"
+
+    # --- G40a: bare `polyglot build` where the patterns match NOTHING refuses with guidance -------------
+    $empty = Join-Path $work "discover-empty"
+    New-Item -ItemType Directory -Force $empty | Out-Null
+    Set-Content (Join-Path $empty "main.pg") "fn main() {`n}`n" -NoNewline
+    Set-Content (Join-Path $empty "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"include`": [ " +
+        "{ `"pattern`": `"nonesuch/*.pg`", `"target`": `"csharp`", `"output`": `"out/%(Filename)`" } ] }") -NoNewline
+    Push-Location $empty
+    $eout = & $Cli build 2>&1 | Out-String
+    $eExit = $LASTEXITCODE
+    Pop-Location
+    Assert ($eExit -ne 0 -and $eout -match "needs an input file") `
+        "bare 'build' with no matching inputs refuses with a guidance message"
+
+    # --- G40b: `%(TargetLanguage)` + `%(RecursiveDir)` route a nested tree per target to disk -----------
+    $tmpl = Join-Path $work "templated"
+    New-Item -ItemType Directory -Force (Join-Path $tmpl "mod") | Out-Null
+    Set-Content (Join-Path $tmpl "main.pg") "import { print } from `"std.io`"`nfn main() {`n  print(1)`n}`n" -NoNewline
+    Set-Content (Join-Path $tmpl "mod/twain.pg") "fn twain(): i32 => 2`n" -NoNewline
+    Set-Content (Join-Path $tmpl "pgconfig.json") ("{ `"targets`": [`"csharp`",`"typescript`"], `"include`": [ " +
+        "{ `"pattern`": `"**/*.pg`", `"target`": `"csharp`", `"output`": `"dist/%(TargetLanguage)/%(RecursiveDir)%(Filename)`" }, " +
+        "{ `"pattern`": `"**/*.pg`", `"target`": `"typescript`", `"output`": `"dist/%(TargetLanguage)/%(RecursiveDir)%(Filename)`" } ] }") -NoNewline
+    Push-Location $tmpl
+    & $Cli build *> $null
+    $tmplExit = $LASTEXITCODE
+    Pop-Location
+    Assert ($tmplExit -eq 0 -and
+            (Test-Path (Join-Path $tmpl "dist/csharp/main.cs")) -and (Test-Path (Join-Path $tmpl "dist/csharp/mod/twain.cs")) -and
+            (Test-Path (Join-Path $tmpl "dist/typescript/main.ts")) -and (Test-Path (Join-Path $tmpl "dist/typescript/mod/twain.ts"))) `
+        "%(TargetLanguage)/%(RecursiveDir) templates land each target's nested tree at distinct paths"
+
+    # --- G35: `polyglot install <local dir>` validates a manifest; a corrupted one is refused ----------
+    $goodPlugin = Join-Path $repo "plugins/python"
+    $vout = & $Cli install $goodPlugin 2>&1 | Out-String
+    Assert ($LASTEXITCODE -eq 0 -and $vout -match 'is valid' -and $vout -match 'file:') `
+        "install <local dir> validates the manifest and points at the file: dependency form"
+    $badPlugin = Join-Path $work "badplugin"
+    New-Item -ItemType Directory -Force $badPlugin | Out-Null
+    Set-Content (Join-Path $badPlugin "polyglot-plugin.json") '{ "name": "@x/broken", NOT VALID JSON' -NoNewline
+    $bout = & $Cli install $badPlugin 2>&1 | Out-String
+    Assert ($LASTEXITCODE -ne 0 -and $bout -match 'invalid plugin') `
+        "install <local dir> refuses a corrupted manifest, naming it invalid"
+
+    # --- G34: a `file:` dependency builds fully OFFLINE (registry pointed at a dead port) --------------
+    # Local plugins resolve in place, so a build never touches the network — proven by unreachable URL.
+    $fileDep = Join-Path $work "filedep"
+    New-Item -ItemType Directory -Force $fileDep | Out-Null
+    Set-Content (Join-Path $fileDep "main.pg") "import { print } from `"std.io`"`nfn main() {`n  print(7)`n}`n" -NoNewline
+    $pyPluginFwd = ($goodPlugin -replace '\\','/')
+    Set-Content (Join-Path $fileDep "pgconfig.json") ("{ `"targets`": [`"python`"], `"dependencies`": { " +
+        "`"@mintplayer/polyglot-target-python`": `"file:$pyPluginFwd`" } }") -NoNewline
+    $env:POLYGLOT_REGISTRY = "http://127.0.0.1:1"   # actively unreachable
+    & $Cli build (Join-Path $fileDep "main.pg") --out $fileDep *> $null
+    Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $fileDep "main.py"))) `
+        "a file: dependency resolves in place and builds fully offline (registry unreachable)"
+
+    # --- G34: `polyglot install <name@version>` warms a fresh cache from the registry -----------------
+    # (Needs the live mock; on the flaky-loopback dev box this shares stage 1's outcome. The
+    # cache-then-offline round-trip itself is already proven by stages 1-2.)
+    if (-not $reg.Proc.HasExited) {
+        $cache2 = Join-Path $work "cache2"
+        New-Item -ItemType Directory -Force $cache2 | Out-Null
+        $env:POLYGLOT_CACHE = $cache2
+        $env:POLYGLOT_REGISTRY = "http://127.0.0.1:$($reg.Port)"
+        & $Cli install "@mintplayer/polyglot-target-pyfixture@1.2.3" *> $null
+        Assert ($LASTEXITCODE -eq 0 -and
+                (Test-Path (Join-Path $cache2 "@mintplayer/polyglot-target-pyfixture/1.2.3/polyglot-plugin.json"))) `
+            "polyglot install <name@version> warms the versioned cache entry from the registry"
+    }
 } finally {
     if ($reg -and -not $reg.Proc.HasExited) { Stop-Process -Id $reg.Proc.Id -Force -ErrorAction SilentlyContinue }
     Remove-Item Env:POLYGLOT_CACHE -ErrorAction SilentlyContinue

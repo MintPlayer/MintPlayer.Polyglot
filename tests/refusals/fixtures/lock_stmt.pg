@@ -1,0 +1,7 @@
+// REFUSED (PRD §3.B): the `lock` statement — Polyglot is single-threaded async only.
+import { print } from "std.io"
+fn main() {
+  lock {
+    print(1)
+  }
+}
