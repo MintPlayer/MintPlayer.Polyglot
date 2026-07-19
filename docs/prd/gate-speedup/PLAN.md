@@ -87,17 +87,28 @@ nx-cache.mintplayer.com and standardizes on NX elsewhere.)*
   `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN` are set as machine env vars — NX picks both up with
   zero repo config, so nothing token-shaped ever enters the repo. FAIL-never-served is NX-native
   (exit-0 entries only).
-- **CI policy — default COLD** (no cache vars in any workflow): the cold run is the backstop against
-  any un-keyed dependency and sidesteps CVE-2025-36852 entirely. Org-wide GitHub secrets DO exist
-  (`NX_CACHE_SERVER`, `NX_CACHE_RO_TOKEN` read-only, `NX_CACHE_RW_TOKEN` read-write), so two opt-in
-  upgrades are available later, each with its recorded tradeoff:
-  (a) **CI as warmer** — `NX_CACHE_RW_TOKEN` on the ubuntu gate job: dev machines start getting
-      remote hits produced by CI. Cost: an RW token also READS, so CI would consume entries written
-      by dev machines — the cold backstop is gone unless the server can hand out a write-only role.
-  (b) **CI read-only** — `NX_CACHE_RO_TOKEN`: faster CI, but it trusts locally-produced entries and
-      neither warms nor backstops. Weakest option; avoid.
-  Decision stands: cold until the merged runner + cache have soaked; revisit (a) once server-side
-  roles can express write-without-read.
+- **CI policy — adopt the ORG CONVENTION** (the maintainer's established pattern, documented in
+  MintPlayer.Spark `docs/guide-nx-remote-cache.md`, using the org-wide secrets `NX_CACHE_SERVER` /
+  `NX_CACHE_RO_TOKEN` / `NX_CACHE_RW_TOKEN`): every workflow sets
+
+  ```yaml
+  NX_SELF_HOSTED_REMOTE_CACHE_SERVER: ${{ secrets.NX_CACHE_SERVER }}
+  NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN: ${{ (github.event_name == 'push' &&
+    github.ref_name == github.event.repository.default_branch) &&
+    secrets.NX_CACHE_RW_TOKEN || secrets.NX_CACHE_RO_TOKEN }}
+  ```
+
+  so **only post-merge runs on master can WRITE** — PR checks and branch pushes read but cannot
+  poison (the CREEP mitigation, server-enforced by the token split; fork PRs get no secrets at all).
+  Applied to this repo: `ci.yml` (PR checks incl. the gate legs) runs RO; a master push warms the
+  cache RW. Two Polyglot-specific keeps on top of the convention:
+  - **release.yml stays cache-free** — same spirit as Spark's deploy isolation (`--skip-nx-cache`):
+    shipped bits are always rebuilt from source; the release matrix never touches NX anyway.
+  - **The coverage job runs `--skip-nx-cache`** — its purpose is executing the code, a cache hit
+    would defeat the instrumentation.
+  Residual accepted risk vs the old "CI cold" idea: RO PR checks can be served entries written by
+  master builds or the maintainer's own machine (both trusted, single-maintainer repo); the
+  cache-free release legs remain the cold backstop for shipped artifacts.
 - **Keep the per-program L1 inside `run-conformance.ps1`** (per the original design): per-program NX
   targets would spawn 95 processes and defeat the shared `csc /shared` pool. Warm loop = NX leg hits
   × in-runner program skips.
