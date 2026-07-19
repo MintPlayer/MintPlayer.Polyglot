@@ -1,0 +1,17 @@
+// Wave-2 G3: an UNSUFFIXED integer literal in an i64 slot must emit as an exact
+// 64-bit literal (TS `…n`), not a runtime conversion of an already-rounded number
+// (`BigInt(9007199254740993)` rounds through an f64 first — printed …992).
+
+fn takes(x: i64): i64 => x + 1
+
+fn main() {
+  let a: i64 = 9007199254740993          // annotation-typed literal (2^53 + 1)
+  print(a)                                // 9007199254740993
+  let b: i64 = -9007199254740993         // negative spelling (unary minus over the literal)
+  print(b)                                // -9007199254740993
+  print(takes(9007199254740992))          // 9007199254740993  (argument slot)
+  var c: i64 = 0
+  c = 9007199254740993                    // assignment slot
+  print(c)
+  print(a + 10)                           // 9007199254741003  (mixed i64 + i32 literal)
+}

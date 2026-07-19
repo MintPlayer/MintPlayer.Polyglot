@@ -2186,6 +2186,80 @@
                 ")"
               ]
             }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsSmallInt",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsInt",
+                    "true"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "node.castSame",
+                      "true"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "emit": "node.operand"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsInt64",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsInt64",
+                    "true"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "node.castSame",
+                      "true"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "emit": "node.operand"
+                }
+              ]
+            }
           ]
         ],
         "else": {
@@ -2734,6 +2808,37 @@
               "and": [
                 {
                   "eq": [
+                    "node.typeIsFloat",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.op",
+                    "%"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "__import__('math').fmod(",
+                {
+                  "emit": "node.lhs"
+                },
+                ", ",
+                {
+                  "emit": "node.rhs"
+                },
+                ")"
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
                     "node.typeIsInt",
                     "true"
                   ]
@@ -2769,6 +2874,18 @@
                         "node.op",
                         "%"
                       ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "<<"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        ">>"
+                      ]
                     }
                   ]
                 }
@@ -2783,6 +2900,82 @@
                 {
                   "case": {
                     "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            "<<"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            " << (",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            " & ",
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "node.typeIsInt64",
+                                        "true"
+                                      ]
+                                    },
+                                    "63"
+                                  ]
+                                ],
+                                "else": "31"
+                              }
+                            },
+                            "))"
+                          ]
+                        }
+                      ],
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            ">>"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            " >> (",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            " & ",
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "node.typeIsInt64",
+                                        "true"
+                                      ]
+                                    },
+                                    "63"
+                                  ]
+                                ],
+                                "else": "31"
+                              }
+                            },
+                            "))"
+                          ]
+                        }
+                      ],
                       [
                         {
                           "eq": [

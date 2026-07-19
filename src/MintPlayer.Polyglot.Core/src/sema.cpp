@@ -347,6 +347,7 @@ public:
         for (std::size_t i = 0; i < unit.classes.size(); ++i) {
             recordModel_ = model_ && req_ && i < req_->userClasses;
             checkTypeBody(unit.classes[i].name, unit.classes[i].generics, unit.classes[i].members, nullptr);
+            checkFieldsInitialized(unit.classes[i]);
             recordModel_ = false;
         }
         for (auto& d : unit.extensions) { // `this` denotes the receiver inside an extension body
@@ -880,6 +881,37 @@ private:
         for (const auto& v : u.values)     if (v.hasType) resolveTypeRef(v.type, v.pos);
     }
 
+    // G11 (wave 2): a class field with no initializer must be assigned in `init` — otherwise a read
+    // observes four DIFFERENT defaults (C# 0, TS undefined, Python AttributeError, PHP null). Defining
+    // the error out of existence: the checker demands the assignment, so no target ever reads one.
+    // Any `this.<name> = …` anywhere in the ctor (including branches) counts — the guard targets
+    // NEVER-assigned fields, not flow-sensitive definite assignment.
+    static void collectThisAssigns(const std::vector<StmtPtr>& body, std::unordered_set<std::string>& out) {
+        for (const auto& s : body) {
+            if (!s) continue;
+            if (s->kind == StmtKind::Assign && s->target && s->target->kind == ExprKind::Member &&
+                s->target->lhs && s->target->lhs->kind == ExprKind::This)
+                out.insert(s->target->text);
+            collectThisAssigns(s->thenBody, out);
+            collectThisAssigns(s->elseBody, out);
+            collectThisAssigns(s->finallyBody, out);
+            for (const auto& c : s->catches) collectThisAssigns(c.body, out);
+        }
+    }
+    void checkFieldsInitialized(const ClassDecl& d) {
+        if (d.isExtern) return;
+        std::unordered_set<std::string> assigned;
+        for (const auto& m : d.members)
+            if (m.kind == MemberKind::Init) collectThisAssigns(m.body, assigned);
+        for (const auto& m : d.members) {
+            if (m.kind != MemberKind::Field || m.init || m.bindings.size()) continue;
+            if (!assigned.count(m.name))
+                diags_.error(m.pos, "field '" + m.name + "' of class '" + d.name +
+                                        "' is never initialized — give it an initializer or assign it in init "
+                                        "(uninitialized reads differ per target)");
+        }
+    }
+
     // ---- body checking ----
     void checkTypeBody(const std::string& typeName, const std::vector<GenericParam>& generics,
                        std::vector<Member>& members, std::vector<Param>* recordFields) {
@@ -1395,7 +1427,23 @@ private:
             if (l != Ty::Unknown && r != Ty::Unknown && (l != r || !isNumeric(l))) diags_.error(e.pos, "'" + op + "' expects matching numeric operands, found " + tyName(l) + " and " + tyName(r));
             return tNamed("bool");
         }
-        // arithmetic / bitwise / shift
+        // Shifts are asymmetric (the C# rule, adopted for every target): the COUNT is a plain i32 — it
+        // never reconciles with the shiftee (C# has no `long << long` / `uint << uint` operator), and
+        // the result takes the SHIFTEE's type. (G4, wave 2.)
+        if (op == "<<" || op == ">>") {
+            if (!(isSignedInt(lt.name) || isUnsignedInt(lt.name))) {
+                diags_.error(e.pos, "'" + op + "' expects an integer left operand, found " + lt.name);
+                return lt;
+            }
+            if (rt.name != "i32") {
+                if (isSignedInt(rt.name) || isUnsignedInt(rt.name))
+                    checkConvert(e.rhs, tNamed("i32"), "shift count");
+                else
+                    diags_.error(e.pos, "'" + op + "' expects an i32 shift count, found " + rt.name);
+            }
+            return lt;
+        }
+        // arithmetic / bitwise
         if (op == "+" && l == Ty::String && r == Ty::String) return tNamed("string");
         if (reconcileNumeric(e, lt, rt, common)) return common; // widen the narrower operand to the wider
         if (isNumericTypeName(lt) && isNumericTypeName(rt)) { // both numeric but neither widens -> needs a cast

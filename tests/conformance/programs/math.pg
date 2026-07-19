@@ -36,4 +36,15 @@ fn main() {
   print(Math.clamp(-3, 0, 10))       // 0    (below lo)
   print(Math.clamp(7, 0, 10))        // 7    (in range)
   print(Math.clamp(5i64, 0i64, 3i64))// 3    (i64, generic)
+
+  // Wave-2 G21: negative floor/ceil/round (exact — floor goes DOWN, not toward zero),
+  // and the float-typed sign/clamp arms (never instantiated before).
+  print((i32)Math.floor(-9.8))            // -10
+  print((i32)Math.ceil(-9.8))             // -9
+  print((i32)Math.round(-9.5))            // -10  (half-to-even: -10 is even)
+  print((i32)Math.sign(-2.5))             // -1   (f64 -> f64 sign arm)
+  print((i32)Math.sign(0.0))              // 0
+  print((i32)(Math.clamp(2.75, 0.0, 2.0) * 100.0))   // 200  (float clamp, exact)
+  print((i32)(Math.clamp(-1.5, 0.0, 2.0) * 10.0))    // 0
+  print((i32)Math.abs(-3.25) * 4)         // 12
 }

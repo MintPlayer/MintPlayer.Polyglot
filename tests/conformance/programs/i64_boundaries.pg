@@ -1,0 +1,15 @@
+// Wave-2 G8 (narrowing half): i64 -> i32 casts at the 32-bit boundary drive the
+// per-target narrowing arms (TS BigInt.asIntN, Python/PHP mask templates) that no
+// program fed a wrapping value before. (The ±2^63 wrap itself is a documented
+// §3.C caveat: PHP has no 64-bit wrap emulation — see SPEC.)
+
+fn main() {
+  let a: i64 = 4294967301          // 2^32 + 5
+  print((i32)a)                    // 5
+  let b: i64 = 2147483648          // 2^31
+  print((i32)b)                    // -2147483648
+  let c: i64 = -4294967291         // -(2^32 - 5)
+  print((i32)c)                    // 5
+  let d: i64 = 9007199254740993    // 2^53 + 1 (odd past the f64 cliff)
+  print((i32)d)                    // 1        (low 32 bits: 0x00000001)
+}

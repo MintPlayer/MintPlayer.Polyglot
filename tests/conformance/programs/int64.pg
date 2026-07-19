@@ -10,4 +10,20 @@ fn main() {
 
   let m = 1000000007i64
   print(m * m)                    // 1000000014000000049  (~1e18, < 2^63, > 2^53)
+
+  // Wave-2 G20: COMPARISONS past 2^53 — a BigInt->Number coercion anywhere in the
+  // comparison path would make values differing only in the low bits compare equal.
+  if a == 9007199254740992i64 + 1i64 { print(1) } else { print(0) }   // 1
+  if a != 9007199254740992i64 { print(1) } else { print(0) }          // 1  (…993 vs …992)
+  if a < a + 1i64 { print(1) } else { print(0) }                      // 1
+  if a > 9007199254740992i64 { print(1) } else { print(0) }           // 1
+  let w: i32 = 5
+  if a == 9007199254740988i64 + (i64)w { print(1) } else { print(0) } // 1  (mixed width)
+  var steps = 0i64
+  var k = a
+  while k > 9007199254740990i64 {   // i64-driven loop condition
+    k = k - 1i64
+    steps = steps + 1i64
+  }
+  print(steps)                      // 3
 }

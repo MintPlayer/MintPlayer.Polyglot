@@ -349,9 +349,16 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
     if (!c) return "";
     std::string inner = emit_(*c);
     if (side == "l" || side == "r") { // binary operand: wrap by precedence + associativity (shared policy)
-        if (e_.kind == ir::ExprKind::Binary && c->kind == ir::ExprKind::Binary) {
+        // A widening cast can emit as pure identity on a target (f32->f64 is textless on TS/Python/PHP),
+        // which would silently swallow the parens its operand needs — `(a + b) * x` becoming `a + b * x`
+        // (wave-2 f32.pg catch). Judge precedence by the expression UNDER any casts; if the cast does
+        // emit real text it self-brackets, so the extra parens are harmless.
+        const ir::Expr* eff = c;
+        while (eff->kind == ir::ExprKind::Cast && static_cast<const ir::Cast&>(*eff).operand)
+            eff = static_cast<const ir::Cast&>(*eff).operand.get();
+        if (e_.kind == ir::ExprKind::Binary && eff->kind == ir::ExprKind::Binary) {
             const std::string& po = static_cast<const ir::Binary&>(e_).op;
-            const std::string& co = static_cast<const ir::Binary&>(*c).op;
+            const std::string& co = static_cast<const ir::Binary&>(*eff).op;
             // Two target quirks precedence levels can't express, both harmless as extra parens on the
             // other targets: JS makes bare `a && b ?? c` a SyntaxError (?? refuses to mix with &&/||
             // unparenthesized), and Python CHAINS comparisons (`a < b == c` means `a < b and b == c`),
@@ -1351,11 +1358,12 @@ std::string InterpretedEmitter::renderType(const TypeRef& t) {
 }
 
 std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
-    struct Depth { // see exprDepth_ — bail with one clean error, never a stack overflow (G45)
+    struct Depth { // see exprDepth_ — bail with one clean error, never a stack overflow (G45).
+                   // 400 levels x ~30KB/frame (MSVC Debug worst case) stays inside the 16MB reserve.
         int& d;
         explicit Depth(int& depth) : d(++depth) {
-            if (d > 512) throw std::runtime_error(
-                "expression is too deeply nested to emit (more than 512 levels) — split it into locals");
+            if (d > 400) throw std::runtime_error(
+                "expression is too deeply nested to emit (more than 400 levels) — split it into locals");
         }
         ~Depth() { --d; }
     } depthGuard(exprDepth_);

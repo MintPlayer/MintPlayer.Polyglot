@@ -1,0 +1,11 @@
+// Wave-2 G5: float `%` is C-style fmod — the result takes the DIVIDEND's sign
+// (the C#/JS behavior). Python's native `%` floors (sign of divisor); PHP's `%`
+// int-casts. Results are exact halves, printed via exact scale-to-int.
+
+fn main() {
+  print((i32)((-7.5 % 2.0) * 10.0))    // -15   (fmod: -1.5; Python % said 0.5)
+  print((i32)((7.5 % -2.0) * 10.0))    // 15    (fmod: 1.5; Python % said -0.5)
+  print((i32)((7.5 % 2.0) * 10.0))     // 15
+  print((i32)((-7.5 % -2.0) * 10.0))   // -15
+  print((i32)((8.0 % 2.0) * 10.0))     // 0
+}

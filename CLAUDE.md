@@ -49,6 +49,12 @@ x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 — or invoke the **`/build-and-test`** skill (`.claude/skills/build-and-test/`). Needs `dotnet` + `node`
 for the conformance stage.
 
+**Code coverage** (wave 2): two complementary instruments — know which one answers your question.
+C++ line coverage measures the **Core/CLI only**: locally `pwsh scripts/coverage.ps1` (OpenCppCoverage,
+`choco install opencppcoverage`, HTML at `x64/coverage/`); on CI the `coverage` job in `ci.yml`
+(gcovr summary + artifact, report-only). The four backends are **JSON plugin templates** — gcov can't
+see them; their coverage instrument is the differential conformance suite (`tests/conformance/`).
+
 **Do NOT run intermediary builds/tests between phases/slices.** The full gate takes ~15 minutes; running
 it per slice multiplies that into hours of waiting. Implement EVERYTHING first, then build + run the full
 gate **once** at the end. (If a slice really needs a mid-flight sanity check, the cheap unit-test exe run

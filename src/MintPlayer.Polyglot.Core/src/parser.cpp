@@ -1,5 +1,8 @@
 #include "mintplayer/polyglot/parser.hpp"
 
+#include <cerrno>
+#include <cstdlib>
+
 namespace mintplayer::polyglot {
 
 namespace {
@@ -407,7 +410,17 @@ private:
             c.pos = peek().pos;
             c.name = expect(TokKind::Identifier, "an enum case name").text;
             if (accept(TokKind::Assign)) {
-                if (at(TokKind::IntLit)) { c.hasValue = true; c.value = std::stoll(advance().text); }
+                if (at(TokKind::IntLit)) {
+                    // Guarded parse (G42): a bare std::stoll would THROW std::out_of_range on a >2^63
+                    // literal and abort the whole process — diagnose instead.
+                    const Token& vt = advance();
+                    errno = 0;
+                    char* end = nullptr;
+                    const long long v = std::strtoll(vt.text.c_str(), &end, 0);
+                    if (errno == ERANGE || end == vt.text.c_str() || *end != '\0')
+                        diags_.error(vt.pos, "enum value '" + vt.text + "' is not a plain integer that fits in 64 bits");
+                    else { c.hasValue = true; c.value = v; }
+                }
                 else error("expected an integer enum value");
             }
             d.cases.push_back(std::move(c));

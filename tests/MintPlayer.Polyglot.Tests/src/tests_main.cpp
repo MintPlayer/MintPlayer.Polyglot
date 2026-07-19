@@ -2652,6 +2652,102 @@ int main() {
         check(namedPat, "issue#29: the typed-pattern diagnostic explains itself");
     }
 
+    // ---- Wave-2 front-end robustness (G42-G48) + slice-1/2 compiler fixes -----------------------------
+    {
+        // G42: a >2^63 enum value is a diagnostic, not a std::stoll process abort.
+        EmitResult hugeEnum = compileStd("enum E { A = 99999999999999999999 }\nfn main() {}\n", findTarget("csharp"));
+        check(!hugeEnum.ok, "G42: out-of-range enum value is rejected, not a crash");
+
+        // G43: a UTF-8 BOM'd source compiles clean.
+        EmitResult bom = compileStd("\xEF\xBB\xBF" "fn main() {\n  print(1)\n}\n", findTarget("csharp"));
+        check(bom.ok, "G43: BOM-prefixed source compiles");
+
+        // G44: an unterminated block comment is diagnosed instead of silently swallowing the file tail.
+        EmitResult untermC = compileStd("fn main() {\n  print(1)\n}\n/* dangling", findTarget("csharp"));
+        check(!untermC.ok, "G44: unterminated /* is a diagnostic");
+        bool namesComment = false;
+        for (const auto& dg : untermC.diagnostics) if (has(dg.message, "unterminated block comment")) namesComment = true;
+        check(namesComment, "G44: the diagnostic names the unterminated comment");
+        EmitResult eofSlash = compileStd("fn main() {\n  print(1)\n}\n// trailing comment at EOF", findTarget("csharp"));
+        check(eofSlash.ok, "G44: '//' at EOF is fine");
+
+        // G45 parser guard: 300 nested parens -> one clean "nests too deeply" error, no stack overflow.
+        {
+            std::string deep = "fn main() {\n  let x = ";
+            for (int i = 0; i < 300; ++i) deep += "(";
+            deep += "1";
+            for (int i = 0; i < 300; ++i) deep += ")";
+            deep += "\n  print(x)\n}\n";
+            EmitResult r = compile(deep, findTarget("csharp"));
+            bool named = false;
+            for (const auto& dg : r.diagnostics) if (has(dg.message, "nests too deeply")) named = true;
+            check(!r.ok && named, "G45: 300-deep parens -> 'nests too deeply' diagnostic");
+        }
+        // G45 emitter guard: a 600-term chain parses ITERATIVELY (no parser guard) but builds a
+        // 600-deep IR spine — the emitter's depth guard throws; it must surface as an error, not UB.
+        {
+            std::string chain = "fn main() {\n  let a = 1\n  print(a";
+            for (int i = 0; i < 600; ++i) chain += " + a";
+            chain += ")\n}\n";
+            bool guarded = false;
+            try {
+                EmitResult r = compile(chain, findTarget("python"));
+                guarded = !r.ok; // if the engine converts the guard to a failed emit, that's fine too
+            } catch (const std::exception& e) {
+                guarded = has(e.what(), "too deeply nested");
+            }
+            check(guarded, "G45: 600-term chain -> emitter depth-guard error (caught, not a crash)");
+        }
+
+        // G46: the Activator refusal row (§3.B runtime reflection) fires.
+        EmitResult act = compileStd("fn main() {\n  let a = Activator\n}\n", findTarget("csharp"));
+        check(!act.ok, "G46: 'Activator' is refused (§3.B reflection)");
+
+        // G48: a non-ASCII identifier is ONE positional diagnostic, not per-byte spam.
+        {
+            EmitResult r = compileStd("fn main() {\n  let caf\xC3\xA9 = 1\n}\n", findTarget("csharp"));
+            int nonAsciiDiags = 0;
+            for (const auto& dg : r.diagnostics) if (has(dg.message, "non-ASCII")) ++nonAsciiDiags;
+            check(!r.ok && nonAsciiDiags == 1, "G48: non-ASCII identifier -> exactly one diagnostic");
+        }
+        // G47: non-ASCII STRING content compiles (published PHP byte-string caveat -> warning only).
+        {
+            EmitResult r = compileStd("fn main() {\n  print(\"caf\xC3\xA9\")\n}\n", findTarget("csharp"));
+            check(r.ok, "G47: non-ASCII string literal still compiles (warns, not errors)");
+        }
+
+        // G11: a never-assigned class field is refused (uninitialized reads differ per target).
+        EmitResult uninit = compileStd(
+            "class C {\n  var x: i32\n  fn get(): i32 => this.x\n}\nfn main() { print(C().get()) }\n",
+            findTarget("csharp"));
+        check(!uninit.ok, "G11: never-initialized class field is refused");
+        EmitResult initOk = compileStd(
+            "class C {\n  var x: i32\n  init(x: i32) { this.x = x }\n  fn get(): i32 => this.x\n}\nfn main() { print(C(3).get()) }\n",
+            findTarget("csharp"));
+        check(initOk.ok, "G11: field assigned in init passes");
+
+        // Slice-1 fix pins: PHP strict equality + record equals routing.
+        EmitResult phpEq = compileStd("fn same(a: string, b: string): bool => a == b\nfn main() { print(same(\"a\", \"b\")) }\n", findTarget("php"));
+        check(phpEq.ok && has(phpEq.code, "==="), "G1: PHP string == emits strict ===");
+        EmitResult phpRec = compileStd("record P(x: i32)\nfn main() { print(P(1) == P(1)) }\n", findTarget("php"));
+        check(phpRec.ok && has(phpRec.code, "->equals(") && has(phpRec.code, "public function equals($other)"),
+              "G1/G10: PHP record == routes to a generated equals()");
+        // Comparing to null stays a null TEST, never equals() (would call a method on null).
+        EmitResult tsNull = compileStd("record P(x: i32)\nfn f(p: P?): i32 => if p != null { 1 } else { 0 }\nfn main() { print(f(null)) }\n", findTarget("typescript"));
+        check(tsNull.ok && !has(tsNull.code, ".equals(null)"), "record != null does not route to equals()");
+
+        // Slice-2 fix pins: i64 literal adoption + declared-type-differs locals.
+        EmitResult tsLit = compileStd("fn main() {\n  let a: i64 = 9007199254740993\n  print(a)\n}\n", findTarget("typescript"));
+        check(tsLit.ok && has(tsLit.code, "9007199254740993n") && !has(tsLit.code, "BigInt(9007199254740993)"),
+              "G3: annotation-typed i64 literal emits the exact BigInt literal");
+        EmitResult csNullable = compileStd("fn main() {\n  var n: i32? = 0\n  n = null\n  print(if n == null { 1 } else { 0 })\n}\n", findTarget("csharp"));
+        check(csNullable.ok && has(csNullable.code, "int? n = 0"), "declared i32? with non-null init keeps the nullable slot (C#)");
+
+        // Slice-2 shift rule: the count is i32; shiftee type is preserved (C# has no long<<long).
+        EmitResult csShift = compileStd("fn main() {\n  let b: i64 = 1\n  print(b << 65)\n}\n", findTarget("csharp"));
+        check(csShift.ok && !has(csShift.code, "(long)(65)"), "G4: shift count stays i32 on C#");
+    }
+
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";
         return 0;
