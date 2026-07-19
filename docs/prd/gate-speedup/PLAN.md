@@ -81,9 +81,12 @@ nx-cache.mintplayer.com and standardizes on NX elsewhere.)*
 - Leg inputs: program/fixture globs, `.expected` goldens, the runner's own script, pgconfig(+lock),
   `scripts/lib/OracleCompile.ps1`, plus `runtime` toolchain inputs in `sharedGlobals`
   (`dotnet --version`, `node --version`, `npx tsc --version`, python/php).
-- Remote: `NX_SELF_HOSTED_REMOTE_CACHE_SERVER=https://nx-cache.mintplayer.com` + bearer token —
-  the OpenAPI HTTP interface ONLY (the deprecated bucket plugins are barred: CVE-2025-36852).
-  **Locals read+write; CI runs cold (no remote read or write).** FAIL-never-served is NX-native
+- Remote: the OpenAPI HTTP interface ONLY (the deprecated bucket plugins are barred:
+  CVE-2025-36852). **Already configured on the dev machine** (verified 2026-07-19):
+  `NX_SELF_HOSTED_REMOTE_CACHE_SERVER=https://nx-cache.mintplayer.com` and
+  `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN` are set as machine env vars — NX picks both up with
+  zero repo config, so nothing token-shaped ever enters the repo. **Locals read+write; CI runs cold**
+  (no remote read or write — do NOT add these vars to any workflow). FAIL-never-served is NX-native
   (exit-0 entries only).
 - **Keep the per-program L1 inside `run-conformance.ps1`** (per the original design): per-program NX
   targets would spawn 95 processes and defeat the shared `csc /shared` pool. Warm loop = NX leg hits
