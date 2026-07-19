@@ -26,16 +26,8 @@ $work = Join-Path ([System.IO.Path]::GetTempPath()) "polyglot-emit"
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
 
-$csproj = @'
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <Nullable>disable</Nullable>
-    <ImplicitUsings>disable</ImplicitUsings>
-  </PropertyGroup>
-</Project>
-'@
+# P35 slice 2: the C# leg compiles through the shared csc oracle (~0.2 s warm vs ~2 s dotnet build).
+. (Join-Path $PSScriptRoot "..\..\scripts\lib\OracleCompile.ps1")
 
 # Sample -> the P14b gap that keeps its emitted code from compiling/running. Remove an entry when fixed.
 $xfail = @{
@@ -54,9 +46,8 @@ foreach ($f in Get-ChildItem $sampleDir -Filter *.pg | Sort-Object Name) {
     if ($LASTEXITCODE -ne 0) {
         $ok = $false
     } else {
-        $csproj | Set-Content (Join-Path $dir "$stem.csproj")
-        & dotnet build (Join-Path $dir "$stem.csproj") -c Release -v quiet --nologo *> $null
-        if ($LASTEXITCODE -ne 0) { $ok = $false }
+        $r = Invoke-OracleCompile -Sources (Join-Path $dir "$stem.cs") -OutDll (Join-Path $dir "$stem.dll")
+        if (-not $r.Ok) { $ok = $false }
         & node (Join-Path $dir "$stem.ts") *> $null
         if ($LASTEXITCODE -ne 0) { $ok = $false }
     }
@@ -74,6 +65,8 @@ foreach ($f in Get-ChildItem $sampleDir -Filter *.pg | Sort-Object Name) {
         $bad++
     }
 }
+
+Stop-OracleBuildServer
 
 Write-Host ""
 if ($bad -eq 0) {

@@ -17,7 +17,8 @@
       "f32": "float",
       "f64": "double",
       "bool": "bool",
-      "string": "string"
+      "string": "string",
+      "char": "char"
     },
     "intSuffix": {
       "i64": "L",
