@@ -134,4 +134,8 @@ loopback failure.
 
 ## Log
 
-*(empty — populated during implementation)*
+**2026-07-19 — Slice 0: silent-drop REFUTED.** Four probes (pgconfig next to entry, cwd = project /
+parent / unrelated dir; and pgconfig ONLY in the cwd with the entry elsewhere): config discovery is
+ENTRY-relative — the first three emit all four targets with exit 0, the fourth refuses loudly with
+exit 64 ("no --target given and no pgconfig.json declares `targets`"), never a partial emit. No issue
+to file; the merged runner keeps the per-target file-presence assertion as designed (belt and braces).
