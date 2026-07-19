@@ -30,6 +30,10 @@ fn classify(code: i32): string {
   } catch (e: OtherError) {
     return "other-kind"
   }
+  // Unreachable (every catch arm returns or rethrows), but the TS when-guard EMULATION
+  // (`__handled` flag chain) is not flow-provable for tsc 5.8's TS2366 — the else-if
+  // restructure of that machinery belongs to the issue #44 guard rework.
+  return "unreachable"
 }
 
 fn main() {

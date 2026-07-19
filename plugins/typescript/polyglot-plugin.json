@@ -3646,8 +3646,8 @@
       "Math.min": "((a, b) => (a <= b ? a : b))($0, $1)",
       "Math.max": "((a, b) => (a >= b ? a : b))($0, $1)",
       "Math.abs": "((a) => (a < (a - a) ? -a : a))($0)",
-      "Math.sign": "((a) => { const o = typeof a === 'bigint' ? 1n : 1; return a > (a - a) ? o : (a < (a - a) ? -o : a - a); })($0)",
-      "Math.clamp": "((x, lo, hi) => x < lo ? lo : (x > hi ? hi : x))($0, $1, $2)",
+      "Math.sign": "((a: any): any => { const o = typeof a === 'bigint' ? 1n : 1; return a > a - a ? o : (a < a - a ? -o : a - a); })($0)",
+      "Math.clamp": "(<T extends number | bigint>(x: T, lo: T, hi: T): T => x < lo ? lo : (x > hi ? hi : x))($0, $1, $2)",
       "Math.round": "((__x: number) => { const __f = Math.floor(__x); return __x - __f === 0.5 ? (__f % 2 === 0 ? __f : __f + 1) : Math.round(__x); })($0)"
     },
     "std.strings": {

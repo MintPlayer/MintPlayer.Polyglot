@@ -1198,13 +1198,14 @@ int main() {
         // `[]`), so the DECLARATION carries it: `let d: [number, number][] = [];` (not the evolving-any `let d = [];`).
         check(has(ts.code, "let d: [number, number][] = [];") && !has(ts.code, "let d = [];"),
               "issue#27 Bug1: type-erased List<T>() construction carries its type on the declaration (TS)");
-        // C# is unaffected — its angle-bracketed List<…> is self-delimiting, and `new List<…>()` carries the
-        // element type in the initializer, so `var d = new …List<(int, int)>();` stays as-is (no annotation churn).
+        // C#: `new List<…>()` carries the element type in the initializer; since wave 2 the EXPLICIT
+        // source annotation also always emits on the declaration (declExplicit — a stamped initializer
+        // type can hide the annotation's information on other shapes), so the local is typed, not `var`.
         EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "global::System.Collections.Generic.List<Node?>"),
               "issue#27 Bug2: C# nullable list element is self-delimiting (List<Node?>)");
-        check(has(cs.code, "var d = new global::System.Collections.Generic.List<(int, int)>();"),
-              "issue#27 Bug1: C# List construction is unchanged (its `new $T()` carries the type)");
+        check(has(cs.code, "List<(int, int)> d = new global::System.Collections.Generic.List<(int, int)>();"),
+              "issue#27 Bug1: C# List construction keeps its element type (typed decl since wave 2)");
     }
 
     // Issue #27 Bug 1 (root-cause language rule) — a `let`/`var` whose initializer is UN-INFERABLE must

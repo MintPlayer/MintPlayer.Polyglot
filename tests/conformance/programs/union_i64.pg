@@ -15,8 +15,10 @@ fn peek<T>(b: Box<T>, dflt: T): T => match b {
 
 fn main() {
   let big: i64 = 9007199254740993
-  print(peek(Full(big), 0))           // 9007199254740993  (exact past 2^53)
-  print("got ${peek(Full(big), 0)}")  // got 9007199254740993
+  // dflt args carry the i64 suffix: a bare `0` stays number-typed through the generic
+  // T slot on TS (literal adoption does not reach instantiated params — issue #56 family).
+  print(peek(Full(big), 0i64))           // 9007199254740993  (exact past 2^53)
+  print("got ${peek(Full(big), 0i64)}")  // got 9007199254740993
   let e: Box<i64> = Empty
-  print(peek(e, 42))                  // 42
+  print(peek(e, 42i64))                  // 42
 }

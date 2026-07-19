@@ -11,5 +11,6 @@ fn main() {
   print(same("0", ""))        // 0
   print(same("abc", "abc"))   // 1
   let x = "5"
-  if x != "05" { print(2) } else { print(3) }   // 2
+  if same(x, "05") == 1 { print(3) } else { print(2) }   // 2  (via string-typed params —
+                                                          // a literal-vs-literal `===` is tsc TS2367)
 }

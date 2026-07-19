@@ -250,6 +250,10 @@ struct Let : Stmt {
     // holds it) — so a value-capture target allocates a cell here instead of a plain variable.
     bool captured = false;
     bool needsCell = false;
+    // The source carried an explicit annotation (wave-2 G-library): the checker STAMPS the initializer's
+    // type from the annotation (bare union cases, list literals), so comparing declared-vs-initializer
+    // types can no longer tell that the annotation added information — this flag preserves the fact.
+    bool declExplicit = false;
     Let(SourcePos p, std::string n, bool m, Type t, ExprPtr i)
         : Stmt(StmtKind::Let, p), name(std::move(n)), isMutable(m), type(std::move(t)), init(std::move(i)) {}
 };

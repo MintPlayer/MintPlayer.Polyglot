@@ -14,7 +14,8 @@ fn main() {
   // Wave-2 G20: COMPARISONS past 2^53 — a BigInt->Number coercion anywhere in the
   // comparison path would make values differing only in the low bits compare equal.
   if a == 9007199254740992i64 + 1i64 { print(1) } else { print(0) }   // 1
-  if a != 9007199254740992i64 { print(1) } else { print(0) }          // 1  (…993 vs …992)
+  let below = a - 1i64                                                // arithmetic-typed (tsc TS2367
+  if a != below { print(1) } else { print(0) }                        // 1  (…993 vs …992) — on literals)
   if a < a + 1i64 { print(1) } else { print(0) }                      // 1
   if a > 9007199254740992i64 { print(1) } else { print(0) }           // 1
   let w: i32 = 5

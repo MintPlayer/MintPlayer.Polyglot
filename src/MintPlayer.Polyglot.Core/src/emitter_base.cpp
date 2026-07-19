@@ -1525,12 +1525,15 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             const bool uninferable = l.init && (l.init->kind == ir::ExprKind::Null ||
                 (l.init->kind == ir::ExprKind::Bound &&
                  boundTemplateIsConstant(static_cast<const ir::Bound&>(*l.init).tmpl)));
-            // A declared type that DIFFERS from the initializer's own type carries information the
-            // target can't re-infer — `var n: i32? = 0` must not become C# `var n = 0` (int, CS0037 on
-            // the later `n = null`), and `let a: Animal = Dog()` must keep the base-typed slot
-            // (issue #47). Identical declared/inferred types keep the `var` spelling unchanged.
+            // An EXPLICIT source annotation always emits — the checker often stamps the initializer's
+            // type FROM the annotation (bare union cases, contextually-typed list literals), so the
+            // annotation's information is invisible to a declared-vs-initializer comparison, yet the
+            // target needs it: `var n: i32? = 0` must not become C# `var n = 0` (CS0037 on the later
+            // `n = null`, issue #47's dropped-annotation half), and `let e: Box<i64> = Empty` /
+            // `var xs: List<Tree> = [...]` need the contextual type in TS or literal `tag`s widen to
+            // string. declDiffers additionally catches non-explicit divergence, belt-and-braces.
             const bool declDiffers = l.init && !l.type.absent() && !sameTypeRef(l.type, l.init->type);
-            if (uninferable || declDiffers) {
+            if (uninferable || declDiffers || (l.declExplicit && !l.type.absent())) {
                 std::string ty = renderType(l.type);
                 if (!ty.empty()) {
                     std::string typed = localDeclTyped(l.name, l.isMutable, ty);

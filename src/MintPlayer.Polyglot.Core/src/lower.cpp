@@ -675,7 +675,9 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 ir::Type t = s.hasDeclType ? s.declType : (s.value ? s.value->type : TypeRef{});
-                return std::make_unique<ir::Let>(s.pos, s.name, s.isMutable, t, expr(*s.value));
+                auto let = std::make_unique<ir::Let>(s.pos, s.name, s.isMutable, t, expr(*s.value));
+                let->declExplicit = s.hasDeclType;
+                return let;
             }
             case StmtKind::Assign:
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
