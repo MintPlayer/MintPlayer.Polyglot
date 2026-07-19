@@ -58,34 +58,61 @@ try {
     Check ($LASTEXITCODE -ne 0 -and $noCfgOut -match 'no --target|pgconfig') `
         "build with no config and no --target refuses"
 
-    # 6. G39: a single invocation driven by pgconfig `targets` emits byte-identical output to four separate
-    # per-target invocations. Guards against per-target codegen drifting based on which sibling targets are
-    # co-emitted in the same run.
-    $g39 = Join-Path $work "g39"
-    New-Item -ItemType Directory -Force $g39 | Out-Null
-    $src = Join-Path $g39 "counter.pg"
-    Copy-Item (Join-Path $repo "tests/conformance/programs/counter.pg") $src
-    '{ "targets": ["csharp", "typescript", "python", "php"] }' | Set-Content (Join-Path $g39 "pgconfig.json")
+    # 6. G39: a single config-sourced invocation emits byte-identical output to separate per-target
+    # invocations. Guards against per-target codegen drifting based on which sibling targets are co-emitted in
+    # the same run. Extended (P35 slice 3) from one program to three representative shapes, because the merged
+    # conformance runner now relies on this single-vs-per-target equivalence for its whole corpus:
+    #   - counter.pg       : the simple single-file, all four targets
+    #   - modular/         : a multi-file program (co-emitted modules vs per-target runs, --root)
+    #   - operators_full.pg: a pinned PHP refuser under its 3-target config (csharp/typescript/python; php
+    #                        excluded because it refuses) vs per-target runs of those three
+    $extOf = @{ csharp = "cs"; typescript = "ts"; python = "py"; php = "php" }
 
-    $single = Join-Path $g39 "single"
-    & $Cli build $src --lib io --out $single *> $null
-    $singleOk = ($LASTEXITCODE -eq 0)
+    # Compare every emitted file of each target's extension between the single (config-sourced) build dir and a
+    # per-target build dir. Returns $false on any missing file or byte mismatch (multi-file: all modules).
+    function Test-G39($label, $isDir, $srcName, $targetList) {
+        $case = Join-Path $work "g39-$label"
+        New-Item -ItemType Directory -Force $case | Out-Null
+        $srcRoot = Join-Path $repo "tests/conformance/programs"
+        if ($isDir) {
+            Copy-Item -Recurse (Join-Path $srcRoot $srcName "*") $case
+            $entry = Join-Path $case "entry.pg"
+        } else {
+            Copy-Item (Join-Path $srcRoot "$srcName.pg") $case
+            $entry = Join-Path $case "$srcName.pg"
+        }
+        $json = '{ "targets": [' + (($targetList | ForEach-Object { "`"$_`"" }) -join ", ") + '] }'
+        $json | Set-Content (Join-Path $case "pgconfig.json")
 
-    $targets = @{ csharp = "cs"; typescript = "ts"; python = "py"; php = "php" }
-    $allMatch = $singleOk
-    foreach ($t in $targets.Keys) {
-        $ext = $targets[$t]
-        $sepDir = Join-Path $g39 "sep-$t"
-        & $Cli build $src --target $t --lib io --out $sepDir *> $null
-        if ($LASTEXITCODE -ne 0) { $allMatch = $false; continue }
-        $a = Join-Path $single "counter.$ext"
-        $b = Join-Path $sepDir "counter.$ext"
-        if (-not (Test-Path $a) -or -not (Test-Path $b)) { $allMatch = $false; continue }
-        $ha = (Get-FileHash $a -Algorithm SHA256).Hash
-        $hb = (Get-FileHash $b -Algorithm SHA256).Hash
-        if ($ha -ne $hb) { Write-Host "        ${t}: single-invocation output differs from per-target run"; $allMatch = $false }
+        $single = Join-Path $case "single"
+        $singleArgs = @("build", $entry, "--lib", "io", "--out", $single)
+        if ($isDir) { $singleArgs += @("--root", $case) }
+        & $Cli @singleArgs *> $null
+        if ($LASTEXITCODE -ne 0) { Write-Host "        ${label}: single config-sourced build failed"; return $false }
+
+        $ok = $true
+        foreach ($t in $targetList) {
+            $ext = $extOf[$t]
+            $sepDir = Join-Path $case "sep-$t"
+            $sepArgs = @("build", $entry, "--target", $t, "--lib", "io", "--out", $sepDir)
+            if ($isDir) { $sepArgs += @("--root", $case) }
+            & $Cli @sepArgs *> $null
+            if ($LASTEXITCODE -ne 0) { Write-Host "        ${label}/${t}: per-target build failed"; $ok = $false; continue }
+            foreach ($f in Get-ChildItem $single -Filter "*.$ext") {
+                $b = Join-Path $sepDir $f.Name
+                if (-not (Test-Path $b)) { Write-Host "        ${label}/${t}: $($f.Name) missing from per-target run"; $ok = $false; continue }
+                if ((Get-FileHash $f.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $b -Algorithm SHA256).Hash) {
+                    Write-Host "        ${label}/${t}: $($f.Name) differs single vs per-target"; $ok = $false
+                }
+            }
+        }
+        return $ok
     }
-    Check $allMatch "four-target single invocation is byte-identical to four per-target runs"
+
+    $g39Ok = (Test-G39 "counter" $false "counter" @("csharp", "typescript", "python", "php"))
+    $g39Ok = (Test-G39 "modular" $true "modular" @("csharp", "typescript", "python", "php")) -and $g39Ok
+    $g39Ok = (Test-G39 "operators_full" $false "operators_full" @("csharp", "typescript", "python")) -and $g39Ok
+    Check $g39Ok "single config-sourced invocation is byte-identical to per-target runs (counter, modular, operators_full)"
 }
 finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue

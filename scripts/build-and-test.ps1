@@ -86,17 +86,14 @@ if ($env:POLYGLOT_ALLOW_REGISTRY_SKIP -eq "1") {
     if ($LASTEXITCODE -ne 0) { Write-Host "`nREGISTRY GATE FAILED. (set POLYGLOT_ALLOW_REGISTRY_SKIP=1 only if this machine's loopback is known-broken)"; exit 1 }
 }
 
-Write-Host "`n==> Differential conformance (C# vs TS)"
-& pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-diff.ps1")
-if ($LASTEXITCODE -ne 0) { Write-Host "`nCONFORMANCE FAILED."; exit 1 }
-
-Write-Host "`n==> Differential conformance (C# vs Python)"
-& pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-python.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
-if ($LASTEXITCODE -ne 0) { Write-Host "`nPYTHON CONFORMANCE FAILED."; exit 1 }
-
-Write-Host "`n==> Differential conformance (C# vs PHP)"
-& pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-php.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
-if ($LASTEXITCODE -ne 0) { Write-Host "`nPHP CONFORMANCE FAILED."; exit 1 }
+# P35 slice 3: ONE merged runner covers all four targets (C# oracle vs TS/Python/PHP) in a single transpile
+# + single csc-oracle-compile per program, and stages the pristine .ts for the library gate below (so the two
+# gates share one transpile pass). The staging dir outlives this stage; it is consumed by the library gate and
+# removed at the end.
+$confStaging = Join-Path ([System.IO.Path]::GetTempPath()) ("polyglot-libstage-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+Write-Host "`n==> Differential conformance (C# oracle vs TS / Python / PHP)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-conformance.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe") -StagingOut $confStaging
+if ($LASTEXITCODE -ne 0) { Write-Host "`nCONFORMANCE FAILED."; Remove-Item -Recurse -Force $confStaging -ErrorAction SilentlyContinue; exit 1 }
 
 Write-Host "`n==> Sample emit gate (each sample's C# compiles + TS runs)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\samples\run-emit.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
@@ -107,8 +104,10 @@ Write-Host "`n==> Nullable / NRT gate (annotations preserved + clean under <Null
 if ($LASTEXITCODE -ne 0) { Write-Host "`nNULLABLE GATE FAILED."; exit 1 }
 
 Write-Host "`n==> Library-consumption gate (emitted TS is an importable, strict-clean ES module)"
-& pwsh -NoProfile -File (Join-Path $repo "tests\library\run-library.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
-if ($LASTEXITCODE -ne 0) { Write-Host "`nLIBRARY GATE FAILED."; exit 1 }
+& pwsh -NoProfile -File (Join-Path $repo "tests\library\run-library.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe") -Staged $confStaging
+$libExit = $LASTEXITCODE
+Remove-Item -Recurse -Force $confStaging -ErrorAction SilentlyContinue
+if ($libExit -ne 0) { Write-Host "`nLIBRARY GATE FAILED."; exit 1 }
 
 # MSBuild/NuGet integration gate — the .pg-aware package auto-transpiling inside a consuming project (P11/P30).
 # Needs the dotnet SDK (packs + restores + several fixture builds); guarded so a dotnet-less environment skips

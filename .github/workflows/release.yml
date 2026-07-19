@@ -106,7 +106,8 @@ jobs:
 
       - name: Gate - differential conformance (C# vs TS)
         shell: pwsh
-        run: pwsh tests/conformance/run-diff.ps1 -Cli x64/Release/MintPlayer.Polyglot.Cli.exe
+        # This leg installs only dotnet + node, so restrict the merged runner to the csharp+TS pair.
+        run: pwsh tests/conformance/run-conformance.ps1 -Cli x64/Release/MintPlayer.Polyglot.Cli.exe -Targets csharp,typescript
 
       - name: Stage and zip (polyglot.exe + plugins)
         shell: pwsh
@@ -186,7 +187,8 @@ jobs:
 
       - name: Gate - differential conformance (C# vs TS)
         if: matrix.full_gates
-        run: pwsh tests/conformance/run-diff.ps1 -Cli ./build/polyglot
+        # This leg installs only dotnet + node, so restrict the merged runner to the csharp+TS pair.
+        run: pwsh tests/conformance/run-conformance.ps1 -Cli ./build/polyglot -Targets csharp,typescript
 
       - name: Package (tar.gz preserves the +x bit)
         run: tar czf "polyglot-${{ matrix.rid }}.tar.gz" -C build polyglot plugins
