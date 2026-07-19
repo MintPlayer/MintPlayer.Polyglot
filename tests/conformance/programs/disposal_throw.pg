@@ -1,6 +1,7 @@
-// Wave-2 G14: `use` disposal on the THROW path — SPEC §5.2 promises disposal
-// "even on throw": nested resources unwind LIFO before the exception reaches
-// the catch. disposal.pg pins the happy path only.
+// Wave-2 G14: `use` disposal on the THROW path — SPEC §5.2 promises disposal "even
+// on throw": nested resources unwind LIFO before the exception reaches the catch.
+// disposal.pg pins the happy path only. (fn named detonate, not explode — the PHP
+// built-in name collision is issue #55.)
 
 class Boom : Error {
   init() { super("boom") }

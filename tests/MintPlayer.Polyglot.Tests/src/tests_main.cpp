@@ -2259,6 +2259,67 @@ int main() {
                   "P30 s3: offline-with-no-lock surfaces the transport diagnostic");
         }
 
+        // G37 (wave 2): a lock pin OUTSIDE an edited range re-resolves (online), and REFUSES offline —
+        // never silently keeps the stale plugin.
+        {
+            const std::string pkg7 = "@mintplayer/polyglot-target-pydemo7";
+            cli::Lockfile stale = cli::loadLockfile(pc.dir);
+            stale.found = true;
+            stale.packages[pkg7] = {"0.9.0", "https://registry.npmjs.org/x-0.9.0.tgz", "sha512-stale"};
+            check(cli::saveLockfile(pc.dir, stale), "G37: (setup) stale lock pin written");
+
+            const std::string tgz7 = gzipStored(tarFile("package/polyglot-plugin.json", renamedManifest("pydemo7")));
+            const std::string url7 = "https://registry.npmjs.org/" + pkg7 + "/-/p7-1.1.0.tgz";
+            served.clear();
+            served["https://registry.npmjs.org/@mintplayer%2Fpolyglot-target-pydemo7"] =
+                packument(pkg7, "1.1.0", url7, cli::sriSha512(tgz7));
+            served[url7] = tgz7;
+            hits = 0;
+            cli::PgConfig pc7 = pc;
+            pc7.dependencies = {{"pydemo7", "^1.0.0"}}; // the 0.9.0 pin does NOT satisfy this
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc7, fake, false, &st);
+            const cli::Lockfile after = cli::loadLockfile(pc.dir);
+            check(r.ok && hits > 0 && after.packages.count(pkg7) && after.packages.at(pkg7).version == "1.1.0",
+                  "G37: a pin outside the edited range re-resolves and advances the lock");
+        }
+        {
+            const std::string pkg8 = "@mintplayer/polyglot-target-pydemo8";
+            cli::Lockfile stale = cli::loadLockfile(pc.dir);
+            stale.found = true;
+            stale.packages[pkg8] = {"0.9.0", "https://registry.npmjs.org/x8-0.9.0.tgz", "sha512-stale"};
+            cli::saveLockfile(pc.dir, stale);
+            served.clear(); // network dead
+            cli::PgConfig pc8 = pc;
+            pc8.dependencies = {{"pydemo8", "^1.0.0"}};
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc8, fake, false, &st);
+            check(!r.ok, "G37: an out-of-range pin refuses OFFLINE (never silently keeps the old plugin)");
+        }
+
+        // G37 (wave 2): `update=true` advances a SATISFIED pin to the newest satisfying version.
+        {
+            const std::string pkg9 = "@mintplayer/polyglot-target-pydemo9u";
+            const std::string tgz12 = gzipStored(tarFile("package/polyglot-plugin.json", renamedManifest("pydemo9u")));
+            const std::string url12 = "https://registry.npmjs.org/" + pkg9 + "/-/p9-1.2.0.tgz";
+            cli::Lockfile lk9 = cli::loadLockfile(pc.dir);
+            lk9.found = true;
+            lk9.packages[pkg9] = {"1.1.0", "https://registry.npmjs.org/x9-1.1.0.tgz", "sha512-oldpin"};
+            cli::saveLockfile(pc.dir, lk9);
+            served.clear();
+            served["https://registry.npmjs.org/@mintplayer%2Fpolyglot-target-pydemo9u"] =
+                packument(pkg9, "1.2.0", url12, cli::sriSha512(tgz12));
+            served[url12] = tgz12;
+            cli::PgConfig pc9 = pc;
+            pc9.dependencies = {{"pydemo9u", "^1.0.0"}};
+            hits = 0;
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc9, fake, /*update=*/true, &st);
+            const cli::Lockfile after = cli::loadLockfile(pc.dir);
+            check(r.ok && hits > 0 && after.packages.count(pkg9) && after.packages.at(pkg9).version == "1.2.0",
+                  "G37: update=true advances a satisfied pin to the newest satisfying version");
+        }
+
         // A package that is not a Polyglot plugin (no manifest in the tarball) is named as such.
         {
             const std::string pkg6 = "@mintplayer/polyglot-target-notaplugin";

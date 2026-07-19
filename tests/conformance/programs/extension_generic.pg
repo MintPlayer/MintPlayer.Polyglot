@@ -1,7 +1,7 @@
 // Wave-2 G17: GENERIC extension methods on List<T> — SPEC §6.3's own examples
 // (`second(): T?`, a function-typed parameter), never executed end-to-end.
 // The lambda bodies stay std-free: a std method on a generic-instantiated lambda
-// param does not bind (emitted verbatim, runtime crash) — TODO(#N2-unbound-member).
+// param does not bind (emitted verbatim, runtime crash) — TODO(#56).
 
 import { List } from "std.collections"
 
