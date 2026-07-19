@@ -1,5 +1,7 @@
 #include "mintplayer/polyglot/sema.hpp"
 
+#include <cerrno>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -80,6 +82,18 @@ int numWidth(const std::string& n) {
 bool isSignedInt(const std::string& n)   { return n == "i8" || n == "i16" || n == "i32" || n == "i64"; }
 bool isUnsignedInt(const std::string& n) { return n == "u8" || n == "u16" || n == "u32" || n == "u64"; }
 bool isFloatName(const std::string& n)   { return n == "f32" || n == "f64"; }
+
+// Does an (unsuffixed) integer-literal text hold a value representable in i64/u64? Used by literal
+// adoption in checkConvert (G3, wave 2). Base 0: decimal and 0x hex alike. The one edge left out is
+// the exact INT64_MIN spelling (its magnitude overflows the positive parse) — that falls back to the
+// widening-cast path.
+bool literalFits64(const std::string& text, bool isUnsigned) {
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long v = std::strtoull(text.c_str(), &end, 0);
+    if (errno == ERANGE || end == text.c_str() || *end != '\0') return false;
+    return isUnsigned || v <= 9223372036854775807ull;
+}
 
 // Is `from -> to` an implicit, value-preserving widening (no precision loss, no sign surprise)? Everything
 // else (narrowing, i64->f64, signed->unsigned) requires an explicit cast. (SPEC §3.)
@@ -989,6 +1003,25 @@ private:
             return;
         }
         instantiateBareCases(slot, target); // a contextually-typed bare union case (`None`) takes `target`
+        // G3 (wave 2): an UNSUFFIXED integer literal flowing into an i64/u64 slot is retyped to the slot's
+        // width — the literal IS a 64-bit value, so targets with a distinct 64-bit literal spelling emit it
+        // exactly (TS `9007199254740993n`, C# `…L`). The widening-CAST path would instead emit a runtime
+        // conversion of an already-parsed narrower value (TS `BigInt(9007199254740993)` rounds through an
+        // f64 before BigInt ever sees it — a silent §3.C violation). Negative literals arrive as unary
+        // minus over an IntLit; retype through the minus. A suffixed literal (`5i32`) keeps its width.
+        if (target.kind == TypeRef::Kind::Named && (target.name == "i64" || target.name == "u64")) {
+            Expr* lit = nullptr;
+            if (slot->kind == ExprKind::IntLit) lit = slot.get();
+            else if (slot->kind == ExprKind::Unary && slot->text == "-" && slot->lhs &&
+                     slot->lhs->kind == ExprKind::IntLit && target.name == "i64")
+                lit = slot->lhs.get();
+            if (lit && lit->text.find_first_of("iu") == std::string::npos &&
+                literalFits64(lit->text, target.name == "u64")) {
+                lit->type = target;
+                slot->type = target;
+                return;
+            }
+        }
         TypeRef from = slot->type;
         if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
         if (isNumericTypeName(from) && isNumericTypeName(target) && !sameNamedType(from, target)) {

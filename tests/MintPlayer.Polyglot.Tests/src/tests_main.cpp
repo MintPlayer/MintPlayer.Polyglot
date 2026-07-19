@@ -868,8 +868,12 @@ int main() {
         check(has(ts.code, "number[]"), "P8 TS: List<i32> -> number[]");
         check(has(ts.code, ".push(3)"), "P8 TS: list.add -> .push");
         check(has(ts.code, ".length"), "P8 TS: list.count -> .length");
-        check(has(ts.code, "xs = xs.filter("), "P8 TS: list.removeAll -> receiver = receiver.filter(...)");
-        check(has(ts.code, "xs = []"), "P8 TS: list.clear -> receiver = [] (receiver reassignment)");
+        // Wave-2 G2: clear/removeAll mutate IN PLACE — a receiver reassignment (`xs = xs.filter(...)`)
+        // is invisible through an alias or a fn parameter, diverging from C#/PHP (list_rebind_alias.pg).
+        check(has(ts.code, "xs.splice(0, xs.length, ...xs.filter("), "P8 TS: list.removeAll -> in-place splice");
+        check(has(ts.code, "xs.length = 0"), "P8 TS: list.clear -> in-place length reset");
+        check(!has(ts.code, "xs = xs.filter(") && !has(ts.code, "xs = []"),
+              "P8 TS: no receiver reassignment for clear/removeAll");
         check(!has(ts.code, "class List"), "P8 TS: extern class List is not emitted");
     }
 

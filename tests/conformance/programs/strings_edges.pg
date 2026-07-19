@@ -1,0 +1,14 @@
+// Wave-2 G23: std.strings edges — negative parse, empty len, last-index charAt,
+// mixed-alphanumeric case mapping, and leading-zero parse (PHP intval must not
+// read "007" as octal).
+
+import "std.strings"
+
+fn main() {
+  print("-7".toI32())        // -7
+  print("".len())            // 0
+  print("abc".charAt(2))     // c
+  print("a1B2".toUpper())    // A1B2
+  print("a1B2".toLower())    // a1b2
+  print("007".toI32())       // 7
+}

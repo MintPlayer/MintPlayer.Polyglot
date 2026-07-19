@@ -1,0 +1,22 @@
+// Wave-2 G19: i64 through a GENERIC union into a match BINDER — the pattern-binder
+// substitution path of TypeArg inference (typeargs.pg pins only call returns).
+// Printed bare and inside interpolation (the TS leg must not coerce BigInt).
+// Match stays in expression position: statement-position match is issue #52.
+
+union Box<T> {
+  Full(value: T)
+  Empty
+}
+
+fn peek<T>(b: Box<T>, dflt: T): T => match b {
+  Full(v) => v,
+  Empty => dflt,
+}
+
+fn main() {
+  let big: i64 = 9007199254740993
+  print(peek(Full(big), 0))           // 9007199254740993  (exact past 2^53)
+  print("got ${peek(Full(big), 0)}")  // got 9007199254740993
+  let e: Box<i64> = Empty
+  print(peek(e, 42))                  // 42
+}

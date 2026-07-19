@@ -1,0 +1,28 @@
+// Wave-2 G16: a RECURSIVE union whose payload is a List of itself, consumed by a
+// recursive match — ADTs × collections × recursion in one shape. Expression arms
+// only: block-bodied arms are issue #51.
+
+import { List } from "std.collections"
+
+union Tree {
+  Leaf(v: i32)
+  Node(kids: List<Tree>)
+}
+
+fn sumAll(kids: List<Tree>): i32 {
+  var s = 0
+  for k in kids { s = s + total(k) }
+  return s
+}
+
+fn total(t: Tree): i32 => match t {
+  Leaf(v) => v,
+  Node(kids) => sumAll(kids),
+}
+
+fn main() {
+  var inner: List<Tree> = [Leaf(1), Leaf(2)]
+  var outer: List<Tree> = [Leaf(10), Node(inner)]
+  print(total(Node(outer)))   // 13
+  print(total(Leaf(7)))       // 7
+}

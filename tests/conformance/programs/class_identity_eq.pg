@@ -1,0 +1,17 @@
+// Wave-2 G1: `==` on CLASS instances is identity (reference equality) on every
+// target — records are structural (equality.pg), classes are not. PHP's loose
+// `==` compared distinct equal-field instances as equal; pins the === cutover.
+
+class P {
+  var x: i32
+  init(x: i32) { this.x = x }
+}
+
+fn main() {
+  let a = P(5)
+  let b = P(5)
+  let c = a
+  print(if a == b { 1 } else { 0 })   // 0   (distinct instances — loose PHP == said 1)
+  print(if a == c { 1 } else { 0 })   // 1   (same instance)
+  print(if a != b { 1 } else { 0 })   // 1
+}

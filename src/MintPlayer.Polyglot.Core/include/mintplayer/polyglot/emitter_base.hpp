@@ -462,6 +462,11 @@ private:
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // the module's extern-class spellings
     int tmp_ = 0;                              // the `fresh` single-eval temp counter
     std::unordered_set<std::string> requires_; // prelude keys recorded during the walk
+    // G45 (wave 2): the expression walk recurses through the rule interpreter, whose frames are deep —
+    // a left-fold source chain (`a1 + a2 + … + aN`) parses ITERATIVELY but builds an N-deep IR spine,
+    // so the parser's nesting guard can't bound this walk. Past the limit: one std::runtime_error
+    // (surfaced as a diagnostic by the CLI's top-level handler), never a stack overflow.
+    int exprDepth_ = 0;
 };
 
 } // namespace mintplayer::polyglot

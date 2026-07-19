@@ -515,7 +515,10 @@ private:
                 if (e.text == "??" && e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name == "Option")
                     return coalesceOption(e);
                 auto b = std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
-                if (e.lhs->type.kind == TypeRef::Kind::Named && !e.lhs->type.name.empty()) {
+                // Comparing against a null literal is a null TEST, never structural equality — don't
+                // route it to the record equals() (TS/PHP `.equals(null)` would read fields off null).
+                const bool rhsIsNullLit = e.rhs->kind == ExprKind::NullLit;
+                if (!rhsIsNullLit && e.lhs->type.kind == TypeRef::Kind::Named && !e.lhs->type.name.empty()) {
                     const std::string& ln = e.lhs->type.name;
                     b->lhsIsRecord = recordNames_.count(ln) != 0;
                     b->lhsIsUserType = !isPrimitiveTypeName(ln) && ln != "unit";

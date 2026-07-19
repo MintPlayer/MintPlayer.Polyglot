@@ -86,6 +86,20 @@ private:
     SourcePos lastBlockEnd_;   // the most recent block's closing '}' position — read right after parseBlock()
     int pendingAngles_ = 0; // leftover '>' borrowed from a split '>>' / '>>>' when closing nested generics
 
+    // G45 (wave 2): recursion-depth guard. Parsing, checking, and emitting all recurse over the nesting
+    // structure, so unbounded source nesting is a stack overflow (a process abort, not a diagnostic).
+    // 256 nested levels is far beyond any real program; deeper input gets ONE clean error instead.
+    static constexpr int kMaxNesting = 256;
+    int depth_ = 0;
+    struct DepthGuard {
+        Parser& p;
+        bool exceeded;
+        explicit DepthGuard(Parser& parser) : p(parser), exceeded(++parser.depth_ > kMaxNesting) {
+            if (exceeded) p.error("nests too deeply (more than " + std::to_string(kMaxNesting) + " levels)");
+        }
+        ~DepthGuard() { --p.depth_; }
+    };
+
     const Token& peek(std::size_t ahead = 0) const {
         std::size_t i = idx_ + ahead;
         return i < toks_.size() ? toks_[i] : toks_.back();
@@ -569,6 +583,15 @@ private:
     }
 
     StmtPtr parseStmt() {
+        DepthGuard guard(*this);
+        if (guard.exceeded) { // bail without descending — one error, no stack overflow (G45)
+            auto s = std::make_unique<Stmt>();
+            s->kind = StmtKind::ExprStmt;
+            s->pos = peek().pos;
+            s->value = mk(ExprKind::IntLit, peek().pos);
+            while (!at(TokKind::End) && !at(TokKind::RBrace)) advance();
+            return s;
+        }
         // §3.B: `lock`/`unsafe` are unspeakable (no grammar), but a C#-habituated author will still try them.
         // Catch the statement form and refuse out loud with a targeted message instead of a confusing parse
         // error, then skip the whole construct (its trailing `{ … }` block, brace-balanced) so no cascade
@@ -767,7 +790,17 @@ private:
 
     // ---- expressions (precedence climbing, loosest first) ----
 
-    ExprPtr parseExpr() { return parseCoalesce(); }
+    ExprPtr parseExpr() {
+        DepthGuard guard(*this);
+        if (guard.exceeded) { // bail without descending — one error, no stack overflow (G45)
+            auto e = mk(ExprKind::IntLit, peek().pos);
+            while (!at(TokKind::End) && !at(TokKind::RParen) && !at(TokKind::RBrace) &&
+                   !at(TokKind::Semicolon) && !at(TokKind::Comma))
+                advance();
+            return e;
+        }
+        return parseCoalesce();
+    }
 
     ExprPtr makeBinary(ExprPtr l, const char* op, ExprPtr r, SourcePos p) {
         auto e = mk(ExprKind::Binary, p);
@@ -853,6 +886,8 @@ private:
         return l;
     }
     ExprPtr parseUnary() {
+        DepthGuard guard(*this); // unary chains (`!!!…x`) recurse here without passing parseExpr (G45)
+        if (guard.exceeded) return mk(ExprKind::IntLit, peek().pos);
         if (isCastAhead()) return parseCast(); // `(i64)expr` binds at unary precedence
         if (at(TokKind::KwAwait)) {
             auto p = advance().pos;

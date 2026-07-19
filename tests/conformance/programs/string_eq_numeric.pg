@@ -1,0 +1,15 @@
+// Wave-2 G1: string equality must be STRICT on every target — PHP's loose `==`
+// treats numeric strings numerically ("10" == "1e1" is true, "5" == "05" is true).
+// Pins the ===/!== cutover in the PHP plugin's binaryOp map.
+
+fn same(a: string, b: string): i32 => if a == b { 1 } else { 0 }
+
+fn main() {
+  print(same("10", "1e1"))    // 0   (loose PHP == said 1)
+  print(same("10", "10"))     // 1
+  print(same("5", "05"))      // 0   (loose PHP == said 1)
+  print(same("0", ""))        // 0
+  print(same("abc", "abc"))   // 1
+  let x = "5"
+  if x != "05" { print(2) } else { print(3) }   // 2
+}

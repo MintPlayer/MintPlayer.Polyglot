@@ -1,0 +1,21 @@
+// Wave-2 G2: List.clear()/removeAll() must mutate IN PLACE — the TS/Python
+// templates rebound the receiver ($this = []), so the change was invisible
+// through an alias or a function parameter (C#/PHP mutated for real).
+
+import { List } from "std.collections"
+
+fn purge(xs: List<i32>) {
+  xs.removeAll((v) => v > 10)
+}
+
+fn main() {
+  var xs: List<i32> = [1, 20, 3, 40]
+  let alias = xs
+  purge(xs)                 // removeAll through a fn parameter
+  print(alias.count)        // 2   (rebinding TS/Py printed 4)
+  print(alias[0])           // 1
+  print(alias[1])           // 3
+  xs.clear()                // clear through the original binding
+  print(alias.count)        // 0   (rebinding TS/Py printed 2)
+  print(xs.count)           // 0
+}

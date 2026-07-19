@@ -17,7 +17,10 @@
     "name": "php",
     "scalarType": {},
     "intSuffix": {},
-    "binaryOp": {},
+    "binaryOp": {
+      "==": "===",
+      "!=": "!=="
+    },
     "delimited": {
       "tuple": {
         "open": "[",
@@ -834,6 +837,75 @@
     "Binary": {
       "case": {
         "when": [
+          [
+            {
+              "and": [
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "!="
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.lhsIsRecord",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "recv"
+                        },
+                        "->equals(",
+                        {
+                          "emit": "node.rhs"
+                        },
+                        ")"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    "!",
+                    {
+                      "emitChild": "node.lhs",
+                      "side": "recv"
+                    },
+                    "->equals(",
+                    {
+                      "emit": "node.rhs"
+                    },
+                    ")"
+                  ]
+                }
+              }
+            }
+          ],
           [
             {
               "and": [
@@ -2196,6 +2268,101 @@
                         },
                         ";"
                       ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "block": {
+              "head": "public function equals($other)",
+              "body": [
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.fields.count",
+                            "0"
+                          ]
+                        },
+                        {
+                          "line": "return true;"
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "line": {
+                        "tmpl": [
+                          "return ",
+                          {
+                            "map": "decl.fields",
+                            "sep": " && ",
+                            "item": {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "item.typeIsRecord",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "tmpl": [
+                                        "$this->",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        },
+                                        "->equals($other->",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        },
+                                        ")"
+                                      ]
+                                    }
+                                  ]
+                                ],
+                                "else": {
+                                  "tmpl": [
+                                    "$this->",
+                                    {
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
+                                    },
+                                    " === $other->",
+                                    {
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          ";"
+                        ]
+                      }
                     }
                   }
                 }

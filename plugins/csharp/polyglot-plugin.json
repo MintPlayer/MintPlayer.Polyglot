@@ -2839,7 +2839,7 @@
       "string.toLower": "$this.ToLower()",
       "string.charAt": "$this[$0].ToString()",
       "string.codePointAt": "char.ConvertToUtf32($this, $0)",
-      "string.codePoints": "$this.EnumerateRunes()",
+      "string.codePoints": "global::System.Linq.Enumerable.Select($this.EnumerateRunes(), __r => __r.ToString())",
       "string.toI32": "global::System.Int32.Parse($this)"
     },
     "std.core": {

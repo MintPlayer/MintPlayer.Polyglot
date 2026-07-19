@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
 
 // The shared walk machinery for the hand-written backends — see emitter_base.hpp for the abstraction.
 
@@ -777,6 +778,14 @@ std::string RecordDeclCtx::get(const std::string& path) const {
             if (rest == "name") return r_.fields[i].name;
             if (rest == "typeIsRecord")
                 return isRecord_ && isRecord_(r_.fields[i].type) ? "true" : "false";
+            if (rest == "typeIsList") { // List<T>/T[] fields compare by REFERENCE in record equality
+                                        // (the C# oracle's default field comparer) — targets whose
+                                        // native == is value-based (Python list) consult this to emit
+                                        // an identity comparison instead.
+                const TypeRef& t = r_.fields[i].type;
+                return t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Array")
+                           ? "true" : "false";
+            }
         }
     }
     return "";
@@ -1342,6 +1351,14 @@ std::string InterpretedEmitter::renderType(const TypeRef& t) {
 }
 
 std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
+    struct Depth { // see exprDepth_ — bail with one clean error, never a stack overflow (G45)
+        int& d;
+        explicit Depth(int& depth) : d(++depth) {
+            if (d > 512) throw std::runtime_error(
+                "expression is too deeply nested to emit (more than 512 levels) — split it into locals");
+        }
+        ~Depth() { --d; }
+    } depthGuard(exprDepth_);
     if (const char* key = exprRuleKey(e.kind); key[0] != '\0') {
         auto it = rules_.find(key);
         if (it != rules_.end()) {
@@ -1463,6 +1480,19 @@ static bool boundTemplateIsConstant(const std::string& tmpl) {
     return true;
 }
 
+// Structural TypeRef identity, for "does the declared type add information over the initializer's own
+// type" (StmtKind::Let). Everything that renders participates: kind, name, nullability, args, ret.
+static bool sameTypeRef(const TypeRef& a, const TypeRef& b) {
+    if (a.kind != b.kind || a.name != b.name || a.nullable != b.nullable ||
+        a.args.size() != b.args.size() || a.ret.size() != b.ret.size())
+        return false;
+    for (std::size_t i = 0; i < a.args.size(); ++i)
+        if (!sameTypeRef(a.args[i], b.args[i])) return false;
+    for (std::size_t i = 0; i < a.ret.size(); ++i)
+        if (!sameTypeRef(a.ret[i], b.ret[i])) return false;
+    return true;
+}
+
 void EmitterBase::emitStmt(const ir::Stmt& s) {
     switch (s.kind) {
         case ir::StmtKind::Assign: {
@@ -1487,7 +1517,12 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             const bool uninferable = l.init && (l.init->kind == ir::ExprKind::Null ||
                 (l.init->kind == ir::ExprKind::Bound &&
                  boundTemplateIsConstant(static_cast<const ir::Bound&>(*l.init).tmpl)));
-            if (uninferable) {
+            // A declared type that DIFFERS from the initializer's own type carries information the
+            // target can't re-infer — `var n: i32? = 0` must not become C# `var n = 0` (int, CS0037 on
+            // the later `n = null`), and `let a: Animal = Dog()` must keep the base-typed slot
+            // (issue #47). Identical declared/inferred types keep the `var` spelling unchanged.
+            const bool declDiffers = l.init && !l.type.absent() && !sameTypeRef(l.type, l.init->type);
+            if (uninferable || declDiffers) {
                 std::string ty = renderType(l.type);
                 if (!ty.empty()) {
                     std::string typed = localDeclTyped(l.name, l.isMutable, ty);

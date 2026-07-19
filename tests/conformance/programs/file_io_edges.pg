@@ -1,0 +1,17 @@
+// Wave-2 G22: std.io edges — appendText CREATES a missing file, writeText
+// TRUNCATES an existing one, and an embedded newline survives a round-trip
+// (pinned via len, not raw bytes — CRLF-translation-proof).
+
+import "std.strings"
+
+fn main() {
+  let path = "pg_io_edges.txt"
+  appendText(path, "x")          // append to a file that does not exist yet
+  print(readText(path))          // x
+  writeText(path, "y")           // write over it — truncates, no residue
+  print(readText(path))          // y
+  writeText(path, "a\nb")
+  print(readText(path).len())    // 3
+  deleteFile(path)
+  print(fileExists(path))        // false
+}

@@ -3481,8 +3481,8 @@
       "List.init": "[]",
       "List.count": "$this.length",
       "List.add": "$this.push($0)",
-      "List.clear": "$this = []",
-      "List.removeAll": "$this = $this.filter(__e => !(($0)(__e)))",
+      "List.clear": "$this.length = 0",
+      "List.removeAll": "$this.splice(0, $this.length, ...$this.filter(__e => !(($0)(__e))))",
       "List.removeAt": "$this.splice($0, 1)"
     },
     "std.io": {

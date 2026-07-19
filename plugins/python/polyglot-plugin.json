@@ -643,26 +643,62 @@
                             "map": "decl.fields",
                             "sep": " and ",
                             "item": {
-                              "tmpl": [
-                                "self.",
-                                {
-                                  "fn": "ident",
-                                  "args": [
+                              "case": {
+                                "when": [
+                                  [
                                     {
-                                      "get": "item.name"
+                                      "eq": [
+                                        "item.typeIsList",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "tmpl": [
+                                        "self.",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        },
+                                        " is other.",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        }
+                                      ]
                                     }
                                   ]
-                                },
-                                " == other.",
-                                {
-                                  "fn": "ident",
-                                  "args": [
+                                ],
+                                "else": {
+                                  "tmpl": [
+                                    "self.",
                                     {
-                                      "get": "item.name"
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
+                                    },
+                                    " == other.",
+                                    {
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
                                     }
                                   ]
                                 }
-                              ]
+                              }
                             }
                           }
                         ]
@@ -2864,8 +2900,8 @@
       "List.init": "[]",
       "List.count": "len($this)",
       "List.add": "$this.append($0)",
-      "List.clear": "$this = []",
-      "List.removeAll": "$this = [__e for __e in $this if not (($0)(__e))]",
+      "List.clear": "$this.clear()",
+      "List.removeAll": "$this[:] = [__e for __e in $this if not (($0)(__e))]",
       "List.removeAt": "$this.pop($0)"
     },
     "std.io": {
