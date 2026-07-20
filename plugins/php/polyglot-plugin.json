@@ -2747,9 +2747,19 @@
                             "when": [
                               [
                                 {
-                                  "eq": [
-                                    "decl.hasSuper",
-                                    "true"
+                                  "and": [
+                                    {
+                                      "eq": [
+                                        "decl.hasSuper",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "eq": [
+                                        "decl.baseHasInit",
+                                        "true"
+                                      ]
+                                    }
                                   ]
                                 },
                                 {

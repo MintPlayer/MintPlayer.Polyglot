@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/lower.hpp"
 
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -256,6 +257,35 @@ public:
             f.originModule = fn.originModule;
             f.globalRefs = scanGlobalRefs(moduleGlobals_, fn.params, fn.body, nullptr);
             m.functions.push_back(std::move(f));
+        }
+
+        // Stamp ir::Class.baseHasInit transitively now that every class/interface is lowered (issue #48).
+        // A base contributes a chainable ctor when it is a user class with an `init` (or one whose own
+        // ancestors do), OR a base that is neither a user class nor a user interface — i.e. an extern/native
+        // type like Error/Exception, which always has a constructor. Interface bases contribute nothing.
+        {
+            std::unordered_map<std::string, const ir::Class*> byName;
+            for (const auto& c : m.classes) byName[c.name] = &c;
+            std::unordered_set<std::string> ifaceNames;
+            for (const auto& it : m.interfaces) ifaceNames.insert(it.name);
+            std::unordered_map<std::string, int> memo; // per-class: -1 computing, 0 no, 1 yes
+            std::function<bool(const ir::Class&)> classChains = [&](const ir::Class& c) -> bool {
+                auto mit = memo.find(c.name);
+                if (mit != memo.end() && mit->second >= 0) return mit->second == 1;
+                memo[c.name] = -1; // guard against inheritance cycles
+                bool chains = false;
+                for (const auto& b : c.bases) {
+                    auto cit = byName.find(b.name);
+                    if (cit != byName.end()) {                 // a user class base
+                        if (cit->second->hasInit || classChains(*cit->second)) { chains = true; break; }
+                    } else if (ifaceNames.count(b.name) == 0) { // not a class, not an interface → native base
+                        chains = true; break;
+                    }
+                }
+                memo[c.name] = chains ? 1 : 0;
+                return chains;
+            };
+            for (auto& c : m.classes) c.baseHasInit = classChains(c);
         }
         return m;
     }

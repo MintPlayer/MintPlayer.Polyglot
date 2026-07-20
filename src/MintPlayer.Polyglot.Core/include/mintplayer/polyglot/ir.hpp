@@ -482,6 +482,12 @@ struct Class { // a mutable reference type
     bool hasInit = false;
     std::vector<Param> initParams;
     bool hasSuper = false;             // init calls `super(...)`: C# `: base(args)`, TS `super(args);`
+    // Does an ANCESTOR have a real constructor to chain up to? True if a base (transitively) is a user
+    // class with an `init`, or a native/extern base (Error→`\Exception`, …) — which always has a ctor.
+    // False when the only bases are interfaces or user classes with no `init`. PHP gates its
+    // `parent::__construct(...)` on this: unlike C#/TS/Python, PHP has no implicit default base ctor, so a
+    // `super()` to an initless base is a fatal `Cannot call constructor` (issue #48).
+    bool baseHasInit = false;
     std::vector<ExprPtr> superArgs;    // the base-constructor arguments (hoisted out of initBody)
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;

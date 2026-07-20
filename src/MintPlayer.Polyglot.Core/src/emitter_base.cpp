@@ -856,6 +856,7 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     if (path == "decl.fields.count")     return std::to_string(c_.fields.size());
     if (path == "decl.hasInit")          return c_.hasInit ? "true" : "false";
     if (path == "decl.hasSuper")         return c_.hasSuper ? "true" : "false";
+    if (path == "decl.baseHasInit")      return c_.baseHasInit ? "true" : "false";
     if (path == "decl.needsCtor")        return c_.hasInit || !instanceInit_.empty() ? "true" : "false";
     if (path == "decl.initBody.count")   return std::to_string(c_.initBody.size());
     if (path == "decl.superArgs.count")  return std::to_string(c_.superArgs.size());

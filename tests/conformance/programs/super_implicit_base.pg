@@ -1,0 +1,43 @@
+// #48: PHP has no implicit default base constructor. Two things must hold, and neither can be met by
+// synthesizing an empty `__construct` on every class (that would break PHP's implicit ctor chain-up):
+//   (1) a `super()` to a base that declares NO init must NOT emit `parent::__construct()` — on PHP that
+//       is a fatal "Cannot call constructor" (C#/TS/Python have an implicit default base ctor).
+//   (2) a leaf whose MIDDLE base has no init must still chain transitively to a grandparent's init, so
+//       the grandparent's field initializer runs (dropping it silently is the miscompile).
+// Output must match byte-for-byte across all four targets (C# is the oracle).
+
+// --- 2-level: base with no init, derived calls super() (issue #48's exact repro) ---
+class Base {
+  fn v(): i32 => 1
+}
+class Derived : Base {
+  init() {
+    super()
+  }
+}
+
+// --- 3-level: grandparent HAS init (sets a field), middle has NO init, leaf calls super() ---
+class Grand {
+  let g: i32
+  init() {
+    this.g = 10
+  }
+}
+class Middle : Grand {
+  fn tag(): i32 => 2
+}
+class Leaf : Middle {
+  let l: i32
+  init() {
+    super()
+    this.l = 5
+  }
+}
+
+fn main() {
+  print(Derived().v())    // 1
+  let leaf = Leaf()
+  print(leaf.g)           // 10  (grandparent init ran transitively through the chain)
+  print(leaf.tag())       // 2
+  print(leaf.l)           // 5
+}
