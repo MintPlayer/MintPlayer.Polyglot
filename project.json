@@ -6,14 +6,23 @@
       "executor": "nx:run-commands",
       "cache": false,
       "options": {
-        "command": "pwsh -NoProfile -File scripts/msbuild-solution.ps1",
+        "command": "pwsh -NoProfile -Command \"if ($IsWindows) { ./scripts/msbuild-solution.ps1 } else { cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOLYGLOT_VERSION=0.0.0-dev; if ($LASTEXITCODE -ne 0) { exit 1 }; cmake --build build -j (nproc) }\"",
         "cwd": "{workspaceRoot}"
       },
       "outputs": [
         "{workspaceRoot}/x64/Debug/MintPlayer.Polyglot.Cli.exe",
         "{workspaceRoot}/x64/Debug/MintPlayer.Polyglot.Tests.exe",
-        "{workspaceRoot}/x64/Debug/plugins/**"
+        "{workspaceRoot}/x64/Debug/plugins/**",
+        "{workspaceRoot}/build/polyglot",
+        "{workspaceRoot}/build/polyglot-tests",
+        "{workspaceRoot}/build/plugins/**"
       ]
+    },
+    "unit": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -Command \"& ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Tests.exe' : './build/polyglot-tests')\"", "cwd": "{workspaceRoot}" }
     },
     "parity": {
       "executor": "nx:run-commands",
@@ -27,17 +36,11 @@
       ],
       "outputs": []
     },
-    "unit": {
-      "executor": "nx:run-commands",
-      "cache": false,
-      "dependsOn": ["build"],
-      "options": { "command": "x64/Debug/MintPlayer.Polyglot.Tests.exe", "cwd": "{workspaceRoot}" }
-    },
     "cli-smoke": {
       "executor": "nx:run-commands",
       "cache": true,
       "dependsOn": ["build"],
-      "options": { "command": "pwsh -NoProfile -File tests/cli/run-cli-smoke.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "options": { "command": "pwsh -NoProfile -Command \"& ./tests/cli/run-cli-smoke.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot')\"", "cwd": "{workspaceRoot}" },
       "inputs": ["{workspaceRoot}/tests/cli/**/*", "{workspaceRoot}/tests/conformance/programs/counter.pg", "{workspaceRoot}/tests/conformance/programs/modular/**", "{workspaceRoot}/tests/conformance/programs/operators_full.pg", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
@@ -45,7 +48,7 @@
       "executor": "nx:run-commands",
       "cache": true,
       "dependsOn": ["build"],
-      "options": { "command": "pwsh -NoProfile -File tests/refusals/run-refusals.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "options": { "command": "pwsh -NoProfile -Command \"& ./tests/refusals/run-refusals.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot')\"", "cwd": "{workspaceRoot}" },
       "inputs": ["{workspaceRoot}/tests/refusals/**/*", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
@@ -53,7 +56,7 @@
       "executor": "nx:run-commands",
       "cache": true,
       "dependsOn": ["build"],
-      "options": { "command": "pwsh -NoProfile -File tests/lsp/run-lsp.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "options": { "command": "pwsh -NoProfile -Command \"& ./tests/lsp/run-lsp.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot')\"", "cwd": "{workspaceRoot}" },
       "inputs": ["{workspaceRoot}/tests/lsp/**/*", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
@@ -69,15 +72,17 @@
       "executor": "nx:run-commands",
       "cache": true,
       "dependsOn": ["build"],
-      "options": { "command": "pwsh -NoProfile -File tests/watch/run-watch.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "options": { "command": "pwsh -NoProfile -Command \"& ./tests/watch/run-watch.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot')\"", "cwd": "{workspaceRoot}" },
       "inputs": ["{workspaceRoot}/tests/watch/**/*", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "registry": {
       "executor": "nx:run-commands",
-      "cache": false,
+      "cache": true,
       "dependsOn": ["build"],
-      "options": { "command": "pwsh -NoProfile -File tests/registry/run-registry.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" }
+      "options": { "command": "pwsh -NoProfile -Command \"& ./tests/registry/run-registry.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot')\"", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/registry/**/*", "compilerSources", "sharedGlobals", { "runtime": "node --version" }],
+      "outputs": []
     },
     "conformance": {
       "executor": "nx:run-commands",
@@ -85,8 +90,8 @@
       "dependsOn": ["build"],
       "options": {
         "commands": [
-          "pwsh -NoProfile -File tests/conformance/run-conformance.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe -StagingOut .nx-libstage",
-          "pwsh -NoProfile -File tests/library/run-library.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe -Staged .nx-libstage",
+          "pwsh -NoProfile -Command \"& ./tests/conformance/run-conformance.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot') -StagingOut .nx-libstage\"",
+          "pwsh -NoProfile -Command \"& ./tests/library/run-library.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot') -Staged .nx-libstage\"",
           "pwsh -NoProfile -Command \"Remove-Item -Recurse -Force .nx-libstage -ErrorAction SilentlyContinue\""
         ],
         "parallel": false,
@@ -108,7 +113,7 @@
       "executor": "nx:run-commands",
       "cache": true,
       "dependsOn": ["build"],
-      "options": { "command": "pwsh -NoProfile -File tests/samples/run-emit.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "options": { "command": "pwsh -NoProfile -Command \"& ./tests/samples/run-emit.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot')\"", "cwd": "{workspaceRoot}" },
       "inputs": ["{workspaceRoot}/tests/samples/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
@@ -116,7 +121,7 @@
       "executor": "nx:run-commands",
       "cache": true,
       "dependsOn": ["build"],
-      "options": { "command": "pwsh -NoProfile -File tests/nullable/run-nullable.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
+      "options": { "command": "pwsh -NoProfile -Command \"& ./tests/nullable/run-nullable.ps1 -Cli ($IsWindows ? 'x64/Debug/MintPlayer.Polyglot.Cli.exe' : 'build/polyglot')\"", "cwd": "{workspaceRoot}" },
       "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
