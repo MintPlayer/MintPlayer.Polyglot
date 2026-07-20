@@ -444,13 +444,36 @@
                   ]
                 },
                 {
-                  "tmpl": [
-                    " as ",
-                    {
-                      "type": "node.elem"
-                    },
-                    "[]"
-                  ]
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.elemIsFunction",
+                            "true"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            " as (",
+                            {
+                              "type": "node.elem"
+                            },
+                            ")[]"
+                          ]
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "tmpl": [
+                        " as ",
+                        {
+                          "type": "node.elem"
+                        },
+                        "[]"
+                      ]
+                    }
+                  }
                 }
               ]
             ],
@@ -1487,6 +1510,21 @@
                   ]
                 },
                 "static "
+              ]
+            ]
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.isOverride",
+                    "true"
+                  ]
+                },
+                "override "
               ]
             ]
           }

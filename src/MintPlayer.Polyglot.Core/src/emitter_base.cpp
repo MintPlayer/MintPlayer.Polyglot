@@ -168,6 +168,8 @@ std::string IrExprCtx::get(const std::string& path) const {
     }
     if (path == "node.indices.count" && e_.kind == ir::ExprKind::Index)
         return std::to_string(static_cast<const ir::Index&>(e_).indices.size());
+    if (path == "node.elemIsFunction" && e_.kind == ir::ExprKind::ListLit) // a function-typed element needs
+        return static_cast<const ir::ListLit&>(e_).elem.kind == TypeRef::Kind::Function ? "true" : "false"; // (…)[] parens
     if (path == "node.isArray") { // a list literal whose target type is the fixed-size Array<T> (vs growable List<T>)
         const bool isArray = e_.kind == ir::ExprKind::ListLit &&
                              static_cast<const ir::ListLit&>(e_).type.name == "Array";
@@ -545,7 +547,14 @@ std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::
         for (std::size_t i = 0; i < tmpl.size();) {
             if (tmpl[i] == '$' && i + 1 < tmpl.size() && tmpl[i + 1] >= '0' && tmpl[i + 1] <= '9') {
                 const std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-                if (idx < t_.args.size()) out += renderTypeRef(t_.args[idx]);
+                if (idx < t_.args.size()) {
+                    std::string a = renderTypeRef(t_.args[idx]);
+                    // A TS arrow function type (`() => number`) inside an array template (`$0[]`) must be
+                    // parenthesized, or the `[]` binds to the return type (`() => number[]`). ` => ` uniquely
+                    // marks a TS function type (C# `Func<>` / Python `Callable[]` / PHP `callable` have none).
+                    if (a.find(" => ") != std::string::npos) a = "(" + a + ")";
+                    out += a;
+                }
                 i += 2;
             } else out += tmpl[i++];
         }
