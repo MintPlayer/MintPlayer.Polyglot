@@ -528,7 +528,10 @@ private:
         // A real operator (not a `get`/`set` indexer) rebinds `this` on targets whose operator declaration
         // is static (C#): stamp the fact on every This lowered from its body (nested lambdas included). The
         // indexer accessors are INSTANCE members (C# `this[...]{get;set;}`), so `this` stays `this` (#40).
-        const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get" && im.opSymbol != "set";
+        // `get`/`set` indexers and `eq` (C# `override Equals`, #49) are INSTANCE members, so `this` stays
+        // `this`; only a genuinely static operator (C# `operator +`, taking lhs/rhs) rebinds `this` -> lhs.
+        const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get" &&
+                            im.opSymbol != "set" && im.opSymbol != "==";
         if (opBody) inOperator_ = true;
         sawYield_ = false; // a `yield` anywhere in the body marks the method an iterator (mirrors ir::Function)
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }

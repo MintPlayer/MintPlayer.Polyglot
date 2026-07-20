@@ -477,6 +477,25 @@ miscompile.
   typed AST from a function at run time, so there is nothing to lower a queryable tree to.
 - **Bit-exact cross-target floats** — not promised; see §9 / PRD §3.D.
 
+### 10.1 Issue-sweep (P36) scope decisions
+
+These clarify or bound features surfaced by the wave-2 coverage sweep (issues #38–#57):
+
+- **Typed `match` patterns / type tests** (#38) — a typed arm `x: Circle` IS a runtime type test on a
+  concrete **class or union** (C# declaration pattern / TS·PHP `instanceof` / Python `isinstance`), narrowing
+  the binding. A type test against an **interface** is refused (interfaces have no runtime identity on TS).
+- **Union `==`** (#57) — **structural** (compares tag + payload), like records; documented in §9.
+- **A user `operator fn eq`** (#49) overrides the default structural/reference equality on every target.
+- **Per-iteration loop-variable capture** (#46) — see §6.4.
+- **Block-bodied `match` arms** are refused (#51) — a match arm must be an expression (Python/PHP lower
+  `match` to an expression fold with no statement block). Extract the block into a function.
+- **Member method overloading** is refused (#53) — `fn` overloading is **top-level only**; a duplicate
+  same-named method is a declaration-site error. Give the overloads distinct names.
+- **Namespace and renaming imports** are refused (#39e) — `import * as ns` and `{ a as b }`; import members
+  by their own name (`import { a, b } from "…"`). Modules merge into one flat namespace.
+- **An unresolvable member on a concrete/primitive receiver** is refused, not emitted verbatim (#56a) —
+  usually a missing `import`.
+
 ---
 
 ## 11. Module structure & imports

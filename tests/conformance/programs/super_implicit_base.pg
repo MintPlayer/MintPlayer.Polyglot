@@ -24,7 +24,7 @@ class Grand {
   }
 }
 class Middle : Grand {
-  fn tag(): i32 => 2
+  fn mid(): i32 => 2
 }
 class Leaf : Middle {
   let l: i32
@@ -38,6 +38,6 @@ fn main() {
   print(Derived().v())    // 1
   let leaf = Leaf()
   print(leaf.g)           // 10  (grandparent init ran transitively through the chain)
-  print(leaf.tag())       // 2
+  print(leaf.mid())       // 2
   print(leaf.l)           // 5
 }

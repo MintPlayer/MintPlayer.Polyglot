@@ -2734,15 +2734,14 @@ int main() {
         check(py.ok && has(py.code, "import abc") && has(py.code, "class IPgNet(abc.ABC):") &&
                   has(py.code, "@abc.abstractmethod") && has(py.code, "class Net(IPgNet):"),
               "issue#29: Python emits the interface as an abc.ABC base");
-        // A typed match binding is NOT a runtime type test — refuse instead of first-arm-always-wins.
+        // #38 (issue #29 follow-up): a typed match binding IS now a runtime type test on a concrete class —
+        // it compiles and emits a C# declaration pattern (`Disk d`), not a fake first-arm-always-wins.
         EmitResult typedPat = compileStd(
             "open class Shape {\n  open fn kind(): i32 => 0\n}\n"
             "class Disk : Shape {\n  override fn kind(): i32 => 1\n}\n"
             "fn f(s: Shape): i32 => match s { d: Disk => 1, _ => 0 }\nfn main() {}\n", findTarget("csharp"));
-        check(!typedPat.ok, "issue#29: typed 'match' binding (fake narrowing) is refused");
-        bool namedPat = false;
-        for (const auto& dg : typedPat.diagnostics) if (has(dg.message, "not a runtime type test")) namedPat = true;
-        check(namedPat, "issue#29: the typed-pattern diagnostic explains itself");
+        check(typedPat.ok && has(typedPat.code, "Disk d"),
+              "issue#29/#38: a typed 'match' binding is a concrete-class type test (C# declaration pattern)");
     }
 
     // ---- Wave-2 front-end robustness (G42-G48) + slice-1/2 compiler fixes -----------------------------
