@@ -153,7 +153,22 @@
         "__e",
         "__opt*",
         "__w*"
-      ]
+      ],
+      "functionBuiltins": {
+        "suffix": "_pg",
+        "names": [
+          "abs", "array_filter", "array_keys", "array_map", "array_merge",
+          "array_pop", "array_push", "array_reverse", "array_shift", "array_slice",
+          "array_splice", "array_values", "assert", "ceil", "compact", "cos", "count",
+          "current", "date", "die", "each", "end", "eval", "exit",
+          "exp", "explode", "extract", "filter", "floatval", "floor", "gettype",
+          "header", "implode", "in_array", "intval", "is_array", "join", "key",
+          "log", "map", "max", "min", "next", "number_format", "ord", "pow",
+          "prev", "printf", "range", "reduce", "reset", "round", "settype",
+          "sin", "sleep", "sort", "split", "sprintf", "sqrt", "str_split", "strlen",
+          "strval", "substr", "tan", "time", "trim"
+        ]
+      }
     },
     "preludes": {}
   },
@@ -299,22 +314,48 @@
       "tmpl": [
         {
           "case": {
-            "when": [ [ { "eq": ["node.isFree", "true"] }, "" ] ],
-            "else": "$"
-          }
-        },
-        {
-          "fn": "mangleName",
-          "args": [
-            {
-              "fn": "ident",
-              "args": [
+            "when": [
+              [
+                { "eq": ["node.isFree", "true"] },
                 {
-                  "get": "node.mangledCallee"
+                  "fn": "mangleName",
+                  "args": [
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "fn": "identFn",
+                          "args": [
+                            {
+                              "get": "node.mangledCallee"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                "$",
+                {
+                  "fn": "mangleName",
+                  "args": [
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "node.mangledCallee"
+                        }
+                      ]
+                    }
+                  ]
                 }
               ]
             }
-          ]
+          }
         },
         "(",
         {
@@ -2035,7 +2076,12 @@
               "fn": "ident",
               "args": [
                 {
-                  "get": "decl.emitName"
+                  "fn": "identFn",
+                  "args": [
+                    {
+                      "get": "decl.emitName"
+                    }
+                  ]
                 }
               ]
             }

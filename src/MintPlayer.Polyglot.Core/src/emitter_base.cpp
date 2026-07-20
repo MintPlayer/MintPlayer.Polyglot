@@ -388,6 +388,7 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
     // Identifier repair — generic catalog entries parameterized by the spec's `identifiers` block (P19).
     if (name == "ident")      return specIdent(spec_, args.empty() ? std::string() : args[0]);
+    if (name == "identFn")    return specIdentFn(spec_, args.empty() ? std::string() : args[0]);
     if (name == "mangleName") return specMangle(spec_, args.empty() ? std::string() : args[0]);
     // Named escape maps — {"fn":"escape","args":["<map>", <text>]} over the spec's `escapes` data (P19).
     if (name == "escape" && args.size() >= 2) return specEscape(spec_, args[0], args[1]);
@@ -977,6 +978,7 @@ std::string FnDeclCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "generics") return hooks_.generics(f_.generics);
     if (name == "where")    return hooks_.where(f_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identFn")  return hooks_.identFn(args.empty() ? std::string() : args[0]);
     if (name == "mangle")   return hooks_.mangle(args.empty() ? std::string() : args[0]);
     return "";
 }

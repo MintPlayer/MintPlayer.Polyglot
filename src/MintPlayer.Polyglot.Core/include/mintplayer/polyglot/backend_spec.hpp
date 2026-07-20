@@ -131,6 +131,13 @@ struct BackendSpec {
     // P19 §7) — the silent-collision miscompiles the 2026-07-02 investigation found, made loud.
     std::vector<std::string> reservedNames;
     std::vector<std::string> globalNames;
+    // Names the target treats as pre-existing FREE FUNCTIONS (PHP builtins like `explode`/`count`) that a
+    // user `fn` of the same name would fatally redeclare. Unlike `reservedNames` (which refuse in EVERY
+    // identifier position), these bite only at function-declaration/call position, so a suffix-mangle here
+    // repairs the one real collision without touching legal params/fields/locals of the same spelling
+    // (issue #55). Empty on targets where free-function names never collide (C#/TS/Python).
+    std::unordered_set<std::string> fnBuiltins;
+    std::string fnBuiltinSuffix; // disambiguating suffix appended to a colliding function name ("" = none)
 };
 
 // A `.pg` identifier spelled for the target: keyword collisions escape per the spec's declared strategy.
@@ -139,6 +146,14 @@ inline std::string specIdent(const BackendSpec& s, const std::string& n) {
     if (s.escapeStrategy == "prefix") return s.escapeWith + n;
     if (s.escapeStrategy == "suffix") return n + s.escapeWith;
     return n;
+}
+
+// A free-function name spelled for the target: a collision with a target builtin (PHP `explode`, …) takes
+// the disambiguating suffix; every other name passes through. Applied ONLY at function-declaration and
+// free-call position — never to params/fields/locals — so it is a no-op on targets with no `fnBuiltins`.
+inline std::string specIdentFn(const BackendSpec& s, const std::string& n) {
+    if (s.fnBuiltins.count(n) == 0) return n;
+    return n + s.fnBuiltinSuffix;
 }
 
 // Look up `key` in the spec's named table ("" when the table or key is absent).

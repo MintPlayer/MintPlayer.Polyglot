@@ -1,0 +1,24 @@
+// #55: free functions whose names collide with PHP builtins (`explode`, `count`, `sort`, `max`, `trim`)
+// must not fatally redeclare on PHP. The PHP backend suffix-mangles names at function-DECLARATION and
+// free-CALL position only (`explode` -> `explode_pg`); the other three targets emit them verbatim. A
+// param/local of the same spelling stays untouched (PHP variables and functions are separate namespaces).
+// Output must match byte-for-byte across all four targets (C# is the oracle).
+
+fn explode(n: i32): i32 => n * 2
+
+fn count(a: i32, b: i32): i32 => a + b
+
+fn sort(x: i32): i32 => x - 1
+
+fn max(x: i32): i32 => x + 100
+
+// a param named like a builtin must NOT be mangled — it is a plain PHP variable `$trim`
+fn trim(trim: i32): i32 => trim + explode(trim)
+
+fn main() {
+  print(explode(21))        // 42
+  print(count(10, 5))       // 15
+  print(sort(7))            // 6
+  print(max(1))             // 101
+  print(trim(3))            // 3 + 6 = 9
+}

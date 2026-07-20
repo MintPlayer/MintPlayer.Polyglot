@@ -88,7 +88,7 @@ private:
 // SILENTLY before this check existed (the slice-6d gate caught exactly that); now it fails the load.
 const std::unordered_set<std::string>& fnCatalog() {
     static const std::unordered_set<std::string> names = {
-        "intSuffix", "escapeString", "opSpelling", "ident", "mangleName", "escape", "wrap", "table",
+        "intSuffix", "escapeString", "opSpelling", "ident", "identFn", "mangleName", "escape", "wrap", "table",
         "subst", "require", "inlineBlock", // shared expression catalog
         "generics", "where", "mangle", "access", // declaration-context catalog (`access` = the requested accessibility modifier)
         "substExtern",                     // type-context catalog (extern-class template substitution)
