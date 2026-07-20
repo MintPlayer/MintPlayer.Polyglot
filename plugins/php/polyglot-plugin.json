@@ -151,6 +151,7 @@
       },
       "reserved": [
         "__e",
+        "__handled",
         "__opt*",
         "__w*"
       ],
@@ -1233,93 +1234,221 @@
           }
         },
         {
-          "mapDecl": "stmt.catches",
-          "each": {
-            "block": {
-              "head": {
-                "tmpl": [
-                  "catch (",
-                  {
-                    "case": {
-                      "when": [
-                        [
-                          {
-                            "eq": [
-                              "item.hasType",
-                              "true"
-                            ]
-                          },
-                          {
-                            "type": "item.type"
-                          }
-                        ]
-                      ],
-                      "else": "\\Throwable"
-                    }
-                  },
-                  " $__e)"
-                ]
-              },
-              "body": [
+          "case": {
+            "when": [
+              [
                 {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.hasBinding",
-                            "true"
-                          ]
-                        },
-                        {
-                          "line": {
-                            "tmpl": [
-                              "$",
-                              {
-                                "fn": "ident",
-                                "args": [
-                                  {
-                                    "get": "item.binding"
+                  "eq": [
+                    "stmt.catchesHaveGuard",
+                    "true"
+                  ]
+                },
+                {
+                  "block": {
+                    "head": "catch (\\Throwable $__e)",
+                    "body": [
+                      {
+                        "line": "$__handled = false;"
+                      },
+                      {
+                        "mapDecl": "stmt.catches",
+                        "each": {
+                          "block": {
+                            "head": {
+                              "tmpl": [
+                                "if (!$__handled",
+                                {
+                                  "case": {
+                                    "when": [
+                                      [
+                                        {
+                                          "eq": [
+                                            "item.hasType",
+                                            "true"
+                                          ]
+                                        },
+                                        {
+                                          "tmpl": [
+                                            " && $__e instanceof ",
+                                            {
+                                              "type": "item.type"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    ]
                                   }
+                                },
+                                ")"
+                              ]
+                            },
+                            "body": [
+                              {
+                                "case": {
+                                  "when": [
+                                    [
+                                      {
+                                        "eq": [
+                                          "item.hasBinding",
+                                          "true"
+                                        ]
+                                      },
+                                      {
+                                        "line": {
+                                          "tmpl": [
+                                            "$",
+                                            {
+                                              "fn": "ident",
+                                              "args": [
+                                                {
+                                                  "get": "item.binding"
+                                                }
+                                              ]
+                                            },
+                                            " = $__e;"
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  ]
+                                }
+                              },
+                              {
+                                "case": {
+                                  "when": [
+                                    [
+                                      {
+                                        "eq": [
+                                          "item.hasGuard",
+                                          "true"
+                                        ]
+                                      },
+                                      {
+                                        "block": {
+                                          "head": {
+                                            "tmpl": [
+                                              "if (",
+                                              {
+                                                "emit": "item.guard"
+                                              },
+                                              ")"
+                                            ]
+                                          },
+                                          "body": [
+                                            {
+                                              "line": "$__handled = true;"
+                                            },
+                                            {
+                                              "stmts": "item.body"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  ],
+                                  "else": {
+                                    "seq": [
+                                      {
+                                        "line": "$__handled = true;"
+                                      },
+                                      {
+                                        "stmts": "item.body"
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "stmt.hasCatchAll",
+                                  "false"
                                 ]
                               },
-                              " = $__e;"
-                            ]
-                          }
-                        }
-                      ]
-                    ]
-                  }
-                },
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.hasGuard",
-                            "true"
-                          ]
-                        },
-                        {
-                          "line": {
-                            "tmpl": [
-                              "if (!(",
                               {
-                                "emit": "item.guard"
-                              },
-                              ")) { throw $__e; }"
+                                "line": "if (!$__handled) { throw $__e; }"
+                              }
                             ]
-                          }
+                          ]
                         }
-                      ]
+                      }
                     ]
                   }
-                },
-                {
-                  "stmts": "item.body"
                 }
               ]
+            ],
+            "else": {
+              "mapDecl": "stmt.catches",
+              "each": {
+                "block": {
+                  "head": {
+                    "tmpl": [
+                      "catch (",
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "item.hasType",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "type": "item.type"
+                              }
+                            ]
+                          ],
+                          "else": "\\Throwable"
+                        }
+                      },
+                      " $__e)"
+                    ]
+                  },
+                  "body": [
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.hasBinding",
+                                "true"
+                              ]
+                            },
+                            {
+                              "line": {
+                                "tmpl": [
+                                  "$",
+                                  {
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "item.binding"
+                                      }
+                                    ]
+                                  },
+                                  " = $__e;"
+                                ]
+                              }
+                            }
+                          ]
+                        ]
+                      }
+                    },
+                    {
+                      "stmts": "item.body"
+                    }
+                  ]
+                }
+              }
             }
           }
         },

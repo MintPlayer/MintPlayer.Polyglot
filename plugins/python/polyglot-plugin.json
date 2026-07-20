@@ -113,6 +113,7 @@
         "__c*",
         "__o*",
         "__e",
+        "__handled",
         "tag",
         "__opt*",
         "__w*"
@@ -769,89 +770,222 @@
           }
         },
         {
-          "mapDecl": "stmt.catches",
-          "each": {
-            "block": {
-              "head": {
-                "tmpl": [
-                  "except ",
-                  {
-                    "case": {
-                      "when": [
-                        [
-                          {
-                            "eq": [
-                              "item.hasType",
-                              "true"
-                            ]
-                          },
-                          {
-                            "type": "item.type"
-                          }
-                        ]
-                      ],
-                      "else": "Exception"
-                    }
-                  },
-                  {
-                    "case": {
-                      "when": [
-                        [
-                          {
-                            "eq": [
-                              "item.hasBinding",
-                              "true"
-                            ]
-                          },
-                          {
-                            "tmpl": [
-                              " as ",
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "stmt.catchesHaveGuard",
+                    "true"
+                  ]
+                },
+                {
+                  "block": {
+                    "head": "except Exception as __e",
+                    "body": [
+                      {
+                        "line": "__handled = False"
+                      },
+                      {
+                        "mapDecl": "stmt.catches",
+                        "each": {
+                          "block": {
+                            "head": {
+                              "tmpl": [
+                                "if not __handled",
+                                {
+                                  "case": {
+                                    "when": [
+                                      [
+                                        {
+                                          "eq": [
+                                            "item.hasType",
+                                            "true"
+                                          ]
+                                        },
+                                        {
+                                          "tmpl": [
+                                            " and isinstance(__e, ",
+                                            {
+                                              "type": "item.type"
+                                            },
+                                            ")"
+                                          ]
+                                        }
+                                      ]
+                                    ]
+                                  }
+                                }
+                              ]
+                            },
+                            "body": [
                               {
-                                "fn": "ident",
-                                "args": [
+                                "case": {
+                                  "when": [
+                                    [
+                                      {
+                                        "eq": [
+                                          "item.hasBinding",
+                                          "true"
+                                        ]
+                                      },
+                                      {
+                                        "line": {
+                                          "tmpl": [
+                                            {
+                                              "fn": "ident",
+                                              "args": [
+                                                {
+                                                  "get": "item.binding"
+                                                }
+                                              ]
+                                            },
+                                            " = __e"
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  ]
+                                }
+                              },
+                              {
+                                "case": {
+                                  "when": [
+                                    [
+                                      {
+                                        "eq": [
+                                          "item.hasGuard",
+                                          "true"
+                                        ]
+                                      },
+                                      {
+                                        "block": {
+                                          "head": {
+                                            "tmpl": [
+                                              "if ",
+                                              {
+                                                "emit": "item.guard"
+                                              }
+                                            ]
+                                          },
+                                          "body": [
+                                            {
+                                              "line": "__handled = True"
+                                            },
+                                            {
+                                              "stmts": "item.body"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  ],
+                                  "else": {
+                                    "seq": [
+                                      {
+                                        "line": "__handled = True"
+                                      },
+                                      {
+                                        "stmts": "item.body"
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "stmt.hasCatchAll",
+                                  "false"
+                                ]
+                              },
+                              {
+                                "block": {
+                                  "head": "if not __handled",
+                                  "body": [
+                                    {
+                                      "line": "raise"
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            ],
+            "else": {
+              "mapDecl": "stmt.catches",
+              "each": {
+                "block": {
+                  "head": {
+                    "tmpl": [
+                      "except ",
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "item.hasType",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "type": "item.type"
+                              }
+                            ]
+                          ],
+                          "else": "Exception"
+                        }
+                      },
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "item.hasBinding",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "tmpl": [
+                                  " as ",
                                   {
-                                    "get": "item.binding"
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "item.binding"
+                                      }
+                                    ]
                                   }
                                 ]
                               }
                             ]
-                          }
-                        ]
-                      ]
-                    }
-                  }
-                ]
-              },
-              "body": [
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.hasGuard",
-                            "true"
                           ]
-                        },
-                        {
-                          "line": {
-                            "tmpl": [
-                              "if not (",
-                              {
-                                "emit": "item.guard"
-                              },
-                              "): raise"
-                            ]
-                          }
                         }
-                      ]
+                      }
                     ]
-                  }
-                },
-                {
-                  "call": "pyItemBody"
+                  },
+                  "body": [
+                    {
+                      "call": "pyItemBody"
+                    }
+                  ]
                 }
-              ]
+              }
             }
           }
         },
