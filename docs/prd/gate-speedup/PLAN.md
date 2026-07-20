@@ -146,6 +146,21 @@ source-change/revert invalidation all verified). Authoring flushed out one real 
 emitted-bytes cache) deliberately NOT shipped — NX per-leg caching already delivers the warm loop;
 recorded as a follow-up if the C++-rebuild inner loop ever needs per-program granularity.
 
+**2026-07-20 — Slice 6 CI adoption: LIVE and green.** The org RO/RW token convention (from
+MintPlayer.Spark's guide) is wired into `ci.yml`: RW on default-branch pushes, RO on PR/branch, none
+for forks. The linux-build job runs the gate via `npx nx run-many -t unit,watch,registry` (build is a
+dep), remote-cached against nx-cache.mintplayer.com; coverage stays cache-free. Two bugs surfaced and
+were fixed getting CI green (each its own commit): (a) nx runs commands through **bash** on Linux,
+which expanded a `$IsWindows` written into an inline command string → routed all targets through a
+`$`-free `scripts/nx-leg.ps1` dispatcher; (b) **pwsh's arg parser splits a version-shaped cmake token**
+(`-DPOLYGLOT_VERSION=0.0.0-dev` → `=0` + `.0.0-dev`), so the POSIX build fell back to a git-describe
+SHA and failed the version-shape unit test → the POSIX build now runs through native bash
+(`scripts/build-linux.sh`); msbuild(win)/cmake(linux) is a genuine platform split, the test runners
+stay pwsh (proven working on the ubuntu runner). All four PR checks green
+(linux-build, coverage, validate, GitGuardian). PR-run legs are RO cache misses until a master push
+warms the cache with the RW token. (This retires the earlier "CI deferred on reproducibility" note —
+source-keying + bash build resolved it.)
+
 **2026-07-19 — Slice 6 cache keying: SOURCE-based, not exe-based (maintainer correction).** The first
 cut keyed cacheable legs on the built exe bytes via `dependentTasksOutputFiles`. That was wrong —
 the exe is a pure function of `src/**` + `plugins/**` + the `.sln`, so keying on those SOURCES is
