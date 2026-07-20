@@ -265,6 +265,9 @@ struct Let : Stmt {
     // type from the annotation (bare union cases, list literals), so comparing declared-vs-initializer
     // types can no longer tell that the annotation added information — this flag preserves the fact.
     bool declExplicit = false;
+    // `let (a, b) = t` destructuring targets (empty = an ordinary single-name let). Emitted via the
+    // per-target TupleLet rule: C# `var (a,b)=`, TS `const [a,b]=`, Python `a, b =`, PHP `[$a,$b]=` (#39b).
+    std::vector<std::string> tupleNames;
     Let(SourcePos p, std::string n, bool m, Type t, ExprPtr i)
         : Stmt(StmtKind::Let, p), name(std::move(n)), isMutable(m), type(std::move(t)), init(std::move(i)) {}
 };

@@ -739,6 +739,7 @@ private:
                 ir::Type t = s.hasDeclType ? s.declType : (s.value ? s.value->type : TypeRef{});
                 auto let = std::make_unique<ir::Let>(s.pos, s.name, s.isMutable, t, expr(*s.value));
                 let->declExplicit = s.hasDeclType;
+                let->tupleNames = s.tupleNames; // `let (a, b) = t` destructuring (#39b)
                 return let;
             }
             case StmtKind::Assign: {

@@ -357,6 +357,28 @@
         ]
       }
     },
+    "TupleLet": {
+      "line": {
+        "tmpl": [
+          {
+            "map": "stmt.names",
+            "sep": ", ",
+            "item": {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "item"
+                }
+              ]
+            }
+          },
+          " = ",
+          {
+            "emit": "stmt.init"
+          }
+        ]
+      }
+    },
     "Cond": {
       "tmpl": [
         "(",

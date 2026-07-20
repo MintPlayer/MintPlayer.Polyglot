@@ -603,6 +603,35 @@
         ]
       }
     },
+    "TupleLet": {
+      "line": {
+        "tmpl": [
+          "[",
+          {
+            "map": "stmt.names",
+            "sep": ", ",
+            "item": {
+              "tmpl": [
+                "$",
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "] = ",
+          {
+            "emit": "stmt.init"
+          },
+          ";"
+        ]
+      }
+    },
     "Cond": {
       "tmpl": [
         "(",

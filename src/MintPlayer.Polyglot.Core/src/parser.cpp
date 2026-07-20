@@ -774,6 +774,21 @@ private:
         s->pos = peek().pos;
         s->isMutable = at(TokKind::KwVar);
         advance();
+        if (at(TokKind::LParen)) {
+            // `let (a, b) = t` — tuple destructuring into simple names (#39b). Nested patterns are not
+            // supported yet; each element must be a bare identifier.
+            advance(); // '('
+            do {
+                s->tupleNames.push_back(expect(TokKind::Identifier, "a binding name").text);
+            } while (accept(TokKind::Comma) && !at(TokKind::RParen));
+            expect(TokKind::RParen, "')'");
+            s->name = s->tupleNames.empty() ? std::string() : s->tupleNames.front();
+            s->namePos = s->pos;
+            expect(TokKind::Assign, "'='");
+            s->value = parseExpr();
+            accept(TokKind::Semicolon);
+            return s;
+        }
         { Token nt = expect(TokKind::Identifier, "a binding name"); s->name = nt.text; s->namePos = nt.pos; }
         if (accept(TokKind::Colon)) { s->declType = parseType(); s->hasDeclType = true; }
         expect(TokKind::Assign, "'='");

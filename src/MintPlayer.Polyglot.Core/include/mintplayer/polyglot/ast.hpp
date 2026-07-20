@@ -147,6 +147,7 @@ struct Stmt {
     SourcePos pos;
 
     std::string name;               // Let / Use binding name
+    std::vector<std::string> tupleNames; // Let: `let (a, b) = t` destructuring targets (empty = single name) #39b
     SourcePos namePos;              // Let / Use: the binding-name identifier (go-to-def / semantic-token anchor)
     bool isMutable = false;         // Let: `var` (true) vs `let` (false)
     TypeRef declType;               // Let / Use: explicit annotation (when hasDeclType)

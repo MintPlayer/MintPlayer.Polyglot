@@ -1149,6 +1149,15 @@ std::string StmtCtx::get(const std::string& path) const {
         const auto& ia = static_cast<const ir::IndexAssign&>(s_);
         if (path == "stmt.indices.count") return std::to_string(ia.indices.size());
     }
+    if (s_.kind == ir::StmtKind::Let) { // `let (a, b) = t` destructuring targets (#39b)
+        const auto& l = static_cast<const ir::Let&>(s_);
+        if (path == "stmt.names.count") return std::to_string(l.tupleNames.size());
+        if (path == "stmt.isMutable")   return l.isMutable ? "true" : "false";
+        if (path.rfind("stmt.names.", 0) == 0) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+            if (i < l.tupleNames.size()) return l.tupleNames[i];
+        }
+    }
     if (s_.kind == ir::StmtKind::For) {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
@@ -1210,6 +1219,10 @@ std::string StmtCtx::renderType(const std::string& path) const {
 
 std::string StmtCtx::emitChild(const std::string& path, const std::string&) const {
     if (!emit_) return "";
+    if (s_.kind == ir::StmtKind::Let) { // TupleLet init (#39b)
+        const auto& l = static_cast<const ir::Let&>(s_);
+        if (path == "stmt.init" && l.init) return emit_(*l.init);
+    }
     if (s_.kind == ir::StmtKind::IndexAssign) {
         const auto& ia = static_cast<const ir::IndexAssign&>(s_);
         if (path == "stmt.receiver" && ia.receiver) return emit_(*ia.receiver);
@@ -1559,6 +1572,18 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             return;
         case ir::StmtKind::Let: {
             const auto& l = static_cast<const ir::Let&>(s);
+            // `let (a, b) = t` destructuring is rendered by the per-target TupleLet rule (issue #39b).
+            if (!l.tupleNames.empty()) {
+                if (const engine::RuleTable* rules = ruleTable())
+                    if (const DeclHooks* hooks = declHooks()) {
+                        auto it = rules->find("TupleLet");
+                        if (it != rules->end()) {
+                            StmtCtx ctx(s, *hooks, [this](const ir::Expr& e) { return emitExpr(e); });
+                            runDeclRule(it->second, ctx, ctx, rules);
+                            return;
+                        }
+                    }
+            }
             // Some initializers give the target no type to reconstruct, so the DECLARATION must carry it
             // (issue #27; C# `var x = null` is also CS0815, issue #9). Two such forms:
             //   • a bare `null` (no underlying type), and

@@ -351,6 +351,45 @@
         ]
       }
     },
+    "TupleLet": {
+      "line": {
+        "tmpl": [
+          {
+            "case": {
+              "when": [
+                [
+                  {
+                    "eq": [
+                      "stmt.isMutable",
+                      "true"
+                    ]
+                  },
+                  "let ["
+                ]
+              ],
+              "else": "const ["
+            }
+          },
+          {
+            "map": "stmt.names",
+            "sep": ", ",
+            "item": {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "item"
+                }
+              ]
+            }
+          },
+          "] = ",
+          {
+            "emit": "stmt.init"
+          },
+          ";"
+        ]
+      }
+    },
     "Cond": {
       "tmpl": [
         "(",

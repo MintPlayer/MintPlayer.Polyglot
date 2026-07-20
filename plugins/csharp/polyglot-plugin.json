@@ -395,6 +395,30 @@
         ]
       }
     },
+    "TupleLet": {
+      "line": {
+        "tmpl": [
+          "var (",
+          {
+            "map": "stmt.names",
+            "sep": ", ",
+            "item": {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "item"
+                }
+              ]
+            }
+          },
+          ") = ",
+          {
+            "emit": "stmt.init"
+          },
+          ";"
+        ]
+      }
+    },
     "Cond": {
       "tmpl": [
         "(",

@@ -1155,6 +1155,13 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 TypeRef init = checkExpr(*s.value);
+                if (!s.tupleNames.empty()) { // `let (a, b) = t` — declare each name from the tuple's elements (#39b)
+                    for (std::size_t i = 0; i < s.tupleNames.size(); ++i) {
+                        TypeRef sub = (init.kind == TypeRef::Kind::Tuple && i < init.args.size()) ? init.args[i] : tUnknown();
+                        declare(s.tupleNames[i], sub, s.isMutable, s.namePos);
+                    }
+                    break;
+                }
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
                 else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
                     diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value));
