@@ -462,6 +462,15 @@ private:
                     break;
             }
         }
+        // Pair a get/set indexer so C# can merge them into one `this[...] { get; set; }` (issue #40). Safe:
+        // ic.methods is complete here and its buffer is never reallocated afterwards (the Class is only moved).
+        ir::Method* getM = nullptr;
+        ir::Method* setM = nullptr;
+        for (auto& mm : ic.methods) {
+            if (mm.kind == ir::MethodKind::Operator && mm.opSymbol == "get") getM = &mm;
+            else if (mm.kind == ir::MethodKind::Operator && mm.opSymbol == "set") setM = &mm;
+        }
+        if (getM && setM) getM->pairedSetter = setM;
         return ic;
     }
 
@@ -497,9 +506,10 @@ private:
         if (m.kind == MemberKind::Operator) im.opSymbol = operatorSymbol(m.name);
         im.returnType = m.returnType;
         for (const auto& p : m.params) im.params.push_back(irParam(p));
-        // A real operator (not the `get` indexer) rebinds `this` on targets whose operator declaration is
-        // static (C#): stamp the fact on every This lowered from its body (nested lambdas included).
-        const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get";
+        // A real operator (not a `get`/`set` indexer) rebinds `this` on targets whose operator declaration
+        // is static (C#): stamp the fact on every This lowered from its body (nested lambdas included). The
+        // indexer accessors are INSTANCE members (C# `this[...]{get;set;}`), so `this` stays `this` (#40).
+        const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get" && im.opSymbol != "set";
         if (opBody) inOperator_ = true;
         sawYield_ = false; // a `yield` anywhere in the body marks the method an iterator (mirrors ir::Function)
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
@@ -719,8 +729,21 @@ private:
                 let->declExplicit = s.hasDeclType;
                 return let;
             }
-            case StmtKind::Assign:
+            case StmtKind::Assign: {
+                // A plain write `recv[a, b] = v` through a USER indexer lowers to an IndexAssign so each
+                // target renders it its own way (C# native subscript-set vs a `set(...)` method call). A
+                // native collection write (`xs[i] = v`, no user indexer) or a compound op stays an Assign.
+                if (s.op == "=" && s.target && s.target->kind == ExprKind::Index && s.target->lhs &&
+                    s.target->lhs->type.kind == TypeRef::Kind::Named &&
+                    indexerTypes_.count(s.target->lhs->type.name) != 0) {
+                    auto ia = std::make_unique<ir::IndexAssign>(s.pos);
+                    ia->receiver = expr(*s.target->lhs);
+                    for (const auto& a : s.target->args) ia->indices.push_back(expr(*a));
+                    ia->value = expr(*s.value);
+                    return ia;
+                }
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
+            }
             case StmtKind::ExprStmt:
                 return std::make_unique<ir::ExprStmt>(s.pos, expr(*s.value));
             case StmtKind::If: {

@@ -125,7 +125,7 @@ constexpr Coverage kCoverage[] = {
     {"MethodCall", nullptr}, {"Binary", nullptr},
     {"MakeCase", "patternMatching"}, // a union-constructor node — only reachable when unions/match are
     {"Match", "patternMatching"}, {"With", "withExpressions"}, {"Await", "async"}, {"Lambda", "closures"},
-    {"ForStmt", nullptr}, {"TryStmt", "exceptions"},
+    {"ForStmt", nullptr}, {"TryStmt", "exceptions"}, {"IndexAssign", nullptr},
     {"Program", nullptr}, {"Type", nullptr}, {"EnumDecl", nullptr}, {"RecordDecl", nullptr},
     {"ClassDecl", nullptr}, {"MethodDecl", nullptr}, {"FunctionDecl", nullptr},
     {"UnionDecl", "patternMatching"}, {"InterfaceDecl", "interfaces"},

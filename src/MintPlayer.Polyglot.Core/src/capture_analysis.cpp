@@ -160,6 +160,13 @@ private:
             walkExpr(a.value.get());
             break;
         }
+        case StmtKind::IndexAssign: {
+            auto& ia = static_cast<IndexAssign&>(s);
+            walkExpr(ia.receiver.get());
+            for (auto& ix : ia.indices) walkExpr(ix.get());
+            walkExpr(ia.value.get());
+            break;
+        }
         case StmtKind::ExprStmt: walkExpr(static_cast<ExprStmt&>(s).expr.get()); break;
         case StmtKind::If: {
             auto& i = static_cast<If&>(s);

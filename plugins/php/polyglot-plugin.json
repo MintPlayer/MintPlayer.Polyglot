@@ -582,6 +582,26 @@
         }
       }
     },
+    "IndexAssign": {
+      "line": {
+        "tmpl": [
+          {
+            "emitChild": "stmt.receiver",
+            "side": "recv"
+          },
+          "->set(",
+          {
+            "map": "stmt.indices",
+            "sep": ", "
+          },
+          ", ",
+          {
+            "emit": "stmt.value"
+          },
+          ");"
+        ]
+      }
+    },
     "Cond": {
       "tmpl": [
         "(",

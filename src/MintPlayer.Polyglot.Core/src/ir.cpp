@@ -127,6 +127,13 @@ private:
                 line(expr(*a.target) + " " + a.op + " " + expr(*a.value));
                 break;
             }
+            case StmtKind::IndexAssign: {
+                const auto& ia = static_cast<const IndexAssign&>(s);
+                std::string idx;
+                for (std::size_t i = 0; i < ia.indices.size(); ++i) { if (i) idx += ", "; idx += expr(*ia.indices[i]); }
+                line(expr(*ia.receiver) + "[" + idx + "] = " + expr(*ia.value));
+                break;
+            }
             case StmtKind::ExprStmt:
                 line(expr(*static_cast<const ExprStmt&>(s).expr));
                 break;

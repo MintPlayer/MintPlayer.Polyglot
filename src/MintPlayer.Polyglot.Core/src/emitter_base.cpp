@@ -720,6 +720,11 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     if (path == "decl.isVirtual")  return m_.isVirtual ? "true" : "false";
     if (path == "decl.isOverride") return m_.isOverride ? "true" : "false";
     if (path == "decl.isIterator") return m_.isIterator ? "true" : "false";
+    if (path == "decl.hasSetter")  return m_.pairedSetter ? "true" : "false"; // paired indexer set (#40)
+    if (path == "decl.setterValueParam")
+        return m_.pairedSetter && !m_.pairedSetter->params.empty() ? m_.pairedSetter->params.back().name : "";
+    if (path == "decl.setterBody.count")
+        return std::to_string(m_.pairedSetter ? m_.pairedSetter->body.size() : 0);
     if (path == "decl.exprBodied") return m_.exprBodied ? "true" : "false";
     if (path == "decl.body.count") return std::to_string(m_.body.size());
     if (path == "decl.retName")    return m_.returnType.kind == TypeRef::Kind::Named ? m_.returnType.name : "";
@@ -778,7 +783,9 @@ std::string MethodDeclCtx::emitChild(const std::string& path, const std::string&
 }
 
 const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path) const {
-    return path == "decl.body" ? &m_.body : nullptr;
+    if (path == "decl.body") return &m_.body;
+    if (path == "decl.setterBody" && m_.pairedSetter) return &m_.pairedSetter->body; // paired indexer set (#40)
+    return nullptr;
 }
 
 std::string RecordDeclCtx::get(const std::string& path) const {
@@ -1124,6 +1131,10 @@ std::string StmtCtx::get(const std::string& path) const {
             if (i < lf.nonlocals.size()) return lf.nonlocals[i];
         }
     }
+    if (s_.kind == ir::StmtKind::IndexAssign) {
+        const auto& ia = static_cast<const ir::IndexAssign&>(s_);
+        if (path == "stmt.indices.count") return std::to_string(ia.indices.size());
+    }
     if (s_.kind == ir::StmtKind::For) {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
@@ -1185,6 +1196,15 @@ std::string StmtCtx::renderType(const std::string& path) const {
 
 std::string StmtCtx::emitChild(const std::string& path, const std::string&) const {
     if (!emit_) return "";
+    if (s_.kind == ir::StmtKind::IndexAssign) {
+        const auto& ia = static_cast<const ir::IndexAssign&>(s_);
+        if (path == "stmt.receiver" && ia.receiver) return emit_(*ia.receiver);
+        if (path == "stmt.value" && ia.value)       return emit_(*ia.value);
+        if (path.rfind("stmt.indices.", 0) == 0) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(13)));
+            if (i < ia.indices.size()) return emit_(*ia.indices[i]);
+        }
+    }
     if (s_.kind == ir::StmtKind::For) {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.rangeStart" && f.rangeStart) return emit_(*f.rangeStart);
@@ -1617,6 +1637,7 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             // is data; only a kind with no rule falls back to the imperative emitStmtTarget.
             const char* key = s.kind == ir::StmtKind::For ? "ForStmt"
                             : s.kind == ir::StmtKind::Try ? "TryStmt"
+                            : s.kind == ir::StmtKind::IndexAssign ? "IndexAssign"
                             : s.kind == ir::StmtKind::LocalFunc ? "LocalFunc" : nullptr;
             if (key) {
                 if (const engine::RuleTable* rules = ruleTable()) {

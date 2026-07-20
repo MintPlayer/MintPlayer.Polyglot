@@ -43,6 +43,7 @@ private:
         switch (s.kind) {
         case StmtKind::Let:      hoistExpr(static_cast<Let&>(s).init, defs); break;
         case StmtKind::Assign: { auto& a = static_cast<Assign&>(s); hoistExpr(a.target, defs); hoistExpr(a.value, defs); break; }
+        case StmtKind::IndexAssign: { auto& ia = static_cast<IndexAssign&>(s); hoistExpr(ia.receiver, defs); for (auto& ix : ia.indices) hoistExpr(ix, defs); hoistExpr(ia.value, defs); break; }
         case StmtKind::ExprStmt: hoistExpr(static_cast<ExprStmt&>(s).expr, defs); break;
         case StmtKind::If:     { auto& i = static_cast<If&>(s); hoistExpr(i.cond, defs); hoistStmts(i.thenBody); hoistStmts(i.elseBody); break; }
         case StmtKind::While:  { auto& w = static_cast<While&>(s); hoistExpr(w.cond, defs); hoistStmts(w.body); break; }

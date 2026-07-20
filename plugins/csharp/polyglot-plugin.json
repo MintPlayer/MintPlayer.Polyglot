@@ -375,6 +375,26 @@
         "]"
       ]
     },
+    "IndexAssign": {
+      "line": {
+        "tmpl": [
+          {
+            "emitChild": "stmt.receiver",
+            "side": "recv"
+          },
+          "[",
+          {
+            "map": "stmt.indices",
+            "sep": ", "
+          },
+          "] = ",
+          {
+            "emit": "stmt.value"
+          },
+          ";"
+        ]
+      }
+    },
     "Cond": {
       "tmpl": [
         "(",
@@ -1281,52 +1301,177 @@
                   [
                     {
                       "eq": [
-                        "decl.exprBodied",
+                        "decl.hasSetter",
                         "true"
                       ]
                     },
                     {
-                      "line": {
-                        "tmpl": [
-                          {
-                            "call": "csIndexerSig"
-                          },
-                          " => ",
-                          {
-                            "emit": "decl.exprBody"
-                          },
-                          ";"
-                        ]
-                      }
+                      "seq": [
+                        {
+                          "line": {
+                            "tmpl": [
+                              {
+                                "call": "csIndexerSig"
+                              },
+                              " {"
+                            ]
+                          }
+                        },
+                        {
+                          "indent": [
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "decl.exprBodied",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "line": {
+                                        "tmpl": [
+                                          "get => ",
+                                          {
+                                            "emit": "decl.exprBody"
+                                          },
+                                          ";"
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                ],
+                                "else": {
+                                  "seq": [
+                                    {
+                                      "line": "get {"
+                                    },
+                                    {
+                                      "indent": [
+                                        {
+                                          "stmts": "decl.body"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "line": "}"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            {
+                              "line": "set {"
+                            },
+                            {
+                              "indent": [
+                                {
+                                  "line": {
+                                    "tmpl": [
+                                      "var ",
+                                      {
+                                        "fn": "ident",
+                                        "args": [
+                                          {
+                                            "get": "decl.setterValueParam"
+                                          }
+                                        ]
+                                      },
+                                      " = value;"
+                                    ]
+                                  }
+                                },
+                                {
+                                  "stmts": "decl.setterBody"
+                                }
+                              ]
+                            },
+                            {
+                              "line": "}"
+                            }
+                          ]
+                        },
+                        {
+                          "line": "}"
+                        }
+                      ]
                     }
                   ]
                 ],
                 "else": {
-                  "seq": [
-                    {
-                      "block": {
-                        "head": {
-                          "tmpl": [
-                            {
-                              "call": "csIndexerSig"
-                            },
-                            " { get"
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.exprBodied",
+                            "true"
                           ]
                         },
-                        "body": [
-                          {
-                            "stmts": "decl.body"
+                        {
+                          "line": {
+                            "tmpl": [
+                              {
+                                "call": "csIndexerSig"
+                              },
+                              " => ",
+                              {
+                                "emit": "decl.exprBody"
+                              },
+                              ";"
+                            ]
                           }
-                        ]
-                      }
-                    },
-                    {
-                      "line": "}"
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "seq": [
+                        {
+                          "block": {
+                            "head": {
+                              "tmpl": [
+                                {
+                                  "call": "csIndexerSig"
+                                },
+                                " { get"
+                              ]
+                            },
+                            "body": [
+                              {
+                                "stmts": "decl.body"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "line": "}"
+                        }
+                      ]
                     }
-                  ]
+                  }
                 }
               }
             }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "operator"
+                  ]
+                },
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "set"
+                  ]
+                }
+              ]
+            },
+            ""
           ],
           [
             {

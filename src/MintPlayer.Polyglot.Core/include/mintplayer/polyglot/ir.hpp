@@ -229,7 +229,7 @@ struct Match : Expr {
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue, Yield, Throw, Try, Use, LocalFunc };
+enum class StmtKind { Let, Assign, IndexAssign, ExprStmt, If, While, For, Return, Break, Continue, Yield, Throw, Try, Use, LocalFunc };
 
 struct Stmt {
     StmtKind kind;
@@ -266,6 +266,16 @@ struct Assign : Stmt {
     bool targetThroughCell = false;
     Assign(SourcePos p, ExprPtr t, std::string o, ExprPtr v)
         : Stmt(StmtKind::Assign, p), target(std::move(t)), op(std::move(o)), value(std::move(v)) {}
+};
+// A write through a USER indexer `recv[a, b] = v` (issue #40). Kept distinct from Assign so each target
+// renders it its own way: C# native `recv[a, b] = v` (paired into the merged `this[...]{get;set;}`),
+// while targets that emulate operators as methods call `recv.set(a, b, v)`. A plain collection write
+// (`xs[i] = v`, no user indexer) stays an ordinary Assign — only a user-indexer receiver lowers here.
+struct IndexAssign : Stmt {
+    ExprPtr receiver;
+    std::vector<ExprPtr> indices;
+    ExprPtr value;
+    IndexAssign(SourcePos p) : Stmt(StmtKind::IndexAssign, p) {}
 };
 struct ExprStmt : Stmt {
     ExprPtr expr;
@@ -435,6 +445,11 @@ struct Method {
     bool isIterator = false;      // body has a `yield` — C# `IEnumerable`, TS generator `*method()` (§4.x)
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
+    // Indexer pairing (issue #40): on a `get` indexer operator, a non-owning pointer to the sibling `set`
+    // operator in the same class, so C# can MERGE them into one `this[...] { get; set; }` (the set method
+    // still owns its own body — it also emits standalone as `.set(...)` on the method-emulation targets).
+    // Stable: set after the class's `methods` vector is fully built and never reallocated afterwards.
+    const Method* pairedSetter = nullptr;
     // Top-level module globals this member's body (incl. a property getter's expr) references — same
     // fact as ir::Function.globalRefs; consumed only by PHP (`global $x;`), empty/ignored elsewhere.
     std::vector<std::string> globalRefs;
