@@ -38,7 +38,7 @@
       "cache": true,
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File tests/cli/run-cli-smoke.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
-      "inputs": ["{workspaceRoot}/tests/cli/**/*", "{workspaceRoot}/tests/conformance/programs/counter.pg", "{workspaceRoot}/tests/conformance/programs/modular/**", "{workspaceRoot}/tests/conformance/programs/operators_full.pg", "cliBinary", "sharedGlobals"],
+      "inputs": ["{workspaceRoot}/tests/cli/**/*", "{workspaceRoot}/tests/conformance/programs/counter.pg", "{workspaceRoot}/tests/conformance/programs/modular/**", "{workspaceRoot}/tests/conformance/programs/operators_full.pg", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "refusals": {
@@ -46,7 +46,7 @@
       "cache": true,
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File tests/refusals/run-refusals.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
-      "inputs": ["{workspaceRoot}/tests/refusals/**/*", "cliBinary", "sharedGlobals"],
+      "inputs": ["{workspaceRoot}/tests/refusals/**/*", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "lsp": {
@@ -54,7 +54,7 @@
       "cache": true,
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File tests/lsp/run-lsp.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
-      "inputs": ["{workspaceRoot}/tests/lsp/**/*", "cliBinary", "sharedGlobals"],
+      "inputs": ["{workspaceRoot}/tests/lsp/**/*", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "fidelity": {
@@ -62,7 +62,7 @@
       "cache": true,
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File tests/fidelity/run-roundtrip.ps1", "cwd": "{workspaceRoot}" },
-      "inputs": ["{workspaceRoot}/tests/fidelity/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "cliBinary", "sharedGlobals"],
+      "inputs": ["{workspaceRoot}/tests/fidelity/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "watch": {
@@ -70,7 +70,7 @@
       "cache": true,
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File tests/watch/run-watch.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
-      "inputs": ["{workspaceRoot}/tests/watch/**/*", "cliBinary", "sharedGlobals"],
+      "inputs": ["{workspaceRoot}/tests/watch/**/*", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "registry": {
@@ -96,7 +96,7 @@
         "{workspaceRoot}/tests/conformance/**/*",
         "{workspaceRoot}/tests/library/**/*",
         "{workspaceRoot}/scripts/lib/OracleCompile.ps1",
-        "cliBinary",
+        "compilerSources",
         "sharedGlobals",
         { "runtime": "python --version" },
         { "runtime": "php --version" },
@@ -109,7 +109,7 @@
       "cache": true,
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File tests/samples/run-emit.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
-      "inputs": ["{workspaceRoot}/tests/samples/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "cliBinary", "sharedGlobals"],
+      "inputs": ["{workspaceRoot}/tests/samples/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "nullable": {
@@ -117,7 +117,7 @@
       "cache": true,
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File tests/nullable/run-nullable.ps1 -Cli x64/Debug/MintPlayer.Polyglot.Cli.exe", "cwd": "{workspaceRoot}" },
-      "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "cliBinary", "sharedGlobals"],
+      "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
     "nuget": {

@@ -134,13 +134,20 @@ loopback failure.
 
 ## Log
 
-**2026-07-19 — Slice 6 scope note (CI):** NX landed for the LOCAL loop only. CI adoption of the
-org token convention is DEFERRED with a concrete blocker, not forgotten: every CI run relinks the
-CLI exe, and `dependentTasksOutputFiles` hashes its bytes — so every exe-dependent leg would
-cache-MISS on every CI run (Debug/Release links are not bit-reproducible). Adopting NX in ci.yml
-becomes worthwhile only after build reproducibility (or a CI-specific input strategy that keys on
-sources instead of the exe — weaker, needs the correctness argument). The ready-to-paste org
-expression (RW on default-branch pushes, RO otherwise) stays documented above for that day.
+**2026-07-19 — Slice 6 cache keying: SOURCE-based, not exe-based (maintainer correction).** The first
+cut keyed cacheable legs on the built exe bytes via `dependentTasksOutputFiles`. That was wrong —
+the exe is a pure function of `src/**` + `plugins/**` + the `.sln`, so keying on those SOURCES is
+equally sound (each leg still `dependsOn: ["build"]`, which brings the exe up to date before any
+cache-miss executes) and strictly better: it is stable across the non-reproducible Debug/Release
+relink (timestamps/PDB GUIDs change the exe bytes on every link even with identical sources).
+Introduced the `compilerSources` namedInput; all cacheable legs consume it. **Verified**: a `src/**`
+edit misses the leg; reverting it HITS again even though the exe was relinked in between (content-
+addressed on sources). This also RETIRES the earlier CI-deferral blocker (which was precisely
+"every relink busts the exe-key on CI") — with source-keying, CI checkouts hash deterministically
+across machines, so the only remaining CI step is wiring the org token expression (RW on
+default-branch pushes / RO otherwise) into ci.yml. That wiring changes the CI contract (ubuntu needs
+node+nx and the remote-cache secrets) and is left as an explicit opt-in for maintainer sign-off, not
+a silent default; the local loop is fully live now.
 
 **2026-07-19 — Slice 0: silent-drop REFUTED.** Four probes (pgconfig next to entry, cwd = project /
 parent / unrelated dir; and pgconfig ONLY in the cwd with the entry elsewhere): config discovery is

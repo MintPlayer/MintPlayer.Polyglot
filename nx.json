@@ -5,8 +5,10 @@
       { "runtime": "dotnet --version" },
       { "runtime": "node --version" }
     ],
-    "cliBinary": [
-      { "dependentTasksOutputFiles": "**/*", "transitive": false }
+    "compilerSources": [
+      "{workspaceRoot}/src/**/*",
+      "{workspaceRoot}/plugins/**/*",
+      "{workspaceRoot}/MintPlayer.Polyglot.sln"
     ]
   },
   "targetDefaults": {
