@@ -842,9 +842,111 @@ private:
 
 } // namespace
 
+// #41: C# forbids a nested-scope local reusing a method-scope local's name (CS0136), unlike TS/Python/PHP.
+// This target-gated pass renames a for-binding that collides with a Let/param name in the same body (and
+// rewrites its in-body references); non-colliding loops are untouched, so existing C# output stays
+// byte-identical. Runs after lowering, only for the C# target.
+namespace {
+struct CsScopeLegalizer {
+    int seq = 0;
+    static std::unordered_set<std::string> paramNames(const std::vector<ir::Param>& ps) {
+        std::unordered_set<std::string> s; for (const auto& p : ps) s.insert(p.name); return s;
+    }
+    void run(ir::Module& m) {
+        for (auto& f : m.functions)  fixBody(f.body, paramNames(f.params));
+        for (auto& f : m.extensions) fixBody(f.body, paramNames(f.params));
+        for (auto& r : m.records) for (auto& mm : r.methods) if (!mm.exprBodied) fixBody(mm.body, paramNames(mm.params));
+        for (auto& c : m.classes) {
+            for (auto& mm : c.methods) if (!mm.exprBodied) fixBody(mm.body, paramNames(mm.params));
+            fixBody(c.initBody, paramNames(c.initParams));
+        }
+    }
+    void fixBody(std::vector<ir::StmtPtr>& body, std::unordered_set<std::string> declared) {
+        for (auto& s : body) collectLets(*s, declared);
+        for (auto& s : body) renameFors(*s, declared);
+    }
+    void collectLets(ir::Stmt& s, std::unordered_set<std::string>& out) {
+        using K = ir::StmtKind;
+        switch (s.kind) {
+            case K::Let: { auto& l = static_cast<ir::Let&>(s); if (!l.name.empty()) out.insert(l.name); for (auto& n : l.tupleNames) out.insert(n); break; }
+            case K::If: { auto& i = static_cast<ir::If&>(s); for (auto& b : i.thenBody) collectLets(*b, out); for (auto& b : i.elseBody) collectLets(*b, out); break; }
+            case K::While: for (auto& b : static_cast<ir::While&>(s).body) collectLets(*b, out); break;
+            case K::For: for (auto& b : static_cast<ir::For&>(s).body) collectLets(*b, out); break;
+            case K::Use: for (auto& b : static_cast<ir::Use&>(s).body) collectLets(*b, out); break;
+            case K::Try: { auto& t = static_cast<ir::Try&>(s); for (auto& b : t.body) collectLets(*b, out); for (auto& c : t.catches) for (auto& b : c.body) collectLets(*b, out); for (auto& b : t.finallyBody) collectLets(*b, out); break; }
+            default: break;
+        }
+    }
+    void renameFors(ir::Stmt& s, const std::unordered_set<std::string>& declared) {
+        using K = ir::StmtKind;
+        switch (s.kind) {
+            case K::For: {
+                auto& f = static_cast<ir::For&>(s);
+                if (!f.binding.empty() && f.binding != "_" && declared.count(f.binding)) {
+                    std::string nn = f.binding + "__cs" + std::to_string(seq++);
+                    for (auto& b : f.body) renameStmt(*b, f.binding, nn);
+                    f.binding = nn;
+                }
+                for (auto& b : f.body) renameFors(*b, declared);
+                break;
+            }
+            case K::If: { auto& i = static_cast<ir::If&>(s); for (auto& b : i.thenBody) renameFors(*b, declared); for (auto& b : i.elseBody) renameFors(*b, declared); break; }
+            case K::While: for (auto& b : static_cast<ir::While&>(s).body) renameFors(*b, declared); break;
+            case K::Use: for (auto& b : static_cast<ir::Use&>(s).body) renameFors(*b, declared); break;
+            case K::Try: { auto& t = static_cast<ir::Try&>(s); for (auto& b : t.body) renameFors(*b, declared); for (auto& c : t.catches) for (auto& b : c.body) renameFors(*b, declared); for (auto& b : t.finallyBody) renameFors(*b, declared); break; }
+            default: break;
+        }
+    }
+    void renameStmt(ir::Stmt& s, const std::string& o, const std::string& n) {
+        using K = ir::StmtKind;
+        switch (s.kind) {
+            case K::Let: { auto& l = static_cast<ir::Let&>(s); if (l.init) renameExpr(*l.init, o, n); break; }
+            case K::Assign: { auto& a = static_cast<ir::Assign&>(s); if (a.target) renameExpr(*a.target, o, n); if (a.value) renameExpr(*a.value, o, n); break; }
+            case K::IndexAssign: { auto& ia = static_cast<ir::IndexAssign&>(s); if (ia.receiver) renameExpr(*ia.receiver, o, n); for (auto& x : ia.indices) renameExpr(*x, o, n); if (ia.value) renameExpr(*ia.value, o, n); break; }
+            case K::ExprStmt: renameExpr(*static_cast<ir::ExprStmt&>(s).expr, o, n); break;
+            case K::Return: { auto& r = static_cast<ir::Return&>(s); if (r.value) renameExpr(*r.value, o, n); break; }
+            case K::Yield: { auto& y = static_cast<ir::Yield&>(s); if (y.value) renameExpr(*y.value, o, n); break; }
+            case K::Throw: { auto& t = static_cast<ir::Throw&>(s); if (t.value) renameExpr(*t.value, o, n); break; }
+            case K::If: { auto& i = static_cast<ir::If&>(s); if (i.cond) renameExpr(*i.cond, o, n); for (auto& b : i.thenBody) renameStmt(*b, o, n); for (auto& b : i.elseBody) renameStmt(*b, o, n); break; }
+            case K::While: { auto& w = static_cast<ir::While&>(s); if (w.cond) renameExpr(*w.cond, o, n); for (auto& b : w.body) renameStmt(*b, o, n); break; }
+            case K::For: { auto& f = static_cast<ir::For&>(s); if (f.rangeStart) renameExpr(*f.rangeStart, o, n); if (f.rangeEnd) renameExpr(*f.rangeEnd, o, n); if (f.iterable) renameExpr(*f.iterable, o, n); if (f.binding != o) for (auto& b : f.body) renameStmt(*b, o, n); break; }
+            case K::Use: { auto& u = static_cast<ir::Use&>(s); if (u.init) renameExpr(*u.init, o, n); for (auto& b : u.body) renameStmt(*b, o, n); break; }
+            case K::Try: { auto& t = static_cast<ir::Try&>(s); for (auto& b : t.body) renameStmt(*b, o, n); for (auto& c : t.catches) for (auto& b : c.body) renameStmt(*b, o, n); for (auto& b : t.finallyBody) renameStmt(*b, o, n); break; }
+            default: break;
+        }
+    }
+    void renameExpr(ir::Expr& e, const std::string& o, const std::string& n) {
+        using K = ir::ExprKind;
+        switch (e.kind) {
+            case K::Var: { auto& v = static_cast<ir::Var&>(e); if (v.name == o) v.name = n; break; }
+            case K::Unary: renameExpr(*static_cast<ir::Unary&>(e).operand, o, n); break;
+            case K::Await: renameExpr(*static_cast<ir::Await&>(e).operand, o, n); break;
+            case K::Cast:  renameExpr(*static_cast<ir::Cast&>(e).operand, o, n); break;
+            case K::Binary: { auto& b = static_cast<ir::Binary&>(e); renameExpr(*b.lhs, o, n); renameExpr(*b.rhs, o, n); break; }
+            case K::Cond: { auto& c = static_cast<ir::Cond&>(e); renameExpr(*c.cond, o, n); renameExpr(*c.then, o, n); renameExpr(*c.els, o, n); break; }
+            case K::Call: { auto& c = static_cast<ir::Call&>(e); for (auto& a : c.args) renameExpr(*a, o, n); break; }
+            case K::MethodCall: { auto& mc = static_cast<ir::MethodCall&>(e); if (mc.object) renameExpr(*mc.object, o, n); for (auto& a : mc.args) renameExpr(*a, o, n); break; }
+            case K::Member: { auto& m = static_cast<ir::Member&>(e); if (m.object) renameExpr(*m.object, o, n); break; }
+            case K::Index: { auto& i = static_cast<ir::Index&>(e); if (i.receiver) renameExpr(*i.receiver, o, n); for (auto& x : i.indices) renameExpr(*x, o, n); break; }
+            case K::ListLit: for (auto& x : static_cast<ir::ListLit&>(e).elements) renameExpr(*x, o, n); break;
+            case K::Tuple: for (auto& x : static_cast<ir::Tuple&>(e).elements) renameExpr(*x, o, n); break;
+            case K::New: for (auto& a : static_cast<ir::New&>(e).args) renameExpr(*a, o, n); break;
+            case K::Interp: for (auto& h : static_cast<ir::Interp&>(e).holes) renameExpr(*h, o, n); break;
+            case K::MakeCase: for (auto& f : static_cast<ir::MakeCase&>(e).fields) renameExpr(*f.value, o, n); break;
+            case K::With: { auto& w = static_cast<ir::With&>(e); if (w.base) renameExpr(*w.base, o, n); for (auto& f : w.fields) renameExpr(*f.value, o, n); break; }
+            case K::Bound: { auto& b = static_cast<ir::Bound&>(e); if (b.receiver) renameExpr(*b.receiver, o, n); for (auto& a : b.args) renameExpr(*a, o, n); break; }
+            case K::Lambda: { auto& l = static_cast<ir::Lambda&>(e); bool shadow = false; for (auto& p : l.params) if (p.name == o) shadow = true; if (shadow) break; if (l.exprBodied) { if (l.body) renameExpr(*l.body, o, n); } else for (auto& b : l.block) renameStmt(*b, o, n); break; }
+            case K::Match: { auto& m = static_cast<ir::Match&>(e); if (m.scrutinee) renameExpr(*m.scrutinee, o, n); for (auto& a : m.arms) { if (a.guard) renameExpr(*a.guard, o, n); if (a.body) renameExpr(*a.body, o, n); } break; }
+            default: break;
+        }
+    }
+};
+} // namespace
+
 ir::Module lower(const CompilationUnit& unit, const std::string& target) {
     Lowerer lowerer(unit, target);
     ir::Module m = lowerer.run(unit);
+    if (target == "csharp") { CsScopeLegalizer cs; cs.run(m); } // #41: rename for-bindings colliding with locals
     analyzeCaptures(m); // P25 §4.18: classify closure captures + stamp cell decisions onto the IR
     // Python's `lambda` is expression-only, so block lambdas hoist to nested `def`s here (the local tier for
     // an expression-only-lambda target). Every other target emits block lambdas inline.
