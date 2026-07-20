@@ -3192,6 +3192,143 @@
                 },
                 {
                   "eq": [
+                    "node.lhsHasUserEq",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "recv"
+                        },
+                        ".eq(",
+                        {
+                          "emit": "node.rhs"
+                        },
+                        ")"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    "!",
+                    {
+                      "emitChild": "node.lhs",
+                      "side": "recv"
+                    },
+                    ".eq(",
+                    {
+                      "emit": "node.rhs"
+                    },
+                    ")"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "!="
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.lhsIsUnion",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        "JSON.stringify(",
+                        {
+                          "emit": "node.lhs"
+                        },
+                        ") === JSON.stringify(",
+                        {
+                          "emit": "node.rhs"
+                        },
+                        ")"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    "JSON.stringify(",
+                    {
+                      "emit": "node.lhs"
+                    },
+                    ") !== JSON.stringify(",
+                    {
+                      "emit": "node.rhs"
+                    },
+                    ")"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "!="
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "eq": [
                     "node.lhsIsRecord",
                     "true"
                   ]

@@ -1,0 +1,21 @@
+// #57: `==` on a union must be STRUCTURAL (compare tag + payload), not reference. C# emits unions as
+// records (structural ==); TS deep-compares the tagged objects (JSON structural); PHP compares the tagged
+// arrays and Python the tagged values structurally. Reference equality on TS made two equal Full(1)
+// unequal. This defect makes all targets identically wrong, so a `.expected` golden is load-bearing.
+
+union Box {
+  Full(value: i32)
+  Empty
+}
+
+fn main() {
+  let a: Box = Full(1)
+  let b: Box = Full(1)
+  let c: Box = Full(2)
+  let e1: Box = Empty
+  let e2: Box = Empty
+  print(if a == b { 1 } else { 0 })     // 1   (structural, distinct instances)
+  print(if a == c { 1 } else { 0 })     // 0   (payload differs)
+  print(if e1 == e2 { 1 } else { 0 })   // 1   (payload-free case)
+  print(if a == e1 { 1 } else { 0 })    // 0   (different case)
+}

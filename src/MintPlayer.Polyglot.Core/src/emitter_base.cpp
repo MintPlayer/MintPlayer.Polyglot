@@ -42,6 +42,8 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& b = static_cast<const ir::Binary&>(e_);
         if (path == "node.lhsIsRecord")   return b.lhsIsRecord ? "true" : "false";
         if (path == "node.lhsIsUserType") return b.lhsIsUserType ? "true" : "false";
+        if (path == "node.lhsIsUnion")    return b.lhsIsUnion ? "true" : "false";     // #57
+        if (path == "node.lhsHasUserEq")  return b.lhsHasUserEq ? "true" : "false";   // #49
     }
     if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index)
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";

@@ -98,6 +98,11 @@ struct Binary : Expr {
     // dispatch on targets without native operators).
     bool lhsIsRecord = false;
     bool lhsIsUserType = false;
+    // Equality model (#49/#57): the lhs type is a union (structural `==` over its cases, like a record), and
+    // the lhs type declares a user `operator fn eq` — which wins over the default structural/reference
+    // equality on every target (TS/Py/PHP call `.eq(...)`; C# emits the user eq as `override Equals`).
+    bool lhsIsUnion = false;
+    bool lhsHasUserEq = false;
     Binary(SourcePos p, Type t, std::string o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::Binary, p, std::move(t)), op(std::move(o)), lhs(std::move(l)), rhs(std::move(r)) {}
 };

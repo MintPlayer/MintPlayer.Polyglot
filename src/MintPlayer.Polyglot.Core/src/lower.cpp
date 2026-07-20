@@ -134,6 +134,8 @@ public:
         auto noteIndexer = [&](const std::string& name, const std::vector<Member>& ms) {
             for (const auto& mem : ms) {
                 if (mem.kind == MemberKind::Operator && mem.name == "get") indexerTypes_.insert(name);
+                if (mem.kind == MemberKind::Operator && mem.name == "eq") userEqTypes_.insert(name); // #49
+
                 // Computed properties (getters): a target that emulates them as methods (PHP) needs the
                 // access site to call `recv->name()`; native-property targets ignore the stamp.
                 if (mem.kind == MemberKind::Property) propertyMembers_[name].insert(mem.name);
@@ -305,6 +307,7 @@ private:
     std::unordered_set<std::string> recordNames_;                    // user records (structural `==`)
     std::unordered_map<std::string, const RecordDecl*> records_;     // record name -> decl (field order for `with`)
     std::unordered_set<std::string> indexerTypes_;                   // types declaring `operator fn get`
+    std::unordered_set<std::string> userEqTypes_;                    // types declaring `operator fn eq` (#49)
     std::unordered_map<std::string, std::unordered_set<std::string>> propertyMembers_; // type -> computed-property names
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
@@ -568,6 +571,8 @@ private:
                     const std::string& ln = e.lhs->type.name;
                     b->lhsIsRecord = recordNames_.count(ln) != 0;
                     b->lhsIsUserType = !isPrimitiveTypeName(ln) && ln != "unit";
+                    b->lhsIsUnion = unionCases_.count(ln) != 0;   // #57: structural `==` over union cases
+                    b->lhsHasUserEq = userEqTypes_.count(ln) != 0; // #49: user `operator fn eq` wins
                 }
                 return b;
             }

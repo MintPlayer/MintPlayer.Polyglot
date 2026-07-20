@@ -1,0 +1,15 @@
+// #49: a user `operator fn eq` defines custom equality (mod-100 here) and must OVERRIDE the default
+// structural equality on every target. C# emits it as `public virtual bool Equals(Money)` so the record's
+// synthesized `==` calls it (avoiding the CS0111 `operator ==` collision); TS routes `==` to `.eq()`;
+// Python to `__eq__`. PHP refuses operator overloading (pinned refuser). This defect makes all targets
+// identically wrong (user eq emitted but never called), so a `.expected` golden is load-bearing.
+
+record Money(cents: i32) {
+  operator fn eq(other: Money): bool => this.cents % 100 == other.cents % 100
+}
+
+fn main() {
+  print(if Money(1) == Money(101) { 1 } else { 0 })   // 1  (1 == 101 mod 100 -> custom eq)
+  print(if Money(1) == Money(2) { 1 } else { 0 })     // 0
+  print(if Money(1) != Money(2) { 1 } else { 0 })     // 1  (!= negates the custom eq)
+}

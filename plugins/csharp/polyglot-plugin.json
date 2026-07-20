@@ -1475,6 +1475,79 @@
           ],
           [
             {
+              "and": [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "operator"
+                  ]
+                },
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "=="
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "decl.exprBodied",
+                        "true"
+                      ]
+                    },
+                    {
+                      "line": {
+                        "tmpl": [
+                          "public virtual bool Equals(",
+                          {
+                            "map": "decl.params",
+                            "sep": ", ",
+                            "item": {
+                              "call": "csParam"
+                            }
+                          },
+                          ") => ",
+                          {
+                            "emit": "decl.exprBody"
+                          },
+                          ";"
+                        ]
+                      }
+                    }
+                  ]
+                ],
+                "else": {
+                  "block": {
+                    "head": {
+                      "tmpl": [
+                        "public virtual bool Equals(",
+                        {
+                          "map": "decl.params",
+                          "sep": ", ",
+                          "item": {
+                            "call": "csParam"
+                          }
+                        },
+                        ")"
+                      ]
+                    },
+                    "body": [
+                      {
+                        "stmts": "decl.body"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          [
+            {
               "eq": [
                 "decl.kind",
                 "operator"
