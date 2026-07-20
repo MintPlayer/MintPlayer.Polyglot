@@ -1,0 +1,24 @@
+// #52: a match in STATEMENT position (value discarded) with void, side-effecting arms. C# must emit a
+// switch STATEMENT — a switch EXPRESSION here is CS0201 (not a statement) + CS0029 (throw-arm to void).
+// TS/Python/PHP keep their IIFE form (valid in either position). This defect makes C# fail to compile,
+// so the csc oracle catches it; a golden pins the shared output.
+
+union Shape {
+  Circle(r: i32)
+  Rect(w: i32, h: i32)
+  Dot
+}
+
+fn show(s: Shape) {
+  match s {
+    Circle(r)  => print(r),
+    Rect(w, h) => print(w * h),
+    Dot        => print(0),
+  }
+}
+
+fn main() {
+  show(Circle(4))     // 4
+  show(Rect(2, 3))    // 6
+  show(Dot)           // 0
+}

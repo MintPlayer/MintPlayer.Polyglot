@@ -731,29 +731,131 @@
       ]
     },
     "Match": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.isStatement",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                "switch (",
+                {
+                  "emitChild": "node.scrutinee",
+                  "side": "recv"
+                },
+                ") { ",
+                {
+                  "map": "node.arms",
+                  "sep": " ",
+                  "item": {
+                    "tmpl": [
+                      "case ",
+                      {
+                        "call": "csMatchPat"
+                      },
+                      {
+                        "call": "csMatchGuard"
+                      },
+                      ": ",
+                      {
+                        "emit": "item.body"
+                      },
+                      "; break;"
+                    ]
+                  }
+                },
+                " }"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "emitChild": "node.scrutinee",
+              "side": "recv"
+            },
+            " switch { ",
+            {
+              "map": "node.arms",
+              "sep": ", ",
+              "item": {
+                "tmpl": [
+                  {
+                    "call": "csMatchPat"
+                  },
+                  {
+                    "call": "csMatchGuard"
+                  },
+                  " => ",
+                  {
+                    "emit": "item.body"
+                  }
+                ]
+              }
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.hasCatchAll",
+                        "true"
+                      ]
+                    },
+                    ""
+                  ]
+                ],
+                "else": ", _ => throw new global::System.InvalidOperationException()"
+              }
+            },
+            " }"
+          ]
+        }
+      }
+    },
+    "csMatchGuard": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.hasGuard",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                " when ",
+                {
+                  "emit": "item.guard"
+                }
+              ]
+            }
+          ]
+        ],
+        "else": ""
+      }
+    },
+    "csMatchPat": {
       "tmpl": [
         {
-          "emitChild": "node.scrutinee",
-          "side": "recv"
-        },
-        " switch { ",
-        {
-          "map": "node.arms",
-          "sep": ", ",
-          "item": {
-            "tmpl": [
-              {
-                "case": {
-                  "when": [
-                    [
-                      {
-                        "eq": [
-                          "item.pattern.kind",
-                          "wildcard"
-                        ]
-                      },
-                      "_"
-                    ],
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "wildcard"
+                  ]
+                },
+                "_"
+              ],
                     [
                       {
                         "eq": [
@@ -881,54 +983,7 @@
                     ]
                   }
                 }
-              },
-              {
-                "case": {
-                  "when": [
-                    [
-                      {
-                        "eq": [
-                          "item.hasGuard",
-                          "true"
-                        ]
-                      },
-                      {
-                        "tmpl": [
-                          " when ",
-                          {
-                            "emit": "item.guard"
-                          }
-                        ]
-                      }
-                    ]
-                  ],
-                  "else": ""
-                }
-              },
-              " => ",
-              {
-                "emit": "item.body"
               }
-            ]
-          }
-        },
-        {
-          "case": {
-            "when": [
-              [
-                {
-                  "eq": [
-                    "node.hasCatchAll",
-                    "true"
-                  ]
-                },
-                ""
-              ]
-            ],
-            "else": ", _ => throw new global::System.InvalidOperationException()"
-          }
-        },
-        " }"
       ]
     },
     "Lambda": {

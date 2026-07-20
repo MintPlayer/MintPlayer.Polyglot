@@ -166,6 +166,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& m = static_cast<const ir::Match&>(e_);
         if (path == "node.arms.count")  return std::to_string(m.arms.size());
         if (path == "node.hasCatchAll") return m.hasCatchAll ? "true" : "false";
+        if (path == "node.isStatement") return m.isStatement ? "true" : "false"; // #52
         if (path.rfind("node.arms.", 0) == 0) { // node.arms.<i>.<rest>
             const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
             const std::size_t dot = path.find('.', 10);

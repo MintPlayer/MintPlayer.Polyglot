@@ -756,8 +756,13 @@ private:
                 }
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
             }
-            case StmtKind::ExprStmt:
-                return std::make_unique<ir::ExprStmt>(s.pos, expr(*s.value));
+            case StmtKind::ExprStmt: {
+                auto ev = expr(*s.value);
+                // A match whose value is discarded is a STATEMENT match (void/side-effecting arms) — C#
+                // must render a switch statement, not a switch expression (issue #52).
+                if (ev->kind == ir::ExprKind::Match) static_cast<ir::Match&>(*ev).isStatement = true;
+                return std::make_unique<ir::ExprStmt>(s.pos, std::move(ev));
+            }
             case StmtKind::If: {
                 auto node = std::make_unique<ir::If>(s.pos, expr(*s.value));
                 node->thenBody = block(s.thenBody);

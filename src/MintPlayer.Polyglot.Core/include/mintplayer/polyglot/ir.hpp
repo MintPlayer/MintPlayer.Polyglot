@@ -232,6 +232,10 @@ struct Match : Expr {
     // exhaustiveness, but C# can't prove it for enums — without a catch-all, the C# rule appends an
     // unreachable `_ => throw` default so the switch expression compiles without CS8524.
     bool hasCatchAll = false;
+    // The match is the whole statement (its value is discarded), so its arms are void/side-effecting.
+    // C# then needs a switch STATEMENT, not a switch expression (which can't have void arms and isn't a
+    // statement — CS0201/CS0029); the other targets' IIFE works in either position (issue #52).
+    bool isStatement = false;
     Match(SourcePos p, Type t, ExprPtr s) : Expr(ExprKind::Match, p, std::move(t)), scrutinee(std::move(s)) {}
 };
 
