@@ -3364,3 +3364,14 @@ verified), bounded `ForEach-Object -Parallel` batching, a tiered gate (`-Tier fa
 caching layer — decided 2026-07-19 follow-up: NX per-leg targets + the maintainer's existing nx-cache.mintplayer.com remote (OpenAPI HTTP interface; locals R/W, CI cold) composing with an in-runner per-program L1 (docs/prd/gate-speedup/NX-EVALUATION.md).
 Projected honestly: **full gate ~5× (~3–3.5 min), one-.pg dev loop ~25–40 s**. Seven ordered slices in
 `docs/prd/gate-speedup/PLAN.md`; slices 0–5 need no C++ changes and no new dependencies.
+
+## P36 — Open-issue sweep: resolve all 19 open defects (#38–#57) in one PR — 📐 investigated, plan ready (2026-07-20; maintainer request, PRD `docs/prd/issue-sweep/`, 13-agent + follow-up investigation)
+
+After PR #58 (wave-2 coverage + P35) landed the tests that surfaced them, all 19 open issues (#38–#44,
+#46–#57 — there is no #45) are to be fixed in ONE large-but-cohesive PR. They collapse to ~13
+shared-machinery groups (pattern/match lowering fixes #43+#52+#51 and enables #38; one equality model
+fixes #49+#57; the indexer path fixes #42+#40; method plumbing fixes #47+#50; etc.). Four scope
+decisions gate coding (#38 typed-match, #46 per-iteration capture, #39e namespace imports, #51 block
+arms) plus recommended implements (#53, #57, #55). 23 dependency-ordered slices, an acceptance-test
+matrix (six un-narrows of existing programs + ~13 net-new programs + unit tests, goldens mandatory for
+#43/#51/#49/#57), and a risk matrix — all in `docs/prd/issue-sweep/{PRD,PLAN,ANALYSIS}.md`. Not started.
