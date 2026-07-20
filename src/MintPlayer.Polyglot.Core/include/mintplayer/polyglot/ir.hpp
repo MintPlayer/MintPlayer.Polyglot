@@ -301,6 +301,7 @@ struct If : Stmt {
 struct While : Stmt {
     ExprPtr cond;
     std::vector<StmtPtr> body;
+    bool isDoWhile = false; // a post-tested `do { … } while (cond)` loop (#39a)
     While(SourcePos p, ExprPtr c) : Stmt(StmtKind::While, p), cond(std::move(c)) {}
 };
 struct For : Stmt { // `for binding in <seq>`: either an integer range or an arbitrary iterable

@@ -1,0 +1,25 @@
+// #39a: `do { … } while (cond)` — a post-tested loop (the body always runs at least once). Python has no
+// do-while, so it lowers to a while-true emulation whose condition RE-RUNS after a `continue` (a naive
+// `while True: body; if not cond: break` would loop forever on continue). Pins that semantic; output must
+// match across all four targets (C# is the oracle).
+
+fn main() {
+  var i = 0
+  var sum = 0
+  do {
+    i = i + 1
+    if i == 3 {
+      continue
+    }
+    sum = sum + i
+  } while (i < 5)
+  print(sum)    // 1 + 2 + 4 + 5 = 12 (3 skipped, loop still re-tested i < 5 after continue)
+  print(i)      // 5
+
+  // body runs once even though the condition is already false
+  var j = 10
+  do {
+    j = j + 1
+  } while (j < 5)
+  print(j)      // 11
+}

@@ -1631,6 +1631,27 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
         case ir::StmtKind::Continue: line(std::string("continue") + spec().stmtEnd); return;
         case ir::StmtKind::While: { // `while (cond)` head is identical across targets; block form via headBlock
             const auto& w = static_cast<const ir::While&>(s);
+            if (w.isDoWhile) {
+                const std::string cond = emitExpr(*w.cond);
+                if (spec().blockStyle == BlockStyle::ColonIndent) {
+                    // Python has no do-while; a while-true emulation whose condition re-runs on the loop
+                    // header, so a `continue` in the body re-tests it: a fresh flag makes the first pass
+                    // unconditional, then every re-entry (incl. after continue) checks `cond` (#39a).
+                    const std::string flag = "__dw" + std::to_string(doWhileSeq_++);
+                    line(flag + " = " + std::string(spec().trueLit));
+                    openBlock("while " + flag + " or (" + cond + ")");
+                    ++indent_;
+                    line(flag + " = " + std::string(spec().falseLit));
+                    for (const auto& st : w.body) emitStmt(*st);
+                    --indent_;
+                    closeBlock();
+                } else {
+                    openBlock("do");
+                    blockBody(w.body);
+                    line("} while (" + cond + ")" + spec().stmtEnd);
+                }
+                return;
+            }
             headBlock("while (" + emitExpr(*w.cond) + ")", w.body);
             return;
         }

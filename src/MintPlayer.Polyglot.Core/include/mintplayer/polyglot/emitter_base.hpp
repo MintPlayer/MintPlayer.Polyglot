@@ -349,6 +349,7 @@ class EmitterBase {
 protected:
     std::string out_;
     int indent_ = 0;
+    int doWhileSeq_ = 0; // fresh-name counter for the Python do-while emulation flag (#39a)
 
     void line(const std::string& s);
 

@@ -772,6 +772,7 @@ private:
             case StmtKind::While: {
                 auto node = std::make_unique<ir::While>(s.pos, expr(*s.value));
                 node->body = block(s.thenBody);
+                node->isDoWhile = s.isDoWhile;
                 return node;
             }
             case StmtKind::For: {

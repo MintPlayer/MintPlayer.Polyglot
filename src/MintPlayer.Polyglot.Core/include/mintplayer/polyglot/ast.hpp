@@ -157,6 +157,7 @@ struct Stmt {
     ExprPtr value;                  // Let/Use init | Assign RHS | ExprStmt | Return/Throw/Yield value | If/While/For cond/iterable
 
     Pattern forBinding;             // For: the loop binding (Binding or Tuple)
+    bool isDoWhile = false;         // While: a `do { … } while (cond)` (post-tested) loop (#39a)
     std::vector<StmtPtr> thenBody;  // If-then / While / For / Use / Try body
     std::vector<StmtPtr> elseBody;  // If-else
     bool hasElse = false;

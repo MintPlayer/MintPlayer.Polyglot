@@ -662,6 +662,7 @@ private:
         if (at(TokKind::KwLet) || at(TokKind::KwVar)) return parseLet();
         if (at(TokKind::KwIf)) return parseIf();
         if (at(TokKind::KwWhile)) return parseWhile();
+        if (at(TokKind::KwDo)) return parseDoWhile();
         if (at(TokKind::KwFor)) return parseFor();
         if (at(TokKind::KwReturn)) return parseReturn();
         if (at(TokKind::KwBreak) || at(TokKind::KwContinue)) {
@@ -803,6 +804,21 @@ private:
         advance();
         s->value = parseExpr();
         s->thenBody = parseBlock();
+        return s;
+    }
+
+    // `do { … } while (cond)` — a post-tested loop (the body runs at least once). Lowered to the same
+    // ir::While with `isDoWhile`, so each backend emits it natively (or a while-true emulation on Python).
+    StmtPtr parseDoWhile() {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::While;
+        s->isDoWhile = true;
+        s->pos = peek().pos;
+        advance(); // 'do'
+        s->thenBody = parseBlock();
+        expect(TokKind::KwWhile, "'while'");
+        s->value = parseExpr(); // parentheses around the condition are optional (a paren group parses fine)
+        accept(TokKind::Semicolon);
         return s;
     }
 
