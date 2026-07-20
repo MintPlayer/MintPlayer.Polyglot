@@ -521,6 +521,13 @@ int main() {
     // to an expression fold with no statement block; issue #51 — was a silent drop-to-`0`).
     refuses("fn f(n: i32): i32 => match n {\n  0 => { return 1 }\n  _ => 0\n}\n",
             "block-bodied match arm", "P6: refuses a block-bodied match arm");
+    { // #56a: an unresolvable method on a concrete string receiver (missing `import "std.strings"`) is
+      // refused, not emitted verbatim to crash at every target's runtime.
+        EmitResult r = compile("fn f(s: string): i32 => s.codePointAt(0)\n", findTarget("csharp"));
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "import missing")) named = true;
+        check(!r.ok && named, "P36 #56a: unresolvable string method (missing import) is refused");
+    }
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
     resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");

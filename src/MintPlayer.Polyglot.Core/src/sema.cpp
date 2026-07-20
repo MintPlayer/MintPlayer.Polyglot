@@ -1651,6 +1651,13 @@ private:
                 if (const MemberInfo* m = findMember(recv.name, method)) { if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second); checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); TypeRef r = inferResult(m->generics, m->params, argTypes, m->type); return m->isAsync ? awaitable(r) : r; }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
+            // #56a: a method call on a CONCRETE primitive receiver (string/i32/bool/char/f64/…) that bound
+            // no extension and no member is a guaranteed runtime crash — refuse it (usually a missing
+            // `import`) instead of emitting it verbatim. Unknown and still-generic receivers stay lenient (an
+            // uninstantiated lambda param resolves later — #56b), because scalarTyOf is Unknown for those.
+            else if (recv.kind == TypeRef::Kind::Named && scalarTyOf(recv) != Ty::Unknown)
+                diags_.error(e.pos, "no method '" + method + "' on '" + recv.name +
+                                        "' — is an import missing (e.g. \"std.strings\")? (PRD §3.B)");
             return tUnknown();
         }
         if (e.lhs->kind != ExprKind::Name) { checkExpr(*e.lhs); return tUnknown(); }
