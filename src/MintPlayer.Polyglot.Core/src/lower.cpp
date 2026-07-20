@@ -515,7 +515,10 @@ private:
                 if (e.text == "??" && e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name == "Option")
                     return coalesceOption(e);
                 auto b = std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
-                if (e.lhs->type.kind == TypeRef::Kind::Named && !e.lhs->type.name.empty()) {
+                // Comparing against a null literal is a null TEST, never structural equality — don't
+                // route it to the record equals() (TS/PHP `.equals(null)` would read fields off null).
+                const bool rhsIsNullLit = e.rhs->kind == ExprKind::NullLit;
+                if (!rhsIsNullLit && e.lhs->type.kind == TypeRef::Kind::Named && !e.lhs->type.name.empty()) {
                     const std::string& ln = e.lhs->type.name;
                     b->lhsIsRecord = recordNames_.count(ln) != 0;
                     b->lhsIsUserType = !isPrimitiveTypeName(ln) && ln != "unit";
@@ -672,7 +675,9 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 ir::Type t = s.hasDeclType ? s.declType : (s.value ? s.value->type : TypeRef{});
-                return std::make_unique<ir::Let>(s.pos, s.name, s.isMutable, t, expr(*s.value));
+                auto let = std::make_unique<ir::Let>(s.pos, s.name, s.isMutable, t, expr(*s.value));
+                let->declExplicit = s.hasDeclType;
+                return let;
             }
             case StmtKind::Assign:
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));

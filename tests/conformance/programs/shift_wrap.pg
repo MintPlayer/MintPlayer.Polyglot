@@ -1,0 +1,21 @@
+// Wave-2 G4: shift semantics — count MASKING (& 31 / & 63, the C# oracle rule) and
+// result wrapping. Python/PHP emitted bare shifts (unbounded ints / no count mask);
+// TS u32 `>>` reinterpreted the operand as signed.
+
+fn main() {
+  // i32: count masks at 32, result wraps at 2^31
+  print(1 << 33)              // 2            (count 33 & 31 = 1)
+  print(1 << 31)              // -2147483648  (wraps to INT_MIN)
+  print((1 << 31) >> 30)      // -2           (arithmetic right shift)
+  print(-8 >> 1)              // -4
+
+  // u32: logical right shift, left shift wraps at 2^32 (the count is always i32 — C# rule)
+  let u: u32 = 3000000000u32
+  print(u >> 4)               // 187500000
+  print(u << 1)               // 1705032704   (6e9 wrapped mod 2^32)
+
+  // i64: count masks at 64
+  let big: i64 = 1
+  print(big << 65)            // 2            (count 65 & 63 = 1)
+  print((big << 62) >> 61)    // 2
+}

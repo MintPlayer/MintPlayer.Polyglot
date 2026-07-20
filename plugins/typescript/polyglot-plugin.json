@@ -3277,6 +3277,130 @@
           ],
           [
             {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsInt64",
+                    "true"
+                  ]
+                },
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "<<"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        ">>"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "tmpl": [
+                    "(",
+                    {
+                      "emit": "node.lhs"
+                    },
+                    " ",
+                    {
+                      "get": "node.op"
+                    },
+                    " (BigInt(",
+                    {
+                      "emit": "node.rhs"
+                    },
+                    ") & 63n))"
+                  ]
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsSmallInt",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.op",
+                    "<<"
+                  ]
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "tmpl": [
+                    "(",
+                    {
+                      "emit": "node.lhs"
+                    },
+                    " << ",
+                    {
+                      "emitChild": "node.rhs",
+                      "side": "r"
+                    },
+                    ")"
+                  ]
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.type",
+                    "u32"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.op",
+                    ">>"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "emitChild": "node.lhs",
+                  "side": "l"
+                },
+                " >>> ",
+                {
+                  "emitChild": "node.rhs",
+                  "side": "r"
+                }
+              ]
+            }
+          ],
+          [
+            {
               "or": [
                 {
                   "eq": [
@@ -3481,8 +3605,8 @@
       "List.init": "[]",
       "List.count": "$this.length",
       "List.add": "$this.push($0)",
-      "List.clear": "$this = []",
-      "List.removeAll": "$this = $this.filter(__e => !(($0)(__e)))",
+      "List.clear": "$this.length = 0",
+      "List.removeAll": "$this.splice(0, $this.length, ...$this.filter(__e => !(($0)(__e))))",
       "List.removeAt": "$this.splice($0, 1)"
     },
     "std.io": {
@@ -3522,9 +3646,9 @@
       "Math.min": "((a, b) => (a <= b ? a : b))($0, $1)",
       "Math.max": "((a, b) => (a >= b ? a : b))($0, $1)",
       "Math.abs": "((a) => (a < (a - a) ? -a : a))($0)",
-      "Math.sign": "((a) => { const o = typeof a === 'bigint' ? 1n : 1; return a > (a - a) ? o : (a < (a - a) ? -o : a - a); })($0)",
-      "Math.clamp": "((x, lo, hi) => x < lo ? lo : (x > hi ? hi : x))($0, $1, $2)",
-      "Math.round": "Math.round($0)"
+      "Math.sign": "((a: any): any => { const o = typeof a === 'bigint' ? 1n : 1; return a > a - a ? o : (a < a - a ? -o : a - a); })($0)",
+      "Math.clamp": "(<T extends number | bigint>(x: T, lo: T, hi: T): T => x < lo ? lo : (x > hi ? hi : x))($0, $1, $2)",
+      "Math.round": "((__x: number) => { const __f = Math.floor(__x); return __x - __f === 0.5 ? (__f % 2 === 0 ? __f : __f + 1) : Math.round(__x); })($0)"
     },
     "std.strings": {
       "string.isEmpty": "($this.length === 0)",

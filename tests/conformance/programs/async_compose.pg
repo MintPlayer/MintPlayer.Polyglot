@@ -1,0 +1,34 @@
+// Wave-2 G15: async COMPOSED with classes, exceptions, and control flow — an
+// async class method that throws, try/catch around an await inside a for loop,
+// and an await in an if arm. async_await.pg pins free functions only.
+// (PHP declares async unsupported — the run-php leg counts the refusal as expected.)
+
+class BadInput : Error {
+  init() { super("bad input") }
+}
+
+class Fetcher {
+  let base: i32
+  init(base: i32) { this.base = base }
+  async fn get(x: i32): i32 {
+    if x < 0 { throw BadInput() }
+    return this.base + x
+  }
+}
+
+async fn main() {
+  let f = Fetcher(100)
+  var total = 0
+  for i in 0..4 {
+    let arg = if i == 2 { -1 } else { i }
+    try {
+      total = total + await f.get(arg)
+    } catch (e: BadInput) {
+      total = total + 1000
+    }
+  }
+  print(total)              // 100 + 101 + 1000 + 103 = 1304
+  if total > 1000 {
+    print(await f.get(5))   // 105  (await in an if arm)
+  }
+}

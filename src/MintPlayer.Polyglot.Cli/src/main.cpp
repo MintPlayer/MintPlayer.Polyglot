@@ -1502,9 +1502,22 @@ void loadPluginsNextToExe(const char* argv0) {
 
 } // namespace
 
+// The whole CLI runs under one exception boundary: an internal error (emitter depth guard, a stdlib
+// throw like std::stoll on an out-of-range literal) must exit with a printed `error:` line, never a
+// process abort / stack-overflow-style crash with empty stderr (G42/G45, wave 2).
+static int run(const std::vector<std::string>& args, const char* argv0);
+
 int main(int argc, char** argv) {
     const std::vector<std::string> args(argv + 1, argv + argc);
+    try {
+        return run(args, argv[0]);
+    } catch (const std::exception& e) {
+        std::cerr << "polyglot: error: " << e.what() << "\n";
+        return 1;
+    }
+}
 
+static int run(const std::vector<std::string>& args, const char* argv0) {
     if (args.empty() || args[0] == "-h" || args[0] == "--help") {
         printUsage();
         return 0;
@@ -1513,7 +1526,7 @@ int main(int argc, char** argv) {
         std::cout << Compiler::version() << "\n";
         return 0;
     }
-    loadPluginsNextToExe(argv[0]);
+    loadPluginsNextToExe(argv0);
     if (args[0] == "build") {
         return runBuild(args);
     }

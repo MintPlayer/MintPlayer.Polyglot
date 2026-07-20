@@ -64,9 +64,17 @@ private:
 struct ChunkResult { std::string text; bool more; };
 ChunkResult scanChunk(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
     std::string value;
+    bool warnedNonAscii = false;
     while (!cur.eof()) {
         if (cur.peek() == '"') { cur.advance(); return {value, false}; }
         if (cur.peek() == '$' && cur.peek(1) == '{') { cur.advance(); cur.advance(); return {value, true}; }
+        // G47: non-ASCII string content is a PUBLISHED faithfulness caveat (SPEC §9) — PHP's string
+        // std is byte-oriented, so len()/charAt() count bytes there and code points elsewhere. Warn
+        // once per literal; the program still compiles.
+        if (static_cast<unsigned char>(cur.peek()) >= 0x80 && !warnedNonAscii) {
+            diags.warn(start, "non-ASCII string content: PHP's string std is byte-oriented (len/charAt/codePoints count bytes there) — see SPEC §9");
+            warnedNonAscii = true;
+        }
         char ch = cur.advance();
         if (ch == '\\' && !cur.eof()) {
             char esc = cur.advance();
@@ -118,6 +126,11 @@ std::string scanQuoted(Cursor& cur, char quote, bool& terminated) {
 std::vector<Token> lex(const std::string& source, DiagnosticBag& diags, int fileId) {
     std::vector<Token> out;
     Cursor cur(source, fileId);
+    // G43: tolerate a UTF-8 BOM — the default save format of several Windows editors. Consumed as
+    // trivia so positions/diagnostics start at the real first character.
+    if (source.size() >= 3 && source.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+        cur.advance(); cur.advance(); cur.advance();
+    }
     std::vector<int> interpDepth; // brace depth per open interpolation hole; non-empty = inside `${ ... }`
 
     auto push = [&](TokKind kind, std::string text, SourcePos pos) {
@@ -135,9 +148,13 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags, int file
             continue;
         }
         if (c == '/' && cur.peek(1) == '*') {
+            SourcePos cstart = cur.pos();
             cur.advance(); cur.advance();
             while (!cur.eof() && !(cur.peek() == '*' && cur.peek(1) == '/')) cur.advance();
             if (!cur.eof()) { cur.advance(); cur.advance(); }
+            else // G44: an unterminated /* would otherwise SILENTLY swallow every token after it —
+                 // miscompile-adjacent trivia. One diagnostic at the comment's start.
+                diags.error(cstart, "unterminated block comment ('/*' without a closing '*/')");
             continue;
         }
 
@@ -305,6 +322,15 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags, int file
                 break;
 
             default:
+                // G48: a non-ASCII byte is one multi-byte character — consume the WHOLE UTF-8
+                // sequence and diagnose once, position-correct, instead of one error per byte.
+                if (static_cast<unsigned char>(c) >= 0x80) {
+                    std::string seq;
+                    while (!cur.eof() && static_cast<unsigned char>(cur.peek()) >= 0x80) seq += cur.advance();
+                    diags.error(start, "non-ASCII character in source — Polyglot identifiers and keywords are ASCII (string literals: see the SPEC §9 PHP byte-string caveat)");
+                    push(TokKind::Unknown, std::move(seq), start);
+                    break;
+                }
                 diags.error(start, std::string("unexpected character '") + c + "'");
                 cur.advance();
                 push(TokKind::Unknown, std::string(1, c), start);

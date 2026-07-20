@@ -1,0 +1,19 @@
+// Wave-2 G7: codePoints() element VALUES (not just the count — codepoints.pg).
+// C# EnumerateRunes() yields Rune, not string: without the Rune→string projection
+// the generated C# didn't compile on first value use.
+
+import "std.strings"
+
+fn main() {
+  let s = "AbZ"
+  var out = ""
+  for c in s.codePoints() {
+    out = out + c + "-"
+  }
+  print(out)                // A-b-Z-
+  var hits = 0
+  for c in s.codePoints() {
+    if c == "b" { hits = hits + 1 }
+  }
+  print(hits)               // 1
+}

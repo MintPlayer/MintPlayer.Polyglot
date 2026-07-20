@@ -1,0 +1,16 @@
+// Wave-2 G6: Math.round half-value mode is HALF-TO-EVEN (banker's — the .NET
+// oracle's default, matched by Python). TS previously rounded half-up
+// (2.5 -> 3), PHP half-away-from-zero (-2.5 -> -3); both now carry shims.
+
+import { Math } from "std.math"
+
+fn main() {
+  print((i32)Math.round(2.5))    // 2    (to even)
+  print((i32)Math.round(3.5))    // 4
+  print((i32)Math.round(-2.5))   // -2
+  print((i32)Math.round(-0.5))   // 0
+  print((i32)Math.round(0.5))    // 0
+  print((i32)Math.round(1.5))    // 2
+  print((i32)Math.round(2.7))    // 3    (non-half values unchanged)
+  print((i32)Math.round(-2.7))   // -3
+}

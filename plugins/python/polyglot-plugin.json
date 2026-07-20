@@ -643,26 +643,62 @@
                             "map": "decl.fields",
                             "sep": " and ",
                             "item": {
-                              "tmpl": [
-                                "self.",
-                                {
-                                  "fn": "ident",
-                                  "args": [
+                              "case": {
+                                "when": [
+                                  [
                                     {
-                                      "get": "item.name"
+                                      "eq": [
+                                        "item.typeIsList",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "tmpl": [
+                                        "self.",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        },
+                                        " is other.",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        }
+                                      ]
                                     }
                                   ]
-                                },
-                                " == other.",
-                                {
-                                  "fn": "ident",
-                                  "args": [
+                                ],
+                                "else": {
+                                  "tmpl": [
+                                    "self.",
                                     {
-                                      "get": "item.name"
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
+                                    },
+                                    " == other.",
+                                    {
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
                                     }
                                   ]
                                 }
-                              ]
+                              }
                             }
                           }
                         ]
@@ -2150,6 +2186,80 @@
                 ")"
               ]
             }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsSmallInt",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsInt",
+                    "true"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "node.castSame",
+                      "true"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "emit": "node.operand"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsInt64",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.fromIsInt64",
+                    "true"
+                  ]
+                },
+                {
+                  "not": {
+                    "eq": [
+                      "node.castSame",
+                      "true"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "fn": "wrap",
+              "args": [
+                {
+                  "get": "node.type"
+                },
+                {
+                  "emit": "node.operand"
+                }
+              ]
+            }
           ]
         ],
         "else": {
@@ -2698,6 +2808,37 @@
               "and": [
                 {
                   "eq": [
+                    "node.typeIsFloat",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.op",
+                    "%"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "__import__('math').fmod(",
+                {
+                  "emit": "node.lhs"
+                },
+                ", ",
+                {
+                  "emit": "node.rhs"
+                },
+                ")"
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
                     "node.typeIsInt",
                     "true"
                   ]
@@ -2733,6 +2874,18 @@
                         "node.op",
                         "%"
                       ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "<<"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        ">>"
+                      ]
                     }
                   ]
                 }
@@ -2747,6 +2900,82 @@
                 {
                   "case": {
                     "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            "<<"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            " << (",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            " & ",
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "node.typeIsInt64",
+                                        "true"
+                                      ]
+                                    },
+                                    "63"
+                                  ]
+                                ],
+                                "else": "31"
+                              }
+                            },
+                            "))"
+                          ]
+                        }
+                      ],
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            ">>"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            " >> (",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            " & ",
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "node.typeIsInt64",
+                                        "true"
+                                      ]
+                                    },
+                                    "63"
+                                  ]
+                                ],
+                                "else": "31"
+                              }
+                            },
+                            "))"
+                          ]
+                        }
+                      ],
                       [
                         {
                           "eq": [
@@ -2864,8 +3093,8 @@
       "List.init": "[]",
       "List.count": "len($this)",
       "List.add": "$this.append($0)",
-      "List.clear": "$this = []",
-      "List.removeAll": "$this = [__e for __e in $this if not (($0)(__e))]",
+      "List.clear": "$this.clear()",
+      "List.removeAll": "$this[:] = [__e for __e in $this if not (($0)(__e))]",
       "List.removeAt": "$this.pop($0)"
     },
     "std.io": {

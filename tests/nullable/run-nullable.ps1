@@ -42,23 +42,14 @@ Check ($cs -match 'Box\? get\(\)')                  "method return keeps '?' (Bo
 Check ($cs -match 'Box\? x')                        "method param keeps '?' (Box? x)"
 
 # 3. A generated file compiles CLEAN under strict NRT (0 warnings) — proves annotations are self-consistent
-#    and the always-shipped std helpers (print<T>, …) are null-clean too.
-$csproj = @'
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <ImplicitUsings>disable</ImplicitUsings>
-  </PropertyGroup>
-</Project>
-'@
-$csproj | Set-Content (Join-Path $work "nullable_positions.csproj")
-$build = & dotnet build (Join-Path $work "nullable_positions.csproj") -c Release --nologo 2>&1 | Out-String
-Check ($build -match 'Build succeeded' -and $build -match '0 Warning\(s\)') `
-      "emitted C# compiles clean under <Nullable>enable</> + <TreatWarningsAsErrors>true</> (0 warnings)"
-if ($build -notmatch 'Build succeeded') { Write-Host ($build.Trim()) }
+#    and the always-shipped std helpers (print<T>, …) are null-clean too. P35 slice 2: through the shared
+#    csc oracle (`/nullable:enable /warnaserror` — verified exit-0-equivalent to the csproj form).
+. (Join-Path $PSScriptRoot "..\..\scripts\lib\OracleCompile.ps1")
+$r = Invoke-OracleCompile -Sources (Join-Path $work "nullable_positions.cs") `
+        -OutDll (Join-Path $work "nullable_positions.dll") -NullableEnable -WarnAsError
+Check $r.Ok "emitted C# compiles clean under /nullable:enable /warnaserror (0 warnings)"
+if (-not $r.Ok) { Write-Host ($r.Output.Trim()) }
+Stop-OracleBuildServer
 
 Write-Host ""
 if ($fail -eq 0) { Write-Host "Nullable/NRT gate green."; exit 0 }

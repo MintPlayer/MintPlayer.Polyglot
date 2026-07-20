@@ -13,8 +13,24 @@ on:
       - 'tests/**'
       - 'plugins/**'
       - 'CMakeLists.txt'
+      - 'project.json'
+      - 'nx.json'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/ci.yml'
+  push:
+    branches: [master]
   workflow_dispatch:
+
+# NX self-hosted remote cache (P35 slice 6) — the org token convention from MintPlayer.Spark
+# (docs/guide-nx-remote-cache.md): every workflow points at the shared cache, but only post-merge runs
+# on the default branch WRITE (NX_CACHE_RW_TOKEN); PR + branch runs are READ-ONLY (NX_CACHE_RO_TOKEN) so
+# a PR can never poison the shared cache (the CVE-2025-36852 mitigation, enforced by the token split).
+# Fork PRs get no secrets and simply run cold. NOTE: CI is ubuntu; local dev is Windows — their toolchain
+# runtime-input hashes differ, so CI entries share only CI↔CI (PR reads master's), not with local Windows.
+env:
+  NX_SELF_HOSTED_REMOTE_CACHE_SERVER: ${{ secrets.NX_CACHE_SERVER }}
+  NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN: ${{ (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) && secrets.NX_CACHE_RW_TOKEN || secrets.NX_CACHE_RO_TOKEN }}
 
 jobs:
   linux-build:
@@ -26,19 +42,67 @@ jobs:
       - name: Install toolchain (cmake, g++)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++
 
-      - name: Build (CMake, Release)
-        # POLYGLOT_VERSION pinned to the dev placeholder: the shallow PR checkout has no tags, so
-        # CMake's `git describe --always` fallback would inject a bare commit SHA and fail the
-        # version-shape unit test. A PR check has no version — say so explicitly.
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOLYGLOT_VERSION=0.0.0-dev
-          cmake --build build -j"$(nproc)"
+      - name: Install NX (gate orchestration only)
+        run: npm ci --no-audit --no-fund
 
-      - name: Unit tests
-        run: ./build/polyglot-tests
+      # Build + unit + the two POSIX harness legs (watch-mode polling + the registry HTTP transport — the
+      # `#ifdef`-forked code that broke every P30 POSIX release leg) run through NX so they read/write the
+      # shared remote cache: an unchanged-source PR gets remote hits from the last master build. The nx
+      # `build` target is OS-aware (cmake+POLYGLOT_VERSION=0.0.0-dev on Linux — the shallow-checkout pin);
+      # `cache: false`, so it always runs, but the cacheable legs skip when their inputs are unchanged.
+      # The runners stay invocable WITHOUT nx (release.yml calls them directly) — nx is orchestration only.
+      - name: Gate (nx run-many — build + unit + watch + registry, remote-cached)
+        run: npx nx run-many -t unit,watch,registry --output-style=stream
 
       - name: Smoke transpile (plugins found next to the binary, not cwd)
         run: |
           printf 'fn main() {\n  print(6 * 7)\n}\n' > /tmp/smoke.pg
           (cd /tmp && "$GITHUB_WORKSPACE/build/polyglot" build /tmp/smoke.pg --target csharp --out /tmp/ --lib io)
           grep -q 'print(6 \* 7)' /tmp/smoke.cs
+
+  # Wave-2 slice 7: C++ line coverage of the Core/CLI, report-only (no threshold until a baseline
+  # exists). Unit suite + a four-target CLI transpile sweep of the conformance programs, so both the
+  # front-end AND the emitter/rule-interpreter paths accumulate .gcda. What this deliberately does NOT
+  # measure: the plugin JSON templates — their instrument is the differential conformance suite.
+  coverage:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain (cmake, g++, gcovr)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ gcovr
+
+      - name: Build (Debug, --coverage)
+        run: |
+          cmake -S . -B build-cov -DCMAKE_BUILD_TYPE=Debug -DPOLYGLOT_VERSION=0.0.0-dev \
+            -DCMAKE_CXX_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
+          cmake --build build-cov -j"$(nproc)"
+
+      - name: Unit tests (instrumented)
+        run: ./build-cov/polyglot-tests
+
+      - name: Conformance transpile sweep (instrumented CLI, all four targets)
+        run: |
+          mkdir -p /tmp/cov-out
+          for t in csharp typescript python php; do
+            for p in tests/conformance/programs/*.pg; do
+              ./build-cov/polyglot build "$p" --target "$t" --lib io --out /tmp/cov-out >/dev/null 2>&1 || true
+            done
+          done
+
+      - name: Coverage report (gcovr)
+        run: |
+          mkdir -p coverage-report
+          gcovr --root . --filter 'src/' --print-summary \
+            --html-details coverage-report/index.html --txt coverage-report/summary.txt
+          { echo '### C++ coverage — Core + CLI (unit suite + conformance transpile sweep)';
+            echo '```';
+            cat coverage-report/summary.txt;
+            echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report/

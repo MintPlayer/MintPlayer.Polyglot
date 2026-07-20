@@ -17,7 +17,10 @@
     "name": "php",
     "scalarType": {},
     "intSuffix": {},
-    "binaryOp": {},
+    "binaryOp": {
+      "==": "===",
+      "!=": "!=="
+    },
     "delimited": {
       "tuple": {
         "open": "[",
@@ -232,7 +235,7 @@
       "Math.abs": "abs($0)",
       "Math.sign": "(fn($a) => $a > 0 ? 1 : ($a < 0 ? -1 : $a - $a))($0)",
       "Math.clamp": "(fn($x, $lo, $hi) => $x < $lo ? $lo : ($x > $hi ? $hi : $x))($0, $1, $2)",
-      "Math.round": "round($0)"
+      "Math.round": "round($0, 0, PHP_ROUND_HALF_EVEN)"
     }
   },
   "rules": {
@@ -838,6 +841,75 @@
             {
               "and": [
                 {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "!="
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.lhsIsRecord",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "recv"
+                        },
+                        "->equals(",
+                        {
+                          "emit": "node.rhs"
+                        },
+                        ")"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    "!",
+                    {
+                      "emitChild": "node.lhs",
+                      "side": "recv"
+                    },
+                    "->equals(",
+                    {
+                      "emit": "node.rhs"
+                    },
+                    ")"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
+              "and": [
+                {
                   "eq": [
                     "node.op",
                     "+"
@@ -862,6 +934,37 @@
                   "emitChild": "node.rhs",
                   "side": "r"
                 }
+              ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "node.typeIsFloat",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.op",
+                    "%"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "fmod(",
+                {
+                  "emit": "node.lhs"
+                },
+                ", ",
+                {
+                  "emit": "node.rhs"
+                },
+                ")"
               ]
             }
           ],
@@ -905,6 +1008,18 @@
                         "node.op",
                         "%"
                       ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "<<"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        ">>"
+                      ]
                     }
                   ]
                 }
@@ -919,6 +1034,82 @@
                 {
                   "case": {
                     "when": [
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            "<<"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            " << (",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            " & ",
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "node.typeIsInt64",
+                                        "true"
+                                      ]
+                                    },
+                                    "63"
+                                  ]
+                                ],
+                                "else": "31"
+                              }
+                            },
+                            "))"
+                          ]
+                        }
+                      ],
+                      [
+                        {
+                          "eq": [
+                            "node.op",
+                            ">>"
+                          ]
+                        },
+                        {
+                          "tmpl": [
+                            "(",
+                            {
+                              "emit": "node.lhs"
+                            },
+                            " >> (",
+                            {
+                              "emit": "node.rhs"
+                            },
+                            " & ",
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "node.typeIsInt64",
+                                        "true"
+                                      ]
+                                    },
+                                    "63"
+                                  ]
+                                ],
+                                "else": "31"
+                              }
+                            },
+                            "))"
+                          ]
+                        }
+                      ],
                       [
                         {
                           "eq": [
@@ -2196,6 +2387,101 @@
                         },
                         ";"
                       ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "block": {
+              "head": "public function equals($other)",
+              "body": [
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.fields.count",
+                            "0"
+                          ]
+                        },
+                        {
+                          "line": "return true;"
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "line": {
+                        "tmpl": [
+                          "return ",
+                          {
+                            "map": "decl.fields",
+                            "sep": " && ",
+                            "item": {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "item.typeIsRecord",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "tmpl": [
+                                        "$this->",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        },
+                                        "->equals($other->",
+                                        {
+                                          "fn": "ident",
+                                          "args": [
+                                            {
+                                              "get": "item.name"
+                                            }
+                                          ]
+                                        },
+                                        ")"
+                                      ]
+                                    }
+                                  ]
+                                ],
+                                "else": {
+                                  "tmpl": [
+                                    "$this->",
+                                    {
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
+                                    },
+                                    " === $other->",
+                                    {
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.name"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          ";"
+                        ]
+                      }
                     }
                   }
                 }

@@ -1,0 +1,2 @@
+// REFUSED (PRD §3.B/§3.D): the `decimal` type — no portable cross-target decimal exists.
+fn tax(amount: decimal): i32 => 0

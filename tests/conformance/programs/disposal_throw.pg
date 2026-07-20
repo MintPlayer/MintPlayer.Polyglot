@@ -1,0 +1,37 @@
+// Wave-2 G14: `use` disposal on the THROW path — SPEC §5.2 promises disposal "even
+// on throw": nested resources unwind LIFO before the exception reaches the catch.
+// disposal.pg pins the happy path only. (fn named detonate, not explode — the PHP
+// built-in name collision is issue #55.)
+
+class Boom : Error {
+  init() { super("boom") }
+}
+
+class Res {
+  let id: i32
+  init(id: i32) {
+    this.id = id
+    print(id)
+  }
+  fn dispose() {
+    print(this.id + 100)
+  }
+}
+
+fn detonate(): i32 {
+  use a = Res(1) {
+    use b = Res(2) {
+      throw Boom()
+    }
+  }
+  return 0
+}
+
+fn main() {
+  try {
+    print(detonate())
+  } catch (e: Boom) {
+    print(9)
+  }
+  // expected: 1, 2, 102, 101, 9  (both disposals run BEFORE the catch body)
+}

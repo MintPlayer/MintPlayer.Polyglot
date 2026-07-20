@@ -1,0 +1,2 @@
+// REFUSED (PRD §3.B): naming `Thread` — threads/locks are refused (single-threaded async only).
+fn run(t: Thread): i32 => 0

@@ -1,0 +1,126 @@
+{
+  "$schema": "./node_modules/nx/schemas/project-schema.json",
+  "name": "polyglot",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 build", "cwd": "{workspaceRoot}" },
+      "outputs": [
+        "{workspaceRoot}/x64/Debug/MintPlayer.Polyglot.Cli.exe",
+        "{workspaceRoot}/x64/Debug/MintPlayer.Polyglot.Tests.exe",
+        "{workspaceRoot}/x64/Debug/plugins/**",
+        "{workspaceRoot}/build/polyglot",
+        "{workspaceRoot}/build/polyglot-tests",
+        "{workspaceRoot}/build/plugins/**"
+      ]
+    },
+    "unit": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 unit", "cwd": "{workspaceRoot}" }
+    },
+    "parity": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 parity", "cwd": "{workspaceRoot}" },
+      "inputs": [
+        "{workspaceRoot}/scripts/check-buildfile-parity.ps1",
+        "{workspaceRoot}/scripts/nx-leg.ps1",
+        "{workspaceRoot}/CMakeLists.txt",
+        "{workspaceRoot}/src/**/*.vcxproj",
+        "{workspaceRoot}/tests/**/*.vcxproj"
+      ],
+      "outputs": []
+    },
+    "cli-smoke": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 cli-smoke", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/cli/**/*", "{workspaceRoot}/tests/conformance/programs/counter.pg", "{workspaceRoot}/tests/conformance/programs/modular/**", "{workspaceRoot}/tests/conformance/programs/operators_full.pg", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "refusals": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 refusals", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/refusals/**/*", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "lsp": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 lsp", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/lsp/**/*", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "fidelity": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 fidelity", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/fidelity/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "watch": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 watch", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/watch/**/*", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "registry": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 registry", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/registry/**/*", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals", { "runtime": "node --version" }],
+      "outputs": []
+    },
+    "conformance": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 conformance", "cwd": "{workspaceRoot}" },
+      "inputs": [
+        "{workspaceRoot}/tests/conformance/**/*",
+        "{workspaceRoot}/tests/library/**/*",
+        "{workspaceRoot}/scripts/lib/OracleCompile.ps1",
+        "{workspaceRoot}/scripts/nx-leg.ps1",
+        "compilerSources",
+        "sharedGlobals",
+        { "runtime": "python --version" },
+        { "runtime": "php --version" },
+        { "runtime": "tsc --version" }
+      ],
+      "outputs": []
+    },
+    "samples": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 samples", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/samples/**/*", "{workspaceRoot}/docs/lang/samples/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "nullable": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 nullable", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "nuget": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 nuget", "cwd": "{workspaceRoot}" }
+    }
+  }
+}

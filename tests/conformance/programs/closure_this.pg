@@ -1,0 +1,23 @@
+// Wave-2 G25: lambdas returned FROM a method capture `this` live (not a value
+// snapshot) — invoked after the method has returned. Pinned only by
+// emission-string asserts until now (PHP $this binding / Python self capture).
+
+class Counter {
+  var n: i32
+  init(n: i32) { this.n = n }
+  fn reader(): () => i32 => () => this.n
+  fn adder(k: i32): (i32) => i32 => (x) => x + this.n + k
+  fn set(v: i32) { this.n = v }
+}
+
+fn main() {
+  let c = Counter(5)
+  let r = c.reader()
+  print(r())        // 5
+  c.set(9)
+  print(r())        // 9   (live this — not a snapshot at reader() time)
+  let f = c.adder(100)
+  print(f(1))       // 110
+  c.set(0)
+  print(f(1))       // 101  (this.n read at CALL time)
+}

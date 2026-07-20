@@ -1,0 +1,5 @@
+// REFUSED (PRD §4.7): `await` in a non-async function — await is only legal inside an `async fn`.
+async fn getValue(): i32 => 42
+fn main() {
+  let x = await getValue()
+}

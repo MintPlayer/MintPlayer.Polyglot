@@ -141,6 +141,52 @@ try {
     $lines = Wait-Cycles 8
     Assert (Test-Path (Join-Path $work "main.ts")) "editing the active pgconfig re-resolves the target set"
 
+    # The valid entry content (imports the util + extra modules created above) used to recreate main.pg.
+    $goodEntry = "import { area } from `"./util`"`nimport { boost } from `"./extra`"`nimport { print } from `"std.io`"`nfn main() {`n  print(area(3, 5))`n}`n"
+
+    # --- cycle 9: DELETING the watched entry fails the cycle but keeps watching (last-good preserved) ---
+    $csLastGood = Get-Content (Join-Path $work "main.cs") -Raw
+    Remove-Item $entry -Force
+    $lines = Wait-Cycles 9
+    $end9 = @($lines | Where-Object { $_ -match $reEnd }) | Select-Object -Last 1
+    Assert ($null -ne $end9 -and $end9 -match $reEnd -and [int]$Matches[1] -ge 1) `
+        "deleting the watched entry fails the cycle (nonzero error count)"
+    Assert (@($lines | Where-Object { $_ -match $reDiag -and $_ -match 'cannot open input file' }).Count -ge 1) `
+        "the failure names the missing input ('cannot open input file')"
+    Assert (-not $proc.HasExited) "the watcher stays alive after the entry is deleted"
+    Assert ((Get-Content (Join-Path $work "main.cs") -Raw) -eq $csLastGood) `
+        "a deleted entry leaves the last-good output untouched on disk"
+
+    # --- cycle 10: recreating the entry recovers to a green cycle ---------------------------------------
+    Set-Content -Path $entry -Value $goodEntry -NoNewline
+    $lines = Wait-Cycles 10
+    $end10 = @($lines | Where-Object { $_ -match $reEnd }) | Select-Object -Last 1
+    Assert ($null -ne $end10 -and $end10 -match $reEnd -and $Matches[1] -eq '0') `
+        "recreating the entry triggers a green rebuild"
+    Assert ((Get-Content (Join-Path $work "main.cs") -Raw).Contains("area(3, 5)")) `
+        "the recovery cycle regenerated the entry's output"
+
+    # --- cycle 11: DELETING pgconfig.json — the config-sourced target set vanishes, so the build --------
+    # refuses per cycle (P30 slice 4: no --target + no pgconfig `targets` is a loud refusal, never a
+    # default pair). The watcher stays alive and last-good outputs are preserved; restoring recovers.
+    $csBeforeCfgDelete = Get-Content (Join-Path $work "main.cs") -Raw
+    Remove-Item (Join-Path $work "pgconfig.json") -Force
+    $lines = Wait-Cycles 11
+    $end11 = @($lines | Where-Object { $_ -match $reEnd }) | Select-Object -Last 1
+    Assert ($null -ne $end11 -and $end11 -match $reEnd -and [int]$Matches[1] -ge 1) `
+        "deleting pgconfig.json refuses the cycle (no config-sourced target set)"
+    Assert (@($lines | Where-Object { $_ -match $reDiag -and $_ -match 'no --target given and no pgconfig\.json' }).Count -ge 1) `
+        "the refusal names the missing config-sourced target set"
+    Assert (-not $proc.HasExited) "the watcher stays alive after pgconfig.json is deleted"
+    Assert ((Get-Content (Join-Path $work "main.cs") -Raw) -eq $csBeforeCfgDelete) `
+        "a deleted pgconfig leaves the last-good output untouched on disk"
+    # Restore for cleanup — and confirm the watcher recovers (never wedged) on the next green cycle.
+    Set-Content -Path (Join-Path $work "pgconfig.json") -Value "{ `"targets`": [`"csharp`", `"typescript`"] }" -NoNewline
+    $lines = Wait-Cycles 12
+    $end12 = @($lines | Where-Object { $_ -match $reEnd }) | Select-Object -Last 1
+    Assert ($null -ne $end12 -and $end12 -match $reEnd -and $Matches[1] -eq '0') `
+        "restoring pgconfig.json recovers to a green cycle (watcher not wedged)"
+
     # --- protocol sweep: every line in the log is one of the known shapes -------------------------------
     $known = @($lines | Where-Object {
         $_ -match $reBegin -or $_ -match $reEnd -or $_ -match $reDiag -or $_ -match '^  -> ' -or $_ -eq ''

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
 
 // The shared walk machinery for the hand-written backends — see emitter_base.hpp for the abstraction.
 
@@ -348,9 +349,16 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
     if (!c) return "";
     std::string inner = emit_(*c);
     if (side == "l" || side == "r") { // binary operand: wrap by precedence + associativity (shared policy)
-        if (e_.kind == ir::ExprKind::Binary && c->kind == ir::ExprKind::Binary) {
+        // A widening cast can emit as pure identity on a target (f32->f64 is textless on TS/Python/PHP),
+        // which would silently swallow the parens its operand needs — `(a + b) * x` becoming `a + b * x`
+        // (wave-2 f32.pg catch). Judge precedence by the expression UNDER any casts; if the cast does
+        // emit real text it self-brackets, so the extra parens are harmless.
+        const ir::Expr* eff = c;
+        while (eff->kind == ir::ExprKind::Cast && static_cast<const ir::Cast&>(*eff).operand)
+            eff = static_cast<const ir::Cast&>(*eff).operand.get();
+        if (e_.kind == ir::ExprKind::Binary && eff->kind == ir::ExprKind::Binary) {
             const std::string& po = static_cast<const ir::Binary&>(e_).op;
-            const std::string& co = static_cast<const ir::Binary&>(*c).op;
+            const std::string& co = static_cast<const ir::Binary&>(*eff).op;
             // Two target quirks precedence levels can't express, both harmless as extra parens on the
             // other targets: JS makes bare `a && b ?? c` a SyntaxError (?? refuses to mix with &&/||
             // unparenthesized), and Python CHAINS comparisons (`a < b == c` means `a < b and b == c`),
@@ -777,6 +785,14 @@ std::string RecordDeclCtx::get(const std::string& path) const {
             if (rest == "name") return r_.fields[i].name;
             if (rest == "typeIsRecord")
                 return isRecord_ && isRecord_(r_.fields[i].type) ? "true" : "false";
+            if (rest == "typeIsList") { // List<T>/T[] fields compare by REFERENCE in record equality
+                                        // (the C# oracle's default field comparer) — targets whose
+                                        // native == is value-based (Python list) consult this to emit
+                                        // an identity comparison instead.
+                const TypeRef& t = r_.fields[i].type;
+                return t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Array")
+                           ? "true" : "false";
+            }
         }
     }
     return "";
@@ -1342,6 +1358,15 @@ std::string InterpretedEmitter::renderType(const TypeRef& t) {
 }
 
 std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
+    struct Depth { // see exprDepth_ — bail with one clean error, never a stack overflow (G45).
+                   // 400 levels x ~30KB/frame (MSVC Debug worst case) stays inside the 16MB reserve.
+        int& d;
+        explicit Depth(int& depth) : d(++depth) {
+            if (d > 400) throw std::runtime_error(
+                "expression is too deeply nested to emit (more than 400 levels) — split it into locals");
+        }
+        ~Depth() { --d; }
+    } depthGuard(exprDepth_);
     if (const char* key = exprRuleKey(e.kind); key[0] != '\0') {
         auto it = rules_.find(key);
         if (it != rules_.end()) {
@@ -1463,6 +1488,19 @@ static bool boundTemplateIsConstant(const std::string& tmpl) {
     return true;
 }
 
+// Structural TypeRef identity, for "does the declared type add information over the initializer's own
+// type" (StmtKind::Let). Everything that renders participates: kind, name, nullability, args, ret.
+static bool sameTypeRef(const TypeRef& a, const TypeRef& b) {
+    if (a.kind != b.kind || a.name != b.name || a.nullable != b.nullable ||
+        a.args.size() != b.args.size() || a.ret.size() != b.ret.size())
+        return false;
+    for (std::size_t i = 0; i < a.args.size(); ++i)
+        if (!sameTypeRef(a.args[i], b.args[i])) return false;
+    for (std::size_t i = 0; i < a.ret.size(); ++i)
+        if (!sameTypeRef(a.ret[i], b.ret[i])) return false;
+    return true;
+}
+
 void EmitterBase::emitStmt(const ir::Stmt& s) {
     switch (s.kind) {
         case ir::StmtKind::Assign: {
@@ -1487,7 +1525,15 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             const bool uninferable = l.init && (l.init->kind == ir::ExprKind::Null ||
                 (l.init->kind == ir::ExprKind::Bound &&
                  boundTemplateIsConstant(static_cast<const ir::Bound&>(*l.init).tmpl)));
-            if (uninferable) {
+            // An EXPLICIT source annotation always emits — the checker often stamps the initializer's
+            // type FROM the annotation (bare union cases, contextually-typed list literals), so the
+            // annotation's information is invisible to a declared-vs-initializer comparison, yet the
+            // target needs it: `var n: i32? = 0` must not become C# `var n = 0` (CS0037 on the later
+            // `n = null`, issue #47's dropped-annotation half), and `let e: Box<i64> = Empty` /
+            // `var xs: List<Tree> = [...]` need the contextual type in TS or literal `tag`s widen to
+            // string. declDiffers additionally catches non-explicit divergence, belt-and-braces.
+            const bool declDiffers = l.init && !l.type.absent() && !sameTypeRef(l.type, l.init->type);
+            if (uninferable || declDiffers || (l.declExplicit && !l.type.absent())) {
                 std::string ty = renderType(l.type);
                 if (!ty.empty()) {
                     std::string typed = localDeclTyped(l.name, l.isMutable, ty);

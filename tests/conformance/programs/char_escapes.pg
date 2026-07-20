@@ -3,6 +3,8 @@
 
 import "std.strings"
 
+fn sameText(a: string, b: string): bool => a == b
+
 fn main() {
   var c = 'A'
   print(c)                      // A
@@ -12,7 +14,9 @@ fn main() {
   var n = 0
   for cp in "abc".codePoints() { n += 1 }
   print(n)                      // 3
-  print("abc" == "abc")         // true
-  print("abc" == "abd")         // false
+  // Equality routes through string-typed params: tsc 5.8 flags a direct
+  // literal-vs-literal `===` as TS2367 in the emitted library-mode TS.
+  print(sameText("abc", "abc")) // true
+  print(sameText("abc", "abd")) // false
   print("x".charAt(0) == "x")   // true
 }

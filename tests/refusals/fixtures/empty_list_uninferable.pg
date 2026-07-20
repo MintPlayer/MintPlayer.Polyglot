@@ -1,0 +1,4 @@
+// REFUSED (checker): an un-annotated empty list literal — the element type cannot be inferred.
+fn main() {
+  var xs = []
+}

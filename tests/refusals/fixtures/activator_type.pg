@@ -1,0 +1,2 @@
+// REFUSED (PRD §3.B): `Activator` — runtime reflection; compile-time metadata only.
+fn make(a: Activator): i32 => 0

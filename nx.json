@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "namedInputs": {
+    "sharedGlobals": [
+      { "runtime": "dotnet --version" },
+      { "runtime": "node --version" }
+    ],
+    "compilerSources": [
+      "{workspaceRoot}/src/**/*",
+      "{workspaceRoot}/plugins/**/*",
+      "{workspaceRoot}/MintPlayer.Polyglot.sln"
+    ]
+  },
+  "targetDefaults": {
+    "cache": false
+  }
+}

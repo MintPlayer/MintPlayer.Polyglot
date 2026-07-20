@@ -1,0 +1,15 @@
+// Wave-2 G13: the seven never-executed scalar parse arms (i8/i16/u8/u16/u32/u64/f32)
+// on in-range values, plus the leading-zero decimal ("007" must not read as octal).
+// Out-of-range/garbage input semantics are a recorded follow-up decision (§3.D).
+
+fn main() {
+  print(i8.parse("100"))                  // 100
+  print(i16.parse("-1234"))               // -1234
+  print(u8.parse("200"))                  // 200
+  print(u16.parse("60000"))               // 60000
+  print(u32.parse("4000000000"))          // 4000000000
+  print(u64.parse("9007199254740993"))    // 9007199254740993
+  print((i32)(f32.parse("1.5") * 2.0))    // 3
+  print(i32.parse("007"))                 // 7
+  print(i64.parse("-42"))                 // -42
+}

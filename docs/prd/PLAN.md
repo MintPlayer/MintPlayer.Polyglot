@@ -3318,3 +3318,49 @@ revisit: the manifest-activates-compiled-in-parser packaging (dylibs refused on 
 WASM recorded as the sole third-party escape hatch), the negotiation formula, the in-code
 parser-version handshake, the C# fixpoint/dual-compile design, and `polyglot convert` as the honest
 first demand probe if authoring-in-C# demand ever materializes.
+
+## P34 — E2E coverage wave 2: divergence pins, harness hardening, code coverage — 🚧 built, gate pending (2026-07-19; maintainer request, PRD `docs/prd/e2e-coverage-wave2/`, 13-agent analysis)
+
+Successor to P32: a six-dimension, skeptic-verified coverage analysis (48 gaps G1–G48, full evidence
+in `docs/prd/e2e-coverage-wave2/ANALYSIS.md`) followed by the implementation in ONE PR. Highlights:
+
+- **Nine new probe-proven defects filed** (#46–#54: loop-closure capture, missing C# virtual/override,
+  operator fn eq, TS member generators, block-bodied match arms lowering to `0` four-way, statement
+  match, member overloading, finalizer refusal, PHP implicit-base super) + three more found while
+  authoring (#55 PHP builtin-name collisions, #56 unbound member calls emit verbatim, #57 TS union
+  `==` is reference equality).
+- **Silent miscompiles fixed in-wave**: PHP loose `==` (strict cutover + generated record `equals`),
+  TS/Py `List.clear/removeAll` receiver rebinding (now in-place), C# `codePoints()` Rune projection,
+  paren-dropping through identity casts, Python narrowing casts, TS `BigInt(<rounded>)` i64 literals
+  (literal adoption in sema), shift masking/wrap + the i32-shift-count rule, float `%` → fmod,
+  `Math.round` unified half-to-even, dropped `let x: T?`/base-typed annotations, and a compiler
+  stack-overflow class (depth guards + 16 MB stack + CLI exception boundary — a 32-term sum used to
+  kill the Python/PHP emit).
+- **Checker**: G11 "field never initialized" diagnostic (uninitialized reads differed 4 ways).
+- **Programs 71 → 87** (+16: equality/null/identity, list aliasing, codepoint values, composition
+  pins incl. a generated 1216-line scale program, numeric boundaries) + 9 `.expected` goldens (the
+  C#-oracle correlated-wrongness fix) + extensions to int64/math/math_transcendental/collections.
+- **Harness**: per-program timeouts, unique temp roots, loud cleanup, pinned PHP refuser set; new
+  gate legs cli-smoke (incl. four-target byte-identity), refusals (§3.B e2e: exit codes, diagnostic
+  shape, no-output-on-refusal, check --json), LSP (framed JSON-RPC lifecycle); run-nuget wired into
+  the gate; watch delete/recreate cycles; registry bare-build/install/offline/token stages; resolver
+  stale-lock + update=true units; ci.yml POSIX watch/registry legs.
+- **Coverage** (maintainer request): ci.yml `coverage` job — gcovr over an instrumented Debug build,
+  unit suite + four-target conformance transpile sweep, report-only summary + HTML artifact — and
+  `scripts/coverage.ps1` (OpenCppCoverage, `x64/coverage/`). Documented split: gcov sees the C++
+  Core/CLI; the JSON plugin templates' instrument is the conformance suite (template-arm tracer =
+  demand-gated follow-up).
+- **SPEC §9 decisions**: round half-even, shift rules, fmod, record-field equality, PHP 64-bit-wrap
+  caveat, non-ASCII caveats (+ lexer warning), `INT_MIN / -1` + out-of-range float→int/parse as §3.D.
+
+## P35 — Gate speed-up: merged conformance runner + parallelism + NX cache — ✅ built (slices 0–6; slice 7 optional/deferred) (2026-07-19; maintainer request, PRD `docs/prd/gate-speedup/`, 8-agent measured investigation + NX evaluation)
+
+The full local gate measures ~958 s, 80% of it the three conformance legs — dominated by `dotnet build`
+of the SAME C# oracle ~2 s × 95 programs × 3 legs (the legs re-compile identical code), plus a fourth
+full transpile sweep in the library gate. Recommended architecture (skeptic-adjusted, all mechanisms
+verified by experiment): **restructure → parallelize → cache** — one merged 4-target single-pass
+conformance runner with a `csc /shared` oracle (kills all 278 dotnet builds; byte-identical output
+verified), bounded `ForEach-Object -Parallel` batching, a tiered gate (`-Tier fast` ≈ 18 s), and an
+caching layer — decided 2026-07-19 follow-up: NX per-leg targets + the maintainer's existing nx-cache.mintplayer.com remote (OpenAPI HTTP interface; locals R/W, CI cold) composing with an in-runner per-program L1 (docs/prd/gate-speedup/NX-EVALUATION.md).
+Projected honestly: **full gate ~5× (~3–3.5 min), one-.pg dev loop ~25–40 s**. Seven ordered slices in
+`docs/prd/gate-speedup/PLAN.md`; slices 0–5 need no C++ changes and no new dependencies.

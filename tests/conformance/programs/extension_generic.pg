@@ -1,0 +1,25 @@
+// Wave-2 G17: GENERIC extension methods on List<T> — SPEC §6.3's own examples
+// (`second(): T?`, a function-typed parameter), never executed end-to-end.
+// The lambda bodies stay std-free: a std method on a generic-instantiated lambda
+// param does not bind (emitted verbatim, runtime crash) — TODO(#56).
+
+import { List } from "std.collections"
+
+extension fn List<T>.second(): T? => if this.count > 1 { this[1] } else { null }
+
+extension fn List<T>.totalWith(f: (T) => i32): i32 {
+  var s = 0
+  for x in this { s = s + f(x) }
+  return s
+}
+
+fn main() {
+  var xs: List<i32> = [3, 5, 8]
+  print(xs.second() ?? -1)              // 5
+  var ys: List<i32> = [4]
+  print(ys.second() ?? -1)              // -1
+  var ss: List<string> = ["x", "yy"]
+  print(ss.second() ?? "none")          // yy   (string instantiation)
+  print(xs.totalWith((v) => v * 2))     // 32
+  print(xs.totalWith((v) => if v > 4 { 1 } else { 0 }))   // 2
+}

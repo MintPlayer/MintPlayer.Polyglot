@@ -1,0 +1,14 @@
+// Wave-2 G1: `x != null` must be a strict null TEST — PHP's loose `!=` treats
+// 0 and "" as equal to null (falsy), so a present-but-zero value read as absent.
+// Pins the !== cutover on nullable value + string locals.
+
+fn main() {
+  var n: i32? = 0
+  print(if n != null { 1 } else { 0 })    // 1   (0 is present, not null — loose PHP != said 0)
+  var s: string? = ""
+  print(if s != null { 1 } else { 0 })    // 1   ("" is present, not null)
+  n = null
+  print(if n != null { 1 } else { 0 })    // 0
+  s = null
+  print(if s == null { 1 } else { 0 })    // 1
+}

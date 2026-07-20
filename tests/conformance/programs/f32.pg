@@ -1,0 +1,14 @@
+// Wave-2 G24: f32 through + − × ÷ on exactly-representable values — the §3.C
+// subset that MUST agree everywhere (dyadic rationals, no rounding). The only
+// f32 use before this was one round() call. Printed via exact scale-to-int.
+
+fn main() {
+  let a = (f32)1.5
+  let b = (f32)0.25
+  print((i32)((a + b) * 100.0))    // 175
+  print((i32)((a - b) * 100.0))    // 125
+  print((i32)((a * b) * 1000.0))   // 375
+  print((i32)((a / b) * 10.0))     // 60
+  let c = (f32)-2.5
+  print((i32)(c * 4.0))            // -10
+}

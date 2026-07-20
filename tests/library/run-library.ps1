@@ -20,17 +20,27 @@
 # Type-checking is hermetic (no @types/node / network): a tiny env.d.ts declares exactly the Node runtime
 # surface the emitted std bindings touch (console, process). Needs `tsc` on PATH (TypeScript >= 5).
 #
+# -Staged <dir> (P35 slice 3): consume the PRISTINE .ts already emitted by run-conformance.ps1 (one subdir
+# per program) instead of re-transpiling every program here — the conformance runner and this gate then share
+# a single transpile pass. Standalone (no -Staged) behavior is unchanged: it self-emits each program's TS.
+#
 # Usage:  pwsh tests/library/run-library.ps1   (build the solution first; see CLAUDE.md)
+#         pwsh tests/library/run-library.ps1 -Staged <library-staging-dir>
 
 param(
-    [string]$Cli = "$PSScriptRoot\..\..\x64\Debug\MintPlayer.Polyglot.Cli.exe"
+    [string]$Cli = "$PSScriptRoot\..\..\x64\Debug\MintPlayer.Polyglot.Cli.exe",
+    [string]$Staged = ""
 )
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-if (-not (Test-Path $Cli)) {
+if (-not $Staged -and -not (Test-Path $Cli)) {
     Write-Host "polyglot CLI not found at $Cli — build the solution first (see CLAUDE.md)."
+    exit 2
+}
+if ($Staged -and -not (Test-Path $Staged)) {
+    Write-Host "staging dir not found at $Staged — run run-conformance.ps1 -StagingOut <dir> first."
     exit 2
 }
 if (-not (Get-Command tsc -ErrorAction SilentlyContinue)) {
@@ -74,15 +84,9 @@ declare const process: { getBuiltinModule(id: string): any };
 $fail = 0
 function Fail($msg) { Write-Host "[FAIL] $msg"; $script:fail++ }
 
-# Emit one program's TS, assert all top-level decls are exported, and drop a consumer next to it.
-# $stem is the emitted entry basename; $cliArgs is the `polyglot build …` argv.
-function Stage-Program($name, $stem, $cliArgs) {
-    $dir = Join-Path $work $name
-    New-Item -ItemType Directory -Force $dir | Out-Null
-
-    & $Cli @cliArgs --lib io --target typescript --out $dir *> $null
-    if ($LASTEXITCODE -ne 0) { Fail "$name (transpile failed)"; return }
-
+# Assert the emitted entry .ts in $dir is a consumable, all-exported module, and drop a consumer next to it.
+# Shared by both the self-emitting and the -Staged paths (the assertion is on the .ts, not on how it got there).
+function Assert-Consumable($name, $stem, $dir) {
     $ts = Join-Path $dir "$stem.ts"
     if (-not (Test-Path $ts)) { Fail "$name (no $stem.ts emitted)"; return }
 
@@ -107,13 +111,39 @@ void m;
     Write-Host "[stage] $name"
 }
 
-foreach ($pg in Get-ChildItem $progDir -Filter *.pg | Sort-Object Name) {
-    Stage-Program $pg.BaseName $pg.BaseName @("build", $pg.FullName)
+# Self-emit one program's TS into $work, then assert it. $stem is the emitted entry basename.
+function Stage-Program($name, $stem, $cliArgs) {
+    $dir = Join-Path $work $name
+    New-Item -ItemType Directory -Force $dir | Out-Null
+
+    & $Cli @cliArgs --lib io --target typescript --out $dir *> $null
+    if ($LASTEXITCODE -ne 0) { Fail "$name (transpile failed)"; return }
+
+    Assert-Consumable $name $stem $dir
 }
-foreach ($d in Get-ChildItem $progDir -Directory | Sort-Object Name) {
-    $entry = Join-Path $d.FullName "entry.pg"
-    if (-not (Test-Path $entry)) { continue }
-    Stage-Program $d.Name "entry" @("build", $entry, "--root", $d.FullName)
+
+if ($Staged) {
+    # -Staged: consume the pristine .ts run-conformance already emitted (one subdir per program). The entry
+    # stem is the program name for a single-file program, "entry" for a multi-file one.
+    Write-Host "==> Consuming staged TS from $Staged (no re-transpile)"
+    foreach ($sub in Get-ChildItem $Staged -Directory | Sort-Object Name) {
+        $name = $sub.Name
+        $dir = Join-Path $work $name
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        foreach ($f in Get-ChildItem $sub.FullName -Filter *.ts) { Copy-Item $f.FullName $dir }
+        $stem = if (Test-Path (Join-Path $dir "$name.ts")) { $name } elseif (Test-Path (Join-Path $dir "entry.ts")) { "entry" } else { $null }
+        if (-not $stem) { Fail "$name (no entry .ts in staging)"; continue }
+        Assert-Consumable $name $stem $dir
+    }
+} else {
+    foreach ($pg in Get-ChildItem $progDir -Filter *.pg | Sort-Object Name) {
+        Stage-Program $pg.BaseName $pg.BaseName @("build", $pg.FullName)
+    }
+    foreach ($d in Get-ChildItem $progDir -Directory | Sort-Object Name) {
+        $entry = Join-Path $d.FullName "entry.pg"
+        if (-not (Test-Path $entry)) { continue }
+        Stage-Program $d.Name "entry" @("build", $entry, "--root", $d.FullName)
+    }
 }
 
 Write-Host ""

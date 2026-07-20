@@ -425,12 +425,26 @@ relaxation is **opt-in and named**, never silent:
 | `f32` vs `f64` | `f32` rides a JS `number` (double) | per-op `Math.fround` strict-float mode is opt-in (the Scala.js strict-floats tax) |
 | nullability | `null`/`undefined` normalized to one "absent" | — |
 | equality / hashing | `record` gets structural `==`/hash; `class` is identity; identity hash via side `WeakMap` in TS | — |
+| record fields in `==` | leaves compare strictly per their own `==`: value types and strings by value, `List<T>`/`T[]`/class fields by REFERENCE (the .NET default field comparer); nested records recurse structurally | — |
+| `Math.round` half values | **half-to-even** (banker's — the .NET default) on every target; TS and PHP carry shims (their natives are half-up / half-away) | — |
+| shifts | count masked (`& 31` / `& 63`, the .NET rule) and result wrapped to the operand width on every target | — |
+| float `%` | C-style `fmod` (result takes the DIVIDEND's sign — the .NET/JS behavior); Python emits `math.fmod`, PHP `fmod()` | — |
+| PHP 64-bit wrap | **published caveat:** PHP has no i64/u64 wrap emulation (no GMP dependency) — i64 arithmetic is faithful only while intermediates stay inside ±2⁶³ (beyond it PHP promotes to float); u64 values above 2⁶³−1 are not representable | a GMP-backed strict mode could be offered later |
+| non-ASCII string content | **published caveat:** PHP's string std is byte-oriented — `len()`/`charAt()`/`codePoints()` count UTF-8 *bytes* on PHP and code points on C#/TS/Python. ASCII content is byte-identical everywhere; the lexer warns on non-ASCII literals | an mbstring-backed PHP string std could be offered later |
 
 **Determinism honesty (PRD §3.D):** only `+ − × ÷ √` are reproducible across .NET and JS (at matched
 width). Transcendentals (`sin`/`cos`/`exp`/`pow`), FMA, and reassociation diverge. Code that needs
 identical cross-target results must use the std **fixed-point / soft-float** type (a P7 std module), *not*
 `f32`/`f64`. The FruitCake sketch uses only `+ − × ÷ √`, so its eventual conformance test gates on
 tolerance + behaviour, never bit-equality.
+
+Two integer edges are §3.D territory as well (documented, deliberately unpinned):
+- **`INT_MIN / -1`** — .NET throws `OverflowException`; the wrap targets yield `INT_MIN`. Don't rely on it.
+- **out-of-range float→int casts** — trunc-then-wrap on the wrap targets, target-defined on .NET
+  (the CLR conversion is unspecified out of range). In-range casts truncate toward zero everywhere
+  (pinned by `cast_float_int.pg`).
+- **scalar `parse` on out-of-range/garbage input** — target-defined (C# throws, TS wraps/NaNs,
+  Python/PHP pass through/coerce); only in-range parses are promised (pinned by `parse_widths.pg`).
 
 ---
 

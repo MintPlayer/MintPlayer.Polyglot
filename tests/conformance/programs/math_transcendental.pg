@@ -38,4 +38,8 @@ fn main() {
   // trunc (exact)
   print(i32(Math.trunc(3.7)))    // 3
   print(i32(Math.trunc(-3.7)))   // -3
+
+  // Wave-2 G21: the E constant (zero references anywhere before), quantized like
+  // every other transcendental here.
+  print(q(Math.E))               // 271828
 }

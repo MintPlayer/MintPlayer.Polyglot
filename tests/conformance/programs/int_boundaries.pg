@@ -1,0 +1,17 @@
+// Wave-2 G9: i32 arithmetic WRAPS at the 32-bit boundary (§3.C masking) — both
+// directions, multiplication, and unary minus of INT_MIN. (INT_MIN / -1 is a
+// documented §3.D divergence — .NET throws, the wrap targets yield INT_MIN — and
+// is deliberately NOT pinned; see SPEC.)
+
+fn main() {
+  // Values flow through locals: C# folds CONSTANT expressions in checked mode at
+  // compile time (CS0220) — runtime arithmetic is unchecked and wraps, which is
+  // exactly what this pins.
+  let hi = 2147483647
+  let lo = -2147483648
+  print(hi + 1)        // -2147483648
+  print(lo - 1)        // 2147483647
+  print(hi * 2)        // -2
+  print(lo * -1)       // -2147483648  (mul wrap at the boundary)
+  print(lo + hi)       // -1
+}

@@ -1,0 +1,23 @@
+// Wave-2 G10: record equality with string and List-typed fields. String fields
+// compare by VALUE (strictly — PHP's loose leaf comparison said "10" == "1e1");
+// List fields compare by REFERENCE (the C# oracle's default field comparer —
+// Python's field-wise == compared list contents; PHP's loose object == deep-compared).
+
+import { List } from "std.collections"
+
+record Tag(label: string)
+record Holder(items: List<i32>)
+
+fn main() {
+  print(if Tag("a") == Tag("a") { 1 } else { 0 })       // 1   (string value equality)
+  print(if Tag("10") == Tag("1e1") { 1 } else { 0 })    // 0   (STRICT leaf — loose PHP said 1)
+  print(if Tag("a") != Tag("b") { 1 } else { 0 })       // 1
+
+  var xs: List<i32> = [1, 2]
+  var ys: List<i32> = [1, 2]
+  let h1 = Holder(xs)
+  let h2 = Holder(ys)
+  let h3 = Holder(xs)
+  print(if h1 == h2 { 1 } else { 0 })   // 0   (distinct lists, equal contents — REFERENCE compare)
+  print(if h1 == h3 { 1 } else { 0 })   // 1   (same list instance)
+}

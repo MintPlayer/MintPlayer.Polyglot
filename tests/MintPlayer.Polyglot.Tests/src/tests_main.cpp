@@ -868,8 +868,12 @@ int main() {
         check(has(ts.code, "number[]"), "P8 TS: List<i32> -> number[]");
         check(has(ts.code, ".push(3)"), "P8 TS: list.add -> .push");
         check(has(ts.code, ".length"), "P8 TS: list.count -> .length");
-        check(has(ts.code, "xs = xs.filter("), "P8 TS: list.removeAll -> receiver = receiver.filter(...)");
-        check(has(ts.code, "xs = []"), "P8 TS: list.clear -> receiver = [] (receiver reassignment)");
+        // Wave-2 G2: clear/removeAll mutate IN PLACE — a receiver reassignment (`xs = xs.filter(...)`)
+        // is invisible through an alias or a fn parameter, diverging from C#/PHP (list_rebind_alias.pg).
+        check(has(ts.code, "xs.splice(0, xs.length, ...xs.filter("), "P8 TS: list.removeAll -> in-place splice");
+        check(has(ts.code, "xs.length = 0"), "P8 TS: list.clear -> in-place length reset");
+        check(!has(ts.code, "xs = xs.filter(") && !has(ts.code, "xs = []"),
+              "P8 TS: no receiver reassignment for clear/removeAll");
         check(!has(ts.code, "class List"), "P8 TS: extern class List is not emitted");
     }
 
@@ -1194,13 +1198,14 @@ int main() {
         // `[]`), so the DECLARATION carries it: `let d: [number, number][] = [];` (not the evolving-any `let d = [];`).
         check(has(ts.code, "let d: [number, number][] = [];") && !has(ts.code, "let d = [];"),
               "issue#27 Bug1: type-erased List<T>() construction carries its type on the declaration (TS)");
-        // C# is unaffected — its angle-bracketed List<…> is self-delimiting, and `new List<…>()` carries the
-        // element type in the initializer, so `var d = new …List<(int, int)>();` stays as-is (no annotation churn).
+        // C#: `new List<…>()` carries the element type in the initializer; since wave 2 the EXPLICIT
+        // source annotation also always emits on the declaration (declExplicit — a stamped initializer
+        // type can hide the annotation's information on other shapes), so the local is typed, not `var`.
         EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "global::System.Collections.Generic.List<Node?>"),
               "issue#27 Bug2: C# nullable list element is self-delimiting (List<Node?>)");
-        check(has(cs.code, "var d = new global::System.Collections.Generic.List<(int, int)>();"),
-              "issue#27 Bug1: C# List construction is unchanged (its `new $T()` carries the type)");
+        check(has(cs.code, "List<(int, int)> d = new global::System.Collections.Generic.List<(int, int)>();"),
+              "issue#27 Bug1: C# List construction keeps its element type (typed decl since wave 2)");
     }
 
     // Issue #27 Bug 1 (root-cause language rule) — a `let`/`var` whose initializer is UN-INFERABLE must
@@ -2255,6 +2260,67 @@ int main() {
                   "P30 s3: offline-with-no-lock surfaces the transport diagnostic");
         }
 
+        // G37 (wave 2): a lock pin OUTSIDE an edited range re-resolves (online), and REFUSES offline —
+        // never silently keeps the stale plugin.
+        {
+            const std::string pkg7 = "@mintplayer/polyglot-target-pydemo7";
+            cli::Lockfile stale = cli::loadLockfile(pc.dir);
+            stale.found = true;
+            stale.packages[pkg7] = {"0.9.0", "https://registry.npmjs.org/x-0.9.0.tgz", "sha512-stale"};
+            check(cli::saveLockfile(pc.dir, stale), "G37: (setup) stale lock pin written");
+
+            const std::string tgz7 = gzipStored(tarFile("package/polyglot-plugin.json", renamedManifest("pydemo7")));
+            const std::string url7 = "https://registry.npmjs.org/" + pkg7 + "/-/p7-1.1.0.tgz";
+            served.clear();
+            served["https://registry.npmjs.org/@mintplayer%2Fpolyglot-target-pydemo7"] =
+                packument(pkg7, "1.1.0", url7, cli::sriSha512(tgz7));
+            served[url7] = tgz7;
+            hits = 0;
+            cli::PgConfig pc7 = pc;
+            pc7.dependencies = {{"pydemo7", "^1.0.0"}}; // the 0.9.0 pin does NOT satisfy this
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc7, fake, false, &st);
+            const cli::Lockfile after = cli::loadLockfile(pc.dir);
+            check(r.ok && hits > 0 && after.packages.count(pkg7) && after.packages.at(pkg7).version == "1.1.0",
+                  "G37: a pin outside the edited range re-resolves and advances the lock");
+        }
+        {
+            const std::string pkg8 = "@mintplayer/polyglot-target-pydemo8";
+            cli::Lockfile stale = cli::loadLockfile(pc.dir);
+            stale.found = true;
+            stale.packages[pkg8] = {"0.9.0", "https://registry.npmjs.org/x8-0.9.0.tgz", "sha512-stale"};
+            cli::saveLockfile(pc.dir, stale);
+            served.clear(); // network dead
+            cli::PgConfig pc8 = pc;
+            pc8.dependencies = {{"pydemo8", "^1.0.0"}};
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc8, fake, false, &st);
+            check(!r.ok, "G37: an out-of-range pin refuses OFFLINE (never silently keeps the old plugin)");
+        }
+
+        // G37 (wave 2): `update=true` advances a SATISFIED pin to the newest satisfying version.
+        {
+            const std::string pkg9 = "@mintplayer/polyglot-target-pydemo9u";
+            const std::string tgz12 = gzipStored(tarFile("package/polyglot-plugin.json", renamedManifest("pydemo9u")));
+            const std::string url12 = "https://registry.npmjs.org/" + pkg9 + "/-/p9-1.2.0.tgz";
+            cli::Lockfile lk9 = cli::loadLockfile(pc.dir);
+            lk9.found = true;
+            lk9.packages[pkg9] = {"1.1.0", "https://registry.npmjs.org/x9-1.1.0.tgz", "sha512-oldpin"};
+            cli::saveLockfile(pc.dir, lk9);
+            served.clear();
+            served["https://registry.npmjs.org/@mintplayer%2Fpolyglot-target-pydemo9u"] =
+                packument(pkg9, "1.2.0", url12, cli::sriSha512(tgz12));
+            served[url12] = tgz12;
+            cli::PgConfig pc9 = pc;
+            pc9.dependencies = {{"pydemo9u", "^1.0.0"}};
+            hits = 0;
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc9, fake, /*update=*/true, &st);
+            const cli::Lockfile after = cli::loadLockfile(pc.dir);
+            check(r.ok && hits > 0 && after.packages.count(pkg9) && after.packages.at(pkg9).version == "1.2.0",
+                  "G37: update=true advances a satisfied pin to the newest satisfying version");
+        }
+
         // A package that is not a Polyglot plugin (no manifest in the tarball) is named as such.
         {
             const std::string pkg6 = "@mintplayer/polyglot-target-notaplugin";
@@ -2646,6 +2712,102 @@ int main() {
         bool namedPat = false;
         for (const auto& dg : typedPat.diagnostics) if (has(dg.message, "not a runtime type test")) namedPat = true;
         check(namedPat, "issue#29: the typed-pattern diagnostic explains itself");
+    }
+
+    // ---- Wave-2 front-end robustness (G42-G48) + slice-1/2 compiler fixes -----------------------------
+    {
+        // G42: a >2^63 enum value is a diagnostic, not a std::stoll process abort.
+        EmitResult hugeEnum = compileStd("enum E { A = 99999999999999999999 }\nfn main() {}\n", findTarget("csharp"));
+        check(!hugeEnum.ok, "G42: out-of-range enum value is rejected, not a crash");
+
+        // G43: a UTF-8 BOM'd source compiles clean.
+        EmitResult bom = compileStd("\xEF\xBB\xBF" "fn main() {\n  print(1)\n}\n", findTarget("csharp"));
+        check(bom.ok, "G43: BOM-prefixed source compiles");
+
+        // G44: an unterminated block comment is diagnosed instead of silently swallowing the file tail.
+        EmitResult untermC = compileStd("fn main() {\n  print(1)\n}\n/* dangling", findTarget("csharp"));
+        check(!untermC.ok, "G44: unterminated /* is a diagnostic");
+        bool namesComment = false;
+        for (const auto& dg : untermC.diagnostics) if (has(dg.message, "unterminated block comment")) namesComment = true;
+        check(namesComment, "G44: the diagnostic names the unterminated comment");
+        EmitResult eofSlash = compileStd("fn main() {\n  print(1)\n}\n// trailing comment at EOF", findTarget("csharp"));
+        check(eofSlash.ok, "G44: '//' at EOF is fine");
+
+        // G45 parser guard: 300 nested parens -> one clean "nests too deeply" error, no stack overflow.
+        {
+            std::string deep = "fn main() {\n  let x = ";
+            for (int i = 0; i < 300; ++i) deep += "(";
+            deep += "1";
+            for (int i = 0; i < 300; ++i) deep += ")";
+            deep += "\n  print(x)\n}\n";
+            EmitResult r = compile(deep, findTarget("csharp"));
+            bool named = false;
+            for (const auto& dg : r.diagnostics) if (has(dg.message, "nests too deeply")) named = true;
+            check(!r.ok && named, "G45: 300-deep parens -> 'nests too deeply' diagnostic");
+        }
+        // G45 emitter guard: a 600-term chain parses ITERATIVELY (no parser guard) but builds a
+        // 600-deep IR spine — the emitter's depth guard throws; it must surface as an error, not UB.
+        {
+            std::string chain = "fn main() {\n  let a = 1\n  print(a";
+            for (int i = 0; i < 600; ++i) chain += " + a";
+            chain += ")\n}\n";
+            bool guarded = false;
+            try {
+                EmitResult r = compile(chain, findTarget("python"));
+                guarded = !r.ok; // if the engine converts the guard to a failed emit, that's fine too
+            } catch (const std::exception& e) {
+                guarded = has(e.what(), "too deeply nested");
+            }
+            check(guarded, "G45: 600-term chain -> emitter depth-guard error (caught, not a crash)");
+        }
+
+        // G46: the Activator refusal row (§3.B runtime reflection) fires.
+        EmitResult act = compileStd("fn main() {\n  let a = Activator\n}\n", findTarget("csharp"));
+        check(!act.ok, "G46: 'Activator' is refused (§3.B reflection)");
+
+        // G48: a non-ASCII identifier is ONE positional diagnostic, not per-byte spam.
+        {
+            EmitResult r = compileStd("fn main() {\n  let caf\xC3\xA9 = 1\n}\n", findTarget("csharp"));
+            int nonAsciiDiags = 0;
+            for (const auto& dg : r.diagnostics) if (has(dg.message, "non-ASCII")) ++nonAsciiDiags;
+            check(!r.ok && nonAsciiDiags == 1, "G48: non-ASCII identifier -> exactly one diagnostic");
+        }
+        // G47: non-ASCII STRING content compiles (published PHP byte-string caveat -> warning only).
+        {
+            EmitResult r = compileStd("fn main() {\n  print(\"caf\xC3\xA9\")\n}\n", findTarget("csharp"));
+            check(r.ok, "G47: non-ASCII string literal still compiles (warns, not errors)");
+        }
+
+        // G11: a never-assigned class field is refused (uninitialized reads differ per target).
+        EmitResult uninit = compileStd(
+            "class C {\n  var x: i32\n  fn get(): i32 => this.x\n}\nfn main() { print(C().get()) }\n",
+            findTarget("csharp"));
+        check(!uninit.ok, "G11: never-initialized class field is refused");
+        EmitResult initOk = compileStd(
+            "class C {\n  var x: i32\n  init(x: i32) { this.x = x }\n  fn get(): i32 => this.x\n}\nfn main() { print(C(3).get()) }\n",
+            findTarget("csharp"));
+        check(initOk.ok, "G11: field assigned in init passes");
+
+        // Slice-1 fix pins: PHP strict equality + record equals routing.
+        EmitResult phpEq = compileStd("fn same(a: string, b: string): bool => a == b\nfn main() { print(same(\"a\", \"b\")) }\n", findTarget("php"));
+        check(phpEq.ok && has(phpEq.code, "==="), "G1: PHP string == emits strict ===");
+        EmitResult phpRec = compileStd("record P(x: i32)\nfn main() { print(P(1) == P(1)) }\n", findTarget("php"));
+        check(phpRec.ok && has(phpRec.code, "->equals(") && has(phpRec.code, "public function equals($other)"),
+              "G1/G10: PHP record == routes to a generated equals()");
+        // Comparing to null stays a null TEST, never equals() (would call a method on null).
+        EmitResult tsNull = compileStd("record P(x: i32)\nfn f(p: P?): i32 => if p != null { 1 } else { 0 }\nfn main() { print(f(null)) }\n", findTarget("typescript"));
+        check(tsNull.ok && !has(tsNull.code, ".equals(null)"), "record != null does not route to equals()");
+
+        // Slice-2 fix pins: i64 literal adoption + declared-type-differs locals.
+        EmitResult tsLit = compileStd("fn main() {\n  let a: i64 = 9007199254740993\n  print(a)\n}\n", findTarget("typescript"));
+        check(tsLit.ok && has(tsLit.code, "9007199254740993n") && !has(tsLit.code, "BigInt(9007199254740993)"),
+              "G3: annotation-typed i64 literal emits the exact BigInt literal");
+        EmitResult csNullable = compileStd("fn main() {\n  var n: i32? = 0\n  n = null\n  print(if n == null { 1 } else { 0 })\n}\n", findTarget("csharp"));
+        check(csNullable.ok && has(csNullable.code, "int? n = 0"), "declared i32? with non-null init keeps the nullable slot (C#)");
+
+        // Slice-2 shift rule: the count is i32; shiftee type is preserved (C# has no long<<long).
+        EmitResult csShift = compileStd("fn main() {\n  let b: i64 = 1\n  print(b << 65)\n}\n", findTarget("csharp"));
+        check(csShift.ok && !has(csShift.code, "(long)(65)"), "G4: shift count stays i32 on C#");
     }
 
     if (g_failures == 0) {

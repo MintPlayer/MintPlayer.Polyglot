@@ -1,0 +1,18 @@
+// Wave-2 G18: record `with` copies are SHALLOW — a List-typed field is shared
+// between the original and the copy (the C# oracle's nondestructive mutation
+// copies the reference, not the list). Includes the PHP ArrayObject path (#36).
+
+import { List } from "std.collections"
+
+record Bag(name: string, items: List<i32>)
+
+fn main() {
+  var xs: List<i32> = [1, 2]
+  let a = Bag("a", xs)
+  let b = a with { name = "b" }
+  print(b.name)            // b
+  print(a.name)            // a
+  xs.add(3)
+  print(a.items.count)     // 3
+  print(b.items.count)     // 3   (the copy SHARES the list)
+}

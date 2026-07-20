@@ -78,6 +78,19 @@ add_executable(polyglot-tests ${TESTS_SOURCES})
 target_include_directories(polyglot-tests PRIVATE ${CLI_DIR}/src)  # tests_main.cpp includes watch.hpp/exe_path.hpp
 target_link_libraries(polyglot-tests PRIVATE polyglot-core)
 
+# G45 (wave 2): the emitter's rule-interpreter recursion is stack-hungry; mirror the .vcxproj's 16 MB
+# StackReserveSize where the main-thread stack is link-settable. Linux keeps its 8 MB default (release
+# frames are lean enough for the 512-level emitter depth guard).
+if(MSVC)
+  foreach(exe polyglot polyglot-tests)
+    target_link_options(${exe} PRIVATE /STACK:16777216)
+  endforeach()
+elseif(APPLE)
+  foreach(exe polyglot polyglot-tests)
+    target_link_options(${exe} PRIVATE -Wl,-stack_size,0x1000000)
+  endforeach()
+endif()
+
 # The CLI is a pure engine — no target is compiled in (P19). Both executables load their backends from a
 # `plugins/` directory next to the binary at runtime, so copy it there after each build (the .vcxproj
 # xcopy PostBuildEvent equivalent). $<TARGET_FILE_DIR:…> resolves per-config for multi-config generators.

@@ -1,5 +1,7 @@
 #include "mintplayer/polyglot/sema.hpp"
 
+#include <cerrno>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -80,6 +82,18 @@ int numWidth(const std::string& n) {
 bool isSignedInt(const std::string& n)   { return n == "i8" || n == "i16" || n == "i32" || n == "i64"; }
 bool isUnsignedInt(const std::string& n) { return n == "u8" || n == "u16" || n == "u32" || n == "u64"; }
 bool isFloatName(const std::string& n)   { return n == "f32" || n == "f64"; }
+
+// Does an (unsuffixed) integer-literal text hold a value representable in i64/u64? Used by literal
+// adoption in checkConvert (G3, wave 2). Base 0: decimal and 0x hex alike. The one edge left out is
+// the exact INT64_MIN spelling (its magnitude overflows the positive parse) — that falls back to the
+// widening-cast path.
+bool literalFits64(const std::string& text, bool isUnsigned) {
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long v = std::strtoull(text.c_str(), &end, 0);
+    if (errno == ERANGE || end == text.c_str() || *end != '\0') return false;
+    return isUnsigned || v <= 9223372036854775807ull;
+}
 
 // Is `from -> to` an implicit, value-preserving widening (no precision loss, no sign surprise)? Everything
 // else (narrowing, i64->f64, signed->unsigned) requires an explicit cast. (SPEC §3.)
@@ -333,6 +347,7 @@ public:
         for (std::size_t i = 0; i < unit.classes.size(); ++i) {
             recordModel_ = model_ && req_ && i < req_->userClasses;
             checkTypeBody(unit.classes[i].name, unit.classes[i].generics, unit.classes[i].members, nullptr);
+            checkFieldsInitialized(unit.classes[i]);
             recordModel_ = false;
         }
         for (auto& d : unit.extensions) { // `this` denotes the receiver inside an extension body
@@ -866,6 +881,37 @@ private:
         for (const auto& v : u.values)     if (v.hasType) resolveTypeRef(v.type, v.pos);
     }
 
+    // G11 (wave 2): a class field with no initializer must be assigned in `init` — otherwise a read
+    // observes four DIFFERENT defaults (C# 0, TS undefined, Python AttributeError, PHP null). Defining
+    // the error out of existence: the checker demands the assignment, so no target ever reads one.
+    // Any `this.<name> = …` anywhere in the ctor (including branches) counts — the guard targets
+    // NEVER-assigned fields, not flow-sensitive definite assignment.
+    static void collectThisAssigns(const std::vector<StmtPtr>& body, std::unordered_set<std::string>& out) {
+        for (const auto& s : body) {
+            if (!s) continue;
+            if (s->kind == StmtKind::Assign && s->target && s->target->kind == ExprKind::Member &&
+                s->target->lhs && s->target->lhs->kind == ExprKind::This)
+                out.insert(s->target->text);
+            collectThisAssigns(s->thenBody, out);
+            collectThisAssigns(s->elseBody, out);
+            collectThisAssigns(s->finallyBody, out);
+            for (const auto& c : s->catches) collectThisAssigns(c.body, out);
+        }
+    }
+    void checkFieldsInitialized(const ClassDecl& d) {
+        if (d.isExtern) return;
+        std::unordered_set<std::string> assigned;
+        for (const auto& m : d.members)
+            if (m.kind == MemberKind::Init) collectThisAssigns(m.body, assigned);
+        for (const auto& m : d.members) {
+            if (m.kind != MemberKind::Field || m.init || m.bindings.size()) continue;
+            if (!assigned.count(m.name))
+                diags_.error(m.pos, "field '" + m.name + "' of class '" + d.name +
+                                        "' is never initialized — give it an initializer or assign it in init "
+                                        "(uninitialized reads differ per target)");
+        }
+    }
+
     // ---- body checking ----
     void checkTypeBody(const std::string& typeName, const std::vector<GenericParam>& generics,
                        std::vector<Member>& members, std::vector<Param>* recordFields) {
@@ -989,6 +1035,25 @@ private:
             return;
         }
         instantiateBareCases(slot, target); // a contextually-typed bare union case (`None`) takes `target`
+        // G3 (wave 2): an UNSUFFIXED integer literal flowing into an i64/u64 slot is retyped to the slot's
+        // width — the literal IS a 64-bit value, so targets with a distinct 64-bit literal spelling emit it
+        // exactly (TS `9007199254740993n`, C# `…L`). The widening-CAST path would instead emit a runtime
+        // conversion of an already-parsed narrower value (TS `BigInt(9007199254740993)` rounds through an
+        // f64 before BigInt ever sees it — a silent §3.C violation). Negative literals arrive as unary
+        // minus over an IntLit; retype through the minus. A suffixed literal (`5i32`) keeps its width.
+        if (target.kind == TypeRef::Kind::Named && (target.name == "i64" || target.name == "u64")) {
+            Expr* lit = nullptr;
+            if (slot->kind == ExprKind::IntLit) lit = slot.get();
+            else if (slot->kind == ExprKind::Unary && slot->text == "-" && slot->lhs &&
+                     slot->lhs->kind == ExprKind::IntLit && target.name == "i64")
+                lit = slot->lhs.get();
+            if (lit && lit->text.find_first_of("iu") == std::string::npos &&
+                literalFits64(lit->text, target.name == "u64")) {
+                lit->type = target;
+                slot->type = target;
+                return;
+            }
+        }
         TypeRef from = slot->type;
         if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
         if (isNumericTypeName(from) && isNumericTypeName(target) && !sameNamedType(from, target)) {
@@ -1362,7 +1427,23 @@ private:
             if (l != Ty::Unknown && r != Ty::Unknown && (l != r || !isNumeric(l))) diags_.error(e.pos, "'" + op + "' expects matching numeric operands, found " + tyName(l) + " and " + tyName(r));
             return tNamed("bool");
         }
-        // arithmetic / bitwise / shift
+        // Shifts are asymmetric (the C# rule, adopted for every target): the COUNT is a plain i32 — it
+        // never reconciles with the shiftee (C# has no `long << long` / `uint << uint` operator), and
+        // the result takes the SHIFTEE's type. (G4, wave 2.)
+        if (op == "<<" || op == ">>") {
+            if (!(isSignedInt(lt.name) || isUnsignedInt(lt.name))) {
+                diags_.error(e.pos, "'" + op + "' expects an integer left operand, found " + lt.name);
+                return lt;
+            }
+            if (rt.name != "i32") {
+                if (isSignedInt(rt.name) || isUnsignedInt(rt.name))
+                    checkConvert(e.rhs, tNamed("i32"), "shift count");
+                else
+                    diags_.error(e.pos, "'" + op + "' expects an i32 shift count, found " + rt.name);
+            }
+            return lt;
+        }
+        // arithmetic / bitwise
         if (op == "+" && l == Ty::String && r == Ty::String) return tNamed("string");
         if (reconcileNumeric(e, lt, rt, common)) return common; // widen the narrower operand to the wider
         if (isNumericTypeName(lt) && isNumericTypeName(rt)) { // both numeric but neither widens -> needs a cast
