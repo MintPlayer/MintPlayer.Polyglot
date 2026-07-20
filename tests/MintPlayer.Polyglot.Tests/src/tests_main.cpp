@@ -514,6 +514,9 @@ int main() {
     // (a targeted message, not a confusing parse error) with no cascade errors.
     refuses("fn main() { lock (m) { print(1) } }\n", "locks", "P6: refuses a `lock` statement");
     refuses("fn main() { unsafe { print(1) } }\n", "unsafe", "P6: refuses an `unsafe` block");
+    // §3.B: a finalizer (`~Name() {}`) is unspeakable — no cross-target deterministic-destruction contract
+    // (issue #54). The parser refuses the `~` member form out loud instead of two raw parse errors.
+    refuses("class Foo {\n  ~Foo() {\n  }\n}\n", "finalizers", "P6: refuses a finalizer (`~Name`)");
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
     resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");

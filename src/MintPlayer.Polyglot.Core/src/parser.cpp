@@ -222,6 +222,30 @@ private:
     Member parseMember() {
         Member m;
         m.pos = peek().pos;
+        // §3.B: a finalizer (`~Name() { … }`) is unspeakable — Polyglot refuses GC/finalizer hooks (no
+        // deterministic-destruction contract across .NET's GC and JS/PHP/Python). A C#/C++-habituated author
+        // will still try one, so catch the `~` member form and refuse out loud with a targeted message
+        // (issue #54) instead of two confusing raw parse errors, then brace-skip the whole construct so no
+        // cascade follows. Mirrors the lock/unsafe statement refusal in parseBlock().
+        if (at(TokKind::Tilde)) {
+            SourcePos sp = peek().pos;
+            diags_.error(sp, "Polyglot refuses finalizers (`~Name`) — there is no cross-target deterministic "
+                             "destruction/GC-hook contract; use `use`/IDisposable-style scoping instead (PRD §3.B)");
+            advance(); // '~'
+            while (!at(TokKind::End) && !at(TokKind::LBrace) && !at(TokKind::Semicolon) && !at(TokKind::RBrace)) advance(); // name + `()`
+            if (at(TokKind::LBrace)) { // skip the balanced `{ … }` body
+                int depth = 0;
+                do {
+                    if (at(TokKind::LBrace)) ++depth;
+                    else if (at(TokKind::RBrace)) --depth;
+                    advance();
+                } while (depth > 0 && !at(TokKind::End));
+            } else {
+                accept(TokKind::Semicolon);
+            }
+            m.kind = MemberKind::Field; // discarded: compilation aborts on the diagnostic before sema
+            return m;
+        }
         while (atModifier()) {
             if (at(TokKind::KwAsync)) { m.isAsync = true; advance(); }
             else m.modifiers.push_back(modifierText(advance().kind));
