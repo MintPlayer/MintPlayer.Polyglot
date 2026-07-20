@@ -43,6 +43,7 @@ private:
         switch (s.kind) {
         case StmtKind::Let:      hoistExpr(static_cast<Let&>(s).init, defs); break;
         case StmtKind::Assign: { auto& a = static_cast<Assign&>(s); hoistExpr(a.target, defs); hoistExpr(a.value, defs); break; }
+        case StmtKind::IndexAssign: { auto& ia = static_cast<IndexAssign&>(s); hoistExpr(ia.receiver, defs); for (auto& ix : ia.indices) hoistExpr(ix, defs); hoistExpr(ia.value, defs); break; }
         case StmtKind::ExprStmt: hoistExpr(static_cast<ExprStmt&>(s).expr, defs); break;
         case StmtKind::If:     { auto& i = static_cast<If&>(s); hoistExpr(i.cond, defs); hoistStmts(i.thenBody); hoistStmts(i.elseBody); break; }
         case StmtKind::While:  { auto& w = static_cast<While&>(s); hoistExpr(w.cond, defs); hoistStmts(w.body); break; }
@@ -96,7 +97,7 @@ private:
         case ExprKind::MethodCall: { auto& mc = static_cast<MethodCall&>(*slot); if (mc.object) hoistExpr(mc.object, defs); for (auto& a : mc.args) hoistExpr(a, defs); break; }
         case ExprKind::Member: { auto& m = static_cast<Member&>(*slot); if (m.object) hoistExpr(m.object, defs); break; }
         case ExprKind::New:    for (auto& a : static_cast<New&>(*slot).args) hoistExpr(a, defs); break;
-        case ExprKind::Index:  { auto& i = static_cast<Index&>(*slot); hoistExpr(i.receiver, defs); hoistExpr(i.index, defs); break; }
+        case ExprKind::Index:  { auto& i = static_cast<Index&>(*slot); hoistExpr(i.receiver, defs); for (auto& ix : i.indices) hoistExpr(ix, defs); break; }
         case ExprKind::ListLit: for (auto& x : static_cast<ListLit&>(*slot).elements) hoistExpr(x, defs); break;
         case ExprKind::Tuple:  for (auto& x : static_cast<Tuple&>(*slot).elements) hoistExpr(x, defs); break;
         case ExprKind::Bound:  { auto& b = static_cast<Bound&>(*slot); if (b.receiver) hoistExpr(b.receiver, defs); for (auto& a : b.args) hoistExpr(a, defs); break; }

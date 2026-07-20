@@ -514,6 +514,37 @@ int main() {
     // (a targeted message, not a confusing parse error) with no cascade errors.
     refuses("fn main() { lock (m) { print(1) } }\n", "locks", "P6: refuses a `lock` statement");
     refuses("fn main() { unsafe { print(1) } }\n", "unsafe", "P6: refuses an `unsafe` block");
+    // §3.B: a finalizer (`~Name() {}`) is unspeakable — no cross-target deterministic-destruction contract
+    // (issue #54). The parser refuses the `~` member form out loud instead of two raw parse errors.
+    refuses("class Foo {\n  ~Foo() {\n  }\n}\n", "finalizers", "P6: refuses a finalizer (`~Name`)");
+    // §3.B: a match arm must be an expression — a block-bodied arm is refused (Python/PHP lower `match`
+    // to an expression fold with no statement block; issue #51 — was a silent drop-to-`0`).
+    refuses("fn f(n: i32): i32 => match n {\n  0 => { return 1 }\n  _ => 0\n}\n",
+            "block-bodied match arm", "P6: refuses a block-bodied match arm");
+    { // #56a: an unresolvable method on a concrete string receiver (missing `import "std.strings"`) is
+      // refused, not emitted verbatim to crash at every target's runtime.
+        EmitResult r = compile("fn f(s: string): i32 => s.codePointAt(0)\n", findTarget("csharp"));
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "import missing")) named = true;
+        check(!r.ok && named, "P36 #56a: unresolvable string method (missing import) is refused");
+    }
+    { // #38: a runtime type-test against an INTERFACE is refused (interfaces erase on TS); a concrete
+      // class type-test is allowed (that's the typed_match.pg conformance program).
+        const char* src = "interface Shape {}\nclass Circle : Shape { init() {} }\n"
+                          "fn f(s: Circle): i32 => match s {\n  x: Shape => 1\n  _ => 0\n}\n";
+        EmitResult r = compile(src, findTarget("csharp"));
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "interface")) named = true;
+        check(!r.ok && named, "P36 #38: a type-test against an interface is refused");
+    }
+    { // #53: member overloading is not supported (top-level only) — a duplicate same-named method is
+      // refused at the declaration site (was silently shadowed + a misleading call-site arity error).
+        const char* src = "class Calc {\n  fn add(a: i32): i32 => a + 1\n  fn add(a: i32, b: i32): i32 => a + b\n}\n";
+        EmitResult r = compile(src, findTarget("csharp"));
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "already defined")) named = true;
+        check(!r.ok && named, "P36 #53: a duplicate member method is refused at the declaration site");
+    }
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
     resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");
@@ -2703,15 +2734,14 @@ int main() {
         check(py.ok && has(py.code, "import abc") && has(py.code, "class IPgNet(abc.ABC):") &&
                   has(py.code, "@abc.abstractmethod") && has(py.code, "class Net(IPgNet):"),
               "issue#29: Python emits the interface as an abc.ABC base");
-        // A typed match binding is NOT a runtime type test — refuse instead of first-arm-always-wins.
+        // #38 (issue #29 follow-up): a typed match binding IS now a runtime type test on a concrete class —
+        // it compiles and emits a C# declaration pattern (`Disk d`), not a fake first-arm-always-wins.
         EmitResult typedPat = compileStd(
             "open class Shape {\n  open fn kind(): i32 => 0\n}\n"
             "class Disk : Shape {\n  override fn kind(): i32 => 1\n}\n"
             "fn f(s: Shape): i32 => match s { d: Disk => 1, _ => 0 }\nfn main() {}\n", findTarget("csharp"));
-        check(!typedPat.ok, "issue#29: typed 'match' binding (fake narrowing) is refused");
-        bool namedPat = false;
-        for (const auto& dg : typedPat.diagnostics) if (has(dg.message, "not a runtime type test")) namedPat = true;
-        check(namedPat, "issue#29: the typed-pattern diagnostic explains itself");
+        check(typedPat.ok && has(typedPat.code, "Disk d"),
+              "issue#29/#38: a typed 'match' binding is a concrete-class type test (C# declaration pattern)");
     }
 
     // ---- Wave-2 front-end robustness (G42-G48) + slice-1/2 compiler fixes -----------------------------

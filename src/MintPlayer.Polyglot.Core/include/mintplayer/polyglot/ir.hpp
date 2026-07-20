@@ -98,6 +98,11 @@ struct Binary : Expr {
     // dispatch on targets without native operators).
     bool lhsIsRecord = false;
     bool lhsIsUserType = false;
+    // Equality model (#49/#57): the lhs type is a union (structural `==` over its cases, like a record), and
+    // the lhs type declares a user `operator fn eq` — which wins over the default structural/reference
+    // equality on every target (TS/Py/PHP call `.eq(...)`; C# emits the user eq as `override Equals`).
+    bool lhsIsUnion = false;
+    bool lhsHasUserEq = false;
     Binary(SourcePos p, Type t, std::string o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::Binary, p, std::move(t)), op(std::move(o)), lhs(std::move(l)), rhs(std::move(r)) {}
 };
@@ -145,14 +150,14 @@ struct New : Expr { // construction `Type(args)` or `Type<TypeArgs>(args)`
     New(SourcePos p, Type t, std::string n) : Expr(ExprKind::New, p, std::move(t)), typeName(std::move(n)) {}
 };
 
-struct Index : Expr { // element access `receiver[index]`
+struct Index : Expr { // element access `receiver[a]` or multi-arg indexer `receiver[a, b]`
     ExprPtr receiver;
-    ExprPtr index;
+    std::vector<ExprPtr> indices; // 1+ subscript args in source order; single-arg (`List[i]`) is the hot path
     // Precomputed in lowering (P19): the receiver's type declares an `operator fn get` — a target without
-    // `[]` overloading (TS) emits `recv.get(i)` instead of a subscription.
+    // `[]` overloading (TS) emits `recv.get(a, b)` instead of a subscription.
     bool receiverHasIndexer = false;
-    Index(SourcePos p, Type t, ExprPtr r, ExprPtr i)
-        : Expr(ExprKind::Index, p, std::move(t)), receiver(std::move(r)), index(std::move(i)) {}
+    Index(SourcePos p, Type t, ExprPtr r)
+        : Expr(ExprKind::Index, p, std::move(t)), receiver(std::move(r)) {}
 };
 struct ListLit : Expr { // list literal `[a, b, c]`; `elem` is the element type T (type is List<T>)
     Type elem;
@@ -200,10 +205,12 @@ struct MakeCase : Expr { // union-case construction: C# `new Case(...)`, TS `{ t
 };
 
 // match patterns
-enum class PatternKind { Wildcard, Literal, Binding, EnumCase, Ctor };
-struct Binder { // a sub-binding of a constructor pattern: bind `binding` from field `field`
-    std::string field;
-    std::string binding;
+enum class PatternKind { Wildcard, Literal, Binding, EnumCase, Ctor, TypeTest };
+struct Binder { // one sub-slot of a constructor pattern, in declaration order (issue #43)
+    std::string field;    // the case field this slot matches (declared field name)
+    std::string binding;  // Binding slot: the bound name; empty when this slot is a literal or wildcard
+    ExprPtr literal;       // Literal slot: the constant this slot must equal (null otherwise) — `Leaf(0)`
+    // A slot with neither binding nor literal is a wildcard (`Leaf(_)`): matches anything, binds nothing.
 };
 struct Pattern {
     PatternKind kind = PatternKind::Wildcard;
@@ -212,6 +219,7 @@ struct Pattern {
     std::string enumType, enumCase; // EnumCase: Type.Case
     std::string ctorCase;           // Ctor: the union case name
     std::vector<Binder> binders;    // Ctor: field -> binding (in declared order)
+    Type testType;                  // TypeTest: the runtime type tested (`d: Disk` -> C# `Disk d`, else instanceof/isinstance) (#38)
 };
 struct MatchArm {
     Pattern pattern;
@@ -225,11 +233,15 @@ struct Match : Expr {
     // exhaustiveness, but C# can't prove it for enums — without a catch-all, the C# rule appends an
     // unreachable `_ => throw` default so the switch expression compiles without CS8524.
     bool hasCatchAll = false;
+    // The match is the whole statement (its value is discarded), so its arms are void/side-effecting.
+    // C# then needs a switch STATEMENT, not a switch expression (which can't have void arms and isn't a
+    // statement — CS0201/CS0029); the other targets' IIFE works in either position (issue #52).
+    bool isStatement = false;
     Match(SourcePos p, Type t, ExprPtr s) : Expr(ExprKind::Match, p, std::move(t)), scrutinee(std::move(s)) {}
 };
 
 // ---- statements ----
-enum class StmtKind { Let, Assign, ExprStmt, If, While, For, Return, Break, Continue, Yield, Throw, Try, Use, LocalFunc };
+enum class StmtKind { Let, Assign, IndexAssign, ExprStmt, If, While, For, Return, Break, Continue, Yield, Throw, Try, Use, LocalFunc };
 
 struct Stmt {
     StmtKind kind;
@@ -254,6 +266,9 @@ struct Let : Stmt {
     // type from the annotation (bare union cases, list literals), so comparing declared-vs-initializer
     // types can no longer tell that the annotation added information — this flag preserves the fact.
     bool declExplicit = false;
+    // `let (a, b) = t` destructuring targets (empty = an ordinary single-name let). Emitted via the
+    // per-target TupleLet rule: C# `var (a,b)=`, TS `const [a,b]=`, Python `a, b =`, PHP `[$a,$b]=` (#39b).
+    std::vector<std::string> tupleNames;
     Let(SourcePos p, std::string n, bool m, Type t, ExprPtr i)
         : Stmt(StmtKind::Let, p), name(std::move(n)), isMutable(m), type(std::move(t)), init(std::move(i)) {}
 };
@@ -266,6 +281,16 @@ struct Assign : Stmt {
     bool targetThroughCell = false;
     Assign(SourcePos p, ExprPtr t, std::string o, ExprPtr v)
         : Stmt(StmtKind::Assign, p), target(std::move(t)), op(std::move(o)), value(std::move(v)) {}
+};
+// A write through a USER indexer `recv[a, b] = v` (issue #40). Kept distinct from Assign so each target
+// renders it its own way: C# native `recv[a, b] = v` (paired into the merged `this[...]{get;set;}`),
+// while targets that emulate operators as methods call `recv.set(a, b, v)`. A plain collection write
+// (`xs[i] = v`, no user indexer) stays an ordinary Assign — only a user-indexer receiver lowers here.
+struct IndexAssign : Stmt {
+    ExprPtr receiver;
+    std::vector<ExprPtr> indices;
+    ExprPtr value;
+    IndexAssign(SourcePos p) : Stmt(StmtKind::IndexAssign, p) {}
 };
 struct ExprStmt : Stmt {
     ExprPtr expr;
@@ -280,6 +305,7 @@ struct If : Stmt {
 struct While : Stmt {
     ExprPtr cond;
     std::vector<StmtPtr> body;
+    bool isDoWhile = false; // a post-tested `do { … } while (cond)` loop (#39a)
     While(SourcePos p, ExprPtr c) : Stmt(StmtKind::While, p), cond(std::move(c)) {}
 };
 struct For : Stmt { // `for binding in <seq>`: either an integer range or an arbitrary iterable
@@ -430,8 +456,22 @@ struct Method {
     bool exprBodied = false;      // `=> expr` vs block
     bool isStatic = false;        // a `static fn` member — called as `Type.method(...)`, no `this`
     bool isAsync = false;         // `async` method — return wrapped in Task/Promise/async def (§4.7)
+    bool isVirtual = false;       // `open fn` — C# `virtual` (overridable); SPEC §grammar 210-213
+    bool isOverride = false;      // `override fn` — C# `override` (replaces a base virtual)
+    bool isIterator = false;      // body has a `yield` — C# `IEnumerable`, TS generator `*method()` (§4.x)
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
+    // Indexer pairing (issue #40): on a `get` indexer operator, a non-owning pointer to the sibling `set`
+    // operator in the same class, so C# can MERGE them into one `this[...] { get; set; }` (the set method
+    // still owns its own body — it also emits standalone as `.set(...)` on the method-emulation targets).
+    // Stable: set after the class's `methods` vector is fully built and never reallocated afterwards.
+    const Method* pairedSetter = nullptr;
+    // Property accessor-block setter (#39c): a read-write computed property carries its setter here (the
+    // getter is exprBody/body). C# emits `{ get …; set { … } }`, TS/Python native get/set accessors, PHP a
+    // getter+setter method pair (property-set assignments route to the setter).
+    bool propHasSetter = false;
+    std::string setterParamName;         // the setter's value parameter (default `value`)
+    std::vector<StmtPtr> setterBody;
     // Top-level module globals this member's body (incl. a property getter's expr) references — same
     // fact as ir::Function.globalRefs; consumed only by PHP (`global $x;`), empty/ignored elsewhere.
     std::vector<std::string> globalRefs;
@@ -482,6 +522,12 @@ struct Class { // a mutable reference type
     bool hasInit = false;
     std::vector<Param> initParams;
     bool hasSuper = false;             // init calls `super(...)`: C# `: base(args)`, TS `super(args);`
+    // Does an ANCESTOR have a real constructor to chain up to? True if a base (transitively) is a user
+    // class with an `init`, or a native/extern base (Error→`\Exception`, …) — which always has a ctor.
+    // False when the only bases are interfaces or user classes with no `init`. PHP gates its
+    // `parent::__construct(...)` on this: unlike C#/TS/Python, PHP has no implicit default base ctor, so a
+    // `super()` to an initless base is a fatal `Cannot call constructor` (issue #48).
+    bool baseHasInit = false;
     std::vector<ExprPtr> superArgs;    // the base-constructor arguments (hoisted out of initBody)
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;

@@ -1,6 +1,6 @@
-// REFUSED (PRD §3.B): a finalizer (`~Foo`) inside a class. Today this surfaces as TWO raw parse
-// errors rather than a targeted "Polyglot refuses finalizers" diagnostic — issue #54 tracks the
-// targeted message. This fixture only asserts nonzero exit + no output written, NOT the message.
+// REFUSED (PRD §3.B): a finalizer (`~Foo`) inside a class. The parser recognizes the `~` member form
+// and refuses it out loud with a targeted "Polyglot refuses finalizers" diagnostic (issue #54), then
+// brace-skips the body so no cascade errors follow.
 class Foo {
   ~Foo() {
   }

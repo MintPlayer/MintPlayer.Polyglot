@@ -32,6 +32,7 @@ const char* featureName(Feature f) {
         case Feature::MutableRefClasses:   return "mutableRefClasses";
         case Feature::FixedWidthIntegers:  return "fixedWidthIntegers";
         case Feature::Utf16Strings:        return "utf16Strings";
+        case Feature::PropertySetters:     return "propertySetters";
     }
     return "?";
 }
@@ -88,7 +89,7 @@ private:
 // SILENTLY before this check existed (the slice-6d gate caught exactly that); now it fails the load.
 const std::unordered_set<std::string>& fnCatalog() {
     static const std::unordered_set<std::string> names = {
-        "intSuffix", "escapeString", "opSpelling", "ident", "mangleName", "escape", "wrap", "table",
+        "intSuffix", "escapeString", "opSpelling", "ident", "identFn", "mangleName", "escape", "wrap", "table",
         "subst", "require", "inlineBlock", // shared expression catalog
         "generics", "where", "mangle", "access", // declaration-context catalog (`access` = the requested accessibility modifier)
         "substExtern",                     // type-context catalog (extern-class template substitution)
@@ -125,7 +126,7 @@ constexpr Coverage kCoverage[] = {
     {"MethodCall", nullptr}, {"Binary", nullptr},
     {"MakeCase", "patternMatching"}, // a union-constructor node — only reachable when unions/match are
     {"Match", "patternMatching"}, {"With", "withExpressions"}, {"Await", "async"}, {"Lambda", "closures"},
-    {"ForStmt", nullptr}, {"TryStmt", "exceptions"},
+    {"ForStmt", nullptr}, {"TryStmt", "exceptions"}, {"IndexAssign", nullptr}, {"TupleLet", nullptr},
     {"Program", nullptr}, {"Type", nullptr}, {"EnumDecl", nullptr}, {"RecordDecl", nullptr},
     {"ClassDecl", nullptr}, {"MethodDecl", nullptr}, {"FunctionDecl", nullptr},
     {"UnionDecl", "patternMatching"}, {"InterfaceDecl", "interfaces"},

@@ -384,6 +384,14 @@ the canonical formatter prints `x => …` for one untyped parameter and parenthe
 Note `=>` is reused for expression-bodied members (§6.1/§6.2) and `match` arms (§4.5) — those are not
 lambdas.
 
+**Loop-variable capture is per-iteration** (issue #46): a closure created inside a `for` loop captures the
+loop variable's value *at that iteration*, not a single shared variable. This is the TS `let` / PHP
+`use($i)` semantic and matches C#'s own `foreach` (since C# 5); it is the least surprising choice. Targets
+whose native `for` differs get a capture shim: C# copies the range binding into a per-iteration local
+(`for (var i__it = …) { var i = i__it; … }`), and Python snapshots it as a default argument
+(`lambda …, i=i: …`). So `for i in 0..3 { fns.add(() => i) }` yields closures returning 0, 1, 2 on every
+target.
+
 ---
 
 ## 7. Iterators (`yield`) and sequences
@@ -468,6 +476,25 @@ miscompile.
   (→ C# delegate, TS arrow function), never code-as-inspectable-data: JS has no portable way to recover a
   typed AST from a function at run time, so there is nothing to lower a queryable tree to.
 - **Bit-exact cross-target floats** — not promised; see §9 / PRD §3.D.
+
+### 10.1 Issue-sweep (P36) scope decisions
+
+These clarify or bound features surfaced by the wave-2 coverage sweep (issues #38–#57):
+
+- **Typed `match` patterns / type tests** (#38) — a typed arm `x: Circle` IS a runtime type test on a
+  concrete **class or union** (C# declaration pattern / TS·PHP `instanceof` / Python `isinstance`), narrowing
+  the binding. A type test against an **interface** is refused (interfaces have no runtime identity on TS).
+- **Union `==`** (#57) — **structural** (compares tag + payload), like records; documented in §9.
+- **A user `operator fn eq`** (#49) overrides the default structural/reference equality on every target.
+- **Per-iteration loop-variable capture** (#46) — see §6.4.
+- **Block-bodied `match` arms** are refused (#51) — a match arm must be an expression (Python/PHP lower
+  `match` to an expression fold with no statement block). Extract the block into a function.
+- **Member method overloading** is refused (#53) — `fn` overloading is **top-level only**; a duplicate
+  same-named method is a declaration-site error. Give the overloads distinct names.
+- **Namespace and renaming imports** are refused (#39e) — `import * as ns` and `{ a as b }`; import members
+  by their own name (`import { a, b } from "…"`). Modules merge into one flat namespace.
+- **An unresolvable member on a concrete/primitive receiver** is refused, not emitted verbatim (#56a) —
+  usually a missing `import`.
 
 ---
 

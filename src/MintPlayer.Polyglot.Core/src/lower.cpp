@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/lower.hpp"
 
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -133,6 +134,8 @@ public:
         auto noteIndexer = [&](const std::string& name, const std::vector<Member>& ms) {
             for (const auto& mem : ms) {
                 if (mem.kind == MemberKind::Operator && mem.name == "get") indexerTypes_.insert(name);
+                if (mem.kind == MemberKind::Operator && mem.name == "eq") userEqTypes_.insert(name); // #49
+
                 // Computed properties (getters): a target that emulates them as methods (PHP) needs the
                 // access site to call `recv->name()`; native-property targets ignore the stamp.
                 if (mem.kind == MemberKind::Property) propertyMembers_[name].insert(mem.name);
@@ -257,6 +260,35 @@ public:
             f.globalRefs = scanGlobalRefs(moduleGlobals_, fn.params, fn.body, nullptr);
             m.functions.push_back(std::move(f));
         }
+
+        // Stamp ir::Class.baseHasInit transitively now that every class/interface is lowered (issue #48).
+        // A base contributes a chainable ctor when it is a user class with an `init` (or one whose own
+        // ancestors do), OR a base that is neither a user class nor a user interface — i.e. an extern/native
+        // type like Error/Exception, which always has a constructor. Interface bases contribute nothing.
+        {
+            std::unordered_map<std::string, const ir::Class*> byName;
+            for (const auto& c : m.classes) byName[c.name] = &c;
+            std::unordered_set<std::string> ifaceNames;
+            for (const auto& it : m.interfaces) ifaceNames.insert(it.name);
+            std::unordered_map<std::string, int> memo; // per-class: -1 computing, 0 no, 1 yes
+            std::function<bool(const ir::Class&)> classChains = [&](const ir::Class& c) -> bool {
+                auto mit = memo.find(c.name);
+                if (mit != memo.end() && mit->second >= 0) return mit->second == 1;
+                memo[c.name] = -1; // guard against inheritance cycles
+                bool chains = false;
+                for (const auto& b : c.bases) {
+                    auto cit = byName.find(b.name);
+                    if (cit != byName.end()) {                 // a user class base
+                        if (cit->second->hasInit || classChains(*cit->second)) { chains = true; break; }
+                    } else if (ifaceNames.count(b.name) == 0) { // not a class, not an interface → native base
+                        chains = true; break;
+                    }
+                }
+                memo[c.name] = chains ? 1 : 0;
+                return chains;
+            };
+            for (auto& c : m.classes) c.baseHasInit = classChains(c);
+        }
         return m;
     }
 
@@ -275,6 +307,7 @@ private:
     std::unordered_set<std::string> recordNames_;                    // user records (structural `==`)
     std::unordered_map<std::string, const RecordDecl*> records_;     // record name -> decl (field order for `with`)
     std::unordered_set<std::string> indexerTypes_;                   // types declaring `operator fn get`
+    std::unordered_set<std::string> userEqTypes_;                    // types declaring `operator fn eq` (#49)
     std::unordered_map<std::string, std::unordered_set<std::string>> propertyMembers_; // type -> computed-property names
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
@@ -301,15 +334,25 @@ private:
                 ip.kind = ir::PatternKind::Ctor;
                 ip.ctorCase = p.name;
                 const auto fit = caseFields_.find(p.name);
+                // Every sub-slot in declaration order (issue #43): a binder binds a field, a LITERAL slot
+                // carries its constant (its equality test must not be dropped), a wildcard binds nothing.
                 for (std::size_t i = 0; i < p.sub.size(); ++i) {
-                    if (p.sub[i].kind != PatKind::Binding) continue; // nested patterns widen later
-                    std::string field = (fit != caseFields_.end() && i < fit->second.size()) ? fit->second[i] : p.sub[i].name;
-                    ip.binders.push_back({field, p.sub[i].name});
+                    ir::Binder b;
+                    b.field = (fit != caseFields_.end() && i < fit->second.size())
+                                  ? fit->second[i]
+                                  : (p.sub[i].kind == PatKind::Binding ? p.sub[i].name : std::string());
+                    if (p.sub[i].kind == PatKind::Literal && p.sub[i].literal) b.literal = expr(*p.sub[i].literal);
+                    else if (p.sub[i].kind == PatKind::Binding) b.binding = p.sub[i].name;
+                    // else: wildcard slot (no binding, no literal)
+                    ip.binders.push_back(std::move(b));
                 }
                 break;
             }
             case PatKind::Binding:
-                if (!scrutEnum.empty() && enumCases_.at(scrutEnum).count(p.name)) {
+                if (p.hasType && p.type.kind == TypeRef::Kind::Named && !p.type.name.empty()) {
+                    // `d: Disk` — a runtime type test (#38): C# declaration pattern / instanceof / isinstance.
+                    ip.kind = ir::PatternKind::TypeTest; ip.binding = p.name; ip.testType = p.type;
+                } else if (!scrutEnum.empty() && enumCases_.at(scrutEnum).count(p.name)) {
                     ip.kind = ir::PatternKind::EnumCase; ip.enumType = scrutEnum; ip.enumCase = p.name;
                 } else if (!scrutUnion.empty() && unionCases_.at(scrutUnion).count(p.name)) {
                     ip.kind = ir::PatternKind::Ctor; ip.ctorCase = p.name; // payload-free case
@@ -432,6 +475,15 @@ private:
                     break;
             }
         }
+        // Pair a get/set indexer so C# can merge them into one `this[...] { get; set; }` (issue #40). Safe:
+        // ic.methods is complete here and its buffer is never reallocated afterwards (the Class is only moved).
+        ir::Method* getM = nullptr;
+        ir::Method* setM = nullptr;
+        for (auto& mm : ic.methods) {
+            if (mm.kind == ir::MethodKind::Operator && mm.opSymbol == "get") getM = &mm;
+            else if (mm.kind == ir::MethodKind::Operator && mm.opSymbol == "set") setM = &mm;
+        }
+        if (getM && setM) getM->pairedSetter = setM;
         return ic;
     }
 
@@ -447,7 +499,11 @@ private:
         ir::Method im;
         im.name = m.name;
         im.isAsync = m.isAsync;
-        for (const auto& mod : m.modifiers) if (mod == "static") im.isStatic = true;
+        for (const auto& mod : m.modifiers) {
+            if (mod == "static") im.isStatic = true;
+            else if (mod == "open") im.isVirtual = true;
+            else if (mod == "override") im.isOverride = true;
+        }
         im.generics = generics(m.generics);
         // Same module-global fact as on ir::Function — a property getter's expr counts as its body.
         im.globalRefs = scanGlobalRefs(moduleGlobals_, m.params, m.body,
@@ -455,20 +511,32 @@ private:
         if (m.kind == MemberKind::Property) {
             im.kind = ir::MethodKind::Property;
             im.returnType = m.type;
-            im.exprBodied = true;
-            if (m.init) im.exprBody = expr(*m.init);
+            if (m.init) { im.exprBodied = true; im.exprBody = expr(*m.init); }
+            else if (!m.body.empty()) { im.exprBodied = false; im.body = block(m.body); } // block-bodied getter (#39c)
+            else im.exprBodied = true; // bound/skeleton property (overlay-armed) — unchanged
+            if (m.hasSetter) { // accessor-block setter (#39c)
+                im.propHasSetter = true;
+                im.setterParamName = m.setterParam;
+                im.setterBody = block(m.setterBody);
+            }
             return im;
         }
         im.kind = (m.kind == MemberKind::Operator) ? ir::MethodKind::Operator : ir::MethodKind::Method;
         if (m.kind == MemberKind::Operator) im.opSymbol = operatorSymbol(m.name);
         im.returnType = m.returnType;
         for (const auto& p : m.params) im.params.push_back(irParam(p));
-        // A real operator (not the `get` indexer) rebinds `this` on targets whose operator declaration is
-        // static (C#): stamp the fact on every This lowered from its body (nested lambdas included).
-        const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get";
+        // A real operator (not a `get`/`set` indexer) rebinds `this` on targets whose operator declaration
+        // is static (C#): stamp the fact on every This lowered from its body (nested lambdas included). The
+        // indexer accessors are INSTANCE members (C# `this[...]{get;set;}`), so `this` stays `this` (#40).
+        // `get`/`set` indexers and `eq` (C# `override Equals`, #49) are INSTANCE members, so `this` stays
+        // `this`; only a genuinely static operator (C# `operator +`, taking lhs/rhs) rebinds `this` -> lhs.
+        const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get" &&
+                            im.opSymbol != "set" && im.opSymbol != "==";
         if (opBody) inOperator_ = true;
+        sawYield_ = false; // a `yield` anywhere in the body marks the method an iterator (mirrors ir::Function)
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
         else { im.exprBodied = false; im.body = block(m.body); }
+        im.isIterator = sawYield_;
         if (opBody) inOperator_ = false;
         return im;
     }
@@ -522,6 +590,8 @@ private:
                     const std::string& ln = e.lhs->type.name;
                     b->lhsIsRecord = recordNames_.count(ln) != 0;
                     b->lhsIsUserType = !isPrimitiveTypeName(ln) && ln != "unit";
+                    b->lhsIsUnion = unionCases_.count(ln) != 0;   // #57: structural `==` over union cases
+                    b->lhsHasUserEq = userEqTypes_.count(ln) != 0; // #49: user `operator fn eq` wins
                 }
                 return b;
             }
@@ -621,11 +691,15 @@ private:
                 return call;
             }
             case ExprKind::Index: {
-                // List element access `recv[i]`. The result type is the element type sema resolved onto
-                // the node; `receiverHasIndexer` marks a user `operator fn get` receiver (TS -> `.get(i)`).
-                auto ix = !e.args.empty()
-                    ? std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), expr(*e.args[0]))
-                    : std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), std::make_unique<ir::IntLit>(e.pos, namedType("i32"), "0"));
+                // Element access `recv[a]` or a multi-arg indexer `recv[a, b]`. The result type is the
+                // element type sema resolved onto the node; `receiverHasIndexer` marks a user `operator fn
+                // get` receiver (a target without `[]` overloading emits `recv.get(a, b)`). Every subscript
+                // arg is carried in declaration order (issue #42); a bare `recv[]` degrades to a single `0`.
+                auto ix = std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs));
+                if (!e.args.empty())
+                    for (const auto& a : e.args) ix->indices.push_back(expr(*a));
+                else
+                    ix->indices.push_back(std::make_unique<ir::IntLit>(e.pos, namedType("i32"), "0"));
                 ix->receiverHasIndexer = e.lhs->type.kind == TypeRef::Kind::Named &&
                                          indexerTypes_.count(e.lhs->type.name) != 0;
                 return ix;
@@ -677,12 +751,31 @@ private:
                 ir::Type t = s.hasDeclType ? s.declType : (s.value ? s.value->type : TypeRef{});
                 auto let = std::make_unique<ir::Let>(s.pos, s.name, s.isMutable, t, expr(*s.value));
                 let->declExplicit = s.hasDeclType;
+                let->tupleNames = s.tupleNames; // `let (a, b) = t` destructuring (#39b)
                 return let;
             }
-            case StmtKind::Assign:
+            case StmtKind::Assign: {
+                // A plain write `recv[a, b] = v` through a USER indexer lowers to an IndexAssign so each
+                // target renders it its own way (C# native subscript-set vs a `set(...)` method call). A
+                // native collection write (`xs[i] = v`, no user indexer) or a compound op stays an Assign.
+                if (s.op == "=" && s.target && s.target->kind == ExprKind::Index && s.target->lhs &&
+                    s.target->lhs->type.kind == TypeRef::Kind::Named &&
+                    indexerTypes_.count(s.target->lhs->type.name) != 0) {
+                    auto ia = std::make_unique<ir::IndexAssign>(s.pos);
+                    ia->receiver = expr(*s.target->lhs);
+                    for (const auto& a : s.target->args) ia->indices.push_back(expr(*a));
+                    ia->value = expr(*s.value);
+                    return ia;
+                }
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
-            case StmtKind::ExprStmt:
-                return std::make_unique<ir::ExprStmt>(s.pos, expr(*s.value));
+            }
+            case StmtKind::ExprStmt: {
+                auto ev = expr(*s.value);
+                // A match whose value is discarded is a STATEMENT match (void/side-effecting arms) — C#
+                // must render a switch statement, not a switch expression (issue #52).
+                if (ev->kind == ir::ExprKind::Match) static_cast<ir::Match&>(*ev).isStatement = true;
+                return std::make_unique<ir::ExprStmt>(s.pos, std::move(ev));
+            }
             case StmtKind::If: {
                 auto node = std::make_unique<ir::If>(s.pos, expr(*s.value));
                 node->thenBody = block(s.thenBody);
@@ -692,6 +785,7 @@ private:
             case StmtKind::While: {
                 auto node = std::make_unique<ir::While>(s.pos, expr(*s.value));
                 node->body = block(s.thenBody);
+                node->isDoWhile = s.isDoWhile;
                 return node;
             }
             case StmtKind::For: {
@@ -754,9 +848,111 @@ private:
 
 } // namespace
 
+// #41: C# forbids a nested-scope local reusing a method-scope local's name (CS0136), unlike TS/Python/PHP.
+// This target-gated pass renames a for-binding that collides with a Let/param name in the same body (and
+// rewrites its in-body references); non-colliding loops are untouched, so existing C# output stays
+// byte-identical. Runs after lowering, only for the C# target.
+namespace {
+struct CsScopeLegalizer {
+    int seq = 0;
+    static std::unordered_set<std::string> paramNames(const std::vector<ir::Param>& ps) {
+        std::unordered_set<std::string> s; for (const auto& p : ps) s.insert(p.name); return s;
+    }
+    void run(ir::Module& m) {
+        for (auto& f : m.functions)  fixBody(f.body, paramNames(f.params));
+        for (auto& f : m.extensions) fixBody(f.body, paramNames(f.params));
+        for (auto& r : m.records) for (auto& mm : r.methods) if (!mm.exprBodied) fixBody(mm.body, paramNames(mm.params));
+        for (auto& c : m.classes) {
+            for (auto& mm : c.methods) if (!mm.exprBodied) fixBody(mm.body, paramNames(mm.params));
+            fixBody(c.initBody, paramNames(c.initParams));
+        }
+    }
+    void fixBody(std::vector<ir::StmtPtr>& body, std::unordered_set<std::string> declared) {
+        for (auto& s : body) collectLets(*s, declared);
+        for (auto& s : body) renameFors(*s, declared);
+    }
+    void collectLets(ir::Stmt& s, std::unordered_set<std::string>& out) {
+        using K = ir::StmtKind;
+        switch (s.kind) {
+            case K::Let: { auto& l = static_cast<ir::Let&>(s); if (!l.name.empty()) out.insert(l.name); for (auto& n : l.tupleNames) out.insert(n); break; }
+            case K::If: { auto& i = static_cast<ir::If&>(s); for (auto& b : i.thenBody) collectLets(*b, out); for (auto& b : i.elseBody) collectLets(*b, out); break; }
+            case K::While: for (auto& b : static_cast<ir::While&>(s).body) collectLets(*b, out); break;
+            case K::For: for (auto& b : static_cast<ir::For&>(s).body) collectLets(*b, out); break;
+            case K::Use: for (auto& b : static_cast<ir::Use&>(s).body) collectLets(*b, out); break;
+            case K::Try: { auto& t = static_cast<ir::Try&>(s); for (auto& b : t.body) collectLets(*b, out); for (auto& c : t.catches) for (auto& b : c.body) collectLets(*b, out); for (auto& b : t.finallyBody) collectLets(*b, out); break; }
+            default: break;
+        }
+    }
+    void renameFors(ir::Stmt& s, const std::unordered_set<std::string>& declared) {
+        using K = ir::StmtKind;
+        switch (s.kind) {
+            case K::For: {
+                auto& f = static_cast<ir::For&>(s);
+                if (!f.binding.empty() && f.binding != "_" && declared.count(f.binding)) {
+                    std::string nn = f.binding + "__cs" + std::to_string(seq++);
+                    for (auto& b : f.body) renameStmt(*b, f.binding, nn);
+                    f.binding = nn;
+                }
+                for (auto& b : f.body) renameFors(*b, declared);
+                break;
+            }
+            case K::If: { auto& i = static_cast<ir::If&>(s); for (auto& b : i.thenBody) renameFors(*b, declared); for (auto& b : i.elseBody) renameFors(*b, declared); break; }
+            case K::While: for (auto& b : static_cast<ir::While&>(s).body) renameFors(*b, declared); break;
+            case K::Use: for (auto& b : static_cast<ir::Use&>(s).body) renameFors(*b, declared); break;
+            case K::Try: { auto& t = static_cast<ir::Try&>(s); for (auto& b : t.body) renameFors(*b, declared); for (auto& c : t.catches) for (auto& b : c.body) renameFors(*b, declared); for (auto& b : t.finallyBody) renameFors(*b, declared); break; }
+            default: break;
+        }
+    }
+    void renameStmt(ir::Stmt& s, const std::string& o, const std::string& n) {
+        using K = ir::StmtKind;
+        switch (s.kind) {
+            case K::Let: { auto& l = static_cast<ir::Let&>(s); if (l.init) renameExpr(*l.init, o, n); break; }
+            case K::Assign: { auto& a = static_cast<ir::Assign&>(s); if (a.target) renameExpr(*a.target, o, n); if (a.value) renameExpr(*a.value, o, n); break; }
+            case K::IndexAssign: { auto& ia = static_cast<ir::IndexAssign&>(s); if (ia.receiver) renameExpr(*ia.receiver, o, n); for (auto& x : ia.indices) renameExpr(*x, o, n); if (ia.value) renameExpr(*ia.value, o, n); break; }
+            case K::ExprStmt: renameExpr(*static_cast<ir::ExprStmt&>(s).expr, o, n); break;
+            case K::Return: { auto& r = static_cast<ir::Return&>(s); if (r.value) renameExpr(*r.value, o, n); break; }
+            case K::Yield: { auto& y = static_cast<ir::Yield&>(s); if (y.value) renameExpr(*y.value, o, n); break; }
+            case K::Throw: { auto& t = static_cast<ir::Throw&>(s); if (t.value) renameExpr(*t.value, o, n); break; }
+            case K::If: { auto& i = static_cast<ir::If&>(s); if (i.cond) renameExpr(*i.cond, o, n); for (auto& b : i.thenBody) renameStmt(*b, o, n); for (auto& b : i.elseBody) renameStmt(*b, o, n); break; }
+            case K::While: { auto& w = static_cast<ir::While&>(s); if (w.cond) renameExpr(*w.cond, o, n); for (auto& b : w.body) renameStmt(*b, o, n); break; }
+            case K::For: { auto& f = static_cast<ir::For&>(s); if (f.rangeStart) renameExpr(*f.rangeStart, o, n); if (f.rangeEnd) renameExpr(*f.rangeEnd, o, n); if (f.iterable) renameExpr(*f.iterable, o, n); if (f.binding != o) for (auto& b : f.body) renameStmt(*b, o, n); break; }
+            case K::Use: { auto& u = static_cast<ir::Use&>(s); if (u.init) renameExpr(*u.init, o, n); for (auto& b : u.body) renameStmt(*b, o, n); break; }
+            case K::Try: { auto& t = static_cast<ir::Try&>(s); for (auto& b : t.body) renameStmt(*b, o, n); for (auto& c : t.catches) for (auto& b : c.body) renameStmt(*b, o, n); for (auto& b : t.finallyBody) renameStmt(*b, o, n); break; }
+            default: break;
+        }
+    }
+    void renameExpr(ir::Expr& e, const std::string& o, const std::string& n) {
+        using K = ir::ExprKind;
+        switch (e.kind) {
+            case K::Var: { auto& v = static_cast<ir::Var&>(e); if (v.name == o) v.name = n; break; }
+            case K::Unary: renameExpr(*static_cast<ir::Unary&>(e).operand, o, n); break;
+            case K::Await: renameExpr(*static_cast<ir::Await&>(e).operand, o, n); break;
+            case K::Cast:  renameExpr(*static_cast<ir::Cast&>(e).operand, o, n); break;
+            case K::Binary: { auto& b = static_cast<ir::Binary&>(e); renameExpr(*b.lhs, o, n); renameExpr(*b.rhs, o, n); break; }
+            case K::Cond: { auto& c = static_cast<ir::Cond&>(e); renameExpr(*c.cond, o, n); renameExpr(*c.then, o, n); renameExpr(*c.els, o, n); break; }
+            case K::Call: { auto& c = static_cast<ir::Call&>(e); for (auto& a : c.args) renameExpr(*a, o, n); break; }
+            case K::MethodCall: { auto& mc = static_cast<ir::MethodCall&>(e); if (mc.object) renameExpr(*mc.object, o, n); for (auto& a : mc.args) renameExpr(*a, o, n); break; }
+            case K::Member: { auto& m = static_cast<ir::Member&>(e); if (m.object) renameExpr(*m.object, o, n); break; }
+            case K::Index: { auto& i = static_cast<ir::Index&>(e); if (i.receiver) renameExpr(*i.receiver, o, n); for (auto& x : i.indices) renameExpr(*x, o, n); break; }
+            case K::ListLit: for (auto& x : static_cast<ir::ListLit&>(e).elements) renameExpr(*x, o, n); break;
+            case K::Tuple: for (auto& x : static_cast<ir::Tuple&>(e).elements) renameExpr(*x, o, n); break;
+            case K::New: for (auto& a : static_cast<ir::New&>(e).args) renameExpr(*a, o, n); break;
+            case K::Interp: for (auto& h : static_cast<ir::Interp&>(e).holes) renameExpr(*h, o, n); break;
+            case K::MakeCase: for (auto& f : static_cast<ir::MakeCase&>(e).fields) renameExpr(*f.value, o, n); break;
+            case K::With: { auto& w = static_cast<ir::With&>(e); if (w.base) renameExpr(*w.base, o, n); for (auto& f : w.fields) renameExpr(*f.value, o, n); break; }
+            case K::Bound: { auto& b = static_cast<ir::Bound&>(e); if (b.receiver) renameExpr(*b.receiver, o, n); for (auto& a : b.args) renameExpr(*a, o, n); break; }
+            case K::Lambda: { auto& l = static_cast<ir::Lambda&>(e); bool shadow = false; for (auto& p : l.params) if (p.name == o) shadow = true; if (shadow) break; if (l.exprBodied) { if (l.body) renameExpr(*l.body, o, n); } else for (auto& b : l.block) renameStmt(*b, o, n); break; }
+            case K::Match: { auto& m = static_cast<ir::Match&>(e); if (m.scrutinee) renameExpr(*m.scrutinee, o, n); for (auto& a : m.arms) { if (a.guard) renameExpr(*a.guard, o, n); if (a.body) renameExpr(*a.body, o, n); } break; }
+            default: break;
+        }
+    }
+};
+} // namespace
+
 ir::Module lower(const CompilationUnit& unit, const std::string& target) {
     Lowerer lowerer(unit, target);
     ir::Module m = lowerer.run(unit);
+    if (target == "csharp") { CsScopeLegalizer cs; cs.run(m); } // #41: rename for-bindings colliding with locals
     analyzeCaptures(m); // P25 §4.18: classify closure captures + stamp cell decisions onto the IR
     // Python's `lambda` is expression-only, so block lambdas hoist to nested `def`s here (the local tier for
     // an expression-only-lambda target). Every other target emits block lambdas inline.

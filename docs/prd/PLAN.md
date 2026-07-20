@@ -3364,3 +3364,49 @@ verified), bounded `ForEach-Object -Parallel` batching, a tiered gate (`-Tier fa
 caching layer — decided 2026-07-19 follow-up: NX per-leg targets + the maintainer's existing nx-cache.mintplayer.com remote (OpenAPI HTTP interface; locals R/W, CI cold) composing with an in-runner per-program L1 (docs/prd/gate-speedup/NX-EVALUATION.md).
 Projected honestly: **full gate ~5× (~3–3.5 min), one-.pg dev loop ~25–40 s**. Seven ordered slices in
 `docs/prd/gate-speedup/PLAN.md`; slices 0–5 need no C++ changes and no new dependencies.
+
+## P36 — Open-issue sweep: resolve all 19 open defects (#38–#57) in one PR — ✅ built + gated (2026-07-20; maintainer request, PRD `docs/prd/issue-sweep/`, 13-agent + follow-up investigation)
+
+After PR #58 (wave-2 coverage + P35) landed the tests that surfaced them, all 19 open issues (#38–#44,
+#46–#57 — there is no #45) are to be fixed in ONE large-but-cohesive PR. They collapse to ~13
+shared-machinery groups (pattern/match lowering fixes #43+#52+#51 and enables #38; one equality model
+fixes #49+#57; the indexer path fixes #42+#40; method plumbing fixes #47+#50; etc.). Four scope
+decisions gate coding (#38 typed-match, #46 per-iteration capture, #39e namespace imports, #51 block
+arms) plus recommended implements (#53, #57, #55). 23 dependency-ordered slices, an acceptance-test
+matrix (six un-narrows of existing programs + ~13 net-new programs + unit tests, goldens mandatory for
+#43/#51/#49/#57), and a risk matrix — all in `docs/prd/issue-sweep/{PRD,PLAN,ANALYSIS}.md`.
+
+**Built (2026-07-20, one PR, 24 commits).** All 19 issues (24 sub-features) resolved across 23
+dependency-ordered slices + a gate-fix commit. The four gating scope decisions were ratified as the PRD
+recommended and are now recorded in SPEC §10.1:
+- **#38 typed-match / `is`** — narrow on concrete classes and unions (type-test pattern `PatternKind::TypeTest`,
+  emits `x is T`/`typeof`/`instanceof`/`isinstance`); a typed binding on an **interface** is refused (no
+  reliable cross-target runtime interface check).
+- **#46 per-iteration capture** — each loop iteration captures a fresh binding (C#/JS `foreach`/`let` are
+  already per-iteration; the by-value-capture default-arg trick pins Python/PHP), matching the other three.
+- **#39e namespace / renaming imports (`import * as`, `import {a as b}`)** — **refused** with a diagnostic;
+  the flat-merge module model has no importer-local alias table to hang them on.
+- **#51 block-bodied match arms** — **refused**; Python/PHP lower `match` to an expression fold that cannot
+  hold statements. Single-expression arms (incl. guarded ctor-pattern arms, #39d) stay supported.
+
+Other non-obvious calls: **#53 member overloading** resolved via **option 2** — a declaration-site
+diagnostic (top-level only) rather than name-mangling, preserving future capacity; **#39c PHP property
+setters** refused through a new `Feature::PropertySetters` capability (PHP declares `"propertySetters":
+false`); **#48 super** chains transitively through init-less middle bases (`Class.baseHasInit` transitive
+post-pass) so a grandparent field initializer still runs, while a `super()` to a genuinely init-less base
+emits no `parent::__construct()` on PHP. New shared machinery: unified equality model (`userEqTypes_`,
+`Binary.lhsIsUnion/lhsHasUserEq`) covering #49+#57; multi-arg indexer read + index-write
+(`Index.indices`, `StmtKind::IndexAssign`) for #42+#40; method modifier/iterator plumbing
+(`isVirtual/isOverride/isIterator`) for #47+#50; a C#-only scope-legalization rename pass (`CsScopeLegalizer`)
+for #41; ordered literal ctor sub-slot patterns for #43; statement-form `match` for #52; `do…while` (#39a);
+`let (a,b) = t` tuple destructuring (#39b); property accessor blocks (#39c); finalizer refusal (#54);
+PHP builtin-name mangle (#55); Py/PHP try-guard `__handled` if-chain (#44); unresolvable-member refusal
+(#56a); bidirectional lambda-param inference in the extension path (#56b).
+
+**Acceptance coverage** (the e2e instrument for these features): ~13 net-new differential conformance
+programs (`php_builtin_collision`, `super_implicit_base`, `virtual_dispatch`, `iterator_compose`,
+`operator_eq`, `union_eq`, `match_statement`, `do_while`, `prop_accessors`, `closure_loop_capture`,
+`typed_match`, …) with `.expected` goldens for the identical-wrongness-prone cases (#43/#51/#49/#57), six
+un-narrows of existing programs, new refusal fixtures (`finalizer`, `block_match_arm`, `namespace_import`),
+and unit-test rows for each new refusal. **Gate green locally**: build, unit tests, all 106 conformance
+programs (9 PHP-refused by design), library gate (tsc strict), refusals. POSIX + release legs run on CI.

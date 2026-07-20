@@ -11,7 +11,8 @@
     "interfaces": "native",
     "blockLambdas": "native",
     "extensionMethods": "emulated",
-    "operatorOverloading": false
+    "operatorOverloading": false,
+    "propertySetters": false
   },
   "spec": {
     "name": "php",
@@ -151,9 +152,26 @@
       },
       "reserved": [
         "__e",
+        "__handled",
+        "__pgm*",
         "__opt*",
         "__w*"
-      ]
+      ],
+      "functionBuiltins": {
+        "suffix": "_pg",
+        "names": [
+          "abs", "array_filter", "array_keys", "array_map", "array_merge",
+          "array_pop", "array_push", "array_reverse", "array_shift", "array_slice",
+          "array_splice", "array_values", "assert", "ceil", "compact", "cos", "count",
+          "current", "date", "die", "each", "end", "eval", "exit",
+          "exp", "explode", "extract", "filter", "floatval", "floor", "gettype",
+          "header", "implode", "in_array", "intval", "is_array", "join", "key",
+          "log", "map", "max", "min", "next", "number_format", "ord", "pow",
+          "prev", "printf", "range", "reduce", "reset", "round", "settype",
+          "sin", "sleep", "sort", "split", "sprintf", "sqrt", "str_split", "strlen",
+          "strval", "substr", "tan", "time", "trim"
+        ]
+      }
     },
     "preludes": {}
   },
@@ -299,22 +317,48 @@
       "tmpl": [
         {
           "case": {
-            "when": [ [ { "eq": ["node.isFree", "true"] }, "" ] ],
-            "else": "$"
-          }
-        },
-        {
-          "fn": "mangleName",
-          "args": [
-            {
-              "fn": "ident",
-              "args": [
+            "when": [
+              [
+                { "eq": ["node.isFree", "true"] },
                 {
-                  "get": "node.mangledCallee"
+                  "fn": "mangleName",
+                  "args": [
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "fn": "identFn",
+                          "args": [
+                            {
+                              "get": "node.mangledCallee"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            ],
+            "else": {
+              "tmpl": [
+                "$",
+                {
+                  "fn": "mangleName",
+                  "args": [
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "node.mangledCallee"
+                        }
+                      ]
+                    }
+                  ]
                 }
               ]
             }
-          ]
+          }
         },
         "(",
         {
@@ -517,7 +561,8 @@
                 },
                 "->get(",
                 {
-                  "emit": "node.index"
+                  "map": "node.indices",
+                  "sep": ", "
                 },
                 ")"
               ]
@@ -537,6 +582,55 @@
             "]"
           ]
         }
+      }
+    },
+    "IndexAssign": {
+      "line": {
+        "tmpl": [
+          {
+            "emitChild": "stmt.receiver",
+            "side": "recv"
+          },
+          "->set(",
+          {
+            "map": "stmt.indices",
+            "sep": ", "
+          },
+          ", ",
+          {
+            "emit": "stmt.value"
+          },
+          ");"
+        ]
+      }
+    },
+    "TupleLet": {
+      "line": {
+        "tmpl": [
+          "[",
+          {
+            "map": "stmt.names",
+            "sep": ", ",
+            "item": {
+              "tmpl": [
+                "$",
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "item"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "] = ",
+          {
+            "emit": "stmt.init"
+          },
+          ";"
+        ]
       }
     },
     "Cond": {
@@ -1192,93 +1286,221 @@
           }
         },
         {
-          "mapDecl": "stmt.catches",
-          "each": {
-            "block": {
-              "head": {
-                "tmpl": [
-                  "catch (",
-                  {
-                    "case": {
-                      "when": [
-                        [
-                          {
-                            "eq": [
-                              "item.hasType",
-                              "true"
-                            ]
-                          },
-                          {
-                            "type": "item.type"
-                          }
-                        ]
-                      ],
-                      "else": "\\Throwable"
-                    }
-                  },
-                  " $__e)"
-                ]
-              },
-              "body": [
+          "case": {
+            "when": [
+              [
                 {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.hasBinding",
-                            "true"
-                          ]
-                        },
-                        {
-                          "line": {
-                            "tmpl": [
-                              "$",
-                              {
-                                "fn": "ident",
-                                "args": [
-                                  {
-                                    "get": "item.binding"
+                  "eq": [
+                    "stmt.catchesHaveGuard",
+                    "true"
+                  ]
+                },
+                {
+                  "block": {
+                    "head": "catch (\\Throwable $__e)",
+                    "body": [
+                      {
+                        "line": "$__handled = false;"
+                      },
+                      {
+                        "mapDecl": "stmt.catches",
+                        "each": {
+                          "block": {
+                            "head": {
+                              "tmpl": [
+                                "if (!$__handled",
+                                {
+                                  "case": {
+                                    "when": [
+                                      [
+                                        {
+                                          "eq": [
+                                            "item.hasType",
+                                            "true"
+                                          ]
+                                        },
+                                        {
+                                          "tmpl": [
+                                            " && $__e instanceof ",
+                                            {
+                                              "type": "item.type"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    ]
                                   }
+                                },
+                                ")"
+                              ]
+                            },
+                            "body": [
+                              {
+                                "case": {
+                                  "when": [
+                                    [
+                                      {
+                                        "eq": [
+                                          "item.hasBinding",
+                                          "true"
+                                        ]
+                                      },
+                                      {
+                                        "line": {
+                                          "tmpl": [
+                                            "$",
+                                            {
+                                              "fn": "ident",
+                                              "args": [
+                                                {
+                                                  "get": "item.binding"
+                                                }
+                                              ]
+                                            },
+                                            " = $__e;"
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  ]
+                                }
+                              },
+                              {
+                                "case": {
+                                  "when": [
+                                    [
+                                      {
+                                        "eq": [
+                                          "item.hasGuard",
+                                          "true"
+                                        ]
+                                      },
+                                      {
+                                        "block": {
+                                          "head": {
+                                            "tmpl": [
+                                              "if (",
+                                              {
+                                                "emit": "item.guard"
+                                              },
+                                              ")"
+                                            ]
+                                          },
+                                          "body": [
+                                            {
+                                              "line": "$__handled = true;"
+                                            },
+                                            {
+                                              "stmts": "item.body"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    ]
+                                  ],
+                                  "else": {
+                                    "seq": [
+                                      {
+                                        "line": "$__handled = true;"
+                                      },
+                                      {
+                                        "stmts": "item.body"
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "stmt.hasCatchAll",
+                                  "false"
                                 ]
                               },
-                              " = $__e;"
-                            ]
-                          }
-                        }
-                      ]
-                    ]
-                  }
-                },
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.hasGuard",
-                            "true"
-                          ]
-                        },
-                        {
-                          "line": {
-                            "tmpl": [
-                              "if (!(",
                               {
-                                "emit": "item.guard"
-                              },
-                              ")) { throw $__e; }"
+                                "line": "if (!$__handled) { throw $__e; }"
+                              }
                             ]
-                          }
+                          ]
                         }
-                      ]
+                      }
                     ]
                   }
-                },
-                {
-                  "stmts": "item.body"
                 }
               ]
+            ],
+            "else": {
+              "mapDecl": "stmt.catches",
+              "each": {
+                "block": {
+                  "head": {
+                    "tmpl": [
+                      "catch (",
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "item.hasType",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "type": "item.type"
+                              }
+                            ]
+                          ],
+                          "else": "\\Throwable"
+                        }
+                      },
+                      " $__e)"
+                    ]
+                  },
+                  "body": [
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.hasBinding",
+                                "true"
+                              ]
+                            },
+                            {
+                              "line": {
+                                "tmpl": [
+                                  "$",
+                                  {
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "item.binding"
+                                      }
+                                    ]
+                                  },
+                                  " = $__e;"
+                                ]
+                              }
+                            }
+                          ]
+                        ]
+                      }
+                    },
+                    {
+                      "stmts": "item.body"
+                    }
+                  ]
+                }
+              }
             }
           }
         },
@@ -1391,6 +1613,23 @@
             {
               "eq": [
                 "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "(fn($",
+                { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] },
+                ") => ",
+                { "emit": "item.body" },
+                ")($_m)"
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
                 "binding"
               ]
             },
@@ -1439,17 +1678,54 @@
                   "map": "item.pattern.binders",
                   "sep": ", ",
                   "item": {
-                    "tmpl": [
-                      "$",
-                      {
-                        "fn": "ident",
-                        "args": [
+                    "case": {
+                      "when": [
+                        [
                           {
-                            "get": "item.binding"
+                            "or": [
+                              {
+                                "eq": [
+                                  "item.isLiteral",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  "item.isWildcard",
+                                  "true"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              "$__pgm_",
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "item.field"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": {
+                        "tmpl": [
+                          "$",
+                          {
+                            "fn": "ident",
+                            "args": [
+                              {
+                                "get": "item.binding"
+                              }
+                            ]
                           }
                         ]
                       }
-                    ]
+                    }
                   }
                 },
                 ") => ",
@@ -1488,6 +1764,23 @@
     "phpArmGuard": {
       "case": {
         "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "(fn($",
+                { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] },
+                ") => ",
+                { "emit": "item.guard" },
+                ")($_m)"
+              ]
+            }
+          ],
           [
             {
               "eq": [
@@ -1540,17 +1833,54 @@
                   "map": "item.pattern.binders",
                   "sep": ", ",
                   "item": {
-                    "tmpl": [
-                      "$",
-                      {
-                        "fn": "ident",
-                        "args": [
+                    "case": {
+                      "when": [
+                        [
                           {
-                            "get": "item.binding"
+                            "or": [
+                              {
+                                "eq": [
+                                  "item.isLiteral",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  "item.isWildcard",
+                                  "true"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              "$__pgm_",
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "item.field"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": {
+                        "tmpl": [
+                          "$",
+                          {
+                            "fn": "ident",
+                            "args": [
+                              {
+                                "get": "item.binding"
+                              }
+                            ]
                           }
                         ]
                       }
-                    ]
+                    }
                   }
                 },
                 ") => ",
@@ -1589,6 +1919,20 @@
     "phpArmBase": {
       "case": {
         "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "$_m instanceof ",
+                { "type": "item.pattern.testType" }
+              ]
+            }
+          ],
           [
             {
               "eq": [
@@ -1642,6 +1986,42 @@
                       "get": "item.pattern.ctorCase"
                     }
                   ]
+                },
+                {
+                  "map": "item.pattern.binders",
+                  "sep": "",
+                  "item": {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.isLiteral",
+                              "true"
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              " && $_m[",
+                              {
+                                "fn": "escapeString",
+                                "args": [
+                                  {
+                                    "get": "item.field"
+                                  }
+                                ]
+                              },
+                              "] === ",
+                              {
+                                "emit": "item.literal"
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": ""
+                    }
+                  }
                 }
               ]
             }
@@ -2035,7 +2415,12 @@
               "fn": "ident",
               "args": [
                 {
-                  "get": "decl.emitName"
+                  "fn": "identFn",
+                  "args": [
+                    {
+                      "get": "decl.emitName"
+                    }
+                  ]
                 }
               ]
             }
@@ -2701,9 +3086,19 @@
                             "when": [
                               [
                                 {
-                                  "eq": [
-                                    "decl.hasSuper",
-                                    "true"
+                                  "and": [
+                                    {
+                                      "eq": [
+                                        "decl.hasSuper",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "eq": [
+                                        "decl.baseHasInit",
+                                        "true"
+                                      ]
+                                    }
                                   ]
                                 },
                                 {

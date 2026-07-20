@@ -1,0 +1,33 @@
+// #50: a class-MEMBER iterator method (`yield` in a method body) must emit as a TS generator method
+// `*upTo()`. Without the `*` tsc rejects the `yield` (ERR_INVALID_TYPESCRIPT_SYNTAX) and node crashes.
+// Top-level iterator functions already get `function*`; this is the member spelling. Composed here with a
+// second member iterator to prove iterators + classes interoperate. All four targets print 10 then 20.
+
+class Counter {
+  let limit: i32
+  init(limit: i32) { this.limit = limit }
+
+  fn upTo(): Iterable<i32> {
+    var i = 0
+    while i < this.limit {
+      yield i
+      i = i + 1
+    }
+  }
+
+  fn doubled(): Iterable<i32> {
+    for v in this.upTo() {
+      yield v * 2
+    }
+  }
+}
+
+fn main() {
+  var t = 0
+  for v in Counter(5).upTo() { t = t + v }
+  print(t)   // 0+1+2+3+4 = 10
+
+  var d = 0
+  for v in Counter(5).doubled() { d = d + v }
+  print(d)   // 2*(0+1+2+3+4) = 20
+}

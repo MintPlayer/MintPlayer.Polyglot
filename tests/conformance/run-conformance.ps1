@@ -70,7 +70,7 @@ $labelOf = @{ csharp = "C#"; typescript = "TS"; python = "Python"; php = "PHP" }
 # a portable fn with no PHP `actual` (expect_actual, extern_ffi). Add here ONLY when the PHP plugin gains a
 # new deliberate gate.
 $expectedRefusers = @(
-    'async_await', 'async_compose', 'expect_actual', 'extern_ffi', 'indexer_grid', 'operators_full', 'vec2'
+    'async_await', 'async_compose', 'expect_actual', 'extern_ffi', 'indexer_grid', 'operator_eq', 'operators_full', 'prop_accessors', 'vec2'
 )
 
 # Normalize the requested target set; the csharp oracle is always present.

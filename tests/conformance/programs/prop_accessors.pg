@@ -1,0 +1,22 @@
+// #39c: a property accessor block `{ get => …; set(v) { … } }` — a read-write computed property. C#/TS/
+// Python emit native property accessors (get/set); PHP has no property setters (< 8.4) so it refuses the
+// setter (pinned refuser). Assignment to the property (`b.area = 5`) routes to the setter. Output must
+// match across C#/TS/Python (C# is the oracle).
+
+class Box {
+  var w: i32
+  init(w: i32) { this.w = w }
+
+  var area: i32 {
+    get => this.w * this.w
+    set(v) { this.w = v }
+  }
+}
+
+fn main() {
+  var b = Box(3)
+  print(b.area)     // 9  (getter: 3 * 3)
+  b.area = 5        // setter: w = 5
+  print(b.area)     // 25 (getter: 5 * 5)
+  print(b.w)        // 5
+}

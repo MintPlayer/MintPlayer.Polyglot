@@ -108,6 +108,12 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
             if (k.kind == json::Value::Kind::String) r.spec.reservedNames.push_back(k.asString());
         for (const json::Value& k : ids["globals"].items())
             if (k.kind == json::Value::Kind::String) r.spec.globalNames.push_back(k.asString());
+        const json::Value& fb = ids["functionBuiltins"];
+        if (fb.kind == json::Value::Kind::Object) {
+            r.spec.fnBuiltinSuffix = fb["suffix"].asString();
+            for (const json::Value& k : fb["names"].items())
+                if (k.kind == json::Value::Kind::String) r.spec.fnBuiltins.insert(k.asString());
+        }
     }
 
     r.ok = true;
@@ -187,7 +193,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
 
     std::string ids;
     if (!spec.keywords.empty() || !spec.escapeStrategy.empty() || !spec.mangleFrom.empty() ||
-        !spec.reservedNames.empty() || !spec.globalNames.empty()) {
+        !spec.reservedNames.empty() || !spec.globalNames.empty() || !spec.fnBuiltins.empty()) {
         std::vector<std::string> kws(spec.keywords.begin(), spec.keywords.end());
         std::sort(kws.begin(), kws.end()); // deterministic serialization
         ids = ",\"identifiers\":{\"keywords\":[";
@@ -206,6 +212,12 @@ std::string backendSpecToJson(const BackendSpec& spec) {
         };
         if (!spec.reservedNames.empty()) ids += ",\"reserved\":" + arr(spec.reservedNames);
         if (!spec.globalNames.empty()) ids += ",\"globals\":" + arr(spec.globalNames);
+        if (!spec.fnBuiltins.empty()) {
+            std::vector<std::string> fbs(spec.fnBuiltins.begin(), spec.fnBuiltins.end());
+            std::sort(fbs.begin(), fbs.end()); // deterministic serialization
+            ids += ",\"functionBuiltins\":{\"suffix\":" + json::quote(spec.fnBuiltinSuffix) +
+                   ",\"names\":" + arr(fbs) + "}";
+        }
         ids += "}";
     }
 

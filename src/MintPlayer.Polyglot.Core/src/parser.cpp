@@ -88,6 +88,9 @@ private:
     bool panicked_ = false;
     SourcePos lastBlockEnd_;   // the most recent block's closing '}' position — read right after parseBlock()
     int pendingAngles_ = 0; // leftover '>' borrowed from a split '>>' / '>>>' when closing nested generics
+    // While parsing a match-arm GUARD, a trailing `ident =>` / `(…) =>` is the arm's `=>`, NOT a lambda —
+    // suppress the bare-lambda parse so `Pair(a, b) if a == b => …` doesn't swallow the arrow (issue #39d).
+    bool suppressLambda_ = false;
 
     // G45 (wave 2): recursion-depth guard. Parsing, checking, and emitting all recurse over the nesting
     // structure, so unbounded source nesting is a stack overflow (a process abort, not a diagnostic).
@@ -222,6 +225,30 @@ private:
     Member parseMember() {
         Member m;
         m.pos = peek().pos;
+        // §3.B: a finalizer (`~Name() { … }`) is unspeakable — Polyglot refuses GC/finalizer hooks (no
+        // deterministic-destruction contract across .NET's GC and JS/PHP/Python). A C#/C++-habituated author
+        // will still try one, so catch the `~` member form and refuse out loud with a targeted message
+        // (issue #54) instead of two confusing raw parse errors, then brace-skip the whole construct so no
+        // cascade follows. Mirrors the lock/unsafe statement refusal in parseBlock().
+        if (at(TokKind::Tilde)) {
+            SourcePos sp = peek().pos;
+            diags_.error(sp, "Polyglot refuses finalizers (`~Name`) — there is no cross-target deterministic "
+                             "destruction/GC-hook contract; use `use`/IDisposable-style scoping instead (PRD §3.B)");
+            advance(); // '~'
+            while (!at(TokKind::End) && !at(TokKind::LBrace) && !at(TokKind::Semicolon) && !at(TokKind::RBrace)) advance(); // name + `()`
+            if (at(TokKind::LBrace)) { // skip the balanced `{ … }` body
+                int depth = 0;
+                do {
+                    if (at(TokKind::LBrace)) ++depth;
+                    else if (at(TokKind::RBrace)) --depth;
+                    advance();
+                } while (depth > 0 && !at(TokKind::End));
+            } else {
+                accept(TokKind::Semicolon);
+            }
+            m.kind = MemberKind::Field; // discarded: compilation aborts on the diagnostic before sema
+            return m;
+        }
         while (atModifier()) {
             if (at(TokKind::KwAsync)) { m.isAsync = true; advance(); }
             else m.modifiers.push_back(modifierText(advance().kind));
@@ -276,6 +303,27 @@ private:
             if (at(TokKind::LBrace) && (peek(1).kind == TokKind::KwActual || peek(1).kind == TokKind::RBrace)) {
                 m.kind = MemberKind::Property; // bound property — `{ }` = overlay-armed skeleton (P19 s9b)
                 tryParseBindings(m);
+            }
+            else if (at(TokKind::LBrace) && (peek(1).text == "get" || peek(1).text == "set")) {
+                // Accessor block `{ get => expr | get { … }; set(v) { … } }` (#39c). The getter fills the
+                // usual init/body/exprBodied; the setter fills hasSetter/setterParam/setterBody.
+                m.kind = MemberKind::Property;
+                advance(); // '{'
+                while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+                    if (atContextual("get")) {
+                        advance();
+                        if (accept(TokKind::Arrow)) { m.init = parseExpr(); m.exprBodied = true; }
+                        else { m.body = parseBlock(); m.exprBodied = false; }
+                    } else if (atContextual("set")) {
+                        advance();
+                        m.setterParam = "value";
+                        if (accept(TokKind::LParen)) { m.setterParam = expect(TokKind::Identifier, "a setter parameter name").text; expect(TokKind::RParen, "')'"); }
+                        m.setterBody = parseBlock();
+                        m.hasSetter = true;
+                    } else { error("expected 'get' or 'set' in a property accessor block"); break; }
+                    accept(TokKind::Semicolon);
+                }
+                expect(TokKind::RBrace, "'}'");
             }
             else if (accept(TokKind::Arrow)) { m.kind = MemberKind::Property; m.init = parseExpr(); }
             else if (accept(TokKind::Assign)) { m.kind = MemberKind::Field; m.init = parseExpr(); }
@@ -635,6 +683,7 @@ private:
         if (at(TokKind::KwLet) || at(TokKind::KwVar)) return parseLet();
         if (at(TokKind::KwIf)) return parseIf();
         if (at(TokKind::KwWhile)) return parseWhile();
+        if (at(TokKind::KwDo)) return parseDoWhile();
         if (at(TokKind::KwFor)) return parseFor();
         if (at(TokKind::KwReturn)) return parseReturn();
         if (at(TokKind::KwBreak) || at(TokKind::KwContinue)) {
@@ -746,6 +795,21 @@ private:
         s->pos = peek().pos;
         s->isMutable = at(TokKind::KwVar);
         advance();
+        if (at(TokKind::LParen)) {
+            // `let (a, b) = t` — tuple destructuring into simple names (#39b). Nested patterns are not
+            // supported yet; each element must be a bare identifier.
+            advance(); // '('
+            do {
+                s->tupleNames.push_back(expect(TokKind::Identifier, "a binding name").text);
+            } while (accept(TokKind::Comma) && !at(TokKind::RParen));
+            expect(TokKind::RParen, "')'");
+            s->name = s->tupleNames.empty() ? std::string() : s->tupleNames.front();
+            s->namePos = s->pos;
+            expect(TokKind::Assign, "'='");
+            s->value = parseExpr();
+            accept(TokKind::Semicolon);
+            return s;
+        }
         { Token nt = expect(TokKind::Identifier, "a binding name"); s->name = nt.text; s->namePos = nt.pos; }
         if (accept(TokKind::Colon)) { s->declType = parseType(); s->hasDeclType = true; }
         expect(TokKind::Assign, "'='");
@@ -776,6 +840,21 @@ private:
         advance();
         s->value = parseExpr();
         s->thenBody = parseBlock();
+        return s;
+    }
+
+    // `do { … } while (cond)` — a post-tested loop (the body runs at least once). Lowered to the same
+    // ir::While with `isDoWhile`, so each backend emits it natively (or a while-true emulation on Python).
+    StmtPtr parseDoWhile() {
+        auto s = std::make_unique<Stmt>();
+        s->kind = StmtKind::While;
+        s->isDoWhile = true;
+        s->pos = peek().pos;
+        advance(); // 'do'
+        s->thenBody = parseBlock();
+        expect(TokKind::KwWhile, "'while'");
+        s->value = parseExpr(); // parentheses around the condition are optional (a paren group parses fine)
+        accept(TokKind::Semicolon);
         return s;
     }
 
@@ -1202,7 +1281,12 @@ private:
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
             MatchArm arm;
             arm.pattern = parsePattern();
-            if (accept(TokKind::KwIf)) arm.guard = parseExpr();
+            if (accept(TokKind::KwIf)) {
+                const bool save = suppressLambda_;
+                suppressLambda_ = true; // the guard's trailing `=>` is the arm arrow, not a lambda (#39d)
+                arm.guard = parseExpr();
+                suppressLambda_ = save;
+            }
             expect(TokKind::Arrow, "'=>'");
             if (at(TokKind::LBrace)) { arm.bodyIsBlock = true; arm.block = parseBlock(); }
             else { arm.body = parseExpr(); }
@@ -1245,7 +1329,7 @@ private:
                 return e;
             }
             case TokKind::Identifier:
-                if (peek(1).kind == TokKind::Arrow) return parseBareLambda(); // `x => …`
+                if (!suppressLambda_ && peek(1).kind == TokKind::Arrow) return parseBareLambda(); // `x => …`
                 { auto e = mk(ExprKind::Name, p); e->text = advance().text; return e; }
             case TokKind::KwIf:      return parseIfExpr();
             case TokKind::KwMatch:   return parseMatch();
@@ -1259,7 +1343,7 @@ private:
                 return e;
             }
             case TokKind::LParen: {
-                if (isLambdaAhead()) return parseLambda();
+                if (!suppressLambda_ && isLambdaAhead()) return parseLambda();
                 advance();
                 auto first = parseExpr();
                 if (at(TokKind::Comma)) {

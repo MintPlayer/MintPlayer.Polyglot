@@ -160,6 +160,13 @@ private:
             walkExpr(a.value.get());
             break;
         }
+        case StmtKind::IndexAssign: {
+            auto& ia = static_cast<IndexAssign&>(s);
+            walkExpr(ia.receiver.get());
+            for (auto& ix : ia.indices) walkExpr(ix.get());
+            walkExpr(ia.value.get());
+            break;
+        }
         case StmtKind::ExprStmt: walkExpr(static_cast<ExprStmt&>(s).expr.get()); break;
         case StmtKind::If: {
             auto& i = static_cast<If&>(s);
@@ -250,7 +257,7 @@ private:
         case ExprKind::MethodCall: { auto& mc = static_cast<MethodCall&>(*e); if (mc.object) walkExpr(mc.object.get()); for (auto& a : mc.args) walkExpr(a.get()); break; }
         case ExprKind::Member: { auto& m = static_cast<Member&>(*e); if (m.object) walkExpr(m.object.get()); break; }
         case ExprKind::New:   for (auto& a : static_cast<New&>(*e).args) walkExpr(a.get()); break;
-        case ExprKind::Index: { auto& i = static_cast<Index&>(*e); walkExpr(i.receiver.get()); walkExpr(i.index.get()); break; }
+        case ExprKind::Index: { auto& i = static_cast<Index&>(*e); walkExpr(i.receiver.get()); for (auto& ix : i.indices) walkExpr(ix.get()); break; }
         case ExprKind::ListLit: for (auto& x : static_cast<ListLit&>(*e).elements) walkExpr(x.get()); break;
         case ExprKind::Tuple: for (auto& x : static_cast<Tuple&>(*e).elements) walkExpr(x.get()); break;
         case ExprKind::Bound: { auto& b = static_cast<Bound&>(*e); if (b.receiver) walkExpr(b.receiver.get()); for (auto& a : b.args) walkExpr(a.get()); break; }

@@ -147,6 +147,7 @@ struct Stmt {
     SourcePos pos;
 
     std::string name;               // Let / Use binding name
+    std::vector<std::string> tupleNames; // Let: `let (a, b) = t` destructuring targets (empty = single name) #39b
     SourcePos namePos;              // Let / Use: the binding-name identifier (go-to-def / semantic-token anchor)
     bool isMutable = false;         // Let: `var` (true) vs `let` (false)
     TypeRef declType;               // Let / Use: explicit annotation (when hasDeclType)
@@ -157,6 +158,7 @@ struct Stmt {
     ExprPtr value;                  // Let/Use init | Assign RHS | ExprStmt | Return/Throw/Yield value | If/While/For cond/iterable
 
     Pattern forBinding;             // For: the loop binding (Binding or Tuple)
+    bool isDoWhile = false;         // While: a `do { … } while (cond)` (post-tested) loop (#39a)
     std::vector<StmtPtr> thenBody;  // If-then / While / For / Use / Try body
     std::vector<StmtPtr> elseBody;  // If-else
     bool hasElse = false;
@@ -211,6 +213,12 @@ struct Member {
     ExprPtr exprBody;                    // `=> expr` body
     bool hasBody = false;                // false = stub (interface method `;`)
     bool exprBodied = false;             // true = `=> expr`, false = block
+    // Property accessor block `{ get => …; set(v) { … } }` (#39c): the setter half. `hasSetter` marks a
+    // read-write computed property; `setterParam` is the value parameter (default `value`); the getter is
+    // in init/body/exprBodied as for a read-only property.
+    bool hasSetter = false;
+    std::string setterParam;
+    std::vector<StmtPtr> setterBody;
     std::vector<TargetBinding> bindings; // Method/Property: per-target FFI binding arms; empty = ordinary
 };
 

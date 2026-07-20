@@ -1,0 +1,16 @@
+// #46: per-iteration loop-variable capture. A closure created in a loop captures the loop variable's
+// value AT THAT ITERATION (the TS/PHP + C#-foreach semantic, chosen as the SPEC rule). C# copies the
+// range binding into a per-iteration local; Python snapshots it via a default argument. Without the fix
+// this diverges silently three ways (C# 31/31/31, Python 21/21/21). All four must print 1, 11, 21.
+
+import { List } from "std.collections"
+
+fn main() {
+  var fns: List<() => i32> = []
+  for i in 0..3 {
+    fns.add(() => i * 10 + 1)
+  }
+  for f in fns {
+    print(f())
+  }
+}

@@ -369,10 +369,55 @@
         },
         "[",
         {
-          "emit": "node.index"
+          "map": "node.indices",
+          "sep": ", "
         },
         "]"
       ]
+    },
+    "IndexAssign": {
+      "line": {
+        "tmpl": [
+          {
+            "emitChild": "stmt.receiver",
+            "side": "recv"
+          },
+          "[",
+          {
+            "map": "stmt.indices",
+            "sep": ", "
+          },
+          "] = ",
+          {
+            "emit": "stmt.value"
+          },
+          ";"
+        ]
+      }
+    },
+    "TupleLet": {
+      "line": {
+        "tmpl": [
+          "var (",
+          {
+            "map": "stmt.names",
+            "sep": ", ",
+            "item": {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "item"
+                }
+              ]
+            }
+          },
+          ") = ",
+          {
+            "emit": "stmt.init"
+          },
+          ";"
+        ]
+      }
     },
     "Cond": {
       "tmpl": [
@@ -710,29 +755,146 @@
       ]
     },
     "Match": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.isStatement",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                "switch (",
+                {
+                  "emitChild": "node.scrutinee",
+                  "side": "recv"
+                },
+                ") { ",
+                {
+                  "map": "node.arms",
+                  "sep": " ",
+                  "item": {
+                    "tmpl": [
+                      "case ",
+                      {
+                        "call": "csMatchPat"
+                      },
+                      {
+                        "call": "csMatchGuard"
+                      },
+                      ": ",
+                      {
+                        "emit": "item.body"
+                      },
+                      "; break;"
+                    ]
+                  }
+                },
+                " }"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "emitChild": "node.scrutinee",
+              "side": "recv"
+            },
+            " switch { ",
+            {
+              "map": "node.arms",
+              "sep": ", ",
+              "item": {
+                "tmpl": [
+                  {
+                    "call": "csMatchPat"
+                  },
+                  {
+                    "call": "csMatchGuard"
+                  },
+                  " => ",
+                  {
+                    "emit": "item.body"
+                  }
+                ]
+              }
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.hasCatchAll",
+                        "true"
+                      ]
+                    },
+                    ""
+                  ]
+                ],
+                "else": ", _ => throw new global::System.InvalidOperationException()"
+              }
+            },
+            " }"
+          ]
+        }
+      }
+    },
+    "csMatchGuard": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "item.hasGuard",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                " when ",
+                {
+                  "emit": "item.guard"
+                }
+              ]
+            }
+          ]
+        ],
+        "else": ""
+      }
+    },
+    "csMatchPat": {
       "tmpl": [
         {
-          "emitChild": "node.scrutinee",
-          "side": "recv"
-        },
-        " switch { ",
-        {
-          "map": "node.arms",
-          "sep": ", ",
-          "item": {
-            "tmpl": [
-              {
-                "case": {
-                  "when": [
-                    [
-                      {
-                        "eq": [
-                          "item.pattern.kind",
-                          "wildcard"
-                        ]
-                      },
-                      "_"
-                    ],
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "wildcard"
+                  ]
+                },
+                "_"
+              ],
+              [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "typeTest"
+                  ]
+                },
+                {
+                  "tmpl": [
+                    { "type": "item.pattern.testType" },
+                    " ",
+                    { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] }
+                  ]
+                }
+              ],
                     [
                       {
                         "eq": [
@@ -817,71 +979,50 @@
                         "map": "item.pattern.binders",
                         "sep": ", ",
                         "item": {
-                          "tmpl": [
-                            "var ",
-                            {
-                              "fn": "ident",
-                              "args": [
+                          "case": {
+                            "when": [
+                              [
                                 {
-                                  "get": "item.binding"
+                                  "eq": [
+                                    "item.isLiteral",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "emit": "item.literal"
+                                }
+                              ],
+                              [
+                                {
+                                  "eq": [
+                                    "item.isWildcard",
+                                    "true"
+                                  ]
+                                },
+                                "_"
+                              ]
+                            ],
+                            "else": {
+                              "tmpl": [
+                                "var ",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.binding"
+                                    }
+                                  ]
                                 }
                               ]
                             }
-                          ]
+                          }
                         }
                       },
                       ")"
                     ]
                   }
                 }
-              },
-              {
-                "case": {
-                  "when": [
-                    [
-                      {
-                        "eq": [
-                          "item.hasGuard",
-                          "true"
-                        ]
-                      },
-                      {
-                        "tmpl": [
-                          " when ",
-                          {
-                            "emit": "item.guard"
-                          }
-                        ]
-                      }
-                    ]
-                  ],
-                  "else": ""
-                }
-              },
-              " => ",
-              {
-                "emit": "item.body"
               }
-            ]
-          }
-        },
-        {
-          "case": {
-            "when": [
-              [
-                {
-                  "eq": [
-                    "node.hasCatchAll",
-                    "true"
-                  ]
-                },
-                ""
-              ]
-            ],
-            "else": ", _ => throw new global::System.InvalidOperationException()"
-          }
-        },
-        " }"
       ]
     },
     "Lambda": {
@@ -1143,6 +1284,30 @@
               [
                 {
                   "eq": [
+                    "decl.isOverride",
+                    "true"
+                  ]
+                },
+                "override "
+              ],
+              [
+                {
+                  "eq": [
+                    "decl.isVirtual",
+                    "true"
+                  ]
+                },
+                "virtual "
+              ]
+            ]
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
                     "decl.isAsync",
                     "true"
                   ]
@@ -1209,27 +1374,113 @@
               ]
             },
             {
-              "line": {
-                "tmpl": [
-                  "public ",
-                  {
-                    "type": "decl.returnType"
-                  },
-                  " ",
-                  {
-                    "fn": "ident",
-                    "args": [
-                      {
-                        "get": "decl.name"
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "decl.propHasSetter",
+                        "true"
+                      ]
+                    },
+                    {
+                      "seq": [
+                        {
+                          "line": {
+                            "tmpl": [
+                              "public ",
+                              { "type": "decl.returnType" },
+                              " ",
+                              { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                              " {"
+                            ]
+                          }
+                        },
+                        {
+                          "indent": [
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    { "eq": [ "decl.exprBodied", "true" ] },
+                                    { "line": { "tmpl": [ "get => ", { "emit": "decl.exprBody" }, ";" ] } }
+                                  ]
+                                ],
+                                "else": {
+                                  "seq": [
+                                    { "line": "get {" },
+                                    { "indent": [ { "stmts": "decl.body" } ] },
+                                    { "line": "}" }
+                                  ]
+                                }
+                              }
+                            },
+                            { "line": "set {" },
+                            {
+                              "indent": [
+                                {
+                                  "case": {
+                                    "when": [
+                                      [
+                                        { "eq": [ "decl.propSetterParam", "value" ] },
+                                        ""
+                                      ]
+                                    ],
+                                    "else": {
+                                      "line": {
+                                        "tmpl": [
+                                          "var ",
+                                          { "fn": "ident", "args": [ { "get": "decl.propSetterParam" } ] },
+                                          " = value;"
+                                        ]
+                                      }
+                                    }
+                                  }
+                                },
+                                { "stmts": "decl.propSetterBody" }
+                              ]
+                            },
+                            { "line": "}" }
+                          ]
+                        },
+                        { "line": "}" }
+                      ]
+                    }
+                  ],
+                  [
+                    { "eq": [ "decl.exprBodied", "true" ] },
+                    {
+                      "line": {
+                        "tmpl": [
+                          "public ",
+                          { "type": "decl.returnType" },
+                          " ",
+                          { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                          " => ",
+                          { "emit": "decl.exprBody" },
+                          ";"
+                        ]
                       }
-                    ]
-                  },
-                  " => ",
-                  {
-                    "emit": "decl.exprBody"
-                  },
-                  ";"
-                ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "seq": [
+                    {
+                      "line": {
+                        "tmpl": [
+                          "public ",
+                          { "type": "decl.returnType" },
+                          " ",
+                          { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                          " {"
+                        ]
+                      }
+                    },
+                    { "indent": [ { "line": "get {" }, { "indent": [ { "stmts": "decl.body" } ] }, { "line": "}" } ] },
+                    { "line": "}" }
+                  ]
+                }
               }
             }
           ],
@@ -1256,6 +1507,201 @@
                   [
                     {
                       "eq": [
+                        "decl.hasSetter",
+                        "true"
+                      ]
+                    },
+                    {
+                      "seq": [
+                        {
+                          "line": {
+                            "tmpl": [
+                              {
+                                "call": "csIndexerSig"
+                              },
+                              " {"
+                            ]
+                          }
+                        },
+                        {
+                          "indent": [
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    {
+                                      "eq": [
+                                        "decl.exprBodied",
+                                        "true"
+                                      ]
+                                    },
+                                    {
+                                      "line": {
+                                        "tmpl": [
+                                          "get => ",
+                                          {
+                                            "emit": "decl.exprBody"
+                                          },
+                                          ";"
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                ],
+                                "else": {
+                                  "seq": [
+                                    {
+                                      "line": "get {"
+                                    },
+                                    {
+                                      "indent": [
+                                        {
+                                          "stmts": "decl.body"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "line": "}"
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            {
+                              "line": "set {"
+                            },
+                            {
+                              "indent": [
+                                {
+                                  "line": {
+                                    "tmpl": [
+                                      "var ",
+                                      {
+                                        "fn": "ident",
+                                        "args": [
+                                          {
+                                            "get": "decl.setterValueParam"
+                                          }
+                                        ]
+                                      },
+                                      " = value;"
+                                    ]
+                                  }
+                                },
+                                {
+                                  "stmts": "decl.setterBody"
+                                }
+                              ]
+                            },
+                            {
+                              "line": "}"
+                            }
+                          ]
+                        },
+                        {
+                          "line": "}"
+                        }
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.exprBodied",
+                            "true"
+                          ]
+                        },
+                        {
+                          "line": {
+                            "tmpl": [
+                              {
+                                "call": "csIndexerSig"
+                              },
+                              " => ",
+                              {
+                                "emit": "decl.exprBody"
+                              },
+                              ";"
+                            ]
+                          }
+                        }
+                      ]
+                    ],
+                    "else": {
+                      "seq": [
+                        {
+                          "block": {
+                            "head": {
+                              "tmpl": [
+                                {
+                                  "call": "csIndexerSig"
+                                },
+                                " { get"
+                              ]
+                            },
+                            "body": [
+                              {
+                                "stmts": "decl.body"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "line": "}"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "operator"
+                  ]
+                },
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "set"
+                  ]
+                }
+              ]
+            },
+            ""
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "operator"
+                  ]
+                },
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "=="
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
                         "decl.exprBodied",
                         "true"
                       ]
@@ -1263,10 +1709,15 @@
                     {
                       "line": {
                         "tmpl": [
+                          "public virtual bool Equals(",
                           {
-                            "call": "csIndexerSig"
+                            "map": "decl.params",
+                            "sep": ", ",
+                            "item": {
+                              "call": "csParam"
+                            }
                           },
-                          " => ",
+                          ") => ",
                           {
                             "emit": "decl.exprBody"
                           },
@@ -1277,28 +1728,26 @@
                   ]
                 ],
                 "else": {
-                  "seq": [
-                    {
-                      "block": {
-                        "head": {
-                          "tmpl": [
-                            {
-                              "call": "csIndexerSig"
-                            },
-                            " { get"
-                          ]
-                        },
-                        "body": [
-                          {
-                            "stmts": "decl.body"
+                  "block": {
+                    "head": {
+                      "tmpl": [
+                        "public virtual bool Equals(",
+                        {
+                          "map": "decl.params",
+                          "sep": ", ",
+                          "item": {
+                            "call": "csParam"
                           }
-                        ]
-                      }
+                        },
+                        ")"
+                      ]
                     },
-                    {
-                      "line": "}"
-                    }
-                  ]
+                    "body": [
+                      {
+                        "stmts": "decl.body"
+                      }
+                    ]
+                  }
                 }
               }
             }
@@ -1639,67 +2088,114 @@
               ]
             },
             {
-              "block": {
-                "head": {
-                  "tmpl": [
-                    "for (var ",
+              "case": {
+                "when": [
+                  [
+                    { "eq": [ "stmt.captured", "true" ] },
                     {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "stmt.binding"
-                        }
-                      ]
-                    },
-                    " = ",
-                    {
-                      "emit": "stmt.rangeStart"
-                    },
-                    "; ",
-                    {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "stmt.binding"
-                        }
-                      ]
-                    },
-                    {
-                      "case": {
-                        "when": [
-                          [
+                      "block": {
+                        "head": {
+                          "tmpl": [
+                            "for (var ",
+                            { "get": "stmt.driver" },
+                            " = ",
+                            { "emit": "stmt.rangeStart" },
+                            "; ",
+                            { "get": "stmt.driver" },
                             {
-                              "eq": [
-                                "stmt.inclusive",
-                                "true"
-                              ]
+                              "case": {
+                                "when": [ [ { "eq": [ "stmt.inclusive", "true" ] }, " <= " ] ],
+                                "else": " < "
+                              }
                             },
-                            " <= "
+                            { "emit": "stmt.rangeEnd" },
+                            "; ",
+                            { "get": "stmt.driver" },
+                            "++)"
                           ]
-                        ],
-                        "else": " < "
+                        },
+                        "body": [
+                          {
+                            "line": {
+                              "tmpl": [
+                                "var ",
+                                { "fn": "ident", "args": [ { "get": "stmt.binding" } ] },
+                                " = ",
+                                { "get": "stmt.driver" },
+                                ";"
+                              ]
+                            }
+                          },
+                          { "stmts": "stmt.body" }
+                        ]
                       }
-                    },
-                    {
-                      "emit": "stmt.rangeEnd"
-                    },
-                    "; ",
-                    {
-                      "fn": "ident",
-                      "args": [
+                    }
+                  ]
+                ],
+                "else": {
+                  "block": {
+                    "head": {
+                      "tmpl": [
+                        "for (var ",
                         {
-                          "get": "stmt.binding"
-                        }
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "stmt.binding"
+                            }
+                          ]
+                        },
+                        " = ",
+                        {
+                          "emit": "stmt.rangeStart"
+                        },
+                        "; ",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "stmt.binding"
+                            }
+                          ]
+                        },
+                        {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "eq": [
+                                    "stmt.inclusive",
+                                    "true"
+                                  ]
+                                },
+                                " <= "
+                              ]
+                            ],
+                            "else": " < "
+                          }
+                        },
+                        {
+                          "emit": "stmt.rangeEnd"
+                        },
+                        "; ",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "stmt.binding"
+                            }
+                          ]
+                        },
+                        "++)"
                       ]
                     },
-                    "++)"
-                  ]
-                },
-                "body": [
-                  {
-                    "stmts": "stmt.body"
+                    "body": [
+                      {
+                        "stmts": "stmt.body"
+                      }
+                    ]
                   }
-                ]
+                }
               }
             }
           ],

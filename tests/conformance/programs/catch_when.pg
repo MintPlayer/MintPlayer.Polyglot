@@ -1,8 +1,8 @@
-// Scenario: typed catch with a `when` guard (TRUE path), an unmatched exception type propagating
-// out to an enclosing try, and finally ordering. Spec'd since P1, never executed.
-// Deliberately narrowed: a FALSE guard must fall through to the next same-type catch arm, but on
-// Python/PHP the re-raise escapes the whole try (issue #44) — that case (and sample 06's identical
-// shape) is excluded until fixed; un-narrowing is the acceptance test.
+// Scenario: typed catch with a `when` guard, a FALSE guard falling through to a SECOND same-type catch
+// arm, an unmatched exception type propagating out to an enclosing try, and finally ordering.
+// Previously narrowed: on Python/PHP a false guard re-raised and escaped the whole try (issue #44). Fixed
+// by mirroring the TS `__handled` if-chain — a false guard now falls through to the next matching arm, and
+// the trailing re-raise is gated on there being no catch-all. This program is that acceptance test.
 
 class AppError : Error {
   let code: i32
@@ -27,24 +27,38 @@ fn classify(code: i32): string {
     return "none"
   } catch (e: AppError) when (e.code == 1) {
     return "guarded-one"
+  } catch (e: AppError) {
+    // The false-guard fall-through: a second AppError arm after the guarded one. On Python/PHP this used
+    // to be unreachable because the guarded arm's re-raise escaped the whole try.
+    return "app-other-${e.code}"
   } catch (e: OtherError) {
     return "other-kind"
   }
-  // Unreachable (every catch arm returns or rethrows), but the TS when-guard EMULATION
-  // (`__handled` flag chain) is not flow-provable for tsc 5.8's TS2366 — the else-if
-  // restructure of that machinery belongs to the issue #44 guard rework.
+  // Unreachable at runtime (every arm returns), but the guard-emulation if-chain is not flow-provable, so
+  // a trailing return is required for tsc.
   return "unreachable"
+}
+
+// The inner try catches only OtherError (guarded), but an AppError is thrown — with no catch-all the
+// exception must re-raise and escape to the enclosing try in main.
+fn escapes(): string {
+  try {
+    throw AppError("esc", 9)
+    return "none"
+  } catch (e: OtherError) when (e.message == "never") {
+    return "inner-other"
+  }
+  return "inner-fell-through"
 }
 
 fn main() {
   print(classify(1))     // guarded-one   (guard true)
-  print(classify(-1))    // other-kind    (second arm, different type)
+  print(classify(2))     // app-other-2   (guard false -> second AppError arm)
+  print(classify(-1))    // other-kind    (different type)
   try {
-    // AppError with the guard false and NO second AppError arm inside classify: the exception
-    // must escape classify and land here.
-    print(classify(2))
+    print(escapes())
   } catch (e: AppError) {
-    print("outer: ${e.message}-${e.code}")   // outer: app-2
+    print("outer: ${e.message}-${e.code}")   // outer: esc-9
   } finally {
     print("done")
   }

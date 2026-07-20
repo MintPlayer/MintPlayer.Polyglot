@@ -1,0 +1,28 @@
+// #38: runtime type-test narrowing in `match`. A typed arm `c: Circle` tests the scrutinee's runtime type
+// and narrows the binding — C# declaration pattern (`Circle c`), TS/PHP `instanceof`, Python `isinstance`.
+// A type-test against an INTERFACE is refused (interfaces erase on TS) — see the checker unit test. This
+// makes all four identically correct only if narrowing works, so a `.expected` golden is load-bearing.
+
+class Shape {
+  init() {}
+}
+class Circle : Shape {
+  let r: i32
+  init(r: i32) { super(); this.r = r }
+}
+class Square : Shape {
+  let side: i32
+  init(side: i32) { super(); this.side = side }
+}
+
+fn describe(s: Shape): i32 => match s {
+  c: Circle  => c.r * 10 + 1
+  sq: Square => sq.side * 10 + 2
+  _          => 0
+}
+
+fn main() {
+  print(describe(Circle(3)))   // 31
+  print(describe(Square(4)))   // 42
+  print(describe(Shape()))     // 0
+}

@@ -60,8 +60,8 @@ function Invoke-RefusedBuild([string]$fixtureName) {
     }
 }
 
-# fixture -> ASCII message fragments the diagnostic must contain. $null = a raw-parse-error fixture
-# (issue #54): assert only nonzero exit + no output, not the message shape.
+# fixture -> ASCII message fragments the diagnostic must contain. ($null would mean a raw-parse-error
+# fixture asserting only nonzero exit + no output — none remain: #54 gave the finalizer a targeted message.)
 $cases = [ordered]@{
     "lock_stmt.pg"              = @("refuses threads and locks")
     "unsafe_block.pg"           = @("no unsafe blocks")
@@ -72,7 +72,9 @@ $cases = [ordered]@{
     "await_outside_async.pg"    = @("'await' is only allowed inside an 'async fn'")
     "empty_list_uninferable.pg" = @("cannot infer the type of 'xs'")
     "null_var_uninferable.pg"   = @("cannot infer the type of 'x'")
-    "finalizer.pg"              = $null   # issue #54: two raw parse errors, no targeted message yet
+    "finalizer.pg"              = @("refuses finalizers")
+    "block_match_arm.pg"        = @("block-bodied match arm")
+    "namespace_import.pg"       = @("namespace import")
 }
 
 foreach ($fx in $cases.Keys) {

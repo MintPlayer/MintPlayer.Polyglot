@@ -312,6 +312,18 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
                  ImportGraph* graph) {
     stack.push_back(selfPath);
     for (const auto& imp : unit.imports) {
+        // #39e (⚑ PRD §2): a renaming (`{ a as b }`) or namespace (`* as ns`) import used to parse but then
+        // resolve to nothing (a silent "undeclared name"). Modules merge into one flat namespace, which has
+        // no place for an importer-local alias or a synthesized namespace object, so both forms are refused
+        // out loud (§3.B) instead of miscompiling. A plain `import { a, b } from "…"` is unaffected.
+        if (imp.isNamespace)
+            diags.error(imp.pos, "Polyglot refuses a namespace import ('import * as " + imp.nsAlias +
+                                     "') — import the members by name (`import { a, b } from \"" + imp.path +
+                                     "\"`) instead (PRD §3.B)");
+        for (const auto& n : imp.names)
+            if (!n.alias.empty())
+                diags.error(imp.pos, "Polyglot refuses a renaming import ('" + n.name + " as " + n.alias +
+                                         "') — import '" + n.name + "' under its own name (PRD §3.B)");
         std::string source, canon;
         bool isStd = imp.path.rfind("std.", 0) == 0;
         if (isStd) { // first-party std: embedded, no IO

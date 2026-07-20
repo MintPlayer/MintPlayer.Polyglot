@@ -126,6 +126,8 @@ public:
     // generic catalog entries, not per-backend code (P19 slice 6).
     std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
+    // Free-function-position collision repair (PHP builtins); no-op where the spec declares no `fnBuiltins`.
+    std::string identFn(const std::string& n) const { return specIdentFn(specFn_(), n); }
     // Generic-parameter spelling, driven by the spec's `generics` strategy (inline bounds / trailing
     // where-clauses / none) with marker-bound erasure (INumber). Bound types render through renderTypeRef.
     std::string generics(const std::vector<ir::GenericParam>& gs) const;
@@ -347,6 +349,7 @@ class EmitterBase {
 protected:
     std::string out_;
     int indent_ = 0;
+    int doWhileSeq_ = 0; // fresh-name counter for the Python do-while emulation flag (#39a)
 
     void line(const std::string& s);
 

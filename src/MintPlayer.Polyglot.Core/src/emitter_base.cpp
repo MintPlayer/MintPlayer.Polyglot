@@ -42,6 +42,8 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& b = static_cast<const ir::Binary&>(e_);
         if (path == "node.lhsIsRecord")   return b.lhsIsRecord ? "true" : "false";
         if (path == "node.lhsIsUserType") return b.lhsIsUserType ? "true" : "false";
+        if (path == "node.lhsIsUnion")    return b.lhsIsUnion ? "true" : "false";     // #57
+        if (path == "node.lhsHasUserEq")  return b.lhsHasUserEq ? "true" : "false";   // #49
     }
     if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index)
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
@@ -113,6 +115,17 @@ std::string IrExprCtx::get(const std::string& path) const {
             return "true";
         }
         if (path == "node.captures.count")    return std::to_string(l.captures.size());
+        // By-value (non-cell, non-this) captures — Python snapshots these as default args so a loop var is
+        // captured PER ITERATION (`lambda …, i=i: …`) rather than by late binding (#46).
+        if (path == "node.byValueCaptures.count") {
+            std::size_t n = 0; for (const auto& c : l.captures) if (!c.needsCell && !c.isThis) ++n;
+            return std::to_string(n);
+        }
+        if (path.rfind("node.byValueCaptures.", 0) == 0) {
+            const std::size_t want = static_cast<std::size_t>(std::stoul(path.substr(21)));
+            std::size_t j = 0;
+            for (const auto& c : l.captures) if (!c.needsCell && !c.isThis) { if (j == want) return c.name; ++j; }
+        }
         if (path.rfind("node.captures.", 0) == 0) { // node.captures.<i>.{name|needsCell}
             const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(14)));
             const std::size_t dot = path.find('.', 14);
@@ -153,6 +166,10 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
         if (e_.kind == ir::ExprKind::Tuple)   return std::to_string(static_cast<const ir::Tuple&>(e_).elements.size());
     }
+    if (path == "node.indices.count" && e_.kind == ir::ExprKind::Index)
+        return std::to_string(static_cast<const ir::Index&>(e_).indices.size());
+    if (path == "node.elemIsFunction" && e_.kind == ir::ExprKind::ListLit) // a function-typed element needs
+        return static_cast<const ir::ListLit&>(e_).elem.kind == TypeRef::Kind::Function ? "true" : "false"; // (…)[] parens
     if (path == "node.isArray") { // a list literal whose target type is the fixed-size Array<T> (vs growable List<T>)
         const bool isArray = e_.kind == ir::ExprKind::ListLit &&
                              static_cast<const ir::ListLit&>(e_).type.name == "Array";
@@ -162,6 +179,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& m = static_cast<const ir::Match&>(e_);
         if (path == "node.arms.count")  return std::to_string(m.arms.size());
         if (path == "node.hasCatchAll") return m.hasCatchAll ? "true" : "false";
+        if (path == "node.isStatement") return m.isStatement ? "true" : "false"; // #52
         if (path.rfind("node.arms.", 0) == 0) { // node.arms.<i>.<rest>
             const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
             const std::size_t dot = path.find('.', 10);
@@ -176,6 +194,7 @@ std::string IrExprCtx::get(const std::string& path) const {
                         case ir::PatternKind::Binding:  return "binding";
                         case ir::PatternKind::EnumCase: return "enumCase";
                         case ir::PatternKind::Ctor:     return "ctor";
+                        case ir::PatternKind::TypeTest: return "typeTest";
                     }
                 }
                 if (rest == "pattern.binding")       return a.pattern.binding;
@@ -189,8 +208,11 @@ std::string IrExprCtx::get(const std::string& path) const {
                     const std::size_t jdot = sub.find('.');
                     if (j < a.pattern.binders.size() && jdot != std::string::npos) {
                         const std::string bf = sub.substr(jdot + 1);
-                        if (bf == "binding") return a.pattern.binders[j].binding;
-                        if (bf == "field")   return a.pattern.binders[j].field;
+                        if (bf == "binding")    return a.pattern.binders[j].binding;
+                        if (bf == "field")      return a.pattern.binders[j].field;
+                        if (bf == "isLiteral")  return a.pattern.binders[j].literal ? "true" : "false"; // #43
+                        if (bf == "isWildcard") // neither a binding nor a literal slot
+                            return (!a.pattern.binders[j].literal && a.pattern.binders[j].binding.empty()) ? "true" : "false";
                     }
                 }
             }
@@ -283,7 +305,11 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
     if (e_.kind == ir::ExprKind::Index) {
         const auto& ix = static_cast<const ir::Index&>(e_);
         if (path == "node.receiver") return ix.receiver.get();
-        if (path == "node.index")    return ix.index.get();
+        if (path == "node.index")    return ix.indices.empty() ? nullptr : ix.indices[0].get(); // single-arg alias
+        if (path.rfind("node.indices.", 0) == 0) { // indexed subscript `node.indices.<i>` (from a `map` rule)
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(13)));
+            if (i < ix.indices.size()) return ix.indices[i].get();
+        }
     }
     if (e_.kind == ir::ExprKind::Cond) {
         const auto& c = static_cast<const ir::Cond&>(e_);
@@ -326,6 +352,14 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
                 if (rest == "body")            return a.body.get();
                 if (rest == "guard")           return a.guard.get();
                 if (rest == "pattern.literal") return a.pattern.literal.get();
+                if (rest.rfind("pattern.binders.", 0) == 0) { // pattern.binders.<j>.literal (issue #43)
+                    const std::string sub = rest.substr(16);
+                    const std::size_t jdot = sub.find('.');
+                    if (jdot != std::string::npos && sub.substr(jdot + 1) == "literal") {
+                        const std::size_t j = static_cast<std::size_t>(std::stoul(sub.substr(0, jdot)));
+                        if (j < a.pattern.binders.size()) return a.pattern.binders[j].literal.get();
+                    }
+                }
             }
         }
     }
@@ -388,6 +422,7 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
     // Identifier repair — generic catalog entries parameterized by the spec's `identifiers` block (P19).
     if (name == "ident")      return specIdent(spec_, args.empty() ? std::string() : args[0]);
+    if (name == "identFn")    return specIdentFn(spec_, args.empty() ? std::string() : args[0]);
     if (name == "mangleName") return specMangle(spec_, args.empty() ? std::string() : args[0]);
     // Named escape maps — {"fn":"escape","args":["<map>", <text>]} over the spec's `escapes` data (P19).
     if (name == "escape" && args.size() >= 2) return specEscape(spec_, args[0], args[1]);
@@ -443,6 +478,12 @@ const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
         const auto& l = static_cast<const ir::Lambda&>(e_);
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
         if (i < l.params.size()) return &l.params[i].type;
+    }
+    if (e_.kind == ir::ExprKind::Match && path.rfind("node.arms.", 0) == 0 &&
+        path.size() > 17 && path.rfind(".pattern.testType") == path.size() - 17) { // #38 typed-match test type
+        const auto& m = static_cast<const ir::Match&>(e_);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+        if (i < m.arms.size()) return &m.arms[i].pattern.testType;
     }
     return nullptr;
 }
@@ -506,7 +547,14 @@ std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::
         for (std::size_t i = 0; i < tmpl.size();) {
             if (tmpl[i] == '$' && i + 1 < tmpl.size() && tmpl[i + 1] >= '0' && tmpl[i + 1] <= '9') {
                 const std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-                if (idx < t_.args.size()) out += renderTypeRef(t_.args[idx]);
+                if (idx < t_.args.size()) {
+                    std::string a = renderTypeRef(t_.args[idx]);
+                    // A TS arrow function type (`() => number`) inside an array template (`$0[]`) must be
+                    // parenthesized, or the `[]` binds to the return type (`() => number[]`). ` => ` uniquely
+                    // marks a TS function type (C# `Func<>` / Python `Callable[]` / PHP `callable` have none).
+                    if (a.find(" => ") != std::string::npos) a = "(" + a + ")";
+                    out += a;
+                }
                 i += 2;
             } else out += tmpl[i++];
         }
@@ -710,6 +758,17 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     if (path == "decl.owner")      return owner_;
     if (path == "decl.isStatic")   return m_.isStatic ? "true" : "false";
     if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";
+    if (path == "decl.isVirtual")  return m_.isVirtual ? "true" : "false";
+    if (path == "decl.isOverride") return m_.isOverride ? "true" : "false";
+    if (path == "decl.isIterator") return m_.isIterator ? "true" : "false";
+    if (path == "decl.propHasSetter")  return m_.propHasSetter ? "true" : "false"; // accessor-block setter (#39c)
+    if (path == "decl.propSetterParam") return m_.setterParamName;
+    if (path == "decl.propSetterBody.count") return std::to_string(m_.setterBody.size());
+    if (path == "decl.hasSetter")  return m_.pairedSetter ? "true" : "false"; // paired indexer set (#40)
+    if (path == "decl.setterValueParam")
+        return m_.pairedSetter && !m_.pairedSetter->params.empty() ? m_.pairedSetter->params.back().name : "";
+    if (path == "decl.setterBody.count")
+        return std::to_string(m_.pairedSetter ? m_.pairedSetter->body.size() : 0);
     if (path == "decl.exprBodied") return m_.exprBodied ? "true" : "false";
     if (path == "decl.body.count") return std::to_string(m_.body.size());
     if (path == "decl.retName")    return m_.returnType.kind == TypeRef::Kind::Named ? m_.returnType.name : "";
@@ -768,7 +827,10 @@ std::string MethodDeclCtx::emitChild(const std::string& path, const std::string&
 }
 
 const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path) const {
-    return path == "decl.body" ? &m_.body : nullptr;
+    if (path == "decl.body") return &m_.body;
+    if (path == "decl.setterBody" && m_.pairedSetter) return &m_.pairedSetter->body; // paired indexer set (#40)
+    if (path == "decl.propSetterBody") return &m_.setterBody; // accessor-block setter (#39c)
+    return nullptr;
 }
 
 std::string RecordDeclCtx::get(const std::string& path) const {
@@ -855,6 +917,7 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     if (path == "decl.fields.count")     return std::to_string(c_.fields.size());
     if (path == "decl.hasInit")          return c_.hasInit ? "true" : "false";
     if (path == "decl.hasSuper")         return c_.hasSuper ? "true" : "false";
+    if (path == "decl.baseHasInit")      return c_.baseHasInit ? "true" : "false";
     if (path == "decl.needsCtor")        return c_.hasInit || !instanceInit_.empty() ? "true" : "false";
     if (path == "decl.initBody.count")   return std::to_string(c_.initBody.size());
     if (path == "decl.superArgs.count")  return std::to_string(c_.superArgs.size());
@@ -977,6 +1040,7 @@ std::string FnDeclCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "generics") return hooks_.generics(f_.generics);
     if (name == "where")    return hooks_.where(f_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identFn")  return hooks_.identFn(args.empty() ? std::string() : args[0]);
     if (name == "mangle")   return hooks_.mangle(args.empty() ? std::string() : args[0]);
     return "";
 }
@@ -1112,11 +1176,26 @@ std::string StmtCtx::get(const std::string& path) const {
             if (i < lf.nonlocals.size()) return lf.nonlocals[i];
         }
     }
+    if (s_.kind == ir::StmtKind::IndexAssign) {
+        const auto& ia = static_cast<const ir::IndexAssign&>(s_);
+        if (path == "stmt.indices.count") return std::to_string(ia.indices.size());
+    }
+    if (s_.kind == ir::StmtKind::Let) { // `let (a, b) = t` destructuring targets (#39b)
+        const auto& l = static_cast<const ir::Let&>(s_);
+        if (path == "stmt.names.count") return std::to_string(l.tupleNames.size());
+        if (path == "stmt.isMutable")   return l.isMutable ? "true" : "false";
+        if (path.rfind("stmt.names.", 0) == 0) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
+            if (i < l.tupleNames.size()) return l.tupleNames[i];
+        }
+    }
     if (s_.kind == ir::StmtKind::For) {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
         if (path == "stmt.inclusive") return f.inclusive ? "true" : "false";
         if (path == "stmt.binding")   return f.binding;
+        if (path == "stmt.captured")  return f.captured ? "true" : "false"; // #46: a closure captures the binding
+        if (path == "stmt.driver")    return f.binding + "__it";            // per-iteration copy's loop counter
         if (path == "stmt.body.count") return std::to_string(f.body.size());
         if (path == "stmt.tupleBindings.count") return std::to_string(f.tupleBindings.size());
         if (path.rfind("stmt.tupleBindings.", 0) == 0) {
@@ -1173,6 +1252,19 @@ std::string StmtCtx::renderType(const std::string& path) const {
 
 std::string StmtCtx::emitChild(const std::string& path, const std::string&) const {
     if (!emit_) return "";
+    if (s_.kind == ir::StmtKind::Let) { // TupleLet init (#39b)
+        const auto& l = static_cast<const ir::Let&>(s_);
+        if (path == "stmt.init" && l.init) return emit_(*l.init);
+    }
+    if (s_.kind == ir::StmtKind::IndexAssign) {
+        const auto& ia = static_cast<const ir::IndexAssign&>(s_);
+        if (path == "stmt.receiver" && ia.receiver) return emit_(*ia.receiver);
+        if (path == "stmt.value" && ia.value)       return emit_(*ia.value);
+        if (path.rfind("stmt.indices.", 0) == 0) {
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(13)));
+            if (i < ia.indices.size()) return emit_(*ia.indices[i]);
+        }
+    }
     if (s_.kind == ir::StmtKind::For) {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.rangeStart" && f.rangeStart) return emit_(*f.rangeStart);
@@ -1513,6 +1605,18 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             return;
         case ir::StmtKind::Let: {
             const auto& l = static_cast<const ir::Let&>(s);
+            // `let (a, b) = t` destructuring is rendered by the per-target TupleLet rule (issue #39b).
+            if (!l.tupleNames.empty()) {
+                if (const engine::RuleTable* rules = ruleTable())
+                    if (const DeclHooks* hooks = declHooks()) {
+                        auto it = rules->find("TupleLet");
+                        if (it != rules->end()) {
+                            StmtCtx ctx(s, *hooks, [this](const ir::Expr& e) { return emitExpr(e); });
+                            runDeclRule(it->second, ctx, ctx, rules);
+                            return;
+                        }
+                    }
+            }
             // Some initializers give the target no type to reconstruct, so the DECLARATION must carry it
             // (issue #27; C# `var x = null` is also CS0815, issue #9). Two such forms:
             //   • a bare `null` (no underlying type), and
@@ -1585,6 +1689,27 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
         case ir::StmtKind::Continue: line(std::string("continue") + spec().stmtEnd); return;
         case ir::StmtKind::While: { // `while (cond)` head is identical across targets; block form via headBlock
             const auto& w = static_cast<const ir::While&>(s);
+            if (w.isDoWhile) {
+                const std::string cond = emitExpr(*w.cond);
+                if (spec().blockStyle == BlockStyle::ColonIndent) {
+                    // Python has no do-while; a while-true emulation whose condition re-runs on the loop
+                    // header, so a `continue` in the body re-tests it: a fresh flag makes the first pass
+                    // unconditional, then every re-entry (incl. after continue) checks `cond` (#39a).
+                    const std::string flag = "__dw" + std::to_string(doWhileSeq_++);
+                    line(flag + " = " + std::string(spec().trueLit));
+                    openBlock("while " + flag + " or (" + cond + ")");
+                    ++indent_;
+                    line(flag + " = " + std::string(spec().falseLit));
+                    for (const auto& st : w.body) emitStmt(*st);
+                    --indent_;
+                    closeBlock();
+                } else {
+                    openBlock("do");
+                    blockBody(w.body);
+                    line("} while (" + cond + ")" + spec().stmtEnd);
+                }
+                return;
+            }
             headBlock("while (" + emitExpr(*w.cond) + ")", w.body);
             return;
         }
@@ -1605,6 +1730,7 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             // is data; only a kind with no rule falls back to the imperative emitStmtTarget.
             const char* key = s.kind == ir::StmtKind::For ? "ForStmt"
                             : s.kind == ir::StmtKind::Try ? "TryStmt"
+                            : s.kind == ir::StmtKind::IndexAssign ? "IndexAssign"
                             : s.kind == ir::StmtKind::LocalFunc ? "LocalFunc" : nullptr;
             if (key) {
                 if (const engine::RuleTable* rules = ruleTable()) {

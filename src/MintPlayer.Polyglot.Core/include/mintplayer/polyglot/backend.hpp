@@ -40,6 +40,8 @@ enum class Feature {
     MutableRefClasses,   // a mutable reference class (`var` field / object identity) — absent on Haskell/Elixir
     FixedWidthIntegers,  // sub-64-bit or unsigned int widths (i8/i16/i32/u8/u16/u32/u64) — emulated on Dart's single int
     Utf16Strings,        // `char` / UTF-16 code-unit strings — emulated on grapheme-string targets (Swift)
+    PropertySetters,     // a property accessor-block SETTER (`var x: T { get …; set(v) {…} }`) — C#/TS/Python
+                         // have native accessors; PHP (< 8.4) has no property setters, so it refuses (#39c)
 };
 const char* featureName(Feature f); // stable lowerCamel id for diagnostics, e.g. "extensionMethods"
 
@@ -48,6 +50,7 @@ inline constexpr Feature kAllFeatures[] = {
     Feature::PatternMatching, Feature::Closures, Feature::Exceptions, Feature::Disposal, Feature::Inheritance,
     Feature::Async, Feature::BlockLambdas, Feature::WithExpressions,
     Feature::MutableRefClasses, Feature::FixedWidthIntegers, Feature::Utf16Strings,
+    Feature::PropertySetters,
 };
 
 class Backend {

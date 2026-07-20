@@ -91,6 +91,7 @@ private:
         for (const auto& m : members) {
             if (m.kind == MemberKind::Operator) mark(Feature::OperatorOverloading, m.pos);
             if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
+            if (m.kind == MemberKind::Property && m.hasSetter) mark(Feature::PropertySetters, m.pos); // #39c
             if (m.isAsync) mark(Feature::Async, m.pos);
             typeRef(m.type, m.pos);
             typeRef(m.returnType, m.pos);

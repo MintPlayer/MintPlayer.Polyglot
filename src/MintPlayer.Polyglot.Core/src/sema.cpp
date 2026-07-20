@@ -571,7 +571,15 @@ private:
         return mi;
     }
     void addMembers(TypeInfo& ti, const std::vector<Member>& members) {
+        std::unordered_set<std::string> methodNames;
         for (const auto& m : members) {
+            // #53: member overloading is not supported (top-level `fn` overloading is — PRD §3.A). A second
+            // same-named method used to silently shadow the first and surface a misleading call-site arity
+            // error; refuse it at the DECLARATION site instead.
+            if (m.kind == MemberKind::Method && !methodNames.insert(m.name).second)
+                diags_.error(m.namePos, "method '" + m.name + "' is already defined — Polyglot supports "
+                                            "overloading for top-level functions only, not members (PRD §3.A); "
+                                            "give the overloads distinct names");
             ti.members.push_back(memberInfo(m));
             if (m.kind == MemberKind::Init) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }
@@ -936,13 +944,21 @@ private:
                 scopeStart_ = {}; scopeEnd_ = {};
                 inAsync_ = false;
                 currentThis_ = tNamed(typeName);
-            } else if (m.kind == MemberKind::Property && m.init) {
+            } else if (m.kind == MemberKind::Property && (m.init || !m.body.empty() || m.hasSetter)) {
                 currentReturn_ = m.type;
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
-                checkExpr(*m.init);
-                checkConvert(m.init, m.type, "property getter");
+                if (m.init) { checkExpr(*m.init); checkConvert(m.init, m.type, "property getter"); }
+                else if (!m.body.empty()) checkBlock(m.body); // block-bodied getter (accessor block, #39c)
                 popScope();
+                if (m.hasSetter) { // the setter body sees `this`, the record fields, and the value param
+                    currentReturn_ = namedType("unit");
+                    pushScope();
+                    if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
+                    declare(m.setterParam, m.type, false, m.pos);
+                    checkBlock(m.setterBody);
+                    popScope();
+                }
             }
             popGenerics(m.generics);
         }
@@ -1103,14 +1119,14 @@ private:
     void declarePattern(const Pattern& p, const TypeRef& scrut) {
         switch (p.kind) {
             case PatKind::Binding:
-                // §3.B never-miscompile: a type-annotated binding LOOKS like a runtime type test, but no
-                // test is lowered — the arm would match unconditionally on every target. Until real
-                // type-test patterns exist, only the scrutinee's own static type may be (redundantly) named.
-                if (p.hasType && !(p.type.kind == TypeRef::Kind::Named && scrut.kind == TypeRef::Kind::Named &&
-                                   p.type.name == scrut.name && p.type.nullable == scrut.nullable))
-                    diags_.error(p.pos, "a typed 'match' binding ('" + p.name + ": " + sigTypeName(p.type) +
-                                            "') is not a runtime type test and would match unconditionally; " +
-                                            "match on a union, or branch without type narrowing");
+                // A typed 'match' binding (`d: Disk`) is a runtime TYPE TEST (#38): allowed for a concrete
+                // class/union type (C# declaration pattern / TS·PHP instanceof / Python isinstance), refused
+                // for an INTERFACE (interfaces erase at runtime on TS — §3.B). The redundant same-type case
+                // (naming the scrutinee's own type) always passes. The binding narrows to the tested type.
+                if (p.hasType && p.type.kind == TypeRef::Kind::Named && interfaceNames_.count(p.type.name))
+                    diags_.error(p.pos, "Polyglot refuses a type-test against an interface ('" + p.type.name +
+                                            "') — interfaces have no runtime identity on TS; test a concrete "
+                                            "class or union case instead (PRD §3.B)");
                 declare(p.name, p.hasType ? p.type : scrut, false, p.pos);
                 break;
             case PatKind::Ctor: {
@@ -1155,6 +1171,13 @@ private:
         switch (s.kind) {
             case StmtKind::Let: {
                 TypeRef init = checkExpr(*s.value);
+                if (!s.tupleNames.empty()) { // `let (a, b) = t` — declare each name from the tuple's elements (#39b)
+                    for (std::size_t i = 0; i < s.tupleNames.size(); ++i) {
+                        TypeRef sub = (init.kind == TypeRef::Kind::Tuple && i < init.args.size()) ? init.args[i] : tUnknown();
+                        declare(s.tupleNames[i], sub, s.isMutable, s.namePos);
+                    }
+                    break;
+                }
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
                 else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
                     diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value));
@@ -1262,6 +1285,28 @@ private:
         return tUnknown();
     }
 
+    // Arity-check a subscript against its target's indexer (issue #42). Native collections take exactly one
+    // index; a user `operator fn get(...)` takes as many as it declares. Lenient when the receiver type is
+    // unknown or has no resolvable indexer (a bare `recv[]` degrading to `0` also passes).
+    void checkIndexArity(const Expr& e, const TypeRef& recv) {
+        if (e.args.empty() || recv.kind != TypeRef::Kind::Named) return;
+        if (recv.name == "List" || recv.name == "Array" || recv.name == "Iterable") {
+            if (e.args.size() != 1)
+                diags_.error(e.pos, "indexing '" + recv.name + "' takes exactly one index, got " +
+                                        std::to_string(e.args.size()));
+            return;
+        }
+        if (auto it = types_.find(recv.name); it != types_.end())
+            for (const auto& m : it->second.members)
+                if (m.kind == MemberKind::Operator && m.name == "get") {
+                    if (e.args.size() != m.params.size())
+                        diags_.error(e.pos, "indexer 'get' on '" + recv.name + "' expects " +
+                                                std::to_string(m.params.size()) + " index argument(s), got " +
+                                                std::to_string(e.args.size()));
+                    return;
+                }
+    }
+
     // ---- expression typing ----
     // checkExpr annotates each node with its resolved type (read later by IR lowering), then returns it.
     TypeRef checkExpr(Expr& e) {
@@ -1306,7 +1351,7 @@ private:
             case ExprKind::Range:     { TypeRef lo = checkExpr(*e.lhs); checkExpr(*e.rhs); return isNumericTypeName(lo) ? lo : tNamed("i32"); }
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);
-            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); return elementType(recv); }
+            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); return elementType(recv); }
             case ExprKind::NullAssert:{
                 TypeRef t = checkExpr(*e.lhs);
                 if (t.kind == TypeRef::Kind::Named && t.name == "Option") { // `x!` on an optional generic: not yet lowered
@@ -1604,6 +1649,27 @@ private:
             // `type 'T' has no method` error doesn't fire for a method an extension actually supplies.
             if (recv.kind == TypeRef::Kind::Named) {
                 if (auto it = extensions_.find(recv.name + "." + method); it != extensions_.end()) {
+                    // #56b: bidirectionally instantiate a lambda arg's param types from the extension's
+                    // function-typed param (generics bound from the receiver — List<T> vs List<string> -> T=
+                    // string), then RE-CHECK the lambda body so std methods on those params bind (else
+                    // `s.len()` stays Unknown -> emitted verbatim -> runtime crash).
+                    if (!it->second.generics.empty()) {
+                        std::unordered_set<std::string> gen(it->second.generics.begin(), it->second.generics.end());
+                        std::unordered_map<std::string, TypeRef> binds;
+                        unifyGeneric(gen, it->second.receiver, recv, binds);
+                        for (std::size_t i = 0; i < it->second.params.size() && i < e.args.size(); ++i) {
+                            if (e.args[i]->kind != ExprKind::Lambda) continue;
+                            TypeRef pt = substGeneric(it->second.params[i], gen, binds);
+                            if (pt.kind != TypeRef::Kind::Function) continue;
+                            Expr& lam = *e.args[i];
+                            bool retyped = false;
+                            for (std::size_t j = 0; j < lam.params.size() && j < pt.args.size(); ++j)
+                                if (lam.params[j].type.absent() && !pt.args[j].absent()) {
+                                    lam.params[j].type = pt.args[j]; retyped = true;
+                                }
+                            if (retyped) checkLambda(lam); // re-walk the body with the now-instantiated params
+                        }
+                    }
                     checkArgs(it->second.params, argTypes, e.args, "extension '" + method + "'", e.pos);
                     // Infer the extension's type params from the receiver (List<i32> vs List<T> -> T=i32) and
                     // args, then substitute the result — so `xs.secondOrNull()` is Option<i32>, not Option<T>.
@@ -1614,6 +1680,13 @@ private:
                 if (const MemberInfo* m = findMember(recv.name, method)) { if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second); checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); TypeRef r = inferResult(m->generics, m->params, argTypes, m->type); return m->isAsync ? awaitable(r) : r; }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
+            // #56a: a method call on a CONCRETE primitive receiver (string/i32/bool/char/f64/…) that bound
+            // no extension and no member is a guaranteed runtime crash — refuse it (usually a missing
+            // `import`) instead of emitting it verbatim. Unknown and still-generic receivers stay lenient (an
+            // uninstantiated lambda param resolves later — #56b), because scalarTyOf is Unknown for those.
+            else if (recv.kind == TypeRef::Kind::Named && scalarTyOf(recv) != Ty::Unknown)
+                diags_.error(e.pos, "no method '" + method + "' on '" + recv.name +
+                                        "' — is an import missing (e.g. \"std.strings\")? (PRD §3.B)");
             return tUnknown();
         }
         if (e.lhs->kind != ExprKind::Name) { checkExpr(*e.lhs); return tUnknown(); }
@@ -1716,7 +1789,16 @@ private:
             pushScope();
             declarePattern(arm.pattern, st);
             if (arm.guard) requireBool(checkExpr(*arm.guard), arm.pattern.pos, "'match' guard");
-            if (arm.bodyIsBlock) for (auto& s : arm.block) checkStmt(*s);
+            if (arm.bodyIsBlock) {
+                // §3.B: a match arm must be an EXPRESSION. Python/PHP lower `match` to an expression form
+                // (a ternary/arrow fold) with no room for a statement block, and hoisting each block arm to
+                // a named function is out of scope — so a block-bodied arm is refused loudly instead of the
+                // old silent drop-to-`0` (issue #51). Extract the block into a function and call it.
+                diags_.error(arm.pattern.pos,
+                             "Polyglot refuses a block-bodied match arm — a match arm must be an expression "
+                             "(extract the block into a function and call it from the arm) (PRD §3.B)");
+                for (auto& s : arm.block) checkStmt(*s); // still check the body so nested errors surface too
+            }
             else if (arm.body) result = checkExpr(*arm.body);
             popScope();
 
