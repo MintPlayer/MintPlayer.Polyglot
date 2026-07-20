@@ -18,6 +18,10 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 if (-not (Test-Path $Cli)) { Write-Host "polyglot CLI not found at $Cli — build the solution first."; exit 2 }
+# Resolve to an ABSOLUTE path: several stages Push-Location into fixture dirs (the bare-`build` discovery
+# tests), after which a relative -Cli no longer resolves (`& x64\Debug\…` → "module 'x64' could not be
+# loaded"). The merged conformance runner does the same for the same reason.
+$Cli = (Resolve-Path $Cli).Path
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) { Write-Host "[SKIP] node not found — the registry gate needs Node."; exit 0 }
 

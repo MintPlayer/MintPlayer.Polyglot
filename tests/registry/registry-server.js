@@ -10,7 +10,12 @@
 //   @mintplayer/polyglot-target-pyfixture2  — the packument LIES about the tarball's integrity
 //                                             (supply-chain tamper: the CLI must refuse)
 //
-// Prints "READY <port>" once listening; exits when stdin closes (the harness dying kills it).
+// Prints "READY <port>" once listening. The harness owns this process's lifetime (it Stop-Processes
+// it in its finally); a stdin-EOF self-exit was tried but is WRONG in non-interactive shells (CI, and
+// any headless pwsh), where the child's stdin is already at EOF, so the server died the instant it
+// started and every fetch hit "connection refused" (the P30 CI failure + the documented local
+// flakiness — one root cause). Instead a 5-minute unref'd watchdog reaps an orphan if the harness
+// ever crashes past its finally, with zero dependency on stdin.
 'use strict';
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -94,5 +99,4 @@ const server = http.createServer((req, res) => {
   res.end('{"error":"Not found"}');
 });
 server.listen(0, '127.0.0.1', () => console.log(`READY ${server.address().port}`));
-process.stdin.on('end', () => process.exit(0));
-process.stdin.resume();
+setTimeout(() => process.exit(0), 300000).unref(); // orphan watchdog; unref'd so it never keeps us alive
