@@ -1,9 +1,10 @@
-// Wave-2 G17: GENERIC extension methods on List<T> — SPEC §6.3's own examples
-// (`second(): T?`, a function-typed parameter), never executed end-to-end.
-// The lambda bodies stay std-free: a std method on a generic-instantiated lambda
-// param does not bind (emitted verbatim, runtime crash) — TODO(#56).
+// Wave-2 G17 + #56b: GENERIC extension methods on List<T>, including a function-typed parameter whose
+// lambda argument uses a std method on the generic-instantiated parameter (`s.len()` where T = string).
+// The lambda param's type is now bidirectionally instantiated from the extension's `(T) => i32` param
+// before the body is checked, so `s.len()` binds instead of emitting verbatim and crashing at runtime.
 
 import { List } from "std.collections"
+import "std.strings"
 
 extension fn List<T>.second(): T? => if this.count > 1 { this[1] } else { null }
 
@@ -22,4 +23,5 @@ fn main() {
   print(ss.second() ?? "none")          // yy   (string instantiation)
   print(xs.totalWith((v) => v * 2))     // 32
   print(xs.totalWith((v) => if v > 4 { 1 } else { 0 }))   // 2
+  print(ss.totalWith((s) => s.len()))   // 1 + 2 = 3  (std method on a generic-instantiated lambda param)
 }

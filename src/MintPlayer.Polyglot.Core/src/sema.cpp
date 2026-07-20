@@ -1641,6 +1641,27 @@ private:
             // `type 'T' has no method` error doesn't fire for a method an extension actually supplies.
             if (recv.kind == TypeRef::Kind::Named) {
                 if (auto it = extensions_.find(recv.name + "." + method); it != extensions_.end()) {
+                    // #56b: bidirectionally instantiate a lambda arg's param types from the extension's
+                    // function-typed param (generics bound from the receiver — List<T> vs List<string> -> T=
+                    // string), then RE-CHECK the lambda body so std methods on those params bind (else
+                    // `s.len()` stays Unknown -> emitted verbatim -> runtime crash).
+                    if (!it->second.generics.empty()) {
+                        std::unordered_set<std::string> gen(it->second.generics.begin(), it->second.generics.end());
+                        std::unordered_map<std::string, TypeRef> binds;
+                        unifyGeneric(gen, it->second.receiver, recv, binds);
+                        for (std::size_t i = 0; i < it->second.params.size() && i < e.args.size(); ++i) {
+                            if (e.args[i]->kind != ExprKind::Lambda) continue;
+                            TypeRef pt = substGeneric(it->second.params[i], gen, binds);
+                            if (pt.kind != TypeRef::Kind::Function) continue;
+                            Expr& lam = *e.args[i];
+                            bool retyped = false;
+                            for (std::size_t j = 0; j < lam.params.size() && j < pt.args.size(); ++j)
+                                if (lam.params[j].type.absent() && !pt.args[j].absent()) {
+                                    lam.params[j].type = pt.args[j]; retyped = true;
+                                }
+                            if (retyped) checkLambda(lam); // re-walk the body with the now-instantiated params
+                        }
+                    }
                     checkArgs(it->second.params, argTypes, e.args, "extension '" + method + "'", e.pos);
                     // Infer the extension's type params from the receiver (List<i32> vs List<T> -> T=i32) and
                     // args, then substitute the result — so `xs.secondOrNull()` is Option<i32>, not Option<T>.
