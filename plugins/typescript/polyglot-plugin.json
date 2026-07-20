@@ -1352,6 +1352,21 @@
           }
         },
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.isIterator",
+                    "true"
+                  ]
+                },
+                "*"
+              ]
+            ]
+          }
+        },
+        {
           "fn": "ident",
           "args": [
             {
