@@ -1,7 +1,8 @@
 // Scenario: match beyond the flat single binder — multi-arg ctor patterns, LITERAL sub-patterns inside
-// a ctor (`Leaf(0)`, `Pair(a, 0)`), top-level literal arms with guards, arm order, and match-as-expression
-// feeding arithmetic. Previously narrowed: a literal sub-pattern inside a ctor was silently dropped at
-// lowering (issue #43) so `Leaf(0)` matched every Leaf. Fixed by carrying every ctor sub-slot in order.
+// a ctor (`Leaf(0)`, `Pair(a, 0)`), a GUARD on a ctor arm (`Pair(a, b) if a == b`), top-level literal
+// arms with guards, arm order, and match-as-expression feeding arithmetic. Previously narrowed: a literal
+// sub-pattern inside a ctor was silently dropped at lowering (issue #43) so `Leaf(0)` matched every Leaf,
+// and a guard on a ctor arm didn't parse (issue #39d) because the trailing `=>` was eaten as a lambda.
 // This defect makes all four targets identically wrong, so a `.expected` golden is load-bearing.
 
 union Node {
@@ -11,11 +12,12 @@ union Node {
 }
 
 fn describe(n: Node): i32 => match n {
-  Leaf(0)    => -1,
-  Leaf(v)    => v,
-  Pair(a, 0) => a * 100,
-  Pair(a, b) => a * 10 + b,
-  Nil        => 0,
+  Leaf(0)              => -1,
+  Leaf(v)              => v,
+  Pair(a, 0)           => a * 100,
+  Pair(a, b) if a == b => 0 - a,
+  Pair(a, b)           => a * 10 + b,
+  Nil                  => 0,
 }
 
 fn classify(n: i32): string => match n {
@@ -30,6 +32,7 @@ fn main() {
   print(describe(Leaf(9)))          // 9
   print(describe(Pair(4, 0)))       // 400 (literal in the 2nd slot; binds the 1st)
   print(describe(Pair(2, 3)))       // 23
+  print(describe(Pair(5, 5)))       // -5  (guard on a ctor arm: a == b)
   print(describe(Nil))              // 0
   print(describe(Pair(4, 5)) * 2)   // 90  (match expression in arithmetic)
   print(classify(0))                // zero

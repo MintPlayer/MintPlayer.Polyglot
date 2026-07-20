@@ -88,6 +88,9 @@ private:
     bool panicked_ = false;
     SourcePos lastBlockEnd_;   // the most recent block's closing '}' position — read right after parseBlock()
     int pendingAngles_ = 0; // leftover '>' borrowed from a split '>>' / '>>>' when closing nested generics
+    // While parsing a match-arm GUARD, a trailing `ident =>` / `(…) =>` is the arm's `=>`, NOT a lambda —
+    // suppress the bare-lambda parse so `Pair(a, b) if a == b => …` doesn't swallow the arrow (issue #39d).
+    bool suppressLambda_ = false;
 
     // G45 (wave 2): recursion-depth guard. Parsing, checking, and emitting all recurse over the nesting
     // structure, so unbounded source nesting is a stack overflow (a process abort, not a diagnostic).
@@ -1226,7 +1229,12 @@ private:
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
             MatchArm arm;
             arm.pattern = parsePattern();
-            if (accept(TokKind::KwIf)) arm.guard = parseExpr();
+            if (accept(TokKind::KwIf)) {
+                const bool save = suppressLambda_;
+                suppressLambda_ = true; // the guard's trailing `=>` is the arm arrow, not a lambda (#39d)
+                arm.guard = parseExpr();
+                suppressLambda_ = save;
+            }
             expect(TokKind::Arrow, "'=>'");
             if (at(TokKind::LBrace)) { arm.bodyIsBlock = true; arm.block = parseBlock(); }
             else { arm.body = parseExpr(); }
@@ -1269,7 +1277,7 @@ private:
                 return e;
             }
             case TokKind::Identifier:
-                if (peek(1).kind == TokKind::Arrow) return parseBareLambda(); // `x => …`
+                if (!suppressLambda_ && peek(1).kind == TokKind::Arrow) return parseBareLambda(); // `x => …`
                 { auto e = mk(ExprKind::Name, p); e->text = advance().text; return e; }
             case TokKind::KwIf:      return parseIfExpr();
             case TokKind::KwMatch:   return parseMatch();
@@ -1283,7 +1291,7 @@ private:
                 return e;
             }
             case TokKind::LParen: {
-                if (isLambdaAhead()) return parseLambda();
+                if (!suppressLambda_ && isLambdaAhead()) return parseLambda();
                 advance();
                 auto first = parseExpr();
                 if (at(TokKind::Comma)) {

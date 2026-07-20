@@ -978,30 +978,6 @@
                           }
                         }
                       },
-                      {
-                        "case": {
-                          "when": [
-                            [
-                              {
-                                "eq": [
-                                  "item.hasGuard",
-                                  "true"
-                                ]
-                              },
-                              {
-                                "tmpl": [
-                                  " && (",
-                                  {
-                                    "emit": "item.guard"
-                                  },
-                                  ")"
-                                ]
-                              }
-                            ]
-                          ],
-                          "else": ""
-                        }
-                      },
                       ") { ",
                       {
                         "map": "item.pattern.binders",
@@ -1054,11 +1030,42 @@
                           }
                         }
                       },
-                      "return ",
                       {
-                        "emit": "item.body"
-                      },
-                      "; } "
+                        "case": {
+                          "when": [
+                            [
+                              {
+                                "eq": [
+                                  "item.hasGuard",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "tmpl": [
+                                  "if (",
+                                  {
+                                    "emit": "item.guard"
+                                  },
+                                  ") return ",
+                                  {
+                                    "emit": "item.body"
+                                  },
+                                  "; } "
+                                ]
+                              }
+                            ]
+                          ],
+                          "else": {
+                            "tmpl": [
+                              "return ",
+                              {
+                                "emit": "item.body"
+                              },
+                              "; } "
+                            ]
+                          }
+                        }
+                      }
                     ]
                   }
                 ],
