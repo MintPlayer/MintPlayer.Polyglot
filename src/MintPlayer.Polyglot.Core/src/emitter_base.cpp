@@ -734,6 +734,9 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     if (path == "decl.isVirtual")  return m_.isVirtual ? "true" : "false";
     if (path == "decl.isOverride") return m_.isOverride ? "true" : "false";
     if (path == "decl.isIterator") return m_.isIterator ? "true" : "false";
+    if (path == "decl.propHasSetter")  return m_.propHasSetter ? "true" : "false"; // accessor-block setter (#39c)
+    if (path == "decl.propSetterParam") return m_.setterParamName;
+    if (path == "decl.propSetterBody.count") return std::to_string(m_.setterBody.size());
     if (path == "decl.hasSetter")  return m_.pairedSetter ? "true" : "false"; // paired indexer set (#40)
     if (path == "decl.setterValueParam")
         return m_.pairedSetter && !m_.pairedSetter->params.empty() ? m_.pairedSetter->params.back().name : "";
@@ -799,6 +802,7 @@ std::string MethodDeclCtx::emitChild(const std::string& path, const std::string&
 const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path) const {
     if (path == "decl.body") return &m_.body;
     if (path == "decl.setterBody" && m_.pairedSetter) return &m_.pairedSetter->body; // paired indexer set (#40)
+    if (path == "decl.propSetterBody") return &m_.setterBody; // accessor-block setter (#39c)
     return nullptr;
 }
 

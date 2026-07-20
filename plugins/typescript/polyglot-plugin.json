@@ -1552,38 +1552,59 @@
               ]
             },
             {
-              "block": {
-                "head": {
-                  "tmpl": [
-                    "get ",
-                    {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "decl.name"
-                        }
+              "seq": [
+                {
+                  "block": {
+                    "head": {
+                      "tmpl": [
+                        "get ",
+                        { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                        "(): ",
+                        { "type": "decl.returnType" }
                       ]
                     },
-                    "(): ",
-                    {
-                      "type": "decl.returnType"
-                    }
-                  ]
-                },
-                "body": [
-                  {
-                    "line": {
-                      "tmpl": [
-                        "return ",
-                        {
-                          "emit": "decl.exprBody"
-                        },
-                        ";"
-                      ]
-                    }
+                    "body": [
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              { "eq": [ "decl.exprBodied", "true" ] },
+                              { "line": { "tmpl": [ "return ", { "emit": "decl.exprBody" }, ";" ] } }
+                            ]
+                          ],
+                          "else": { "stmts": "decl.body" }
+                        }
+                      }
+                    ]
                   }
-                ]
-              }
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
+                        { "eq": [ "decl.propHasSetter", "true" ] },
+                        {
+                          "block": {
+                            "head": {
+                              "tmpl": [
+                                "set ",
+                                { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                                "(",
+                                { "fn": "ident", "args": [ { "get": "decl.propSetterParam" } ] },
+                                ": ",
+                                { "type": "decl.returnType" },
+                                ")"
+                              ]
+                            },
+                            "body": [ { "stmts": "decl.propSetterBody" } ]
+                          }
+                        }
+                      ]
+                    ],
+                    "else": ""
+                  }
+                }
+              ]
             }
           ]
         ],

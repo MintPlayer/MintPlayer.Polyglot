@@ -11,7 +11,8 @@
     "interfaces": "native",
     "blockLambdas": "native",
     "extensionMethods": "emulated",
-    "operatorOverloading": false
+    "operatorOverloading": false,
+    "propertySetters": false
   },
   "spec": {
     "name": "php",

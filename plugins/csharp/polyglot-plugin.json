@@ -1359,27 +1359,113 @@
               ]
             },
             {
-              "line": {
-                "tmpl": [
-                  "public ",
-                  {
-                    "type": "decl.returnType"
-                  },
-                  " ",
-                  {
-                    "fn": "ident",
-                    "args": [
-                      {
-                        "get": "decl.name"
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "decl.propHasSetter",
+                        "true"
+                      ]
+                    },
+                    {
+                      "seq": [
+                        {
+                          "line": {
+                            "tmpl": [
+                              "public ",
+                              { "type": "decl.returnType" },
+                              " ",
+                              { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                              " {"
+                            ]
+                          }
+                        },
+                        {
+                          "indent": [
+                            {
+                              "case": {
+                                "when": [
+                                  [
+                                    { "eq": [ "decl.exprBodied", "true" ] },
+                                    { "line": { "tmpl": [ "get => ", { "emit": "decl.exprBody" }, ";" ] } }
+                                  ]
+                                ],
+                                "else": {
+                                  "seq": [
+                                    { "line": "get {" },
+                                    { "indent": [ { "stmts": "decl.body" } ] },
+                                    { "line": "}" }
+                                  ]
+                                }
+                              }
+                            },
+                            { "line": "set {" },
+                            {
+                              "indent": [
+                                {
+                                  "case": {
+                                    "when": [
+                                      [
+                                        { "eq": [ "decl.propSetterParam", "value" ] },
+                                        ""
+                                      ]
+                                    ],
+                                    "else": {
+                                      "line": {
+                                        "tmpl": [
+                                          "var ",
+                                          { "fn": "ident", "args": [ { "get": "decl.propSetterParam" } ] },
+                                          " = value;"
+                                        ]
+                                      }
+                                    }
+                                  }
+                                },
+                                { "stmts": "decl.propSetterBody" }
+                              ]
+                            },
+                            { "line": "}" }
+                          ]
+                        },
+                        { "line": "}" }
+                      ]
+                    }
+                  ],
+                  [
+                    { "eq": [ "decl.exprBodied", "true" ] },
+                    {
+                      "line": {
+                        "tmpl": [
+                          "public ",
+                          { "type": "decl.returnType" },
+                          " ",
+                          { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                          " => ",
+                          { "emit": "decl.exprBody" },
+                          ";"
+                        ]
                       }
-                    ]
-                  },
-                  " => ",
-                  {
-                    "emit": "decl.exprBody"
-                  },
-                  ";"
-                ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "seq": [
+                    {
+                      "line": {
+                        "tmpl": [
+                          "public ",
+                          { "type": "decl.returnType" },
+                          " ",
+                          { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                          " {"
+                        ]
+                      }
+                    },
+                    { "indent": [ { "line": "get {" }, { "indent": [ { "stmts": "decl.body" } ] }, { "line": "}" } ] },
+                    { "line": "}" }
+                  ]
+                }
               }
             }
           ],

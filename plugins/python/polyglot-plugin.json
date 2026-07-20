@@ -2191,6 +2191,48 @@
               }
             }
           }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.propHasSetter",
+                    "true"
+                  ]
+                },
+                {
+                  "seq": [
+                    {
+                      "line": {
+                        "tmpl": [
+                          "@",
+                          { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                          ".setter"
+                        ]
+                      }
+                    },
+                    {
+                      "block": {
+                        "head": {
+                          "tmpl": [
+                            "def ",
+                            { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                            "(self, ",
+                            { "fn": "ident", "args": [ { "get": "decl.propSetterParam" } ] },
+                            ")"
+                          ]
+                        },
+                        "body": [ { "stmts": "decl.propSetterBody" } ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            ],
+            "else": ""
+          }
         }
       ]
     },

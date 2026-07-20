@@ -465,6 +465,12 @@ struct Method {
     // still owns its own body — it also emits standalone as `.set(...)` on the method-emulation targets).
     // Stable: set after the class's `methods` vector is fully built and never reallocated afterwards.
     const Method* pairedSetter = nullptr;
+    // Property accessor-block setter (#39c): a read-write computed property carries its setter here (the
+    // getter is exprBody/body). C# emits `{ get …; set { … } }`, TS/Python native get/set accessors, PHP a
+    // getter+setter method pair (property-set assignments route to the setter).
+    bool propHasSetter = false;
+    std::string setterParamName;         // the setter's value parameter (default `value`)
+    std::vector<StmtPtr> setterBody;
     // Top-level module globals this member's body (incl. a property getter's expr) references — same
     // fact as ir::Function.globalRefs; consumed only by PHP (`global $x;`), empty/ignored elsewhere.
     std::vector<std::string> globalRefs;

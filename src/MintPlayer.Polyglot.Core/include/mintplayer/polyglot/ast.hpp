@@ -213,6 +213,12 @@ struct Member {
     ExprPtr exprBody;                    // `=> expr` body
     bool hasBody = false;                // false = stub (interface method `;`)
     bool exprBodied = false;             // true = `=> expr`, false = block
+    // Property accessor block `{ get => …; set(v) { … } }` (#39c): the setter half. `hasSetter` marks a
+    // read-write computed property; `setterParam` is the value parameter (default `value`); the getter is
+    // in init/body/exprBodied as for a read-only property.
+    bool hasSetter = false;
+    std::string setterParam;
+    std::vector<StmtPtr> setterBody;
     std::vector<TargetBinding> bindings; // Method/Property: per-target FFI binding arms; empty = ordinary
 };
 

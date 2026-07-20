@@ -32,6 +32,7 @@ const char* featureName(Feature f) {
         case Feature::MutableRefClasses:   return "mutableRefClasses";
         case Feature::FixedWidthIntegers:  return "fixedWidthIntegers";
         case Feature::Utf16Strings:        return "utf16Strings";
+        case Feature::PropertySetters:     return "propertySetters";
     }
     return "?";
 }

@@ -936,13 +936,21 @@ private:
                 scopeStart_ = {}; scopeEnd_ = {};
                 inAsync_ = false;
                 currentThis_ = tNamed(typeName);
-            } else if (m.kind == MemberKind::Property && m.init) {
+            } else if (m.kind == MemberKind::Property && (m.init || !m.body.empty() || m.hasSetter)) {
                 currentReturn_ = m.type;
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
-                checkExpr(*m.init);
-                checkConvert(m.init, m.type, "property getter");
+                if (m.init) { checkExpr(*m.init); checkConvert(m.init, m.type, "property getter"); }
+                else if (!m.body.empty()) checkBlock(m.body); // block-bodied getter (accessor block, #39c)
                 popScope();
+                if (m.hasSetter) { // the setter body sees `this`, the record fields, and the value param
+                    currentReturn_ = namedType("unit");
+                    pushScope();
+                    if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
+                    declare(m.setterParam, m.type, false, m.pos);
+                    checkBlock(m.setterBody);
+                    popScope();
+                }
             }
             popGenerics(m.generics);
         }

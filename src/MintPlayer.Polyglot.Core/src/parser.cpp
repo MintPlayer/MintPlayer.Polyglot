@@ -304,6 +304,27 @@ private:
                 m.kind = MemberKind::Property; // bound property — `{ }` = overlay-armed skeleton (P19 s9b)
                 tryParseBindings(m);
             }
+            else if (at(TokKind::LBrace) && (peek(1).text == "get" || peek(1).text == "set")) {
+                // Accessor block `{ get => expr | get { … }; set(v) { … } }` (#39c). The getter fills the
+                // usual init/body/exprBodied; the setter fills hasSetter/setterParam/setterBody.
+                m.kind = MemberKind::Property;
+                advance(); // '{'
+                while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+                    if (atContextual("get")) {
+                        advance();
+                        if (accept(TokKind::Arrow)) { m.init = parseExpr(); m.exprBodied = true; }
+                        else { m.body = parseBlock(); m.exprBodied = false; }
+                    } else if (atContextual("set")) {
+                        advance();
+                        m.setterParam = "value";
+                        if (accept(TokKind::LParen)) { m.setterParam = expect(TokKind::Identifier, "a setter parameter name").text; expect(TokKind::RParen, "')'"); }
+                        m.setterBody = parseBlock();
+                        m.hasSetter = true;
+                    } else { error("expected 'get' or 'set' in a property accessor block"); break; }
+                    accept(TokKind::Semicolon);
+                }
+                expect(TokKind::RBrace, "'}'");
+            }
             else if (accept(TokKind::Arrow)) { m.kind = MemberKind::Property; m.init = parseExpr(); }
             else if (accept(TokKind::Assign)) { m.kind = MemberKind::Field; m.init = parseExpr(); }
             else { m.kind = MemberKind::Field; }

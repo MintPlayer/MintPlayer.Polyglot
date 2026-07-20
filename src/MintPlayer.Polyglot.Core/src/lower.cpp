@@ -508,8 +508,14 @@ private:
         if (m.kind == MemberKind::Property) {
             im.kind = ir::MethodKind::Property;
             im.returnType = m.type;
-            im.exprBodied = true;
-            if (m.init) im.exprBody = expr(*m.init);
+            if (m.init) { im.exprBodied = true; im.exprBody = expr(*m.init); }
+            else if (!m.body.empty()) { im.exprBodied = false; im.body = block(m.body); } // block-bodied getter (#39c)
+            else im.exprBodied = true; // bound/skeleton property (overlay-armed) — unchanged
+            if (m.hasSetter) { // accessor-block setter (#39c)
+                im.propHasSetter = true;
+                im.setterParamName = m.setterParam;
+                im.setterBody = block(m.setterBody);
+            }
             return im;
         }
         im.kind = (m.kind == MemberKind::Operator) ? ir::MethodKind::Operator : ir::MethodKind::Method;
