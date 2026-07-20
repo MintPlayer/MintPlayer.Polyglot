@@ -2402,6 +2402,27 @@ Windows** (the existing gates prove it).
 - **Binding auto-generation:** shape-only bindings from `.d.ts` / .NET metadata / WebIDL + hand overrides
   (feeds the plugin ecosystem; produces declarative data at authoring time).
 - **Plugin registry & signing:** distribution/versioning infrastructure + signature trust for downloads.
+- **Per-language emitter dialects (🚦 demand-gated, from issue #59, closed not-planned 2026-07-20).** One
+  compiler, several emitter specs for the *same* target — e.g. `polyglot-csharp-modern` /
+  `-net48` / `-unity`, `polyglot-python-3.10` / `-3.13`. The 100%-JSON plugin model already supports this
+  structurally (a dialect is just another `plugins/<target-variant>/`), so no core work is needed — it is a
+  packaging/versioning decision, not a capability gap.
+  *Concrete precedent — .NET's TargetFramework Moniker (TFM).* .NET already solves exactly this shape:
+  one language + runtime, and a single moniker string selects the flavor as `base[-platform][version]` —
+  `net8.0` (portable), `net8.0-windows` / `net8.0-windows10.0.19041.0` (Win-desktop APIs, OS-version-pinned),
+  `net8.0-android`, `net8.0-ios`, `net8.0-maccatalyst`, `net8.0-tvos`, `net8.0-browser` (Blazor WASM/web),
+  plus the legacy `net48` / `netstandard2.0`. The MSBuild `<TargetFramework>` value drives which API surface
+  and codegen you get from *one* SDK. The Polyglot analogue is a target moniker in `pgconfig` selecting an
+  emitter dialect — `csharp` (portable), `csharp-net48`, `csharp-windowsdesktop`, `csharp-android`,
+  `csharp-ios`, `csharp-unity`; `python-3.10` / `python-3.13`; `typescript-esnext` / `typescript-es2017` —
+  each a `plugins/<moniker>/polyglot-plugin.json` over the same IR, exactly as a TFM is one SDK with a
+  different reference assembly + build props. **Not scheduled:** no consumer needs versioned dialects today
+  and PRD §3 says don't build speculative capability. Revisit when a real consumer (e.g. a Unity or
+  `netstandard2.0` constraint the modern-C# emitter can't satisfy) demands it. NB: issue
+  #59's other suggestions (data-driven JSON backends, community npm plugin packages, JSON-as-emitter-DSL
+  with `block`/`join`/`emit`/helpers, single static C++ binary) were already shipped by P18/P19 + P30 —
+  the plugin rule engine is a structured DSL (`case`/`when`, `block{head,body}`, `map`+`sep`, `emit`,
+  `fn`/`call`), not flat text templates.
 
 ## Release 0.3.0 — issue #11 (2026-07-05, designed + built same day)
 Full PRD/plan: `docs/prd/issue-11-features/`. Four things, six byte-gated slices:
