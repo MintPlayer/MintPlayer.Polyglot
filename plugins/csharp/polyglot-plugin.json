@@ -1143,6 +1143,30 @@
               [
                 {
                   "eq": [
+                    "decl.isOverride",
+                    "true"
+                  ]
+                },
+                "override "
+              ],
+              [
+                {
+                  "eq": [
+                    "decl.isVirtual",
+                    "true"
+                  ]
+                },
+                "virtual "
+              ]
+            ]
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
                     "decl.isAsync",
                     "true"
                   ]

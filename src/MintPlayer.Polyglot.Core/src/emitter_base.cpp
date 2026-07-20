@@ -711,6 +711,9 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     if (path == "decl.owner")      return owner_;
     if (path == "decl.isStatic")   return m_.isStatic ? "true" : "false";
     if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";
+    if (path == "decl.isVirtual")  return m_.isVirtual ? "true" : "false";
+    if (path == "decl.isOverride") return m_.isOverride ? "true" : "false";
+    if (path == "decl.isIterator") return m_.isIterator ? "true" : "false";
     if (path == "decl.exprBodied") return m_.exprBodied ? "true" : "false";
     if (path == "decl.body.count") return std::to_string(m_.body.size());
     if (path == "decl.retName")    return m_.returnType.kind == TypeRef::Kind::Named ? m_.returnType.name : "";

@@ -477,7 +477,11 @@ private:
         ir::Method im;
         im.name = m.name;
         im.isAsync = m.isAsync;
-        for (const auto& mod : m.modifiers) if (mod == "static") im.isStatic = true;
+        for (const auto& mod : m.modifiers) {
+            if (mod == "static") im.isStatic = true;
+            else if (mod == "open") im.isVirtual = true;
+            else if (mod == "override") im.isOverride = true;
+        }
         im.generics = generics(m.generics);
         // Same module-global fact as on ir::Function — a property getter's expr counts as its body.
         im.globalRefs = scanGlobalRefs(moduleGlobals_, m.params, m.body,
@@ -497,8 +501,10 @@ private:
         // static (C#): stamp the fact on every This lowered from its body (nested lambdas included).
         const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get";
         if (opBody) inOperator_ = true;
+        sawYield_ = false; // a `yield` anywhere in the body marks the method an iterator (mirrors ir::Function)
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
         else { im.exprBodied = false; im.body = block(m.body); }
+        im.isIterator = sawYield_;
         if (opBody) inOperator_ = false;
         return im;
     }

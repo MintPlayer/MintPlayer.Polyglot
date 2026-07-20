@@ -430,6 +430,9 @@ struct Method {
     bool exprBodied = false;      // `=> expr` vs block
     bool isStatic = false;        // a `static fn` member — called as `Type.method(...)`, no `this`
     bool isAsync = false;         // `async` method — return wrapped in Task/Promise/async def (§4.7)
+    bool isVirtual = false;       // `open fn` — C# `virtual` (overridable); SPEC §grammar 210-213
+    bool isOverride = false;      // `override fn` — C# `override` (replaces a base virtual)
+    bool isIterator = false;      // body has a `yield` — C# `IEnumerable`, TS generator `*method()` (§4.x)
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
     // Top-level module globals this member's body (incl. a property getter's expr) references — same

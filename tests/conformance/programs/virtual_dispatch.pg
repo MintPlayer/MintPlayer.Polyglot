@@ -1,0 +1,26 @@
+// #47: `open fn` must emit C# `virtual` and `override fn` C# `override`. Without them Dog.sound HIDES
+// Animal.sound, so Animal.loud()'s `this.sound()` binds statically to Animal.sound and prints 0 instead
+// of dispatching to the override. The base-typed local `let a: Animal = Dog()` and the base-typed
+// parameter both dispatch through the overridden method. csc proves the C# compiles and prints 90/30,
+// not 0. Output must match byte-for-byte across all four targets.
+
+class Animal {
+  open fn sound(): i32 => 0
+  fn loud(): i32 => this.sound() * 10
+}
+class Dog : Animal {
+  override fn sound(): i32 => 9
+}
+class Cat : Animal {
+  override fn sound(): i32 => 3
+}
+
+fn describe(a: Animal): i32 => a.loud()
+
+fn main() {
+  let a: Animal = Dog()
+  print(a.sound())      // 9
+  print(a.loud())       // 90  (base method dispatches to the override)
+  let c: Animal = Cat()
+  print(describe(c))    // 30  (dispatch through a base-typed parameter)
+}
