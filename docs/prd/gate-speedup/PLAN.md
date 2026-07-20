@@ -134,6 +134,18 @@ loopback failure.
 
 ## Log
 
+**2026-07-19 — Slices 0–6 shipped (one PR, one commit each).** Measured outcomes on this machine
+(under sibling-agent load, so lower bounds): merged conformance runner **767 s → 199 s sequential →
+97 s parallel** (~7.9× vs the three original legs, all 95 programs agreeing C#/TS/Python/PHP, 7 PHP
+refused by design); samples **25 s → 10 s** and nullable **4 s → 3 s** on the shared `csc /shared`
+oracle; NuGet gate **65 s → ~41 s**; fast tier **19 s**. NX orchestrates the ~13 legs over the
+unchanged runners with per-leg caching keyed on `compilerSources` + toolchain runtime inputs, remote
+cache live against nx-cache.mintplayer.com (local hit, remote hit after local purge, and
+source-change/revert invalidation all verified). Authoring flushed out one real product fix (C#
+`scalarType` was missing `char` — `declExplicit` emitted `@char`). Slice 7 (in-runner L2
+emitted-bytes cache) deliberately NOT shipped — NX per-leg caching already delivers the warm loop;
+recorded as a follow-up if the C++-rebuild inner loop ever needs per-program granularity.
+
 **2026-07-19 — Slice 6 cache keying: SOURCE-based, not exe-based (maintainer correction).** The first
 cut keyed cacheable legs on the built exe bytes via `dependentTasksOutputFiles`. That was wrong —
 the exe is a pure function of `src/**` + `plugins/**` + the `.sln`, so keying on those SOURCES is

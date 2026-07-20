@@ -45,9 +45,21 @@ msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
 x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.3.2
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
-**One-shot gate** (build → unit tests → differential C#/TS conformance): `pwsh scripts/build-and-test.ps1`
-— or invoke the **`/build-and-test`** skill (`.claude/skills/build-and-test/`). Needs `dotnet` + `node`
-for the conformance stage.
+**One-shot gate** (build → unit tests → all gate legs → differential C#/TS/Python/PHP conformance):
+`pwsh scripts/build-and-test.ps1` — or invoke the **`/build-and-test`** skill
+(`.claude/skills/build-and-test/`). Needs `dotnet` + `node` (+ `python`/`php` for those legs).
+**Tiered (P35):** `-Tier fast` = parity/build/unit/cli-smoke/refusals/lsp (~20 s, the mid-slice sanity
+ceiling); `-Tier full` (default) is the only pre-merge bar (~3–4 min — the conformance leg is ONE
+merged parallel runner over a shared `csc /shared` oracle, not three legs). The registry leg fails the
+gate unless `POLYGLOT_ALLOW_REGISTRY_SKIP=1` (the documented local loopback opt-out; CI never sets it).
+
+**NX-cached path (P35 slice 6):** `npx nx run polyglot:<leg>` or `npx nx run-many -t <legs>` runs the
+same runners with per-leg caching (local + the remote at nx-cache.mintplayer.com — credentials are
+machine env vars). Keys are `compilerSources` (src/plugins/sln) + the runner's own files + toolchain
+`--version`s, NOT the built exe (stable across non-reproducible relinks; `dependsOn build` refreshes
+the exe before any cache-miss runs). The runners stay directly invocable without NX — that is the
+contract; release.yml never touches NX. CI adoption of the org RO/RW token convention is an opt-in
+follow-up (the source-keying unblocked it; wiring it changes the CI contract, so it needs sign-off).
 
 **Code coverage** (wave 2): two complementary instruments — know which one answers your question.
 C++ line coverage measures the **Core/CLI only**: locally `pwsh scripts/coverage.ps1` (OpenCppCoverage,
@@ -55,10 +67,11 @@ C++ line coverage measures the **Core/CLI only**: locally `pwsh scripts/coverage
 (gcovr summary + artifact, report-only). The four backends are **JSON plugin templates** — gcov can't
 see them; their coverage instrument is the differential conformance suite (`tests/conformance/`).
 
-**Do NOT run intermediary builds/tests between phases/slices.** The full gate takes ~15 minutes; running
-it per slice multiplies that into hours of waiting. Implement EVERYTHING first, then build + run the full
-gate **once** at the end. (If a slice really needs a mid-flight sanity check, the cheap unit-test exe run
-is the ceiling — never the full gate, and never speculative extra legs like WSL/CMake builds.)
+**Do NOT run intermediary builds/tests between phases/slices.** The full gate takes ~3–4 min (P35;
+was ~15); running it per slice still multiplies into a lot of waiting. Implement EVERYTHING first, then
+build + run the full gate **once** at the end. (If a slice really needs a mid-flight sanity check,
+`-Tier fast` or the cheap unit-test exe run is the ceiling — never the full gate, and never speculative
+extra legs like WSL/CMake builds.)
 **Exception:** when a change touches platform-forked code (`#ifdef _WIN32`/POSIX branches, dlopen/popen,
 chrono/filesystem edges), one POSIX compile+unit run (WSL `cmake`, or the PR's Linux check) is part of
 the required end gate, not an extra leg — MSVC accepting the code proves nothing about g++/clang (the

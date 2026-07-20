@@ -3353,7 +3353,7 @@ in `docs/prd/e2e-coverage-wave2/ANALYSIS.md`) followed by the implementation in 
 - **SPEC §9 decisions**: round half-even, shift rules, fmod, record-field equality, PHP 64-bit-wrap
   caveat, non-ASCII caveats (+ lexer warning), `INT_MIN / -1` + out-of-range float→int/parse as §3.D.
 
-## P35 — Gate speed-up: merged conformance runner + parallelism + NX-style cache — 📐 investigated, plan ready (2026-07-19; maintainer request, PRD `docs/prd/gate-speedup/`, 8-agent measured investigation)
+## P35 — Gate speed-up: merged conformance runner + parallelism + NX cache — ✅ built (slices 0–6; slice 7 optional/deferred) (2026-07-19; maintainer request, PRD `docs/prd/gate-speedup/`, 8-agent measured investigation + NX evaluation)
 
 The full local gate measures ~958 s, 80% of it the three conformance legs — dominated by `dotnet build`
 of the SAME C# oracle ~2 s × 95 programs × 3 legs (the legs re-compile identical code), plus a fourth
