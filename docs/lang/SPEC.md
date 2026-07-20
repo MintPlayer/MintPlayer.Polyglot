@@ -384,6 +384,14 @@ the canonical formatter prints `x => …` for one untyped parameter and parenthe
 Note `=>` is reused for expression-bodied members (§6.1/§6.2) and `match` arms (§4.5) — those are not
 lambdas.
 
+**Loop-variable capture is per-iteration** (issue #46): a closure created inside a `for` loop captures the
+loop variable's value *at that iteration*, not a single shared variable. This is the TS `let` / PHP
+`use($i)` semantic and matches C#'s own `foreach` (since C# 5); it is the least surprising choice. Targets
+whose native `for` differs get a capture shim: C# copies the range binding into a per-iteration local
+(`for (var i__it = …) { var i = i__it; … }`), and Python snapshots it as a default argument
+(`lambda …, i=i: …`). So `for i in 0..3 { fns.add(() => i) }` yields closures returning 0, 1, 2 on every
+target.
+
 ---
 
 ## 7. Iterators (`yield`) and sequences

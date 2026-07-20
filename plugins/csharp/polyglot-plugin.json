@@ -2073,67 +2073,114 @@
               ]
             },
             {
-              "block": {
-                "head": {
-                  "tmpl": [
-                    "for (var ",
+              "case": {
+                "when": [
+                  [
+                    { "eq": [ "stmt.captured", "true" ] },
                     {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "stmt.binding"
-                        }
-                      ]
-                    },
-                    " = ",
-                    {
-                      "emit": "stmt.rangeStart"
-                    },
-                    "; ",
-                    {
-                      "fn": "ident",
-                      "args": [
-                        {
-                          "get": "stmt.binding"
-                        }
-                      ]
-                    },
-                    {
-                      "case": {
-                        "when": [
-                          [
+                      "block": {
+                        "head": {
+                          "tmpl": [
+                            "for (var ",
+                            { "get": "stmt.driver" },
+                            " = ",
+                            { "emit": "stmt.rangeStart" },
+                            "; ",
+                            { "get": "stmt.driver" },
                             {
-                              "eq": [
-                                "stmt.inclusive",
-                                "true"
-                              ]
+                              "case": {
+                                "when": [ [ { "eq": [ "stmt.inclusive", "true" ] }, " <= " ] ],
+                                "else": " < "
+                              }
                             },
-                            " <= "
+                            { "emit": "stmt.rangeEnd" },
+                            "; ",
+                            { "get": "stmt.driver" },
+                            "++)"
                           ]
-                        ],
-                        "else": " < "
+                        },
+                        "body": [
+                          {
+                            "line": {
+                              "tmpl": [
+                                "var ",
+                                { "fn": "ident", "args": [ { "get": "stmt.binding" } ] },
+                                " = ",
+                                { "get": "stmt.driver" },
+                                ";"
+                              ]
+                            }
+                          },
+                          { "stmts": "stmt.body" }
+                        ]
                       }
-                    },
-                    {
-                      "emit": "stmt.rangeEnd"
-                    },
-                    "; ",
-                    {
-                      "fn": "ident",
-                      "args": [
+                    }
+                  ]
+                ],
+                "else": {
+                  "block": {
+                    "head": {
+                      "tmpl": [
+                        "for (var ",
                         {
-                          "get": "stmt.binding"
-                        }
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "stmt.binding"
+                            }
+                          ]
+                        },
+                        " = ",
+                        {
+                          "emit": "stmt.rangeStart"
+                        },
+                        "; ",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "stmt.binding"
+                            }
+                          ]
+                        },
+                        {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "eq": [
+                                    "stmt.inclusive",
+                                    "true"
+                                  ]
+                                },
+                                " <= "
+                              ]
+                            ],
+                            "else": " < "
+                          }
+                        },
+                        {
+                          "emit": "stmt.rangeEnd"
+                        },
+                        "; ",
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "stmt.binding"
+                            }
+                          ]
+                        },
+                        "++)"
                       ]
                     },
-                    "++)"
-                  ]
-                },
-                "body": [
-                  {
-                    "stmts": "stmt.body"
+                    "body": [
+                      {
+                        "stmts": "stmt.body"
+                      }
+                    ]
                   }
-                ]
+                }
               }
             }
           ],

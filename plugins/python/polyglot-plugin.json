@@ -472,6 +472,41 @@
             ]
           }
         },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "and": [
+                    {
+                      "not": {
+                        "eq": [ "node.params.count", "0" ]
+                      }
+                    },
+                    {
+                      "not": {
+                        "eq": [ "node.byValueCaptures.count", "0" ]
+                      }
+                    }
+                  ]
+                },
+                ", "
+              ]
+            ],
+            "else": ""
+          }
+        },
+        {
+          "map": "node.byValueCaptures",
+          "sep": ", ",
+          "item": {
+            "tmpl": [
+              { "fn": "ident", "args": [ { "get": "item" } ] },
+              "=",
+              { "fn": "ident", "args": [ { "get": "item" } ] }
+            ]
+          }
+        },
         ": ",
         {
           "emit": "node.body"

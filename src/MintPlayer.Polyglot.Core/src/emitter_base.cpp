@@ -115,6 +115,17 @@ std::string IrExprCtx::get(const std::string& path) const {
             return "true";
         }
         if (path == "node.captures.count")    return std::to_string(l.captures.size());
+        // By-value (non-cell, non-this) captures — Python snapshots these as default args so a loop var is
+        // captured PER ITERATION (`lambda …, i=i: …`) rather than by late binding (#46).
+        if (path == "node.byValueCaptures.count") {
+            std::size_t n = 0; for (const auto& c : l.captures) if (!c.needsCell && !c.isThis) ++n;
+            return std::to_string(n);
+        }
+        if (path.rfind("node.byValueCaptures.", 0) == 0) {
+            const std::size_t want = static_cast<std::size_t>(std::stoul(path.substr(21)));
+            std::size_t j = 0;
+            for (const auto& c : l.captures) if (!c.needsCell && !c.isThis) { if (j == want) return c.name; ++j; }
+        }
         if (path.rfind("node.captures.", 0) == 0) { // node.captures.<i>.{name|needsCell}
             const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(14)));
             const std::size_t dot = path.find('.', 14);
@@ -1167,6 +1178,8 @@ std::string StmtCtx::get(const std::string& path) const {
         if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
         if (path == "stmt.inclusive") return f.inclusive ? "true" : "false";
         if (path == "stmt.binding")   return f.binding;
+        if (path == "stmt.captured")  return f.captured ? "true" : "false"; // #46: a closure captures the binding
+        if (path == "stmt.driver")    return f.binding + "__it";            // per-iteration copy's loop counter
         if (path == "stmt.body.count") return std::to_string(f.body.size());
         if (path == "stmt.tupleBindings.count") return std::to_string(f.tupleBindings.size());
         if (path.rfind("stmt.tupleBindings.", 0) == 0) {
