@@ -4,7 +4,9 @@
 > transpiling works as expected in all scenarios"* + *"also set up code-coverage on the repo"*.
 > Successor to the wave-1 language-surface fill (`docs/prd/e2e-scenario-coverage/`, PR #45).
 
-- **Status:** Draft v1.0 · 2026-07-19.
+- **Status:** v1.1 · 2026-07-19 · **built** — all slices shipped on PR #58 (95 conformance programs
+  green across C#/TS/Python/PHP; 12 fixes; issues #46–#57 filed; coverage instrumentation added).
+  Slice-by-slice record in [PLAN.md](./PLAN.md) Log.
 - **Author:** Pieterjan (with Claude Code).
 - **Provenance:** a 13-agent read-only coverage analysis (six dimensions, each skeptic-verified) —
   full findings with file evidence in [ANALYSIS.md](./ANALYSIS.md). Gap IDs **G1–G48** and new-defect

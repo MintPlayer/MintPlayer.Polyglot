@@ -4,7 +4,10 @@
 > currently takes WAAAAY too long. Can we speed this up by parallelizing the tests (in batches) and/or
 > caching the test results and only running the affected tests (like NX does)?"*
 
-- **Status:** Draft v1.0 · 2026-07-19 · investigation complete, implementation not started.
+- **Status:** v1.1 · 2026-07-19 · **built** — slices 0–6 shipped and verified (full gate ~16 min →
+  ~5.8 min under load; conformance 767 s → 97 s). Slice 7 (in-runner L2 cache) deferred as optional;
+  CI adoption of the NX token convention is an opt-in follow-up. Slice-by-slice record + timings in
+  [PLAN.md](./PLAN.md) Log.
 - **Author:** Pieterjan (with Claude Code).
 - **Provenance:** an 8-agent measured investigation — one profiling agent (real unit-cost timings on
   this machine), three competing designs (parallelization / NX-style caching / gate restructure), one
