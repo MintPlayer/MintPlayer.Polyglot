@@ -349,7 +349,10 @@ private:
                 break;
             }
             case PatKind::Binding:
-                if (!scrutEnum.empty() && enumCases_.at(scrutEnum).count(p.name)) {
+                if (p.hasType && p.type.kind == TypeRef::Kind::Named && !p.type.name.empty()) {
+                    // `d: Disk` — a runtime type test (#38): C# declaration pattern / instanceof / isinstance.
+                    ip.kind = ir::PatternKind::TypeTest; ip.binding = p.name; ip.testType = p.type;
+                } else if (!scrutEnum.empty() && enumCases_.at(scrutEnum).count(p.name)) {
                     ip.kind = ir::PatternKind::EnumCase; ip.enumType = scrutEnum; ip.enumCase = p.name;
                 } else if (!scrutUnion.empty() && unionCases_.at(scrutUnion).count(p.name)) {
                     ip.kind = ir::PatternKind::Ctor; ip.ctorCase = p.name; // payload-free case

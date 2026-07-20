@@ -967,6 +967,34 @@
                   {
                     "eq": [
                       "item.pattern.kind",
+                      "typeTest"
+                    ]
+                  },
+                  {
+                    "tmpl": [
+                      "if (_m instanceof ",
+                      { "type": "item.pattern.testType" },
+                      ") { const ",
+                      { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] },
+                      " = _m; ",
+                      {
+                        "case": {
+                          "when": [
+                            [
+                              { "eq": [ "item.hasGuard", "true" ] },
+                              { "tmpl": [ "if (", { "emit": "item.guard" }, ") return ", { "emit": "item.body" }, "; } " ] }
+                            ]
+                          ],
+                          "else": { "tmpl": [ "return ", { "emit": "item.body" }, "; } " ] }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                [
+                  {
+                    "eq": [
+                      "item.pattern.kind",
                       "ctor"
                     ]
                   },

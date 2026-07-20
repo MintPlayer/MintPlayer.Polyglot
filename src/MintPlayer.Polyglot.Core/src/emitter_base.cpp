@@ -192,6 +192,7 @@ std::string IrExprCtx::get(const std::string& path) const {
                         case ir::PatternKind::Binding:  return "binding";
                         case ir::PatternKind::EnumCase: return "enumCase";
                         case ir::PatternKind::Ctor:     return "ctor";
+                        case ir::PatternKind::TypeTest: return "typeTest";
                     }
                 }
                 if (rest == "pattern.binding")       return a.pattern.binding;
@@ -475,6 +476,12 @@ const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
         const auto& l = static_cast<const ir::Lambda&>(e_);
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(12)));
         if (i < l.params.size()) return &l.params[i].type;
+    }
+    if (e_.kind == ir::ExprKind::Match && path.rfind("node.arms.", 0) == 0 &&
+        path.size() > 17 && path.rfind(".pattern.testType") == path.size() - 17) { // #38 typed-match test type
+        const auto& m = static_cast<const ir::Match&>(e_);
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
+        if (i < m.arms.size()) return &m.arms[i].pattern.testType;
     }
     return nullptr;
 }

@@ -1111,14 +1111,14 @@ private:
     void declarePattern(const Pattern& p, const TypeRef& scrut) {
         switch (p.kind) {
             case PatKind::Binding:
-                // §3.B never-miscompile: a type-annotated binding LOOKS like a runtime type test, but no
-                // test is lowered — the arm would match unconditionally on every target. Until real
-                // type-test patterns exist, only the scrutinee's own static type may be (redundantly) named.
-                if (p.hasType && !(p.type.kind == TypeRef::Kind::Named && scrut.kind == TypeRef::Kind::Named &&
-                                   p.type.name == scrut.name && p.type.nullable == scrut.nullable))
-                    diags_.error(p.pos, "a typed 'match' binding ('" + p.name + ": " + sigTypeName(p.type) +
-                                            "') is not a runtime type test and would match unconditionally; " +
-                                            "match on a union, or branch without type narrowing");
+                // A typed 'match' binding (`d: Disk`) is a runtime TYPE TEST (#38): allowed for a concrete
+                // class/union type (C# declaration pattern / TS·PHP instanceof / Python isinstance), refused
+                // for an INTERFACE (interfaces erase at runtime on TS — §3.B). The redundant same-type case
+                // (naming the scrutinee's own type) always passes. The binding narrows to the tested type.
+                if (p.hasType && p.type.kind == TypeRef::Kind::Named && interfaceNames_.count(p.type.name))
+                    diags_.error(p.pos, "Polyglot refuses a type-test against an interface ('" + p.type.name +
+                                            "') — interfaces have no runtime identity on TS; test a concrete "
+                                            "class or union case instead (PRD §3.B)");
                 declare(p.name, p.hasType ? p.type : scrut, false, p.pos);
                 break;
             case PatKind::Ctor: {

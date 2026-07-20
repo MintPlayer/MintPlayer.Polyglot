@@ -1613,6 +1613,23 @@
             {
               "eq": [
                 "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "(fn($",
+                { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] },
+                ") => ",
+                { "emit": "item.body" },
+                ")($_m)"
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
                 "binding"
               ]
             },
@@ -1751,6 +1768,23 @@
             {
               "eq": [
                 "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "(fn($",
+                { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] },
+                ") => ",
+                { "emit": "item.guard" },
+                ")($_m)"
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
                 "binding"
               ]
             },
@@ -1885,6 +1919,20 @@
     "phpArmBase": {
       "case": {
         "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "$_m instanceof ",
+                { "type": "item.pattern.testType" }
+              ]
+            }
+          ],
           [
             {
               "eq": [

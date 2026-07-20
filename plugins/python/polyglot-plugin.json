@@ -2733,6 +2733,23 @@
             {
               "eq": [
                 "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "(lambda ",
+                { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] },
+                ": ",
+                { "emit": "item.body" },
+                ")(_m)"
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
                 "binding"
               ]
             },
@@ -2861,6 +2878,23 @@
             {
               "eq": [
                 "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "(lambda ",
+                { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] },
+                ": ",
+                { "emit": "item.guard" },
+                ")(_m)"
+              ]
+            }
+          ],
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
                 "binding"
               ]
             },
@@ -2985,6 +3019,21 @@
     "pyArmBase": {
       "case": {
         "when": [
+          [
+            {
+              "eq": [
+                "item.pattern.kind",
+                "typeTest"
+              ]
+            },
+            {
+              "tmpl": [
+                "isinstance(_m, ",
+                { "type": "item.pattern.testType" },
+                ")"
+              ]
+            }
+          ],
           [
             {
               "eq": [

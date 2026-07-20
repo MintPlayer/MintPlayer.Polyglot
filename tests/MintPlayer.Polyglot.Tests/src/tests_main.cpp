@@ -528,6 +528,15 @@ int main() {
         for (const auto& d : r.diagnostics) if (has(d.message, "import missing")) named = true;
         check(!r.ok && named, "P36 #56a: unresolvable string method (missing import) is refused");
     }
+    { // #38: a runtime type-test against an INTERFACE is refused (interfaces erase on TS); a concrete
+      // class type-test is allowed (that's the typed_match.pg conformance program).
+        const char* src = "interface Shape {}\nclass Circle : Shape { init() {} }\n"
+                          "fn f(s: Circle): i32 => match s {\n  x: Shape => 1\n  _ => 0\n}\n";
+        EmitResult r = compile(src, findTarget("csharp"));
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "interface")) named = true;
+        check(!r.ok && named, "P36 #38: a type-test against an interface is refused");
+    }
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
     resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");

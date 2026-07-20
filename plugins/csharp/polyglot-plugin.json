@@ -880,6 +880,21 @@
                 },
                 "_"
               ],
+              [
+                {
+                  "eq": [
+                    "item.pattern.kind",
+                    "typeTest"
+                  ]
+                },
+                {
+                  "tmpl": [
+                    { "type": "item.pattern.testType" },
+                    " ",
+                    { "fn": "ident", "args": [ { "get": "item.pattern.binding" } ] }
+                  ]
+                }
+              ],
                     [
                       {
                         "eq": [
