@@ -1,8 +1,8 @@
-// Scenario: match beyond the flat single binder — multi-arg ctor patterns, top-level literal arms
-// with guards, arm order, and match-as-expression feeding arithmetic.
-// Deliberately narrowed: guards on CTOR arms don't parse (issue #39), and a LITERAL sub-pattern
-// inside a ctor (`Leaf(0)`) is silently dropped at lowering (issue #43) — un-narrowing this
-// program is those issues' acceptance test.
+// Scenario: match beyond the flat single binder — multi-arg ctor patterns, LITERAL sub-patterns inside
+// a ctor (`Leaf(0)`, `Pair(a, 0)`), top-level literal arms with guards, arm order, and match-as-expression
+// feeding arithmetic. Previously narrowed: a literal sub-pattern inside a ctor was silently dropped at
+// lowering (issue #43) so `Leaf(0)` matched every Leaf. Fixed by carrying every ctor sub-slot in order.
+// This defect makes all four targets identically wrong, so a `.expected` golden is load-bearing.
 
 union Node {
   Leaf(v: i32)
@@ -11,7 +11,9 @@ union Node {
 }
 
 fn describe(n: Node): i32 => match n {
+  Leaf(0)    => -1,
   Leaf(v)    => v,
+  Pair(a, 0) => a * 100,
   Pair(a, b) => a * 10 + b,
   Nil        => 0,
 }
@@ -24,12 +26,14 @@ fn classify(n: i32): string => match n {
 }
 
 fn main() {
-  print(describe(Leaf(9)))              // 9
-  print(describe(Pair(2, 3)))           // 23
-  print(describe(Nil))                  // 0
-  print(describe(Pair(4, 5)) * 2)       // 90 — match expression in arithmetic
-  print(classify(0))                    // zero
-  print(classify(-3))                   // neg
-  print(classify(7))                    // lucky
-  print(classify(8))                    // many
+  print(describe(Leaf(0)))          // -1  (literal sub-pattern, specific arm before Leaf(v))
+  print(describe(Leaf(9)))          // 9
+  print(describe(Pair(4, 0)))       // 400 (literal in the 2nd slot; binds the 1st)
+  print(describe(Pair(2, 3)))       // 23
+  print(describe(Nil))              // 0
+  print(describe(Pair(4, 5)) * 2)   // 90  (match expression in arithmetic)
+  print(classify(0))                // zero
+  print(classify(-3))               // neg
+  print(classify(7))                // lucky
+  print(classify(8))                // many
 }

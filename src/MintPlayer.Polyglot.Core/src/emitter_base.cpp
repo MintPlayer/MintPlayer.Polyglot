@@ -193,8 +193,11 @@ std::string IrExprCtx::get(const std::string& path) const {
                     const std::size_t jdot = sub.find('.');
                     if (j < a.pattern.binders.size() && jdot != std::string::npos) {
                         const std::string bf = sub.substr(jdot + 1);
-                        if (bf == "binding") return a.pattern.binders[j].binding;
-                        if (bf == "field")   return a.pattern.binders[j].field;
+                        if (bf == "binding")    return a.pattern.binders[j].binding;
+                        if (bf == "field")      return a.pattern.binders[j].field;
+                        if (bf == "isLiteral")  return a.pattern.binders[j].literal ? "true" : "false"; // #43
+                        if (bf == "isWildcard") // neither a binding nor a literal slot
+                            return (!a.pattern.binders[j].literal && a.pattern.binders[j].binding.empty()) ? "true" : "false";
                     }
                 }
             }
@@ -334,6 +337,14 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
                 if (rest == "body")            return a.body.get();
                 if (rest == "guard")           return a.guard.get();
                 if (rest == "pattern.literal") return a.pattern.literal.get();
+                if (rest.rfind("pattern.binders.", 0) == 0) { // pattern.binders.<j>.literal (issue #43)
+                    const std::string sub = rest.substr(16);
+                    const std::size_t jdot = sub.find('.');
+                    if (jdot != std::string::npos && sub.substr(jdot + 1) == "literal") {
+                        const std::size_t j = static_cast<std::size_t>(std::stoul(sub.substr(0, jdot)));
+                        if (j < a.pattern.binders.size()) return a.pattern.binders[j].literal.get();
+                    }
+                }
             }
         }
     }

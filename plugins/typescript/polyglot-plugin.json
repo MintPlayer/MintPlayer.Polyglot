@@ -943,6 +943,42 @@
                         ]
                       },
                       {
+                        "map": "item.pattern.binders",
+                        "sep": "",
+                        "item": {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "eq": [
+                                    "item.isLiteral",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "tmpl": [
+                                    " && _m.",
+                                    {
+                                      "fn": "ident",
+                                      "args": [
+                                        {
+                                          "get": "item.field"
+                                        }
+                                      ]
+                                    },
+                                    " === ",
+                                    {
+                                      "emit": "item.literal"
+                                    }
+                                  ]
+                                }
+                              ]
+                            ],
+                            "else": ""
+                          }
+                        }
+                      },
+                      {
                         "case": {
                           "when": [
                             [
@@ -971,27 +1007,51 @@
                         "map": "item.pattern.binders",
                         "sep": "",
                         "item": {
-                          "tmpl": [
-                            "const ",
-                            {
-                              "fn": "ident",
-                              "args": [
+                          "case": {
+                            "when": [
+                              [
                                 {
-                                  "get": "item.binding"
-                                }
-                              ]
-                            },
-                            " = _m.",
-                            {
-                              "fn": "ident",
-                              "args": [
+                                  "eq": [
+                                    "item.isLiteral",
+                                    "true"
+                                  ]
+                                },
+                                ""
+                              ],
+                              [
                                 {
-                                  "get": "item.field"
-                                }
+                                  "eq": [
+                                    "item.isWildcard",
+                                    "true"
+                                  ]
+                                },
+                                ""
                               ]
-                            },
-                            "; "
-                          ]
+                            ],
+                            "else": {
+                              "tmpl": [
+                                "const ",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.binding"
+                                    }
+                                  ]
+                                },
+                                " = _m.",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.field"
+                                    }
+                                  ]
+                                },
+                                "; "
+                              ]
+                            }
+                          }
                         }
                       },
                       "return ",

@@ -838,17 +838,43 @@
                         "map": "item.pattern.binders",
                         "sep": ", ",
                         "item": {
-                          "tmpl": [
-                            "var ",
-                            {
-                              "fn": "ident",
-                              "args": [
+                          "case": {
+                            "when": [
+                              [
                                 {
-                                  "get": "item.binding"
+                                  "eq": [
+                                    "item.isLiteral",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "emit": "item.literal"
+                                }
+                              ],
+                              [
+                                {
+                                  "eq": [
+                                    "item.isWildcard",
+                                    "true"
+                                  ]
+                                },
+                                "_"
+                              ]
+                            ],
+                            "else": {
+                              "tmpl": [
+                                "var ",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "item.binding"
+                                    }
+                                  ]
                                 }
                               ]
                             }
-                          ]
+                          }
                         }
                       },
                       ")"

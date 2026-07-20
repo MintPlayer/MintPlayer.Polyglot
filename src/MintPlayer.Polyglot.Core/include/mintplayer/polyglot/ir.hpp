@@ -206,9 +206,11 @@ struct MakeCase : Expr { // union-case construction: C# `new Case(...)`, TS `{ t
 
 // match patterns
 enum class PatternKind { Wildcard, Literal, Binding, EnumCase, Ctor };
-struct Binder { // a sub-binding of a constructor pattern: bind `binding` from field `field`
-    std::string field;
-    std::string binding;
+struct Binder { // one sub-slot of a constructor pattern, in declaration order (issue #43)
+    std::string field;    // the case field this slot matches (declared field name)
+    std::string binding;  // Binding slot: the bound name; empty when this slot is a literal or wildcard
+    ExprPtr literal;       // Literal slot: the constant this slot must equal (null otherwise) — `Leaf(0)`
+    // A slot with neither binding nor literal is a wildcard (`Leaf(_)`): matches anything, binds nothing.
 };
 struct Pattern {
     PatternKind kind = PatternKind::Wildcard;

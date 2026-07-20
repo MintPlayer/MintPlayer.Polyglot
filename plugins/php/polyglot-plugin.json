@@ -152,6 +152,7 @@
       "reserved": [
         "__e",
         "__handled",
+        "__pgm*",
         "__opt*",
         "__w*"
       ],
@@ -1630,17 +1631,54 @@
                   "map": "item.pattern.binders",
                   "sep": ", ",
                   "item": {
-                    "tmpl": [
-                      "$",
-                      {
-                        "fn": "ident",
-                        "args": [
+                    "case": {
+                      "when": [
+                        [
                           {
-                            "get": "item.binding"
+                            "or": [
+                              {
+                                "eq": [
+                                  "item.isLiteral",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  "item.isWildcard",
+                                  "true"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              "$__pgm_",
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "item.field"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": {
+                        "tmpl": [
+                          "$",
+                          {
+                            "fn": "ident",
+                            "args": [
+                              {
+                                "get": "item.binding"
+                              }
+                            ]
                           }
                         ]
                       }
-                    ]
+                    }
                   }
                 },
                 ") => ",
@@ -1731,17 +1769,54 @@
                   "map": "item.pattern.binders",
                   "sep": ", ",
                   "item": {
-                    "tmpl": [
-                      "$",
-                      {
-                        "fn": "ident",
-                        "args": [
+                    "case": {
+                      "when": [
+                        [
                           {
-                            "get": "item.binding"
+                            "or": [
+                              {
+                                "eq": [
+                                  "item.isLiteral",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "eq": [
+                                  "item.isWildcard",
+                                  "true"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              "$__pgm_",
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "item.field"
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": {
+                        "tmpl": [
+                          "$",
+                          {
+                            "fn": "ident",
+                            "args": [
+                              {
+                                "get": "item.binding"
+                              }
+                            ]
                           }
                         ]
                       }
-                    ]
+                    }
                   }
                 },
                 ") => ",
@@ -1833,6 +1908,42 @@
                       "get": "item.pattern.ctorCase"
                     }
                   ]
+                },
+                {
+                  "map": "item.pattern.binders",
+                  "sep": "",
+                  "item": {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.isLiteral",
+                              "true"
+                            ]
+                          },
+                          {
+                            "tmpl": [
+                              " && $_m[",
+                              {
+                                "fn": "escapeString",
+                                "args": [
+                                  {
+                                    "get": "item.field"
+                                  }
+                                ]
+                              },
+                              "] === ",
+                              {
+                                "emit": "item.literal"
+                              }
+                            ]
+                          }
+                        ]
+                      ],
+                      "else": ""
+                    }
+                  }
                 }
               ]
             }

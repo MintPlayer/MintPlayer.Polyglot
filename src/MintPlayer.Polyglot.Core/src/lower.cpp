@@ -334,10 +334,17 @@ private:
                 ip.kind = ir::PatternKind::Ctor;
                 ip.ctorCase = p.name;
                 const auto fit = caseFields_.find(p.name);
+                // Every sub-slot in declaration order (issue #43): a binder binds a field, a LITERAL slot
+                // carries its constant (its equality test must not be dropped), a wildcard binds nothing.
                 for (std::size_t i = 0; i < p.sub.size(); ++i) {
-                    if (p.sub[i].kind != PatKind::Binding) continue; // nested patterns widen later
-                    std::string field = (fit != caseFields_.end() && i < fit->second.size()) ? fit->second[i] : p.sub[i].name;
-                    ip.binders.push_back({field, p.sub[i].name});
+                    ir::Binder b;
+                    b.field = (fit != caseFields_.end() && i < fit->second.size())
+                                  ? fit->second[i]
+                                  : (p.sub[i].kind == PatKind::Binding ? p.sub[i].name : std::string());
+                    if (p.sub[i].kind == PatKind::Literal && p.sub[i].literal) b.literal = expr(*p.sub[i].literal);
+                    else if (p.sub[i].kind == PatKind::Binding) b.binding = p.sub[i].name;
+                    // else: wildcard slot (no binding, no literal)
+                    ip.binders.push_back(std::move(b));
                 }
                 break;
             }
