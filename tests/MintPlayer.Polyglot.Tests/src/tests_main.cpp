@@ -517,6 +517,10 @@ int main() {
     // §3.B: a finalizer (`~Name() {}`) is unspeakable — no cross-target deterministic-destruction contract
     // (issue #54). The parser refuses the `~` member form out loud instead of two raw parse errors.
     refuses("class Foo {\n  ~Foo() {\n  }\n}\n", "finalizers", "P6: refuses a finalizer (`~Name`)");
+    // §3.B: a match arm must be an expression — a block-bodied arm is refused (Python/PHP lower `match`
+    // to an expression fold with no statement block; issue #51 — was a silent drop-to-`0`).
+    refuses("fn f(n: i32): i32 => match n {\n  0 => { return 1 }\n  _ => 0\n}\n",
+            "block-bodied match arm", "P6: refuses a block-bodied match arm");
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
     resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");

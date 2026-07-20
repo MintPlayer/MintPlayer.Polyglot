@@ -73,6 +73,7 @@ $cases = [ordered]@{
     "empty_list_uninferable.pg" = @("cannot infer the type of 'xs'")
     "null_var_uninferable.pg"   = @("cannot infer the type of 'x'")
     "finalizer.pg"              = @("refuses finalizers")
+    "block_match_arm.pg"        = @("block-bodied match arm")
 }
 
 foreach ($fx in $cases.Keys) {

@@ -1738,7 +1738,16 @@ private:
             pushScope();
             declarePattern(arm.pattern, st);
             if (arm.guard) requireBool(checkExpr(*arm.guard), arm.pattern.pos, "'match' guard");
-            if (arm.bodyIsBlock) for (auto& s : arm.block) checkStmt(*s);
+            if (arm.bodyIsBlock) {
+                // §3.B: a match arm must be an EXPRESSION. Python/PHP lower `match` to an expression form
+                // (a ternary/arrow fold) with no room for a statement block, and hoisting each block arm to
+                // a named function is out of scope — so a block-bodied arm is refused loudly instead of the
+                // old silent drop-to-`0` (issue #51). Extract the block into a function and call it.
+                diags_.error(arm.pattern.pos,
+                             "Polyglot refuses a block-bodied match arm — a match arm must be an expression "
+                             "(extract the block into a function and call it from the arm) (PRD §3.B)");
+                for (auto& s : arm.block) checkStmt(*s); // still check the body so nested errors surface too
+            }
             else if (arm.body) result = checkExpr(*arm.body);
             popScope();
 

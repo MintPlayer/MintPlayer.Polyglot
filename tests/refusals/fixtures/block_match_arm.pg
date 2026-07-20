@@ -1,0 +1,12 @@
+// REFUSED (PRD §3.B, issue #51): a block-bodied match arm. A match arm must be an EXPRESSION — Python
+// and PHP lower `match` to an expression fold with no room for a statement block, so a `{ … }` arm is
+// refused loudly (it used to silently drop to a default `0` on all four targets).
+fn area(n: i32): i32 => match n {
+  0 => {
+    let a = n * n
+    return a
+  }
+  _ => 0
+}
+
+fn main() { let x = area(3) }
