@@ -23,9 +23,10 @@ switch ($Leg) {
         if ($IsWindows) {
             Invoke-Leg { & pwsh -NoProfile -File scripts/msbuild-solution.ps1 }
         } else {
-            # Shallow PR checkout has no tags — pin the dev version (matches release.yml's linux floor).
-            Invoke-Leg { cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPOLYGLOT_VERSION=0.0.0-dev }
-            Invoke-Leg { cmake --build build -j ([int](& nproc)) }
+            # POSIX build goes through native bash (scripts/build-linux.sh): pwsh's arg parser splits a
+            # version-shaped cmake `-D` token, so the version define never reached CMake here. Bash passes
+            # it cleanly. msbuild vs cmake is a genuine platform split, not duplicated logic.
+            Invoke-Leg { & bash scripts/build-linux.sh }
         }
     }
     "unit"      { Invoke-Leg { & $tests } }
