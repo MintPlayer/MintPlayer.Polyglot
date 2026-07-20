@@ -3431,3 +3431,33 @@ programs (`php_builtin_collision`, `super_implicit_base`, `virtual_dispatch`, `i
 un-narrows of existing programs, new refusal fixtures (`finalizer`, `block_match_arm`, `namespace_import`),
 and unit-test rows for each new refusal. **Gate green locally**: build, unit tests, all 106 conformance
 programs (9 PHP-refused by design), library gate (tsc strict), refusals. POSIX + release legs run on CI.
+
+## P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes — 📐 designed, plan ready (2026-07-20; maintainer request, PRD `docs/prd/p37-feature-batch/`, 8-agent scope investigation + 4-agent adversarial validation)
+
+Four maintainer-requested language features, one cohesive PR, no back-compat. Full design + slice plan +
+code-grounded validation in `docs/prd/p37-feature-batch/{PRD,PLAN,ANALYSIS}.md`. Validation verdict
+**GO-WITH-CONDITIONS**.
+- **A — `init`→`constructor`** full rename (surface keyword + internal `KwConstructor`/`MemberKind::Constructor`
+  + plugin skeleton keys). One sync trap: 3 runtime key-derivation sites must flip with the 12 plugin keys;
+  leave the internal `initParams`/`hasInit` ctor-data fields alone.
+- **B — `is`/`as`** over concrete class/union types. `x is T name` narrows in the guarded branch only; `x as T`
+  is a checked conversion → `T?` (**null on failure, never throws** — runtime `instanceof`/`isinstance` guard
+  on TS/Python/PHP, never a bare TS `as`). Interface `is`/`as` refused only when a configured target lacks
+  runtime interface identity (config-driven — a relaxation of the unconditional P36 #38 refusal). Reuses the
+  #38 TypeTest emit machinery.
+- **C — operators complete.** Correcting a premise: operator dispatch is native on C#/Python today (static
+  `operator`, dunders) and instance-method only on TS — so operators stay native on C#/Python and move to
+  **static-on-type** on TS (fixes the null-eq NRE; arithmetic still throws on null). Adds **explicit conversion
+  operators** (`operator fn explicit T`; implicit refused), **compound assignment** on user types, hierarchical
+  **`operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}`** capabilities (PHP flips to
+  `:eq`+`:indexers`), and fixes **#62** (TS unary `neg`) + **#63** (bitwise SPEC-vs-code drift).
+- **D — attributes as emit-only pass-through** (no reflection — nothing exists at runtime to reflect against).
+  `[Name(args)]` declaration-prefix syntax (no locals), positional + named args, const + intersection-gated
+  variable values (D11, from day 1). Per-target `extern attribute` bindings (reusing the `actual(target)
+  extern(...)` arm + a new import/using field + a `refuse` arm); attachment-point/arg-kind gating via a new
+  keyed capability vocabulary; no binding for a configured target → loud refusal; mechanism-only distribution
+  via a new binding-only P30 package kind. Documented as outside the §3.C faithfulness guarantee (H2).
+- **Shared prerequisite:** generalize the flat 16-member `Feature` enum to a keyed, load-validated closed
+  capability vocabulary (`parent:child`), consumed by both C6 and D10/D11.
+Deferred follow-ups (recorded, not built): cross-package operator *resolution*; `return:`/type-param
+attributes; auto-included attribute stdlib package. Not started.
