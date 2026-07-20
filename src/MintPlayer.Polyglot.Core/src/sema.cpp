@@ -571,7 +571,15 @@ private:
         return mi;
     }
     void addMembers(TypeInfo& ti, const std::vector<Member>& members) {
+        std::unordered_set<std::string> methodNames;
         for (const auto& m : members) {
+            // #53: member overloading is not supported (top-level `fn` overloading is — PRD §3.A). A second
+            // same-named method used to silently shadow the first and surface a misleading call-site arity
+            // error; refuse it at the DECLARATION site instead.
+            if (m.kind == MemberKind::Method && !methodNames.insert(m.name).second)
+                diags_.error(m.namePos, "method '" + m.name + "' is already defined — Polyglot supports "
+                                            "overloading for top-level functions only, not members (PRD §3.A); "
+                                            "give the overloads distinct names");
             ti.members.push_back(memberInfo(m));
             if (m.kind == MemberKind::Init) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }

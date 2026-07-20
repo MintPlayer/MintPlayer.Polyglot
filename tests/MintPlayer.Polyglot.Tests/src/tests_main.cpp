@@ -537,6 +537,14 @@ int main() {
         for (const auto& d : r.diagnostics) if (has(d.message, "interface")) named = true;
         check(!r.ok && named, "P36 #38: a type-test against an interface is refused");
     }
+    { // #53: member overloading is not supported (top-level only) — a duplicate same-named method is
+      // refused at the declaration site (was silently shadowed + a misleading call-site arity error).
+        const char* src = "class Calc {\n  fn add(a: i32): i32 => a + 1\n  fn add(a: i32, b: i32): i32 => a + b\n}\n";
+        EmitResult r = compile(src, findTarget("csharp"));
+        bool named = false;
+        for (const auto& d : r.diagnostics) if (has(d.message, "already defined")) named = true;
+        check(!r.ok && named, "P36 #53: a duplicate member method is refused at the declaration site");
+    }
     // P6 — function overloading: resolves by arity/type; true duplicates still rejected.
     resolvesStd("fn f(x: i32): i32 => x\nfn f(x: f64): i32 => 0\nfn f(a: i32, b: i32): i32 => a\n"
              "fn main() { print(f(1))\n print(f(1.0))\n print(f(1, 2)) }\n", "P6: function overloading resolves");
