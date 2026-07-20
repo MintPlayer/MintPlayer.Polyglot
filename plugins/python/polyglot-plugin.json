@@ -312,7 +312,8 @@
                 },
                 ".get(",
                 {
-                  "emit": "node.index"
+                  "map": "node.indices",
+                  "sep": ", "
                 },
                 ")"
               ]

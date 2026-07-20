@@ -657,11 +657,15 @@ private:
                 return call;
             }
             case ExprKind::Index: {
-                // List element access `recv[i]`. The result type is the element type sema resolved onto
-                // the node; `receiverHasIndexer` marks a user `operator fn get` receiver (TS -> `.get(i)`).
-                auto ix = !e.args.empty()
-                    ? std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), expr(*e.args[0]))
-                    : std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs), std::make_unique<ir::IntLit>(e.pos, namedType("i32"), "0"));
+                // Element access `recv[a]` or a multi-arg indexer `recv[a, b]`. The result type is the
+                // element type sema resolved onto the node; `receiverHasIndexer` marks a user `operator fn
+                // get` receiver (a target without `[]` overloading emits `recv.get(a, b)`). Every subscript
+                // arg is carried in declaration order (issue #42); a bare `recv[]` degrades to a single `0`.
+                auto ix = std::make_unique<ir::Index>(e.pos, e.type, expr(*e.lhs));
+                if (!e.args.empty())
+                    for (const auto& a : e.args) ix->indices.push_back(expr(*a));
+                else
+                    ix->indices.push_back(std::make_unique<ir::IntLit>(e.pos, namedType("i32"), "0"));
                 ix->receiverHasIndexer = e.lhs->type.kind == TypeRef::Kind::Named &&
                                          indexerTypes_.count(e.lhs->type.name) != 0;
                 return ix;

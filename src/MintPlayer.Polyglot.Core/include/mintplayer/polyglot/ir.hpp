@@ -145,14 +145,14 @@ struct New : Expr { // construction `Type(args)` or `Type<TypeArgs>(args)`
     New(SourcePos p, Type t, std::string n) : Expr(ExprKind::New, p, std::move(t)), typeName(std::move(n)) {}
 };
 
-struct Index : Expr { // element access `receiver[index]`
+struct Index : Expr { // element access `receiver[a]` or multi-arg indexer `receiver[a, b]`
     ExprPtr receiver;
-    ExprPtr index;
+    std::vector<ExprPtr> indices; // 1+ subscript args in source order; single-arg (`List[i]`) is the hot path
     // Precomputed in lowering (P19): the receiver's type declares an `operator fn get` — a target without
-    // `[]` overloading (TS) emits `recv.get(i)` instead of a subscription.
+    // `[]` overloading (TS) emits `recv.get(a, b)` instead of a subscription.
     bool receiverHasIndexer = false;
-    Index(SourcePos p, Type t, ExprPtr r, ExprPtr i)
-        : Expr(ExprKind::Index, p, std::move(t)), receiver(std::move(r)), index(std::move(i)) {}
+    Index(SourcePos p, Type t, ExprPtr r)
+        : Expr(ExprKind::Index, p, std::move(t)), receiver(std::move(r)) {}
 };
 struct ListLit : Expr { // list literal `[a, b, c]`; `elem` is the element type T (type is List<T>)
     Type elem;

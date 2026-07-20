@@ -1262,6 +1262,28 @@ private:
         return tUnknown();
     }
 
+    // Arity-check a subscript against its target's indexer (issue #42). Native collections take exactly one
+    // index; a user `operator fn get(...)` takes as many as it declares. Lenient when the receiver type is
+    // unknown or has no resolvable indexer (a bare `recv[]` degrading to `0` also passes).
+    void checkIndexArity(const Expr& e, const TypeRef& recv) {
+        if (e.args.empty() || recv.kind != TypeRef::Kind::Named) return;
+        if (recv.name == "List" || recv.name == "Array" || recv.name == "Iterable") {
+            if (e.args.size() != 1)
+                diags_.error(e.pos, "indexing '" + recv.name + "' takes exactly one index, got " +
+                                        std::to_string(e.args.size()));
+            return;
+        }
+        if (auto it = types_.find(recv.name); it != types_.end())
+            for (const auto& m : it->second.members)
+                if (m.kind == MemberKind::Operator && m.name == "get") {
+                    if (e.args.size() != m.params.size())
+                        diags_.error(e.pos, "indexer 'get' on '" + recv.name + "' expects " +
+                                                std::to_string(m.params.size()) + " index argument(s), got " +
+                                                std::to_string(e.args.size()));
+                    return;
+                }
+    }
+
     // ---- expression typing ----
     // checkExpr annotates each node with its resolved type (read later by IR lowering), then returns it.
     TypeRef checkExpr(Expr& e) {
@@ -1306,7 +1328,7 @@ private:
             case ExprKind::Range:     { TypeRef lo = checkExpr(*e.lhs); checkExpr(*e.rhs); return isNumericTypeName(lo) ? lo : tNamed("i32"); }
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);
-            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); return elementType(recv); }
+            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); return elementType(recv); }
             case ExprKind::NullAssert:{
                 TypeRef t = checkExpr(*e.lhs);
                 if (t.kind == TypeRef::Kind::Named && t.name == "Option") { // `x!` on an optional generic: not yet lowered

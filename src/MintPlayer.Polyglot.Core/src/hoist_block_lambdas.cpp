@@ -96,7 +96,7 @@ private:
         case ExprKind::MethodCall: { auto& mc = static_cast<MethodCall&>(*slot); if (mc.object) hoistExpr(mc.object, defs); for (auto& a : mc.args) hoistExpr(a, defs); break; }
         case ExprKind::Member: { auto& m = static_cast<Member&>(*slot); if (m.object) hoistExpr(m.object, defs); break; }
         case ExprKind::New:    for (auto& a : static_cast<New&>(*slot).args) hoistExpr(a, defs); break;
-        case ExprKind::Index:  { auto& i = static_cast<Index&>(*slot); hoistExpr(i.receiver, defs); hoistExpr(i.index, defs); break; }
+        case ExprKind::Index:  { auto& i = static_cast<Index&>(*slot); hoistExpr(i.receiver, defs); for (auto& ix : i.indices) hoistExpr(ix, defs); break; }
         case ExprKind::ListLit: for (auto& x : static_cast<ListLit&>(*slot).elements) hoistExpr(x, defs); break;
         case ExprKind::Tuple:  for (auto& x : static_cast<Tuple&>(*slot).elements) hoistExpr(x, defs); break;
         case ExprKind::Bound:  { auto& b = static_cast<Bound&>(*slot); if (b.receiver) hoistExpr(b.receiver, defs); for (auto& a : b.args) hoistExpr(a, defs); break; }

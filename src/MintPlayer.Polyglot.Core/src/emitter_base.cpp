@@ -153,6 +153,8 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::ListLit) return std::to_string(static_cast<const ir::ListLit&>(e_).elements.size());
         if (e_.kind == ir::ExprKind::Tuple)   return std::to_string(static_cast<const ir::Tuple&>(e_).elements.size());
     }
+    if (path == "node.indices.count" && e_.kind == ir::ExprKind::Index)
+        return std::to_string(static_cast<const ir::Index&>(e_).indices.size());
     if (path == "node.isArray") { // a list literal whose target type is the fixed-size Array<T> (vs growable List<T>)
         const bool isArray = e_.kind == ir::ExprKind::ListLit &&
                              static_cast<const ir::ListLit&>(e_).type.name == "Array";
@@ -283,7 +285,11 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
     if (e_.kind == ir::ExprKind::Index) {
         const auto& ix = static_cast<const ir::Index&>(e_);
         if (path == "node.receiver") return ix.receiver.get();
-        if (path == "node.index")    return ix.index.get();
+        if (path == "node.index")    return ix.indices.empty() ? nullptr : ix.indices[0].get(); // single-arg alias
+        if (path.rfind("node.indices.", 0) == 0) { // indexed subscript `node.indices.<i>` (from a `map` rule)
+            const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(13)));
+            if (i < ix.indices.size()) return ix.indices[i].get();
+        }
     }
     if (e_.kind == ir::ExprKind::Cond) {
         const auto& c = static_cast<const ir::Cond&>(e_);
