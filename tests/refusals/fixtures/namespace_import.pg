@@ -1,0 +1,6 @@
+// REFUSED (PRD §3.B, issue #39e): a namespace import (`import * as ns from "…"`). Modules merge into one
+// flat namespace with no place for a per-module namespace object, so this is refused out loud instead of
+// resolving to nothing. Import the members by name instead.
+import * as s from "std.strings"
+
+fn main() {}
