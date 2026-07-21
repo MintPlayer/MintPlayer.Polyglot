@@ -151,6 +151,81 @@ per-target binding + capability-intersection machinery.
   complete backend with full IR coverage). To avoid N-dependency friction for the common case, bless a
   curated first-party `polyglot-attributes-*` package (one dependency, not N). No auto-included stdlib.
 
+### D.1 Design note — why attributes are *pass-through only*, not "functional" (behavior-affecting)
+
+Recorded after a maintainer challenge (2026-07-21): *"if a polyglot attribute's constructor does logic, and
+that logic is reflected in the generated code, why isn't it portable?"* A 3-agent investigation
+(attr-semantics / attr-models / attr-interop) answered this precisely. The distinction is real and this note
+captures it next to the decision it justifies.
+
+**"Functional attribute" names one of two fundamentally different mechanisms:**
+- **Model 1 — pass-through annotation (logic runs at the *target's* runtime).** Polyglot emits the native
+  annotation (`[Attr]`/`@dec`/`#[Attr]`) verbatim; whatever happens is up to the target's own
+  runtime/framework. **This is what P37 §D builds.** Nothing is "reflected into" the output — the annotation
+  *is* the output.
+- **Model 2 — compile-time transform / macro (logic runs at *Polyglot's* transpile time).** The attribute's
+  logic rewrites the annotated declaration's IR at transpile time; every target then emits plain, already-
+  transformed code with **no** attribute/decorator at all. *This* is "logic reflected in the generated code"
+  — and it is the model the maintainer's phrasing actually describes.
+
+**The execution-timing fault line (the semantic bedrock).** The four targets split into two camps by *when*
+an attribute's own logic runs:
+
+| | logic runs… | transforms the declaration? | ctor runs without a `GetCustomAttributes`-style call? |
+|---|---|---|---|
+| **C#**, **PHP 8+** | **only when reflection explicitly materializes it** | no — inert metadata | **never** |
+| **TypeScript** (legacy + TC39), **Python** | **eagerly, at definition time** | yes — wraps/replaces | always |
+
+**Empirical confirmation (C#, maintainer-run 2026-07-21).** Even *reflecting* over a decorated type/method
+does not run the attribute constructor — because ordinary introspection never touches the custom-attribute
+blob:
+```csharp
+[ClassTest] class TestClass { [MethodTest] public void TestMethod() { } }
+// ClassTestAttribute()/MethodTestAttribute() ctors each Console.WriteLine on construction.
+
+var t  = typeof(TestClass);                                  // metadata handle — ctor does NOT fire
+var m  = t.GetMethod(nameof(TestClass.TestMethod));          // metadata handle — ctor does NOT fire
+// Output contains NO "... attribute constructor triggered" line.
+```
+The attribute ctor fires **only** on the specific `GetCustomAttributes()` / `GetCustomAttribute<T>()` family
+(`m.GetCustomAttributes(true)` would print "Method attribute constructor triggered"). So a C#/PHP attribute
+is inert not just "until reflected" but "until a program deliberately makes the one reflection call that
+materializes it." Polyglot emits **no** reflection and transpiles the `.pg` away, so that call site never
+exists — a C#/PHP attribute constructor provably runs **zero times**.
+
+**Consequence — why a behavior-affecting pass-through attribute cannot be portable (Model 1).** Take
+`@Memoize`: on TS/Python the decorator is a function that runs at definition time and wraps the method
+(**live**); on C#/PHP it is inert metadata that does nothing unless an external weaver/generator/reflection
+host acts on it — which Polyglot refuses (§3.B) and does not emit (**dead no-op**). Same attribute, live on
+two targets, dead on two — a silent behavioral divergence, the one unforgivable sin (§3). This is *intrinsic*
+to Model 1, not a gap to close, which is exactly why §D restricts pass-through to **semantically-passive**
+annotations and H2 puts behavior-transforming decorators out of scope.
+
+**Model 2 *would* make it portable** — one IR rewrite feeds all four emitters as plain code, no reflection,
+no divergence — but Model 2 is a **hygienic-macro subsystem**, not a feature: a transpile-time `.pg`
+interpreter beside the emitters, plus hygiene, ordering, error-span mapping, and a `--expand` view. Prior art
+is unanimous on the cost and the traps (Lisp/Scheme → hygiene is mandatory; Rust proc-macros / C++ TMP →
+debuggability & error spans are brutal; C# source generators / Java APT → the *safe* design is **additive-
+only**, which cannot even express `@Memoize`-rewrites-the-body; Scala → deleted and rebuilt its macro system;
+Nim → macro-heavy code becomes an unreadable dialect, the opposite of Polyglot's readable-output promise).
+A user-programmable macro layer is the maximal form of the scope creep that killed JSIL/SharpKit/Bridge.NET.
+
+**The reality check that makes this moot for the stated motivation.** The attributes that are "used
+everywhere daily" — Angular `@Component`/`@Injectable`, `[JsonProperty]`/`[JsonIgnore]`, DataAnnotations
+`[Required]`, `@app.route`/`[Route]` — are **passive metadata consumed by the target's *own* framework**
+(Angular's compiler, System.Text.Json/Newtonsoft, the DI container, the router). For all of them Polyglot
+**must** emit the native annotation verbatim; a transform can't replicate them without reimplementing each
+framework (modern Angular Ivy and STJ even consume them at *build* time via their own compiler/source-gen,
+making native pass-through *more* mandatory). So the portable behavior-injecting attribute is **orthogonal**
+to the daily demand: the daily demand is Model 1 pass-through.
+
+**Decision & open item.** P37 §D builds **Model 1** (pass-through, passive-metadata-only) — correct for the
+motivating use cases. Behavior-transforming / "functional" attributes remain **out of scope and the way
+forward is OPEN** (maintainer undecided as of 2026-07-21). If a specific transform is ever genuinely wanted,
+the scope-disciplined path is a **fixed, first-party, compiler-authored lowering** (i.e. "add one language
+feature," like Polyglot already synthesizes constructors and value-equality) — **not** a user-programmable
+`.pg` macro system. Recorded as a demand-gated deferral (see §G).
+
 ## E. Shared prerequisite — keyed capability vocabulary
 
 C6 (operator sub-keys) and D10/D11 (attribute target/arg keys) both need capabilities the current **flat
@@ -185,7 +260,10 @@ both workstreams consume it.
   no binding for a configured target; variable attribute-arg values when C#/PHP is targeted.
 - **Deferred (demand-gated follow-ups, recorded not built):** cross-package operator *resolution* (adopt the
   static *shape* now; no consumer + no resolver path today); `return:`-target and type-parameter attributes
-  (new syntax, no grammar home); an auto-included attribute stdlib package.
+  (new syntax, no grammar home); an auto-included attribute stdlib package; **"functional" / behavior-
+  transforming attributes (Model 2 — a compile-time transform/macro subsystem)** — the way forward is OPEN
+  (maintainer undecided 2026-07-21); if ever pursued, a fixed first-party compiler-authored lowering, not a
+  user-programmable `.pg` macro platform (full rationale + empirical C# demonstration in §D.1).
 
 ## H. Testing strategy (see PLAN.md matrix)
 
