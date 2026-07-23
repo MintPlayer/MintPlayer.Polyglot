@@ -172,3 +172,36 @@ Cross-package operator *resolution* (static shape adopted now); `return:`-target
 attributes; auto-included attribute stdlib package; Tier 2 param-level metadata + query; `AllowMultiple`;
 `Meta.getInherited`; `Meta.all<T>()`; dual-tier single declaration; LSP hover of resolved `Meta`
 constants + in-string member completion.
+
+## As-built notes (2026-07-23) — deviations from the design, decided during implementation
+
+- **B scope:** `is`/`as` cover **class/record hierarchies only**; union types/cases refuse toward
+  `match` (no case-as-type exists in the type system to narrow to — inventing one mid-slice would be
+  a half-feature). Enums/scalars/extern classes/generic instantiations also refuse.
+- **B3 shape:** the binding lowers to a hoisted `let name = x as T` BEFORE the `if` + a `name != null`
+  cond rewrite (not a thenBody-prepended Let) — idiomatic on all four targets and single-eval by
+  construction. Consequence: the emitted binding outlives the branch, so redeclaring an `is`-binding
+  name later in the same block is refused (sema owns the language scope; the rule keeps emitted TS
+  `const` collisions impossible).
+- **Conversion spelling:** `operator fn explicit(): T` — the RETURN TYPE is the conversion target
+  (no `operator fn explicit T(...)` production; one source of truth, zero new grammar). `string`/
+  `bool` targets refused (toString/truthiness divergence).
+- **D9 import clause:** one verbatim spelling — `actual(t) extern("<whole annotation line>") import
+  "<whole import/using line>"`. The template is the ENTIRE native line (brackets included), so Tier 1
+  emission needs zero plugin-template knowledge (one shared C++ injection point above each decl).
+- **D10/D11 v1 surface:** attachment points shipped = type/method (both tiers), function (Tier 1),
+  field/property (Tier 2 — needs no emission). Pass-through FIELD attributes, params, enum cases,
+  and non-const arg values (`attributes.arg.nonConst`) are deferred — the four emitters render
+  fields/params inline in their templates, and X3 already called nonConst near-vacuous. Capability
+  keys shipped: `attributes:target.{type,method,function}` only (H5: keys enter the vocabulary with
+  their consumer).
+- **D13 deferred:** the binding-only P30 package kind is NOT in this PR — `extern attribute`
+  declarations live in user `.pg` (or an imported module) for now; the package kind is additive.
+- **New syntax rule found by D8:** a subscript `[` must start on the SAME LINE as the expression it
+  indexes — statements are newline-terminated without a token, so a next-line `[…]` (an attribute
+  list after an expression-bodied decl) would otherwise be swallowed as an index.
+- **Anti-silent-drop bonus (D.3):** explicit type args on member calls used to parse and be silently
+  ignored; now that `Meta` consumes them, every other member call carrying them refuses.
+- **PHP C6 flip as ratified:** `:eq` + `:indexers` native (comparison stays refused);
+  `operator_eq.pg` + `indexer_grid.pg` moved OUT of the G28 PHP-refused set, the four new operator
+  programs moved in.

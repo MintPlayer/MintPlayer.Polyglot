@@ -98,7 +98,24 @@ gets an error naming the feature, never broken output.
 
 The compile-gate feature names: `extensionMethods`, `operatorOverloading`, `properties`,
 `iterators`, `patternMatching`, `closures`, `exceptions`, `disposal`, `inheritance`, `async`,
-`blockLambdas`, `withExpressions`.
+`blockLambdas`, `withExpressions`, `mutableRefClasses`, `fixedWidthIntegers`, `utf16Strings`,
+`propertySetters`.
+
+**Keyed refinements (P37 slice 0).** A capability may also be a `parent:child` key from the closed,
+load-validated vocabulary — an unknown key is a **load error**, never silently ignored. A sub-key
+with no explicit entry inherits the bare parent's stance (the umbrella rule); an absent parent is
+supported. Current keyed entries:
+
+- `interfaces:runtimeIdentity` — interfaces exist as testable runtime types (`is`/`as`/typed match).
+  TS declares `false` (interfaces erase); Python overrides its `"interfaces": "emulated"` umbrella
+  with an explicit `"native"`.
+- `operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}` — graded operator support.
+  PHP declares the umbrella `false` plus `:eq` and `:indexers` `"native"` (`->eq(...)`,
+  `->get`/`->set`).
+- `attributes:target.{type,method,function}` — where a Tier 1 pass-through attribute may attach on
+  this target. TS declares `attributes:target.function: false` (no function decorators). Tier 2
+  portable metadata needs **no capability at all** — the compiler both writes and reads its data, so
+  a plugin never sees it.
 
 Capabilities also serve the **anti-silent-drop coverage contract** enforced at load time: every IR
 construct the compiler can produce must have a rule, *or* the plugin must declare its stance via the

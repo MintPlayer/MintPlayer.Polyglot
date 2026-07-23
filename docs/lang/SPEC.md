@@ -250,6 +250,74 @@ union Shape {
 `match` over a `union` is **exhaustiveness-checked at compile time** (P3) — a missing case is an error, not
 a fall-through.
 
+### 4.6 `is` / `as` (P37 B)
+
+Runtime type tests and checked conversions over **class/record hierarchies** (unions/cases stay `match`'s
+job — union values are tagged data and cases are not types to narrow to):
+
+```pg
+if x is Circle c && c.r > 0 { print(c.r) }   // `is T name` binds a narrowed local — if-conditions only,
+                                             // scoped to the guarded branch (and the rest of the `&&` chain)
+let ok = x is Circle                         // bare bool form, any expression position
+let d = a as Dog                             // checked conversion -> Dog? — null on failure, NEVER throws
+print(d?.nick ?? "not a dog")
+```
+
+Emission: C# `is`/declaration-pattern + `as`; TS/PHP `instanceof` guards (never a bare TS `as` assertion —
+that has no runtime check); Python `isinstance`. The `if`-binding form lowers to a hoisted
+`let name = x as T` + `name != null`, so the emitted binding **outlives the branch** — redeclaring the
+name later in the same block is refused. Refused: tests on unions/cases, enums, scalars, extern/std types,
+type parameters (generics are emitted generically — no runtime test can exist), generic instantiations
+(type args erase on TS/Python), and provably-unrelated types. Interface tests gate per-target
+(`interfaces:runtimeIdentity`, §10.1 #38).
+
+### 4.7 Attributes & portable metadata (P37 D — the three-tier taxonomy)
+
+One usage syntax — `[Name(args)]` before a class/record/function/method — two declaration forms, and the
+declaration picks the tier:
+
+```pg
+// Tier 2 — portable inert metadata: a pure DATA SHAPE (no body, no constructor, const-envelope params).
+attribute Range(min: i32, max: i32)
+
+[Range(1, 8)]
+class Box {
+  [Range(0, 100)]
+  var fill: i32
+  constructor() { this.fill = 0 }
+}
+
+fn main() {
+  print(Meta.has<Box, Range>())                 // true      — a bool literal in the output
+  print(Meta.get<Box, Range>()?.max ?? -1)      // 8         — `new Range(1, 8)` inlined at the call site
+  print(Meta.member<Box, Range>("fill")?.max ?? -1) // 100
+}
+
+// Tier 1 — pass-through: the binding IS the native annotation line, per target, emitted verbatim
+// above the declaration for that target's OWN framework; `import` is a verbatim header line.
+extern attribute JsonProp(name: string) {
+  actual(csharp)     extern("[Newtonsoft.Json.JsonProperty($0)]") import "using Newtonsoft.Json;"
+  actual(typescript) extern("@JsonProperty($name)")               import "import { JsonProperty } from 'class-transformer';"
+  actual(python)     refuse
+}
+```
+
+- **Tier 2 is fully inside §9 faithfulness**: every `Meta` query resolves **at transpile time** and lowers
+  to inline constants — no metadata file, no table, no reflection, identical on all four targets, and an
+  attached-but-unqueried attribute emits **zero** runtime output. No capability is involved (the compiler
+  both writes and reads the data), so it works on every target unconditionally. Queries are exact-type,
+  definition-site lookups yielding a fresh value per evaluation — no inherited-attribute walk. Attribute
+  types cannot be constructed directly.
+- **Tier 1 is outside the faithfulness guarantee** (H2): Polyglot guarantees the spelling + attachment
+  land per the binding, never identical cross-target runtime behavior (C#/PHP attributes are inert
+  metadata; TS/Python decorators execute at definition time — bind only semantically-passive
+  annotations). Attachment points gate per target (`attributes:target.{type,method,function}` — TS has
+  no function decorators); a used attribute with **no arm** (or an explicit `refuse` arm) for a
+  configured target refuses loudly (D12) — never a silent drop.
+- v1 attachment points: classes/records + methods (both tiers), functions (Tier 1), fields/properties
+  (Tier 2 — pass-through field attributes are a recorded deferral, as are params, enum cases,
+  `AllowMultiple`, and variable argument values).
+
 ---
 
 ## 5. Statements & control flow
@@ -316,8 +384,9 @@ on both — which is exactly why finalizers/GC hooks are refused (§10): `use` i
 ### 6.1 Operator overloading (named methods → symbols)
 
 TypeScript has **no** operator overloading, so a custom `a + b` must lower to a method call there. Polyglot
-therefore defines operators as **fixed-named methods**; the C# backend emits real `operator` members and
-the TS backend rewrites the symbol to the method call.
+therefore defines operators as **fixed-named methods**; the C# backend emits real `operator` members,
+Python emits the native dunders, and TS emits **static-on-type** methods (`Money.plus(a, b)` — a static
+travels with its type and, for `eq`, tolerates a null left operand where an instance call would throw).
 
 | Operator | Method name | | Operator | Method name |
 |---|---|---|---|---|
@@ -326,17 +395,32 @@ the TS backend rewrites the symbol to the method call.
 | `*` | `times` | | `>` `>=` | `gt` `ge` |
 | `/` | `div` | | `-` (unary) | `neg` |
 | `%` | `rem` | | `&` `\|` `^` | `band` `bor` `bxor` |
+| `<<` `>>` | `shl` `shr` | | `~` (unary) | `bnot` |
 
 ```pg
 record Money(cents: i64) {
   operator fn plus(o: Money): Money => Money(this.cents + o.cents)
   operator fn lt(o: Money): bool => this.cents < o.cents
+  operator fn explicit(): f64 => (f64)this.cents / 100.0   // explicit conversion: (f64)m
 }
-// a + b  -> C#: a + b   |  TS: a.plus(b)
-// a < b  -> C#: a < b   |  TS: a.lt(b)
+// a + b   -> C#: a + b          |  TS: Money.plus(a, b)  |  Python: a + b (__add__)
+// a < b   -> C#: a < b          |  TS: Money.lt(a, b)
+// (f64)m  -> C#: (double)m      |  TS/Python/PHP: m.toF64()
 ```
 
 `eq`/`lt` also feed `match` literal/comparison patterns and the generated structural equality.
+Comparing against the **`null` literal is always a null test** — it never routes to a user `eq`.
+**Explicit conversions** are declared `operator fn explicit(): T` (the return type IS the conversion
+target; no parameters); C# emits a native `explicit operator`, method-form targets generate `to<T>()`
+and rewrite the cast site. **Implicit** user conversions are refused (invisible call-site injection).
+`string`/`bool` conversion targets are refused (toString/truthiness semantics differ per target).
+**Compound assignment** on a user type lowers to `target = <op>(target, value)`; through a user indexer
+it becomes the get+set pair; the receiver must be a simple name/`this` (hoist a computed receiver to a
+local — single evaluation by construction).
+
+Operator support is **graded per target** via keyed capabilities
+`operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}`: PHP supports `:eq` (`->eq(...)`)
+and `:indexers` (`->get`/`->set`) while refusing the rest; C#/TS/Python support all grades.
 
 ### 6.2 Properties and indexers
 
@@ -466,8 +550,20 @@ miscompile.
 - **Threads / concurrency primitives** — `lock`, `Interlocked`, `Parallel.*`, thread spawning. Single-
   threaded `async`/`await` only (design in PRD §4.7 — a colored function, author writes the unwrapped `T`,
   per-backend wrapper (`Task<T>`/`Promise<T>`/`async def`), capability-gated; **implemented 2026-07-01**).
-- **Runtime reflection** — `Activator`, open-world `Type.GetType(string)`, attribute introspection at run
-  time. (Defeats tree-shaking; #1 bloat source.)
+- **Runtime reflection** — `Activator`, open-world `Type.GetType(string)`, and **native attribute
+  introspection at run time** (`GetCustomAttributes`, `ReflectionAttribute::newInstance`,
+  reflect-metadata). (Defeats tree-shaking; #1 bloat source.) The three-way attribute split (P37 §D):
+  native runtime reflection is refused, forever; **Tier 1** `extern attribute` pass-through is allowed
+  (Polyglot emits the native annotation for the target's OWN framework and never reads it back); **Tier 2**
+  `attribute` + `Meta` queries are allowed **because nothing resolves at run time** — the lookup happens
+  at transpile time and the output carries only constants (§4.7). Runtime-variant `Meta` queries
+  (`Meta.of(expr)`, type-parameter type args, computed member names) are refused **permanently** (M6):
+  they would require shipping per-type metadata registries plus a uniform runtime type identity that the
+  four targets do not share.
+- **Behavior-transforming decorators** (Tier 3) — an attribute is never executable code: TS/Python
+  decorators RUN at definition time while C#/PHP attributes never run, so a portable behavior-injecting
+  attribute cannot exist (P37 §D.1). If a specific transform is ever wanted, it becomes a fixed
+  first-party compiler lowering — never a user-programmable macro.
 - **Finalizers / GC hooks** — no `~T()`, no `GC.*`. Deterministic disposal is `use` (§5.2) — that's all.
 - **`decimal`** — no `decimal` type or literal (a big-decimal std type may be opted in later).
 - **`unsafe` / pointers** — no `unsafe`, `*T`, `&`-address-of, `stackalloc`, raw `Span`.
@@ -481,9 +577,11 @@ miscompile.
 
 These clarify or bound features surfaced by the wave-2 coverage sweep (issues #38–#57):
 
-- **Typed `match` patterns / type tests** (#38) — a typed arm `x: Circle` IS a runtime type test on a
-  concrete **class or union** (C# declaration pattern / TS·PHP `instanceof` / Python `isinstance`), narrowing
-  the binding. A type test against an **interface** is refused (interfaces have no runtime identity on TS).
+- **Typed `match` patterns / type tests** (#38, relaxed by P37 B4) — a typed arm `x: Circle` IS a runtime
+  type test on a concrete **class or union** (C# declaration pattern / TS·PHP `instanceof` / Python
+  `isinstance`), narrowing the binding. A type test against an **interface** gates per-target
+  (`interfaces:runtimeIdentity`): refused iff a configured target lacks runtime interface identity (TS
+  erases interfaces); a C#/Python/PHP-only build allows it.
 - **Union `==`** (#57) — **structural** (compares tag + payload), like records; documented in §9.
 - **A user `operator fn eq`** (#49) overrides the default structural/reference equality on every target.
 - **Per-iteration loop-variable capture** (#46) — see §6.4.
