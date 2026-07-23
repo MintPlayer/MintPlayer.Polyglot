@@ -144,8 +144,8 @@ Three template flavors:
   `$this = …` emits a **receiver assignment** instead of an expression — Python's
   `"List.clear": "$this = []"`.
 - **`<Type>.type`** maps an extern class's type spelling (`$0`,`$1` = rendered type args — C#:
-  `"List.type": "global::System.Collections.Generic.List<$0>"`); **`<Type>.init`** maps its
-  construction (`$T` = the mapped type, `$0`,… = ctor args — Python: `"List.init": "[]"`).
+  `"List.type": "global::System.Collections.Generic.List<$0>"`); **`<Type>.constructor`** maps its
+  construction (`$T` = the mapped type, `$0`,… = ctor args — Python: `"List.constructor": "[]"`).
 - **`expect` functions** (`print`): the template is the target-language *body* of the synthesized
   `actual`, referencing the fn's parameters by name (PHP's `print(x)` body reads `$x` because PHP
   spells the variable that way; Python's reads bare `x`).

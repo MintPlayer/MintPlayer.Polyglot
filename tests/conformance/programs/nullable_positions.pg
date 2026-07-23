@@ -3,14 +3,14 @@
 // dropped, producing CS8xxx cascades under <Nullable>enable/>) — TS/Python erase it. Runtime-identical.
 class Box {
   var v: i32
-  init(v: i32) { this.v = v }
+  constructor(v: i32) { this.v = v }
 }
 
 record Pair(a: Box, b: Box?)
 
 class Holder {
   var maybe: Box?
-  init() { this.maybe = null }
+  constructor() { this.maybe = null }
   fn get(): Box? { return this.maybe }
   fn set(x: Box?) { this.maybe = x }
 }

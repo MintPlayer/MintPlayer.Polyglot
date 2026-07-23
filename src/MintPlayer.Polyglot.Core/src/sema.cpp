@@ -376,6 +376,7 @@ private:
     std::unordered_map<std::string, std::vector<FnSig>> fns_; // name -> overload set
     std::unordered_map<std::string, TypeInfo> types_;
     std::unordered_set<std::string> typeNames_;
+    std::unordered_set<std::string> externClassNames_;                     // `extern class` names (std/FFI carriers)
     std::unordered_set<std::string> interfaceNames_;                       // declared `interface` names
     std::unordered_map<std::string, const InterfaceDecl*> interfaceDecls_; // for base type-args (conformance)
     std::unordered_set<std::string> enumNames_;
@@ -393,6 +394,11 @@ private:
                                 // methods (where currentThis_ is Unknown) so its statics/consts resolve unqualified
     bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
     bool inAsync_ = false;  // checking an `async fn`/method body — the only place `await` is allowed (§4.7)
+    bool isBindingAllowed_ = false; // the next `is` checked sits on an if-condition's `&&` spine (P37 B3)
+    // Per-enclosing-block names bound by `if … is T name` (P37 B3): the emitted binding outlives the
+    // branch on every target (it's hoisted before the `if`), so redeclaring the name later in the same
+    // block would collide in the OUTPUT even though the language scope ended — refused here instead.
+    std::vector<std::unordered_set<std::string>> blockIsBindings_;
 
     // ---- semantic model (LSP; §4.8). Populated only when model_ != nullptr, and only for file-local symbols.
     SemanticModel* model_ = nullptr;
@@ -492,7 +498,7 @@ private:
     }
     void collectTypeNames(const CompilationUnit& u) {
         for (const auto& d : u.records)    declareType(d.name, d.pos);
-        for (const auto& d : u.classes)    declareType(d.name, d.pos, d.isExtern);
+        for (const auto& d : u.classes)    { declareType(d.name, d.pos, d.isExtern); if (d.isExtern) externClassNames_.insert(d.name); }
         for (const auto& d : u.interfaces) declareType(d.name, d.pos);
         for (const auto& d : u.enums)      { declareType(d.name, d.pos); enumNames_.insert(d.name); }
         for (const auto& d : u.unions)     declareType(d.name, d.pos);
@@ -581,7 +587,7 @@ private:
                                             "overloading for top-level functions only, not members (PRD §3.A); "
                                             "give the overloads distinct names");
             ti.members.push_back(memberInfo(m));
-            if (m.kind == MemberKind::Init) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
+            if (m.kind == MemberKind::Constructor) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }
     }
     static void collectBaseNames(const std::vector<TypeRef>& bases, std::vector<std::string>& out) {
@@ -760,7 +766,7 @@ private:
                 const char* what = m.kind == MemberKind::Field ? "a field"
                                  : m.kind == MemberKind::Const ? "a const"
                                  : m.kind == MemberKind::Property ? "a property"
-                                 : m.kind == MemberKind::Init ? "an initializer" : nullptr;
+                                 : m.kind == MemberKind::Constructor ? "an initializer" : nullptr;
                 if (what) {
                     diags_.error(m.pos, "an interface declares method signatures only — " + std::string(what) +
                                             " is not allowed in 'interface " + d.name + "' (express it as a method)");
@@ -910,7 +916,7 @@ private:
         if (d.isExtern) return;
         std::unordered_set<std::string> assigned;
         for (const auto& m : d.members)
-            if (m.kind == MemberKind::Init) collectThisAssigns(m.body, assigned);
+            if (m.kind == MemberKind::Constructor) collectThisAssigns(m.body, assigned);
         for (const auto& m : d.members) {
             if (m.kind != MemberKind::Field || m.init || m.bindings.size()) continue;
             if (!assigned.count(m.name))
@@ -928,17 +934,17 @@ private:
         currentClass_ = typeName;
         for (auto& m : members) {
             pushGenerics(m.generics);
-            if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Init) {
+            if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Constructor) {
                 bool isStatic = false;
                 for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
                 currentThis_ = isStatic ? tUnknown() : tNamed(typeName); // no `this` inside a static method
-                currentReturn_ = (m.kind == MemberKind::Init) ? namedType("unit") : m.returnType;
+                currentReturn_ = (m.kind == MemberKind::Constructor) ? namedType("unit") : m.returnType;
                 inAsync_ = m.isAsync;
                 scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 for (const auto& p : m.params) declare(p.name, p.type, false, p.pos);
-                if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Init) checkConvert(m.exprBody, m.returnType, "method body"); }
+                if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Constructor) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
                 scopeStart_ = {}; scopeEnd_ = {};
@@ -969,7 +975,9 @@ private:
 
     void checkBlock(std::vector<StmtPtr>& body) {
         pushScope();
+        blockIsBindings_.emplace_back();
         for (auto& s : body) checkStmt(*s);
+        blockIsBindings_.pop_back();
         popScope();
     }
 
@@ -1119,14 +1127,11 @@ private:
     void declarePattern(const Pattern& p, const TypeRef& scrut) {
         switch (p.kind) {
             case PatKind::Binding:
-                // A typed 'match' binding (`d: Disk`) is a runtime TYPE TEST (#38): allowed for a concrete
-                // class/union type (C# declaration pattern / TS·PHP instanceof / Python isinstance), refused
-                // for an INTERFACE (interfaces erase at runtime on TS — §3.B). The redundant same-type case
-                // (naming the scrutinee's own type) always passes. The binding narrows to the tested type.
-                if (p.hasType && p.type.kind == TypeRef::Kind::Named && interfaceNames_.count(p.type.name))
-                    diags_.error(p.pos, "Polyglot refuses a type-test against an interface ('" + p.type.name +
-                                            "') — interfaces have no runtime identity on TS; test a concrete "
-                                            "class or union case instead (PRD §3.B)");
+                // A typed 'match' binding (`d: Disk`) is a runtime TYPE TEST (#38): C# declaration pattern /
+                // TS·PHP instanceof / Python isinstance. An INTERFACE test is no longer refused here (P37
+                // B4): it gates in the target-aware capability pass instead — refused iff a configured
+                // target lacks runtime interface identity (`interfaces:runtimeIdentity`, false on TS where
+                // interfaces erase). The binding narrows to the tested type.
                 declare(p.name, p.hasType ? p.type : scrut, false, p.pos);
                 break;
             case PatKind::Ctor: {
@@ -1181,6 +1186,9 @@ private:
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
                 else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
                     diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value));
+                if (!blockIsBindings_.empty() && blockIsBindings_.back().count(s.name))
+                    diags_.error(s.namePos, "'" + s.name + "' was bound by an `is` test earlier in this block; "
+                                            "pick another name (the emitted binding outlives the branch)");
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
                 break;
             }
@@ -1206,9 +1214,16 @@ private:
                 if (s.value) checkExpr(*s.value);
                 break;
             case StmtKind::If: {
-                requireBool(checkExpr(*s.value), s.pos, "'if' condition");
-                checkBlock(s.thenBody);
+                // P37 B3: `is` bindings on the condition's `&&` spine narrow into the rest of the
+                // condition AND the then-body (one scope) — never the else-branch or past the `if`.
+                pushScope();
+                requireBool(checkIfCond(*s.value), s.pos, "'if' condition");
+                blockIsBindings_.emplace_back(); // then-body is its own block for later-redecl purposes
+                for (auto& st : s.thenBody) checkStmt(*st);
+                blockIsBindings_.pop_back();
+                popScope();
                 if (s.hasElse) checkBlock(s.elseBody);
+                if (!blockIsBindings_.empty()) collectIsBindingNames(*s.value, blockIsBindings_.back());
                 break;
             }
             case StmtKind::While:
@@ -1259,6 +1274,103 @@ private:
         }
     }
     static bool isUnitT(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "unit" && !t.nullable; }
+    // P37 B3: check an `if` condition, accepting `is` bindings along its top-level `&&` spine only —
+    // there the test dominates the then-branch. Under `||`, `!`, or a lambda the binding wouldn't be
+    // guaranteed, so the ordinary checkExpr path refuses it.
+    TypeRef checkIfCond(Expr& e) {
+        if (e.kind == ExprKind::Binary && e.text == "&&") {
+            requireBool(checkIfCond(*e.lhs), e.lhs->pos, "'&&' operand");
+            requireBool(checkIfCond(*e.rhs), e.rhs->pos, "'&&' operand");
+            e.type = tNamed("bool");
+            return e.type;
+        }
+        if (e.kind == ExprKind::Is) {
+            isBindingAllowed_ = true;
+            TypeRef t = checkExpr(e); // checkIsAs consumes + resets the flag
+            isBindingAllowed_ = false;
+            return t;
+        }
+        return checkExpr(e);
+    }
+    // The `is`-binding names on an if-condition's `&&` spine (for the enclosing block's redecl guard).
+    void collectIsBindingNames(const Expr& e, std::unordered_set<std::string>& out) const {
+        if (e.kind == ExprKind::Binary && e.text == "&&") {
+            if (e.lhs) collectIsBindingNames(*e.lhs, out);
+            if (e.rhs) collectIsBindingNames(*e.rhs, out);
+        } else if (e.kind == ExprKind::Is && !e.text.empty()) {
+            out.insert(e.text);
+        }
+    }
+
+    // P37 B: `x is T [name]` / `x as T` — runtime tests over class/record hierarchies (M1: `as` yields
+    // null on failure, never throws). Interfaces pass here and gate per-target in the capability pass
+    // (B4: refused only when a configured target lacks runtime interface identity). Unions/cases point
+    // at `match` (no case-as-type exists to narrow to); enums/scalars/extern classes are refused.
+    TypeRef checkIsAs(Expr& e, bool isTest) {
+        const bool bindingAllowed = isBindingAllowed_;
+        isBindingAllowed_ = false;
+        TypeRef operand = checkExpr(*e.lhs);
+        const char* op = isTest ? "is" : "as";
+        TypeRef& target = e.castType;
+        normalizeOptional(target, genericsInScope_);
+        const std::string& n = target.name;
+        auto fail = [&](const std::string& msg) {
+            diags_.error(e.pos, msg);
+            return isTest ? tNamed("bool") : tUnknown();
+        };
+        if (target.kind != TypeRef::Kind::Named || n.empty())
+            return fail(std::string("'") + op + "' expects a named class or record type");
+        if (genericsInScope_.count(n))
+            return fail(std::string("'") + op + "' cannot test a type parameter ('" + n +
+                        "') — generics are emitted generically, never specialized, so no runtime test exists");
+        if (isBuiltinType(n))
+            return fail(std::string("'") + op + "' does not apply to scalar/builtin types; use a numeric cast");
+        if (enumNames_.count(n))
+            return fail(std::string("'") + op + "' does not apply to enums (enum values are not class instances)");
+        if (unionAllCases_.count(n) || unionCtors_.count(n))
+            return fail(std::string("Polyglot refuses '") + op + "' on union types/cases — use 'match' "
+                        "(union values are tagged data, and cases are not types to narrow to)");
+        if (externClassNames_.count(n))
+            return fail(std::string("'") + op + "' cannot test an extern/std type ('" + n +
+                        "') — its runtime shape is target-defined");
+        if (!typeNames_.count(n))
+            return fail("unknown type '" + n + "' in '" + op + "'");
+        if (!target.args.empty())
+            return fail(std::string("'") + op + "' cannot test a generic instantiation ('" + n +
+                        "<…>') — type arguments are erased at runtime on TS/Python");
+        // Nominal relatedness: refuse a provably-impossible test (neither type derives from the other,
+        // and the operand isn't interface-typed). An unknown/erased operand type stays lenient.
+        if (operand.kind == TypeRef::Kind::Named && !operand.name.empty() && typeNames_.count(operand.name) &&
+            !interfaceNames_.count(operand.name) && !interfaceNames_.count(n)) {
+            const std::string& on = operand.name;
+            if (on != n && !derivesFrom(n, on) && !derivesFrom(on, n))
+                return fail(std::string("'") + operand.name + "' can never be a '" + n + "' — the '" + op +
+                            "' test is provably impossible (unrelated types)");
+        }
+        if (isTest && !e.text.empty()) {
+            if (!bindingAllowed)
+                diags_.error(e.pos, "an `is` binding ('" + e.text + "') is only allowed on an `if` "
+                                    "condition's `&&` chain, where the test guards the branch (P37 B3)");
+            else {
+                TypeRef bound = target;
+                declare(e.text, bound, false, e.pos);
+            }
+        }
+        if (isTest) return tNamed("bool");
+        TypeRef result = target;
+        result.nullable = true; // `as` = checked conversion -> T? (null on failure, never throws)
+        return result;
+    }
+    // Transitive nominal derivation: `derived` reaches `base` through class/interface base lists.
+    bool derivesFrom(const std::string& derived, const std::string& base) const {
+        auto it = types_.find(derived);
+        if (it == types_.end()) return false;
+        for (const auto& b : it->second.bases) {
+            if (b == base || derivesFrom(b, base)) return true;
+        }
+        return false;
+    }
+
     void requireBool(const TypeRef& t, SourcePos pos, const char* what) {
         Ty s = scalarTyOf(t);
         if (s != Ty::Unknown && s != Ty::Bool) diags_.error(pos, std::string(what) + " must be bool, found " + tyName(s));
@@ -1343,6 +1455,8 @@ private:
             }
             case ExprKind::Binary:    return checkBinary(e);
             case ExprKind::Cast:      return checkCast(e);
+            case ExprKind::Is:        return checkIsAs(e, true);
+            case ExprKind::As:        return checkIsAs(e, false);
             case ExprKind::Extern: // raw target code — type asserted by context (§4.4 FFI)
                 if (!inActual_)
                     diags_.error(e.pos, "'extern' target code is only allowed in a target-gated 'actual' — "

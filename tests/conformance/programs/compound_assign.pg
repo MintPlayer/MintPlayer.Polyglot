@@ -5,7 +5,7 @@ import { List } from "std.collections"
 
 class Acc {
   var total: i32
-  init() { this.total = 0 }
+  constructor() { this.total = 0 }
 }
 
 fn main() {

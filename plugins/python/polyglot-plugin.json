@@ -3,7 +3,8 @@
   "name": "python",
   "capabilities": {
     "blockLambdas": "emulated",
-    "interfaces": "emulated"
+    "interfaces": "emulated",
+    "interfaces:runtimeIdentity": "native"
   },
   "spec": {
     "name": "python",
@@ -2306,6 +2307,48 @@
         "}"
       ]
     },
+    "IsTest": {
+      "tmpl": [
+        "isinstance(",
+        { "emit": "node.operand" },
+        ", ",
+        { "type": "node.testType" },
+        ")"
+      ]
+    },
+    "AsCast": {
+      "case": {
+        "when": [
+          [
+            { "eq": [ "node.operandIsSimple", "true" ] },
+            {
+              "tmpl": [
+                "(",
+                { "emit": "node.operand" },
+                " if isinstance(",
+                { "emit": "node.operand" },
+                ", ",
+                { "type": "node.castType" },
+                ") else None)"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "(",
+            { "get": "node.tempName" },
+            " if isinstance((",
+            { "get": "node.tempName" },
+            " := ",
+            { "emit": "node.operand" },
+            "), ",
+            { "type": "node.castType" },
+            ") else None)"
+          ]
+        }
+      }
+    },
     "Unary": {
       "case": {
         "when": [
@@ -3500,7 +3543,7 @@
   "std": {
     "std.collections": {
       "List.type": "list",
-      "List.init": "[]",
+      "List.constructor": "[]",
       "List.count": "len($this)",
       "List.add": "$this.append($0)",
       "List.clear": "$this.clear()",
@@ -3560,11 +3603,11 @@
     },
     "std.core": {
       "Error.type": "Exception",
-      "Error.init": "$T($0)",
+      "Error.constructor": "$T($0)",
       "Error.message": "str($this)",
       "Iterable.type": "list",
       "Array.type": "list",
-      "Array.init": "[]",
+      "Array.constructor": "[]",
       "Array.count": "len($this)",
       "i8.parse": "int($0)",
       "i16.parse": "int($0)",

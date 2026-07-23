@@ -5,7 +5,7 @@
 
 class Box {
   var w: i32
-  init(w: i32) { this.w = w }
+  constructor(w: i32) { this.w = w }
 
   var area: i32 {
     get => this.w * this.w

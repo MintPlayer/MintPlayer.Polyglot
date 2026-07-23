@@ -622,6 +622,20 @@
         ")"
       ]
     },
+    "IsTest": {
+      "tmpl": [
+        { "emitChild": "node.operand", "side": "recv" },
+        " is ",
+        { "type": "node.testType" }
+      ]
+    },
+    "AsCast": {
+      "tmpl": [
+        { "emitChild": "node.operand", "side": "recv" },
+        " as ",
+        { "type": "node.castType" }
+      ]
+    },
     "Unary": {
       "tmpl": [
         {
@@ -3281,7 +3295,7 @@
   "std": {
     "std.collections": {
       "List.type": "global::System.Collections.Generic.List<$0>",
-      "List.init": "new $T()",
+      "List.constructor": "new $T()",
       "List.count": "$this.Count",
       "List.add": "$this.Add($0)",
       "List.clear": "$this.Clear()",
@@ -3341,11 +3355,11 @@
     },
     "std.core": {
       "Error.type": "global::System.Exception",
-      "Error.init": "new $T($0)",
+      "Error.constructor": "new $T($0)",
       "Error.message": "$this.Message",
       "Iterable.type": "global::System.Collections.Generic.IEnumerable<$0>",
       "Array.type": "$0[]",
-      "Array.init": "global::System.Array.Empty<$0>()",
+      "Array.constructor": "global::System.Array.Empty<$0>()",
       "Array.count": "$this.Length",
       "i8.parse": "sbyte.Parse($0)",
       "i16.parse": "short.Parse($0)",

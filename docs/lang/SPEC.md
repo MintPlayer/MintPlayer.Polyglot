@@ -155,10 +155,10 @@ what makes value-vs-reference identity *unobservable across targets*:
 
 ```pg
 class Account {            // mutable, reference identity
-  let id: string           // set once in init
+  let id: string           // set once in the constructor
   var balance: f64
 
-  init(id: string, balance: f64) {
+  constructor(id: string, balance: f64) {
     this.id = id
     this.balance = balance
   }
@@ -199,7 +199,7 @@ interface Comparable<T> { fn compareTo(other: T): i32; }
 open class Shape { open fn area(): f64 => 0.0 }
 class Disk : Shape { 
   let r: f64
-  init(r: f64) { this.r = r }
+  constructor(r: f64) { this.r = r }
   override fn area(): f64 => 3.141592653589793 * this.r * this.r
 }
 
@@ -275,7 +275,7 @@ are recognized by the backends and emitted as C-style `for` loops where the boun
 ### 5.1 Exceptions (`try`/`catch`/`when`/`finally`, `throw`)
 
 ```pg
-class ParseError : Error { init(msg: string) { super(msg) } }
+class ParseError : Error { constructor(msg: string) { super(msg) } }
 
 fn parseTier(s: string): i32 {
   if s.isEmpty() { throw ParseError("empty tier") }

@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With };
+enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With, IsTest, AsCast };
 
 struct Expr {
     ExprKind kind;
@@ -109,6 +109,27 @@ struct Binary : Expr {
 struct Cast : Expr { // numeric conversion: the result type is `type`, the source is `operand->type`
     ExprPtr operand;
     Cast(SourcePos p, Type t, ExprPtr o) : Expr(ExprKind::Cast, p, std::move(t)), operand(std::move(o)) {}
+};
+// P37 B: `x is T` — a runtime type test over a class/record hierarchy; type bool. Pure predicate: an
+// `if`-condition binding form is desugared in lowering (hoisted `AsCast` Let + null check), so every
+// target emits its native test (C# `is`, TS/PHP `instanceof`, Python `isinstance`).
+struct IsTest : Expr {
+    ExprPtr operand;
+    Type testType;
+    IsTest(SourcePos p, Type t, ExprPtr o, Type tt)
+        : Expr(ExprKind::IsTest, p, std::move(t)), operand(std::move(o)), testType(std::move(tt)) {}
+};
+// P37 B: `x as T` — checked conversion; `type` is T with `nullable=true`, null on failure, NEVER throws
+// (M1: a runtime guard on TS/Python/PHP — never a bare TS `as` assertion). Targets that re-evaluate the
+// operand in their guard bind `tempName` inline when the operand isn't a simple var (the `With` pattern):
+// TS an IIFE parameter, Python a walrus, PHP an assignment expression; C# `as` never needs it.
+struct AsCast : Expr {
+    ExprPtr operand;
+    Type castType;
+    bool operandIsSimple = true;
+    std::string tempName; // set iff !operandIsSimple
+    AsCast(SourcePos p, Type t, ExprPtr o, Type ct)
+        : Expr(ExprKind::AsCast, p, std::move(t)), operand(std::move(o)), castType(std::move(ct)) {}
 };
 struct Extern : Expr { // `extern("…")`: raw target code emitted verbatim (the FFI hatch)
     std::string code;

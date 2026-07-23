@@ -88,6 +88,7 @@ private:
     bool panicked_ = false;
     SourcePos lastBlockEnd_;   // the most recent block's closing '}' position — read right after parseBlock()
     int pendingAngles_ = 0; // leftover '>' borrowed from a split '>>' / '>>>' when closing nested generics
+    bool allowIsBinding_ = false; // inside an `if` condition: `x is T name` may bind (P37 B3)
     // While parsing a match-arm GUARD, a trailing `ident =>` / `(…) =>` is the arm's `=>`, NOT a lambda —
     // suppress the bare-lambda parse so `Pair(a, b) if a == b => …` doesn't swallow the arrow (issue #39d).
     bool suppressLambda_ = false;
@@ -254,9 +255,9 @@ private:
             else m.modifiers.push_back(modifierText(advance().kind));
         }
 
-        if (at(TokKind::KwInit)) {
-            m.kind = MemberKind::Init;
-            m.name = "init";
+        if (at(TokKind::KwConstructor)) {
+            m.kind = MemberKind::Constructor;
+            m.name = "constructor";
             advance();
             expect(TokKind::LParen, "'('");
             m.params = parseParamList();
@@ -823,7 +824,10 @@ private:
         s->kind = StmtKind::If;
         s->pos = peek().pos;
         advance();
+        const bool prevAllow = allowIsBinding_;
+        allowIsBinding_ = true;
         s->value = parseExpr();
+        allowIsBinding_ = prevAllow;
         s->thenBody = parseBlock();
         if (accept(TokKind::KwElse)) {
             s->hasElse = true;
@@ -918,11 +922,30 @@ private:
         return l;
     }
     ExprPtr parseEquality() {
-        auto l = parseComparison();
+        auto l = parseIsAs();
         while (at(TokKind::EqEq) || at(TokKind::NotEq)) {
             const char* op = at(TokKind::EqEq) ? "==" : "!=";
             auto p = advance().pos;
-            l = makeBinary(std::move(l), op, parseComparison(), p);
+            l = makeBinary(std::move(l), op, parseIsAs(), p);
+        }
+        return l;
+    }
+    // P37 B: `x is T [name]` / `x as T` — contextual infix between equality and comparison (C#-style:
+    // binds tighter than ==, looser than <). The optional `is` binding name is accepted ONLY while an
+    // `if` condition is being parsed (allowIsBinding_): elsewhere a trailing identifier would greedily
+    // swallow the next statement's leading name (statements are newline-terminated without a token).
+    ExprPtr parseIsAs() {
+        auto l = parseComparison();
+        while (atContextual("is") || atContextual("as")) {
+            const bool isTest = peek().text == "is";
+            auto p = advance().pos;
+            auto e = mk(isTest ? ExprKind::Is : ExprKind::As, p);
+            e->castType = parseType();
+            if (isTest && allowIsBinding_ && at(TokKind::Identifier) &&
+                !atContextual("is") && !atContextual("as"))
+                e->text = advance().text;
+            e->lhs = std::move(l);
+            l = std::move(e);
         }
         return l;
     }

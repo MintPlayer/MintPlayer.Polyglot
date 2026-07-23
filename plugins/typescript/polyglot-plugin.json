@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "typescript",
   "crossDirImports": true,
-  "capabilities": {},
+  "capabilities": { "interfaces:runtimeIdentity": false },
   "spec": {
     "name": "typescript",
     "scalarType": {
@@ -566,6 +566,48 @@
         },
         " }"
       ]
+    },
+    "IsTest": {
+      "tmpl": [
+        { "emitChild": "node.operand", "side": "recv" },
+        " instanceof ",
+        { "type": "node.testType" }
+      ]
+    },
+    "AsCast": {
+      "case": {
+        "when": [
+          [
+            { "eq": [ "node.operandIsSimple", "true" ] },
+            {
+              "tmpl": [
+                "(",
+                { "emit": "node.operand" },
+                " instanceof ",
+                { "type": "node.castType" },
+                " ? ",
+                { "emit": "node.operand" },
+                " : null)"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "((",
+            { "get": "node.tempName" },
+            ") => ",
+            { "get": "node.tempName" },
+            " instanceof ",
+            { "type": "node.castType" },
+            " ? ",
+            { "get": "node.tempName" },
+            " : null)(",
+            { "emit": "node.operand" },
+            ")"
+          ]
+        }
+      }
     },
     "Unary": {
       "case": {
@@ -3968,7 +4010,7 @@
   "std": {
     "std.collections": {
       "List.type": "$0[]",
-      "List.init": "[]",
+      "List.constructor": "[]",
       "List.count": "$this.length",
       "List.add": "$this.push($0)",
       "List.clear": "$this.length = 0",
@@ -4028,11 +4070,11 @@
     },
     "std.core": {
       "Error.type": "Error",
-      "Error.init": "new $T($0)",
+      "Error.constructor": "new $T($0)",
       "Error.message": "$this.message",
       "Iterable.type": "Iterable<$0>",
       "Array.type": "$0[]",
-      "Array.init": "[]",
+      "Array.constructor": "[]",
       "Array.count": "$this.length",
       "i8.parse": "(Number.parseInt($0, 10) << 24 >> 24)",
       "i16.parse": "(Number.parseInt($0, 10) << 16 >> 16)",

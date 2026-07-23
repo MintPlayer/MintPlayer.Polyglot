@@ -164,8 +164,8 @@ private:
                 line(mods + (m.isMutable ? "var " : "let ") + m.name + ": " + typeStr(m.type) +
                      " => " + expr(*m.init));
                 break;
-            case MemberKind::Init:
-                line(mods + "init(" + params(m.params) + ") {");
+            case MemberKind::Constructor:
+                line(mods + "constructor(" + params(m.params) + ") {");
                 printBlock(m.body);
                 line("}");
                 break;
@@ -411,6 +411,10 @@ private:
             case ExprKind::TupleLit:   return "(" + exprList(e.args) + ")";
             case ExprKind::Cast:
                 return "(" + typeStr(e.castType) + ")" + atom(*e.lhs);
+            case ExprKind::Is:
+                return atom(*e.lhs) + " is " + typeStr(e.castType) + (e.text.empty() ? "" : " " + e.text);
+            case ExprKind::As:
+                return atom(*e.lhs) + " as " + typeStr(e.castType);
             case ExprKind::Extern:
                 return "extern(\"" + e.text + "\")";
             case ExprKind::Lambda: {

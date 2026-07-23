@@ -6,7 +6,7 @@
 // -1 so any recurrence is loud in the differential gate, not a coincidence-masked float divergence.
 class Box {
   var v: f64
-  init(v: f64) { this.v = v }
+  constructor(v: f64) { this.v = v }
 }
 
 fn classify(v: f64): i32 => if v != v { -1 } else { (i32)(v + 0.5) }

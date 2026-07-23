@@ -1,0 +1,43 @@
+// P37 B: `is` type tests over a class hierarchy — the bare bool form and the `if`-condition binding
+// form (`x is T name`, narrowed local scoped to the guarded branch), including a later `&&` conjunct
+// reading the binding. Emits C# `as`+null-check hoists, TS/PHP `instanceof`, Python `isinstance`.
+
+open class Shape {
+}
+
+class Circle : Shape {
+  var r: i32
+  constructor(r: i32) {
+    super()
+    this.r = r
+  }
+}
+
+class Square : Shape {
+  var s: i32
+  constructor(s: i32) {
+    super()
+    this.s = s
+  }
+}
+
+fn describe(x: Shape): i32 {
+  if x is Circle c {
+    return c.r
+  }
+  if x is Square q && q.s > 3 {
+    return q.s * 10
+  }
+  return -1
+}
+
+fn main() {
+  let c: Shape = Circle(7)
+  let q: Shape = Square(5)
+  let t: Shape = Square(2)
+  print(describe(c))     // 7
+  print(describe(q))     // 50
+  print(describe(t))     // -1  (bound but the second conjunct fails)
+  print(c is Circle)     // true
+  print(c is Square)     // false
+}

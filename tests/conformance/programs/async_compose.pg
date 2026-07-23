@@ -4,12 +4,12 @@
 // (PHP declares async unsupported — the run-php leg counts the refusal as expected.)
 
 class BadInput : Error {
-  init() { super("bad input") }
+  constructor() { super("bad input") }
 }
 
 class Fetcher {
   let base: i32
-  init(base: i32) { this.base = base }
+  constructor(base: i32) { this.base = base }
   async fn get(x: i32): i32 {
     if x < 0 { throw BadInput() }
     return this.base + x

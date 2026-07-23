@@ -4,15 +4,15 @@
 // makes all four identically correct only if narrowing works, so a `.expected` golden is load-bearing.
 
 class Shape {
-  init() {}
+  constructor() {}
 }
 class Circle : Shape {
   let r: i32
-  init(r: i32) { super(); this.r = r }
+  constructor(r: i32) { super(); this.r = r }
 }
 class Square : Shape {
   let side: i32
-  init(side: i32) { super(); this.side = side }
+  constructor(side: i32) { super(); this.side = side }
 }
 
 fn describe(s: Shape): i32 => match s {

@@ -53,18 +53,37 @@ inline constexpr Feature kAllFeatures[] = {
     Feature::PropertySetters,
 };
 
+// P37 slice 0 — the keyed capability vocabulary. A capability is addressed by a string key: either a
+// bare parent (`"operatorOverloading"` — the 16 Feature names plus the coverage-only entries like
+// `"interfaces"`), or a `parent:child` refinement (`"operatorOverloading:eq"`,
+// `"attributes:target.param"`). The vocabulary stays CLOSED and load-validated (PRD §3.E / P37 H5):
+// sub-keying a fixed entry into a small set of grades is refinement, not per-feature growth, and a
+// manifest declaring a key outside the vocabulary is a LOAD ERROR — never silently ignored. Stance
+// lookup applies the umbrella rule: a `parent:child` key with no explicit manifest entry inherits the
+// bare parent's stance (so PHP's `"operatorOverloading": false` covers every sub-key it doesn't
+// override), and an absent parent is "native" (supported) as before.
+bool isKnownCapabilityKey(const std::string& key);
+
 class Backend {
 public:
     virtual ~Backend() = default;
     virtual std::string name() const = 0;                 // stable id, e.g. "csharp" / "typescript"
     virtual std::string emit(const ir::Module& module) const = 0;
-    // Whether this backend can emit the given §3.A feature on its target (PRD §3.E capability flag).
-    virtual bool supports(Feature f) const = 0;
-    // The tri-state stance behind supports() (PRD §4.11): "native" | "emulated" | "false". supports() is the
-    // coarse gate (anything but "false"); the stance additionally lets the compiler WARN on "emulated" — the
-    // "we rewrote your call site, here's why" surface. Default derives from supports(), so a backend that only
-    // overrides supports() keeps working unchanged.
-    virtual std::string capabilityStance(Feature f) const { return supports(f) ? "native" : "false"; }
+    // The tri-state stance for a capability KEY (PRD §4.11 / P37 slice 0): "native" | "emulated" | "false".
+    // supports() is the coarse gate (anything but "false"); the stance additionally lets the compiler WARN
+    // on "emulated" — the "we rewrote your call site, here's why" surface. Implementations answering from a
+    // declared map must apply the umbrella rule (see isKnownCapabilityKey): exact key, else the bare parent
+    // of a `parent:child` key, else "native". The default supports everything.
+    virtual std::string capabilityStance(const std::string& key) const {
+        (void)key;
+        return "native";
+    }
+    // Convenience overloads over the keyed source of truth (kept so the 16 legacy features stay typed at
+    // call sites). Derived classes overriding the string virtual should `using Backend::capabilityStance;`
+    // if they also call the Feature form on a derived-typed object.
+    std::string capabilityStance(Feature f) const { return capabilityStance(std::string(featureName(f))); }
+    bool supports(const std::string& key) const { return capabilityStance(key) != "false"; }
+    bool supports(Feature f) const { return capabilityStance(f) != "false"; }
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }
@@ -86,7 +105,7 @@ public:
         return kEmpty;
     }
     // The target's std overlay arms (P19 slice 9b): the FFI templates its plugin ships for the std
-    // SKELETONS embedded in Core — keyed "<Class>.<member>" / "<Class>.type" / "<Class>.init" /
+    // SKELETONS embedded in Core — keyed "<Class>.<member>" / "<Class>.type" / "<Class>.constructor" /
     // "<receiver>.<extension>" / "<expectFnName>", flattened across std modules. The compiler injects
     // them onto the skeleton decls before capability-checking/lowering; a used member with no overlay
     // entry refuses (§3.E). Empty for a backend without std support.

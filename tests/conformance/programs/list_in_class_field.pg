@@ -7,7 +7,7 @@ import { List } from "std.collections"
 class Bag {
   var items: List<i32>
 
-  init() {
+  constructor() {
     this.items = List<i32>()
   }
 

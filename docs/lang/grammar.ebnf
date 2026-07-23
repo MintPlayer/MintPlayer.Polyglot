@@ -77,14 +77,14 @@ member =
       field_decl
     | property_decl
     | method_decl
-    | init_decl
+    | constructor_decl
     | indexer_decl
     | operator_decl
     | const_decl ;
 
 field_decl    = visibility , ( "let" | "var" ) , IDENT , ":" , type ,
                 [ "=" , expression ] , ";" ;
-init_decl     = visibility , "init" , "(" , [ param_list ] , ")" , block ;
+constructor_decl = visibility , "constructor" , "(" , [ param_list ] , ")" , block ;
 method_decl   = visibility , { method_modifier } , [ "async" ] , "fn" , IDENT ,
                 [ generic_params ] , "(" , [ param_list ] , ")" ,
                 [ ":" , type ] , function_body ;

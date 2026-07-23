@@ -75,6 +75,7 @@ $cases = [ordered]@{
     "finalizer.pg"              = @("refuses finalizers")
     "block_match_arm.pg"        = @("block-bodied match arm")
     "namespace_import.pg"       = @("namespace import")
+    "is_union.pg"               = @("union types/cases", "use 'match'")
 }
 
 foreach ($fx in $cases.Keys) {

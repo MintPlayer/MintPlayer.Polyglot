@@ -6,14 +6,14 @@ import "std.strings"
 
 class ParseError : Error {
   let position: i32
-  init(message: string, position: i32) {
+  constructor(message: string, position: i32) {
     super(message)
     this.position = position
   }
 }
 
 class RangeError : Error {
-  init(message: string) { super(message) }
+  constructor(message: string) { super(message) }
 }
 
 fn parsePercent(s: string): i32 {

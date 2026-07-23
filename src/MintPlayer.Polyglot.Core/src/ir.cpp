@@ -66,7 +66,7 @@ public:
         for (const auto& f : c.fields)
             line(std::string(f.isMutable ? "var " : "let ") + f.name + ": " + typeName(f.type) + (f.init ? " = " + expr(*f.init) : ""));
         if (c.hasInit) {
-            std::string s = "init(";
+            std::string s = "constructor(";
             for (std::size_t i = 0; i < c.initParams.size(); ++i) { if (i) s += ", "; s += c.initParams[i].name + ": " + typeName(c.initParams[i].type); }
             line(s + ") {");
             ++indent_;
@@ -233,6 +233,8 @@ private:
             case ExprKind::Unary: { const auto& u = static_cast<const Unary&>(e); repr = u.op + expr(*u.operand); break; }
             case ExprKind::Await: { const auto& a = static_cast<const Await&>(e); repr = "await " + expr(*a.operand); break; }
             case ExprKind::Cast: { const auto& c = static_cast<const Cast&>(e); repr = "(" + typeName(e.type) + ")" + expr(*c.operand); break; }
+            case ExprKind::IsTest: { const auto& t = static_cast<const IsTest&>(e); repr = expr(*t.operand) + " is " + typeName(t.testType); break; }
+            case ExprKind::AsCast: { const auto& a = static_cast<const AsCast&>(e); repr = expr(*a.operand) + " as " + typeName(a.castType); break; }
             case ExprKind::Extern: { repr = "extern(\"" + static_cast<const Extern&>(e).code + "\")"; break; }
             case ExprKind::Binary: {
                 const auto& b = static_cast<const Binary&>(e);

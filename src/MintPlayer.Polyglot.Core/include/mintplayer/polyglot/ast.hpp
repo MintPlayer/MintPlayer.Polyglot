@@ -105,6 +105,7 @@ enum class ExprKind {
     Unary, Binary, Range, Cast, Extern, Await,
     Call, Member, Index, NullAssert,
     Lambda, ListLit, TupleLit, With, IfExpr, Match,
+    Is, As, // P37 B: `x is T [name]` type test (bool) / `x as T` checked conversion (T?, null on failure)
 };
 
 struct Expr {
@@ -126,7 +127,7 @@ struct Expr {
     std::vector<MatchArm> arms; // Match arms
     std::vector<TypeRef> typeArgs; // Call: explicit generic args, e.g. List<i32>()
     std::vector<std::string> chunks; // InterpString: N+1 literal chunks around N holes (in `args`)
-    TypeRef castType;              // Cast: the target type in `(T)expr` (operand is `lhs`)
+    TypeRef castType;              // Cast/Is/As: the target/tested type (operand is `lhs`; Is binding is `text`)
     std::string overloadName;      // Call: the resolved overload's mangled name (set by sema); empty = none
     std::string staticOwner;       // Name/Call: resolves to a static/const member of this enclosing class
                                    // (set by sema so lowering can qualify it as `Owner.member`); empty = none
@@ -194,7 +195,7 @@ struct TargetBinding {
 };
 
 // A member of a record/class/interface body.
-enum class MemberKind { Field, Const, Init, Method, Operator, Property };
+enum class MemberKind { Field, Const, Constructor, Method, Operator, Property };
 struct Member {
     MemberKind kind;
     SourcePos pos;

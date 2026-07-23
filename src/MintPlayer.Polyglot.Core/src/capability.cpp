@@ -1,6 +1,5 @@
 #include "mintplayer/polyglot/capability.hpp"
 
-#include <array>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -24,6 +23,7 @@ public:
     std::vector<std::pair<std::vector<std::string>, SourcePos>> memberUses;
 
     void run(const CompilationUnit& u) {
+        for (const auto& i : u.interfaces) interfaces_.insert(i.name); // prescan: interface-typed runtime tests (B4)
         for (const auto& e : u.extensions) {
             mark(Feature::ExtensionMethods, e.pos);
             typeRef(e.receiver, e.pos);
@@ -60,14 +60,14 @@ public:
     }
 
 private:
-    std::array<bool, 32> seen_{}; // indexed by (int)Feature — first use of each is the one reported
+    std::unordered_set<std::string> seen_; // capability keys — first use of each is the one reported
+    std::unordered_set<std::string> interfaces_; // declared interface names (prescanned)
 
-    void mark(Feature f, SourcePos pos) {
-        auto i = static_cast<std::size_t>(f);
-        if (seen_[i]) return;
-        seen_[i] = true;
-        uses.push_back({f, pos});
+    void mark(std::string key, SourcePos pos) {
+        if (!seen_.insert(key).second) return;
+        uses.push_back({std::move(key), pos});
     }
+    void mark(Feature f, SourcePos pos) { mark(std::string(featureName(f)), pos); }
 
     // Fixed-width/unsigned integers and `char`/UTF-16 strings survive as syntactic TypeRef names even though
     // the MVP scalar lattice (Ty) collapses them — so type annotations are where these two axes are detected.
@@ -131,10 +131,14 @@ private:
         if (e->kind == ExprKind::Await)  mark(Feature::Async, e->pos);
         if (e->kind == ExprKind::CharLit) mark(Feature::Utf16Strings, e->pos);
         if (e->kind == ExprKind::Cast)   typeRef(e->castType, e->pos);
+        // P37 B4: an interface-typed runtime test gates per-target (TS interfaces erase — no instanceof).
+        if ((e->kind == ExprKind::Is || e->kind == ExprKind::As) &&
+            e->castType.kind == TypeRef::Kind::Named && interfaces_.count(e->castType.name))
+            mark("interfaces:runtimeIdentity", e->pos);
         for (const auto& ta : e->typeArgs) typeRef(ta, e->pos); // explicit generic args, e.g. List<u32>()
         if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name) {
             calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`
-            memberUses.push_back({{e->lhs->text + ".init"}, e->pos}); // or a construction `Type(args)`
+            memberUses.push_back({{e->lhs->text + ".constructor"}, e->pos}); // or a construction `Type(args)`
         }
         if (e->kind == ExprKind::Member && e->lhs) {
             std::vector<std::string> keys;
@@ -150,10 +154,17 @@ private:
         for (const auto& st : e->block) stmt(st.get());
         for (const auto& f : e->fields) expr(f.value.get());
         for (const auto& arm : e->arms) {
+            pattern(arm.pattern); // typed-arm interface tests (B4)
             expr(arm.guard.get());
             expr(arm.body.get());
             for (const auto& st : arm.block) stmt(st.get());
         }
+    }
+
+    void pattern(const Pattern& p) {
+        if (p.hasType && p.type.kind == TypeRef::Kind::Named && interfaces_.count(p.type.name))
+            mark("interfaces:runtimeIdentity", p.pos);
+        for (const auto& s : p.sub) pattern(s);
     }
 };
 
@@ -169,13 +180,13 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
     Collector c;
     c.run(unit);
     for (const auto& use : c.uses) {
-        const std::string stance = backend.capabilityStance(use.feature);
+        const std::string stance = backend.capabilityStance(use.key);
         if (stance == "false")
             diags.error(use.pos, std::string("target '") + backend.name() + "' does not support " +
-                                      featureName(use.feature) + "; remove it or drop that target");
+                                      use.key + "; remove it or drop that target");
         else if (stance == "emulated")
             diags.warn(use.pos, std::string("target '") + backend.name() + "' emulates " +
-                                     featureName(use.feature) + " (runtime behavior is faithful, but the emitted "
+                                     use.key + " (runtime behavior is faithful, but the emitted "
                                      "shape differs from a native construct)");
     }
 
@@ -212,7 +223,7 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
         if (!d.isExtern) continue;
         for (const auto& m : d.members) {
             if (!(m.hasBody && m.body.empty() && !m.exprBody)) continue; // binding-shaped members only
-            const std::string member = m.kind == MemberKind::Init ? "init" : m.name;
+            const std::string member = m.kind == MemberKind::Constructor ? "constructor" : m.name;
             boundMembers[d.name + "." + member] = hasArm(m.bindings);
         }
     }
@@ -288,7 +299,7 @@ private:
     }
     void members(const std::vector<Member>& ms) {
         for (const auto& m : ms) {
-            if (m.kind != MemberKind::Init) add(m.name, m.namePos);
+            if (m.kind != MemberKind::Constructor) add(m.name, m.namePos);
             params(m.params);
             for (const auto& s : m.body) stmt(s.get());
             expr(m.exprBody.get());

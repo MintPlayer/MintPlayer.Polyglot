@@ -10,7 +10,7 @@ class Grid {
   var cells: List<i32>
   let w: i32
 
-  init(w: i32, h: i32) {
+  constructor(w: i32, h: i32) {
     this.w = w
     this.cells = List<i32>()
     for i in 0..(w * h) { this.cells.add(i) }

@@ -27,7 +27,7 @@ const char* STD_COLLECTIONS = R"PG(
 extern class List<T> {
   type {
   }
-  init() {
+  constructor() {
   }
   let count: i32 {
   }
@@ -191,7 +191,7 @@ const char* STD_CORE = R"PG(
 extern class Error {
   type {
   }
-  init(message: string) {
+  constructor(message: string) {
   }
   let message: string {
   }
@@ -207,7 +207,7 @@ extern class Iterable<T> {
 extern class Array<T> {
   type {
   }
-  init() {
+  constructor() {
   }
   let count: i32 {
   }
@@ -504,7 +504,7 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         if (const std::string* t = find(c.name + ".type"); t && !hasArm(c.typeBindings))
             c.typeBindings.push_back({target, *t, c.pos});
         for (auto& mem : c.members) {
-            const std::string key = c.name + "." + (mem.kind == MemberKind::Init ? "init" : mem.name);
+            const std::string key = c.name + "." + (mem.kind == MemberKind::Constructor ? "constructor" : mem.name);
             if (const std::string* t = find(key); t && !hasArm(mem.bindings))
                 mem.bindings.push_back({target, *t, mem.pos});
         }

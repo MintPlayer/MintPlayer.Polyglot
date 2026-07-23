@@ -49,7 +49,7 @@ class FruitBody {
   var pendingMerge: bool
   var removed: bool
 
-  init(x: f64, y: f64, r: f64, tier: i32, invMass: f64, invI: f64) {
+  constructor(x: f64, y: f64, r: f64, tier: i32, invMass: f64, invI: f64) {
     this.x = x; this.y = y; this.r = r; this.tier = tier
     this.invMass = invMass; this.invI = invI
     this.vx = 0.0; this.vy = 0.0; this.angle = 0.0; this.angularVel = 0.0
@@ -84,7 +84,7 @@ class FruitCakeWorld {
   var mergeQueue: List<(FruitBody, FruitBody)> = List<(FruitBody, FruitBody)>()
   var contacts: List<Contact> = List<Contact>()
 
-  init(enableRotation: bool = false) { this.rotation = enableRotation }
+  constructor(enableRotation: bool = false) { this.rotation = enableRotation }
 
   let count: i32 => this.bodies.count
 

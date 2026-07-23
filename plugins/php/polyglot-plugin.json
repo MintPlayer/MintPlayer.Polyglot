@@ -178,7 +178,7 @@
   "std": {
     "std.collections": {
       "List.type": "\\ArrayObject",
-      "List.init": "new \\ArrayObject()",
+      "List.constructor": "new \\ArrayObject()",
       "List.count": "count($this)",
       "List.add": "$this[] = $0",
       "List.clear": "$this->exchangeArray([])",
@@ -205,11 +205,11 @@
     },
     "std.core": {
       "Error.type": "\\Exception",
-      "Error.init": "new $T($0)",
+      "Error.constructor": "new $T($0)",
       "Error.message": "$this->getMessage()",
       "Iterable.type": "iterable",
       "Array.type": "\\ArrayObject",
-      "Array.init": "new \\ArrayObject()",
+      "Array.constructor": "new \\ArrayObject()",
       "Array.count": "count($this)",
       "i8.parse": "intval($0)",
       "i16.parse": "intval($0)",
@@ -730,6 +730,46 @@
         },
         ")"
       ]
+    },
+    "IsTest": {
+      "tmpl": [
+        { "emitChild": "node.operand", "side": "recv" },
+        " instanceof ",
+        { "type": "node.testType" }
+      ]
+    },
+    "AsCast": {
+      "case": {
+        "when": [
+          [
+            { "eq": [ "node.operandIsSimple", "true" ] },
+            {
+              "tmpl": [
+                "(",
+                { "emit": "node.operand" },
+                " instanceof ",
+                { "type": "node.castType" },
+                " ? ",
+                { "emit": "node.operand" },
+                " : null)"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "(($",
+            { "get": "node.tempName" },
+            " = ",
+            { "emit": "node.operand" },
+            ") instanceof ",
+            { "type": "node.castType" },
+            " ? $",
+            { "get": "node.tempName" },
+            " : null)"
+          ]
+        }
+      }
     },
     "Unary": {
       "case": {

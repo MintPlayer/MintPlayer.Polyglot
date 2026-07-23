@@ -1,0 +1,7 @@
+// REFUSED (P37 B): `is`/`as` on union types/cases — union values are tagged data, cases are not
+// types to narrow to; `match` is the tool.
+union Shape {
+  Circle(r: i32)
+  Square(s: i32)
+}
+fn f(x: Shape): bool => x is Circle

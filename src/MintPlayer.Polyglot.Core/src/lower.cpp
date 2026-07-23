@@ -122,7 +122,7 @@ public:
         // substituted ctor template instead of a plain `new Type(...)`.
         for (const auto& c : unit.classes)
             for (const auto& mem : c.members)
-                if (mem.kind == MemberKind::Init && !mem.bindings.empty()) ctorBindings_[c.name] = &mem.bindings;
+                if (mem.kind == MemberKind::Constructor && !mem.bindings.empty()) ctorBindings_[c.name] = &mem.bindings;
         // Named base types, so a binding/member inherited from a base resolves on a subclass receiver
         // (e.g. `Error.message`, declared on the core-prelude `extern class Error`, on a `: Error` subclass).
         for (const auto& c : unit.classes) for (const auto& b : c.bases) if (!b.name.empty()) bases_[c.name].push_back(b.name);
@@ -452,7 +452,7 @@ private:
                     ic.fields.push_back(std::move(f));
                     break;
                 }
-                case MemberKind::Init:
+                case MemberKind::Constructor:
                     ic.hasInit = true;
                     for (const auto& p : mem.params) ic.initParams.push_back(irParam(p));
                     // A `super(...)` call carries the base-ctor args; hoist it out of the body so each
@@ -573,6 +573,11 @@ private:
             case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
             case ExprKind::Await:     return std::make_unique<ir::Await>(e.pos, e.type, expr(*e.lhs));
             case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
+            case ExprKind::Is: { // binding-less test (a bound form was rewritten by lowerIfCond)
+                auto t = std::make_unique<ir::IsTest>(e.pos, namedType("bool"), expr(*e.lhs), e.castType);
+                return t;
+            }
+            case ExprKind::As: return makeAsCast(e);
             // `x!` asserts the non-null type sema put on the node: a cast to it (C# unwraps a Nullable<T>
             // value type via `(int)x`; for reference types it's an identity cast — TS strips both).
             case ExprKind::NullAssert: return std::make_unique<ir::Cast>(e.pos, e.type, expr(*e.lhs));
@@ -777,7 +782,12 @@ private:
                 return std::make_unique<ir::ExprStmt>(s.pos, std::move(ev));
             }
             case StmtKind::If: {
-                auto node = std::make_unique<ir::If>(s.pos, expr(*s.value));
+                // P37 B3: `x is T name` on the condition's `&&` spine — hoist `let name = x as T` before
+                // the `if` (via pendingStmts_) and test `name != null` instead. Single-eval by
+                // construction (the operand is evaluated once, inside the AsCast), and every target then
+                // reads the narrowed binding directly: C# `var c = x as T; if (c != null …)`, TS
+                // `const c = x instanceof T ? x : null; if (c !== null …)`, Python/PHP alike.
+                auto node = std::make_unique<ir::If>(s.pos, lowerIfCond(*s.value));
                 node->thenBody = block(s.thenBody);
                 if (s.hasElse) { node->hasElse = true; node->elseBody = block(s.elseBody); }
                 return node;
@@ -841,9 +851,44 @@ private:
 
     std::vector<ir::StmtPtr> block(const std::vector<StmtPtr>& body) {
         std::vector<ir::StmtPtr> out;
-        for (const auto& s : body) if (auto st = stmt(*s)) out.push_back(std::move(st));
+        for (const auto& s : body) {
+            auto st = stmt(*s);
+            // Statements a lowering hoisted out of `s` (P37 B3 `is`-binding Lets) go first.
+            for (auto& p : pendingStmts_) out.push_back(std::move(p));
+            pendingStmts_.clear();
+            if (st) out.push_back(std::move(st));
+        }
         return out;
     }
+
+    // P37 B: `x as T` → ir::AsCast (checked conversion, null on failure). Targets whose guard
+    // re-evaluates the operand (TS/Python/PHP) bind an inline temp when it isn't a simple variable.
+    ir::ExprPtr makeAsCast(const Expr& e) {
+        TypeRef nt = e.castType;
+        nt.nullable = true;
+        auto cast = std::make_unique<ir::AsCast>(e.pos, nt, expr(*e.lhs), e.castType);
+        cast->operandIsSimple = e.lhs->kind == ExprKind::Name || e.lhs->kind == ExprKind::This;
+        if (!cast->operandIsSimple) cast->tempName = "__as" + std::to_string(tmpCounter_++);
+        return cast;
+    }
+    // P37 B3: lower an `if` condition, rewriting each bound `is` on the `&&` spine (see StmtKind::If).
+    ir::ExprPtr lowerIfCond(const Expr& e) {
+        if (e.kind == ExprKind::Binary && e.text == "&&") {
+            auto b = std::make_unique<ir::Binary>(e.pos, namedType("bool"), "&&",
+                                                  lowerIfCond(*e.lhs), lowerIfCond(*e.rhs));
+            return b;
+        }
+        if (e.kind == ExprKind::Is && !e.text.empty()) {
+            TypeRef nt = e.castType;
+            nt.nullable = true;
+            pendingStmts_.push_back(std::make_unique<ir::Let>(e.pos, e.text, false, nt, makeAsCast(e)));
+            return std::make_unique<ir::Binary>(e.pos, namedType("bool"), "!=",
+                                                std::make_unique<ir::Var>(e.pos, nt, e.text),
+                                                std::make_unique<ir::NullLit>(e.pos, TypeRef{}));
+        }
+        return expr(e);
+    }
+    std::vector<ir::StmtPtr> pendingStmts_; // hoisted by the CURRENT statement's lowering; flushed by block()
 };
 
 } // namespace

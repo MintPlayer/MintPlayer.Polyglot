@@ -1,0 +1,41 @@
+// P37 B: `as` checked conversion — the value on success, null on failure, NEVER throws (M1: a runtime
+// guard on TS/Python/PHP, never a bare TS `as` assertion). Covers `?.`/`??` interop on the native-
+// nullable result, `null as T`, and single evaluation of a non-simple operand (the side-effect pin).
+
+open class Animal {
+  var legs: i32
+  constructor(l: i32) {
+    this.legs = l
+  }
+}
+
+class Dog : Animal {
+  var nick: string
+  constructor() {
+    super(4)
+    this.nick = "rex"
+  }
+}
+
+var calls: i32 = 0
+
+fn mk(): Animal {
+  calls = calls + 1
+  return Dog()
+}
+
+fn nameOf(a: Animal): string {
+  let d = a as Dog
+  return d?.nick ?? "not a dog"
+}
+
+fn main() {
+  let d: Animal = Dog()
+  let plain: Animal = Animal(2)
+  print(nameOf(d))                 // rex
+  print(nameOf(plain))             // not a dog
+  print((null as Dog) == null)     // true
+  let got = mk() as Dog
+  print(calls)                     // 1  (non-simple operand evaluated exactly once)
+  print(got?.nick ?? "none")       // rex
+}

@@ -71,6 +71,11 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& b = static_cast<const ir::Binary&>(e_);
         return b.lhsIsUserType && !specTable(spec_, "opMethod", b.op).empty() ? "true" : "false";
     }
+    if (e_.kind == ir::ExprKind::AsCast) { // P37 B: guard-shape choice + inline temp (the With pattern)
+        const auto& a = static_cast<const ir::AsCast&>(e_);
+        if (path == "node.operandIsSimple") return a.operandIsSimple ? "true" : "false";
+        if (path == "node.tempName")        return a.tempName;
+    }
     if (e_.kind == ir::ExprKind::With) {
         const auto& w = static_cast<const ir::With&>(e_);
         if (path == "node.baseIsSimple")   return w.baseIsSimple ? "true" : "false";
@@ -332,6 +337,8 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Cast)  return static_cast<const ir::Cast&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
+        if (e_.kind == ir::ExprKind::IsTest) return static_cast<const ir::IsTest&>(e_).operand.get();
+        if (e_.kind == ir::ExprKind::AsCast) return static_cast<const ir::AsCast&>(e_).operand.get();
     }
     if (e_.kind == ir::ExprKind::Lambda && path == "node.body")
         return static_cast<const ir::Lambda&>(e_).body.get();
@@ -485,6 +492,10 @@ const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
         if (i < m.arms.size()) return &m.arms[i].pattern.testType;
     }
+    if (path == "node.testType" && e_.kind == ir::ExprKind::IsTest) // P37 B `is`
+        return &static_cast<const ir::IsTest&>(e_).testType;
+    if (path == "node.castType" && e_.kind == ir::ExprKind::AsCast) // P37 B `as`
+        return &static_cast<const ir::AsCast&>(e_).castType;
     return nullptr;
 }
 
@@ -1393,6 +1404,8 @@ const char* exprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::MakeCase: return "MakeCase";
         case ir::ExprKind::Unary:    return "Unary";
         case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::IsTest:   return "IsTest";
+        case ir::ExprKind::AsCast:   return "AsCast";
         case ir::ExprKind::With:       return "With";
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";
