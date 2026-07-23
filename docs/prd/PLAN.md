@@ -3432,7 +3432,7 @@ un-narrows of existing programs, new refusal fixtures (`finalizer`, `block_match
 and unit-test rows for each new refusal. **Gate green locally**: build, unit tests, all 106 conformance
 programs (9 PHP-refused by design), library gate (tsc strict), refusals. POSIX + release legs run on CI.
 
-## P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes — 📐 designed, plan ready (2026-07-20; maintainer request, PRD `docs/prd/p37-feature-batch/`, 8-agent scope investigation + 4-agent adversarial validation)
+## P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes — ✅ built + gated locally (2026-07-20 designed, 2026-07-23 §D revised + built; maintainer request, PRD `docs/prd/p37-feature-batch/`, 8-agent scope + 4-agent validation + 6-agent attributes follow-up)
 
 Four maintainer-requested language features, one cohesive PR, no back-compat. Full design + slice plan +
 code-grounded validation in `docs/prd/p37-feature-batch/{PRD,PLAN,ANALYSIS}.md`. Validation verdict
@@ -3469,5 +3469,28 @@ code-grounded validation in `docs/prd/p37-feature-batch/{PRD,PLAN,ANALYSIS}.md`.
   behavior-transforming decorators — refused (§D.1 two-model analysis stands).
 - **Shared prerequisite:** generalize the flat 16-member `Feature` enum to a keyed, load-validated closed
   capability vocabulary (`parent:child`), consumed by both C6 and D10/D11.
+
+**Built (2026-07-23, one PR — #65, 6 ordered commits).** All four workstreams + the shared keyed-capability
+slice, as designed with the deviations recorded in `docs/prd/p37-feature-batch/PLAN.md` §As-built (headline:
+`is`/`as` are class/record-only with unions pointed at `match`; the `is` binding lowers to a hoisted
+`as`+null-check before the `if`; conversions spell `operator fn explicit(): T`; Tier 1 attachment points v1
+= type/method/function with the binding template being the whole verbatim native line; D13's binding-only
+package kind deferred; a new same-line rule for subscript `[`; member-call type args now refuse instead of
+silently dropping). Fixes #62 + #63. New machinery: `ExprKind::Is/As` + `ir::IsTest/AsCast`,
+`interfaces:runtimeIdentity` + `operatorOverloading:*` + `attributes:target.*` keyed capabilities (PHP flips
+to `:eq`+`:indexers`), TS static-on-type operators (incl. static null-tolerant `eq` and static `to<T>()`
+conversions), Python `is None` null-literal tests, C# synthesized `operator ==`/`!=` for classes with user
+eq, the Meta intrinsics resolved in shared sema (M6) and lowered to inline constants, and the one-injection-
+point Tier 1 attribute-line emission.
+
+**Acceptance coverage:** 8 net-new differential conformance programs (`is_binding`, `as_cast`,
+`operator_unary`, `operator_bitwise`(+`.expected`), `operator_compound`, `operator_convert`,
+`operator_null_eq` (M3 pin), `meta_query` — the first differentially-executable attribute surface, PHP
+included), 4 new refusal fixtures (`is_union`, `implicit_conversion`, `meta_typeparam` + the msbuild
+embedded-fixture rename), ~40 new unit-test rows covering every emission shape and refusal, and the M4
+no-bare-`.constructor` golden. **Gate green locally**: build, unit tests, parity, cli-smoke, refusals, LSP,
+watch, nullable, library (tsc strict), sample emit, NuGet/P11, and all 114 conformance programs agreeing
+across C#/TS/Python/PHP (11 php-refused by design). Registry + POSIX legs run on CI (PR #65).
 Deferred follow-ups (recorded, not built): cross-package operator *resolution*; `return:`/type-param
-attributes; auto-included attribute stdlib package. Not started.
+attributes; auto-included attribute stdlib package; Tier 2 param metadata; `AllowMultiple`;
+`Meta.getInherited`/`Meta.all<T>()`; dual-tier declarations; the P30 binding-only package kind.
