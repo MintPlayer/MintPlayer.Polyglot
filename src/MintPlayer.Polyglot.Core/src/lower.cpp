@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/lower.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <functional>
 #include <unordered_map>
@@ -144,6 +145,86 @@ public:
         };
         for (const auto& r : unit.records) noteIndexer(r.name, r.members);
         for (const auto& c : unit.classes) noteIndexer(c.name, c.members);
+        // P37 D: attribute machinery — Tier 1 bindings by name, and the Tier 2 materialized set (attribute
+        // records some Meta query constructs; the rest emit nothing).
+        unit_ = &unit;
+        for (const auto& ea : unit.externAttrs) externAttrMap_[ea.name] = &ea;
+        for (const auto& n : unit.metaMaterialized) materialized_.insert(n);
+    }
+
+    // P37 D Tier 1: render each pass-through attribute into its native annotation line for the ACTIVE
+    // target — the arm's template IS the whole line, with $0…/$name substituted from the (constant) args;
+    // the arm's import line is accumulated once onto the module. Tier 2 attributes render nothing.
+    std::vector<std::string> renderAttrLines(const std::vector<AttrUse>& attrs) {
+        std::vector<std::string> out;
+        for (const auto& a : attrs) {
+            auto it = externAttrMap_.find(a.name);
+            if (it == externAttrMap_.end()) continue; // Tier 2: compile-time data, no emission
+            const ExternAttrDecl& d = *it->second;
+            const ExternAttrArm* arm = nullptr;
+            for (const auto& cand : d.arms)
+                if (cand.target == target_ && !cand.refuse) arm = &cand;
+            if (!arm) continue; // no arm for this target: D12 refused it before lowering
+            // Resolve each declared param to its constant value (positional, named, or default).
+            std::vector<std::string> values;
+            for (std::size_t i = 0; i < d.params.size(); ++i) {
+                const Expr* v = nullptr;
+                std::size_t positional = 0;
+                for (const auto& arg : a.args) {
+                    if (arg.name.empty()) {
+                        if (positional == i) { v = arg.value.get(); }
+                        ++positional;
+                    } else if (arg.name == d.params[i].name) {
+                        v = arg.value.get();
+                    }
+                }
+                if (!v && d.params[i].hasDefault) v = d.params[i].defaultValue.get();
+                values.push_back(v ? constAttrText(*v) : std::string());
+            }
+            std::string line = arm->code;
+            // $<name> first (longest names first so a prefix never clobbers), then $0…$n.
+            std::vector<std::size_t> order(d.params.size());
+            for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+            std::sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) {
+                return d.params[x].name.size() > d.params[y].name.size();
+            });
+            for (std::size_t i : order) substAll(line, "$" + d.params[i].name, values[i]);
+            for (std::size_t i = 0; i < values.size(); ++i) substAll(line, "$" + std::to_string(i), values[i]);
+            out.push_back(std::move(line));
+            if (!arm->importLine.empty()) {
+                bool dup = false;
+                for (const auto& l : attrImports_) if (l == arm->importLine) dup = true;
+                if (!dup) attrImports_.push_back(arm->importLine);
+            }
+        }
+        return out;
+    }
+    static void substAll(std::string& s, const std::string& key, const std::string& val) {
+        for (std::size_t i = 0; (i = s.find(key, i)) != std::string::npos; i += val.size())
+            s.replace(i, key.size(), val);
+    }
+    // Render a constant attribute argument as target source text (bools differ per target; strings are
+    // double-quoted with minimal escaping, which every current target accepts).
+    std::string constAttrText(const Expr& v) const {
+        switch (v.kind) {
+            case ExprKind::IntLit:
+            case ExprKind::FloatLit: return v.text;
+            case ExprKind::BoolLit:
+                if (target_ == "python") return v.boolVal ? "True" : "False";
+                return v.boolVal ? "true" : "false";
+            case ExprKind::StringLit: {
+                std::string out = "\"";
+                for (char c : v.text) {
+                    if (c == '"' || c == '\\') out += '\\';
+                    out += c;
+                }
+                return out + "\"";
+            }
+            case ExprKind::Unary:
+                return "-" + (v.lhs ? constAttrText(*v.lhs) : std::string());
+            default:
+                return "";
+        }
     }
 
     // Build an ir::Bound from a receiver, args and a "Type.member" binding — the ACTIVE target's arm
@@ -186,8 +267,12 @@ public:
             m.unions.push_back(std::move(iu));
         }
         for (const auto& r : unit.records) {
+            // P37 D Tier 2: an `attribute` record is emitted ONLY when some Meta query materialized it —
+            // attached-but-unqueried metadata produces zero runtime output.
+            if (r.isAttribute && !materialized_.count(r.name)) continue;
             ir::Record rec;
             rec.name = r.name;
+            rec.attrLines = renderAttrLines(r.attributes);
             rec.generics = generics(r.generics);
             for (const auto& b : r.bases) rec.bases.push_back(b);
             for (const auto& f : r.fields) rec.fields.push_back({f.name, f.type});
@@ -254,6 +339,7 @@ public:
             f.isEntry = (fn.name == "main" && fn.params.empty());
             f.isAsync = fn.isAsync;
             for (const auto& p : fn.params) f.params.push_back(irParam(p));
+            f.attrLines = renderAttrLines(fn.attributes);
             sawYield_ = false;
             f.body = block(fn.body);
             f.isIterator = sawYield_;
@@ -261,6 +347,7 @@ public:
             f.globalRefs = scanGlobalRefs(moduleGlobals_, fn.params, fn.body, nullptr);
             m.functions.push_back(std::move(f));
         }
+        m.attrImports = attrImports_; // P37 D Tier 1: verbatim import/using lines for used bindings
 
         // Stamp ir::Class.baseHasInit transitively now that every class/interface is lowered (issue #48).
         // A base contributes a chainable ctor when it is a user class with an `init` (or one whose own
@@ -295,6 +382,10 @@ public:
 
 private:
     std::string target_;        // the active target name — binding/extern arms are picked for it
+    const CompilationUnit* unit_ = nullptr; // P37 D: Meta resolution re-reads decl attributes
+    std::unordered_map<std::string, const ExternAttrDecl*> externAttrMap_; // Tier 1 bindings by name
+    std::unordered_set<std::string> materialized_;  // Tier 2 attribute records some Meta query constructs
+    std::vector<std::string> attrImports_;          // Tier 1 import/using lines (deduped, verbatim)
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
@@ -443,6 +534,7 @@ private:
     ir::Class lowerClass(const ClassDecl& c) {
         ir::Class ic;
         ic.name = c.name;
+        ic.attrLines = renderAttrLines(c.attributes);
         ic.generics = generics(c.generics);
         ic.bases = c.bases;
         for (const auto& mem : c.members) {
@@ -505,6 +597,7 @@ private:
     ir::Method method(const Member& m) {
         ir::Method im;
         im.name = m.name;
+        im.attrLines = renderAttrLines(m.attributes);
         im.isAsync = m.isAsync;
         for (const auto& mod : m.modifiers) {
             if (mod == "static") im.isStatic = true;
@@ -665,6 +758,13 @@ private:
                 return lam;
             }
             case ExprKind::Call: {
+                // P37 D Tier 2: a Meta intrinsic resolves NOW, at transpile time — the output carries
+                // only the answer: a bool literal, a construction of the attribute record from its
+                // recorded constant args, or a typed null. Nothing is looked up at run time.
+                if (e.lhs && e.lhs->kind == ExprKind::Member && e.lhs->lhs &&
+                    e.lhs->lhs->kind == ExprKind::Name && e.lhs->lhs->text == "Meta" &&
+                    e.typeArgs.size() == 2 && !typeNames_.count("Meta"))
+                    return lowerMetaCall(e);
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
                     // Static call `Type.method(args)`: the receiver is a type name, not a value.
                     if (e.lhs->lhs->kind == ExprKind::Name &&
@@ -913,6 +1013,56 @@ private:
             if (st) out.push_back(std::move(st));
         }
         return out;
+    }
+
+    // P37 D Tier 2 — resolve a Meta query against the unit's recorded attribute attachments.
+    ir::ExprPtr lowerMetaCall(const Expr& e) {
+        const std::string& method = e.lhs->text;
+        const std::string& tn = e.typeArgs[0].name;
+        const std::string& an = e.typeArgs[1].name;
+        const std::vector<AttrUse>* attrs = nullptr;
+        if (method == "member") {
+            const std::string& mem = e.args.empty() ? std::string() : e.args[0]->text;
+            auto memberAttrs = [&](const std::vector<Member>& ms) -> const std::vector<AttrUse>* {
+                for (const auto& m : ms) if (m.name == mem) return &m.attributes;
+                return nullptr;
+            };
+            for (const auto& c : unit_->classes) if (c.name == tn) attrs = memberAttrs(c.members);
+            for (const auto& r : unit_->records) if (r.name == tn && !attrs) attrs = memberAttrs(r.members);
+        } else {
+            for (const auto& c : unit_->classes) if (c.name == tn) attrs = &c.attributes;
+            for (const auto& r : unit_->records) if (r.name == tn) attrs = &r.attributes;
+        }
+        const AttrUse* use = nullptr;
+        if (attrs)
+            for (const auto& a : *attrs) if (a.name == an) use = &a;
+        if (method == "has")
+            return std::make_unique<ir::BoolLit>(e.pos, namedType("bool"), use != nullptr);
+        if (!use) {
+            TypeRef nt = namedType(an);
+            nt.nullable = true;
+            return std::make_unique<ir::NullLit>(e.pos, nt);
+        }
+        const RecordDecl* adecl = nullptr;
+        for (const auto& r : unit_->records) if (r.name == an) adecl = &r;
+        auto n = std::make_unique<ir::New>(e.pos, namedType(an), an);
+        if (adecl) {
+            for (std::size_t i = 0; i < adecl->fields.size(); ++i) {
+                const Expr* v = nullptr;
+                std::size_t positional = 0;
+                for (const auto& arg : use->args) {
+                    if (arg.name.empty()) {
+                        if (positional == i) v = arg.value.get();
+                        ++positional;
+                    } else if (arg.name == adecl->fields[i].name) {
+                        v = arg.value.get();
+                    }
+                }
+                if (!v && adecl->fields[i].hasDefault) v = adecl->fields[i].defaultValue.get();
+                if (v) n->args.push_back(expr(*v));
+            }
+        }
+        return n;
     }
 
     // P37 B: `x as T` → ir::AsCast (checked conversion, null on failure). Targets whose guard

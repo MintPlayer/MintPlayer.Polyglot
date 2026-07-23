@@ -78,6 +78,19 @@ struct FieldInit {           // `name = value` inside a `with { ... }` expressio
     std::string name;
     ExprPtr value;
 };
+// P37 D — an attribute attached to a declaration: `[Name(args)]`. One usage syntax for both tiers;
+// the resolved DECLARATION picks the tier (Tier 1 `extern attribute` pass-through vs Tier 2
+// `attribute` portable metadata). Args are compile-time constants; a named arg carries its name.
+struct AttrArg {
+    std::string name; // empty = positional
+    ExprPtr value;
+    SourcePos pos;
+};
+struct AttrUse {
+    std::string name;
+    std::vector<AttrArg> args;
+    SourcePos pos;
+};
 
 // ---- patterns (for `match`) ----
 enum class PatKind { Wildcard, Literal, Binding, Ctor, Tuple };
@@ -181,6 +194,7 @@ struct FunctionDecl {
     SourcePos bodyEnd;             // end of the body (the `}` / end of `=> expr`) — the scope extent for locals (§4.8 completion)
     bool isExpect = false;         // `expect fn` — a capability signature with no body (§4.4)
     std::string actualTarget;      // `actual(<target>) fn` — the per-target implementation; empty otherwise
+    std::vector<AttrUse> attributes; // P37 D: attributes attached to this function
     bool isAsync = false;          // `async fn` — a coroutine; each backend wraps the return in Task/Promise/async def (§4.7)
     std::string originModule;      // module linking (§4.5): "" = entry-own; a canonical path = imported user module; "<prelude>" = core/lib/std
 };
@@ -192,6 +206,27 @@ struct TargetBinding {
     std::string target;   // "csharp" / "typescript"
     std::string code;     // template, e.g. "$this.Add($0)" or "$this = $this.filter(e => !($0(e)))"
     SourcePos pos;
+};
+
+
+// P37 D Tier 1 — `extern attribute Name(params) { actual(t) extern("…") [import "…"] | actual(t) refuse }`:
+// a typed binding to each target's NATIVE annotation. The `code` template is the ENTIRE annotation line
+// emitted verbatim above the declaration (`[X($0)]` / `@X($0)` / `#[X($0)]`); `importLine` is a verbatim
+// import/using line accumulated once into the module header. `refuse` = a loud per-target refusal arm.
+struct ExternAttrArm {
+    std::string target;
+    std::string code;
+    std::string importLine;
+    bool refuse = false;
+    SourcePos pos;
+};
+struct ExternAttrDecl {
+    std::string name;
+    SourcePos pos;
+    SourcePos namePos;
+    std::vector<Param> params;
+    std::vector<ExternAttrArm> arms;
+    std::string originModule;
 };
 
 // A member of a record/class/interface body.
@@ -221,6 +256,7 @@ struct Member {
     std::string setterParam;
     std::vector<StmtPtr> setterBody;
     std::vector<TargetBinding> bindings; // Method/Property: per-target FFI binding arms; empty = ordinary
+    std::vector<AttrUse> attributes;     // P37 D: attributes on a method (v1: methods only among members)
 };
 
 struct RecordDecl {
@@ -232,6 +268,10 @@ struct RecordDecl {
     std::vector<TypeRef> bases;          // implemented interfaces
     std::vector<Member> members;         // optional body
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
+    // P37 D Tier 2: declared via `attribute Name(params)` — a pure data shape (no body). Reuses the
+    // record machinery end-to-end but is EMITTED only if some Meta query materializes it.
+    bool isAttribute = false;
+    std::vector<AttrUse> attributes;     // attributes attached to this record
 };
 struct ClassDecl {
     std::vector<std::string> modifiers;
@@ -244,6 +284,7 @@ struct ClassDecl {
     bool isExtern = false;               // `extern class`: native-backed std type; not emitted (only its bindings)
     std::vector<TargetBinding> typeBindings; // `extern class`: the `type { actual… }` per-target spelling arms
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
+    std::vector<AttrUse> attributes;     // P37 D: attributes attached to this class
 };
 struct InterfaceDecl {
     std::string name;
@@ -324,10 +365,14 @@ struct CompilationUnit {
     std::vector<UnionDecl> unions;
     std::vector<RecordDecl> records;
     std::vector<ClassDecl> classes;
+    std::vector<ExternAttrDecl> externAttrs; // P37 D Tier 1 declarations
     std::vector<InterfaceDecl> interfaces;
     std::vector<ExtensionDecl> extensions;
     std::vector<ValueDecl> values;
     std::vector<FunctionDecl> functions;
+    // P37 D Tier 2: attribute types some Meta query materializes (filled by sema, read by lowering —
+    // an attached-but-unqueried attribute record emits ZERO output).
+    std::vector<std::string> metaMaterialized;
 };
 
 } // namespace mintplayer::polyglot

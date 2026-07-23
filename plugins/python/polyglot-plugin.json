@@ -1250,21 +1250,83 @@
     "Program": {
       "seq": [
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "module.attrImportsBlock",
+                      ""
+                    ]
+                  }
+                },
+                {
+                  "line": {
+                    "get": "module.attrImportsBlock"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
           "mapDecl": "module.imports",
           "each": {
             "line": {
               "case": {
                 "when": [
                   [
-                    { "eq": [ "item.isNamespace", "true" ] },
-                    { "tmpl": [ "import ", { "get": "item.path" }, " as ", { "get": "item.ns" } ] }
+                    {
+                      "eq": [
+                        "item.isNamespace",
+                        "true"
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        "import ",
+                        {
+                          "get": "item.path"
+                        },
+                        " as ",
+                        {
+                          "get": "item.ns"
+                        }
+                      ]
+                    }
                   ],
                   [
-                    { "not": { "eq": [ "item.names", "" ] } },
-                    { "tmpl": [ "from ", { "get": "item.path" }, " import ", { "get": "item.names" } ] }
+                    {
+                      "not": {
+                        "eq": [
+                          "item.names",
+                          ""
+                        ]
+                      }
+                    },
+                    {
+                      "tmpl": [
+                        "from ",
+                        {
+                          "get": "item.path"
+                        },
+                        " import ",
+                        {
+                          "get": "item.names"
+                        }
+                      ]
+                    }
                   ]
                 ],
-                "else": { "tmpl": [ "import ", { "get": "item.path" } ] }
+                "else": {
+                  "tmpl": [
+                    "import ",
+                    {
+                      "get": "item.path"
+                    }
+                  ]
+                }
               }
             }
           }

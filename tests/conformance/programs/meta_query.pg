@@ -1,0 +1,40 @@
+// P37 D Tier 2: portable inert metadata — `attribute` data shapes attached to declarations, queried
+// via Meta intrinsics RESOLVED AT TRANSPILE TIME (H6): the emitted program contains only the answers
+// (bool literals, constructions from the recorded constants, typed nulls). No runtime tables, no
+// reflection — and no capability: this runs on all four targets, PHP included.
+
+attribute Range(min: i32, max: i32)
+attribute Label(text: string = "none")
+
+[Range(1, 8), Label("box")]
+class Box {
+  [Range(0, 100)]
+  var fill: i32
+  constructor() {
+    this.fill = 0
+  }
+}
+
+[Label]
+class Plain {
+  var v: i32
+  constructor() {
+    this.v = 0
+  }
+}
+
+fn main() {
+  print(Meta.has<Box, Range>())                  // true
+  print(Meta.has<Plain, Range>())                // false
+  let r = Meta.get<Box, Range>()
+  print(r?.min ?? -1)                            // 1
+  print(r?.max ?? -1)                            // 8
+  print(Meta.get<Plain, Range>() == null)        // true
+  let l = Meta.get<Box, Label>()
+  print(l?.text ?? "?")                          // box
+  print(Meta.get<Plain, Label>()?.text ?? "?")   // none  (declared default)
+  let f = Meta.member<Box, Range>("fill")
+  print(f?.max ?? -1)                            // 100
+  print(Meta.member<Plain, Range>("v") == null)  // true
+  print(Meta.member<Box, Label>("fill") == null) // true  (fill carries Range, not Label)
+}

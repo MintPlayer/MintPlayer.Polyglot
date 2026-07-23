@@ -450,6 +450,7 @@ struct LocalFunc : Stmt {
     LocalFunc(SourcePos p, std::string n) : Stmt(StmtKind::LocalFunc, p), name(std::move(n)) {}
 };
 struct Function {
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
     std::vector<GenericParam> generics;
@@ -475,6 +476,7 @@ struct RecordField {
 };
 enum class MethodKind { Method, Operator, Property };
 struct Method {
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     MethodKind kind = MethodKind::Method;
     std::string name;             // method/property name; operator method name (e.g. "plus")
     std::string opSymbol;         // Operator: the source symbol ("+", "-", ...); else empty
@@ -505,6 +507,7 @@ struct Method {
     std::vector<std::string> globalRefs;
 };
 struct Record { // an immutable data type (record)
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;        // implemented interfaces
@@ -543,6 +546,7 @@ struct ClassField {
     ExprPtr init;   // optional field initializer (may be null)
 };
 struct Class { // a mutable reference type
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;        // base class and/or interfaces (single base drives `extends`/`: Base`)
@@ -594,6 +598,7 @@ struct ModuleImport {
 };
 
 struct Module {
+    std::vector<std::string> attrImports; // P37 D Tier 1: verbatim import/using lines (deduped) for used attribute bindings
     std::vector<Enum> enums;
     std::vector<Union> unions;
     std::vector<Record> records;

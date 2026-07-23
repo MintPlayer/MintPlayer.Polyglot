@@ -2458,6 +2458,27 @@
                 {
                   "not": {
                     "eq": [
+                      "module.attrImportsBlock",
+                      ""
+                    ]
+                  }
+                },
+                {
+                  "line": {
+                    "get": "module.attrImportsBlock"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
                       "module.globals.count",
                       "0"
                     ]
@@ -2507,7 +2528,31 @@
                 },
                 {
                   "block": {
-                    "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotExtensions" ] },
+                    "head": {
+                      "tmpl": [
+                        {
+                          "fn": "access"
+                        },
+                        "static ",
+                        {
+                          "case": {
+                            "when": [
+                              [
+                                {
+                                  "eq": [
+                                    "module.linked",
+                                    "true"
+                                  ]
+                                },
+                                "partial "
+                              ]
+                            ],
+                            "else": ""
+                          }
+                        },
+                        "class PolyglotExtensions"
+                      ]
+                    },
                     "body": [
                       {
                         "mapMembers": "module.extensions",
@@ -2577,7 +2622,31 @@
         },
         {
           "block": {
-            "head": { "tmpl": [ { "fn": "access" }, "static ", { "case": { "when": [ [ { "eq": [ "module.linked", "true" ] }, "partial " ] ], "else": "" } }, "class PolyglotProgram" ] },
+            "head": {
+              "tmpl": [
+                {
+                  "fn": "access"
+                },
+                "static ",
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "module.linked",
+                            "true"
+                          ]
+                        },
+                        "partial "
+                      ]
+                    ],
+                    "else": ""
+                  }
+                },
+                "class PolyglotProgram"
+              ]
+            },
             "body": [
               {
                 "mapDecl": "module.globals",

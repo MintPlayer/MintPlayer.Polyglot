@@ -3295,10 +3295,37 @@
           "line": "<?php"
         },
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "module.attrImportsBlock",
+                      ""
+                    ]
+                  }
+                },
+                {
+                  "line": {
+                    "get": "module.attrImportsBlock"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
           "mapDecl": "module.imports",
           "each": {
             "line": {
-              "tmpl": [ "require_once __DIR__ . '/", { "get": "item.path" }, ".php';" ]
+              "tmpl": [
+                "require_once __DIR__ . '/",
+                {
+                  "get": "item.path"
+                },
+                ".php';"
+              ]
             }
           }
         },

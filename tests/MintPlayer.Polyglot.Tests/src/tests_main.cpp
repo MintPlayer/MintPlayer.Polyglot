@@ -1678,6 +1678,95 @@ int main() {
         check(!phpAr.ok && namedArith, "P37 s3 (C6): PHP still refuses :arithmetic, by sub-key");
     }
 
+    // ---- P37 slice 4: attributes — Tier 2 portable metadata + Tier 1 pass-through ----------------------
+    {
+        // Tier 2: Meta queries resolve at transpile time and lower to inline constants.
+        const char* meta =
+            "attribute Range(min: i32, max: i32)\n"
+            "[Range(1, 8)]\nclass Box {\n  [Range(0, 100)]\n  var fill: i32\n"
+            "  constructor() { this.fill = 0 }\n}\n"
+            "class Plain {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n";
+        std::string q = std::string(meta) +
+            "fn main() {\n  print(Meta.has<Box, Range>())\n  print(Meta.has<Plain, Range>())\n"
+            "  let r = Meta.get<Box, Range>()\n  print(r?.max ?? -1)\n"
+            "  print(Meta.member<Box, Range>(\"fill\")?.max ?? -1)\n}\n";
+        EmitResult ts = compileStd(q, findTarget("typescript"));
+        check(ts.ok, "P37 s4: Meta queries compile on typescript");
+        check(has(ts.code, "new Range(1, 8)") && has(ts.code, "new Range(0, 100)"),
+              "P37 s4: Meta.get/member lower to inline constructions of the recorded constants");
+        check(!has(ts.code, "Meta"), "P37 s4: no Meta runtime surface exists in the output");
+        EmitResult php = compileStd(q, findTarget("php"));
+        check(php.ok, "P37 s4: Tier 2 metadata needs NO capability — it runs on PHP too");
+
+        // Zero output when unqueried: attach but never query -> the attribute record vanishes.
+        std::string unq = std::string(meta) + "fn main() { print(Box().fill) }\n";
+        EmitResult tsu = compileStd(unq, findTarget("typescript"));
+        check(tsu.ok && !has(tsu.code, "Range"),
+              "P37 s4: an attached-but-unqueried attribute emits ZERO runtime output");
+
+        // Tier 1: the binding IS the native annotation line; imports accumulate once; refuse/D12 gate.
+        const char* bind =
+            "extern attribute JsonProp(name: string) {\n"
+            "  actual(csharp) extern(\"[Newtonsoft.Json.JsonProperty($0)]\") import \"using Newtonsoft.Json;\"\n"
+            "  actual(typescript) extern(\"@JsonProp($name)\")\n"
+            "  actual(python) refuse\n"
+            "}\n";
+        std::string prog1 = std::string(bind) +
+            "[JsonProp(\"x\")]\nclass C {\n  var x: i32\n  constructor() { this.x = 0 }\n}\n"
+            "fn main() { print(C().x) }\n";
+        EmitResult cs = compileStd(prog1, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "[Newtonsoft.Json.JsonProperty(\"x\")]") &&
+                  has(cs.code, "using Newtonsoft.Json;"),
+              "P37 s4 (Tier 1): C# gets the native attribute line + the using once");
+        EmitResult ts1 = compileStd(prog1, findTarget("typescript"));
+        check(ts1.ok && has(ts1.code, "@JsonProp(\"x\")"),
+              "P37 s4 (Tier 1): TS gets the decorator line ($name substitution)");
+        EmitResult py1 = compileStd(prog1, findTarget("python"));
+        bool refusedArm = false;
+        for (const auto& d : py1.diagnostics) if (has(d.message, "declares `refuse`")) refusedArm = true;
+        check(!py1.ok && refusedArm, "P37 s4 (D12): an explicit `refuse` arm refuses loudly");
+        EmitResult ph1 = compileStd(prog1, findTarget("php"));
+        bool noArm = false;
+        for (const auto& d : ph1.diagnostics) if (has(d.message, "no binding for target 'php'")) noArm = true;
+        check(!ph1.ok && noArm, "P37 s4 (D12): a target with NO arm refuses loudly");
+
+        // Attachment-point gating: TS has no function decorators.
+        std::string fnAttr = std::string(bind) +
+            "[JsonProp(\"f\")]\nfn helper(): i32 => 1\nfn main() { print(helper()) }\n";
+        EmitResult tsf = compileStd(fnAttr, findTarget("typescript"));
+        bool gatedFn = false;
+        for (const auto& d : tsf.diagnostics)
+            if (has(d.message, "attributes:target.function")) gatedFn = true;
+        check(!tsf.ok && gatedFn, "P37 s4 (D10): a function attribute gates on TS (no function decorators)");
+        check(compileStd(fnAttr, findTarget("csharp")).ok,
+              "P37 s4 (D10): the same function attribute is fine on C#");
+
+        // M6 + attachment refusals.
+        auto refuses4 = [&](const std::string& src, const char* frag, const char* label) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+            check(!r.ok && named, label);
+        };
+        refuses4(std::string(meta) + "fn f<T>(): bool => Meta.has<T, Range>()\nfn main() { }\n",
+                 "cannot be a type parameter",
+                 "P37 s4 (M6): a type-parameter type arg refuses — permanently");
+        refuses4(std::string(meta) + "fn f(n: string): bool => Meta.member<Box, Range>(n) != null\nfn main() { }\n",
+                 "STRING LITERAL", "P37 s4 (M6): a computed member name refuses");
+        refuses4(std::string(meta) + "fn main() { print(Meta.member<Box, Range>(\"nope\") == null) }\n",
+                 "no member named 'nope'", "P37 s4: an unknown member name refuses");
+        refuses4("attribute Tag()\n[Tag, Tag]\nclass C {\n  var v: i32\n  constructor() { this.v = 0 }\n}\nfn main() { }\n",
+                 "applied more than once", "P37 s4: repeat application refuses (AllowMultiple deferred)");
+        refuses4("attribute Tag(v: i32)\nfn cfg(): i32 => 3\n[Tag(cfg())]\nclass C {\n  var v: i32\n  constructor() { this.v = 0 }\n}\nfn main() { }\n",
+                 "compile-time constants", "P37 s4: a non-const attribute arg refuses");
+        refuses4("attribute Tag()\nfn main() {\n  let t = Tag()\n}\n",
+                 "cannot be constructed directly", "P37 s4: direct construction of an attribute refuses");
+        refuses4("class C {\n  var v: i32\n  constructor() { this.v = 0 }\n  fn m(): i32 => this.v\n}\n"
+                 "fn main() {\n  let c = C()\n  print(c.m<i32>())\n}\n",
+                 "explicit type arguments are not supported",
+                 "P37 s4 (D.3): silently-ignored member-call type args now refuse (anti-silent-drop)");
+    }
+
     // ---- P19 slices 13-15: reserved/forbidden identifiers (identifier hygiene, json-plugins.md §7) -----
     {
         // A name a target's generated code uses is refused for that target only (kind-blind v1).

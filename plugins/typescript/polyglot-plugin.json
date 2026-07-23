@@ -2,7 +2,10 @@
   "schema": 1,
   "name": "typescript",
   "crossDirImports": true,
-  "capabilities": { "interfaces:runtimeIdentity": false },
+  "capabilities": {
+    "interfaces:runtimeIdentity": false,
+    "attributes:target.function": false
+  },
   "spec": {
     "name": "typescript",
     "scalarType": {
@@ -2944,21 +2947,86 @@
     "Program": {
       "seq": [
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "module.attrImportsBlock",
+                      ""
+                    ]
+                  }
+                },
+                {
+                  "line": {
+                    "get": "module.attrImportsBlock"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
           "mapDecl": "module.imports",
           "each": {
             "line": {
               "case": {
                 "when": [
                   [
-                    { "eq": [ "item.isNamespace", "true" ] },
-                    { "tmpl": [ "import * as ", { "get": "item.ns" }, " from \"", { "get": "item.path" }, "\";" ] }
+                    {
+                      "eq": [
+                        "item.isNamespace",
+                        "true"
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        "import * as ",
+                        {
+                          "get": "item.ns"
+                        },
+                        " from \"",
+                        {
+                          "get": "item.path"
+                        },
+                        "\";"
+                      ]
+                    }
                   ],
                   [
-                    { "not": { "eq": [ "item.names", "" ] } },
-                    { "tmpl": [ "import { ", { "get": "item.names" }, " } from \"", { "get": "item.path" }, "\";" ] }
+                    {
+                      "not": {
+                        "eq": [
+                          "item.names",
+                          ""
+                        ]
+                      }
+                    },
+                    {
+                      "tmpl": [
+                        "import { ",
+                        {
+                          "get": "item.names"
+                        },
+                        " } from \"",
+                        {
+                          "get": "item.path"
+                        },
+                        "\";"
+                      ]
+                    }
                   ]
                 ],
-                "else": { "tmpl": [ "import \"", { "get": "item.path" }, "\";" ] }
+                "else": {
+                  "tmpl": [
+                    "import \"",
+                    {
+                      "get": "item.path"
+                    },
+                    "\";"
+                  ]
+                }
               }
             }
           }

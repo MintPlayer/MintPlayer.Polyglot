@@ -15,17 +15,24 @@ public:
     CompilationUnit parseUnit() {
         CompilationUnit unit;
         while (!at(TokKind::End)) {
+            // P37 D8: attribute lists prefix a declaration (`[` is illegal at top level otherwise).
+            std::vector<AttrUse> attrs;
+            while (at(TokKind::LBracket)) parseAttrList(attrs);
             if (at(TokKind::KwImport)) unit.imports.push_back(parseImport());
-            else if (at(TokKind::KwFn)) unit.functions.push_back(parseFunction());
-            else if (at(TokKind::KwAsync)) unit.functions.push_back(parseAsyncFunction());
+            else if (at(TokKind::KwFn)) { unit.functions.push_back(parseFunction()); unit.functions.back().attributes = std::move(attrs); attrs.clear(); }
+            else if (at(TokKind::KwAsync)) { unit.functions.push_back(parseAsyncFunction()); unit.functions.back().attributes = std::move(attrs); attrs.clear(); }
             else if (at(TokKind::KwExpect)) unit.functions.push_back(parseExpect());
             else if (at(TokKind::KwActual)) unit.functions.push_back(parseActual());
             else if (at(TokKind::KwEnum)) unit.enums.push_back(parseEnum());
             else if (at(TokKind::KwUnion)) unit.unions.push_back(parseUnion());
-            else if (at(TokKind::KwRecord)) unit.records.push_back(parseRecord());
+            else if (at(TokKind::KwRecord)) { unit.records.push_back(parseRecord()); unit.records.back().attributes = std::move(attrs); attrs.clear(); }
             else if (at(TokKind::KwClass) || at(TokKind::KwAbstract) || at(TokKind::KwOpen) ||
-                     at(TokKind::KwSealed)) unit.classes.push_back(parseClass());
+                     at(TokKind::KwSealed)) { unit.classes.push_back(parseClass()); unit.classes.back().attributes = std::move(attrs); attrs.clear(); }
             else if (at(TokKind::KwExtern) && peek(1).kind == TokKind::KwClass) unit.classes.push_back(parseClass());
+            else if (at(TokKind::KwExtern) && peek(1).kind == TokKind::Identifier && peek(1).text == "attribute")
+                unit.externAttrs.push_back(parseExternAttr()); // P37 D Tier 1
+            else if (atContextual("attribute") && peek(1).kind == TokKind::Identifier)
+                unit.records.push_back(parseAttributeDecl()); // P37 D Tier 2
             else if (at(TokKind::KwInterface)) unit.interfaces.push_back(parseInterface());
             else if (at(TokKind::KwExtension)) unit.extensions.push_back(parseExtension());
             else if (at(TokKind::KwConst) || at(TokKind::KwLet)) unit.values.push_back(parseValueDecl());
@@ -33,6 +40,9 @@ public:
                 error("expected a declaration");
                 if (!recoverToTopLevel()) break;
             }
+            if (!attrs.empty())
+                diags_.error(attrs.front().pos, "attributes are not supported on this declaration (v1: "
+                                                "classes, records, functions, and methods)");
         }
         return unit;
     }
@@ -185,6 +195,92 @@ private:
 
     // Parse a binding body `{ actual(target) extern("…template…") … }` into `out`. The receiver (`$this`),
     // args (`$0`,…) and (for ctor/type bindings) the mapped type (`$T`) are substituted at each use site.
+    // P37 D8 — one attribute list `[A(args), B]` (stacked lists parse by calling this in a loop).
+    // Declaration-prefix position only; `[` is otherwise illegal there, so one-token lookahead suffices.
+    // Args: positional or named (`name = value`) constant expressions (sema enforces const-ness).
+    void parseAttrList(std::vector<AttrUse>& out) {
+        expect(TokKind::LBracket, "'['");
+        do {
+            AttrUse a;
+            a.pos = peek().pos;
+            a.name = expect(TokKind::Identifier, "an attribute name").text;
+            if (accept(TokKind::LParen)) {
+                if (!at(TokKind::RParen)) {
+                    do {
+                        AttrArg arg;
+                        arg.pos = peek().pos;
+                        if (at(TokKind::Identifier) && peek(1).kind == TokKind::Assign) {
+                            arg.name = advance().text; // named arg `name = value`
+                            advance();                 // '='
+                        }
+                        arg.value = parseExpr();
+                        a.args.push_back(std::move(arg));
+                    } while (accept(TokKind::Comma));
+                }
+                expect(TokKind::RParen, "')'");
+            }
+            out.push_back(std::move(a));
+        } while (accept(TokKind::Comma));
+        expect(TokKind::RBracket, "']'");
+    }
+
+    // P37 D Tier 2 — `attribute Name(params)`: a pure data shape (typed params, NO body). Parsed as a
+    // record flagged isAttribute so the record machinery carries it end-to-end; a `{` body is refused
+    // toward the Tier 3 boundary (behavior-transforming decorators don't exist).
+    RecordDecl parseAttributeDecl() {
+        RecordDecl d;
+        d.pos = peek().pos;
+        d.isAttribute = true;
+        advance(); // contextual 'attribute'
+        { Token nt = expect(TokKind::Identifier, "an attribute name"); d.name = nt.text; d.namePos = nt.pos; }
+        expect(TokKind::LParen, "'('");
+        d.fields = parseParamList();
+        expect(TokKind::RParen, "')'");
+        if (at(TokKind::LBrace))
+            error("an `attribute` is a pure data shape — no body (behavior-transforming decorators are "
+                  "refused; P37 Tier 3)");
+        accept(TokKind::Semicolon);
+        return d;
+    }
+
+    // P37 D Tier 1 — `extern attribute Name(params) { actual(t) extern("<verbatim line>") [import "<line>"]
+    // | actual(t) refuse }`. The extern template is the ENTIRE native annotation line; the import string is
+    // a verbatim import/using line accumulated once into the module header.
+    ExternAttrDecl parseExternAttr() {
+        ExternAttrDecl d;
+        d.pos = peek().pos;
+        expect(TokKind::KwExtern, "'extern'");
+        advance(); // contextual 'attribute'
+        { Token nt = expect(TokKind::Identifier, "an attribute name"); d.name = nt.text; d.namePos = nt.pos; }
+        expect(TokKind::LParen, "'('");
+        d.params = parseParamList();
+        expect(TokKind::RParen, "')'");
+        expect(TokKind::LBrace, "'{'");
+        while (at(TokKind::KwActual)) {
+            ExternAttrArm arm;
+            arm.pos = peek().pos;
+            advance(); // 'actual'
+            expect(TokKind::LParen, "'('");
+            arm.target = expect(TokKind::Identifier, "a target name").text;
+            expect(TokKind::RParen, "')'");
+            if (atContextual("refuse")) {
+                advance();
+                arm.refuse = true;
+            } else {
+                expect(TokKind::KwExtern, "'extern' (or 'refuse')");
+                expect(TokKind::LParen, "'('");
+                arm.code = expect(TokKind::StringLit, "the native annotation line").text;
+                expect(TokKind::RParen, "')'");
+                if (accept(TokKind::KwImport))
+                    arm.importLine = expect(TokKind::StringLit, "a verbatim import/using line").text;
+            }
+            accept(TokKind::Semicolon);
+            d.arms.push_back(std::move(arm));
+        }
+        expect(TokKind::RBrace, "'}'");
+        return d;
+    }
+
     // Assumes the current token is the opening '{'.
     void parseBindingArms(std::vector<TargetBinding>& out) {
         advance(); // '{'
@@ -341,7 +437,10 @@ private:
         std::vector<Member> members;
         expect(TokKind::LBrace, "'{'");
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            std::vector<AttrUse> attrs; // P37 D8: member-prefix attribute lists
+            while (at(TokKind::LBracket)) parseAttrList(attrs);
             members.push_back(parseMember());
+            members.back().attributes = std::move(attrs);
             if (panicked_) { // skip to the next member boundary
                 while (!at(TokKind::RBrace) && !at(TokKind::End) && !at(TokKind::Semicolon)) advance();
                 accept(TokKind::Semicolon);
@@ -392,7 +491,10 @@ private:
                 parseBindingArms(d.typeBindings);
                 continue;
             }
+            std::vector<AttrUse> attrs; // P37 D8: member-prefix attribute lists
+            while (at(TokKind::LBracket)) parseAttrList(attrs);
             d.members.push_back(parseMember());
+            d.members.back().attributes = std::move(attrs);
             if (panicked_) {
                 while (!at(TokKind::RBrace) && !at(TokKind::End) && !at(TokKind::Semicolon)) advance();
                 accept(TokKind::Semicolon);
@@ -1070,7 +1172,10 @@ private:
                 }
                 expect(TokKind::RParen, "')'");
                 e = std::move(call);
-            } else if (at(TokKind::LBracket)) {
+            } else if (at(TokKind::LBracket) && idx_ > 0 && peek().pos.line == toks_[idx_ - 1].pos.line) {
+                // A subscript `[` must start on the SAME LINE as the expression it indexes: statements are
+                // newline-terminated without a token, so a next-line `[…]` is a new statement (P37 D8: an
+                // attribute list after an expression-bodied decl would otherwise be swallowed as an index).
                 auto p = advance().pos;
                 auto ix = mk(ExprKind::Index, p);
                 ix->lhs = std::move(e);

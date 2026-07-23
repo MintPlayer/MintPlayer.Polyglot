@@ -16,6 +16,7 @@ namespace {
 class Collector {
 public:
     std::vector<FeatureUse> uses;
+    std::vector<const AttrUse*> tier1Uses_; // P37 D12: every pass-through attribute attachment
     std::vector<std::pair<std::string, SourcePos>> calls; // free-function call sites: (callee name, pos)
     // Member/construction use sites, keyed "<TypeOrOwner>.<member>" (both the receiver's semantic type and,
     // for a bare-name receiver, its spelling — statics like `Math.sqrt` resolve by the latter). The bound-
@@ -24,6 +25,26 @@ public:
 
     void run(const CompilationUnit& u) {
         for (const auto& i : u.interfaces) interfaces_.insert(i.name); // prescan: interface-typed runtime tests (B4)
+        // P37 D Tier 1: a pass-through attribute marks its ATTACHMENT POINT per target — Python has class/
+        // method/function decorators but TS has no function decorators, so the point matters, not just
+        // "attributes". Tier 2 marks nothing (the compiler both writes and reads the data).
+        for (const auto& ea : u.externAttrs) externAttrNames_.insert(ea.name);
+        auto markAttrs = [&](const std::vector<AttrUse>& attrs, const char* point) {
+            for (const auto& a : attrs)
+                if (externAttrNames_.count(a.name)) {
+                    mark(std::string("attributes:target.") + point, a.pos);
+                    tier1Uses_.push_back(&a);
+                }
+        };
+        for (const auto& r : u.records) {
+            markAttrs(r.attributes, "type");
+            for (const auto& mem : r.members) markAttrs(mem.attributes, "method");
+        }
+        for (const auto& c : u.classes) {
+            markAttrs(c.attributes, "type");
+            for (const auto& mem : c.members) markAttrs(mem.attributes, "method");
+        }
+        for (const auto& f : u.functions) markAttrs(f.attributes, "function");
         for (const auto& e : u.extensions) {
             mark(Feature::ExtensionMethods, e.pos);
             typeRef(e.receiver, e.pos);
@@ -62,6 +83,7 @@ public:
 private:
     std::unordered_set<std::string> seen_; // capability keys — first use of each is the one reported
     std::unordered_set<std::string> interfaces_; // declared interface names (prescanned)
+    std::unordered_set<std::string> externAttrNames_; // Tier 1 extern attribute names (prescanned)
 
     void mark(std::string key, SourcePos pos) {
         if (!seen_.insert(key).second) return;
@@ -251,6 +273,27 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
                                             "'; add an `actual(" + backend.name() +
                                             ")` arm (or a plugin std overlay) or drop that target");
         }
+    }
+
+    // P37 D12 (non-negotiable): a used pass-through attribute must have a non-refuse arm for THIS target —
+    // the backstop that makes emit-only honest (no arm would silently drop the annotation).
+    std::unordered_map<std::string, const ExternAttrDecl*> externAttrs;
+    for (const auto& ea : unit.externAttrs) externAttrs[ea.name] = &ea;
+    for (const AttrUse* a : c.tier1Uses_) {
+        auto it = externAttrs.find(a->name);
+        if (it == externAttrs.end()) continue;
+        const ExternAttrArm* arm = nullptr;
+        bool refused = false;
+        for (const auto& cand : it->second->arms)
+            if (cand.target == backend.name()) { arm = &cand; refused = cand.refuse; }
+        if (!arm)
+            diags.error(a->pos, "attribute '" + a->name + "' has no binding for target '" + backend.name() +
+                                    "'; add an `actual(" + backend.name() +
+                                    ")` arm (or an explicit `refuse`) or drop that target (D12)");
+        else if (refused)
+            diags.error(a->pos, "attribute '" + a->name + "' is refused on target '" + backend.name() +
+                                    "' (its binding declares `refuse`); remove the attribute or drop that "
+                                    "target");
     }
 }
 

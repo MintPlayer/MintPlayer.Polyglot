@@ -767,6 +767,11 @@ std::string InterfaceDeclCtx::emitChild(const std::string& path, const std::stri
 }
 
 std::string MethodDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(m_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < m_.attrLines.size()) return m_.attrLines[i];
+    }
     if (path == "decl.kind") {
         switch (m_.kind) {
             case ir::MethodKind::Property: return "property";
@@ -855,6 +860,11 @@ const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path)
 }
 
 std::string RecordDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(r_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < r_.attrLines.size()) return r_.attrLines[i];
+    }
     if (path == "decl.name")          return r_.name;
     if (path == "decl.fields.count")  return std::to_string(r_.fields.size());
     if (path == "decl.bases.count")   return std::to_string(r_.bases.size());
@@ -932,6 +942,11 @@ bool splitIndexed(const std::string& path, std::size_t prefixLen, std::size_t& i
 } // namespace
 
 std::string ClassDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(c_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < c_.attrLines.size()) return c_.attrLines[i];
+    }
     if (path == "decl.name")             return c_.name;
     if (path == "decl.bases.count")      return std::to_string(c_.bases.size());
     if (path == "decl.methods.count")    return std::to_string(c_.methods.size());
@@ -1021,6 +1036,11 @@ std::unique_ptr<IrDeclCtx> ClassDeclCtx::memberCtx(const std::string& path, std:
 }
 
 std::string FnDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(f_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < f_.attrLines.size()) return f_.attrLines[i];
+    }
     if (path == "decl.name")        return f_.name;
     if (path == "decl.mangledName") return f_.mangledName;
     if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
@@ -1114,6 +1134,14 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
     if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.attrImportsBlock") { // P37 D Tier 1: verbatim import/using lines, newline-joined
+        std::string out;
+        for (const auto& l : m_.attrImports) {
+            if (!out.empty()) out += "\n";
+            out += l;
+        }
+        return out;
+    }
     if (path == "module.linked")           return m_.linked ? "true" : "false";
     if (path == "module.hasEntry")         return entry_ >= 0 ? "true" : "false";
     if (entry_ >= 0) {
@@ -1365,8 +1393,16 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
             int n = 0;
             for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
             for (int i = 0; i < n; ++i)
-                if (auto sub = root.memberCtx(ctx.resolvePath(r.s), static_cast<std::size_t>(i)))
+                if (auto sub = root.memberCtx(ctx.resolvePath(r.s), static_cast<std::size_t>(i))) {
+                    // P37 D Tier 1: pre-rendered native annotation lines go directly above the decl —
+                    // one shared injection point (module decls and members both drive through here),
+                    // so no plugin template needs to know attributes exist.
+                    const std::string ac = sub->get("decl.attrLines.count");
+                    int an = 0;
+                    for (char c : ac) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
+                    for (int j = 0; j < an; ++j) line(sub->get("decl.attrLines." + std::to_string(j)));
                     runDeclRule(it->second, *sub, *sub, helpers);
+                }
             return;
         }
         case K::Case:

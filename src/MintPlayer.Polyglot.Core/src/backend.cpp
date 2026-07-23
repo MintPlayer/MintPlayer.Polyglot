@@ -112,6 +112,12 @@ const std::unordered_set<std::string>& capabilityVocabulary() {
         s.insert("operatorOverloading:eq");
         s.insert("operatorOverloading:indexers");
         s.insert("operatorOverloading:conversion");
+        // P37 D10: Tier 1 pass-through attribute ATTACHMENT POINTS (Tier 2 needs no capability — the
+        // compiler both writes and reads its data). `attributes` is the umbrella parent.
+        s.insert("attributes");
+        s.insert("attributes:target.type");
+        s.insert("attributes:target.method");
+        s.insert("attributes:target.function");
         return s;
     }();
     return keys;

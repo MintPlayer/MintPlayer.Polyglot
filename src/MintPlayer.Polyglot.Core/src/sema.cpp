@@ -314,12 +314,14 @@ public:
         : diags_(diags), model_(model), req_(req) {}
 
     void run(CompilationUnit& unit) {
+        unit_ = &unit;
         collectTypeNames(unit);
         liftExtensionGenerics(unit);
         normalizeOptionalGenerics(unit); // `T?` (generic T) -> Option<T>, before tables read the types
         buildTables(unit);
         resolveAllTypes(unit);
         checkImplements(unit); // issue #29: implements-conformance, override rule, interface-body shape
+        checkAttributesPass(unit); // P37 D: attribute declarations + every [Name(args)] attachment
 
         // Pre-register file-local definitions (functions, types + members, values) so a reference from any
         // user body resolves to one. The linker APPENDS merged std/import decls, so indices [0, userX) are
@@ -401,6 +403,9 @@ private:
     bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
     bool inAsync_ = false;  // checking an `async fn`/method body — the only place `await` is allowed (§4.7)
     bool isBindingAllowed_ = false; // the next `is` checked sits on an if-condition's `&&` spine (P37 B3)
+    CompilationUnit* unit_ = nullptr; // for P37 D: Meta materialization is recorded onto the unit
+    std::unordered_map<std::string, const ExternAttrDecl*> externAttrs_; // Tier 1 declarations by name
+    std::unordered_set<std::string> attributeNames_;                    // Tier 2 `attribute` record names
     // Per-enclosing-block names bound by `if … is T name` (P37 B3): the emitted binding outlives the
     // branch on every target (it's hoisted before the `if`), so redeclaring the name later in the same
     // block would collide in the OUTPUT even though the language scope ended — refused here instead.
@@ -1328,6 +1333,226 @@ private:
         }
     }
     static bool isUnitT(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "unit" && !t.nullable; }
+    // ---- P37 D: attributes (both tiers) + the Meta intrinsics -----------------------------------------
+
+    // The const envelope Tier 2 attribute params may use: what every target holds as a plain literal.
+    static bool isConstEnvelopeType(const TypeRef& t) {
+        if (t.kind != TypeRef::Kind::Named || t.nullable || !t.args.empty()) return false;
+        const std::string& n = t.name;
+        return n == "bool" || n == "string" || n == "i8" || n == "i16" || n == "i32" || n == "i64" ||
+               n == "u8" || n == "u16" || n == "u32" || n == "u64" || n == "f32" || n == "f64";
+    }
+    // A compile-time-constant attribute argument: a literal, or a signed numeric literal. There is no
+    // constant evaluator and none is wanted — resolvability is decided by FORM (M6 discipline).
+    static bool isConstAttrValue(const Expr& e) {
+        switch (e.kind) {
+            case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::StringLit: case ExprKind::BoolLit:
+                return true;
+            case ExprKind::Unary:
+                return e.text == "-" && e.lhs &&
+                       (e.lhs->kind == ExprKind::IntLit || e.lhs->kind == ExprKind::FloatLit);
+            default:
+                return false;
+        }
+    }
+    enum class AttrPoint { Type, Method, Field, Function, Other };
+
+    void checkAttributesPass(CompilationUnit& u) {
+        for (auto& ea : u.externAttrs) {
+            if (!externAttrs_.emplace(ea.name, &ea).second)
+                diags_.error(ea.pos, "duplicate extern attribute '" + ea.name + "'");
+            std::unordered_set<std::string> targets;
+            for (auto& arm : ea.arms)
+                if (!targets.insert(arm.target).second)
+                    diags_.error(arm.pos, "extern attribute '" + ea.name + "': duplicate arm for target '" +
+                                              arm.target + "'");
+        }
+        for (auto& r : u.records) {
+            if (r.isAttribute) {
+                attributeNames_.insert(r.name);
+                if (!r.bases.empty())
+                    diags_.error(r.pos, "an `attribute` is a pure data shape — no base types");
+                if (!r.generics.empty())
+                    diags_.error(r.pos, "an `attribute` cannot be generic (its values must be plain constants)");
+                for (const auto& f : r.fields)
+                    if (!isConstEnvelopeType(f.type))
+                        diags_.error(f.pos, "attribute parameter '" + f.name + "' must be a constant-"
+                                            "envelope type (bool, an integer/float scalar, or string)");
+            }
+        }
+        for (auto& r : u.records) {
+            checkAttrList(r.attributes, AttrPoint::Type);
+            for (auto& m : r.members) checkAttrList(m.attributes, memberPoint(m));
+        }
+        for (auto& c : u.classes) {
+            checkAttrList(c.attributes, AttrPoint::Type);
+            for (auto& m : c.members) checkAttrList(m.attributes, memberPoint(m));
+        }
+        for (auto& f : u.functions) checkAttrList(f.attributes, AttrPoint::Function);
+        for (auto& i : u.interfaces)
+            for (auto& m : i.members)
+                if (!m.attributes.empty())
+                    diags_.error(m.attributes.front().pos,
+                                 "attributes on interface members are not supported (v1)");
+    }
+    static AttrPoint memberPoint(const Member& m) {
+        if (m.kind == MemberKind::Method) return AttrPoint::Method;
+        if (m.kind == MemberKind::Field || m.kind == MemberKind::Property) return AttrPoint::Field;
+        return AttrPoint::Other;
+    }
+    void checkAttrList(std::vector<AttrUse>& attrs, AttrPoint point) {
+        std::unordered_set<std::string> seen;
+        for (auto& a : attrs) {
+            const bool tier1 = externAttrs_.count(a.name) != 0;
+            const bool tier2 = attributeNames_.count(a.name) != 0;
+            if (!tier1 && !tier2) {
+                diags_.error(a.pos, "unknown attribute '" + a.name + "' — declare `attribute " + a.name +
+                                        "(…)` (portable metadata) or `extern attribute " + a.name +
+                                        "(…) { … }` (native pass-through)");
+                continue;
+            }
+            if (!seen.insert(a.name).second)
+                diags_.error(a.pos, "attribute '" + a.name + "' is applied more than once on this "
+                                        "declaration (AllowMultiple is a deferred follow-up)");
+            if (point == AttrPoint::Other)
+                diags_.error(a.pos, "attributes are not supported on this member kind (v1: methods and "
+                                        "fields/properties)");
+            else if (tier1 && point == AttrPoint::Field)
+                diags_.error(a.pos, "a pass-through attribute on a field/property is deferred (the four "
+                                        "emitters render fields inline); portable `attribute` metadata "
+                                        "works on fields today");
+            else if (tier2 && point == AttrPoint::Function)
+                diags_.error(a.pos, "portable metadata on a free function has no query surface (`Meta` "
+                                        "takes a type) — deferred; a pass-through `extern attribute` works");
+            const std::vector<Param>& params =
+                tier1 ? externAttrs_[a.name]->params : typeInfoParams(a.name);
+            checkAttrArgs(a, params);
+        }
+    }
+    // A Tier 2 attribute's params are its record fields (registered as ctorParams); re-read the DECL's
+    // fields so names + defaults are visible for named-arg matching.
+    const std::vector<Param>& typeInfoParams(const std::string& attrName) const {
+        static const std::vector<Param> kEmpty;
+        for (const auto& r : unit_->records)
+            if (r.name == attrName) return r.fields;
+        return kEmpty;
+    }
+    void checkAttrArgs(AttrUse& a, const std::vector<Param>& params) {
+        std::unordered_set<std::string> given;
+        std::size_t positional = 0;
+        bool sawNamed = false;
+        for (auto& arg : a.args) {
+            if (!arg.value) continue;
+            const Param* p = nullptr;
+            if (arg.name.empty()) {
+                if (sawNamed)
+                    diags_.error(arg.pos, "positional attribute arguments must precede named ones");
+                if (positional < params.size()) p = &params[positional];
+                else diags_.error(arg.pos, "too many arguments for attribute '" + a.name + "'");
+                ++positional;
+            } else {
+                sawNamed = true;
+                for (const auto& cand : params)
+                    if (cand.name == arg.name) { p = &cand; break; }
+                if (!p)
+                    diags_.error(arg.pos, "attribute '" + a.name + "' has no parameter named '" +
+                                              arg.name + "'");
+            }
+            if (p && !given.insert(p->name).second)
+                diags_.error(arg.pos, "attribute argument '" + p->name + "' is given twice");
+            if (!isConstAttrValue(*arg.value))
+                diags_.error(arg.pos, "attribute arguments must be compile-time constants (a literal); "
+                                          "variable values are a deferred follow-up");
+            checkExpr(*arg.value);
+            if (p) checkConvert(arg.value, p->type, "attribute argument '" + p->name + "'");
+        }
+        for (std::size_t i = 0; i < params.size(); ++i)
+            if (!params[i].hasDefault && (i >= positional && !given.count(params[i].name)))
+                diags_.error(a.pos, "attribute '" + a.name + "' is missing required argument '" +
+                                        params[i].name + "'");
+    }
+
+    // P37 D.3 (M6, permanent): the `Meta` intrinsics — `Meta.has<T, A>()`, `Meta.get<T, A>() -> A?`,
+    // `Meta.member<T, A>("m") -> A?` — resolved entirely at transpile time. Type arguments must be
+    // compile-time-concrete names (never a type parameter: the compiler is generic-preserving, so there
+    // is no point at which `T` is one type) and the member name a string literal. All diagnosed here in
+    // target-independent sema so build/check/LSP agree.
+    TypeRef checkMetaCall(Expr& e) {
+        const std::string& method = e.lhs->text;
+        if (method != "has" && method != "get" && method != "member") {
+            diags_.error(e.pos, "unknown Meta intrinsic '" + method + "' (has / get / member)");
+            return tUnknown();
+        }
+        if (e.typeArgs.size() != 2) {
+            diags_.error(e.pos, "Meta." + method + " takes exactly two type arguments: <T, A>");
+            return tUnknown();
+        }
+        auto concrete = [&](const TypeRef& t, const char* what) -> bool {
+            if (t.kind != TypeRef::Kind::Named || t.name.empty()) {
+                diags_.error(e.pos, std::string("Meta's ") + what + " must be a named type");
+                return false;
+            }
+            if (genericsInScope_.count(t.name)) {
+                diags_.error(e.pos, std::string("Meta's ") + what + " cannot be a type parameter ('" +
+                                        t.name + "') — Meta resolves at transpile time and generics are "
+                                        "emitted generically, never specialized (M6, permanent)");
+                return false;
+            }
+            if (!t.args.empty()) {
+                diags_.error(e.pos, std::string("Meta's ") + what + " cannot be a generic instantiation");
+                return false;
+            }
+            if (!typeNames_.count(t.name)) {
+                diags_.error(e.pos, "unknown type '" + t.name + "' in Meta." + method);
+                return false;
+            }
+            return true;
+        };
+        if (!concrete(e.typeArgs[0], "subject type <T>") || !concrete(e.typeArgs[1], "attribute type <A>"))
+            return tUnknown();
+        const std::string& tn = e.typeArgs[0].name;
+        const std::string& an = e.typeArgs[1].name;
+        if (interfaceNames_.count(tn) || enumNames_.count(tn) || unionAllCases_.count(tn) ||
+            externClassNames_.count(tn) || attributeNames_.count(tn)) {
+            diags_.error(e.pos, "Meta's subject type <T> must be a user class or record ('" + tn + "')");
+            return tUnknown();
+        }
+        if (!attributeNames_.count(an)) {
+            diags_.error(e.pos, "'" + an + "' is not an `attribute` declaration — Meta queries portable "
+                                    "(Tier 2) metadata only");
+            return tUnknown();
+        }
+        if (method == "member") {
+            if (e.args.size() != 1 || !e.args[0] || e.args[0]->kind != ExprKind::StringLit) {
+                diags_.error(e.pos, "Meta.member takes one STRING LITERAL member name — a variable or "
+                                        "computed name cannot resolve at transpile time (M6)");
+                return tUnknown();
+            }
+            checkExpr(*e.args[0]);
+            const std::string& mem = e.args[0]->text;
+            if (!findMember(tn, mem)) {
+                SourcePos endp = e.args[0]->pos;
+                endp.col += static_cast<int>(mem.size()) + 2; // underline the literal (incl. quotes)
+                diags_.error(e.args[0]->pos, endp,
+                             "'" + tn + "' has no member named '" + mem + "'");
+                return tUnknown();
+            }
+        } else if (!e.args.empty()) {
+            diags_.error(e.pos, "Meta." + method + " takes no value arguments");
+            return tUnknown();
+        }
+        if (method != "has" && unit_) {
+            auto& mm = unit_->metaMaterialized;
+            bool present = false;
+            for (const auto& n : mm) if (n == an) present = true;
+            if (!present) mm.push_back(an);
+        }
+        if (method == "has") return tNamed("bool");
+        TypeRef result = e.typeArgs[1];
+        result.nullable = true;
+        return result;
+    }
+
     // P37 B3: check an `if` condition, accepting `is` bindings along its top-level `&&` spine only —
     // there the test dominates the then-branch. Under `||`, `!`, or a lambda the binding wouldn't be
     // guaranteed, so the ordinary checkExpr path refuses it.
@@ -1826,6 +2051,27 @@ private:
     }
 
     TypeRef checkCall(Expr& e) {
+        // P37 D: the Meta intrinsics — resolved before ordinary checking (`Meta` is a compiler name
+        // unless the user shadows it with a type or local of their own).
+        if (e.lhs && e.lhs->kind == ExprKind::Member && e.lhs->lhs && e.lhs->lhs->kind == ExprKind::Name &&
+            e.lhs->lhs->text == "Meta" && !typeNames_.count("Meta") && !lookup("Meta"))
+            return checkMetaCall(e);
+        // P37 D.3 anti-silent-drop: explicit type args on a member call used to parse and be silently
+        // IGNORED by every resolution path (inference-only). Now that Meta consumes them, any other
+        // member call carrying them refuses instead of dropping them.
+        if (e.lhs && e.lhs->kind == ExprKind::Member && !e.typeArgs.empty())
+            diags_.error(e.pos, "explicit type arguments are not supported on this call (they are "
+                                "inferred from the arguments; only construction and Meta take them)");
+        // P37 D Tier 2: attribute values are constructed by the compiler (Meta.get/member) from the
+        // attachment's recorded constants — never directly (an unqueried attribute emits no type to
+        // construct against).
+        if (e.lhs && e.lhs->kind == ExprKind::Name && attributeNames_.count(e.lhs->text)) {
+            diags_.error(e.pos, "an `attribute` type ('" + e.lhs->text + "') cannot be constructed "
+                                "directly — attach it with [" + e.lhs->text + "(…)] and read it back "
+                                "via Meta.get/Meta.member");
+            return tUnknown();
+        }
+
         std::vector<TypeRef> argTypes;
         for (auto& a : e.args) argTypes.push_back(checkExpr(*a));
 
