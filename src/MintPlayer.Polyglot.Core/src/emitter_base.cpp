@@ -819,6 +819,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
         const std::size_t dot = sub.find('.');
         if (i < m_.params.size() && dot != std::string::npos) {
             const std::string rest = sub.substr(dot + 1);
+            if (rest == "attrInline") return m_.params[i].attrInline; // P37 D Tier 1
             if (rest == "name")       return m_.params[i].name;
             if (rest == "hasDefault") return m_.params[i].defaultValue ? "true" : "false";
         }
@@ -976,12 +977,18 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     std::string f;
     if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size()) {
         const ir::ClassField& fld = c_.fields[i];
+        if (f == "attrLines.count") return std::to_string(fld.attrLines.size()); // P37 D Tier 1
+        if (f.rfind("attrLines.", 0) == 0) {
+            const std::size_t j = static_cast<std::size_t>(std::stoul(f.substr(10)));
+            if (j < fld.attrLines.size()) return fld.attrLines[j];
+        }
         if (f == "name")      return fld.name;
         if (f == "isStatic")  return fld.isStatic ? "true" : "false";
         if (f == "isMutable") return fld.isMutable ? "true" : "false";
         if (f == "hasInit")   return fld.init ? "true" : "false";
     }
     if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size()) {
+        if (f == "attrInline") return c_.initParams[i].attrInline; // P37 D Tier 1
         if (f == "name")       return c_.initParams[i].name;
         if (f == "hasDefault") return c_.initParams[i].defaultValue ? "true" : "false";
     }
@@ -1072,6 +1079,7 @@ std::string FnDeclCtx::get(const std::string& path) const {
     std::size_t i = 0;
     std::string f;
     if (path.rfind("decl.params.", 0) == 0 && splitIndexed(path, 12, i, f) && i < f_.params.size()) {
+        if (f == "attrInline") return f_.params[i].attrInline; // P37 D Tier 1
         if (f == "name")       return f_.params[i].name;
         if (f == "hasDefault") return f_.params[i].defaultValue ? "true" : "false";
     }
@@ -1379,6 +1387,11 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
             for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
             for (int i = 0; i < n; ++i) {
                 engine::ItemCtx item(ctx, ctx.resolvePath(r.s) + "." + std::to_string(i), i);
+                // P37 D Tier 1: pre-rendered attribute lines above a line-item decl (class fields) —
+                // the same shared-injection trick as MapMembers; item lists without the path no-op.
+                int an = 0;
+                for (char c : item.get("item.attrLines.count")) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
+                for (int j = 0; j < an; ++j) line(item.get("item.attrLines." + std::to_string(j)));
                 runDeclRule(r.parts[0], item, root, helpers);
             }
             return;

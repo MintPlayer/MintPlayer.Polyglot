@@ -1768,6 +1768,82 @@ int main() {
                  "P37 s4 (D.3): silently-ignored member-call type args now refuse (anti-silent-drop)");
     }
 
+    // ---- P37 feature-complete: field/param attributes, enum/array values, Meta.param ------------------
+    {
+        const char* bind =
+            "extern attribute JsonProp(name: string) {\n"
+            "  actual(csharp) extern(\"[Newtonsoft.Json.JsonProperty($0)]\") import \"using Newtonsoft.Json;\"\n"
+            "  actual(php) extern(\"#[JsonProp($0)]\")\n"
+            "}\n";
+        // Tier 1 on a FIELD: the annotation line lands above the field; Python gates the point.
+        std::string fieldProg = std::string(bind) +
+            "class C {\n  [JsonProp(\"x\")]\n  var x: i32\n  constructor() { this.x = 0 }\n}\n"
+            "fn main() { print(C().x) }\n";
+        EmitResult csf = compileStd(fieldProg, findTarget("csharp"));
+        check(csf.ok && has(csf.code, "[Newtonsoft.Json.JsonProperty(\"x\")]"),
+              "P37 fc: a Tier 1 FIELD attribute emits above the field on C#");
+        EmitResult pyf = compileStd(fieldProg, findTarget("python"));
+        bool gatedField = false;
+        for (const auto& d : pyf.diagnostics)
+            if (has(d.message, "attributes:target.field")) gatedField = true;
+        check(!pyf.ok && gatedField, "P37 fc: a field attribute gates on Python (no field annotations)");
+
+        // Tier 1 on a PARAMETER: inline before the param on C#/PHP; TS gates the point.
+        std::string paramProg = std::string(bind) +
+            "fn f([JsonProp(\"p\")] p: i32): i32 => p\nfn main() { print(f(3)) }\n";
+        EmitResult csp = compileStd(paramProg, findTarget("csharp"));
+        check(csp.ok && has(csp.code, "[Newtonsoft.Json.JsonProperty(\"p\")] int p"),
+              "P37 fc: a Tier 1 PARAM attribute emits inline on C#");
+        EmitResult php2 = compileStd(paramProg, findTarget("php"));
+        check(php2.ok && has(php2.code, "#[JsonProp(\"p\")] $p"),
+              "P37 fc: a Tier 1 PARAM attribute emits inline on PHP");
+        EmitResult tsp = compileStd(paramProg, findTarget("typescript"));
+        bool gatedParam = false;
+        for (const auto& d : tsp.diagnostics)
+            if (has(d.message, "attributes:target.param")) gatedParam = true;
+        check(!tsp.ok && gatedParam, "P37 fc: a param attribute gates on TS (TC39 has none)");
+
+        // Enum + array constant values render per plugin SPEC data (never target-name checks in Core).
+        std::string constProg =
+            "enum Sev {\n  Low\n  High\n}\n"
+            "extern attribute Cfg(s: Sev, ids: i32[]) {\n"
+            "  actual(csharp) extern(\"[Cfg($0, $1)]\")\n"
+            "  actual(php) extern(\"#[Cfg($0, $1)]\")\n"
+            "}\n"
+            "[Cfg(Sev.High, [1, 2])]\nclass C {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n"
+            "fn main() { print(C().v) }\n";
+        EmitResult csc3 = compileStd(constProg, findTarget("csharp"));
+        check(csc3.ok && has(csc3.code, "[Cfg(Sev.High, new[] {1, 2})]"),
+              "P37 fc: enum + array values spell per the C# plugin spec (constArray*)");
+        EmitResult phc = compileStd(constProg, findTarget("php"));
+        check(phc.ok && has(phc.code, "#[Cfg(Sev::High, [1, 2])]"),
+              "P37 fc: enum member spells via the PHP plugin's enumMemberOp");
+
+        // Tier 2 param metadata via Meta.param.
+        std::string metaParam =
+            "attribute Range(min: i32, max: i32)\n"
+            "class Box {\n  var v: i32\n  constructor() { this.v = 0 }\n"
+            "  fn scale([Range(1, 4)] k: i32): i32 => this.v * k\n}\n"
+            "fn main() {\n  print(Meta.param<Box, Range>(\"scale\", \"k\")?.max ?? -1)\n}\n";
+        EmitResult mp = compileStd(metaParam, findTarget("typescript"));
+        check(mp.ok && has(mp.code, "new Range(1, 4)"),
+              "P37 fc: Meta.param lowers to the recorded constants");
+        auto refusesFc = [&](const std::string& src, const char* frag, const char* label) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+            check(!r.ok && named, label);
+        };
+        refusesFc("attribute Range(min: i32, max: i32)\n"
+                  "class Box {\n  var v: i32\n  constructor() { this.v = 0 }\n"
+                  "  fn scale([Range(1, 4)] k: i32): i32 => this.v * k\n}\n"
+                  "fn main() {\n  print(Meta.param<Box, Range>(\"scale\", \"nope\") == null)\n}\n",
+                  "no parameter named 'nope'", "P37 fc: an unknown param name refuses");
+        refusesFc("attribute Tag(v: i32)\nattribute Wrap([Tag(1)] x: i32)\nfn main() { }\n",
+                  "attribute` declaration's parameters are refused",
+                  "P37 fc: attributes on an attribute's own params refuse");
+    }
+
     // ---- P19 slices 13-15: reserved/forbidden identifiers (identifier hygiene, json-plugins.md §7) -----
     {
         // A name a target's generated code uses is refused for that target only (kind-blind v1).

@@ -84,6 +84,23 @@ public:
     std::string capabilityStance(Feature f) const { return capabilityStance(std::string(featureName(f))); }
     bool supports(const std::string& key) const { return capabilityStance(key) != "false"; }
     bool supports(Feature f) const { return capabilityStance(f) != "false"; }
+    // P37 D: how this target spells the compile-time constants LOWERING bakes into pre-rendered text
+    // (Tier 1 attribute lines). Plugin-spec DATA (trueLit/falseLit/enumMemberOp/constArray*): the Core
+    // is a pure engine and never compares target names — it cannot know what languages exist.
+    struct ConstSpelling {
+        std::string trueLit = "true";
+        std::string falseLit = "false";
+        std::string enumMemberOp = ".";
+        std::string arrayOpen = "[";
+        std::string arrayClose = "]";
+    };
+    virtual ConstSpelling constSpelling() const { return {}; }
+    // Target trait flags (plugin spec data — see BackendSpec): modules link by compilation (no import
+    // statements); nested-scope locals may not shadow outer ones (scope legalization); lambdas are
+    // expression-only (block lambdas hoist to local functions).
+    virtual bool linksWithoutImports() const { return false; }
+    virtual bool forbidsShadowedLocals() const { return false; }
+    virtual bool expressionOnlyLambdas() const { return false; }
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }

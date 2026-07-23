@@ -189,12 +189,17 @@ constants + in-string member completion.
 - **D9 import clause:** one verbatim spelling — `actual(t) extern("<whole annotation line>") import
   "<whole import/using line>"`. The template is the ENTIRE native line (brackets included), so Tier 1
   emission needs zero plugin-template knowledge (one shared C++ injection point above each decl).
-- **D10/D11 v1 surface:** attachment points shipped = type/method (both tiers), function (Tier 1),
-  field/property (Tier 2 — needs no emission). Pass-through FIELD attributes, params, enum cases,
-  and non-const arg values (`attributes.arg.nonConst`) are deferred — the four emitters render
-  fields/params inline in their templates, and X3 already called nonConst near-vacuous. Capability
-  keys shipped: `attributes:target.{type,method,function}` only (H5: keys enter the vocabulary with
-  their consumer).
+- **D10/D11 surface (feature-completed 2026-07-24):** attachment points shipped = type, method,
+  field/property, and PARAMETER (both tiers) + function (Tier 1). Field lines emit via a second
+  shared injection point (the MapDecl item walk); parameter text emits INLINE via the C#/PHP param
+  templates; TS gates `function`+`param` (TC39 has neither), Python gates `field`+`param`. Values
+  gained enum members and non-empty arrays, spelled from plugin-spec DATA (`enumMemberOp`,
+  `constArrayOpen/Close`, `trueLit`/`falseLit`) — the Core never compares target names. Tier 2 gained
+  `Meta.param<T, A>("method", "param")`. Still deferred: enum-case + `return:` targets, non-const
+  values (`attributes:arg.*` keys enter the vocabulary with that consumer, H5), `AllowMultiple`.
+- **Core stays language-agnostic (maintainer directive, 2026-07-24):** the three legacy target-name
+  checks in Core became plugin trait flags — `linksWithoutImports` (C#), `forbidsShadowedLocals`
+  (C#, the #41 scope-legalization gate), `expressionOnlyLambdas` (Python, the block-lambda hoist).
 - **D13 deferred:** the binding-only P30 package kind is NOT in this PR — `extern attribute`
   declarations live in user `.pg` (or an imported module) for now; the package kind is additive.
 - **New syntax rule found by D8:** a subscript `[` must start on the SAME LINE as the expression it

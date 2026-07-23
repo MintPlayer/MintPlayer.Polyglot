@@ -3480,8 +3480,12 @@ silently dropping). Fixes #62 + #63. New machinery: `ExprKind::Is/As` + `ir::IsT
 `interfaces:runtimeIdentity` + `operatorOverloading:*` + `attributes:target.*` keyed capabilities (PHP flips
 to `:eq`+`:indexers`), TS static-on-type operators (incl. static null-tolerant `eq` and static `to<T>()`
 conversions), Python `is None` null-literal tests, C# synthesized `operator ==`/`!=` for classes with user
-eq, the Meta intrinsics resolved in shared sema (M6) and lowered to inline constants, and the one-injection-
-point Tier 1 attribute-line emission.
+eq, the Meta intrinsics resolved in shared sema (M6) and lowered to inline constants, and the shared-
+injection Tier 1 attribute emission (decl lines + field lines + inline params). **Feature-completed
+2026-07-24:** field/property + PARAMETER attachment (both tiers, per-target gates), enum-member + array
+constant values spelled from plugin-spec data, `Meta.param`, and — per maintainer directive — the Core's
+last target-name checks became plugin trait flags (`linksWithoutImports`, `forbidsShadowedLocals`,
+`expressionOnlyLambdas`): the Core cannot know what languages exist.
 
 **Acceptance coverage:** 8 net-new differential conformance programs (`is_binding`, `as_cast`,
 `operator_unary`, `operator_bitwise`(+`.expected`), `operator_compound`, `operator_convert`,

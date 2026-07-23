@@ -78,6 +78,10 @@
     "trueLit": "true",
     "falseLit": "false",
     "nullLit": "null",
+    "constArrayOpen": "new[] {",
+    "constArrayClose": "}",
+    "linksWithoutImports": true,
+    "forbidsShadowedLocals": true,
     "escapes": {
       "interp": {
         "\"": "\\\"",
@@ -1153,6 +1157,26 @@
     },
     "csParam": {
       "tmpl": [
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "has": "item.attrInline"
+                },
+                {
+                  "tmpl": [
+                    {
+                      "get": "item.attrInline"
+                    },
+                    " "
+                  ]
+                }
+              ]
+            ],
+            "else": ""
+          }
+        },
         {
           "type": "item.type"
         },

@@ -1,6 +1,7 @@
 # P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes
 
-**Status:** designed (2026-07-20), §D revised (2026-07-23) — pre-implementation. One cohesive PR
+**Status:** designed (2026-07-20), §D revised (2026-07-23), **BUILT + gated (2026-07-23/24, as-built
+markers inline)**. One cohesive PR
 (`p37-feature-batch`), ordered commits, no back-compat (clean cutovers). Investigated by an 8-agent scope
 investigation + a 4-agent adversarial validation team; validation verdict **GO-WITH-CONDITIONS**
 (conditions folded in below). §D was subsequently revised by a 6-agent follow-up investigation
@@ -49,12 +50,15 @@ manifest.
 
 ## B. `is` / `as`
 
-Two new expression operators over **concrete class/union types** (never interfaces — see the refusal):
+Two new expression operators over **class/record hierarchies** (as built: union types/cases refuse toward
+`match` — no case-as-type exists to narrow to; interfaces gate per-target, see the refusal):
 
 - **`is`** — type test. `x is T` → `bool`. `x is T name` binds a narrowed local `name` **scoped to the
-  guarded branch only, permanently** (B3 — no flow-typing out, ever). Emits the P36 #38 shapes: C# decl
-  pattern, TS `instanceof`, Python `isinstance`, PHP `instanceof`. Lowering prepends a narrowed `Let` to
-  `ir::If.thenBody` (no `ir::If` change needed — makes branch-scoping structural).
+  guarded branch only, permanently** (B3 — no flow-typing out, ever). Emits the P36 #38 shapes: C# `is`,
+  TS/PHP `instanceof`, Python `isinstance`. As built, the binding lowers to a hoisted
+  `let name = x as T` + `name != null` BEFORE the `if` (single-eval by construction, idiomatic on all
+  four targets); the emitted binding outlives the branch, so redeclaring the name later in the same
+  block is refused.
 - **`as`** — checked conversion, result type `T?` (native nullable, **not** `Option<T>`, because operands
   are always concrete reference types). **Semantics pinned (M1, non-negotiable):** yields the value typed as
   `T` on success, **`null` on failure — never throws.** Emit: C# `x as T`; TS `(x instanceof T ? x : null)`;
@@ -91,7 +95,8 @@ on a null operand (faithful to C#/Python deref), and `eq` becomes null-tolerant 
 `a.eq(b)` NREs when `a` is null). **M3 (pinned):** a comparison against the `null` literal is always a
 null/reference check, never a user-`eq` call (keep the `rhsIsNullLit` guard).
 
-- **Explicit conversion operators** — new: `operator fn explicit T(...)`. C# native `explicit operator T`;
+- **Explicit conversion operators** — new, as built: `operator fn explicit(): T` (the RETURN TYPE is the
+  conversion target; no parameters). C# native `explicit operator T`;
   the method-form targets emit a named `toT()` and rewrite the `Cast` site when from→to is a registered user
   conversion (a `userConversionTypes_` set + a `Cast`-rule branch, mirroring `userEqTypes_`). **Implicit
   user conversions are refused** with a diagnostic (invisible call-site injection has no TS hook and violates
@@ -142,46 +147,49 @@ A Tier 1 `.pg` attribute is parsed, type-checked against a binding, and emitted 
 annotation. Polyglot never executes or reads it. This is an **FFI-class** feature (like `extern`),
 governed by the same per-target binding + capability-intersection machinery.
 
-- **Syntax (D8):** C#-style `[Name(args)]` in **declaration-prefix position** — before class, method,
-  field/property, param, and (deferred) return. `[` is illegal at all those positions today, so parsing is
-  unambiguous with one-token lookahead. **No attributes on local variables in v1** (the one position where
-  `[` already begins a list literal — excluding it removes all ambiguity; frameworks don't target locals).
-  Stacked `[A] [B]` and grouped `[A, B]` are both accepted (equivalent).
-- **Arguments:** positional and **named** (`Name = value`, a *new* `[ident '='] expr` production — maps to
-  C# named attribute properties, per-target options elsewhere). Value grammar: literals, enum-member
-  references, and arrays of those. **Non-const / variable values (D11) are supported from day one**, gated
-  by capability `attributes.arg.nonConst`: allowed only when *all* configured targets declare support
-  (C#/PHP require compile-time constants → their flag is false → the intersection refuses variable values
-  whenever C#/PHP is a target; TS/Python-only target sets get them). Loud refusal, never a silent drop.
-- **Binding (D9):** reuse the existing binding-arm syntax (do NOT invent a parallel grammar), extended with
-  an import/using clause and a `refuse` arm:
+*(This section is AS-BUILT, 2026-07-24 — the original design bullets were revised where implementation
+found a better or narrower shape; each deviation is also logged in `PLAN.md` §As-built.)*
+
+- **Syntax (D8, as built):** C#-style `[Name(args)]` in **declaration-prefix position** — before class,
+  record, function, method, field/property, and inline before a parameter. Stacked `[A] [B]` and grouped
+  `[A, B]` are both accepted (equivalent). **No attributes on local variables** (the one position where
+  `[` already begins a list literal) and no `return:`-target attributes (no grammar home) — both recorded
+  deferrals. Implementation found one more ambiguity D8's analysis missed: an attribute list after an
+  *expression-bodied* declaration would be swallowed as a subscript, so a **subscript `[` must start on
+  the same line as the expression it indexes** (a next-line `[…]` is a new statement).
+- **Arguments (as built):** positional and **named** (`name = value`), with declared defaults filled in.
+  Value grammar: `bool`/int/float/string literals (incl. negative numerics), **enum members**, and
+  **non-empty arrays** of those — each rendered from plugin-spec DATA (`trueLit`/`falseLit`,
+  `enumMemberOp`, `constArrayOpen/Close`), never target-name checks in Core. **Non-const / variable
+  values (D11) are DEFERRED** (not built): validation X3 already called the capability near-vacuous
+  (it could only ever light up on TS/Python-only target sets), so v1 is const-only everywhere with a
+  loud refusal; `attributes:arg.*` capability keys enter the vocabulary only when a consumer ships (H5).
+- **Binding (D9, as built):** one verbatim spelling instead of the per-target import grammar sketched at
+  design time — the extern template is the ENTIRE native annotation line, and the optional import is a
+  verbatim header line:
   ```
-  extern attribute JsonProperty(name: string) {
-    actual(csharp)     extern("Newtonsoft.Json.JsonProperty($name)") using "Newtonsoft.Json"
-    actual(typescript) extern("JsonProperty($name)")                 import { JsonProperty } from "class-transformer"
-    actual(php)        extern("JsonProperty($name)")
+  extern attribute JsonProp(name: string) {
+    actual(csharp)     extern("[Newtonsoft.Json.JsonProperty($0)]") import "using Newtonsoft.Json;"
+    actual(typescript) extern("@JsonProperty($name)")               import "import { JsonProperty } from 'class-transformer';"
     actual(python)     refuse
   }
   ```
-  The declared `(params)` signature type-checks each usage via the existing `checkArgs`/`checkConvert` path
-  (same as extern-class methods). `$name`/`$0`… placeholders reuse `substBoundTemplate`. **New machinery:**
-  a per-target import/using field on `TargetBinding` (it has none today — C# std bindings sidestep it with
-  `global::` FQN, but package annotations need real `import`s) + a per-file import accumulator feeding the
-  existing `module.imports` emission site + the `refuse` arm.
-- **Attachment points & arg-kinds gated by intersection (D10):** attribute targets
-  (`attributes.target.{class,method,field,param,return}`) and arg kinds
-  (`attributes.arg.{const,nonConst,enum,array}`) are capability-gated per plugin; the supported set is the
-  set-AND across configured targets — the *same* mechanism as language features today. **Per-attachment-point
-  granularity is mandatory** (Python has class decorators but no *parameter* decorators — a coarse
-  `attributes` flag would silently miscompile; the intersection must exclude param attributes when Python is
-  targeted). `return`-target attributes (C# `[return: X]`) have no grammar home yet → **deferred**.
-- **D12 (non-negotiable):** a used attribute with no binding for a configured target → **loud compile-time
-  refusal** naming the attribute and the lacking target(s). This is the backstop that makes emit-only honest.
-- **D13 — mechanism-only distribution:** the Core ships only the attribute mechanism; *all* bindings ship as
-  packages via P30. This needs a **binding-only package kind** (a partial plugin contributing `extern
-  attribute` declarations + their imports, *not* a full target backend — today every plugin must be a
-  complete backend with full IR coverage). To avoid N-dependency friction for the common case, bless a
-  curated first-party `polyglot-attributes-*` package (one dependency, not N). No auto-included stdlib.
+  The declared `(params)` signature type-checks each usage (`checkArgs`/`checkConvert` path);
+  `$0`…/`$name` substitute the constant args. Because the template is the whole line, Tier 1 emission
+  needs zero plugin-template knowledge: one shared injection point (the MapMembers/MapDecl walk) prints
+  the lines above classes/records/methods/functions/fields, and C#/PHP param templates prepend the
+  inline text; import lines dedupe onto the module header.
+- **Attachment points gated by intersection (D10, as built):** keyed capabilities
+  `attributes:target.{type,method,function,field,param}`, set-AND across configured targets.
+  Per-attachment-point granularity proved mandatory exactly as designed: TS declares `function` and
+  `param` false (TC39 has neither), Python declares `field` and `param` false. Arg-kind keys
+  (`attributes:arg.*`) ship with the nonConst follow-up, not before (H5).
+- **D12 (non-negotiable, as built):** a used attribute with no arm — or an explicit `refuse` arm — for a
+  configured target → **loud compile-time refusal** naming the attribute and target. The backstop that
+  makes emit-only honest.
+- **D13 — mechanism-only distribution: DEFERRED.** The binding-only P30 package kind (a partial plugin
+  contributing `extern attribute` decls, not a full backend) is additive and ships as a follow-up;
+  today `extern attribute` declarations live in user `.pg` / imported modules.
 
 ### D.1 Design note — why attributes are *pass-through only*, not "functional" (behavior-affecting)
 
@@ -272,19 +280,19 @@ only if materialized** (below). This is the typed shape Haxe's rejected "typed m
 proposal pointed at (haxe-evolution #73): where Haxe metadata is stringly-typed with `Dynamic` returns,
 a `.pg` attribute has a signature the checker enforces at every attachment and a typed query result.
 
-**Attachment.** Same `[Name(args)]` syntax and positions as D8 (class, method, field/property, enum case;
-stacked/grouped; positional + named args; no locals). Tier-2-specific rules: **values must be compile-time
-constants** — literals, enum members, arrays of those — always (there is no non-const gate for Tier 2;
-the value must be inlinable at every query site; D11 `attributes.arg.nonConst` is Tier-1-only). **At most
-one application of a given attribute type per declaration** (repeat → diagnostic; `AllowMultiple` is
-deferred). **No parameter attachment in v1** (v1 ships type- and member-level queries only; attaching
-where nothing can query would be a silent no-op, so it's refused, not kept). **No capability gating** —
-nothing native is emitted, so Python's lack of parameter decorators etc. is irrelevant here; the D10
-`attributes.target.*` intersection applies to Tier 1 only.
+**Attachment (as built).** Same `[Name(args)]` syntax and positions as D8 — classes/records, methods,
+fields/properties, and **parameters** (stacked/grouped; positional + named args; no locals; enum cases
+deferred). Tier-2-specific rules: **values must be compile-time constants** — literals, enum members,
+non-empty arrays of those — always (there is no non-const gate for Tier 2; the value must be inlinable
+at every query site). **At most one application of a given attribute type per declaration** (repeat →
+diagnostic; `AllowMultiple` is deferred). **No capability gating** — nothing native is emitted, so
+Python's lack of parameter decorators etc. is irrelevant here; the D10 `attributes:target.*`
+intersection applies to Tier 1 only. (Free functions carry Tier 1 only: `Meta` takes a type, so
+function-level Tier 2 metadata has no query surface — refused toward that rationale.)
 
-**Query — compile-time-resolved, lowers to inline constants.** A `std.meta` module (embedded like
-`STD_MATH`) exposing intrinsics: `Meta.has<T, A>() -> bool`, `Meta.get<T, A>() -> A?`,
-`Meta.member<T, A>("name") -> A?`. **Every query is resolved at transpile time**: the compiler looks up
+**Query — compile-time-resolved, lowers to inline constants.** The `Meta` intrinsics:
+`Meta.has<T, A>() -> bool`, `Meta.get<T, A>() -> A?`, `Meta.member<T, A>("name") -> A?`, and
+`Meta.param<T, A>("method", "param") -> A?`. **Every query is resolved at transpile time**: the compiler looks up
 the attribute list on the statically-named declaration and lowers the call site to plain code — `has` →
 a `true`/`false` literal; `get`/`member` → a construction of the attribute record from the recorded
 constant args (C#/PHP `new Range(1, 8)`, TS `new Range(1, 8)`, Python `Range(1, 8)`) or the target's
@@ -395,22 +403,23 @@ both workstreams consume it.
 ## G. Scope boundaries & deferred follow-ups
 
 - **Refused (loud diagnostic, never silent):** native runtime reflection / attribute read-back; new operator
-  *symbols*; implicit user conversion operators; attributes on local variables (v1); a Tier 1 attribute used
-  with no binding for a configured target; variable attribute-arg values when C#/PHP is targeted (Tier 1) or
-  ever (Tier 2); **runtime-variant `Meta` queries — permanently** (M6, §D.3: instance-dispatched
-  `Meta.of(expr)`, type-parameter type args, computed member names); repeated application of one Tier 2
-  attribute type; Tier 2 parameter attachment (v1); a Tier 2 `attribute` declared with a body; explicit
+  *symbols*; implicit user conversion operators; attributes on local variables; a Tier 1 attribute used
+  with no arm (or an explicit `refuse` arm) for a configured target; variable attribute-arg values (both
+  tiers — deferred with the `attributes:arg.*` keys); **runtime-variant `Meta` queries — permanently**
+  (M6, §D.3: instance-dispatched `Meta.of(expr)`, type-parameter type args, computed member/param names);
+  repeated application of one attribute type; a Tier 2 `attribute` declared with a body; attributes on an
+  attribute declaration's own parameters; Tier 2 metadata on free functions (no query surface); explicit
   member-call type args that no path consumes (latent silent-drop, closed by D.3); **Tier 3 behavior-
   transforming attributes** (Model 2 as a user feature — if a specific transform is ever wanted, a fixed
   first-party compiler-authored lowering, never a user-programmable `.pg` macro platform; rationale +
   empirical C# demonstration in §D.1).
 - **Deferred (demand-gated follow-ups, recorded not built):** cross-package operator *resolution* (adopt the
-  static *shape* now; no consumer + no resolver path today); `return:`-target and type-parameter attributes
-  (new syntax, no grammar home); an auto-included attribute stdlib package; Tier 2 parameter-level metadata
-  + query; `AllowMultiple` (query returns a list); `Meta.getInherited`; `Meta.all<T>()` (needs a
-  heterogeneous-list story); a dual-tier single declaration (portable data *and* native emission from one
-  attachment); LSP hover showing resolved `Meta` constants + member-name completion inside the string
-  literal.
+  static *shape* now; no consumer + no resolver path today); `return:`-target, enum-case, and type-parameter
+  attributes (new syntax / no grammar home); non-const attribute values (`attributes:arg.*`); the D13
+  binding-only P30 package kind + an auto-included attribute stdlib package; `AllowMultiple` (query returns
+  a list); `Meta.getInherited`; `Meta.all<T>()` (needs a heterogeneous-list story); a dual-tier single
+  declaration (portable data *and* native emission from one attachment); LSP hover showing resolved `Meta`
+  constants + member-name completion inside the string literal.
 
 ## H. Testing strategy (see PLAN.md matrix)
 
@@ -418,9 +427,9 @@ Operators / `is` / `as` / compound-assign / conversions are **differentially exe
 suite is the safety net (critical for the C5 rework, which regenerates 9 existing operator/equality
 goldens). **Tier 1** attributes hook target *frameworks* absent from the harness → **golden-only** (assert
 emitted per-target text + required imports). **Tier 2** is differentially executable (H6): `meta_query.pg`
-programs print `Meta.has`/`get`/`member` results (present + absent + defaults + arrays + enum args) and all
-four targets must agree; plus one golden pinning that an attached-but-unqueried attribute emits **zero**
-runtime output. Capability gates (C6 sub-keys, D10/D11, B4, D12) and the M6/D.2 rules (type-parameter type
+prints `Meta.has`/`get`/`member`/`param` results (present + absent + defaults + enum + array args +
+parameter metadata) and all four targets must agree — PHP included; plus one golden pinning that an
+attached-but-unqueried attribute emits **zero** runtime output. Capability gates (C6 sub-keys, D10/D11, B4, D12) and the M6/D.2 rules (type-parameter type
 arg, non-literal member name, unknown member, repeat application, param attachment, body on an `attribute`)
 get **refusal fixtures**. The A-rename adds a golden asserting emitted TS/JS never yields a bare
 `.constructor` access.

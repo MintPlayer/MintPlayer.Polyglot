@@ -4,7 +4,8 @@
   "crossDirImports": true,
   "capabilities": {
     "interfaces:runtimeIdentity": false,
-    "attributes:target.function": false
+    "attributes:target.function": false,
+    "attributes:target.param": false
   },
   "spec": {
     "name": "typescript",

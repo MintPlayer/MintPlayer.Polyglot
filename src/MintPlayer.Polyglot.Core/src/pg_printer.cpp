@@ -94,6 +94,19 @@ private:
         std::string s;
         for (std::size_t i = 0; i < ps.size(); ++i) {
             if (i) s += ", ";
+            for (const auto& a : ps[i].attributes) { // P37 D: inline parameter attributes
+                s += "[" + a.name;
+                if (!a.args.empty()) {
+                    s += "(";
+                    for (std::size_t j = 0; j < a.args.size(); ++j) {
+                        if (j) s += ", ";
+                        if (!a.args[j].name.empty()) s += a.args[j].name + " = ";
+                        s += expr(*a.args[j].value);
+                    }
+                    s += ")";
+                }
+                s += "] ";
+            }
             s += ps[i].name;
             if (!ps[i].type.absent()) s += ": " + typeStr(ps[i].type);
             if (ps[i].hasDefault) s += " = " + expr(*ps[i].defaultValue);

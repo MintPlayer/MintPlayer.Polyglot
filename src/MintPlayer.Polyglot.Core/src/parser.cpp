@@ -167,6 +167,7 @@ private:
         do {
             Param p;
             p.pos = peek().pos;
+            while (at(TokKind::LBracket)) parseAttrList(p.attributes); // P37 D: parameter attributes
             p.name = expect(TokKind::Identifier, "a parameter name").text;
             expect(TokKind::Colon, "':'");
             p.type = parseType();

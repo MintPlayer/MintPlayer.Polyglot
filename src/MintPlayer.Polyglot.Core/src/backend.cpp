@@ -74,6 +74,12 @@ public:
     }
     using Backend::capabilityStance;
 
+    ConstSpelling constSpelling() const override {
+        return {spec_.trueLit, spec_.falseLit, spec_.enumMemberOp, spec_.constArrayOpen, spec_.constArrayClose};
+    }
+    bool linksWithoutImports() const override { return spec_.linksWithoutImports; }
+    bool forbidsShadowedLocals() const override { return spec_.forbidsShadowedLocals; }
+    bool expressionOnlyLambdas() const override { return spec_.expressionOnlyLambdas; }
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }
@@ -118,6 +124,8 @@ const std::unordered_set<std::string>& capabilityVocabulary() {
         s.insert("attributes:target.type");
         s.insert("attributes:target.method");
         s.insert("attributes:target.function");
+        s.insert("attributes:target.field");  // false on Python (no field annotations)
+        s.insert("attributes:target.param");  // false on TS (TC39 has none) + Python
         return s;
     }();
     return keys;

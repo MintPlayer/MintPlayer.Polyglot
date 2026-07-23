@@ -61,23 +61,6 @@ using ExprPtr = std::unique_ptr<Expr>;
 struct Stmt;
 using StmtPtr = std::unique_ptr<Stmt>;
 
-struct Param {
-    std::string name;
-    TypeRef type;            // absent() = inferred
-    SourcePos pos;
-    ExprPtr defaultValue;    // optional `= expr`
-    bool hasDefault = false;
-};
-
-struct GenericParam {
-    std::string name;
-    std::vector<TypeRef> bounds;   // `T: A & B`
-};
-
-struct FieldInit {           // `name = value` inside a `with { ... }` expression
-    std::string name;
-    ExprPtr value;
-};
 // P37 D — an attribute attached to a declaration: `[Name(args)]`. One usage syntax for both tiers;
 // the resolved DECLARATION picks the tier (Tier 1 `extern attribute` pass-through vs Tier 2
 // `attribute` portable metadata). Args are compile-time constants; a named arg carries its name.
@@ -90,6 +73,25 @@ struct AttrUse {
     std::string name;
     std::vector<AttrArg> args;
     SourcePos pos;
+};
+
+struct Param {
+    std::string name;
+    TypeRef type;            // absent() = inferred
+    SourcePos pos;
+    ExprPtr defaultValue;    // optional `= expr`
+    bool hasDefault = false;
+    std::vector<AttrUse> attributes; // P37 D: parameter attributes (`fn f([NotNull] s: string)`)
+};
+
+struct GenericParam {
+    std::string name;
+    std::vector<TypeRef> bounds;   // `T: A & B`
+};
+
+struct FieldInit {           // `name = value` inside a `with { ... }` expression
+    std::string name;
+    ExprPtr value;
 };
 
 // ---- patterns (for `match`) ----

@@ -67,6 +67,12 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     r.spec.trueLit      = strOr("trueLit", "true");
     r.spec.falseLit     = strOr("falseLit", "false");
     r.spec.nullLit      = strOr("nullLit", "null");
+    r.spec.enumMemberOp   = strOr("enumMemberOp", ".");
+    r.spec.constArrayOpen  = strOr("constArrayOpen", "[");
+    r.spec.constArrayClose = strOr("constArrayClose", "]");
+    r.spec.linksWithoutImports   = doc["linksWithoutImports"].asBool(false);
+    r.spec.forbidsShadowedLocals = doc["forbidsShadowedLocals"].asBool(false);
+    r.spec.expressionOnlyLambdas = doc["expressionOnlyLambdas"].asBool(false);
 
     for (const auto& kv : doc["escapes"].members)
         if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.escapes[kv.first]);
@@ -235,7 +241,13 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"memberOp\":" + json::quote(spec.memberOp) +
            ",\"trueLit\":" + json::quote(spec.trueLit) +
            ",\"falseLit\":" + json::quote(spec.falseLit) +
-           ",\"nullLit\":" + json::quote(spec.nullLit) + gen + wa + tbls + escs + ids + "}";
+           ",\"nullLit\":" + json::quote(spec.nullLit) +
+           ",\"enumMemberOp\":" + json::quote(spec.enumMemberOp) +
+           ",\"constArrayOpen\":" + json::quote(spec.constArrayOpen) +
+           ",\"constArrayClose\":" + json::quote(spec.constArrayClose) +
+           std::string(",\"linksWithoutImports\":") + (spec.linksWithoutImports ? "true" : "false") +
+           std::string(",\"forbidsShadowedLocals\":") + (spec.forbidsShadowedLocals ? "true" : "false") +
+           std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") + gen + wa + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

@@ -290,7 +290,8 @@ class Box {
 fn main() {
   print(Meta.has<Box, Range>())                 // true      — a bool literal in the output
   print(Meta.get<Box, Range>()?.max ?? -1)      // 8         — `new Range(1, 8)` inlined at the call site
-  print(Meta.member<Box, Range>("fill")?.max ?? -1) // 100
+  print(Meta.member<Box, Range>("fill")?.max ?? -1)         // 100
+  print(Meta.param<Box, Range>("scale", "k")?.max ?? -1)    // parameter metadata, same discipline
 }
 
 // Tier 1 — pass-through: the binding IS the native annotation line, per target, emitted verbatim
@@ -314,9 +315,12 @@ extern attribute JsonProp(name: string) {
   annotations). Attachment points gate per target (`attributes:target.{type,method,function}` — TS has
   no function decorators); a used attribute with **no arm** (or an explicit `refuse` arm) for a
   configured target refuses loudly (D12) — never a silent drop.
-- v1 attachment points: classes/records + methods (both tiers), functions (Tier 1), fields/properties
-  (Tier 2 — pass-through field attributes are a recorded deferral, as are params, enum cases,
-  `AllowMultiple`, and variable argument values).
+- Attachment points: classes/records, methods, fields/properties, and parameters (both tiers), plus free
+  functions (Tier 1 only — `Meta` takes a type, so function metadata has no query surface). Tier 1
+  points gate per target: TS has no function or parameter decorators; Python has no field or parameter
+  annotations. Values: bool/int/float/string literals, enum members, and non-empty arrays of those —
+  each spelled from plugin-spec data (`trueLit`/`falseLit`, `enumMemberOp`, `constArrayOpen/Close`).
+  Recorded deferrals: enum-case and `return:` targets, `AllowMultiple`, variable argument values.
 
 ---
 

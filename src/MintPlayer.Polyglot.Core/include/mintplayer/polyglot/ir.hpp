@@ -399,6 +399,10 @@ struct Param {
     std::string name;
     Type type;
     ExprPtr defaultValue;   // optional `= expr` default; null = required parameter
+    // P37 D Tier 1: pre-rendered native annotation text emitted INLINE before the parameter
+    // (space-joined: C# `[X] int p`, PHP `#[X] int $p`); empty on targets without parameter
+    // annotations (gated by attributes:target.param) and for Tier 2 metadata.
+    std::string attrInline;
     // Capture analysis (P25 §4.18): this parameter is captured by a nested lambda; `needsCell` if that
     // capture needs a shared mutable binding (the param is assigned somewhere its closures can observe).
     bool captured = false;
@@ -545,6 +549,7 @@ struct Union {
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct ClassField {
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (above the field)
     std::string name;
     bool isMutable = false;
     bool isStatic = false;  // a `const`/`static` member — accessed `Owner.name`, emitted `static`/`readonly`

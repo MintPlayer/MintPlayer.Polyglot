@@ -1336,27 +1336,43 @@ private:
     static bool isUnitT(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "unit" && !t.nullable; }
     // ---- P37 D: attributes (both tiers) + the Meta intrinsics -----------------------------------------
 
-    // The const envelope Tier 2 attribute params may use: what every target holds as a plain literal.
-    static bool isConstEnvelopeType(const TypeRef& t) {
-        if (t.kind != TypeRef::Kind::Named || t.nullable || !t.args.empty()) return false;
+    // The const envelope attribute params may use: what every target holds as a plain literal — scalars,
+    // strings, enum types, and single-level arrays of those.
+    bool isConstEnvelopeType(const TypeRef& t) const {
+        if (t.kind != TypeRef::Kind::Named || t.nullable) return false;
         const std::string& n = t.name;
+        if (n == "Array" && t.args.size() == 1) { // `T[]` — one level, element must itself be envelope
+            const TypeRef& el = t.args[0];
+            return el.kind == TypeRef::Kind::Named && el.args.empty() && isConstEnvelopeType(el);
+        }
+        if (!t.args.empty()) return false;
+        if (enumNames_.count(n)) return true;
         return n == "bool" || n == "string" || n == "i8" || n == "i16" || n == "i32" || n == "i64" ||
                n == "u8" || n == "u16" || n == "u32" || n == "u64" || n == "f32" || n == "f64";
     }
-    // A compile-time-constant attribute argument: a literal, or a signed numeric literal. There is no
-    // constant evaluator and none is wanted — resolvability is decided by FORM (M6 discipline).
-    static bool isConstAttrValue(const Expr& e) {
+    // A compile-time-constant attribute argument: a literal, a signed numeric literal, an enum member,
+    // or a non-empty array literal of those. There is no constant evaluator and none is wanted —
+    // resolvability is decided by FORM (M6 discipline).
+    bool isConstAttrValue(const Expr& e) const {
         switch (e.kind) {
             case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::StringLit: case ExprKind::BoolLit:
                 return true;
             case ExprKind::Unary:
                 return e.text == "-" && e.lhs &&
                        (e.lhs->kind == ExprKind::IntLit || e.lhs->kind == ExprKind::FloatLit);
+            case ExprKind::Member: // an enum member `Color.Red`
+                return e.lhs && e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text) != 0;
+            case ExprKind::ListLit: { // a non-empty array of consts (empty = uninferable, like #27)
+                if (e.args.empty()) return false;
+                for (const auto& el : e.args)
+                    if (!el || el->kind == ExprKind::ListLit || !isConstAttrValue(*el)) return false;
+                return true;
+            }
             default:
                 return false;
         }
     }
-    enum class AttrPoint { Type, Method, Field, Function, Other };
+    enum class AttrPoint { Type, Method, Field, Param, Function, Other };
 
     void checkAttributesPass(CompilationUnit& u) {
         for (auto& ea : u.externAttrs) {
@@ -1383,13 +1399,33 @@ private:
         }
         for (auto& r : u.records) {
             checkAttrList(r.attributes, AttrPoint::Type);
-            for (auto& m : r.members) checkAttrList(m.attributes, memberPoint(m));
+            if (r.isAttribute) { // an attribute's own params carry data, not further attributes
+                for (auto& p : r.fields)
+                    if (!p.attributes.empty())
+                        diags_.error(p.attributes.front().pos,
+                                     "attributes on an `attribute` declaration's parameters are refused");
+            }
+            for (auto& m : r.members) {
+                checkAttrList(m.attributes, memberPoint(m));
+                for (auto& p : m.params) checkAttrList(p.attributes, AttrPoint::Param);
+            }
         }
         for (auto& c : u.classes) {
             checkAttrList(c.attributes, AttrPoint::Type);
-            for (auto& m : c.members) checkAttrList(m.attributes, memberPoint(m));
+            for (auto& m : c.members) {
+                checkAttrList(m.attributes, memberPoint(m));
+                for (auto& p : m.params) checkAttrList(p.attributes, AttrPoint::Param);
+            }
         }
-        for (auto& f : u.functions) checkAttrList(f.attributes, AttrPoint::Function);
+        for (auto& f : u.functions) {
+            checkAttrList(f.attributes, AttrPoint::Function);
+            for (auto& p : f.params) checkAttrList(p.attributes, AttrPoint::Param);
+        }
+        for (auto& ea : u.externAttrs)
+            for (auto& p : ea.params)
+                if (!p.attributes.empty())
+                    diags_.error(p.attributes.front().pos,
+                                 "attributes on an `extern attribute` declaration's parameters are refused");
         for (auto& i : u.interfaces)
             for (auto& m : i.members)
                 if (!m.attributes.empty())
@@ -1416,12 +1452,8 @@ private:
                 diags_.error(a.pos, "attribute '" + a.name + "' is applied more than once on this "
                                         "declaration (AllowMultiple is a deferred follow-up)");
             if (point == AttrPoint::Other)
-                diags_.error(a.pos, "attributes are not supported on this member kind (v1: methods and "
-                                        "fields/properties)");
-            else if (tier1 && point == AttrPoint::Field)
-                diags_.error(a.pos, "a pass-through attribute on a field/property is deferred (the four "
-                                        "emitters render fields inline); portable `attribute` metadata "
-                                        "works on fields today");
+                diags_.error(a.pos, "attributes are not supported on this member kind (v1: methods, "
+                                        "fields/properties, and parameters)");
             else if (tier2 && point == AttrPoint::Function)
                 diags_.error(a.pos, "portable metadata on a free function has no query surface (`Meta` "
                                         "takes a type) — deferred; a pass-through `extern attribute` works");
@@ -1480,8 +1512,8 @@ private:
     // target-independent sema so build/check/LSP agree.
     TypeRef checkMetaCall(Expr& e) {
         const std::string& method = e.lhs->text;
-        if (method != "has" && method != "get" && method != "member") {
-            diags_.error(e.pos, "unknown Meta intrinsic '" + method + "' (has / get / member)");
+        if (method != "has" && method != "get" && method != "member" && method != "param") {
+            diags_.error(e.pos, "unknown Meta intrinsic '" + method + "' (has / get / member / param)");
             return tUnknown();
         }
         if (e.typeArgs.size() != 2) {
@@ -1523,7 +1555,34 @@ private:
                                     "(Tier 2) metadata only");
             return tUnknown();
         }
-        if (method == "member") {
+        if (method == "param") {
+            // Meta.param<T, A>("method", "param") — both names are string literals resolved at
+            // transpile time against the declaration (M6: computed names cannot resolve).
+            if (e.args.size() != 2 || !e.args[0] || e.args[0]->kind != ExprKind::StringLit ||
+                !e.args[1] || e.args[1]->kind != ExprKind::StringLit) {
+                diags_.error(e.pos, "Meta.param takes two STRING LITERALS: the method name and the "
+                                        "parameter name (M6)");
+                return tUnknown();
+            }
+            checkExpr(*e.args[0]);
+            checkExpr(*e.args[1]);
+            const std::string& mem = e.args[0]->text;
+            const std::string& par = e.args[1]->text;
+            const Member* found = findDeclMember(tn, mem);
+            if (!found) {
+                diags_.error(e.args[0]->pos, "'" + tn + "' has no member named '" + mem + "'");
+                return tUnknown();
+            }
+            bool hasParam = false;
+            for (const auto& p : found->params) if (p.name == par) hasParam = true;
+            if (!hasParam) {
+                SourcePos endp = e.args[1]->pos;
+                endp.col += static_cast<int>(par.size()) + 2;
+                diags_.error(e.args[1]->pos, endp,
+                             "'" + tn + "." + mem + "' has no parameter named '" + par + "'");
+                return tUnknown();
+            }
+        } else if (method == "member") {
             if (e.args.size() != 1 || !e.args[0] || e.args[0]->kind != ExprKind::StringLit) {
                 diags_.error(e.pos, "Meta.member takes one STRING LITERAL member name — a variable or "
                                         "computed name cannot resolve at transpile time (M6)");
@@ -1641,6 +1700,18 @@ private:
         result.nullable = true; // `as` = checked conversion -> T? (null on failure, never throws)
         return result;
     }
+    // Decl-level member lookup (P37 D: Meta.param needs parameter NAMES, which MemberInfo drops).
+    const Member* findDeclMember(const std::string& typeName, const std::string& member) const {
+        if (!unit_) return nullptr;
+        for (const auto& c : unit_->classes)
+            if (c.name == typeName)
+                for (const auto& m : c.members) if (m.name == member) return &m;
+        for (const auto& r : unit_->records)
+            if (r.name == typeName)
+                for (const auto& m : r.members) if (m.name == member) return &m;
+        return nullptr;
+    }
+
     // Transitive nominal derivation: `derived` reaches `base` through class/interface base lists.
     bool derivesFrom(const std::string& derived, const std::string& base) const {
         auto it = types_.find(derived);

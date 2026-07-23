@@ -3,16 +3,24 @@
 // (bool literals, constructions from the recorded constants, typed nulls). No runtime tables, no
 // reflection — and no capability: this runs on all four targets, PHP included.
 
+enum Sev {
+  Low
+  High
+}
+
 attribute Range(min: i32, max: i32)
 attribute Label(text: string = "none")
+attribute Level(s: Sev)
+attribute Tags(ids: i32[])
 
-[Range(1, 8), Label("box")]
+[Range(1, 8), Label("box"), Level(Sev.High), Tags([4, 5, 6])]
 class Box {
   [Range(0, 100)]
   var fill: i32
   constructor() {
     this.fill = 0
   }
+  fn scale([Range(1, 4)] k: i32): i32 => this.fill * k
 }
 
 [Label]
@@ -37,4 +45,12 @@ fn main() {
   print(f?.max ?? -1)                            // 100
   print(Meta.member<Plain, Range>("v") == null)  // true
   print(Meta.member<Box, Label>("fill") == null) // true  (fill carries Range, not Label)
+  let lv = Meta.get<Box, Level>()
+  print(lv != null && lv!.s == Sev.High)         // true  (enum-valued constant)
+  let tg = Meta.get<Box, Tags>()
+  if tg != null {
+    print(tg!.ids[1])                            // 5     (array-valued constant)
+  }
+  print(Meta.param<Box, Range>("scale", "k")?.max ?? -1)   // 4  (parameter metadata)
+  print(Meta.param<Box, Label>("scale", "k") == null)      // true
 }

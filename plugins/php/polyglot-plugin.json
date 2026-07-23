@@ -36,6 +36,7 @@
     "throwKeyword": "throw",
     "rethrow": "throw $__e;",
     "memberOp": "->",
+    "enumMemberOp": "::",
     "trueLit": "true",
     "falseLit": "false",
     "nullLit": "null",
@@ -2501,6 +2502,26 @@
     },
     "phpParam": {
       "tmpl": [
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "has": "item.attrInline"
+                },
+                {
+                  "tmpl": [
+                    {
+                      "get": "item.attrInline"
+                    },
+                    " "
+                  ]
+                }
+              ]
+            ],
+            "else": ""
+          }
+        },
         "$",
         {
           "fn": "ident",

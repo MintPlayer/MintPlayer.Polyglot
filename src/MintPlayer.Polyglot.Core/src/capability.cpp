@@ -36,15 +36,27 @@ public:
                     tier1Uses_.push_back(&a);
                 }
         };
+        auto memberPoint = [](const Member& m) {
+            return m.kind == MemberKind::Field ? "field" : "method"; // properties ride the method shape
+        };
         for (const auto& r : u.records) {
             markAttrs(r.attributes, "type");
-            for (const auto& mem : r.members) markAttrs(mem.attributes, "method");
+            for (const auto& mem : r.members) {
+                markAttrs(mem.attributes, memberPoint(mem));
+                for (const auto& p : mem.params) markAttrs(p.attributes, "param");
+            }
         }
         for (const auto& c : u.classes) {
             markAttrs(c.attributes, "type");
-            for (const auto& mem : c.members) markAttrs(mem.attributes, "method");
+            for (const auto& mem : c.members) {
+                markAttrs(mem.attributes, memberPoint(mem));
+                for (const auto& p : mem.params) markAttrs(p.attributes, "param");
+            }
         }
-        for (const auto& f : u.functions) markAttrs(f.attributes, "function");
+        for (const auto& f : u.functions) {
+            markAttrs(f.attributes, "function");
+            for (const auto& p : f.params) markAttrs(p.attributes, "param");
+        }
         for (const auto& e : u.extensions) {
             mark(Feature::ExtensionMethods, e.pos);
             typeRef(e.receiver, e.pos);

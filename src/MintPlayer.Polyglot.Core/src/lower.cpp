@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/capture_analysis.hpp"
 #include "mintplayer/polyglot/hoist_block_lambdas.hpp"
 
@@ -150,6 +151,7 @@ public:
         unit_ = &unit;
         for (const auto& ea : unit.externAttrs) externAttrMap_[ea.name] = &ea;
         for (const auto& n : unit.metaMaterialized) materialized_.insert(n);
+        if (const Backend* b = findBackend(target_)) spell_ = b->constSpelling();
     }
 
     // P37 D Tier 1: render each pass-through attribute into its native annotation line for the ACTIVE
@@ -210,8 +212,7 @@ public:
             case ExprKind::IntLit:
             case ExprKind::FloatLit: return v.text;
             case ExprKind::BoolLit:
-                if (target_ == "python") return v.boolVal ? "True" : "False";
-                return v.boolVal ? "true" : "false";
+                return v.boolVal ? spell_.trueLit : spell_.falseLit;
             case ExprKind::StringLit: {
                 std::string out = "\"";
                 for (char c : v.text) {
@@ -222,6 +223,17 @@ public:
             }
             case ExprKind::Unary:
                 return "-" + (v.lhs ? constAttrText(*v.lhs) : std::string());
+            case ExprKind::Member: // enum member — the plugin's enumMemberOp spells the accessor
+                if (v.lhs) return v.lhs->text + spell_.enumMemberOp + v.text;
+                return "";
+            case ExprKind::ListLit: { // array of consts — the plugin's constArray delimiters
+                std::string items;
+                for (const auto& el : v.args) {
+                    if (!items.empty()) items += ", ";
+                    if (el) items += constAttrText(*el);
+                }
+                return spell_.arrayOpen + items + spell_.arrayClose;
+            }
             default:
                 return "";
         }
@@ -388,6 +400,7 @@ private:
     std::unordered_map<std::string, const ExternAttrDecl*> externAttrMap_; // Tier 1 bindings by name
     std::unordered_set<std::string> materialized_;  // Tier 2 attribute records some Meta query constructs
     std::vector<std::string> attrImports_;          // Tier 1 import/using lines (deduped, verbatim)
+    Backend::ConstSpelling spell_;                  // the active plugin's constant spellings (data, not names)
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
@@ -545,6 +558,7 @@ private:
                 case MemberKind::Field:
                 case MemberKind::Const: {
                     ir::ClassField f;
+                    f.attrLines = renderAttrLines(mem.attributes);
                     f.name = mem.name;
                     f.isMutable = mem.isMutable;
                     f.isStatic = mem.kind == MemberKind::Const;
@@ -593,6 +607,10 @@ private:
     // and callers may omit trailing defaulted arguments — both C# and TS support default parameters).
     ir::Param irParam(const Param& p) {
         ir::Param ip{p.name, p.type, nullptr};
+        for (const std::string& l : renderAttrLines(p.attributes)) {
+            if (!ip.attrInline.empty()) ip.attrInline += " ";
+            ip.attrInline += l;
+        }
         if (p.hasDefault && p.defaultValue) ip.defaultValue = expr(*p.defaultValue);
         return ip;
     }
@@ -1038,7 +1056,19 @@ private:
         const std::string& tn = e.typeArgs[0].name;
         const std::string& an = e.typeArgs[1].name;
         const std::vector<AttrUse>* attrs = nullptr;
-        if (method == "member") {
+        if (method == "param") { // Meta.param<T, A>("method", "param")
+            const std::string& mem = e.args.size() > 0 ? e.args[0]->text : std::string();
+            const std::string& par = e.args.size() > 1 ? e.args[1]->text : std::string();
+            auto paramAttrs = [&](const std::vector<Member>& ms) -> const std::vector<AttrUse>* {
+                for (const auto& m : ms)
+                    if (m.name == mem)
+                        for (const auto& p : m.params)
+                            if (p.name == par) return &p.attributes;
+                return nullptr;
+            };
+            for (const auto& c : unit_->classes) if (c.name == tn) attrs = paramAttrs(c.members);
+            for (const auto& r : unit_->records) if (r.name == tn && !attrs) attrs = paramAttrs(r.members);
+        } else if (method == "member") {
             const std::string& mem = e.args.empty() ? std::string() : e.args[0]->text;
             auto memberAttrs = [&](const std::vector<Member>& ms) -> const std::vector<AttrUse>* {
                 for (const auto& m : ms) if (m.name == mem) return &m.attributes;
@@ -1218,11 +1248,13 @@ struct CsScopeLegalizer {
 ir::Module lower(const CompilationUnit& unit, const std::string& target) {
     Lowerer lowerer(unit, target);
     ir::Module m = lowerer.run(unit);
-    if (target == "csharp") { CsScopeLegalizer cs; cs.run(m); } // #41: rename for-bindings colliding with locals
+    // Target-trait passes gate on PLUGIN FLAGS, never target names (the Core cannot know what
+    // languages exist): scope legalization for targets that forbid shadowed nested locals (#41,
+    // CS0136-class rules), and block-lambda hoisting for expression-only-lambda targets.
+    const Backend* b = findBackend(target);
+    if (b && b->forbidsShadowedLocals()) { CsScopeLegalizer cs; cs.run(m); }
     analyzeCaptures(m); // P25 §4.18: classify closure captures + stamp cell decisions onto the IR
-    // Python's `lambda` is expression-only, so block lambdas hoist to nested `def`s here (the local tier for
-    // an expression-only-lambda target). Every other target emits block lambdas inline.
-    if (target == "python") hoistBlockLambdas(m);
+    if (b && b->expressionOnlyLambdas()) hoistBlockLambdas(m);
     return m;
 }
 

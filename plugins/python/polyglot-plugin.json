@@ -4,7 +4,9 @@
   "capabilities": {
     "blockLambdas": "emulated",
     "interfaces": "emulated",
-    "interfaces:runtimeIdentity": "native"
+    "interfaces:runtimeIdentity": "native",
+    "attributes:target.field": false,
+    "attributes:target.param": false
   },
   "spec": {
     "name": "python",
@@ -58,6 +60,7 @@
     "trueLit": "True",
     "falseLit": "False",
     "nullLit": "None",
+    "expressionOnlyLambdas": true,
     "identifiers": {
       "keywords": [
         "False",

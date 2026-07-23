@@ -51,7 +51,9 @@ declaration =
 attr_list      = "[" , attr_use , { "," , attr_use } , "]" ;
 attr_use       = IDENT , [ "(" , [ attr_arg , { "," , attr_arg } ] , ")" ] ;
 attr_arg       = [ IDENT , "=" ] , const_expr ;   (* positional or named; constants only *)
-const_expr     = INT | FLOAT | STRING | "true" | "false" | "-" , ( INT | FLOAT ) ;
+const_expr     = INT | FLOAT | STRING | "true" | "false" | "-" , ( INT | FLOAT )
+               | IDENT , "." , IDENT                          (* enum member, e.g. Sev.High *)
+               | "[" , const_expr , { "," , const_expr } , "]" ;  (* non-empty, one level *)
 attribute_decl = "attribute" , IDENT , "(" , [ param_list ] , ")" ;   (* a pure data shape — NO body *)
 extern_attribute_decl =
       "extern" , "attribute" , IDENT , "(" , [ param_list ] , ")" ,
@@ -77,7 +79,8 @@ function_body =
     | ";" ;                         (* abstract / interface stub *)
 
 param_list = param , { "," , param } , [ "," ] ;
-param      = IDENT , ":" , type , [ "=" , expression ] ;   (* default value *)
+param      = { attr_list } , IDENT , ":" , type , [ "=" , expression ] ;   (* P37 D: inline
+                parameter attributes precede the name; then the optional default value *)
 
 
 (* 2.2 Classes (reference types — identity semantics, may be mutable) *)

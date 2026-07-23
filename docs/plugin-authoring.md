@@ -112,10 +112,22 @@ supported. Current keyed entries:
 - `operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}` — graded operator support.
   PHP declares the umbrella `false` plus `:eq` and `:indexers` `"native"` (`->eq(...)`,
   `->get`/`->set`).
-- `attributes:target.{type,method,function}` — where a Tier 1 pass-through attribute may attach on
-  this target. TS declares `attributes:target.function: false` (no function decorators). Tier 2
-  portable metadata needs **no capability at all** — the compiler both writes and reads its data, so
-  a plugin never sees it.
+- `attributes:target.{type,method,function,field,param}` — where a Tier 1 pass-through attribute may
+  attach on this target. TS declares `function` and `param` false (TC39 has neither); Python declares
+  `field` and `param` false. Tier 2 portable metadata needs **no capability at all** — the compiler
+  both writes and reads its data, so a plugin never sees it.
+
+**Constant spellings + trait flags (P37).** The Core is a pure engine: it never compares target names
+(it cannot know what languages exist). Anything lowering must bake into pre-rendered text or gate a
+pass on comes from `spec` properties instead:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `enumMemberOp` | `"."` | how a constant enum member spells (`Color.Red` vs PHP's `"::"`) |
+| `constArrayOpen` / `constArrayClose` | `"["` / `"]"` | constant array delimiters (C#: `"new[] {"` / `"}"`) |
+| `linksWithoutImports` | `false` | modules link by compilation into one unit — no import statements (C#) |
+| `forbidsShadowedLocals` | `false` | a nested-scope local may not reuse an outer local's name → the scope-legalization pass runs (C#, CS0136) |
+| `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
 
 Capabilities also serve the **anti-silent-drop coverage contract** enforced at load time: every IR
 construct the compiler can produce must have a rule, *or* the plugin must declare its stance via the

@@ -74,6 +74,18 @@ struct BackendSpec {
     std::string trueLit = "true";
     std::string falseLit = "false";
     std::string nullLit = "null";
+    // P37 D Tier 1: how this target spells the compile-time constants lowering bakes into pre-rendered
+    // attribute text — the enum-member accessor (`Color.Red` vs PHP `Color::Red`) and the array-literal
+    // delimiters (`[…]` vs C# `new[] {…}`). Data, like every other spelling here: the Core never
+    // compares target names (it cannot know what languages exist).
+    std::string enumMemberOp = ".";
+    std::string constArrayOpen = "[";
+    std::string constArrayClose = "]";
+    // Target trait flags the Core's lowering/linking consult — DATA, never target-name comparisons
+    // (the Core cannot know what languages exist):
+    bool linksWithoutImports = false;  // modules link by compilation into one unit (no import statements)
+    bool forbidsShadowedLocals = false; // a nested-scope local may not reuse an outer local's name (CS0136)
+    bool expressionOnlyLambdas = false; // lambdas are expression-only; block lambdas hoist to local fns
 
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
