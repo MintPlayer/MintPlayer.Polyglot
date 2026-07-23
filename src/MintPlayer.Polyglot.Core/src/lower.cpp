@@ -277,8 +277,10 @@ public:
             for (const auto& b : r.bases) rec.bases.push_back(b);
             for (const auto& f : r.fields) rec.fields.push_back({f.name, f.type});
             for (const auto& mem : r.members)
-                if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property)
+                if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property) {
                     rec.methods.push_back(method(mem));
+                    rec.methods.back().ownerIsRecord = true;
+                }
             rec.originModule = r.originModule;
             m.records.push_back(std::move(rec));
         }
@@ -390,6 +392,7 @@ private:
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
     bool inOperator_ = false;   // set while lowering a (non-indexer) operator body; stamps This.insideOperator
+    bool inEqOperator_ = false; // set while lowering a user `eq` body; stamps This.insideEqOperator (P37 C5)
     std::unordered_set<std::string> moduleGlobals_; // top-level let/const names (PHP `global` fact)
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
     std::unordered_map<std::string, const std::vector<TargetBinding>*> bindings_; // "Type.member" -> FFI arms
@@ -640,12 +643,18 @@ private:
         // `this`; only a genuinely static operator (C# `operator +`, taking lhs/rhs) rebinds `this` -> lhs.
         const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get" &&
                             im.opSymbol != "set" && im.opSymbol != "==";
+        // P37 C5: an `eq` body is target-split — instance `override Equals` on C# (`this` stays) but the
+        // static null-tolerant `T.eq(lhs, rhs)` on TS (`this` -> `lhs`). A second node-local fact carries
+        // the distinction; each target's This rule picks its side.
+        const bool eqBody = im.kind == ir::MethodKind::Operator && im.opSymbol == "==";
         if (opBody) inOperator_ = true;
+        if (eqBody) inEqOperator_ = true;
         sawYield_ = false; // a `yield` anywhere in the body marks the method an iterator (mirrors ir::Function)
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
         else { im.exprBodied = false; im.body = block(m.body); }
         im.isIterator = sawYield_;
         if (opBody) inOperator_ = false;
+        if (eqBody) inEqOperator_ = false;
         return im;
     }
 
@@ -676,6 +685,7 @@ private:
                 if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
                 auto t = std::make_unique<ir::This>(e.pos, e.type);
                 t->insideOperator = inOperator_;
+                t->insideEqOperator = inEqOperator_;
                 return t;
             }
             case ExprKind::Unary: {
@@ -941,9 +951,16 @@ private:
                 // construction (the operand is evaluated once, inside the AsCast), and every target then
                 // reads the narrowed binding directly: C# `var c = x as T; if (c != null …)`, TS
                 // `const c = x instanceof T ? x : null; if (c !== null …)`, Python/PHP alike.
-                auto node = std::make_unique<ir::If>(s.pos, lowerIfCond(*s.value));
+                auto cond = lowerIfCond(*s.value);
+                // The hoisted binding Lets must survive the NESTED block() calls below (each flushes
+                // pendingStmts_ into ITS body) — steal them now, restore after, so the OUTER block()
+                // emits them directly above this `if`.
+                std::vector<ir::StmtPtr> hoisted;
+                hoisted.swap(pendingStmts_);
+                auto node = std::make_unique<ir::If>(s.pos, std::move(cond));
                 node->thenBody = block(s.thenBody);
                 if (s.hasElse) { node->hasElse = true; node->elseBody = block(s.elseBody); }
+                pendingStmts_ = std::move(hoisted);
                 return node;
             }
             case StmtKind::While: {

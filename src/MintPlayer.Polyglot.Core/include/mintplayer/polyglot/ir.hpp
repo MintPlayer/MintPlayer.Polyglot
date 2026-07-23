@@ -79,6 +79,9 @@ struct This : Expr {
     // Lowering-precomputed fact (P19): inside an operator method's body. Target-neutral; only the C#
     // static-operator declaration shape consumes it (`this` -> the `lhs` first operand).
     bool insideOperator = false;
+    // P37 C5: inside a user `eq` operator body. C# ignores it (eq emits as instance `override Equals`,
+    // `this` stays); TS consumes it (eq emits as the static null-tolerant `T.eq(lhs, rhs)` -> `lhs`).
+    bool insideEqOperator = false;
     explicit This(SourcePos p, Type t) : Expr(ExprKind::This, p, std::move(t)) {}
 };
 struct Unary : Expr {
@@ -477,6 +480,9 @@ struct RecordField {
 enum class MethodKind { Method, Operator, Property };
 struct Method {
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
+    // P37 C5: the owning type is a record. C#'s user-eq emission differs: a record's `==` already
+    // routes through the strongly-typed Equals; a CLASS needs a synthesized operator ==/!= pair.
+    bool ownerIsRecord = false;
     MethodKind kind = MethodKind::Method;
     std::string name;             // method/property name; operator method name (e.g. "plus")
     std::string opSymbol;         // Operator: the source symbol ("+", "-", ...); else empty

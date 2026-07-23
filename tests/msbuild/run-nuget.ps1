@@ -48,7 +48,7 @@ $sharedFixture = {
 @"
 class PgThing {
   var v: i32
-  init(v: i32) { this.v = v }
+  constructor(v: i32) { this.v = v }
 }
 fn twice(x: i32): i32 { return x * 2 }
 "@ | Set-Content (Join-Path $shared "nn.pg")

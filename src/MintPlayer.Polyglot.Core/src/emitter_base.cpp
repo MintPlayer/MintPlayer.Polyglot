@@ -45,6 +45,10 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.lhsIsUnion")    return b.lhsIsUnion ? "true" : "false";     // #57
         if (path == "node.lhsHasUserEq")  return b.lhsHasUserEq ? "true" : "false";   // #49
         if (path == "node.lhsTypeName" && b.lhs) return b.lhs->type.name; // P37 C5: static-on-type dispatch
+        // P37 M3: the rhs is the null literal — Python must emit an IDENTITY test (`is None`): its
+        // runtime `==` would still dispatch the user/record __eq__, which derefs the null operand.
+        if (path == "node.rhsIsNull" && b.rhs)
+            return b.rhs->kind == ir::ExprKind::Null ? "true" : "false";
     }
     if (e_.kind == ir::ExprKind::Unary) { // P37 C (#62): user neg/bnot routing on method-form targets
         const auto& u = static_cast<const ir::Unary&>(e_);
@@ -59,6 +63,11 @@ std::string IrExprCtx::get(const std::string& path) const {
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
     if (path == "node.insideOperator" && e_.kind == ir::ExprKind::This)
         return static_cast<const ir::This&>(e_).insideOperator ? "true" : "false";
+    if (path == "node.insideEqOperator" && e_.kind == ir::ExprKind::This) // P37 C5 (TS static eq)
+        return static_cast<const ir::This&>(e_).insideEqOperator ? "true" : "false";
+    if (path == "node.operandTypeName" && e_.kind == ir::ExprKind::Cast && // P37 C5 (TS static conversion)
+        static_cast<const ir::Cast&>(e_).operand)
+        return static_cast<const ir::Cast&>(e_).operand->type.name;
     // Type-class predicates — which `.pg` types are ints/floats/64-bit is a LANGUAGE fact, not a target
     // fact; the per-target part is only which predicate a rule consults.
     if (path == "node.typeIsInt")      return isIntTypeName(e_.type) ? "true" : "false";
@@ -781,6 +790,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     }
     if (path == "decl.name")       return m_.name;
     if (path == "decl.opSymbol")   return m_.opSymbol;
+    if (path == "decl.ownerIsRecord") return m_.ownerIsRecord ? "true" : "false"; // P37 C5 (C# class eq)
     if (path == "decl.owner")      return owner_;
     if (path == "decl.isStatic")   return m_.isStatic ? "true" : "false";
     if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";

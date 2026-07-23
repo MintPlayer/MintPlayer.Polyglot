@@ -3376,6 +3376,66 @@
         "when": [
           [
             {
+              "and": [
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "!="
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.rhsIsNull",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "l"
+                        },
+                        " is None"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    {
+                      "emitChild": "node.lhs",
+                      "side": "l"
+                    },
+                    " is not None"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
               "eq": [
                 "node.op",
                 "??"

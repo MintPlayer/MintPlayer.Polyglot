@@ -1231,6 +1231,7 @@ private:
                     const Local* local = lookup(nm);
                     if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
+                        s.target->type = local->type; // stamp: the C7 compound rewrite keys on this
                         if (!local->isMutable) diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
                         // P37 C7: a compound op on a USER type converts against the operator member's own
                         // signature (lenient, like binary resolution) — the rhs is the operator's operand,

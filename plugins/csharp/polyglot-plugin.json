@@ -1808,59 +1808,151 @@
               ]
             },
             {
-              "case": {
-                "when": [
-                  [
-                    {
-                      "eq": [
-                        "decl.exprBodied",
-                        "true"
+              "seq": [
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "decl.exprBodied",
+                            "true"
+                          ]
+                        },
+                        {
+                          "line": {
+                            "tmpl": [
+                              "public virtual bool Equals(",
+                              {
+                                "map": "decl.params",
+                                "sep": ", ",
+                                "item": {
+                                  "call": "csParam"
+                                }
+                              },
+                              ") => ",
+                              {
+                                "emit": "decl.exprBody"
+                              },
+                              ";"
+                            ]
+                          }
+                        }
                       ]
-                    },
-                    {
-                      "line": {
-                        "tmpl": [
-                          "public virtual bool Equals(",
+                    ],
+                    "else": {
+                      "block": {
+                        "head": {
+                          "tmpl": [
+                            "public virtual bool Equals(",
+                            {
+                              "map": "decl.params",
+                              "sep": ", ",
+                              "item": {
+                                "call": "csParam"
+                              }
+                            },
+                            ")"
+                          ]
+                        },
+                        "body": [
                           {
-                            "map": "decl.params",
-                            "sep": ", ",
-                            "item": {
-                              "call": "csParam"
-                            }
-                          },
-                          ") => ",
-                          {
-                            "emit": "decl.exprBody"
-                          },
-                          ";"
+                            "stmts": "decl.body"
+                          }
                         ]
                       }
                     }
-                  ]
-                ],
-                "else": {
-                  "block": {
-                    "head": {
-                      "tmpl": [
-                        "public virtual bool Equals(",
+                  }
+                },
+                {
+                  "case": {
+                    "when": [
+                      [
                         {
-                          "map": "decl.params",
-                          "sep": ", ",
-                          "item": {
-                            "call": "csParam"
-                          }
+                          "eq": [
+                            "decl.ownerIsRecord",
+                            "false"
+                          ]
                         },
-                        ")"
+                        {
+                          "seq": [
+                            {
+                              "line": {
+                                "tmpl": [
+                                  "public static bool operator ==(",
+                                  {
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "decl.owner"
+                                      }
+                                    ]
+                                  },
+                                  " a, ",
+                                  {
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "decl.owner"
+                                      }
+                                    ]
+                                  },
+                                  " b) => a is null || b is null ? ReferenceEquals(a, b) : a.Equals(b);"
+                                ]
+                              }
+                            },
+                            {
+                              "line": {
+                                "tmpl": [
+                                  "public static bool operator !=(",
+                                  {
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "decl.owner"
+                                      }
+                                    ]
+                                  },
+                                  " a, ",
+                                  {
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "decl.owner"
+                                      }
+                                    ]
+                                  },
+                                  " b) => !(a == b);"
+                                ]
+                              }
+                            },
+                            {
+                              "line": {
+                                "tmpl": [
+                                  "public override bool Equals(object? o) => o is ",
+                                  {
+                                    "fn": "ident",
+                                    "args": [
+                                      {
+                                        "get": "decl.owner"
+                                      }
+                                    ]
+                                  },
+                                  " __o && this.Equals(__o);"
+                                ]
+                              }
+                            },
+                            {
+                              "line": "public override int GetHashCode() => 0;"
+                            }
+                          ]
+                        }
                       ]
-                    },
-                    "body": [
-                      {
-                        "stmts": "decl.body"
-                      }
-                    ]
+                    ],
+                    "else": ""
                   }
                 }
-              }
+              ]
             }
           ],
           [

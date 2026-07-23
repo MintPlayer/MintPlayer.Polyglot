@@ -3,6 +3,8 @@
 // even for scalar elements. Receivers are pure by rule (sema refuses computed receivers), so the
 // re-lowered read side is single-eval by construction.
 
+import { List } from "std.collections"
+
 class Acc {
   var total: i32
   constructor(v: i32) {
@@ -18,7 +20,8 @@ class Grid {
   constructor(w: i32, h: i32) {
     this.w = w
     this.cells = List<i32>()
-    for i in 0 .. w * h {
+    let n = w * h
+    for i in 0 .. n {
       this.cells.add(0)
     }
   }

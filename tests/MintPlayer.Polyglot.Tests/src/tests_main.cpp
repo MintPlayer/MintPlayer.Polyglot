@@ -1639,7 +1639,8 @@ int main() {
         std::string conv = "record Cel(deg: f64) {\n  operator fn explicit(): f64 => this.deg * 2.0\n}\n"
                            "fn main() {\n  let c = Cel(5.0)\n  print((f64)c)\n}\n";
         EmitResult tsc = compileStd(conv, findTarget("typescript"));
-        check(tsc.ok && has(tsc.code, ".toF64()"), "P37 s3: TS rewrites the cast site to toF64()");
+        check(tsc.ok && has(tsc.code, "Cel.toF64(c)") && has(tsc.code, "static toF64(lhs: Cel)"),
+              "P37 s3: TS rewrites the cast site to the static Cel.toF64(c)");
         EmitResult csc2 = compileStd(conv, findTarget("csharp"));
         check(csc2.ok && has(csc2.code, "explicit operator double(Cel lhs)"),
               "P37 s3: C# emits the native explicit operator");

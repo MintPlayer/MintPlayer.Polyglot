@@ -17,10 +17,8 @@ class Dog : Animal {
   }
 }
 
-var calls: i32 = 0
-
 fn mk(): Animal {
-  calls = calls + 1
+  print(7777)
   return Dog()
 }
 
@@ -35,7 +33,6 @@ fn main() {
   print(nameOf(d))                 // rex
   print(nameOf(plain))             // not a dog
   print((null as Dog) == null)     // true
-  let got = mk() as Dog
-  print(calls)                     // 1  (non-simple operand evaluated exactly once)
+  let got = mk() as Dog            // prints 7777 exactly ONCE (non-simple operand, single eval)
   print(got?.nick ?? "none")       // rex
 }
