@@ -12,6 +12,8 @@
     "blockLambdas": "native",
     "extensionMethods": "emulated",
     "operatorOverloading": false,
+    "operatorOverloading:eq": "native",
+    "operatorOverloading:indexers": "native",
     "propertySetters": false
   },
   "spec": {
@@ -828,6 +830,24 @@
         "when": [
           [
             {
+              "has": "node.convMethod"
+            },
+            {
+              "tmpl": [
+                {
+                  "emitChild": "node.operand",
+                  "side": "recv"
+                },
+                "->",
+                {
+                  "get": "node.convMethod"
+                },
+                "()"
+              ]
+            }
+          ],
+          [
+            {
               "eq": [
                 "node.castSame",
                 "true"
@@ -971,6 +991,75 @@
     "Binary": {
       "case": {
         "when": [
+          [
+            {
+              "and": [
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "!="
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.lhsHasUserEq",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "recv"
+                        },
+                        "->eq(",
+                        {
+                          "emit": "node.rhs"
+                        },
+                        ")"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    "!",
+                    {
+                      "emitChild": "node.lhs",
+                      "side": "recv"
+                    },
+                    "->eq(",
+                    {
+                      "emit": "node.rhs"
+                    },
+                    ")"
+                  ]
+                }
+              }
+            }
+          ],
           [
             {
               "and": [

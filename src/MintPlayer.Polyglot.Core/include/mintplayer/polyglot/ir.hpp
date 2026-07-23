@@ -84,6 +84,9 @@ struct This : Expr {
 struct Unary : Expr {
     std::string op;
     ExprPtr operand;
+    // P37 C (#62): the operand is a user type — method-form targets route `-`/`~` to its declared
+    // neg/bnot operator (`T.neg(v)` on TS) instead of emitting a native unary.
+    bool operandIsUserType = false;
     Unary(SourcePos p, Type t, std::string o, ExprPtr e) : Expr(ExprKind::Unary, p, std::move(t)), op(std::move(o)), operand(std::move(e)) {}
 };
 struct Await : Expr { // `await e` — only inside an async fn; `type` is the unwrapped result (identity in v1)
@@ -108,6 +111,10 @@ struct Binary : Expr {
 };
 struct Cast : Expr { // numeric conversion: the result type is `type`, the source is `operand->type`
     ExprPtr operand;
+    // P37 C: non-empty = a USER explicit conversion (`operator fn explicit(): T`): method-form targets
+    // rewrite this cast site to `operand.to<T>()`; C# keeps its native cast (its `explicit operator`
+    // declaration makes `(T)v` legal). Empty = the ordinary numeric conversion.
+    std::string convMethod;
     Cast(SourcePos p, Type t, ExprPtr o) : Expr(ExprKind::Cast, p, std::move(t)), operand(std::move(o)) {}
 };
 // P37 B: `x is T` — a runtime type test over a class/record hierarchy; type bool. Pure predicate: an

@@ -87,9 +87,21 @@ private:
         for (const auto& p : ps) typeRef(p.type, p.pos);
     }
 
+    // P37 C6: operator support is graded per sub-capability, not one blanket flag — PHP supports
+    // `:eq` (structural equality) and `:indexers` (get/set) while refusing `:arithmetic`/`:comparison`/
+    // `:conversion`. The bare `operatorOverloading` manifest stance umbrella-covers undeclared sub-keys.
+    static std::string operatorCategory(const std::string& method) {
+        if (method == "eq") return "eq";
+        if (method == "lt" || method == "le" || method == "gt" || method == "ge") return "comparison";
+        if (method == "get" || method == "set") return "indexers";
+        if (method == "explicit" || method == "implicit") return "conversion";
+        return "arithmetic"; // plus/minus/times/div/rem/band/bor/bxor/shl/shr/neg/bnot
+    }
+
     void typeBody(const std::vector<Member>& members) {
         for (const auto& m : members) {
-            if (m.kind == MemberKind::Operator) mark(Feature::OperatorOverloading, m.pos);
+            if (m.kind == MemberKind::Operator)
+                mark("operatorOverloading:" + operatorCategory(m.name), m.pos);
             if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
             if (m.kind == MemberKind::Property && m.hasSetter) mark(Feature::PropertySetters, m.pos); // #39c
             if (m.isAsync) mark(Feature::Async, m.pos);

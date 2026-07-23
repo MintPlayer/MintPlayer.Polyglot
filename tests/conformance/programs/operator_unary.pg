@@ -1,0 +1,27 @@
+// P37 C (#62): user unary operators — `-v` routes to the declared `neg` and `~v` to `bnot` on every
+// target (C# native `operator -`/`operator ~`, TS static-on-type `Vec.neg(v)`, Python `__neg__`/
+// `__invert__`). Scalar unary stays native alongside.
+
+class Vec {
+  var x: i32
+  var y: i32
+  constructor(x: i32, y: i32) {
+    this.x = x
+    this.y = y
+  }
+  operator fn neg(): Vec => Vec(0 - this.x, 0 - this.y)
+  operator fn bnot(): Vec => Vec(~this.x, ~this.y)
+}
+
+fn main() {
+  let v = Vec(3, -4)
+  let n = -v
+  print(n.x)        // -3
+  print(n.y)        // 4
+  let b = ~v
+  print(b.x)        // -4
+  print(b.y)        // 3
+  let k = -7
+  print(-k)         // 7  (scalar unary stays native)
+  print(~0)         // -1
+}

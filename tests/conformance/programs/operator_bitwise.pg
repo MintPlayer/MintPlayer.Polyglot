@@ -1,0 +1,23 @@
+// P37 C (#63): user bitwise/shift operators — band/bor/bxor/shl/shr were in SPEC §6.1 but not in the
+// code (the SPEC-vs-code drift). Scalar bitwise stays native alongside; identical-wrongness-prone, so
+// this program carries a committed .expected golden.
+
+record Bits(v: i32) {
+  operator fn band(o: Bits): Bits => Bits(this.v & o.v)
+  operator fn bor(o: Bits): Bits => Bits(this.v | o.v)
+  operator fn bxor(o: Bits): Bits => Bits(this.v ^ o.v)
+  operator fn shl(n: i32): Bits => Bits(this.v << n)
+  operator fn shr(n: i32): Bits => Bits(this.v >> n)
+}
+
+fn main() {
+  let a = Bits(12)
+  let b = Bits(10)
+  print((a & b).v)     // 8
+  print((a | b).v)     // 14
+  print((a ^ b).v)     // 6
+  print((a << 2).v)    // 48
+  print((a >> 1).v)    // 6
+  print(12 & 10)       // 8   (scalar stays native)
+  print(1 << 5)        // 32
+}

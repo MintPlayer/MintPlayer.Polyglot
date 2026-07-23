@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/lower.hpp"
 
+#include <cctype>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -429,7 +430,13 @@ private:
         if (method == "le") return "<=";
         if (method == "gt") return ">";
         if (method == "ge") return ">=";
-        if (method == "neg") return "-"; // unary
+        if (method == "band") return "&";  // P37 C (#63): bitwise/shift operator members
+        if (method == "bor") return "|";
+        if (method == "bxor") return "^";
+        if (method == "shl") return "<<";
+        if (method == "shr") return ">>";
+        if (method == "neg") return "-";  // unary
+        if (method == "bnot") return "~"; // unary
         return method;
     }
 
@@ -522,7 +529,15 @@ private:
             return im;
         }
         im.kind = (m.kind == MemberKind::Operator) ? ir::MethodKind::Operator : ir::MethodKind::Method;
-        if (m.kind == MemberKind::Operator) im.opSymbol = operatorSymbol(m.name);
+        if (m.kind == MemberKind::Operator) {
+            im.opSymbol = operatorSymbol(m.name);
+            if (m.name == "explicit") { // P37 C: explicit conversion — method-form targets emit `to<T>()`
+                im.opSymbol = "explicit";
+                std::string tgt = m.returnType.name;
+                if (!tgt.empty()) tgt[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(tgt[0])));
+                im.name = "to" + tgt;
+            }
+        }
         im.returnType = m.returnType;
         for (const auto& p : m.params) im.params.push_back(irParam(p));
         // A real operator (not a `get`/`set` indexer) rebinds `this` on targets whose operator declaration
@@ -570,9 +585,20 @@ private:
                 t->insideOperator = inOperator_;
                 return t;
             }
-            case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
+            case ExprKind::Unary: {
+                auto u = std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
+                // P37 C (#62): a user-typed operand routes to its neg/bnot operator on method-form targets.
+                const TypeRef& ot = e.lhs->type;
+                if (ot.kind == TypeRef::Kind::Named && !ot.name.empty())
+                    u->operandIsUserType = !isPrimitiveTypeName(ot.name) && ot.name != "unit";
+                return u;
+            }
             case ExprKind::Await:     return std::make_unique<ir::Await>(e.pos, e.type, expr(*e.lhs));
-            case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
+            case ExprKind::Cast: {
+                auto c = std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
+                c->convMethod = e.overloadName; // P37 C: user explicit conversion — method targets call to<T>()
+                return c;
+            }
             case ExprKind::Is: { // binding-less test (a bound form was rewritten by lowerIfCond)
                 auto t = std::make_unique<ir::IsTest>(e.pos, namedType("bool"), expr(*e.lhs), e.castType);
                 return t;
@@ -771,6 +797,34 @@ private:
                     for (const auto& a : s.target->args) ia->indices.push_back(expr(*a));
                     ia->value = expr(*s.value);
                     return ia;
+                }
+                // P37 C7: a compound op lowers to `target = <op>(target, value)` when the target is a
+                // USER type (operator-method routing: C# native operator, TS static-on-type, Python
+                // dunder) or sits behind a USER indexer (which has no native `[...] op=` on any
+                // method-form target — it needs the get+set pair even for scalar elements). Sema
+                // restricts the target to pure bases, so re-lowering the read side is single-eval-safe.
+                const bool userTypedTarget = s.op != "=" && s.op != "??=" && s.target &&
+                    s.target->type.kind == TypeRef::Kind::Named && !s.target->type.name.empty() &&
+                    !isPrimitiveTypeName(s.target->type.name) && s.target->type.name != "unit";
+                const bool userIndexerTarget = s.op != "=" && s.op != "??=" && s.target &&
+                    s.target->kind == ExprKind::Index && s.target->lhs &&
+                    s.target->lhs->type.kind == TypeRef::Kind::Named &&
+                    indexerTypes_.count(s.target->lhs->type.name) != 0;
+                if (userTypedTarget || userIndexerTarget) {
+                    const std::string binOp = s.op.substr(0, s.op.size() - 1);
+                    auto read = expr(*s.target);
+                    auto rhs = expr(*s.value);
+                    auto b = std::make_unique<ir::Binary>(s.pos, s.target->type, binOp,
+                                                          std::move(read), std::move(rhs));
+                    b->lhsIsUserType = userTypedTarget; // operator-method routing (scalar elements stay native)
+                    if (userIndexerTarget) {
+                        auto ia = std::make_unique<ir::IndexAssign>(s.pos); // user indexer: get+set pair
+                        ia->receiver = expr(*s.target->lhs);
+                        for (const auto& a : s.target->args) ia->indices.push_back(expr(*a));
+                        ia->value = std::move(b);
+                        return ia;
+                    }
+                    return std::make_unique<ir::Assign>(s.pos, expr(*s.target), "=", std::move(b));
                 }
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
             }

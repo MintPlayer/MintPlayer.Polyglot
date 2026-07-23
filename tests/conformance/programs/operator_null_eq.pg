@@ -1,0 +1,22 @@
+// P37 C / M3: comparing against the `null` LITERAL is always a null/reference test — it never routes
+// to a user `operator fn eq` (whose body would deref null). Both-null and one-null shapes pinned; the
+// user eq itself stays live for value comparisons, null-tolerantly on TS (static Vec.eq(a, b)).
+
+class Money {
+  var cents: i32
+  constructor(c: i32) {
+    this.cents = c
+  }
+  operator fn eq(o: Money): bool => this.cents == o.cents
+}
+
+fn main() {
+  let m = Money(100)
+  var empty: Money? = null
+  print(m == null)          // false  (null test, not eq)
+  print(m != null)          // true
+  print(empty == null)      // true   (both-null shape)
+  print(empty != null)      // false
+  print(m == Money(100))    // true   (the user eq stays live)
+  print(m == Money(250))    // false
+}

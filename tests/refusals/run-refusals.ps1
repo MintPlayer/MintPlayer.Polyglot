@@ -76,6 +76,7 @@ $cases = [ordered]@{
     "block_match_arm.pg"        = @("block-bodied match arm")
     "namespace_import.pg"       = @("namespace import")
     "is_union.pg"               = @("union types/cases", "use 'match'")
+    "implicit_conversion.pg"    = @("refuses implicit user conversions")
 }
 
 foreach ($fx in $cases.Keys) {

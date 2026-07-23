@@ -44,7 +44,17 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.lhsIsUserType") return b.lhsIsUserType ? "true" : "false";
         if (path == "node.lhsIsUnion")    return b.lhsIsUnion ? "true" : "false";     // #57
         if (path == "node.lhsHasUserEq")  return b.lhsHasUserEq ? "true" : "false";   // #49
+        if (path == "node.lhsTypeName" && b.lhs) return b.lhs->type.name; // P37 C5: static-on-type dispatch
     }
+    if (e_.kind == ir::ExprKind::Unary) { // P37 C (#62): user neg/bnot routing on method-form targets
+        const auto& u = static_cast<const ir::Unary&>(e_);
+        if (path == "node.operandIsUserType") return u.operandIsUserType ? "true" : "false";
+        if (path == "node.operandTypeName" && u.operand) return u.operand->type.name;
+        if (path == "node.hasUnaryOpMethod")
+            return u.operandIsUserType && !specTable(spec_, "opMethod", "u" + u.op).empty() ? "true" : "false";
+    }
+    if (path == "node.convMethod" && e_.kind == ir::ExprKind::Cast) // P37 C: user explicit conversion
+        return static_cast<const ir::Cast&>(e_).convMethod;
     if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index)
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
     if (path == "node.insideOperator" && e_.kind == ir::ExprKind::This)

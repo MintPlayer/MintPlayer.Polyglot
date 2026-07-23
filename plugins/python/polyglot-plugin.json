@@ -1922,6 +1922,34 @@
         "when": [
           [
             {
+              "and": [
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "-"
+                  ]
+                },
+                {
+                  "eq": [
+                    "decl.params.count",
+                    "0"
+                  ]
+                }
+              ]
+            },
+            "__neg__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "~"
+              ]
+            },
+            "__invert__"
+          ],
+          [
+            {
               "eq": [
                 "decl.opSymbol",
                 "+"
@@ -2009,6 +2037,51 @@
               ]
             },
             "__ge__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "&"
+              ]
+            },
+            "__and__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "|"
+              ]
+            },
+            "__or__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "^"
+              ]
+            },
+            "__xor__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "<<"
+              ]
+            },
+            "__lshift__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                ">>"
+              ]
+            },
+            "__rshift__"
           ]
         ],
         "else": {
@@ -2421,6 +2494,24 @@
     "Cast": {
       "case": {
         "when": [
+          [
+            {
+              "has": "node.convMethod"
+            },
+            {
+              "tmpl": [
+                {
+                  "emitChild": "node.operand",
+                  "side": "recv"
+                },
+                ".",
+                {
+                  "get": "node.convMethod"
+                },
+                "()"
+              ]
+            }
+          ],
           [
             {
               "and": [

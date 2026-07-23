@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/sema.hpp"
 
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <string>
@@ -162,7 +163,7 @@ const char* refusedReason(const std::string& n) {
     return nullptr;
 }
 
-// Map an operator symbol to its overload method name (PRD §6.1 / SPEC §6.1).
+// Map an operator symbol to its overload method name (PRD §6.1 / SPEC §6.1; bitwise added by P37 C, #63).
 std::string operatorMethod(const std::string& op) {
     if (op == "+") return "plus";
     if (op == "-") return "minus";
@@ -174,6 +175,11 @@ std::string operatorMethod(const std::string& op) {
     if (op == "<=") return "le";
     if (op == ">") return "gt";
     if (op == ">=") return "ge";
+    if (op == "&") return "band";
+    if (op == "|") return "bor";
+    if (op == "^") return "bxor";
+    if (op == "<<") return "shl";
+    if (op == ">>") return "shr";
     return "";
 }
 
@@ -669,6 +675,10 @@ private:
         for (const auto& base : it->second.bases) if (const MemberInfo* m = findMember(base, name)) return m; // inherited
         return nullptr;
     }
+    const TypeInfo* typeInfoOf(const std::string& name) const {
+        auto it = types_.find(name);
+        return it == types_.end() ? nullptr : &it->second;
+    }
     bool knownType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && !t.name.empty() && types_.count(t.name) != 0;
     }
@@ -934,6 +944,23 @@ private:
         currentClass_ = typeName;
         for (auto& m : members) {
             pushGenerics(m.generics);
+            if (m.kind == MemberKind::Operator) { // P37 C: conversion-operator declaration rules
+                if (m.name == "implicit")
+                    diags_.error(m.pos, "Polyglot refuses implicit user conversions — an invisible "
+                                        "call-site injection has no TS hook and hides behavior; declare "
+                                        "`operator fn explicit(): T` and cast explicitly");
+                else if (m.name == "explicit") {
+                    if (!m.params.empty())
+                        diags_.error(m.pos, "`operator fn explicit` takes no parameters — the conversion "
+                                            "source is `this`, the target is the return type");
+                    const std::string& tgt = m.returnType.name;
+                    if (m.returnType.kind != TypeRef::Kind::Named || tgt.empty() || tgt == "unit" ||
+                        tgt == "string" || tgt == "bool")
+                        diags_.error(m.pos, "an explicit conversion targets a numeric or user type — "
+                                            "string/bool conversions stay named methods (toString/truthiness "
+                                            "semantics differ per target)");
+                }
+            }
             if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Constructor) {
                 bool isStatic = false;
                 for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
@@ -1200,9 +1227,36 @@ private:
                     if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
                         if (!local->isMutable) diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
-                        checkConvert(s.value, local->type, "assignment to '" + nm + "'");
+                        // P37 C7: a compound op on a USER type converts against the operator member's own
+                        // signature (lenient, like binary resolution) — the rhs is the operator's operand,
+                        // not a value of the target's type (`v *= 2.0` with `times(s: f64)`).
+                        const bool userCompound = s.op != "=" && local->type.kind == TypeRef::Kind::Named &&
+                                                  !local->type.name.empty() && knownType(local->type) &&
+                                                  !isBuiltinType(local->type.name);
+                        if (!userCompound) checkConvert(s.value, local->type, "assignment to '" + nm + "'");
                     }
-                } else if (s.target) checkExpr(*s.target);
+                } else if (s.target) {
+                    checkExpr(*s.target);
+                    // P37 C7: a compound op on a user-typed Member/Index target — or through a USER
+                    // indexer even with scalar elements — re-lowers the target for the read side, so the
+                    // base must be pure (a name or `this`) for single evaluation; a computed receiver is
+                    // refused toward an explicit local.
+                    const bool userTyped = s.target->type.kind == TypeRef::Kind::Named &&
+                                           !s.target->type.name.empty() && knownType(s.target->type) &&
+                                           !isBuiltinType(s.target->type.name);
+                    const bool userIndexer = s.target->kind == ExprKind::Index && s.target->lhs &&
+                                             s.target->lhs->type.kind == TypeRef::Kind::Named &&
+                                             findMember(s.target->lhs->type.name, "get") != nullptr;
+                    if (s.op != "=" &&
+                        (s.target->kind == ExprKind::Member || s.target->kind == ExprKind::Index) &&
+                        (userTyped || userIndexer)) {
+                        const Expr* base = s.target->lhs.get();
+                        if (base && base->kind != ExprKind::Name && base->kind != ExprKind::This)
+                            diags_.error(s.pos, "a compound assignment on a user type or user indexer "
+                                                "needs a simple receiver — hoist the receiver to a local "
+                                                "first (single evaluation)");
+                    }
+                }
                 break;
             }
             case StmtKind::ExprStmt: checkExpr(*s.value); break;
@@ -1534,6 +1588,24 @@ private:
     TypeRef checkCast(Expr& e) {
         TypeRef from = checkExpr(*e.lhs);
         resolveTypeRef(e.castType, e.pos);
+        // P37 C: a USER explicit conversion — `(T)v` where v's type declares `operator fn explicit(): T`.
+        // C# emits its native `explicit operator`; method-form targets rewrite this cast site to the
+        // generated `to<T>()` call (stamped here as the overloadName, carried to ir::Cast.convMethod).
+        if (from.kind == TypeRef::Kind::Named && !from.name.empty() && knownType(from) &&
+            !isBuiltinType(from.name) && from.name != "unit") {
+            if (const TypeInfo* ti = typeInfoOf(from.name)) {
+                for (const auto& m : ti->members)
+                    if (m.kind == MemberKind::Operator && m.name == "explicit" &&
+                        m.type.kind == TypeRef::Kind::Named && m.type.name == e.castType.name) {
+                        e.overloadName = conversionMethodName(e.castType.name);
+                        return e.castType;
+                    }
+            }
+            diags_.error(e.pos, "no explicit conversion from '" + from.name + "' to '" + e.castType.name +
+                                    "' — declare `operator fn explicit(): " + e.castType.name + "` on '" +
+                                    from.name + "'");
+            return e.castType;
+        }
         Ty fs = scalarTyOf(from);
         if (isNumericTypeName(e.castType) && (fs == Ty::Bool || fs == Ty::String))
             diags_.error(e.pos, std::string("cannot cast ") + tyName(fs) + " to numeric type '" + e.castType.name + "'");
@@ -1542,6 +1614,12 @@ private:
                                     "' — use s.codePointAt(i) from std.strings for the ordinal");
         return e.castType;
     }
+    // The generated conversion-method name shared by lowering and the cast-site rewrite: `toF64`, `toVec2`.
+    static std::string conversionMethodName(const std::string& target) {
+        std::string n = target;
+        if (!n.empty()) n[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(n[0])));
+        return "to" + n;
+    }
 
     TypeRef checkUnary(Expr& e) {
         TypeRef ot = checkExpr(*e.lhs);
@@ -1549,6 +1627,18 @@ private:
         if (e.text == "!") {
             if (o != Ty::Unknown && o != Ty::Bool) diags_.error(e.pos, std::string("'!' expects bool, found ") + tyName(o));
             return tNamed("bool");
+        }
+        // P37 C (#62): a user type must DECLARE `neg`/`bnot` for unary `-`/`~` — the old path silently
+        // accepted `-v` on any user type and TS then emitted a native minus (NaN garbage).
+        if (ot.kind == TypeRef::Kind::Named && !ot.name.empty() && knownType(ot) &&
+            !isBuiltinType(ot.name) && ot.name != "unit") {
+            const char* meth = e.text == "-" ? "neg" : e.text == "~" ? "bnot" : nullptr;
+            if (meth) {
+                if (const MemberInfo* m = findMember(ot.name, meth)) return m->type;
+                diags_.error(e.pos, "type '" + ot.name + "' declares no 'operator fn " + meth +
+                                        "' for unary '" + e.text + "'");
+                return tUnknown();
+            }
         }
         if (e.text == "~") return ot;
         if (o != Ty::Unknown && !isNumeric(o)) diags_.error(e.pos, std::string("unary '-' expects a numeric operand, found ") + tyName(o));
@@ -1574,6 +1664,16 @@ private:
             TypeRef res = lt; res.nullable = false; // native nullable: the left's type, made non-nullable
             if (res.name.empty() && res.kind == TypeRef::Kind::Named) res = rt;
             return res;
+        }
+        // P37 C: a user-declared operator member resolves the op before any scalar rule (this is what
+        // admits bitwise/shift overloads, #63 — the scalar shift/bitwise checks below would otherwise
+        // reject a user operand). `x == null` still emits as a null TEST, never a user-eq call: the
+        // rhsIsNullLit guard in lowering owns that routing (M3); here the types agree either way (bool).
+        if (lt.kind == TypeRef::Kind::Named && !lt.name.empty() && knownType(lt) &&
+            !isBuiltinType(lt.name) && lt.name != "unit") {
+            const std::string meth = operatorMethod(op);
+            if (!meth.empty())
+                if (const MemberInfo* m = findMember(lt.name, meth)) return m->type;
         }
         TypeRef common;
         if (op == "==" || op == "!=") {

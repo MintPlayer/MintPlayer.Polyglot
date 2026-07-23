@@ -1518,8 +1518,10 @@ int main() {
         // parent's stance; an absent parent stays "native".
         const Backend* php = findBackend("php");
         const Backend* cs = findBackend("csharp");
-        check(php && php->capabilityStance(std::string("operatorOverloading:eq")) == "false",
-              "P37 s0: php's blanket operatorOverloading=false umbrella-covers a sub-key");
+        check(php && php->capabilityStance(std::string("operatorOverloading:arithmetic")) == "false",
+              "P37 s0: php's blanket operatorOverloading=false umbrella-covers an undeclared sub-key");
+        check(php && php->capabilityStance(std::string("operatorOverloading:eq")) == "native",
+              "P37 s0/C6: an explicit sub-key entry overrides the umbrella (php :eq)");
         check(cs && cs->capabilityStance(std::string("operatorOverloading:eq")) == "native",
               "P37 s0: an absent parent leaves a sub-key native");
     }
@@ -1604,6 +1606,76 @@ int main() {
             if (has(d.message, "interfaces:runtimeIdentity")) gated = true;
         check(!tsIface.ok && gated,
               "P37 s2 (B4): interface `is` refused when typescript is configured (no runtime identity)");
+    }
+
+    // ---- P37 slice 3: operators complete ---------------------------------------------------------------
+    {
+        const char* vec = "class Vec {\n  var x: i32\n  constructor(x: i32) { this.x = x }\n"
+                          "  operator fn plus(o: Vec): Vec => Vec(this.x + o.x)\n"
+                          "  operator fn eq(o: Vec): bool => this.x == o.x\n"
+                          "  operator fn neg(): Vec => Vec(0 - this.x)\n"
+                          "  operator fn band(o: Vec): Vec => Vec(this.x & o.x)\n}\n";
+        // C5: TS moves to static-on-type; C#/Python stay native.
+        std::string prog = std::string(vec) +
+            "fn main() {\n  let a = Vec(3)\n  let b = Vec(4)\n  print((a + b).x)\n  print(a == b)\n"
+            "  print((-a).x)\n  print((a & b).x)\n}\n";
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok, "P37 s3: TS compiles the full operator surface");
+        check(has(ts.code, "static plus(lhs: Vec") && has(ts.code, "Vec.plus(a, b)"),
+              "P37 s3 (C5): TS operators are static-on-type at decl and call site");
+        check(has(ts.code, "static eq(lhs: Vec | null") && has(ts.code, "Vec.eq(a, b)") &&
+                  has(ts.code, "if (lhs === null ||"),
+              "P37 s3 (C5): TS eq is static and null-tolerant");
+        check(has(ts.code, "Vec.neg(a)"), "P37 s3 (#62): TS routes user unary neg");
+        check(has(ts.code, "Vec.band(a, b)"), "P37 s3 (#63): TS routes user bitwise band");
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "operator +(Vec lhs") && has(cs.code, "operator &(Vec lhs"),
+              "P37 s3: C# operators stay native (incl. bitwise)");
+        EmitResult py = compileStd(prog, findTarget("python"));
+        check(py.ok && has(py.code, "__add__") && has(py.code, "__neg__") && has(py.code, "__and__"),
+              "P37 s3: Python dunders cover arithmetic + unary + bitwise");
+
+        // Explicit conversion: cast-site rewrite on method targets, native explicit operator on C#.
+        std::string conv = "record Cel(deg: f64) {\n  operator fn explicit(): f64 => this.deg * 2.0\n}\n"
+                           "fn main() {\n  let c = Cel(5.0)\n  print((f64)c)\n}\n";
+        EmitResult tsc = compileStd(conv, findTarget("typescript"));
+        check(tsc.ok && has(tsc.code, ".toF64()"), "P37 s3: TS rewrites the cast site to toF64()");
+        EmitResult csc2 = compileStd(conv, findTarget("csharp"));
+        check(csc2.ok && has(csc2.code, "explicit operator double(Cel lhs)"),
+              "P37 s3: C# emits the native explicit operator");
+
+        // Refusals: implicit conversion; unary without a declared neg; compound with a computed receiver.
+        auto refuses3 = [&](const std::string& src, const char* frag, const char* label) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+            check(!r.ok && named, label);
+        };
+        refuses3("record M(v: f64) {\n  operator fn implicit(): f64 => this.v\n}\nfn main() { }\n",
+                 "refuses implicit user conversions", "P37 s3: implicit conversion refused");
+        refuses3(std::string(vec) + "fn main() {\n  let a = Vec(1)\n  let t = ~a\n}\n",
+                 "declares no 'operator fn bnot'",
+                 "P37 s3 (#62): `~` on a user type without bnot is refused, not mis-emitted");
+        refuses3("class Box {\n  var a: Vec\n  constructor() { this.a = Vec(0) }\n}\n" + std::string(vec) +
+                 "fn mk(): Box => Box()\nfn main() {\n  mk().a += Vec(2)\n}\n",
+                 "needs a simple receiver",
+                 "P37 s3 (C7): a compound through a computed receiver is refused (single-eval)");
+        check(compileStd(std::string(vec) + "fn main() {\n  var v = Vec(1)\n  v += Vec(2)\n  print(v.x)\n}\n",
+                         findTarget("typescript")).ok,
+              "P37 s3 (C7): a simple compound on a user type compiles");
+
+        // C6: PHP gains :eq (+:indexers) while :arithmetic stays refused.
+        std::string eqOnly = "class M {\n  var c: i32\n  constructor(c: i32) { this.c = c }\n"
+                             "  operator fn eq(o: M): bool => this.c == o.c\n}\n"
+                             "fn main() { print(M(1) == M(1)) }\n";
+        EmitResult phpEq = compileStd(eqOnly, findTarget("php"));
+        check(phpEq.ok && has(phpEq.code, "->eq("), "P37 s3 (C6): PHP supports user eq (->eq call)");
+        std::string arith = std::string(vec) + "fn main() { print((Vec(1) + Vec(2)).x) }\n";
+        EmitResult phpAr = compileStd(arith, findTarget("php"));
+        bool namedArith = false;
+        for (const auto& d : phpAr.diagnostics)
+            if (has(d.message, "operatorOverloading:arithmetic")) namedArith = true;
+        check(!phpAr.ok && namedArith, "P37 s3 (C6): PHP still refuses :arithmetic, by sub-key");
     }
 
     // ---- P19 slices 13-15: reserved/forbidden identifiers (identifier hygiene, json-plugins.md §7) -----

@@ -1,0 +1,7 @@
+// REFUSED (P37 C): implicit user conversions — invisible call-site injection has no TS hook and
+// hides behavior; declare `operator fn explicit(): T` and cast explicitly.
+record Meters(v: f64) {
+  operator fn implicit(): f64 => this.v
+}
+fn main() {
+}
