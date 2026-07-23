@@ -3451,12 +3451,22 @@ code-grounded validation in `docs/prd/p37-feature-batch/{PRD,PLAN,ANALYSIS}.md`.
   operators** (`operator fn explicit T`; implicit refused), **compound assignment** on user types, hierarchical
   **`operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}`** capabilities (PHP flips to
   `:eq`+`:indexers`), and fixes **#62** (TS unary `neg`) + **#63** (bitwise SPEC-vs-code drift).
-- **D — attributes as emit-only pass-through** (no reflection — nothing exists at runtime to reflect against).
-  `[Name(args)]` declaration-prefix syntax (no locals), positional + named args, const + intersection-gated
-  variable values (D11, from day 1). Per-target `extern attribute` bindings (reusing the `actual(target)
-  extern(...)` arm + a new import/using field + a `refuse` arm); attachment-point/arg-kind gating via a new
-  keyed capability vocabulary; no binding for a configured target → loud refusal; mechanism-only distribution
-  via a new binding-only P30 package kind. Documented as outside the §3.C faithfulness guarantee (H2).
+- **D — attributes: the three-tier taxonomy** (revised 2026-07-23 by a 6-agent follow-up investigation —
+  Haxe / prior art / target semantics / repo + generics + LSP grounding, `ATTRIBUTES-RESEARCH.md` — resolving
+  the maintainer's block: native mechanisms diverge irreconcilably, C#/PHP-inert vs TS/Python-eager, so the
+  portable tier maps to NO native mechanism). One `[Name(args)]` syntax; the declaration picks the tier.
+  **Tier 1 `extern attribute`** — emit-only pass-through to native annotations for the target's own
+  framework: per-target bindings (`actual(target) extern(...)` + import/using + `refuse` arms),
+  attachment-point/arg-kind gating via the keyed capability vocabulary, no binding → loud refusal (D12),
+  binding-only P30 package kind, outside §3.C (H2). **Tier 2 `attribute`** — portable inert metadata: a
+  typed pure data shape (const-envelope params, no body, no constructor — Haxe's `@name` move, plus the
+  typing Haxe wished it had) queried via `std.meta` intrinsics (`Meta.has/get/member<T, A>()`) **resolved at
+  transpile time and lowered to inline constants** — works on all four targets unconditionally, zero runtime
+  tables/reflection, zero output when unqueried, inside §3.C and differentially testable (H6). **M6
+  (permanent):** `Meta` never accepts runtime-variant types — enforced by a closed syntactic form in shared
+  sema (`genericsInScope_` concreteness walk + string-literal member names), so build/check/LSP diagnose
+  identically; structurally locked by the generic-preserving (never-monomorphizing) architecture. **Tier 3**
+  behavior-transforming decorators — refused (§D.1 two-model analysis stands).
 - **Shared prerequisite:** generalize the flat 16-member `Feature` enum to a keyed, load-validated closed
   capability vocabulary (`parent:child`), consumed by both C6 and D10/D11.
 Deferred follow-ups (recorded, not built): cross-package operator *resolution*; `return:`/type-param

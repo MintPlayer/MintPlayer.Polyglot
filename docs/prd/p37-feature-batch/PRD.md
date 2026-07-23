@@ -1,8 +1,12 @@
 # P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes
 
-**Status:** designed (2026-07-20), pre-implementation. One cohesive PR (`p37-feature-batch`), ordered
-commits, no back-compat (clean cutovers). Investigated by an 8-agent scope investigation + a 4-agent
-adversarial validation team; validation verdict **GO-WITH-CONDITIONS** (conditions folded in below).
+**Status:** designed (2026-07-20), §D revised (2026-07-23) — pre-implementation. One cohesive PR
+(`p37-feature-batch`), ordered commits, no back-compat (clean cutovers). Investigated by an 8-agent scope
+investigation + a 4-agent adversarial validation team; validation verdict **GO-WITH-CONDITIONS**
+(conditions folded in below). §D was subsequently revised by a 6-agent follow-up investigation
+(Haxe / prior art / target semantics / repo + generics + LSP grounding — evidence in
+`ATTRIBUTES-RESEARCH.md`) that resolved the maintainer's block on the attributes concept with the
+**three-tier taxonomy** (§D below); it was briefly drafted as a separate "P38" and folded back here.
 
 This PRD is the design contract. `PLAN.md` is the dependency-ordered slice plan + acceptance matrix.
 `ANALYSIS.md` is the code-grounded validation findings (file:line) the implementation follows.
@@ -13,11 +17,14 @@ Every item here was weighed against the support/refuse/faithfulness/determinism 
 language surface **without** opening a lowest-common-denominator seam:
 
 - **Runtime reflection stays refused, forever.** `.pg` is fully transpiled away — nothing exists at runtime
-  to reflect against. Attributes (workstream D) are therefore strictly **emit-only pass-through**: Polyglot
-  parses them, type-checks them against a binding, and emits each target's native annotation for *that
-  target's* ecosystem to consume. Polyglot never reads an attribute back. (SPEC "Refused" already names
-  "attribute introspection at run time"; §D below and SPEC §10 must state the emit-only-is-allowed /
-  read-back-is-refused distinction explicitly so the two don't read as a contradiction.)
+  to reflect against. Attributes (workstream D) therefore come in exactly two allowed forms and one refusal:
+  **Tier 1 emit-only pass-through** (Polyglot parses, type-checks against a binding, emits each target's
+  native annotation for *that target's* ecosystem to consume — never read back), **Tier 2 portable inert
+  metadata** (queries resolved **at transpile time**, lowering to inline constants — nothing resolves at
+  run time, so nothing is reflected against), and **Tier 3 behavior transforms — refused** (§D.1). SPEC §10
+  must state the three-way split explicitly so "attribute introspection at run time" (refused, forever —
+  the native `GetCustomAttributes`/`ReflectionAttribute`/reflect-metadata surfaces) doesn't read as
+  contradicting the two allowed tiers.
 
 ## A. `init` → `constructor` (surface rename, full)
 
@@ -104,11 +111,36 @@ one blanket mark. **PHP flips** from blanket-refuse to supporting `:eq` (structu
 change that widens PHP support. Umbrella semantics: a bare `operatorOverloading` stance applies to all
 sub-keys unless a sub-key overrides it.
 
-## D. Attributes — emit-only pass-through
+## D. Attributes — the three-tier taxonomy
 
-A `.pg` attribute is parsed, type-checked against a binding, and emitted as each target's native annotation.
-Polyglot never executes or reads it. This is an **FFI-class** feature (like `extern`), governed by the same
-per-target binding + capability-intersection machinery.
+**The block this resolves (2026-07-23).** The four targets split into two camps by *when an attribute's
+own logic runs* (§D.1): C#/PHP attributes are inert metadata whose constructor never runs unless a program
+makes an explicit reflection call Polyglot never emits; TS/Python decorators execute eagerly at definition
+time. So one native-mapped concept can't have one semantics — and the fallback of exposing *two* concepts
+("Attributes" and "Decorators"), each usable only when every configured target supports it natively, would
+leave a typical multi-target user able to use **neither**. The resolution (Haxe-informed — see
+`ATTRIBUTES-RESEARCH.md`; Haxe survived the same fault line across 10+ targets): **the portable tier must
+not map to native mechanisms at all.** One `[Name(args)]` usage syntax; the *declaration* picks the tier:
+
+| Tier | Declared as | What it is | Works on | Faithfulness |
+|---|---|---|---|---|
+| **1 — pass-through** (§D, this section) | `extern attribute` | typed binding to each target's **native** annotation, for that target's *own* framework | targets with a binding; intersection-gated, D12 loud refusal | outside §3.C (H2) |
+| **2 — portable metadata** (§D.2) | `attribute` | a **pure data shape** — no body, no constructor, const-only args — queried via `std.meta` at **transpile time** | **all targets, unconditionally** — no capability, no gate | inside §3.C (H6) |
+| **3 — behavior transforms** | — | decorators that wrap/replace declarations | **refused** (§D.1) | — |
+
+The intersection objection applies only to Tier 1 — and there it is *correct*: Tier 1 exists to feed one
+target's framework (Angular reads `@Component`, Symfony reads `#[Route]`), which is per-target by nature
+and typically already routed per-target by pgconfig `include` rules. Tier 2 — the tier a multi-target user
+reaches for — requires nothing from any target because the compiler both writes and reads the data. And
+the constructor-timing divergence cannot arise: Tier 2 attributes have no constructor (Haxe's `@name`
+move: metadata is data, not a class); Tier 1 disclaims cross-target runtime behavior (H2); Tier 3 (the
+only place eager execution would matter) is refused.
+
+### Tier 1 — emit-only pass-through (`extern attribute`)
+
+A Tier 1 `.pg` attribute is parsed, type-checked against a binding, and emitted as each target's native
+annotation. Polyglot never executes or reads it. This is an **FFI-class** feature (like `extern`),
+governed by the same per-target binding + capability-intersection machinery.
 
 - **Syntax (D8):** C#-style `[Name(args)]` in **declaration-prefix position** — before class, method,
   field/property, param, and (deferred) return. `[` is illegal at all those positions today, so parsing is
@@ -219,12 +251,111 @@ framework (modern Angular Ivy and STJ even consume them at *build* time via thei
 making native pass-through *more* mandatory). So the portable behavior-injecting attribute is **orthogonal**
 to the daily demand: the daily demand is Model 1 pass-through.
 
-**Decision & open item.** P37 §D builds **Model 1** (pass-through, passive-metadata-only) — correct for the
-motivating use cases. Behavior-transforming / "functional" attributes remain **out of scope and the way
-forward is OPEN** (maintainer undecided as of 2026-07-21). If a specific transform is ever genuinely wanted,
-the scope-disciplined path is a **fixed, first-party, compiler-authored lowering** (i.e. "add one language
-feature," like Polyglot already synthesizes constructors and value-equality) — **not** a user-programmable
-`.pg` macro system. Recorded as a demand-gated deferral (see §G).
+**Decision (closed 2026-07-23).** §D builds **Model 1** (pass-through, passive-metadata-only) as Tier 1 —
+correct for the framework-interop use cases — and the follow-up investigation added **Tier 2** (§D.2) for
+the portable-metadata demand Model 1 cannot serve. Behavior-transforming / "functional" attributes (Model
+2 as a *user-facing* feature) are **refused**: this is exactly Haxe's macro tier (`@:build`), i.e. the
+maximal form of the scope creep that killed JSIL/SharpKit/Bridge.NET. If a specific transform is ever
+genuinely wanted, the scope-disciplined path remains a **fixed, first-party, compiler-authored lowering**
+(i.e. "add one language feature," like Polyglot already synthesizes constructors and value-equality) —
+**not** a user-programmable `.pg` macro system (see §G).
+
+### D.2 Tier 2 — portable inert metadata (`attribute` + `std.meta`)
+
+**Declaration — a pure data shape.** `attribute Range(min: i32, max: i32)` — a name + typed parameters.
+**No body, no methods, no bases, no constructor logic** (a `{` after the param list is a diagnostic naming
+the Tier 3 refusal). Parameter types are the **const envelope**: `bool`, the integer/float scalars,
+`string`, enum types, and arrays of those — the intersection of the C#/PHP attribute-constant rules and
+what every target holds as a plain literal. Const defaults allowed. Internally the declaration is a
+record-shaped type flagged as an attribute — it reuses the record machinery end-to-end but is **emitted
+only if materialized** (below). This is the typed shape Haxe's rejected "typed metadata" evolution
+proposal pointed at (haxe-evolution #73): where Haxe metadata is stringly-typed with `Dynamic` returns,
+a `.pg` attribute has a signature the checker enforces at every attachment and a typed query result.
+
+**Attachment.** Same `[Name(args)]` syntax and positions as D8 (class, method, field/property, enum case;
+stacked/grouped; positional + named args; no locals). Tier-2-specific rules: **values must be compile-time
+constants** — literals, enum members, arrays of those — always (there is no non-const gate for Tier 2;
+the value must be inlinable at every query site; D11 `attributes.arg.nonConst` is Tier-1-only). **At most
+one application of a given attribute type per declaration** (repeat → diagnostic; `AllowMultiple` is
+deferred). **No parameter attachment in v1** (v1 ships type- and member-level queries only; attaching
+where nothing can query would be a silent no-op, so it's refused, not kept). **No capability gating** —
+nothing native is emitted, so Python's lack of parameter decorators etc. is irrelevant here; the D10
+`attributes.target.*` intersection applies to Tier 1 only.
+
+**Query — compile-time-resolved, lowers to inline constants.** A `std.meta` module (embedded like
+`STD_MATH`) exposing intrinsics: `Meta.has<T, A>() -> bool`, `Meta.get<T, A>() -> A?`,
+`Meta.member<T, A>("name") -> A?`. **Every query is resolved at transpile time**: the compiler looks up
+the attribute list on the statically-named declaration and lowers the call site to plain code — `has` →
+a `true`/`false` literal; `get`/`member` → a construction of the attribute record from the recorded
+constant args (C#/PHP `new Range(1, 8)`, TS `new Range(1, 8)`, Python `Range(1, 8)`) or the target's
+typed `null`/`None`. **No metadata file, no table, no reflection surface, no runtime type identity —
+the output contains the *answers*, not the questions.** Consequences, all pinned:
+- An attribute attached but never queried produces **zero runtime output** (golden-pinned); a queried
+  attribute materializes exactly its record type + the inlined constants. Pay only for what you query —
+  the discipline that separates this from the Bridge.NET/JSIL/SharpKit default-on metadata tables
+  (`ATTRIBUTES-RESEARCH.md` §2), and from Haxe's own always-emitted `__meta__` (its documented DCE/bloat
+  regret).
+- **Fresh value per query evaluation** (incidentally C# `GetCustomAttributes` semantics); attribute
+  records have structural equality, so identity is immaterial. Identical on all four targets →
+  **differentially testable** — the conformance suite, not goldens, is the primary instrument (H6).
+- **Exact-type lookup only**: `Meta.get<Derived, A>()` consults `Derived`'s own attribute list — no
+  inherited walk (C#'s `Inherited=true` is a reflection-walk behavior we don't replicate; H7).
+- `Meta.member`'s name argument must be a **string literal** naming a member of `T` — unknown member →
+  diagnostic with the exact literal underlined (typed where Haxe is stringly).
+
+### D.3 M6 — the static-resolvability invariant (non-negotiable, permanent)
+
+**M6: every `Meta` query is resolved from names that are compile-time-concrete, forever.** `Meta` will
+**never** accept a runtime-variant type — no `Meta.of(expr)` over a value's runtime type, no type
+parameter as a type argument, no computed member name. This is not a v1 simplification; it is
+structurally load-bearing twice over:
+1. **There is nothing at runtime to ask.** Tier 2's entire value — zero tables, zero reflection runtime,
+   zero output when unqueried, §3.C-faithful semantics — exists *because* the question is answered at
+   transpile time. A runtime-variant query would require shipping per-type metadata registries in every
+   output **plus** inventing a uniform cross-target runtime type-identity primitive that does not exist
+   (TS/Python/PHP unions discriminate by string tag, C# by nominal type; TS interfaces have no runtime
+   identity at all) — i.e. the exact default-on reflection-emulation path §3.B refuses and the dead
+   C#→JS cohort died on.
+2. **The compiler is generic-preserving, so a type-parameter query can never be resolved.** Polyglot
+   never monomorphizes: generic decls lower 1:1 (`ir.hpp:427-538`, `lower.cpp:415`) and emit as native
+   generics; TypeArg inference substitutes at call sites only, never specializing bodies
+   (`sema.cpp:1504-1548`). Inside `fn f<T>() { Meta.get<T, Range>() }` there is no point in compilation
+   at which `T` is one type — so this is refused **by architecture**, not by choice, and lifting it would
+   require monomorphization (a rejected architecture change). Any future "dynamic metadata" request
+   re-opens as its own PRD against both walls above, with the recorded expectation of decline.
+
+**How the compiler *knows* an argument isn't statically determinable — a closed syntactic form, not an
+analysis.** Polyglot has no constant-evaluation machinery and gains none here; resolvability is decided
+by form, so the diagnostic set is total and predictable ("define errors out of existence" — no
+sometimes-works constant propagation):
+- **Type arguments**: a `TypeRef` is concrete iff every `Named` node in it, walked recursively like
+  `resolveTypeRef` (`sema.cpp:852-870`), satisfies `!genericsInScope_.count(name) &&
+  (isBuiltinType(name) || typeNames_.count(name))`. The `genericsInScope_` set (`sema.cpp:388`,
+  maintained by `pushGenerics`/`popGenerics` around every decl walk) is checked **first** — it is
+  exactly how sema distinguishes a type parameter from a concrete type, so `T` in the example above
+  fails the test with a diagnostic naming M6, while `List<Foo>` composes fine.
+- **Member-name argument**: the node must be `ExprKind::StringLit` (value directly on `Expr::text`,
+  `ast.hpp:103-115`); a variable, concatenation, or interpolated string → diagnostic. No evaluator
+  needed or wanted.
+- **Sync trap found by validation (fix, don't inherit):** explicit type args on member calls currently
+  **parse and are silently ignored** — `parser.cpp:1025-1040` fills `Expr::typeArgs` for
+  `obj.m<T>(...)`/`Type.m<T>(...)`, but the static/instance/extension call paths in sema never read
+  them (only construction does, `sema.cpp:1738`). `Meta` adds the first consumer; the same change adds
+  a diagnostic for explicit type args any *other* member-call path would drop — an existing latent
+  silent-drop closed under the anti-silent-drop rule, not widened.
+
+**Where enforcement lives — and why the LSP diagnoses identically for free.** All M6/D.2 usage checks go
+in **target-independent sema (`check`)** — NOT the capability pass: `polyglot build`, `polyglot check`,
+and the LSP all funnel through the one shared front end (`runFrontEnd`, `compiler.cpp:460`; the LSP's
+`analyze()` at `:765` runs the same sema on every keystroke), whereas `checkCapabilities` runs only
+inside `compile()` and never reaches live squiggles. One `Diagnostic` type serves both consumers
+(`diagnostics.hpp:21-35`); `Meta` diagnostics use the **two-arg span overload** (`bag.error(pos, end,
+msg)`, `diagnostics.hpp:35` — machinery present, previously unused by sema) so the editor underlines
+exactly the offending type argument or string literal (the LSP's point-widening covers identifiers only,
+`main.cpp:1056-1060`). The live generated-output preview (`polyglot/emit`) runs the full `compile()` per
+debounced edit, so query resolution changes are visible in the preview as you type. Hover on a `Meta`
+call showing the resolved constants, and member-name completion inside the string literal, are recorded
+LSP follow-ups (hover has direct precedent, `main.cpp:1154-1163`; in-string completion is net-new).
 
 ## E. Shared prerequisite — keyed capability vocabulary
 
@@ -238,12 +369,14 @@ both workstreams consume it.
 
 ## F. Faithfulness / determinism honesty notes (must land in SPEC §3.C/§3.D/§10)
 
-- **H1** — reflection-never rationale + attributes emit-only-only (decision 0).
-- **H2** — attributes are outside the §3.C faithfulness guarantee: Polyglot guarantees the spelling +
-  attachment land per the binding, **not** identical cross-target runtime behavior (C#/PHP attributes are
-  inert metadata; TS/Python decorators execute at definition time). Behavior-*transforming* decorators are
-  out of scope; only bindings to a semantically-passive annotation on each target are permitted; no binding
-  ⇒ D12 refusal.
+- **H1** — reflection-never rationale + the three-way attribute split (decision 0): native runtime
+  reflection refused forever; Tier 1 emit-without-read-back allowed; Tier 2 compile-time-resolved queries
+  allowed *because nothing resolves at run time*.
+- **H2** — **Tier 1** attributes are outside the §3.C faithfulness guarantee: Polyglot guarantees the
+  spelling + attachment land per the binding, **not** identical cross-target runtime behavior (C#/PHP
+  attributes are inert metadata; TS/Python decorators execute at definition time). Behavior-*transforming*
+  decorators are out of scope; only bindings to a semantically-passive annotation on each target are
+  permitted; no binding ⇒ D12 refusal.
 - **H3** — `as` = checked conversion → `null` (runtime guard on TS/Python/PHP, never TS assertion); interface
   `is`/`as` refused when a configured target lacks runtime interface identity; `is`-binding narrows in-branch
   only.
@@ -252,23 +385,42 @@ both workstreams consume it.
   only.
 - **H5** — capability-vocabulary governance: operator sub-keys and attribute keys are additive to the closed,
   load-validated set via a fixed `parent:child` form — not a growth license.
+- **H6** — **Tier 2** metadata is fully **inside §3.C**: semantics are identical on all four targets by
+  construction (compiler-emitted constants), pinned **differentially** by the conformance suite — the
+  first attribute surface that is, unlike Tier 1's golden-only coverage.
+- **H7** — `Meta` queries are exact-type, definition-site, compile-time lookups yielding a fresh value per
+  evaluation: no inherited-attribute walk (no C# `Inherited=true`), no runtime dispatch, no decorator
+  mutation semantics. M6 (static-resolvability, §D.3) is permanent, not a v1 gap.
 
 ## G. Scope boundaries & deferred follow-ups
 
-- **Refused (loud diagnostic, never silent):** runtime reflection / attribute read-back; new operator
-  *symbols*; implicit user conversion operators; attributes on local variables (v1); an attribute used with
-  no binding for a configured target; variable attribute-arg values when C#/PHP is targeted.
+- **Refused (loud diagnostic, never silent):** native runtime reflection / attribute read-back; new operator
+  *symbols*; implicit user conversion operators; attributes on local variables (v1); a Tier 1 attribute used
+  with no binding for a configured target; variable attribute-arg values when C#/PHP is targeted (Tier 1) or
+  ever (Tier 2); **runtime-variant `Meta` queries — permanently** (M6, §D.3: instance-dispatched
+  `Meta.of(expr)`, type-parameter type args, computed member names); repeated application of one Tier 2
+  attribute type; Tier 2 parameter attachment (v1); a Tier 2 `attribute` declared with a body; explicit
+  member-call type args that no path consumes (latent silent-drop, closed by D.3); **Tier 3 behavior-
+  transforming attributes** (Model 2 as a user feature — if a specific transform is ever wanted, a fixed
+  first-party compiler-authored lowering, never a user-programmable `.pg` macro platform; rationale +
+  empirical C# demonstration in §D.1).
 - **Deferred (demand-gated follow-ups, recorded not built):** cross-package operator *resolution* (adopt the
   static *shape* now; no consumer + no resolver path today); `return:`-target and type-parameter attributes
-  (new syntax, no grammar home); an auto-included attribute stdlib package; **"functional" / behavior-
-  transforming attributes (Model 2 — a compile-time transform/macro subsystem)** — the way forward is OPEN
-  (maintainer undecided 2026-07-21); if ever pursued, a fixed first-party compiler-authored lowering, not a
-  user-programmable `.pg` macro platform (full rationale + empirical C# demonstration in §D.1).
+  (new syntax, no grammar home); an auto-included attribute stdlib package; Tier 2 parameter-level metadata
+  + query; `AllowMultiple` (query returns a list); `Meta.getInherited`; `Meta.all<T>()` (needs a
+  heterogeneous-list story); a dual-tier single declaration (portable data *and* native emission from one
+  attachment); LSP hover showing resolved `Meta` constants + member-name completion inside the string
+  literal.
 
 ## H. Testing strategy (see PLAN.md matrix)
 
 Operators / `is` / `as` / compound-assign / conversions are **differentially executable** — the conformance
 suite is the safety net (critical for the C5 rework, which regenerates 9 existing operator/equality
-goldens). Attributes hook target *frameworks* absent from the harness → **golden-only** (assert emitted
-per-target text + required imports). Capability gates (C6 sub-keys, D10/D11, B4, D12) get **refusal
-fixtures**. The A-rename adds a golden asserting emitted TS/JS never yields a bare `.constructor` access.
+goldens). **Tier 1** attributes hook target *frameworks* absent from the harness → **golden-only** (assert
+emitted per-target text + required imports). **Tier 2** is differentially executable (H6): `meta_query.pg`
+programs print `Meta.has`/`get`/`member` results (present + absent + defaults + arrays + enum args) and all
+four targets must agree; plus one golden pinning that an attached-but-unqueried attribute emits **zero**
+runtime output. Capability gates (C6 sub-keys, D10/D11, B4, D12) and the M6/D.2 rules (type-parameter type
+arg, non-literal member name, unknown member, repeat application, param attachment, body on an `attribute`)
+get **refusal fixtures**. The A-rename adds a golden asserting emitted TS/JS never yields a bare
+`.constructor` access.

@@ -68,14 +68,20 @@ ALL slices first, then run the full gate ONCE at the end + one POSIX leg via CI 
   **Refusal fixtures:** implicit-conversion refused; C6 sub-capability refusals via a stub backend lacking
   `:arithmetic`/`:indexers`/`:eq`.
 
-## Slice 4 — D: attributes (greenfield)
+## Slice 4 — D: attributes (greenfield; Tier 1 pass-through + Tier 2 portable metadata)
 
+### 4a — shared syntax (both tiers)
 - Lexer/parser: `[Name(args)]` attribute lists in declaration-prefix position (top-level, member, param,
   enum case) via `while (at(LBracket)) parseAttributeList();`. **No locals.** Named-arg production
   `[ident '='] expr`; const value grammar (literals, enum members, arrays) + non-const values behind the
-  capability gate.
-- IR/AST: an `attributes` vector on the decl nodes (parallel to `modifiers`); `extern attribute` declaration
-  node reusing `TargetBinding` + a **new import/using field** + a `refuse` arm.
+  Tier 1 capability gate.
+- IR/AST: an `attributes` vector on the decl nodes (parallel to `modifiers`). Attachment resolves the name
+  to its declaration; the declaration's form picks the tier (Tier 1 `extern attribute` / Tier 2
+  `attribute`).
+
+### 4b — Tier 1: `extern attribute` bindings + native emission
+- AST: `extern attribute` declaration node reusing `TargetBinding` + a **new import/using field** + a
+  `refuse` arm.
 - Sema: type-check `[Name(args)]` against the binding's declared `(params)` via `checkArgs`/`checkConvert`;
   const-only enforcement unless `attributes.arg.nonConst` holds across the intersection; attachment-point +
   arg-kind gating via the Slice-0 keyed capabilities (`attributes.target.*`, `attributes.arg.*`); **D12**
@@ -84,11 +90,51 @@ ALL slices first, then run the full gate ONCE at the end + one POSIX leg via CI 
   imports/usings into the existing `module.imports` emission site.
 - Distribution: **binding-only package kind** (partial plugin: `extern attribute` decls + imports, no full
   backend) loadable by the P30 resolver; a curated first-party `polyglot-attributes-*` example package.
-- **Acceptance (golden-only — framework not in harness):** `attr_emit.pg` — one binding, assert the exact
+
+### 4c — Tier 2: `attribute` declarations + attachment sema
+- Parser: `attribute Name(params)` top-level decl — **no body** (a `{` is a diagnostic naming the Tier 3
+  refusal), no bases, no generics (v1). Internally a record-shaped type flagged `isAttribute` (reuses
+  record machinery; **not emitted unless materialized**, 4e).
+- Sema: param types restricted to the const envelope (`bool`, int/float scalars, `string`, enums, arrays
+  of those — violation names the param + the envelope); attachment args const-only (no gate — always);
+  args type-checked via the same `checkArgs` path; **one application per attribute type per decl**;
+  **param attachment refused** (v1). Evaluated constant args recorded on the decl node (precomputed-facts
+  grain, `lower.cpp:130-145`). **No capability marks** — Tier 2 is target-independent by construction.
+
+### 4d — Tier 2: `std.meta` intrinsics + M6 enforcement (all in target-independent sema — PRD §D.3)
+- New embedded std module `STD_META` (`compiler.cpp` registry): `Meta.has<T, A>() -> bool`,
+  `Meta.get<T, A>() -> A?`, `Meta.member<T, A>(name: string) -> A?`.
+- Sema consumes `Expr::typeArgs` on the static-call path (**greenfield** — today `parser.cpp:1025-1040`
+  fills it for member calls and sema silently ignores it; same change adds the anti-silent-drop
+  diagnostic for explicit type args on any non-consuming call path). Arity = 2; each type arg must pass
+  the **concreteness walk** (recursive over the `TypeRef` like `resolveTypeRef`, `sema.cpp:852-870`:
+  reject iff `genericsInScope_.count(name)`, else require builtin/`typeNames_` — run inside the scoped
+  decl walk so enclosing type params are visible); `T` must be a user class/record/enum/union, `A` a
+  Tier 2 attribute; `Meta.member`'s name arg must be `ExprKind::StringLit` naming a member of `T`.
+  All violations diagnosed with the **two-arg span overload** (`diagnostics.hpp:35`) underlining exactly
+  the offending type arg / literal — these surface live in the LSP for free (shared `analyze()` front
+  end); none of this goes in `checkCapabilities` (not run by the live-squiggle path).
+- Lowering: `has` → bool literal; `get`/`member` → construction of `A` from recorded args, or typed null;
+  mark `A` materialized.
+
+### 4e — Tier 2: emission
+- Materialized attribute decls emit as plain records on all four targets (existing record machinery,
+  structural equality included); zero queries → zero output (golden-pinned). Query sites emit what 4d
+  lowered — verify per-plugin construction/null templates cover the inlined shapes; no new plugin rule
+  kinds expected.
+
+### Slice 4 acceptance
+- **Tier 1 (golden-only — framework not in harness):** `attr_emit.pg` — one binding, assert the exact
   per-target emitted annotation + required `using`/`import` on class/method/field/param; named args; const +
   (TS/Python-only) variable-value args. **Refusal fixtures:** unsupported attachment point for a configured
   target; param attribute when Python targeted; variable-value arg when C#/PHP targeted; `[MyAttr]` with no
   binding (D12); `python => refuse` arm hit. Round-trip test for the `.pg` printer.
+- **Tier 2 (differential — H6):** `meta_query.pg` — `has`/`get`/`member` × present/absent × positional/
+  named/default/array/enum args; all four targets print identical values. **Golden:** attached-but-unqueried
+  attribute → zero runtime output; materialized record shape. **Refusal fixtures (M6/D.2):** type-parameter
+  type arg (`fn f<T>() { Meta.get<T, A>() }`); non-literal member name; unknown member; interface/extern as
+  `T`; repeat application; param attachment; `attribute` with a body; non-const attachment arg; explicit
+  type args on a non-consuming member call. Round-trip test for the `.pg` printer.
 
 ## Cross-cutting: SPEC + docs
 
@@ -112,11 +158,17 @@ ALL slices first, then run the full gate ONCE at the end + one POSIX leg via CI 
 | C5/M3 `x == null` bypass | ✅ | ✅ both-null + one-null | — |
 | C6 sub-capability gating | — | — | ✅ stub backend |
 | C7 compound `+=` on user type | ✅ | ✅ eval-once on prop/indexer LHS | — |
-| D attribute emit + `extern attribute` binding | ✅ per-target text + imports | ❌ (framework absent) | — |
-| D10/D11 unsupported attachment / arg-kind | — | — | ✅ |
-| D12 no binding for configured target | — | — | ✅ |
+| D Tier 1 attribute emit + `extern attribute` binding | ✅ per-target text + imports | ❌ (framework absent) | — |
+| D10/D11 unsupported attachment / arg-kind (Tier 1) | — | — | ✅ |
+| D12 no binding for configured target (Tier 1) | — | — | ✅ |
+| D Tier 2 `Meta.has`/`get`/`member` (present + absent) | ✅ inlined constants | ✅ `meta_query.pg`, all four agree | — |
+| D Tier 2 unqueried attribute → zero output | ✅ | — | — |
+| D.3 M6 static-resolvability (type-param arg, non-literal/unknown member, …) | — | — | ✅ |
+| D.2 attachment rules (const-only, single application, no params, no body) | — | — | ✅ |
 
 ## Deferred follow-ups (recorded, not in this PR)
 
 Cross-package operator *resolution* (static shape adopted now); `return:`-target & type-parameter
-attributes; auto-included attribute stdlib package.
+attributes; auto-included attribute stdlib package; Tier 2 param-level metadata + query; `AllowMultiple`;
+`Meta.getInherited`; `Meta.all<T>()`; dual-tier single declaration; LSP hover of resolved `Meta`
+constants + in-string member completion.
