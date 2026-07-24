@@ -21,7 +21,7 @@ class RingBuffer<T> {
   var items: List<T>
   let capacity: i32
 
-  init(capacity: i32) {
+  constructor(capacity: i32) {
     this.capacity = capacity
     this.items = List<T>()
   }

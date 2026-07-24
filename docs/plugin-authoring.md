@@ -98,7 +98,36 @@ gets an error naming the feature, never broken output.
 
 The compile-gate feature names: `extensionMethods`, `operatorOverloading`, `properties`,
 `iterators`, `patternMatching`, `closures`, `exceptions`, `disposal`, `inheritance`, `async`,
-`blockLambdas`, `withExpressions`.
+`blockLambdas`, `withExpressions`, `mutableRefClasses`, `fixedWidthIntegers`, `utf16Strings`,
+`propertySetters`.
+
+**Keyed refinements (P37 slice 0).** A capability may also be a `parent:child` key from the closed,
+load-validated vocabulary — an unknown key is a **load error**, never silently ignored. A sub-key
+with no explicit entry inherits the bare parent's stance (the umbrella rule); an absent parent is
+supported. Current keyed entries:
+
+- `interfaces:runtimeIdentity` — interfaces exist as testable runtime types (`is`/`as`/typed match).
+  TS declares `false` (interfaces erase); Python overrides its `"interfaces": "emulated"` umbrella
+  with an explicit `"native"`.
+- `operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}` — graded operator support.
+  PHP declares the umbrella `false` plus `:eq` and `:indexers` `"native"` (`->eq(...)`,
+  `->get`/`->set`).
+- `attributes:target.{type,method,function,field,param}` — where a Tier 1 pass-through attribute may
+  attach on this target. TS declares `function` and `param` false (TC39 has neither); Python declares
+  `field` and `param` false. Tier 2 portable metadata needs **no capability at all** — the compiler
+  both writes and reads its data, so a plugin never sees it.
+
+**Constant spellings + trait flags (P37).** The Core is a pure engine: it never compares target names
+(it cannot know what languages exist). Anything lowering must bake into pre-rendered text or gate a
+pass on comes from `spec` properties instead:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `enumMemberOp` | `"."` | how a constant enum member spells (`Color.Red` vs PHP's `"::"`) |
+| `constArrayOpen` / `constArrayClose` | `"["` / `"]"` | constant array delimiters (C#: `"new[] {"` / `"}"`) |
+| `linksWithoutImports` | `false` | modules link by compilation into one unit — no import statements (C#) |
+| `forbidsShadowedLocals` | `false` | a nested-scope local may not reuse an outer local's name → the scope-legalization pass runs (C#, CS0136) |
+| `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
 
 Capabilities also serve the **anti-silent-drop coverage contract** enforced at load time: every IR
 construct the compiler can produce must have a rule, *or* the plugin must declare its stance via the
@@ -144,8 +173,8 @@ Three template flavors:
   `$this = …` emits a **receiver assignment** instead of an expression — Python's
   `"List.clear": "$this = []"`.
 - **`<Type>.type`** maps an extern class's type spelling (`$0`,`$1` = rendered type args — C#:
-  `"List.type": "global::System.Collections.Generic.List<$0>"`); **`<Type>.init`** maps its
-  construction (`$T` = the mapped type, `$0`,… = ctor args — Python: `"List.init": "[]"`).
+  `"List.type": "global::System.Collections.Generic.List<$0>"`); **`<Type>.constructor`** maps its
+  construction (`$T` = the mapped type, `$0`,… = ctor args — Python: `"List.constructor": "[]"`).
 - **`expect` functions** (`print`): the template is the target-language *body* of the synthesized
   `actual`, referencing the fn's parameters by name (PHP's `print(x)` body reads `$x` because PHP
   spells the variable that way; Python's reads bare `x`).

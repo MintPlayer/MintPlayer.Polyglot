@@ -58,15 +58,28 @@ public:
         return emitter.emit(m);
     }
 
-    // Tri-state capabilities (PRD §4.11): a feature absent from the map is `"native"` (supported); `"false"`
-    // gates it at compile time (§3.E); `"emulated"` is supported but warns (call-site rewrite). `supports()`
-    // is the coarse gate; `capabilityStance()` is the source of truth both read from.
-    std::string capabilityStance(Feature f) const override {
-        auto it = capabilities_.find(featureName(f));
-        return it == capabilities_.end() ? "native" : it->second;
+    // Tri-state capabilities (PRD §4.11 / P37 slice 0): keyed lookup with the umbrella rule — exact key,
+    // else the bare parent of a `parent:child` key, else `"native"` (supported). `"false"` gates at compile
+    // time (§3.E); `"emulated"` is supported but warns (call-site rewrite). `supports()` is the coarse gate;
+    // `capabilityStance()` is the source of truth both read from.
+    std::string capabilityStance(const std::string& key) const override {
+        auto it = capabilities_.find(key);
+        if (it != capabilities_.end()) return it->second;
+        const auto colon = key.find(':');
+        if (colon != std::string::npos) {
+            it = capabilities_.find(key.substr(0, colon));
+            if (it != capabilities_.end()) return it->second;
+        }
+        return "native";
     }
-    bool supports(Feature f) const override { return capabilityStance(f) != "false"; }
+    using Backend::capabilityStance;
 
+    ConstSpelling constSpelling() const override {
+        return {spec_.trueLit, spec_.falseLit, spec_.enumMemberOp, spec_.constArrayOpen, spec_.constArrayClose};
+    }
+    bool linksWithoutImports() const override { return spec_.linksWithoutImports; }
+    bool forbidsShadowedLocals() const override { return spec_.forbidsShadowedLocals; }
+    bool expressionOnlyLambdas() const override { return spec_.expressionOnlyLambdas; }
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }
@@ -84,6 +97,45 @@ private:
 };
 
 // ---- Load-time validation (P19 slice 8) ------------------------------------------------------------------
+
+// The closed capability vocabulary (P37 slice 0, PRD §3.E / H5): the 16 Feature names, the coverage-only
+// entries, and the enumerated `parent:child` refinements later slices consume. A manifest key outside this
+// set is a LOAD ERROR (never silently ignored) — the anti-silent-drop rule applied to capability spelling:
+// a typo'd key used to read as an unrelated, defaulted-to-native capability.
+const std::unordered_set<std::string>& capabilityVocabulary() {
+    static const std::unordered_set<std::string> keys = [] {
+        std::unordered_set<std::string> s;
+        for (const Feature f : kAllFeatures) s.insert(featureName(f));
+        s.insert("interfaces"); // coverage-only today (InterfaceDecl stance); checker-enforced since P31
+        // P37 B4: whether interfaces exist as testable runtime types (`is`/`as`/typed-match against an
+        // interface). False on TS (interfaces erase); native elsewhere (C# `is`, Python ABC isinstance,
+        // PHP instanceof).
+        s.insert("interfaces:runtimeIdentity");
+        // P37 C6: graded operator support — PHP supports :eq/:indexers while refusing the rest; the bare
+        // `operatorOverloading` stance umbrella-covers undeclared sub-keys.
+        s.insert("operatorOverloading:arithmetic");
+        s.insert("operatorOverloading:comparison");
+        s.insert("operatorOverloading:eq");
+        s.insert("operatorOverloading:indexers");
+        s.insert("operatorOverloading:conversion");
+        // P37 D10: Tier 1 pass-through attribute ATTACHMENT POINTS (Tier 2 needs no capability — the
+        // compiler both writes and reads its data). `attributes` is the umbrella parent.
+        s.insert("attributes");
+        s.insert("attributes:target.type");
+        s.insert("attributes:target.method");
+        s.insert("attributes:target.function");
+        s.insert("attributes:target.field");  // false on Python (no field annotations)
+        s.insert("attributes:target.param");  // false on TS (TC39 has none) + Python
+        return s;
+    }();
+    return keys;
+}
+
+} // namespace
+
+bool isKnownCapabilityKey(const std::string& key) { return capabilityVocabulary().count(key) != 0; }
+
+namespace {
 
 // The fixed builtin catalog — every `{"fn":…}` a rule may name. A name outside this set evaluated to ""
 // SILENTLY before this check existed (the slice-6d gate caught exactly that); now it fails the load.
@@ -123,6 +175,7 @@ constexpr Coverage kCoverage[] = {
     {"Extern", nullptr},   {"Call", nullptr},     {"Member", nullptr}, {"Index", nullptr},
     {"Cond", nullptr},     {"ListLit", nullptr},  {"Tuple", nullptr},  {"New", nullptr},
     {"Unary", nullptr},    {"Cast", nullptr},     {"Interp", nullptr},
+    {"IsTest", nullptr},   {"AsCast", nullptr},   // P37 B: `is` / `as` (instanceof/isinstance everywhere)
     {"MethodCall", nullptr}, {"Binary", nullptr},
     {"MakeCase", "patternMatching"}, // a union-constructor node — only reachable when unions/match are
     {"Match", "patternMatching"}, {"With", "withExpressions"}, {"Await", "async"}, {"Lambda", "closures"},
@@ -201,6 +254,13 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
         if (stance != "native" && stance != "emulated" && stance != "false") {
             error = "plugin '" + name + "': capability '" + kv.first +
                     "' must be \"native\", \"emulated\" or false (got '" + stance + "')";
+            return nullptr;
+        }
+        // P37 slice 0: the vocabulary is closed and load-validated — an unknown key (typo, or a key from a
+        // newer vocabulary than this compiler) fails the load instead of silently defaulting to "native".
+        if (!isKnownCapabilityKey(kv.first)) {
+            error = "plugin '" + name + "': unknown capability key '" + kv.first +
+                    "' (the capability vocabulary is closed; see PRD §3.E)";
             return nullptr;
         }
         caps[kv.first] = stance;

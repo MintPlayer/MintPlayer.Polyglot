@@ -4,7 +4,7 @@
 
 class Probe {
   var calls: i32
-  init() { this.calls = 0 }
+  constructor() { this.calls = 0 }
   fn yes(): bool {
     this.calls += 1
     return true

@@ -2,7 +2,11 @@
   "schema": 1,
   "name": "typescript",
   "crossDirImports": true,
-  "capabilities": {},
+  "capabilities": {
+    "interfaces:runtimeIdentity": false,
+    "attributes:target.function": false,
+    "attributes:target.param": false
+  },
   "spec": {
     "name": "typescript",
     "scalarType": {
@@ -89,7 +93,14 @@
         "<": "lt",
         "<=": "le",
         ">": "gt",
-        ">=": "ge"
+        ">=": "ge",
+        "&": "band",
+        "|": "bor",
+        "^": "bxor",
+        "<<": "shl",
+        ">>": "shr",
+        "u-": "neg",
+        "u~": "bnot"
       },
       "localDecl": {
         "mutable": "let $x",
@@ -213,7 +224,32 @@
         }
       ]
     },
-    "This": "this",
+    "This": {
+      "case": {
+        "when": [
+          [
+            {
+              "or": [
+                {
+                  "eq": [
+                    "node.insideOperator",
+                    "true"
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.insideEqOperator",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            "lhs"
+          ]
+        ],
+        "else": "this"
+      }
+    },
     "Extern": {
       "get": "node.code"
     },
@@ -567,9 +603,112 @@
         " }"
       ]
     },
+    "IsTest": {
+      "tmpl": [
+        { "emitChild": "node.operand", "side": "recv" },
+        " instanceof ",
+        { "type": "node.testType" }
+      ]
+    },
+    "AsCast": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "node.operandIsSimple",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                "(",
+                {
+                  "emit": "node.operand"
+                },
+                " instanceof ",
+                {
+                  "type": "node.castType"
+                },
+                " ? ",
+                {
+                  "emit": "node.operand"
+                },
+                " : null)"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "((",
+            {
+              "get": "node.tempName"
+            },
+            ": any) => ",
+            {
+              "get": "node.tempName"
+            },
+            " instanceof ",
+            {
+              "type": "node.castType"
+            },
+            " ? ",
+            {
+              "get": "node.tempName"
+            },
+            " : null)(",
+            {
+              "emit": "node.operand"
+            },
+            ")"
+          ]
+        }
+      }
+    },
     "Unary": {
       "case": {
         "when": [
+          [
+            {
+              "eq": [
+                "node.hasUnaryOpMethod",
+                "true"
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.operandTypeName"
+                    }
+                  ]
+                },
+                ".",
+                {
+                  "fn": "table",
+                  "args": [
+                    "opMethod",
+                    {
+                      "tmpl": [
+                        "u",
+                        {
+                          "get": "node.op"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "(",
+                {
+                  "emit": "node.operand"
+                },
+                ")"
+              ]
+            }
+          ],
           [
             {
               "and": [
@@ -622,6 +761,32 @@
     "Cast": {
       "case": {
         "when": [
+          [
+            {
+              "has": "node.convMethod"
+            },
+            {
+              "tmpl": [
+                {
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.operandTypeName"
+                    }
+                  ]
+                },
+                ".",
+                {
+                  "get": "node.convMethod"
+                },
+                "(",
+                {
+                  "emit": "node.operand"
+                },
+                ")"
+              ]
+            }
+          ],
           [
             {
               "eq": [
@@ -1607,6 +1772,85 @@
         }
       ]
     },
+    "tsOperatorSig": {
+      "tmpl": [
+        "static ",
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.name"
+            }
+          ]
+        },
+        "(lhs: ",
+        {
+          "fn": "ident",
+          "args": [
+            {
+              "get": "decl.owner"
+            }
+          ]
+        },
+        {
+          "case": {
+            "when": [
+              [
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "=="
+                  ]
+                },
+                " | null"
+              ]
+            ],
+            "else": ""
+          }
+        },
+        {
+          "map": "decl.params",
+          "sep": "",
+          "item": {
+            "tmpl": [
+              ", ",
+              {
+                "fn": "ident",
+                "args": [
+                  {
+                    "get": "item.name"
+                  }
+                ]
+              },
+              ": ",
+              {
+                "type": "item.type"
+              },
+              {
+                "case": {
+                  "when": [
+                    [
+                      {
+                        "eq": [
+                          "decl.opSymbol",
+                          "=="
+                        ]
+                      },
+                      " | null"
+                    ]
+                  ],
+                  "else": ""
+                }
+              }
+            ]
+          }
+        },
+        "): ",
+        {
+          "type": "decl.returnType"
+        }
+      ]
+    },
     "MethodDecl": {
       "case": {
         "when": [
@@ -1624,9 +1868,18 @@
                     "head": {
                       "tmpl": [
                         "get ",
-                        { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                        {
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "decl.name"
+                            }
+                          ]
+                        },
                         "(): ",
-                        { "type": "decl.returnType" }
+                        {
+                          "type": "decl.returnType"
+                        }
                       ]
                     },
                     "body": [
@@ -1634,11 +1887,28 @@
                         "case": {
                           "when": [
                             [
-                              { "eq": [ "decl.exprBodied", "true" ] },
-                              { "line": { "tmpl": [ "return ", { "emit": "decl.exprBody" }, ";" ] } }
+                              {
+                                "eq": [
+                                  "decl.exprBodied",
+                                  "true"
+                                ]
+                              },
+                              {
+                                "line": {
+                                  "tmpl": [
+                                    "return ",
+                                    {
+                                      "emit": "decl.exprBody"
+                                    },
+                                    ";"
+                                  ]
+                                }
+                              }
                             ]
                           ],
-                          "else": { "stmts": "decl.body" }
+                          "else": {
+                            "stmts": "decl.body"
+                          }
                         }
                       }
                     ]
@@ -1648,21 +1918,46 @@
                   "case": {
                     "when": [
                       [
-                        { "eq": [ "decl.propHasSetter", "true" ] },
+                        {
+                          "eq": [
+                            "decl.propHasSetter",
+                            "true"
+                          ]
+                        },
                         {
                           "block": {
                             "head": {
                               "tmpl": [
                                 "set ",
-                                { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "decl.name"
+                                    }
+                                  ]
+                                },
                                 "(",
-                                { "fn": "ident", "args": [ { "get": "decl.propSetterParam" } ] },
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "decl.propSetterParam"
+                                    }
+                                  ]
+                                },
                                 ": ",
-                                { "type": "decl.returnType" },
+                                {
+                                  "type": "decl.returnType"
+                                },
                                 ")"
                               ]
                             },
-                            "body": [ { "stmts": "decl.propSetterBody" } ]
+                            "body": [
+                              {
+                                "stmts": "decl.propSetterBody"
+                              }
+                            ]
                           }
                         }
                       ]
@@ -1671,6 +1966,201 @@
                   }
                 }
               ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "operator"
+                  ]
+                },
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "+"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "-"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "*"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "/"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "%"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "<"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "<="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        ">"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        ">="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "&"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "|"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "^"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "<<"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        ">>"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "~"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "decl.opSymbol",
+                        "explicit"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "block": {
+                "head": {
+                  "call": "tsOperatorSig"
+                },
+                "body": [
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "decl.opSymbol",
+                              "=="
+                            ]
+                          },
+                          {
+                            "line": {
+                              "tmpl": [
+                                "if (lhs === null || ",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "decl.params.0.name"
+                                    }
+                                  ]
+                                },
+                                " === null) { return lhs === ",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "decl.params.0.name"
+                                    }
+                                  ]
+                                },
+                                "; }"
+                              ]
+                            }
+                          }
+                        ]
+                      ],
+                      "else": ""
+                    }
+                  },
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "decl.exprBodied",
+                              "true"
+                            ]
+                          },
+                          {
+                            "line": {
+                              "tmpl": [
+                                "return ",
+                                {
+                                  "emit": "decl.exprBody"
+                                },
+                                ";"
+                              ]
+                            }
+                          }
+                        ]
+                      ],
+                      "else": {
+                        "stmts": "decl.body"
+                      }
+                    }
+                  }
+                ]
+              }
             }
           ]
         ],
@@ -2518,21 +3008,86 @@
     "Program": {
       "seq": [
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "module.attrImportsBlock",
+                      ""
+                    ]
+                  }
+                },
+                {
+                  "line": {
+                    "get": "module.attrImportsBlock"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
           "mapDecl": "module.imports",
           "each": {
             "line": {
               "case": {
                 "when": [
                   [
-                    { "eq": [ "item.isNamespace", "true" ] },
-                    { "tmpl": [ "import * as ", { "get": "item.ns" }, " from \"", { "get": "item.path" }, "\";" ] }
+                    {
+                      "eq": [
+                        "item.isNamespace",
+                        "true"
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        "import * as ",
+                        {
+                          "get": "item.ns"
+                        },
+                        " from \"",
+                        {
+                          "get": "item.path"
+                        },
+                        "\";"
+                      ]
+                    }
                   ],
                   [
-                    { "not": { "eq": [ "item.names", "" ] } },
-                    { "tmpl": [ "import { ", { "get": "item.names" }, " } from \"", { "get": "item.path" }, "\";" ] }
+                    {
+                      "not": {
+                        "eq": [
+                          "item.names",
+                          ""
+                        ]
+                      }
+                    },
+                    {
+                      "tmpl": [
+                        "import { ",
+                        {
+                          "get": "item.names"
+                        },
+                        " } from \"",
+                        {
+                          "get": "item.path"
+                        },
+                        "\";"
+                      ]
+                    }
                   ]
                 ],
-                "else": { "tmpl": [ "import \"", { "get": "item.path" }, "\";" ] }
+                "else": {
+                  "tmpl": [
+                    "import \"",
+                    {
+                      "get": "item.path"
+                    },
+                    "\";"
+                  ]
+                }
               }
             }
           }
@@ -3404,10 +3959,18 @@
                     {
                       "tmpl": [
                         {
-                          "emitChild": "node.lhs",
-                          "side": "recv"
+                          "fn": "ident",
+                          "args": [
+                            {
+                              "get": "node.lhsTypeName"
+                            }
+                          ]
                         },
                         ".eq(",
+                        {
+                          "emit": "node.lhs"
+                        },
+                        ", ",
                         {
                           "emit": "node.rhs"
                         },
@@ -3420,10 +3983,18 @@
                   "tmpl": [
                     "!",
                     {
-                      "emitChild": "node.lhs",
-                      "side": "recv"
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "node.lhsTypeName"
+                        }
+                      ]
                     },
                     ".eq(",
+                    {
+                      "emit": "node.lhs"
+                    },
+                    ", ",
                     {
                       "emit": "node.rhs"
                     },
@@ -3620,8 +4191,12 @@
             {
               "tmpl": [
                 {
-                  "emitChild": "node.lhs",
-                  "side": "recv"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.lhsTypeName"
+                    }
+                  ]
                 },
                 ".",
                 {
@@ -3634,6 +4209,10 @@
                   ]
                 },
                 "(",
+                {
+                  "emit": "node.lhs"
+                },
+                ", ",
                 {
                   "emit": "node.rhs"
                 },
@@ -3968,7 +4547,7 @@
   "std": {
     "std.collections": {
       "List.type": "$0[]",
-      "List.init": "[]",
+      "List.constructor": "[]",
       "List.count": "$this.length",
       "List.add": "$this.push($0)",
       "List.clear": "$this.length = 0",
@@ -4028,11 +4607,11 @@
     },
     "std.core": {
       "Error.type": "Error",
-      "Error.init": "new $T($0)",
+      "Error.constructor": "new $T($0)",
       "Error.message": "$this.message",
       "Iterable.type": "Iterable<$0>",
       "Array.type": "$0[]",
-      "Array.init": "[]",
+      "Array.constructor": "[]",
       "Array.count": "$this.length",
       "i8.parse": "(Number.parseInt($0, 10) << 24 >> 24)",
       "i16.parse": "(Number.parseInt($0, 10) << 16 >> 16)",

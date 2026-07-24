@@ -1,0 +1,12 @@
+// REFUSED (P37 D.3, M6 — permanent): a Meta type argument can never be a type parameter — Meta
+// resolves at transpile time and generics are emitted generically, never specialized.
+attribute Tag()
+class C {
+  var v: i32
+  constructor() {
+    this.v = 0
+  }
+}
+fn f<T>(): bool => Meta.has<T, Tag>()
+fn main() {
+}

@@ -3,7 +3,10 @@
   "name": "python",
   "capabilities": {
     "blockLambdas": "emulated",
-    "interfaces": "emulated"
+    "interfaces": "emulated",
+    "interfaces:runtimeIdentity": "native",
+    "attributes:target.field": false,
+    "attributes:target.param": false
   },
   "spec": {
     "name": "python",
@@ -57,6 +60,7 @@
     "trueLit": "True",
     "falseLit": "False",
     "nullLit": "None",
+    "expressionOnlyLambdas": true,
     "identifiers": {
       "keywords": [
         "False",
@@ -1249,21 +1253,83 @@
     "Program": {
       "seq": [
         {
+          "case": {
+            "when": [
+              [
+                {
+                  "not": {
+                    "eq": [
+                      "module.attrImportsBlock",
+                      ""
+                    ]
+                  }
+                },
+                {
+                  "line": {
+                    "get": "module.attrImportsBlock"
+                  }
+                }
+              ]
+            ]
+          }
+        },
+        {
           "mapDecl": "module.imports",
           "each": {
             "line": {
               "case": {
                 "when": [
                   [
-                    { "eq": [ "item.isNamespace", "true" ] },
-                    { "tmpl": [ "import ", { "get": "item.path" }, " as ", { "get": "item.ns" } ] }
+                    {
+                      "eq": [
+                        "item.isNamespace",
+                        "true"
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        "import ",
+                        {
+                          "get": "item.path"
+                        },
+                        " as ",
+                        {
+                          "get": "item.ns"
+                        }
+                      ]
+                    }
                   ],
                   [
-                    { "not": { "eq": [ "item.names", "" ] } },
-                    { "tmpl": [ "from ", { "get": "item.path" }, " import ", { "get": "item.names" } ] }
+                    {
+                      "not": {
+                        "eq": [
+                          "item.names",
+                          ""
+                        ]
+                      }
+                    },
+                    {
+                      "tmpl": [
+                        "from ",
+                        {
+                          "get": "item.path"
+                        },
+                        " import ",
+                        {
+                          "get": "item.names"
+                        }
+                      ]
+                    }
                   ]
                 ],
-                "else": { "tmpl": [ "import ", { "get": "item.path" } ] }
+                "else": {
+                  "tmpl": [
+                    "import ",
+                    {
+                      "get": "item.path"
+                    }
+                  ]
+                }
               }
             }
           }
@@ -1921,6 +1987,34 @@
         "when": [
           [
             {
+              "and": [
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "-"
+                  ]
+                },
+                {
+                  "eq": [
+                    "decl.params.count",
+                    "0"
+                  ]
+                }
+              ]
+            },
+            "__neg__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "~"
+              ]
+            },
+            "__invert__"
+          ],
+          [
+            {
               "eq": [
                 "decl.opSymbol",
                 "+"
@@ -2008,6 +2102,51 @@
               ]
             },
             "__ge__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "&"
+              ]
+            },
+            "__and__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "|"
+              ]
+            },
+            "__or__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "^"
+              ]
+            },
+            "__xor__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "<<"
+              ]
+            },
+            "__lshift__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                ">>"
+              ]
+            },
+            "__rshift__"
           ]
         ],
         "else": {
@@ -2306,6 +2445,48 @@
         "}"
       ]
     },
+    "IsTest": {
+      "tmpl": [
+        "isinstance(",
+        { "emit": "node.operand" },
+        ", ",
+        { "type": "node.testType" },
+        ")"
+      ]
+    },
+    "AsCast": {
+      "case": {
+        "when": [
+          [
+            { "eq": [ "node.operandIsSimple", "true" ] },
+            {
+              "tmpl": [
+                "(",
+                { "emit": "node.operand" },
+                " if isinstance(",
+                { "emit": "node.operand" },
+                ", ",
+                { "type": "node.castType" },
+                ") else None)"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "(",
+            { "get": "node.tempName" },
+            " if isinstance((",
+            { "get": "node.tempName" },
+            " := ",
+            { "emit": "node.operand" },
+            "), ",
+            { "type": "node.castType" },
+            ") else None)"
+          ]
+        }
+      }
+    },
     "Unary": {
       "case": {
         "when": [
@@ -2378,6 +2559,24 @@
     "Cast": {
       "case": {
         "when": [
+          [
+            {
+              "has": "node.convMethod"
+            },
+            {
+              "tmpl": [
+                {
+                  "emitChild": "node.operand",
+                  "side": "recv"
+                },
+                ".",
+                {
+                  "get": "node.convMethod"
+                },
+                "()"
+              ]
+            }
+          ],
           [
             {
               "and": [
@@ -3180,6 +3379,66 @@
         "when": [
           [
             {
+              "and": [
+                {
+                  "or": [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "node.op",
+                        "!="
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "eq": [
+                    "node.rhsIsNull",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "node.op",
+                        "=="
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        {
+                          "emitChild": "node.lhs",
+                          "side": "l"
+                        },
+                        " is None"
+                      ]
+                    }
+                  ]
+                ],
+                "else": {
+                  "tmpl": [
+                    {
+                      "emitChild": "node.lhs",
+                      "side": "l"
+                    },
+                    " is not None"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
               "eq": [
                 "node.op",
                 "??"
@@ -3500,7 +3759,7 @@
   "std": {
     "std.collections": {
       "List.type": "list",
-      "List.init": "[]",
+      "List.constructor": "[]",
       "List.count": "len($this)",
       "List.add": "$this.append($0)",
       "List.clear": "$this.clear()",
@@ -3560,11 +3819,11 @@
     },
     "std.core": {
       "Error.type": "Exception",
-      "Error.init": "$T($0)",
+      "Error.constructor": "$T($0)",
       "Error.message": "str($this)",
       "Iterable.type": "list",
       "Array.type": "list",
-      "Array.init": "[]",
+      "Array.constructor": "[]",
       "Array.count": "len($this)",
       "i8.parse": "int($0)",
       "i16.parse": "int($0)",

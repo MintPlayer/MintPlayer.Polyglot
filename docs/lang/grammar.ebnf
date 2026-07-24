@@ -34,15 +34,33 @@ namespace_import = "*" , "as" , IDENT ;
 (* ---- 2. Declarations ----------------------------------------------------- *)
 
 declaration =
-      function_decl
+      { attr_list } ,            (* P37 D8: attributes prefix classes/records/functions *)
+      ( function_decl
     | class_decl
     | record_decl
     | interface_decl
     | enum_decl
     | union_decl
     | extension_decl
+    | attribute_decl             (* P37 D Tier 2: portable metadata data shape *)
+    | extern_attribute_decl      (* P37 D Tier 1: native pass-through binding  *)
     | const_decl
-    | value_decl ;     (* top-level immutable binding (module-scope `let`)     *)
+    | value_decl ) ;   (* top-level immutable binding (module-scope `let`)     *)
+
+(* P37 D — attributes. One usage syntax, two declaration forms (the declaration picks the tier). *)
+attr_list      = "[" , attr_use , { "," , attr_use } , "]" ;
+attr_use       = IDENT , [ "(" , [ attr_arg , { "," , attr_arg } ] , ")" ] ;
+attr_arg       = [ IDENT , "=" ] , const_expr ;   (* positional or named; constants only *)
+const_expr     = INT | FLOAT | STRING | "true" | "false" | "-" , ( INT | FLOAT )
+               | IDENT , "." , IDENT                          (* enum member, e.g. Sev.High *)
+               | "[" , const_expr , { "," , const_expr } , "]" ;  (* non-empty, one level *)
+attribute_decl = "attribute" , IDENT , "(" , [ param_list ] , ")" ;   (* a pure data shape — NO body *)
+extern_attribute_decl =
+      "extern" , "attribute" , IDENT , "(" , [ param_list ] , ")" ,
+      "{" , { attr_arm } , "}" ;
+attr_arm       = "actual" , "(" , IDENT , ")" ,
+                 ( "extern" , "(" , STRING , ")" , [ "import" , STRING ]   (* the WHOLE native line *)
+                 | "refuse" ) ;
 
 (* Top-level visibility. Default is module-public; `private` confines to the
    file. No other access levels in v0.1 (hold the surface line). *)
@@ -61,7 +79,8 @@ function_body =
     | ";" ;                         (* abstract / interface stub *)
 
 param_list = param , { "," , param } , [ "," ] ;
-param      = IDENT , ":" , type , [ "=" , expression ] ;   (* default value *)
+param      = { attr_list } , IDENT , ":" , type , [ "=" , expression ] ;   (* P37 D: inline
+                parameter attributes precede the name; then the optional default value *)
 
 
 (* 2.2 Classes (reference types — identity semantics, may be mutable) *)
@@ -74,17 +93,18 @@ class_decl =
 class_modifier = "abstract" | "open" | "sealed" ;
 
 member =
-      field_decl
+      { attr_list } ,
+      ( field_decl
     | property_decl
     | method_decl
-    | init_decl
+    | constructor_decl
     | indexer_decl
     | operator_decl
-    | const_decl ;
+    | const_decl ) ;
 
 field_decl    = visibility , ( "let" | "var" ) , IDENT , ":" , type ,
                 [ "=" , expression ] , ";" ;
-init_decl     = visibility , "init" , "(" , [ param_list ] , ")" , block ;
+constructor_decl = visibility , "constructor" , "(" , [ param_list ] , ")" , block ;
 method_decl   = visibility , { method_modifier } , [ "async" ] , "fn" , IDENT ,
                 [ generic_params ] , "(" , [ param_list ] , ")" ,
                 [ ":" , type ] , function_body ;
@@ -161,6 +181,10 @@ indexer_decl =
 operator_decl =
       visibility , "operator" , "fn" , IDENT ,
       "(" , [ param_list ] , ")" , [ ":" , type ] , function_body ;
+(* Operator names are the closed SPEC §6.1 set (plus/minus/…/shl/shr/bnot, get/set indexers) plus
+   "explicit" — an explicit conversion whose RETURN TYPE is the conversion target and whose parameter
+   list is empty ((f64)v — C# native explicit operator; method targets generate to<T>()). "implicit"
+   is refused. *)
 
 
 (* 2.9 Top-level / member constants *)
@@ -272,8 +296,12 @@ match_arm       = pattern , [ "if" , expression ] , "=>" , ( expression | block 
 coalesce_expr   = or_expr , { "??" , or_expr } ;
 or_expr         = and_expr , { "||" , and_expr } ;
 and_expr        = equality_expr , { "&&" , equality_expr } ;
-equality_expr   = comparison_expr , { ( "==" | "!=" ) , comparison_expr } ;
-(* `is` (runtime type test) is reserved for a future type-narrowing feature — not lexed today. *)
+equality_expr   = is_as_expr , { ( "==" | "!=" ) , is_as_expr } ;
+(* P37 B: `is`/`as` — contextual infix between equality and comparison (binds tighter than `==`,
+   looser than `<`). The `is` binding IDENT is accepted only while an `if` condition is being parsed
+   (statements are newline-terminated without a token — elsewhere a trailing identifier would swallow
+   the next statement's leading name). *)
+is_as_expr      = comparison_expr , { ( "is" , type , [ IDENT ] ) | ( "as" , type ) } ;
 comparison_expr = bitor_expr , { ( "<" | "<=" | ">" | ">=" ) , bitor_expr } ;
 bitor_expr      = bitxor_expr , { ( "|" ) , bitxor_expr } ;
 bitxor_expr     = bitand_expr , { ( "^" ) , bitand_expr } ;
@@ -292,8 +320,12 @@ postfix_expr    = primary_expr , { postfix_op } ;
 postfix_op =
       "." , IDENT                                (* member access            *)
     | "?." , IDENT                               (* null-safe member access  *)
-    | "(" , [ arg_list ] , ")"                   (* call                     *)
-    | "[" , arg_list , "]"                       (* index                    *)
+    | [ type_args ] , "(" , [ arg_list ] , ")"   (* call — explicit type args are consumed only by
+                                                    construction and the Meta intrinsics; any other
+                                                    call refuses them (P37 D.3 anti-silent-drop) *)
+    | "[" , arg_list , "]"                           (* index — the `[` must start on the SAME
+                                                     LINE as the subscripted expression; a
+                                                     next-line `[…]` is a new statement (attrs) *)
     | "!" ;                                       (* null-assert (T? -> T)   *)
 
 arg_list        = expression , { "," , expression } , [ "," ] ;

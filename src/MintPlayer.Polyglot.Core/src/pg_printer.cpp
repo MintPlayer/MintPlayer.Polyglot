@@ -34,6 +34,7 @@ public:
         auto sep = [&]() { if (!first) out_ += "\n"; first = false; };
         for (const auto& e : unit.enums)       { sep(); printEnum(e); }
         for (const auto& u : unit.unions)      { sep(); printUnion(u); }
+        for (const auto& ea : unit.externAttrs) { sep(); printExternAttr(ea); }
         for (const auto& r : unit.records)     { sep(); printRecord(r); }
         for (const auto& c : unit.classes)     { sep(); printClass(c); }
         for (const auto& i : unit.interfaces)  { sep(); printInterface(i); }
@@ -93,6 +94,19 @@ private:
         std::string s;
         for (std::size_t i = 0; i < ps.size(); ++i) {
             if (i) s += ", ";
+            for (const auto& a : ps[i].attributes) { // P37 D: inline parameter attributes
+                s += "[" + a.name;
+                if (!a.args.empty()) {
+                    s += "(";
+                    for (std::size_t j = 0; j < a.args.size(); ++j) {
+                        if (j) s += ", ";
+                        if (!a.args[j].name.empty()) s += a.args[j].name + " = ";
+                        s += expr(*a.args[j].value);
+                    }
+                    s += ")";
+                }
+                s += "] ";
+            }
             s += ps[i].name;
             if (!ps[i].type.absent()) s += ": " + typeStr(ps[i].type);
             if (ps[i].hasDefault) s += " = " + expr(*ps[i].defaultValue);
@@ -140,6 +154,7 @@ private:
     }
 
     void printFunction(const FunctionDecl& fn) {
+        printAttrs(fn.attributes);
         std::string sig = std::string(fn.isAsync ? "async " : "") + "fn " + fn.name +
                           generics(fn.generics) + "(" + params(fn.params) + ")";
         if (!isUnit(fn.returnType)) sig += ": " + typeStr(fn.returnType);
@@ -164,8 +179,8 @@ private:
                 line(mods + (m.isMutable ? "var " : "let ") + m.name + ": " + typeStr(m.type) +
                      " => " + expr(*m.init));
                 break;
-            case MemberKind::Init:
-                line(mods + "init(" + params(m.params) + ") {");
+            case MemberKind::Constructor:
+                line(mods + "constructor(" + params(m.params) + ") {");
                 printBlock(m.body);
                 line("}");
                 break;
@@ -185,12 +200,47 @@ private:
 
     void printBody(const std::vector<Member>& members) {
         ++indent_;
-        for (const auto& m : members) printMember(m);
+        for (const auto& m : members) { printAttrs(m.attributes); printMember(m); }
         --indent_;
     }
 
+
+    // P37 D: attribute round-trip — usage lists above a decl, and the two declaration forms.
+    void printAttrs(const std::vector<AttrUse>& attrs) {
+        for (const auto& a : attrs) {
+            std::string t = "[" + a.name;
+            if (!a.args.empty()) {
+                t += "(";
+                for (std::size_t i = 0; i < a.args.size(); ++i) {
+                    if (i) t += ", ";
+                    if (!a.args[i].name.empty()) t += a.args[i].name + " = ";
+                    t += expr(*a.args[i].value);
+                }
+                t += ")";
+            }
+            line(t + "]");
+        }
+    }
+    void printExternAttr(const ExternAttrDecl& d) {
+        line("extern attribute " + d.name + "(" + params(d.params) + ") {");
+        ++indent_;
+        for (const auto& arm : d.arms) {
+            if (arm.refuse) line("actual(" + arm.target + ") refuse");
+            else {
+                std::string t = "actual(" + arm.target + ") extern(" + quote(arm.code, '"') + ")";
+                if (!arm.importLine.empty()) t += " import " + quote(arm.importLine, '"');
+                line(t);
+            }
+        }
+        --indent_;
+        line("}");
+    }
+
     void printRecord(const RecordDecl& d) {
-        std::string head = "record " + d.name + generics(d.generics) + "(" + params(d.fields) + ")";
+        printAttrs(d.attributes);
+        std::string head = (d.isAttribute ? "attribute " : "record ") + d.name + generics(d.generics) +
+                           "(" + params(d.fields) + ")";
+        if (d.isAttribute) { line(head); return; }
         if (!d.bases.empty()) head += " : " + typeList(d.bases);
         if (d.members.empty()) { line(head); return; }
         line(head + " {");
@@ -199,6 +249,7 @@ private:
     }
 
     void printClass(const ClassDecl& d) {
+        printAttrs(d.attributes);
         std::string head = modifiers(d.modifiers) + "class " + d.name + generics(d.generics);
         if (!d.bases.empty()) head += " : " + typeList(d.bases);
         line(head + " {");
@@ -411,6 +462,10 @@ private:
             case ExprKind::TupleLit:   return "(" + exprList(e.args) + ")";
             case ExprKind::Cast:
                 return "(" + typeStr(e.castType) + ")" + atom(*e.lhs);
+            case ExprKind::Is:
+                return atom(*e.lhs) + " is " + typeStr(e.castType) + (e.text.empty() ? "" : " " + e.text);
+            case ExprKind::As:
+                return atom(*e.lhs) + " as " + typeStr(e.castType);
             case ExprKind::Extern:
                 return "extern(\"" + e.text + "\")";
             case ExprKind::Lambda: {

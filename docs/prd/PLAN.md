@@ -3431,3 +3431,70 @@ programs (`php_builtin_collision`, `super_implicit_base`, `virtual_dispatch`, `i
 un-narrows of existing programs, new refusal fixtures (`finalizer`, `block_match_arm`, `namespace_import`),
 and unit-test rows for each new refusal. **Gate green locally**: build, unit tests, all 106 conformance
 programs (9 PHP-refused by design), library gate (tsc strict), refusals. POSIX + release legs run on CI.
+
+## P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes — ✅ built + gated locally (2026-07-20 designed, 2026-07-23 §D revised + built; maintainer request, PRD `docs/prd/p37-feature-batch/`, 8-agent scope + 4-agent validation + 6-agent attributes follow-up)
+
+Four maintainer-requested language features, one cohesive PR, no back-compat. Full design + slice plan +
+code-grounded validation in `docs/prd/p37-feature-batch/{PRD,PLAN,ANALYSIS}.md`. Validation verdict
+**GO-WITH-CONDITIONS**.
+- **A — `init`→`constructor`** full rename (surface keyword + internal `KwConstructor`/`MemberKind::Constructor`
+  + plugin skeleton keys). One sync trap: 3 runtime key-derivation sites must flip with the 12 plugin keys;
+  leave the internal `initParams`/`hasInit` ctor-data fields alone.
+- **B — `is`/`as`** over concrete class/union types. `x is T name` narrows in the guarded branch only; `x as T`
+  is a checked conversion → `T?` (**null on failure, never throws** — runtime `instanceof`/`isinstance` guard
+  on TS/Python/PHP, never a bare TS `as`). Interface `is`/`as` refused only when a configured target lacks
+  runtime interface identity (config-driven — a relaxation of the unconditional P36 #38 refusal). Reuses the
+  #38 TypeTest emit machinery.
+- **C — operators complete.** Correcting a premise: operator dispatch is native on C#/Python today (static
+  `operator`, dunders) and instance-method only on TS — so operators stay native on C#/Python and move to
+  **static-on-type** on TS (fixes the null-eq NRE; arithmetic still throws on null). Adds **explicit conversion
+  operators** (`operator fn explicit T`; implicit refused), **compound assignment** on user types, hierarchical
+  **`operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}`** capabilities (PHP flips to
+  `:eq`+`:indexers`), and fixes **#62** (TS unary `neg`) + **#63** (bitwise SPEC-vs-code drift).
+- **D — attributes: the three-tier taxonomy** (revised 2026-07-23 by a 6-agent follow-up investigation —
+  Haxe / prior art / target semantics / repo + generics + LSP grounding, `ATTRIBUTES-RESEARCH.md` — resolving
+  the maintainer's block: native mechanisms diverge irreconcilably, C#/PHP-inert vs TS/Python-eager, so the
+  portable tier maps to NO native mechanism). One `[Name(args)]` syntax; the declaration picks the tier.
+  **Tier 1 `extern attribute`** — emit-only pass-through to native annotations for the target's own
+  framework: per-target bindings (`actual(target) extern(...)` + import/using + `refuse` arms),
+  attachment-point/arg-kind gating via the keyed capability vocabulary, no binding → loud refusal (D12),
+  binding-only P30 package kind, outside §3.C (H2). **Tier 2 `attribute`** — portable inert metadata: a
+  typed pure data shape (const-envelope params, no body, no constructor — Haxe's `@name` move, plus the
+  typing Haxe wished it had) queried via `std.meta` intrinsics (`Meta.has/get/member<T, A>()`) **resolved at
+  transpile time and lowered to inline constants** — works on all four targets unconditionally, zero runtime
+  tables/reflection, zero output when unqueried, inside §3.C and differentially testable (H6). **M6
+  (permanent):** `Meta` never accepts runtime-variant types — enforced by a closed syntactic form in shared
+  sema (`genericsInScope_` concreteness walk + string-literal member names), so build/check/LSP diagnose
+  identically; structurally locked by the generic-preserving (never-monomorphizing) architecture. **Tier 3**
+  behavior-transforming decorators — refused (§D.1 two-model analysis stands).
+- **Shared prerequisite:** generalize the flat 16-member `Feature` enum to a keyed, load-validated closed
+  capability vocabulary (`parent:child`), consumed by both C6 and D10/D11.
+
+**Built (2026-07-23, one PR — #65, 6 ordered commits).** All four workstreams + the shared keyed-capability
+slice, as designed with the deviations recorded in `docs/prd/p37-feature-batch/PLAN.md` §As-built (headline:
+`is`/`as` are class/record-only with unions pointed at `match`; the `is` binding lowers to a hoisted
+`as`+null-check before the `if`; conversions spell `operator fn explicit(): T`; Tier 1 attachment points v1
+= type/method/function with the binding template being the whole verbatim native line; D13's binding-only
+package kind deferred; a new same-line rule for subscript `[`; member-call type args now refuse instead of
+silently dropping). Fixes #62 + #63. New machinery: `ExprKind::Is/As` + `ir::IsTest/AsCast`,
+`interfaces:runtimeIdentity` + `operatorOverloading:*` + `attributes:target.*` keyed capabilities (PHP flips
+to `:eq`+`:indexers`), TS static-on-type operators (incl. static null-tolerant `eq` and static `to<T>()`
+conversions), Python `is None` null-literal tests, C# synthesized `operator ==`/`!=` for classes with user
+eq, the Meta intrinsics resolved in shared sema (M6) and lowered to inline constants, and the shared-
+injection Tier 1 attribute emission (decl lines + field lines + inline params). **Feature-completed
+2026-07-24:** field/property + PARAMETER attachment (both tiers, per-target gates), enum-member + array
+constant values spelled from plugin-spec data, `Meta.param`, and — per maintainer directive — the Core's
+last target-name checks became plugin trait flags (`linksWithoutImports`, `forbidsShadowedLocals`,
+`expressionOnlyLambdas`): the Core cannot know what languages exist.
+
+**Acceptance coverage:** 8 net-new differential conformance programs (`is_binding`, `as_cast`,
+`operator_unary`, `operator_bitwise`(+`.expected`), `operator_compound`, `operator_convert`,
+`operator_null_eq` (M3 pin), `meta_query` — the first differentially-executable attribute surface, PHP
+included), 4 new refusal fixtures (`is_union`, `implicit_conversion`, `meta_typeparam` + the msbuild
+embedded-fixture rename), ~40 new unit-test rows covering every emission shape and refusal, and the M4
+no-bare-`.constructor` golden. **Gate green locally**: build, unit tests, parity, cli-smoke, refusals, LSP,
+watch, nullable, library (tsc strict), sample emit, NuGet/P11, and all 114 conformance programs agreeing
+across C#/TS/Python/PHP (11 php-refused by design). Registry + POSIX legs run on CI (PR #65).
+Deferred follow-ups (recorded, not built): cross-package operator *resolution*; `return:`/type-param
+attributes; auto-included attribute stdlib package; Tier 2 param metadata; `AllowMultiple`;
+`Meta.getInherited`/`Meta.all<T>()`; dual-tier declarations; the P30 binding-only package kind.

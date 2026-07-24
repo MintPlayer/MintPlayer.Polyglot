@@ -22,7 +22,7 @@ namespace mintplayer::polyglot::ir {
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With };
+enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With, IsTest, AsCast };
 
 struct Expr {
     ExprKind kind;
@@ -79,11 +79,17 @@ struct This : Expr {
     // Lowering-precomputed fact (P19): inside an operator method's body. Target-neutral; only the C#
     // static-operator declaration shape consumes it (`this` -> the `lhs` first operand).
     bool insideOperator = false;
+    // P37 C5: inside a user `eq` operator body. C# ignores it (eq emits as instance `override Equals`,
+    // `this` stays); TS consumes it (eq emits as the static null-tolerant `T.eq(lhs, rhs)` -> `lhs`).
+    bool insideEqOperator = false;
     explicit This(SourcePos p, Type t) : Expr(ExprKind::This, p, std::move(t)) {}
 };
 struct Unary : Expr {
     std::string op;
     ExprPtr operand;
+    // P37 C (#62): the operand is a user type — method-form targets route `-`/`~` to its declared
+    // neg/bnot operator (`T.neg(v)` on TS) instead of emitting a native unary.
+    bool operandIsUserType = false;
     Unary(SourcePos p, Type t, std::string o, ExprPtr e) : Expr(ExprKind::Unary, p, std::move(t)), op(std::move(o)), operand(std::move(e)) {}
 };
 struct Await : Expr { // `await e` — only inside an async fn; `type` is the unwrapped result (identity in v1)
@@ -108,7 +114,32 @@ struct Binary : Expr {
 };
 struct Cast : Expr { // numeric conversion: the result type is `type`, the source is `operand->type`
     ExprPtr operand;
+    // P37 C: non-empty = a USER explicit conversion (`operator fn explicit(): T`): method-form targets
+    // rewrite this cast site to `operand.to<T>()`; C# keeps its native cast (its `explicit operator`
+    // declaration makes `(T)v` legal). Empty = the ordinary numeric conversion.
+    std::string convMethod;
     Cast(SourcePos p, Type t, ExprPtr o) : Expr(ExprKind::Cast, p, std::move(t)), operand(std::move(o)) {}
+};
+// P37 B: `x is T` — a runtime type test over a class/record hierarchy; type bool. Pure predicate: an
+// `if`-condition binding form is desugared in lowering (hoisted `AsCast` Let + null check), so every
+// target emits its native test (C# `is`, TS/PHP `instanceof`, Python `isinstance`).
+struct IsTest : Expr {
+    ExprPtr operand;
+    Type testType;
+    IsTest(SourcePos p, Type t, ExprPtr o, Type tt)
+        : Expr(ExprKind::IsTest, p, std::move(t)), operand(std::move(o)), testType(std::move(tt)) {}
+};
+// P37 B: `x as T` — checked conversion; `type` is T with `nullable=true`, null on failure, NEVER throws
+// (M1: a runtime guard on TS/Python/PHP — never a bare TS `as` assertion). Targets that re-evaluate the
+// operand in their guard bind `tempName` inline when the operand isn't a simple var (the `With` pattern):
+// TS an IIFE parameter, Python a walrus, PHP an assignment expression; C# `as` never needs it.
+struct AsCast : Expr {
+    ExprPtr operand;
+    Type castType;
+    bool operandIsSimple = true;
+    std::string tempName; // set iff !operandIsSimple
+    AsCast(SourcePos p, Type t, ExprPtr o, Type ct)
+        : Expr(ExprKind::AsCast, p, std::move(t)), operand(std::move(o)), castType(std::move(ct)) {}
 };
 struct Extern : Expr { // `extern("…")`: raw target code emitted verbatim (the FFI hatch)
     std::string code;
@@ -368,6 +399,10 @@ struct Param {
     std::string name;
     Type type;
     ExprPtr defaultValue;   // optional `= expr` default; null = required parameter
+    // P37 D Tier 1: pre-rendered native annotation text emitted INLINE before the parameter
+    // (space-joined: C# `[X] int p`, PHP `#[X] int $p`); empty on targets without parameter
+    // annotations (gated by attributes:target.param) and for Tier 2 metadata.
+    std::string attrInline;
     // Capture analysis (P25 §4.18): this parameter is captured by a nested lambda; `needsCell` if that
     // capture needs a shared mutable binding (the param is assigned somewhere its closures can observe).
     bool captured = false;
@@ -422,6 +457,7 @@ struct LocalFunc : Stmt {
     LocalFunc(SourcePos p, std::string n) : Stmt(StmtKind::LocalFunc, p), name(std::move(n)) {}
 };
 struct Function {
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
     std::vector<GenericParam> generics;
@@ -447,6 +483,10 @@ struct RecordField {
 };
 enum class MethodKind { Method, Operator, Property };
 struct Method {
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
+    // P37 C5: the owning type is a record. C#'s user-eq emission differs: a record's `==` already
+    // routes through the strongly-typed Equals; a CLASS needs a synthesized operator ==/!= pair.
+    bool ownerIsRecord = false;
     MethodKind kind = MethodKind::Method;
     std::string name;             // method/property name; operator method name (e.g. "plus")
     std::string opSymbol;         // Operator: the source symbol ("+", "-", ...); else empty
@@ -477,6 +517,7 @@ struct Method {
     std::vector<std::string> globalRefs;
 };
 struct Record { // an immutable data type (record)
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;        // implemented interfaces
@@ -508,6 +549,7 @@ struct Union {
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct ClassField {
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (above the field)
     std::string name;
     bool isMutable = false;
     bool isStatic = false;  // a `const`/`static` member — accessed `Owner.name`, emitted `static`/`readonly`
@@ -515,6 +557,7 @@ struct ClassField {
     ExprPtr init;   // optional field initializer (may be null)
 };
 struct Class { // a mutable reference type
+    std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;        // base class and/or interfaces (single base drives `extends`/`: Base`)
@@ -566,6 +609,7 @@ struct ModuleImport {
 };
 
 struct Module {
+    std::vector<std::string> attrImports; // P37 D Tier 1: verbatim import/using lines (deduped) for used attribute bindings
     std::vector<Enum> enums;
     std::vector<Union> unions;
     std::vector<Record> records;

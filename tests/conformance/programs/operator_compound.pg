@@ -1,0 +1,47 @@
+// P37 C7: compound assignment on user types lowers to `target = <op>(target, value)` — the operator-
+// method shape each target routes natively — and through a USER indexer it becomes the get+set pair
+// even for scalar elements. Receivers are pure by rule (sema refuses computed receivers), so the
+// re-lowered read side is single-eval by construction.
+
+import { List } from "std.collections"
+
+class Acc {
+  var total: i32
+  constructor(v: i32) {
+    this.total = v
+  }
+  operator fn plus(o: Acc): Acc => Acc(this.total + o.total)
+  operator fn times(k: i32): Acc => Acc(this.total * k)
+}
+
+class Grid {
+  var cells: List<i32>
+  var w: i32
+  constructor(w: i32, h: i32) {
+    this.w = w
+    this.cells = List<i32>()
+    let n = w * h
+    for i in 0 .. n {
+      this.cells.add(0)
+    }
+  }
+  operator fn get(x: i32, y: i32): i32 => this.cells[y * this.w + x]
+  operator fn set(x: i32, y: i32, v: i32) {
+    this.cells[y * this.w + x] = v
+  }
+}
+
+fn main() {
+  var a = Acc(10)
+  a += Acc(5)
+  print(a.total)       // 15
+  a *= 3
+  print(a.total)       // 45
+  let g = Grid(2, 2)
+  g[1, 0] = 7
+  g[1, 0] += 5
+  print(g[1, 0])       // 12
+  var n = 40
+  n += 2
+  print(n)             // 42  (scalar compound stays native)
+}

@@ -3,6 +3,6 @@
 // compiling entry + nn into one C# assembly does not hit CS0101.
 class PgThing {
   var v: f64
-  init(v: f64) { this.v = v }
+  constructor(v: f64) { this.v = v }
 }
 fn twice(x: f64): f64 { return x * 2.0 }

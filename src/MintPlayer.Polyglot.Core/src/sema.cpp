@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/sema.hpp"
 
+#include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <string>
@@ -162,7 +163,7 @@ const char* refusedReason(const std::string& n) {
     return nullptr;
 }
 
-// Map an operator symbol to its overload method name (PRD §6.1 / SPEC §6.1).
+// Map an operator symbol to its overload method name (PRD §6.1 / SPEC §6.1; bitwise added by P37 C, #63).
 std::string operatorMethod(const std::string& op) {
     if (op == "+") return "plus";
     if (op == "-") return "minus";
@@ -174,6 +175,11 @@ std::string operatorMethod(const std::string& op) {
     if (op == "<=") return "le";
     if (op == ">") return "gt";
     if (op == ">=") return "ge";
+    if (op == "&") return "band";
+    if (op == "|") return "bor";
+    if (op == "^") return "bxor";
+    if (op == "<<") return "shl";
+    if (op == ">>") return "shr";
     return "";
 }
 
@@ -308,12 +314,14 @@ public:
         : diags_(diags), model_(model), req_(req) {}
 
     void run(CompilationUnit& unit) {
+        unit_ = &unit;
         collectTypeNames(unit);
         liftExtensionGenerics(unit);
         normalizeOptionalGenerics(unit); // `T?` (generic T) -> Option<T>, before tables read the types
         buildTables(unit);
         resolveAllTypes(unit);
         checkImplements(unit); // issue #29: implements-conformance, override rule, interface-body shape
+        checkAttributesPass(unit); // P37 D: attribute declarations + every [Name(args)] attachment
 
         // Pre-register file-local definitions (functions, types + members, values) so a reference from any
         // user body resolves to one. The linker APPENDS merged std/import decls, so indices [0, userX) are
@@ -376,6 +384,7 @@ private:
     std::unordered_map<std::string, std::vector<FnSig>> fns_; // name -> overload set
     std::unordered_map<std::string, TypeInfo> types_;
     std::unordered_set<std::string> typeNames_;
+    std::unordered_set<std::string> externClassNames_;                     // `extern class` names (std/FFI carriers)
     std::unordered_set<std::string> interfaceNames_;                       // declared `interface` names
     std::unordered_map<std::string, const InterfaceDecl*> interfaceDecls_; // for base type-args (conformance)
     std::unordered_set<std::string> enumNames_;
@@ -393,6 +402,14 @@ private:
                                 // methods (where currentThis_ is Unknown) so its statics/consts resolve unqualified
     bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
     bool inAsync_ = false;  // checking an `async fn`/method body — the only place `await` is allowed (§4.7)
+    bool isBindingAllowed_ = false; // the next `is` checked sits on an if-condition's `&&` spine (P37 B3)
+    CompilationUnit* unit_ = nullptr; // for P37 D: Meta materialization is recorded onto the unit
+    std::unordered_map<std::string, const ExternAttrDecl*> externAttrs_; // Tier 1 declarations by name
+    std::unordered_set<std::string> attributeNames_;                    // Tier 2 `attribute` record names
+    // Per-enclosing-block names bound by `if … is T name` (P37 B3): the emitted binding outlives the
+    // branch on every target (it's hoisted before the `if`), so redeclaring the name later in the same
+    // block would collide in the OUTPUT even though the language scope ended — refused here instead.
+    std::vector<std::unordered_set<std::string>> blockIsBindings_;
 
     // ---- semantic model (LSP; §4.8). Populated only when model_ != nullptr, and only for file-local symbols.
     SemanticModel* model_ = nullptr;
@@ -492,7 +509,7 @@ private:
     }
     void collectTypeNames(const CompilationUnit& u) {
         for (const auto& d : u.records)    declareType(d.name, d.pos);
-        for (const auto& d : u.classes)    declareType(d.name, d.pos, d.isExtern);
+        for (const auto& d : u.classes)    { declareType(d.name, d.pos, d.isExtern); if (d.isExtern) externClassNames_.insert(d.name); }
         for (const auto& d : u.interfaces) declareType(d.name, d.pos);
         for (const auto& d : u.enums)      { declareType(d.name, d.pos); enumNames_.insert(d.name); }
         for (const auto& d : u.unions)     declareType(d.name, d.pos);
@@ -581,7 +598,7 @@ private:
                                             "overloading for top-level functions only, not members (PRD §3.A); "
                                             "give the overloads distinct names");
             ti.members.push_back(memberInfo(m));
-            if (m.kind == MemberKind::Init) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
+            if (m.kind == MemberKind::Constructor) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }
     }
     static void collectBaseNames(const std::vector<TypeRef>& bases, std::vector<std::string>& out) {
@@ -662,6 +679,10 @@ private:
         for (const auto& m : it->second.members) if (m.name == name) return &m;
         for (const auto& base : it->second.bases) if (const MemberInfo* m = findMember(base, name)) return m; // inherited
         return nullptr;
+    }
+    const TypeInfo* typeInfoOf(const std::string& name) const {
+        auto it = types_.find(name);
+        return it == types_.end() ? nullptr : &it->second;
     }
     bool knownType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && !t.name.empty() && types_.count(t.name) != 0;
@@ -760,7 +781,7 @@ private:
                 const char* what = m.kind == MemberKind::Field ? "a field"
                                  : m.kind == MemberKind::Const ? "a const"
                                  : m.kind == MemberKind::Property ? "a property"
-                                 : m.kind == MemberKind::Init ? "an initializer" : nullptr;
+                                 : m.kind == MemberKind::Constructor ? "an initializer" : nullptr;
                 if (what) {
                     diags_.error(m.pos, "an interface declares method signatures only — " + std::string(what) +
                                             " is not allowed in 'interface " + d.name + "' (express it as a method)");
@@ -910,7 +931,7 @@ private:
         if (d.isExtern) return;
         std::unordered_set<std::string> assigned;
         for (const auto& m : d.members)
-            if (m.kind == MemberKind::Init) collectThisAssigns(m.body, assigned);
+            if (m.kind == MemberKind::Constructor) collectThisAssigns(m.body, assigned);
         for (const auto& m : d.members) {
             if (m.kind != MemberKind::Field || m.init || m.bindings.size()) continue;
             if (!assigned.count(m.name))
@@ -928,17 +949,34 @@ private:
         currentClass_ = typeName;
         for (auto& m : members) {
             pushGenerics(m.generics);
-            if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Init) {
+            if (m.kind == MemberKind::Operator) { // P37 C: conversion-operator declaration rules
+                if (m.name == "implicit")
+                    diags_.error(m.pos, "Polyglot refuses implicit user conversions — an invisible "
+                                        "call-site injection has no TS hook and hides behavior; declare "
+                                        "`operator fn explicit(): T` and cast explicitly");
+                else if (m.name == "explicit") {
+                    if (!m.params.empty())
+                        diags_.error(m.pos, "`operator fn explicit` takes no parameters — the conversion "
+                                            "source is `this`, the target is the return type");
+                    const std::string& tgt = m.returnType.name;
+                    if (m.returnType.kind != TypeRef::Kind::Named || tgt.empty() || tgt == "unit" ||
+                        tgt == "string" || tgt == "bool")
+                        diags_.error(m.pos, "an explicit conversion targets a numeric or user type — "
+                                            "string/bool conversions stay named methods (toString/truthiness "
+                                            "semantics differ per target)");
+                }
+            }
+            if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Constructor) {
                 bool isStatic = false;
                 for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
                 currentThis_ = isStatic ? tUnknown() : tNamed(typeName); // no `this` inside a static method
-                currentReturn_ = (m.kind == MemberKind::Init) ? namedType("unit") : m.returnType;
+                currentReturn_ = (m.kind == MemberKind::Constructor) ? namedType("unit") : m.returnType;
                 inAsync_ = m.isAsync;
                 scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 for (const auto& p : m.params) declare(p.name, p.type, false, p.pos);
-                if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Init) checkConvert(m.exprBody, m.returnType, "method body"); }
+                if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Constructor) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
                 scopeStart_ = {}; scopeEnd_ = {};
@@ -969,7 +1007,9 @@ private:
 
     void checkBlock(std::vector<StmtPtr>& body) {
         pushScope();
+        blockIsBindings_.emplace_back();
         for (auto& s : body) checkStmt(*s);
+        blockIsBindings_.pop_back();
         popScope();
     }
 
@@ -1119,14 +1159,11 @@ private:
     void declarePattern(const Pattern& p, const TypeRef& scrut) {
         switch (p.kind) {
             case PatKind::Binding:
-                // A typed 'match' binding (`d: Disk`) is a runtime TYPE TEST (#38): allowed for a concrete
-                // class/union type (C# declaration pattern / TS·PHP instanceof / Python isinstance), refused
-                // for an INTERFACE (interfaces erase at runtime on TS — §3.B). The redundant same-type case
-                // (naming the scrutinee's own type) always passes. The binding narrows to the tested type.
-                if (p.hasType && p.type.kind == TypeRef::Kind::Named && interfaceNames_.count(p.type.name))
-                    diags_.error(p.pos, "Polyglot refuses a type-test against an interface ('" + p.type.name +
-                                            "') — interfaces have no runtime identity on TS; test a concrete "
-                                            "class or union case instead (PRD §3.B)");
+                // A typed 'match' binding (`d: Disk`) is a runtime TYPE TEST (#38): C# declaration pattern /
+                // TS·PHP instanceof / Python isinstance. An INTERFACE test is no longer refused here (P37
+                // B4): it gates in the target-aware capability pass instead — refused iff a configured
+                // target lacks runtime interface identity (`interfaces:runtimeIdentity`, false on TS where
+                // interfaces erase). The binding narrows to the tested type.
                 declare(p.name, p.hasType ? p.type : scrut, false, p.pos);
                 break;
             case PatKind::Ctor: {
@@ -1181,6 +1218,9 @@ private:
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
                 else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
                     diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value));
+                if (!blockIsBindings_.empty() && blockIsBindings_.back().count(s.name))
+                    diags_.error(s.namePos, "'" + s.name + "' was bound by an `is` test earlier in this block; "
+                                            "pick another name (the emitted binding outlives the branch)");
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
                 break;
             }
@@ -1191,10 +1231,38 @@ private:
                     const Local* local = lookup(nm);
                     if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
+                        s.target->type = local->type; // stamp: the C7 compound rewrite keys on this
                         if (!local->isMutable) diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
-                        checkConvert(s.value, local->type, "assignment to '" + nm + "'");
+                        // P37 C7: a compound op on a USER type converts against the operator member's own
+                        // signature (lenient, like binary resolution) — the rhs is the operator's operand,
+                        // not a value of the target's type (`v *= 2.0` with `times(s: f64)`).
+                        const bool userCompound = s.op != "=" && local->type.kind == TypeRef::Kind::Named &&
+                                                  !local->type.name.empty() && knownType(local->type) &&
+                                                  !isBuiltinType(local->type.name);
+                        if (!userCompound) checkConvert(s.value, local->type, "assignment to '" + nm + "'");
                     }
-                } else if (s.target) checkExpr(*s.target);
+                } else if (s.target) {
+                    checkExpr(*s.target);
+                    // P37 C7: a compound op on a user-typed Member/Index target — or through a USER
+                    // indexer even with scalar elements — re-lowers the target for the read side, so the
+                    // base must be pure (a name or `this`) for single evaluation; a computed receiver is
+                    // refused toward an explicit local.
+                    const bool userTyped = s.target->type.kind == TypeRef::Kind::Named &&
+                                           !s.target->type.name.empty() && knownType(s.target->type) &&
+                                           !isBuiltinType(s.target->type.name);
+                    const bool userIndexer = s.target->kind == ExprKind::Index && s.target->lhs &&
+                                             s.target->lhs->type.kind == TypeRef::Kind::Named &&
+                                             findMember(s.target->lhs->type.name, "get") != nullptr;
+                    if (s.op != "=" &&
+                        (s.target->kind == ExprKind::Member || s.target->kind == ExprKind::Index) &&
+                        (userTyped || userIndexer)) {
+                        const Expr* base = s.target->lhs.get();
+                        if (base && base->kind != ExprKind::Name && base->kind != ExprKind::This)
+                            diags_.error(s.pos, "a compound assignment on a user type or user indexer "
+                                                "needs a simple receiver — hoist the receiver to a local "
+                                                "first (single evaluation)");
+                    }
+                }
                 break;
             }
             case StmtKind::ExprStmt: checkExpr(*s.value); break;
@@ -1206,9 +1274,16 @@ private:
                 if (s.value) checkExpr(*s.value);
                 break;
             case StmtKind::If: {
-                requireBool(checkExpr(*s.value), s.pos, "'if' condition");
-                checkBlock(s.thenBody);
+                // P37 B3: `is` bindings on the condition's `&&` spine narrow into the rest of the
+                // condition AND the then-body (one scope) — never the else-branch or past the `if`.
+                pushScope();
+                requireBool(checkIfCond(*s.value), s.pos, "'if' condition");
+                blockIsBindings_.emplace_back(); // then-body is its own block for later-redecl purposes
+                for (auto& st : s.thenBody) checkStmt(*st);
+                blockIsBindings_.pop_back();
+                popScope();
                 if (s.hasElse) checkBlock(s.elseBody);
+                if (!blockIsBindings_.empty()) collectIsBindingNames(*s.value, blockIsBindings_.back());
                 break;
             }
             case StmtKind::While:
@@ -1259,6 +1334,394 @@ private:
         }
     }
     static bool isUnitT(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "unit" && !t.nullable; }
+    // ---- P37 D: attributes (both tiers) + the Meta intrinsics -----------------------------------------
+
+    // The const envelope attribute params may use: what every target holds as a plain literal — scalars,
+    // strings, enum types, and single-level arrays of those.
+    bool isConstEnvelopeType(const TypeRef& t) const {
+        if (t.kind != TypeRef::Kind::Named || t.nullable) return false;
+        const std::string& n = t.name;
+        if (n == "Array" && t.args.size() == 1) { // `T[]` — one level, element must itself be envelope
+            const TypeRef& el = t.args[0];
+            return el.kind == TypeRef::Kind::Named && el.args.empty() && isConstEnvelopeType(el);
+        }
+        if (!t.args.empty()) return false;
+        if (enumNames_.count(n)) return true;
+        return n == "bool" || n == "string" || n == "i8" || n == "i16" || n == "i32" || n == "i64" ||
+               n == "u8" || n == "u16" || n == "u32" || n == "u64" || n == "f32" || n == "f64";
+    }
+    // A compile-time-constant attribute argument: a literal, a signed numeric literal, an enum member,
+    // or a non-empty array literal of those. There is no constant evaluator and none is wanted —
+    // resolvability is decided by FORM (M6 discipline).
+    bool isConstAttrValue(const Expr& e) const {
+        switch (e.kind) {
+            case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::StringLit: case ExprKind::BoolLit:
+                return true;
+            case ExprKind::Unary:
+                return e.text == "-" && e.lhs &&
+                       (e.lhs->kind == ExprKind::IntLit || e.lhs->kind == ExprKind::FloatLit);
+            case ExprKind::Member: // an enum member `Color.Red`
+                return e.lhs && e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text) != 0;
+            case ExprKind::ListLit: { // a non-empty array of consts (empty = uninferable, like #27)
+                if (e.args.empty()) return false;
+                for (const auto& el : e.args)
+                    if (!el || el->kind == ExprKind::ListLit || !isConstAttrValue(*el)) return false;
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+    enum class AttrPoint { Type, Method, Field, Param, Function, Other };
+
+    void checkAttributesPass(CompilationUnit& u) {
+        for (auto& ea : u.externAttrs) {
+            if (!externAttrs_.emplace(ea.name, &ea).second)
+                diags_.error(ea.pos, "duplicate extern attribute '" + ea.name + "'");
+            std::unordered_set<std::string> targets;
+            for (auto& arm : ea.arms)
+                if (!targets.insert(arm.target).second)
+                    diags_.error(arm.pos, "extern attribute '" + ea.name + "': duplicate arm for target '" +
+                                              arm.target + "'");
+        }
+        for (auto& r : u.records) {
+            if (r.isAttribute) {
+                attributeNames_.insert(r.name);
+                if (!r.bases.empty())
+                    diags_.error(r.pos, "an `attribute` is a pure data shape — no base types");
+                if (!r.generics.empty())
+                    diags_.error(r.pos, "an `attribute` cannot be generic (its values must be plain constants)");
+                for (const auto& f : r.fields)
+                    if (!isConstEnvelopeType(f.type))
+                        diags_.error(f.pos, "attribute parameter '" + f.name + "' must be a constant-"
+                                            "envelope type (bool, an integer/float scalar, or string)");
+            }
+        }
+        for (auto& r : u.records) {
+            checkAttrList(r.attributes, AttrPoint::Type);
+            if (r.isAttribute) { // an attribute's own params carry data, not further attributes
+                for (auto& p : r.fields)
+                    if (!p.attributes.empty())
+                        diags_.error(p.attributes.front().pos,
+                                     "attributes on an `attribute` declaration's parameters are refused");
+            }
+            for (auto& m : r.members) {
+                checkAttrList(m.attributes, memberPoint(m));
+                for (auto& p : m.params) checkAttrList(p.attributes, AttrPoint::Param);
+            }
+        }
+        for (auto& c : u.classes) {
+            checkAttrList(c.attributes, AttrPoint::Type);
+            for (auto& m : c.members) {
+                checkAttrList(m.attributes, memberPoint(m));
+                for (auto& p : m.params) checkAttrList(p.attributes, AttrPoint::Param);
+            }
+        }
+        for (auto& f : u.functions) {
+            checkAttrList(f.attributes, AttrPoint::Function);
+            for (auto& p : f.params) checkAttrList(p.attributes, AttrPoint::Param);
+        }
+        for (auto& ea : u.externAttrs)
+            for (auto& p : ea.params)
+                if (!p.attributes.empty())
+                    diags_.error(p.attributes.front().pos,
+                                 "attributes on an `extern attribute` declaration's parameters are refused");
+        for (auto& i : u.interfaces)
+            for (auto& m : i.members)
+                if (!m.attributes.empty())
+                    diags_.error(m.attributes.front().pos,
+                                 "attributes on interface members are not supported (v1)");
+    }
+    static AttrPoint memberPoint(const Member& m) {
+        if (m.kind == MemberKind::Method) return AttrPoint::Method;
+        if (m.kind == MemberKind::Field || m.kind == MemberKind::Property) return AttrPoint::Field;
+        return AttrPoint::Other;
+    }
+    void checkAttrList(std::vector<AttrUse>& attrs, AttrPoint point) {
+        std::unordered_set<std::string> seen;
+        for (auto& a : attrs) {
+            const bool tier1 = externAttrs_.count(a.name) != 0;
+            const bool tier2 = attributeNames_.count(a.name) != 0;
+            if (!tier1 && !tier2) {
+                diags_.error(a.pos, "unknown attribute '" + a.name + "' — declare `attribute " + a.name +
+                                        "(…)` (portable metadata) or `extern attribute " + a.name +
+                                        "(…) { … }` (native pass-through)");
+                continue;
+            }
+            if (!seen.insert(a.name).second)
+                diags_.error(a.pos, "attribute '" + a.name + "' is applied more than once on this "
+                                        "declaration (AllowMultiple is a deferred follow-up)");
+            if (point == AttrPoint::Other)
+                diags_.error(a.pos, "attributes are not supported on this member kind (v1: methods, "
+                                        "fields/properties, and parameters)");
+            else if (tier2 && point == AttrPoint::Function)
+                diags_.error(a.pos, "portable metadata on a free function has no query surface (`Meta` "
+                                        "takes a type) — deferred; a pass-through `extern attribute` works");
+            const std::vector<Param>& params =
+                tier1 ? externAttrs_[a.name]->params : typeInfoParams(a.name);
+            checkAttrArgs(a, params);
+        }
+    }
+    // A Tier 2 attribute's params are its record fields (registered as ctorParams); re-read the DECL's
+    // fields so names + defaults are visible for named-arg matching.
+    const std::vector<Param>& typeInfoParams(const std::string& attrName) const {
+        static const std::vector<Param> kEmpty;
+        for (const auto& r : unit_->records)
+            if (r.name == attrName) return r.fields;
+        return kEmpty;
+    }
+    void checkAttrArgs(AttrUse& a, const std::vector<Param>& params) {
+        std::unordered_set<std::string> given;
+        std::size_t positional = 0;
+        bool sawNamed = false;
+        for (auto& arg : a.args) {
+            if (!arg.value) continue;
+            const Param* p = nullptr;
+            if (arg.name.empty()) {
+                if (sawNamed)
+                    diags_.error(arg.pos, "positional attribute arguments must precede named ones");
+                if (positional < params.size()) p = &params[positional];
+                else diags_.error(arg.pos, "too many arguments for attribute '" + a.name + "'");
+                ++positional;
+            } else {
+                sawNamed = true;
+                for (const auto& cand : params)
+                    if (cand.name == arg.name) { p = &cand; break; }
+                if (!p)
+                    diags_.error(arg.pos, "attribute '" + a.name + "' has no parameter named '" +
+                                              arg.name + "'");
+            }
+            if (p && !given.insert(p->name).second)
+                diags_.error(arg.pos, "attribute argument '" + p->name + "' is given twice");
+            if (!isConstAttrValue(*arg.value))
+                diags_.error(arg.pos, "attribute arguments must be compile-time constants (a literal); "
+                                          "variable values are a deferred follow-up");
+            checkExpr(*arg.value);
+            if (p) checkConvert(arg.value, p->type, "attribute argument '" + p->name + "'");
+        }
+        for (std::size_t i = 0; i < params.size(); ++i)
+            if (!params[i].hasDefault && (i >= positional && !given.count(params[i].name)))
+                diags_.error(a.pos, "attribute '" + a.name + "' is missing required argument '" +
+                                        params[i].name + "'");
+    }
+
+    // P37 D.3 (M6, permanent): the `Meta` intrinsics — `Meta.has<T, A>()`, `Meta.get<T, A>() -> A?`,
+    // `Meta.member<T, A>("m") -> A?` — resolved entirely at transpile time. Type arguments must be
+    // compile-time-concrete names (never a type parameter: the compiler is generic-preserving, so there
+    // is no point at which `T` is one type) and the member name a string literal. All diagnosed here in
+    // target-independent sema so build/check/LSP agree.
+    TypeRef checkMetaCall(Expr& e) {
+        const std::string& method = e.lhs->text;
+        if (method != "has" && method != "get" && method != "member" && method != "param") {
+            diags_.error(e.pos, "unknown Meta intrinsic '" + method + "' (has / get / member / param)");
+            return tUnknown();
+        }
+        if (e.typeArgs.size() != 2) {
+            diags_.error(e.pos, "Meta." + method + " takes exactly two type arguments: <T, A>");
+            return tUnknown();
+        }
+        auto concrete = [&](const TypeRef& t, const char* what) -> bool {
+            if (t.kind != TypeRef::Kind::Named || t.name.empty()) {
+                diags_.error(e.pos, std::string("Meta's ") + what + " must be a named type");
+                return false;
+            }
+            if (genericsInScope_.count(t.name)) {
+                diags_.error(e.pos, std::string("Meta's ") + what + " cannot be a type parameter ('" +
+                                        t.name + "') — Meta resolves at transpile time and generics are "
+                                        "emitted generically, never specialized (M6, permanent)");
+                return false;
+            }
+            if (!t.args.empty()) {
+                diags_.error(e.pos, std::string("Meta's ") + what + " cannot be a generic instantiation");
+                return false;
+            }
+            if (!typeNames_.count(t.name)) {
+                diags_.error(e.pos, "unknown type '" + t.name + "' in Meta." + method);
+                return false;
+            }
+            return true;
+        };
+        if (!concrete(e.typeArgs[0], "subject type <T>") || !concrete(e.typeArgs[1], "attribute type <A>"))
+            return tUnknown();
+        const std::string& tn = e.typeArgs[0].name;
+        const std::string& an = e.typeArgs[1].name;
+        if (interfaceNames_.count(tn) || enumNames_.count(tn) || unionAllCases_.count(tn) ||
+            externClassNames_.count(tn) || attributeNames_.count(tn)) {
+            diags_.error(e.pos, "Meta's subject type <T> must be a user class or record ('" + tn + "')");
+            return tUnknown();
+        }
+        if (!attributeNames_.count(an)) {
+            diags_.error(e.pos, "'" + an + "' is not an `attribute` declaration — Meta queries portable "
+                                    "(Tier 2) metadata only");
+            return tUnknown();
+        }
+        if (method == "param") {
+            // Meta.param<T, A>("method", "param") — both names are string literals resolved at
+            // transpile time against the declaration (M6: computed names cannot resolve).
+            if (e.args.size() != 2 || !e.args[0] || e.args[0]->kind != ExprKind::StringLit ||
+                !e.args[1] || e.args[1]->kind != ExprKind::StringLit) {
+                diags_.error(e.pos, "Meta.param takes two STRING LITERALS: the method name and the "
+                                        "parameter name (M6)");
+                return tUnknown();
+            }
+            checkExpr(*e.args[0]);
+            checkExpr(*e.args[1]);
+            const std::string& mem = e.args[0]->text;
+            const std::string& par = e.args[1]->text;
+            const Member* found = findDeclMember(tn, mem);
+            if (!found) {
+                diags_.error(e.args[0]->pos, "'" + tn + "' has no member named '" + mem + "'");
+                return tUnknown();
+            }
+            bool hasParam = false;
+            for (const auto& p : found->params) if (p.name == par) hasParam = true;
+            if (!hasParam) {
+                SourcePos endp = e.args[1]->pos;
+                endp.col += static_cast<int>(par.size()) + 2;
+                diags_.error(e.args[1]->pos, endp,
+                             "'" + tn + "." + mem + "' has no parameter named '" + par + "'");
+                return tUnknown();
+            }
+        } else if (method == "member") {
+            if (e.args.size() != 1 || !e.args[0] || e.args[0]->kind != ExprKind::StringLit) {
+                diags_.error(e.pos, "Meta.member takes one STRING LITERAL member name — a variable or "
+                                        "computed name cannot resolve at transpile time (M6)");
+                return tUnknown();
+            }
+            checkExpr(*e.args[0]);
+            const std::string& mem = e.args[0]->text;
+            if (!findMember(tn, mem)) {
+                SourcePos endp = e.args[0]->pos;
+                endp.col += static_cast<int>(mem.size()) + 2; // underline the literal (incl. quotes)
+                diags_.error(e.args[0]->pos, endp,
+                             "'" + tn + "' has no member named '" + mem + "'");
+                return tUnknown();
+            }
+        } else if (!e.args.empty()) {
+            diags_.error(e.pos, "Meta." + method + " takes no value arguments");
+            return tUnknown();
+        }
+        if (method != "has" && unit_) {
+            auto& mm = unit_->metaMaterialized;
+            bool present = false;
+            for (const auto& n : mm) if (n == an) present = true;
+            if (!present) mm.push_back(an);
+        }
+        if (method == "has") return tNamed("bool");
+        TypeRef result = e.typeArgs[1];
+        result.nullable = true;
+        return result;
+    }
+
+    // P37 B3: check an `if` condition, accepting `is` bindings along its top-level `&&` spine only —
+    // there the test dominates the then-branch. Under `||`, `!`, or a lambda the binding wouldn't be
+    // guaranteed, so the ordinary checkExpr path refuses it.
+    TypeRef checkIfCond(Expr& e) {
+        if (e.kind == ExprKind::Binary && e.text == "&&") {
+            requireBool(checkIfCond(*e.lhs), e.lhs->pos, "'&&' operand");
+            requireBool(checkIfCond(*e.rhs), e.rhs->pos, "'&&' operand");
+            e.type = tNamed("bool");
+            return e.type;
+        }
+        if (e.kind == ExprKind::Is) {
+            isBindingAllowed_ = true;
+            TypeRef t = checkExpr(e); // checkIsAs consumes + resets the flag
+            isBindingAllowed_ = false;
+            return t;
+        }
+        return checkExpr(e);
+    }
+    // The `is`-binding names on an if-condition's `&&` spine (for the enclosing block's redecl guard).
+    void collectIsBindingNames(const Expr& e, std::unordered_set<std::string>& out) const {
+        if (e.kind == ExprKind::Binary && e.text == "&&") {
+            if (e.lhs) collectIsBindingNames(*e.lhs, out);
+            if (e.rhs) collectIsBindingNames(*e.rhs, out);
+        } else if (e.kind == ExprKind::Is && !e.text.empty()) {
+            out.insert(e.text);
+        }
+    }
+
+    // P37 B: `x is T [name]` / `x as T` — runtime tests over class/record hierarchies (M1: `as` yields
+    // null on failure, never throws). Interfaces pass here and gate per-target in the capability pass
+    // (B4: refused only when a configured target lacks runtime interface identity). Unions/cases point
+    // at `match` (no case-as-type exists to narrow to); enums/scalars/extern classes are refused.
+    TypeRef checkIsAs(Expr& e, bool isTest) {
+        const bool bindingAllowed = isBindingAllowed_;
+        isBindingAllowed_ = false;
+        TypeRef operand = checkExpr(*e.lhs);
+        const char* op = isTest ? "is" : "as";
+        TypeRef& target = e.castType;
+        normalizeOptional(target, genericsInScope_);
+        const std::string& n = target.name;
+        auto fail = [&](const std::string& msg) {
+            diags_.error(e.pos, msg);
+            return isTest ? tNamed("bool") : tUnknown();
+        };
+        if (target.kind != TypeRef::Kind::Named || n.empty())
+            return fail(std::string("'") + op + "' expects a named class or record type");
+        if (genericsInScope_.count(n))
+            return fail(std::string("'") + op + "' cannot test a type parameter ('" + n +
+                        "') — generics are emitted generically, never specialized, so no runtime test exists");
+        if (isBuiltinType(n))
+            return fail(std::string("'") + op + "' does not apply to scalar/builtin types; use a numeric cast");
+        if (enumNames_.count(n))
+            return fail(std::string("'") + op + "' does not apply to enums (enum values are not class instances)");
+        if (unionAllCases_.count(n) || unionCtors_.count(n))
+            return fail(std::string("Polyglot refuses '") + op + "' on union types/cases — use 'match' "
+                        "(union values are tagged data, and cases are not types to narrow to)");
+        if (externClassNames_.count(n))
+            return fail(std::string("'") + op + "' cannot test an extern/std type ('" + n +
+                        "') — its runtime shape is target-defined");
+        if (!typeNames_.count(n))
+            return fail("unknown type '" + n + "' in '" + op + "'");
+        if (!target.args.empty())
+            return fail(std::string("'") + op + "' cannot test a generic instantiation ('" + n +
+                        "<…>') — type arguments are erased at runtime on TS/Python");
+        // Nominal relatedness: refuse a provably-impossible test (neither type derives from the other,
+        // and the operand isn't interface-typed). An unknown/erased operand type stays lenient.
+        if (operand.kind == TypeRef::Kind::Named && !operand.name.empty() && typeNames_.count(operand.name) &&
+            !interfaceNames_.count(operand.name) && !interfaceNames_.count(n)) {
+            const std::string& on = operand.name;
+            if (on != n && !derivesFrom(n, on) && !derivesFrom(on, n))
+                return fail(std::string("'") + operand.name + "' can never be a '" + n + "' — the '" + op +
+                            "' test is provably impossible (unrelated types)");
+        }
+        if (isTest && !e.text.empty()) {
+            if (!bindingAllowed)
+                diags_.error(e.pos, "an `is` binding ('" + e.text + "') is only allowed on an `if` "
+                                    "condition's `&&` chain, where the test guards the branch (P37 B3)");
+            else {
+                TypeRef bound = target;
+                declare(e.text, bound, false, e.pos);
+            }
+        }
+        if (isTest) return tNamed("bool");
+        TypeRef result = target;
+        result.nullable = true; // `as` = checked conversion -> T? (null on failure, never throws)
+        return result;
+    }
+    // Decl-level member lookup (P37 D: Meta.param needs parameter NAMES, which MemberInfo drops).
+    const Member* findDeclMember(const std::string& typeName, const std::string& member) const {
+        if (!unit_) return nullptr;
+        for (const auto& c : unit_->classes)
+            if (c.name == typeName)
+                for (const auto& m : c.members) if (m.name == member) return &m;
+        for (const auto& r : unit_->records)
+            if (r.name == typeName)
+                for (const auto& m : r.members) if (m.name == member) return &m;
+        return nullptr;
+    }
+
+    // Transitive nominal derivation: `derived` reaches `base` through class/interface base lists.
+    bool derivesFrom(const std::string& derived, const std::string& base) const {
+        auto it = types_.find(derived);
+        if (it == types_.end()) return false;
+        for (const auto& b : it->second.bases) {
+            if (b == base || derivesFrom(b, base)) return true;
+        }
+        return false;
+    }
+
     void requireBool(const TypeRef& t, SourcePos pos, const char* what) {
         Ty s = scalarTyOf(t);
         if (s != Ty::Unknown && s != Ty::Bool) diags_.error(pos, std::string(what) + " must be bool, found " + tyName(s));
@@ -1343,6 +1806,8 @@ private:
             }
             case ExprKind::Binary:    return checkBinary(e);
             case ExprKind::Cast:      return checkCast(e);
+            case ExprKind::Is:        return checkIsAs(e, true);
+            case ExprKind::As:        return checkIsAs(e, false);
             case ExprKind::Extern: // raw target code — type asserted by context (§4.4 FFI)
                 if (!inActual_)
                     diags_.error(e.pos, "'extern' target code is only allowed in a target-gated 'actual' — "
@@ -1420,6 +1885,24 @@ private:
     TypeRef checkCast(Expr& e) {
         TypeRef from = checkExpr(*e.lhs);
         resolveTypeRef(e.castType, e.pos);
+        // P37 C: a USER explicit conversion — `(T)v` where v's type declares `operator fn explicit(): T`.
+        // C# emits its native `explicit operator`; method-form targets rewrite this cast site to the
+        // generated `to<T>()` call (stamped here as the overloadName, carried to ir::Cast.convMethod).
+        if (from.kind == TypeRef::Kind::Named && !from.name.empty() && knownType(from) &&
+            !isBuiltinType(from.name) && from.name != "unit") {
+            if (const TypeInfo* ti = typeInfoOf(from.name)) {
+                for (const auto& m : ti->members)
+                    if (m.kind == MemberKind::Operator && m.name == "explicit" &&
+                        m.type.kind == TypeRef::Kind::Named && m.type.name == e.castType.name) {
+                        e.overloadName = conversionMethodName(e.castType.name);
+                        return e.castType;
+                    }
+            }
+            diags_.error(e.pos, "no explicit conversion from '" + from.name + "' to '" + e.castType.name +
+                                    "' — declare `operator fn explicit(): " + e.castType.name + "` on '" +
+                                    from.name + "'");
+            return e.castType;
+        }
         Ty fs = scalarTyOf(from);
         if (isNumericTypeName(e.castType) && (fs == Ty::Bool || fs == Ty::String))
             diags_.error(e.pos, std::string("cannot cast ") + tyName(fs) + " to numeric type '" + e.castType.name + "'");
@@ -1428,6 +1911,12 @@ private:
                                     "' — use s.codePointAt(i) from std.strings for the ordinal");
         return e.castType;
     }
+    // The generated conversion-method name shared by lowering and the cast-site rewrite: `toF64`, `toVec2`.
+    static std::string conversionMethodName(const std::string& target) {
+        std::string n = target;
+        if (!n.empty()) n[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(n[0])));
+        return "to" + n;
+    }
 
     TypeRef checkUnary(Expr& e) {
         TypeRef ot = checkExpr(*e.lhs);
@@ -1435,6 +1924,18 @@ private:
         if (e.text == "!") {
             if (o != Ty::Unknown && o != Ty::Bool) diags_.error(e.pos, std::string("'!' expects bool, found ") + tyName(o));
             return tNamed("bool");
+        }
+        // P37 C (#62): a user type must DECLARE `neg`/`bnot` for unary `-`/`~` — the old path silently
+        // accepted `-v` on any user type and TS then emitted a native minus (NaN garbage).
+        if (ot.kind == TypeRef::Kind::Named && !ot.name.empty() && knownType(ot) &&
+            !isBuiltinType(ot.name) && ot.name != "unit") {
+            const char* meth = e.text == "-" ? "neg" : e.text == "~" ? "bnot" : nullptr;
+            if (meth) {
+                if (const MemberInfo* m = findMember(ot.name, meth)) return m->type;
+                diags_.error(e.pos, "type '" + ot.name + "' declares no 'operator fn " + meth +
+                                        "' for unary '" + e.text + "'");
+                return tUnknown();
+            }
         }
         if (e.text == "~") return ot;
         if (o != Ty::Unknown && !isNumeric(o)) diags_.error(e.pos, std::string("unary '-' expects a numeric operand, found ") + tyName(o));
@@ -1460,6 +1961,16 @@ private:
             TypeRef res = lt; res.nullable = false; // native nullable: the left's type, made non-nullable
             if (res.name.empty() && res.kind == TypeRef::Kind::Named) res = rt;
             return res;
+        }
+        // P37 C: a user-declared operator member resolves the op before any scalar rule (this is what
+        // admits bitwise/shift overloads, #63 — the scalar shift/bitwise checks below would otherwise
+        // reject a user operand). `x == null` still emits as a null TEST, never a user-eq call: the
+        // rhsIsNullLit guard in lowering owns that routing (M3); here the types agree either way (bool).
+        if (lt.kind == TypeRef::Kind::Named && !lt.name.empty() && knownType(lt) &&
+            !isBuiltinType(lt.name) && lt.name != "unit") {
+            const std::string meth = operatorMethod(op);
+            if (!meth.empty())
+                if (const MemberInfo* m = findMember(lt.name, meth)) return m->type;
         }
         TypeRef common;
         if (op == "==" || op == "!=") {
@@ -1612,6 +2123,27 @@ private:
     }
 
     TypeRef checkCall(Expr& e) {
+        // P37 D: the Meta intrinsics — resolved before ordinary checking (`Meta` is a compiler name
+        // unless the user shadows it with a type or local of their own).
+        if (e.lhs && e.lhs->kind == ExprKind::Member && e.lhs->lhs && e.lhs->lhs->kind == ExprKind::Name &&
+            e.lhs->lhs->text == "Meta" && !typeNames_.count("Meta") && !lookup("Meta"))
+            return checkMetaCall(e);
+        // P37 D.3 anti-silent-drop: explicit type args on a member call used to parse and be silently
+        // IGNORED by every resolution path (inference-only). Now that Meta consumes them, any other
+        // member call carrying them refuses instead of dropping them.
+        if (e.lhs && e.lhs->kind == ExprKind::Member && !e.typeArgs.empty())
+            diags_.error(e.pos, "explicit type arguments are not supported on this call (they are "
+                                "inferred from the arguments; only construction and Meta take them)");
+        // P37 D Tier 2: attribute values are constructed by the compiler (Meta.get/member) from the
+        // attachment's recorded constants — never directly (an unqueried attribute emits no type to
+        // construct against).
+        if (e.lhs && e.lhs->kind == ExprKind::Name && attributeNames_.count(e.lhs->text)) {
+            diags_.error(e.pos, "an `attribute` type ('" + e.lhs->text + "') cannot be constructed "
+                                "directly — attach it with [" + e.lhs->text + "(…)] and read it back "
+                                "via Meta.get/Meta.member");
+            return tUnknown();
+        }
+
         std::vector<TypeRef> argTypes;
         for (auto& a : e.args) argTypes.push_back(checkExpr(*a));
 

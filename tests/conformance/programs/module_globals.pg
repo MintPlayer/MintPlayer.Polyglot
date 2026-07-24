@@ -14,7 +14,7 @@ record Vec(x: i32) {
 
 class Box {
   var n: i32
-  init(n: i32) { this.n = n }
+  constructor(n: i32) { this.n = n }
   fn lookup(): i32 => TABLE[this.n] + LIMIT
 }
 

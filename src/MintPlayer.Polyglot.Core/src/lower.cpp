@@ -1,9 +1,12 @@
 #include "mintplayer/polyglot/lower.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/capture_analysis.hpp"
 #include "mintplayer/polyglot/hoist_block_lambdas.hpp"
 
@@ -122,7 +125,7 @@ public:
         // substituted ctor template instead of a plain `new Type(...)`.
         for (const auto& c : unit.classes)
             for (const auto& mem : c.members)
-                if (mem.kind == MemberKind::Init && !mem.bindings.empty()) ctorBindings_[c.name] = &mem.bindings;
+                if (mem.kind == MemberKind::Constructor && !mem.bindings.empty()) ctorBindings_[c.name] = &mem.bindings;
         // Named base types, so a binding/member inherited from a base resolves on a subclass receiver
         // (e.g. `Error.message`, declared on the core-prelude `extern class Error`, on a `: Error` subclass).
         for (const auto& c : unit.classes) for (const auto& b : c.bases) if (!b.name.empty()) bases_[c.name].push_back(b.name);
@@ -143,6 +146,97 @@ public:
         };
         for (const auto& r : unit.records) noteIndexer(r.name, r.members);
         for (const auto& c : unit.classes) noteIndexer(c.name, c.members);
+        // P37 D: attribute machinery — Tier 1 bindings by name, and the Tier 2 materialized set (attribute
+        // records some Meta query constructs; the rest emit nothing).
+        unit_ = &unit;
+        for (const auto& ea : unit.externAttrs) externAttrMap_[ea.name] = &ea;
+        for (const auto& n : unit.metaMaterialized) materialized_.insert(n);
+        if (const Backend* b = findBackend(target_)) spell_ = b->constSpelling();
+    }
+
+    // P37 D Tier 1: render each pass-through attribute into its native annotation line for the ACTIVE
+    // target — the arm's template IS the whole line, with $0…/$name substituted from the (constant) args;
+    // the arm's import line is accumulated once onto the module. Tier 2 attributes render nothing.
+    std::vector<std::string> renderAttrLines(const std::vector<AttrUse>& attrs) {
+        std::vector<std::string> out;
+        for (const auto& a : attrs) {
+            auto it = externAttrMap_.find(a.name);
+            if (it == externAttrMap_.end()) continue; // Tier 2: compile-time data, no emission
+            const ExternAttrDecl& d = *it->second;
+            const ExternAttrArm* arm = nullptr;
+            for (const auto& cand : d.arms)
+                if (cand.target == target_ && !cand.refuse) arm = &cand;
+            if (!arm) continue; // no arm for this target: D12 refused it before lowering
+            // Resolve each declared param to its constant value (positional, named, or default).
+            std::vector<std::string> values;
+            for (std::size_t i = 0; i < d.params.size(); ++i) {
+                const Expr* v = nullptr;
+                std::size_t positional = 0;
+                for (const auto& arg : a.args) {
+                    if (arg.name.empty()) {
+                        if (positional == i) { v = arg.value.get(); }
+                        ++positional;
+                    } else if (arg.name == d.params[i].name) {
+                        v = arg.value.get();
+                    }
+                }
+                if (!v && d.params[i].hasDefault) v = d.params[i].defaultValue.get();
+                values.push_back(v ? constAttrText(*v) : std::string());
+            }
+            std::string line = arm->code;
+            // $<name> first (longest names first so a prefix never clobbers), then $0…$n.
+            std::vector<std::size_t> order(d.params.size());
+            for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+            std::sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) {
+                return d.params[x].name.size() > d.params[y].name.size();
+            });
+            for (std::size_t i : order) substAll(line, "$" + d.params[i].name, values[i]);
+            for (std::size_t i = 0; i < values.size(); ++i) substAll(line, "$" + std::to_string(i), values[i]);
+            out.push_back(std::move(line));
+            if (!arm->importLine.empty()) {
+                bool dup = false;
+                for (const auto& l : attrImports_) if (l == arm->importLine) dup = true;
+                if (!dup) attrImports_.push_back(arm->importLine);
+            }
+        }
+        return out;
+    }
+    static void substAll(std::string& s, const std::string& key, const std::string& val) {
+        for (std::size_t i = 0; (i = s.find(key, i)) != std::string::npos; i += val.size())
+            s.replace(i, key.size(), val);
+    }
+    // Render a constant attribute argument as target source text (bools differ per target; strings are
+    // double-quoted with minimal escaping, which every current target accepts).
+    std::string constAttrText(const Expr& v) const {
+        switch (v.kind) {
+            case ExprKind::IntLit:
+            case ExprKind::FloatLit: return v.text;
+            case ExprKind::BoolLit:
+                return v.boolVal ? spell_.trueLit : spell_.falseLit;
+            case ExprKind::StringLit: {
+                std::string out = "\"";
+                for (char c : v.text) {
+                    if (c == '"' || c == '\\') out += '\\';
+                    out += c;
+                }
+                return out + "\"";
+            }
+            case ExprKind::Unary:
+                return "-" + (v.lhs ? constAttrText(*v.lhs) : std::string());
+            case ExprKind::Member: // enum member — the plugin's enumMemberOp spells the accessor
+                if (v.lhs) return v.lhs->text + spell_.enumMemberOp + v.text;
+                return "";
+            case ExprKind::ListLit: { // array of consts — the plugin's constArray delimiters
+                std::string items;
+                for (const auto& el : v.args) {
+                    if (!items.empty()) items += ", ";
+                    if (el) items += constAttrText(*el);
+                }
+                return spell_.arrayOpen + items + spell_.arrayClose;
+            }
+            default:
+                return "";
+        }
     }
 
     // Build an ir::Bound from a receiver, args and a "Type.member" binding — the ACTIVE target's arm
@@ -185,14 +279,20 @@ public:
             m.unions.push_back(std::move(iu));
         }
         for (const auto& r : unit.records) {
+            // P37 D Tier 2: an `attribute` record is emitted ONLY when some Meta query materialized it —
+            // attached-but-unqueried metadata produces zero runtime output.
+            if (r.isAttribute && !materialized_.count(r.name)) continue;
             ir::Record rec;
             rec.name = r.name;
+            rec.attrLines = renderAttrLines(r.attributes);
             rec.generics = generics(r.generics);
             for (const auto& b : r.bases) rec.bases.push_back(b);
             for (const auto& f : r.fields) rec.fields.push_back({f.name, f.type});
             for (const auto& mem : r.members)
-                if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property)
+                if (mem.kind == MemberKind::Method || mem.kind == MemberKind::Operator || mem.kind == MemberKind::Property) {
                     rec.methods.push_back(method(mem));
+                    rec.methods.back().ownerIsRecord = true;
+                }
             rec.originModule = r.originModule;
             m.records.push_back(std::move(rec));
         }
@@ -253,6 +353,7 @@ public:
             f.isEntry = (fn.name == "main" && fn.params.empty());
             f.isAsync = fn.isAsync;
             for (const auto& p : fn.params) f.params.push_back(irParam(p));
+            f.attrLines = renderAttrLines(fn.attributes);
             sawYield_ = false;
             f.body = block(fn.body);
             f.isIterator = sawYield_;
@@ -260,6 +361,7 @@ public:
             f.globalRefs = scanGlobalRefs(moduleGlobals_, fn.params, fn.body, nullptr);
             m.functions.push_back(std::move(f));
         }
+        m.attrImports = attrImports_; // P37 D Tier 1: verbatim import/using lines for used bindings
 
         // Stamp ir::Class.baseHasInit transitively now that every class/interface is lowered (issue #48).
         // A base contributes a chainable ctor when it is a user class with an `init` (or one whose own
@@ -294,10 +396,16 @@ public:
 
 private:
     std::string target_;        // the active target name — binding/extern arms are picked for it
+    const CompilationUnit* unit_ = nullptr; // P37 D: Meta resolution re-reads decl attributes
+    std::unordered_map<std::string, const ExternAttrDecl*> externAttrMap_; // Tier 1 bindings by name
+    std::unordered_set<std::string> materialized_;  // Tier 2 attribute records some Meta query constructs
+    std::vector<std::string> attrImports_;          // Tier 1 import/using lines (deduped, verbatim)
+    Backend::ConstSpelling spell_;                  // the active plugin's constant spellings (data, not names)
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
     bool inOperator_ = false;   // set while lowering a (non-indexer) operator body; stamps This.insideOperator
+    bool inEqOperator_ = false; // set while lowering a user `eq` body; stamps This.insideEqOperator (P37 C5)
     std::unordered_set<std::string> moduleGlobals_; // top-level let/const names (PHP `global` fact)
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
     std::unordered_map<std::string, const std::vector<TargetBinding>*> bindings_; // "Type.member" -> FFI arms
@@ -429,13 +537,20 @@ private:
         if (method == "le") return "<=";
         if (method == "gt") return ">";
         if (method == "ge") return ">=";
-        if (method == "neg") return "-"; // unary
+        if (method == "band") return "&";  // P37 C (#63): bitwise/shift operator members
+        if (method == "bor") return "|";
+        if (method == "bxor") return "^";
+        if (method == "shl") return "<<";
+        if (method == "shr") return ">>";
+        if (method == "neg") return "-";  // unary
+        if (method == "bnot") return "~"; // unary
         return method;
     }
 
     ir::Class lowerClass(const ClassDecl& c) {
         ir::Class ic;
         ic.name = c.name;
+        ic.attrLines = renderAttrLines(c.attributes);
         ic.generics = generics(c.generics);
         ic.bases = c.bases;
         for (const auto& mem : c.members) {
@@ -443,6 +558,7 @@ private:
                 case MemberKind::Field:
                 case MemberKind::Const: {
                     ir::ClassField f;
+                    f.attrLines = renderAttrLines(mem.attributes);
                     f.name = mem.name;
                     f.isMutable = mem.isMutable;
                     f.isStatic = mem.kind == MemberKind::Const;
@@ -452,7 +568,7 @@ private:
                     ic.fields.push_back(std::move(f));
                     break;
                 }
-                case MemberKind::Init:
+                case MemberKind::Constructor:
                     ic.hasInit = true;
                     for (const auto& p : mem.params) ic.initParams.push_back(irParam(p));
                     // A `super(...)` call carries the base-ctor args; hoist it out of the body so each
@@ -491,6 +607,10 @@ private:
     // and callers may omit trailing defaulted arguments — both C# and TS support default parameters).
     ir::Param irParam(const Param& p) {
         ir::Param ip{p.name, p.type, nullptr};
+        for (const std::string& l : renderAttrLines(p.attributes)) {
+            if (!ip.attrInline.empty()) ip.attrInline += " ";
+            ip.attrInline += l;
+        }
         if (p.hasDefault && p.defaultValue) ip.defaultValue = expr(*p.defaultValue);
         return ip;
     }
@@ -498,6 +618,7 @@ private:
     ir::Method method(const Member& m) {
         ir::Method im;
         im.name = m.name;
+        im.attrLines = renderAttrLines(m.attributes);
         im.isAsync = m.isAsync;
         for (const auto& mod : m.modifiers) {
             if (mod == "static") im.isStatic = true;
@@ -522,7 +643,15 @@ private:
             return im;
         }
         im.kind = (m.kind == MemberKind::Operator) ? ir::MethodKind::Operator : ir::MethodKind::Method;
-        if (m.kind == MemberKind::Operator) im.opSymbol = operatorSymbol(m.name);
+        if (m.kind == MemberKind::Operator) {
+            im.opSymbol = operatorSymbol(m.name);
+            if (m.name == "explicit") { // P37 C: explicit conversion — method-form targets emit `to<T>()`
+                im.opSymbol = "explicit";
+                std::string tgt = m.returnType.name;
+                if (!tgt.empty()) tgt[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(tgt[0])));
+                im.name = "to" + tgt;
+            }
+        }
         im.returnType = m.returnType;
         for (const auto& p : m.params) im.params.push_back(irParam(p));
         // A real operator (not a `get`/`set` indexer) rebinds `this` on targets whose operator declaration
@@ -532,12 +661,18 @@ private:
         // `this`; only a genuinely static operator (C# `operator +`, taking lhs/rhs) rebinds `this` -> lhs.
         const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get" &&
                             im.opSymbol != "set" && im.opSymbol != "==";
+        // P37 C5: an `eq` body is target-split — instance `override Equals` on C# (`this` stays) but the
+        // static null-tolerant `T.eq(lhs, rhs)` on TS (`this` -> `lhs`). A second node-local fact carries
+        // the distinction; each target's This rule picks its side.
+        const bool eqBody = im.kind == ir::MethodKind::Operator && im.opSymbol == "==";
         if (opBody) inOperator_ = true;
+        if (eqBody) inEqOperator_ = true;
         sawYield_ = false; // a `yield` anywhere in the body marks the method an iterator (mirrors ir::Function)
         if (m.exprBodied && m.exprBody) { im.exprBodied = true; im.exprBody = expr(*m.exprBody); }
         else { im.exprBodied = false; im.body = block(m.body); }
         im.isIterator = sawYield_;
         if (opBody) inOperator_ = false;
+        if (eqBody) inEqOperator_ = false;
         return im;
     }
 
@@ -568,11 +703,28 @@ private:
                 if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
                 auto t = std::make_unique<ir::This>(e.pos, e.type);
                 t->insideOperator = inOperator_;
+                t->insideEqOperator = inEqOperator_;
                 return t;
             }
-            case ExprKind::Unary:     return std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
+            case ExprKind::Unary: {
+                auto u = std::make_unique<ir::Unary>(e.pos, e.type, e.text, expr(*e.lhs));
+                // P37 C (#62): a user-typed operand routes to its neg/bnot operator on method-form targets.
+                const TypeRef& ot = e.lhs->type;
+                if (ot.kind == TypeRef::Kind::Named && !ot.name.empty())
+                    u->operandIsUserType = !isPrimitiveTypeName(ot.name) && ot.name != "unit";
+                return u;
+            }
             case ExprKind::Await:     return std::make_unique<ir::Await>(e.pos, e.type, expr(*e.lhs));
-            case ExprKind::Cast:      return std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
+            case ExprKind::Cast: {
+                auto c = std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
+                c->convMethod = e.overloadName; // P37 C: user explicit conversion — method targets call to<T>()
+                return c;
+            }
+            case ExprKind::Is: { // binding-less test (a bound form was rewritten by lowerIfCond)
+                auto t = std::make_unique<ir::IsTest>(e.pos, namedType("bool"), expr(*e.lhs), e.castType);
+                return t;
+            }
+            case ExprKind::As: return makeAsCast(e);
             // `x!` asserts the non-null type sema put on the node: a cast to it (C# unwraps a Nullable<T>
             // value type via `(int)x`; for reference types it's an identity cast — TS strips both).
             case ExprKind::NullAssert: return std::make_unique<ir::Cast>(e.pos, e.type, expr(*e.lhs));
@@ -634,6 +786,13 @@ private:
                 return lam;
             }
             case ExprKind::Call: {
+                // P37 D Tier 2: a Meta intrinsic resolves NOW, at transpile time — the output carries
+                // only the answer: a bool literal, a construction of the attribute record from its
+                // recorded constant args, or a typed null. Nothing is looked up at run time.
+                if (e.lhs && e.lhs->kind == ExprKind::Member && e.lhs->lhs &&
+                    e.lhs->lhs->kind == ExprKind::Name && e.lhs->lhs->text == "Meta" &&
+                    e.typeArgs.size() == 2 && !typeNames_.count("Meta"))
+                    return lowerMetaCall(e);
                 if (e.lhs && e.lhs->kind == ExprKind::Member) { // method call `obj.method(args)`
                     // Static call `Type.method(args)`: the receiver is a type name, not a value.
                     if (e.lhs->lhs->kind == ExprKind::Name &&
@@ -767,6 +926,34 @@ private:
                     ia->value = expr(*s.value);
                     return ia;
                 }
+                // P37 C7: a compound op lowers to `target = <op>(target, value)` when the target is a
+                // USER type (operator-method routing: C# native operator, TS static-on-type, Python
+                // dunder) or sits behind a USER indexer (which has no native `[...] op=` on any
+                // method-form target — it needs the get+set pair even for scalar elements). Sema
+                // restricts the target to pure bases, so re-lowering the read side is single-eval-safe.
+                const bool userTypedTarget = s.op != "=" && s.op != "??=" && s.target &&
+                    s.target->type.kind == TypeRef::Kind::Named && !s.target->type.name.empty() &&
+                    !isPrimitiveTypeName(s.target->type.name) && s.target->type.name != "unit";
+                const bool userIndexerTarget = s.op != "=" && s.op != "??=" && s.target &&
+                    s.target->kind == ExprKind::Index && s.target->lhs &&
+                    s.target->lhs->type.kind == TypeRef::Kind::Named &&
+                    indexerTypes_.count(s.target->lhs->type.name) != 0;
+                if (userTypedTarget || userIndexerTarget) {
+                    const std::string binOp = s.op.substr(0, s.op.size() - 1);
+                    auto read = expr(*s.target);
+                    auto rhs = expr(*s.value);
+                    auto b = std::make_unique<ir::Binary>(s.pos, s.target->type, binOp,
+                                                          std::move(read), std::move(rhs));
+                    b->lhsIsUserType = userTypedTarget; // operator-method routing (scalar elements stay native)
+                    if (userIndexerTarget) {
+                        auto ia = std::make_unique<ir::IndexAssign>(s.pos); // user indexer: get+set pair
+                        ia->receiver = expr(*s.target->lhs);
+                        for (const auto& a : s.target->args) ia->indices.push_back(expr(*a));
+                        ia->value = std::move(b);
+                        return ia;
+                    }
+                    return std::make_unique<ir::Assign>(s.pos, expr(*s.target), "=", std::move(b));
+                }
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
             }
             case StmtKind::ExprStmt: {
@@ -777,9 +964,21 @@ private:
                 return std::make_unique<ir::ExprStmt>(s.pos, std::move(ev));
             }
             case StmtKind::If: {
-                auto node = std::make_unique<ir::If>(s.pos, expr(*s.value));
+                // P37 B3: `x is T name` on the condition's `&&` spine — hoist `let name = x as T` before
+                // the `if` (via pendingStmts_) and test `name != null` instead. Single-eval by
+                // construction (the operand is evaluated once, inside the AsCast), and every target then
+                // reads the narrowed binding directly: C# `var c = x as T; if (c != null …)`, TS
+                // `const c = x instanceof T ? x : null; if (c !== null …)`, Python/PHP alike.
+                auto cond = lowerIfCond(*s.value);
+                // The hoisted binding Lets must survive the NESTED block() calls below (each flushes
+                // pendingStmts_ into ITS body) — steal them now, restore after, so the OUTER block()
+                // emits them directly above this `if`.
+                std::vector<ir::StmtPtr> hoisted;
+                hoisted.swap(pendingStmts_);
+                auto node = std::make_unique<ir::If>(s.pos, std::move(cond));
                 node->thenBody = block(s.thenBody);
                 if (s.hasElse) { node->hasElse = true; node->elseBody = block(s.elseBody); }
+                pendingStmts_ = std::move(hoisted);
                 return node;
             }
             case StmtKind::While: {
@@ -841,9 +1040,106 @@ private:
 
     std::vector<ir::StmtPtr> block(const std::vector<StmtPtr>& body) {
         std::vector<ir::StmtPtr> out;
-        for (const auto& s : body) if (auto st = stmt(*s)) out.push_back(std::move(st));
+        for (const auto& s : body) {
+            auto st = stmt(*s);
+            // Statements a lowering hoisted out of `s` (P37 B3 `is`-binding Lets) go first.
+            for (auto& p : pendingStmts_) out.push_back(std::move(p));
+            pendingStmts_.clear();
+            if (st) out.push_back(std::move(st));
+        }
         return out;
     }
+
+    // P37 D Tier 2 — resolve a Meta query against the unit's recorded attribute attachments.
+    ir::ExprPtr lowerMetaCall(const Expr& e) {
+        const std::string& method = e.lhs->text;
+        const std::string& tn = e.typeArgs[0].name;
+        const std::string& an = e.typeArgs[1].name;
+        const std::vector<AttrUse>* attrs = nullptr;
+        if (method == "param") { // Meta.param<T, A>("method", "param")
+            const std::string& mem = e.args.size() > 0 ? e.args[0]->text : std::string();
+            const std::string& par = e.args.size() > 1 ? e.args[1]->text : std::string();
+            auto paramAttrs = [&](const std::vector<Member>& ms) -> const std::vector<AttrUse>* {
+                for (const auto& m : ms)
+                    if (m.name == mem)
+                        for (const auto& p : m.params)
+                            if (p.name == par) return &p.attributes;
+                return nullptr;
+            };
+            for (const auto& c : unit_->classes) if (c.name == tn) attrs = paramAttrs(c.members);
+            for (const auto& r : unit_->records) if (r.name == tn && !attrs) attrs = paramAttrs(r.members);
+        } else if (method == "member") {
+            const std::string& mem = e.args.empty() ? std::string() : e.args[0]->text;
+            auto memberAttrs = [&](const std::vector<Member>& ms) -> const std::vector<AttrUse>* {
+                for (const auto& m : ms) if (m.name == mem) return &m.attributes;
+                return nullptr;
+            };
+            for (const auto& c : unit_->classes) if (c.name == tn) attrs = memberAttrs(c.members);
+            for (const auto& r : unit_->records) if (r.name == tn && !attrs) attrs = memberAttrs(r.members);
+        } else {
+            for (const auto& c : unit_->classes) if (c.name == tn) attrs = &c.attributes;
+            for (const auto& r : unit_->records) if (r.name == tn) attrs = &r.attributes;
+        }
+        const AttrUse* use = nullptr;
+        if (attrs)
+            for (const auto& a : *attrs) if (a.name == an) use = &a;
+        if (method == "has")
+            return std::make_unique<ir::BoolLit>(e.pos, namedType("bool"), use != nullptr);
+        if (!use) {
+            TypeRef nt = namedType(an);
+            nt.nullable = true;
+            return std::make_unique<ir::NullLit>(e.pos, nt);
+        }
+        const RecordDecl* adecl = nullptr;
+        for (const auto& r : unit_->records) if (r.name == an) adecl = &r;
+        auto n = std::make_unique<ir::New>(e.pos, namedType(an), an);
+        if (adecl) {
+            for (std::size_t i = 0; i < adecl->fields.size(); ++i) {
+                const Expr* v = nullptr;
+                std::size_t positional = 0;
+                for (const auto& arg : use->args) {
+                    if (arg.name.empty()) {
+                        if (positional == i) v = arg.value.get();
+                        ++positional;
+                    } else if (arg.name == adecl->fields[i].name) {
+                        v = arg.value.get();
+                    }
+                }
+                if (!v && adecl->fields[i].hasDefault) v = adecl->fields[i].defaultValue.get();
+                if (v) n->args.push_back(expr(*v));
+            }
+        }
+        return n;
+    }
+
+    // P37 B: `x as T` → ir::AsCast (checked conversion, null on failure). Targets whose guard
+    // re-evaluates the operand (TS/Python/PHP) bind an inline temp when it isn't a simple variable.
+    ir::ExprPtr makeAsCast(const Expr& e) {
+        TypeRef nt = e.castType;
+        nt.nullable = true;
+        auto cast = std::make_unique<ir::AsCast>(e.pos, nt, expr(*e.lhs), e.castType);
+        cast->operandIsSimple = e.lhs->kind == ExprKind::Name || e.lhs->kind == ExprKind::This;
+        if (!cast->operandIsSimple) cast->tempName = "__as" + std::to_string(tmpCounter_++);
+        return cast;
+    }
+    // P37 B3: lower an `if` condition, rewriting each bound `is` on the `&&` spine (see StmtKind::If).
+    ir::ExprPtr lowerIfCond(const Expr& e) {
+        if (e.kind == ExprKind::Binary && e.text == "&&") {
+            auto b = std::make_unique<ir::Binary>(e.pos, namedType("bool"), "&&",
+                                                  lowerIfCond(*e.lhs), lowerIfCond(*e.rhs));
+            return b;
+        }
+        if (e.kind == ExprKind::Is && !e.text.empty()) {
+            TypeRef nt = e.castType;
+            nt.nullable = true;
+            pendingStmts_.push_back(std::make_unique<ir::Let>(e.pos, e.text, false, nt, makeAsCast(e)));
+            return std::make_unique<ir::Binary>(e.pos, namedType("bool"), "!=",
+                                                std::make_unique<ir::Var>(e.pos, nt, e.text),
+                                                std::make_unique<ir::NullLit>(e.pos, TypeRef{}));
+        }
+        return expr(e);
+    }
+    std::vector<ir::StmtPtr> pendingStmts_; // hoisted by the CURRENT statement's lowering; flushed by block()
 };
 
 } // namespace
@@ -952,11 +1248,13 @@ struct CsScopeLegalizer {
 ir::Module lower(const CompilationUnit& unit, const std::string& target) {
     Lowerer lowerer(unit, target);
     ir::Module m = lowerer.run(unit);
-    if (target == "csharp") { CsScopeLegalizer cs; cs.run(m); } // #41: rename for-bindings colliding with locals
+    // Target-trait passes gate on PLUGIN FLAGS, never target names (the Core cannot know what
+    // languages exist): scope legalization for targets that forbid shadowed nested locals (#41,
+    // CS0136-class rules), and block-lambda hoisting for expression-only-lambda targets.
+    const Backend* b = findBackend(target);
+    if (b && b->forbidsShadowedLocals()) { CsScopeLegalizer cs; cs.run(m); }
     analyzeCaptures(m); // P25 §4.18: classify closure captures + stamp cell decisions onto the IR
-    // Python's `lambda` is expression-only, so block lambdas hoist to nested `def`s here (the local tier for
-    // an expression-only-lambda target). Every other target emits block lambdas inline.
-    if (target == "python") hoistBlockLambdas(m);
+    if (b && b->expressionOnlyLambdas()) hoistBlockLambdas(m);
     return m;
 }
 

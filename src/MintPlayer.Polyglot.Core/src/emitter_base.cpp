@@ -44,11 +44,30 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.lhsIsUserType") return b.lhsIsUserType ? "true" : "false";
         if (path == "node.lhsIsUnion")    return b.lhsIsUnion ? "true" : "false";     // #57
         if (path == "node.lhsHasUserEq")  return b.lhsHasUserEq ? "true" : "false";   // #49
+        if (path == "node.lhsTypeName" && b.lhs) return b.lhs->type.name; // P37 C5: static-on-type dispatch
+        // P37 M3: the rhs is the null literal — Python must emit an IDENTITY test (`is None`): its
+        // runtime `==` would still dispatch the user/record __eq__, which derefs the null operand.
+        if (path == "node.rhsIsNull" && b.rhs)
+            return b.rhs->kind == ir::ExprKind::Null ? "true" : "false";
     }
+    if (e_.kind == ir::ExprKind::Unary) { // P37 C (#62): user neg/bnot routing on method-form targets
+        const auto& u = static_cast<const ir::Unary&>(e_);
+        if (path == "node.operandIsUserType") return u.operandIsUserType ? "true" : "false";
+        if (path == "node.operandTypeName" && u.operand) return u.operand->type.name;
+        if (path == "node.hasUnaryOpMethod")
+            return u.operandIsUserType && !specTable(spec_, "opMethod", "u" + u.op).empty() ? "true" : "false";
+    }
+    if (path == "node.convMethod" && e_.kind == ir::ExprKind::Cast) // P37 C: user explicit conversion
+        return static_cast<const ir::Cast&>(e_).convMethod;
     if (path == "node.receiverHasIndexer" && e_.kind == ir::ExprKind::Index)
         return static_cast<const ir::Index&>(e_).receiverHasIndexer ? "true" : "false";
     if (path == "node.insideOperator" && e_.kind == ir::ExprKind::This)
         return static_cast<const ir::This&>(e_).insideOperator ? "true" : "false";
+    if (path == "node.insideEqOperator" && e_.kind == ir::ExprKind::This) // P37 C5 (TS static eq)
+        return static_cast<const ir::This&>(e_).insideEqOperator ? "true" : "false";
+    if (path == "node.operandTypeName" && e_.kind == ir::ExprKind::Cast && // P37 C5 (TS static conversion)
+        static_cast<const ir::Cast&>(e_).operand)
+        return static_cast<const ir::Cast&>(e_).operand->type.name;
     // Type-class predicates — which `.pg` types are ints/floats/64-bit is a LANGUAGE fact, not a target
     // fact; the per-target part is only which predicate a rule consults.
     if (path == "node.typeIsInt")      return isIntTypeName(e_.type) ? "true" : "false";
@@ -70,6 +89,11 @@ std::string IrExprCtx::get(const std::string& path) const {
         // operator overload -> method call, on targets whose spec declares an opMethod table row
         const auto& b = static_cast<const ir::Binary&>(e_);
         return b.lhsIsUserType && !specTable(spec_, "opMethod", b.op).empty() ? "true" : "false";
+    }
+    if (e_.kind == ir::ExprKind::AsCast) { // P37 B: guard-shape choice + inline temp (the With pattern)
+        const auto& a = static_cast<const ir::AsCast&>(e_);
+        if (path == "node.operandIsSimple") return a.operandIsSimple ? "true" : "false";
+        if (path == "node.tempName")        return a.tempName;
     }
     if (e_.kind == ir::ExprKind::With) {
         const auto& w = static_cast<const ir::With&>(e_);
@@ -332,6 +356,8 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Cast)  return static_cast<const ir::Cast&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Unary) return static_cast<const ir::Unary&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
+        if (e_.kind == ir::ExprKind::IsTest) return static_cast<const ir::IsTest&>(e_).operand.get();
+        if (e_.kind == ir::ExprKind::AsCast) return static_cast<const ir::AsCast&>(e_).operand.get();
     }
     if (e_.kind == ir::ExprKind::Lambda && path == "node.body")
         return static_cast<const ir::Lambda&>(e_).body.get();
@@ -485,6 +511,10 @@ const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
         if (i < m.arms.size()) return &m.arms[i].pattern.testType;
     }
+    if (path == "node.testType" && e_.kind == ir::ExprKind::IsTest) // P37 B `is`
+        return &static_cast<const ir::IsTest&>(e_).testType;
+    if (path == "node.castType" && e_.kind == ir::ExprKind::AsCast) // P37 B `as`
+        return &static_cast<const ir::AsCast&>(e_).castType;
     return nullptr;
 }
 
@@ -746,6 +776,11 @@ std::string InterfaceDeclCtx::emitChild(const std::string& path, const std::stri
 }
 
 std::string MethodDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(m_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < m_.attrLines.size()) return m_.attrLines[i];
+    }
     if (path == "decl.kind") {
         switch (m_.kind) {
             case ir::MethodKind::Property: return "property";
@@ -755,6 +790,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     }
     if (path == "decl.name")       return m_.name;
     if (path == "decl.opSymbol")   return m_.opSymbol;
+    if (path == "decl.ownerIsRecord") return m_.ownerIsRecord ? "true" : "false"; // P37 C5 (C# class eq)
     if (path == "decl.owner")      return owner_;
     if (path == "decl.isStatic")   return m_.isStatic ? "true" : "false";
     if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";
@@ -783,6 +819,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
         const std::size_t dot = sub.find('.');
         if (i < m_.params.size() && dot != std::string::npos) {
             const std::string rest = sub.substr(dot + 1);
+            if (rest == "attrInline") return m_.params[i].attrInline; // P37 D Tier 1
             if (rest == "name")       return m_.params[i].name;
             if (rest == "hasDefault") return m_.params[i].defaultValue ? "true" : "false";
         }
@@ -834,6 +871,11 @@ const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path)
 }
 
 std::string RecordDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(r_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < r_.attrLines.size()) return r_.attrLines[i];
+    }
     if (path == "decl.name")          return r_.name;
     if (path == "decl.fields.count")  return std::to_string(r_.fields.size());
     if (path == "decl.bases.count")   return std::to_string(r_.bases.size());
@@ -911,6 +953,11 @@ bool splitIndexed(const std::string& path, std::size_t prefixLen, std::size_t& i
 } // namespace
 
 std::string ClassDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(c_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < c_.attrLines.size()) return c_.attrLines[i];
+    }
     if (path == "decl.name")             return c_.name;
     if (path == "decl.bases.count")      return std::to_string(c_.bases.size());
     if (path == "decl.methods.count")    return std::to_string(c_.methods.size());
@@ -930,12 +977,18 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     std::string f;
     if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size()) {
         const ir::ClassField& fld = c_.fields[i];
+        if (f == "attrLines.count") return std::to_string(fld.attrLines.size()); // P37 D Tier 1
+        if (f.rfind("attrLines.", 0) == 0) {
+            const std::size_t j = static_cast<std::size_t>(std::stoul(f.substr(10)));
+            if (j < fld.attrLines.size()) return fld.attrLines[j];
+        }
         if (f == "name")      return fld.name;
         if (f == "isStatic")  return fld.isStatic ? "true" : "false";
         if (f == "isMutable") return fld.isMutable ? "true" : "false";
         if (f == "hasInit")   return fld.init ? "true" : "false";
     }
     if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size()) {
+        if (f == "attrInline") return c_.initParams[i].attrInline; // P37 D Tier 1
         if (f == "name")       return c_.initParams[i].name;
         if (f == "hasDefault") return c_.initParams[i].defaultValue ? "true" : "false";
     }
@@ -1000,6 +1053,11 @@ std::unique_ptr<IrDeclCtx> ClassDeclCtx::memberCtx(const std::string& path, std:
 }
 
 std::string FnDeclCtx::get(const std::string& path) const {
+    if (path == "decl.attrLines.count") return std::to_string(f_.attrLines.size()); // P37 D Tier 1
+    if (path.rfind("decl.attrLines.", 0) == 0) {
+        const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(15)));
+        if (i < f_.attrLines.size()) return f_.attrLines[i];
+    }
     if (path == "decl.name")        return f_.name;
     if (path == "decl.mangledName") return f_.mangledName;
     if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
@@ -1021,6 +1079,7 @@ std::string FnDeclCtx::get(const std::string& path) const {
     std::size_t i = 0;
     std::string f;
     if (path.rfind("decl.params.", 0) == 0 && splitIndexed(path, 12, i, f) && i < f_.params.size()) {
+        if (f == "attrInline") return f_.params[i].attrInline; // P37 D Tier 1
         if (f == "name")       return f_.params[i].name;
         if (f == "hasDefault") return f_.params[i].defaultValue ? "true" : "false";
     }
@@ -1093,6 +1152,14 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
     if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.attrImportsBlock") { // P37 D Tier 1: verbatim import/using lines, newline-joined
+        std::string out;
+        for (const auto& l : m_.attrImports) {
+            if (!out.empty()) out += "\n";
+            out += l;
+        }
+        return out;
+    }
     if (path == "module.linked")           return m_.linked ? "true" : "false";
     if (path == "module.hasEntry")         return entry_ >= 0 ? "true" : "false";
     if (entry_ >= 0) {
@@ -1320,6 +1387,11 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
             for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
             for (int i = 0; i < n; ++i) {
                 engine::ItemCtx item(ctx, ctx.resolvePath(r.s) + "." + std::to_string(i), i);
+                // P37 D Tier 1: pre-rendered attribute lines above a line-item decl (class fields) —
+                // the same shared-injection trick as MapMembers; item lists without the path no-op.
+                int an = 0;
+                for (char c : item.get("item.attrLines.count")) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
+                for (int j = 0; j < an; ++j) line(item.get("item.attrLines." + std::to_string(j)));
                 runDeclRule(r.parts[0], item, root, helpers);
             }
             return;
@@ -1344,8 +1416,16 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
             int n = 0;
             for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
             for (int i = 0; i < n; ++i)
-                if (auto sub = root.memberCtx(ctx.resolvePath(r.s), static_cast<std::size_t>(i)))
+                if (auto sub = root.memberCtx(ctx.resolvePath(r.s), static_cast<std::size_t>(i))) {
+                    // P37 D Tier 1: pre-rendered native annotation lines go directly above the decl —
+                    // one shared injection point (module decls and members both drive through here),
+                    // so no plugin template needs to know attributes exist.
+                    const std::string ac = sub->get("decl.attrLines.count");
+                    int an = 0;
+                    for (char c : ac) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
+                    for (int j = 0; j < an; ++j) line(sub->get("decl.attrLines." + std::to_string(j)));
                     runDeclRule(it->second, *sub, *sub, helpers);
+                }
             return;
         }
         case K::Case:
@@ -1393,6 +1473,8 @@ const char* exprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::MakeCase: return "MakeCase";
         case ir::ExprKind::Unary:    return "Unary";
         case ir::ExprKind::Cast:     return "Cast";
+        case ir::ExprKind::IsTest:   return "IsTest";
+        case ir::ExprKind::AsCast:   return "AsCast";
         case ir::ExprKind::With:       return "With";
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";

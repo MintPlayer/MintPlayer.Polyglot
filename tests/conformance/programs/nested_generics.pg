@@ -8,7 +8,7 @@ import { List } from "std.collections"
 class Layers {
   var w1: List<List<f64>>
   var w2: List<List<f64>>
-  init(w1: List<List<f64>>, w2: List<List<f64>>) {
+  constructor(w1: List<List<f64>>, w2: List<List<f64>>) {
     this.w1 = w1
     this.w2 = w2
   }

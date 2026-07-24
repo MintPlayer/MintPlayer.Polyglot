@@ -6,14 +6,14 @@
 
 class AppError : Error {
   let code: i32
-  init(message: string, code: i32) {
+  constructor(message: string, code: i32) {
     super(message)
     this.code = code
   }
 }
 
 class OtherError : Error {
-  init(message: string) { super(message) }
+  constructor(message: string) { super(message) }
 }
 
 fn boom(code: i32) {

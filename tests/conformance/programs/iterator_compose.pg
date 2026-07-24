@@ -5,7 +5,7 @@
 
 class Counter {
   let limit: i32
-  init(limit: i32) { this.limit = limit }
+  constructor(limit: i32) { this.limit = limit }
 
   fn upTo(): Iterable<i32> {
     var i = 0

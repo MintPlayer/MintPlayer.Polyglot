@@ -27,7 +27,7 @@ const char* STD_COLLECTIONS = R"PG(
 extern class List<T> {
   type {
   }
-  init() {
+  constructor() {
   }
   let count: i32 {
   }
@@ -191,7 +191,7 @@ const char* STD_CORE = R"PG(
 extern class Error {
   type {
   }
-  init(message: string) {
+  constructor(message: string) {
   }
   let message: string {
   }
@@ -207,7 +207,7 @@ extern class Iterable<T> {
 extern class Array<T> {
   type {
   }
-  init() {
+  constructor() {
   }
   let count: i32 {
   }
@@ -504,7 +504,7 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         if (const std::string* t = find(c.name + ".type"); t && !hasArm(c.typeBindings))
             c.typeBindings.push_back({target, *t, c.pos});
         for (auto& mem : c.members) {
-            const std::string key = c.name + "." + (mem.kind == MemberKind::Init ? "init" : mem.name);
+            const std::string key = c.name + "." + (mem.kind == MemberKind::Constructor ? "constructor" : mem.name);
             if (const std::string* t = find(key); t && !hasArm(mem.bindings))
                 mem.bindings.push_back({target, *t, mem.pos});
         }
@@ -598,10 +598,10 @@ static std::string relativeSpecifier(const std::string& fromDir, const std::stri
 // host's routed output dirs (no router = flat = "./<base>"); otherwise it stays the bare basename.
 static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, const std::string& fileOrigin,
                                                   const std::map<std::string, std::string>& baseByCanon,
-                                                  const std::string& target, bool crossDir,
+                                                  bool linksWithoutImports, bool crossDir,
                                                   const std::function<std::string(const std::string&)>& outDirOf) {
     std::vector<ir::ModuleImport> out;
-    if (target == "csharp") return out;
+    if (linksWithoutImports) return out; // modules link by compilation into one unit (plugin trait flag)
     auto it = graph.find(fileOrigin);
     if (it == graph.end()) return out;
     const std::string fromDir = (crossDir && outDirOf) ? outDirOf(fileOrigin) : std::string();
@@ -714,7 +714,8 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         m.linked = true;
         m.access = lib.access;
-        m.imports = buildImports(importGraph, importOrigin, baseByCanon, target.name(),
+        m.imports = buildImports(importGraph, importOrigin, baseByCanon,
+                                 target.backend()->linksWithoutImports(),
                                  target.backend()->crossDirImports(), lib.moduleOutputDir);
         return target.backend()->emit(m);
     };

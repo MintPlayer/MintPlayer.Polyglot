@@ -1,0 +1,25 @@
+// P37 C: explicit user conversion operators — `operator fn explicit(): T` makes `(T)v` legal: C# emits
+// its native `explicit operator T`, method-form targets rewrite the cast site to the generated `to<T>()`
+// call. Implicit conversions are refused (separate fixture); string/bool targets are refused.
+
+record Celsius(deg: f64) {
+  operator fn explicit(): f64 => this.deg * 1.8 + 32.0
+}
+
+class Ratio {
+  var num: i32
+  var den: i32
+  constructor(n: i32, d: i32) {
+    this.num = n
+    this.den = d
+  }
+  operator fn explicit(): f64 => (f64)this.num / (f64)this.den
+}
+
+fn main() {
+  let c = Celsius(100.0)
+  let f = (f64)c
+  print(f)             // 212
+  let r = Ratio(3, 4)
+  print((f64)r)        // 0.75
+}

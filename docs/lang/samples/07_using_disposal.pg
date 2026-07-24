@@ -12,7 +12,7 @@ class ScopedTimer : Disposable {
   let label: string
   var disposed: bool
 
-  init(label: string) {
+  constructor(label: string) {
     this.label = label
     this.disposed = false
     print("start ${label}")

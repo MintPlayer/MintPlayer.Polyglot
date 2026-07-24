@@ -1,6 +1,5 @@
 #include "mintplayer/polyglot/capability.hpp"
 
-#include <array>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,6 +16,7 @@ namespace {
 class Collector {
 public:
     std::vector<FeatureUse> uses;
+    std::vector<const AttrUse*> tier1Uses_; // P37 D12: every pass-through attribute attachment
     std::vector<std::pair<std::string, SourcePos>> calls; // free-function call sites: (callee name, pos)
     // Member/construction use sites, keyed "<TypeOrOwner>.<member>" (both the receiver's semantic type and,
     // for a bare-name receiver, its spelling — statics like `Math.sqrt` resolve by the latter). The bound-
@@ -24,6 +24,39 @@ public:
     std::vector<std::pair<std::vector<std::string>, SourcePos>> memberUses;
 
     void run(const CompilationUnit& u) {
+        for (const auto& i : u.interfaces) interfaces_.insert(i.name); // prescan: interface-typed runtime tests (B4)
+        // P37 D Tier 1: a pass-through attribute marks its ATTACHMENT POINT per target — Python has class/
+        // method/function decorators but TS has no function decorators, so the point matters, not just
+        // "attributes". Tier 2 marks nothing (the compiler both writes and reads the data).
+        for (const auto& ea : u.externAttrs) externAttrNames_.insert(ea.name);
+        auto markAttrs = [&](const std::vector<AttrUse>& attrs, const char* point) {
+            for (const auto& a : attrs)
+                if (externAttrNames_.count(a.name)) {
+                    mark(std::string("attributes:target.") + point, a.pos);
+                    tier1Uses_.push_back(&a);
+                }
+        };
+        auto memberPoint = [](const Member& m) {
+            return m.kind == MemberKind::Field ? "field" : "method"; // properties ride the method shape
+        };
+        for (const auto& r : u.records) {
+            markAttrs(r.attributes, "type");
+            for (const auto& mem : r.members) {
+                markAttrs(mem.attributes, memberPoint(mem));
+                for (const auto& p : mem.params) markAttrs(p.attributes, "param");
+            }
+        }
+        for (const auto& c : u.classes) {
+            markAttrs(c.attributes, "type");
+            for (const auto& mem : c.members) {
+                markAttrs(mem.attributes, memberPoint(mem));
+                for (const auto& p : mem.params) markAttrs(p.attributes, "param");
+            }
+        }
+        for (const auto& f : u.functions) {
+            markAttrs(f.attributes, "function");
+            for (const auto& p : f.params) markAttrs(p.attributes, "param");
+        }
         for (const auto& e : u.extensions) {
             mark(Feature::ExtensionMethods, e.pos);
             typeRef(e.receiver, e.pos);
@@ -60,14 +93,15 @@ public:
     }
 
 private:
-    std::array<bool, 32> seen_{}; // indexed by (int)Feature — first use of each is the one reported
+    std::unordered_set<std::string> seen_; // capability keys — first use of each is the one reported
+    std::unordered_set<std::string> interfaces_; // declared interface names (prescanned)
+    std::unordered_set<std::string> externAttrNames_; // Tier 1 extern attribute names (prescanned)
 
-    void mark(Feature f, SourcePos pos) {
-        auto i = static_cast<std::size_t>(f);
-        if (seen_[i]) return;
-        seen_[i] = true;
-        uses.push_back({f, pos});
+    void mark(std::string key, SourcePos pos) {
+        if (!seen_.insert(key).second) return;
+        uses.push_back({std::move(key), pos});
     }
+    void mark(Feature f, SourcePos pos) { mark(std::string(featureName(f)), pos); }
 
     // Fixed-width/unsigned integers and `char`/UTF-16 strings survive as syntactic TypeRef names even though
     // the MVP scalar lattice (Ty) collapses them — so type annotations are where these two axes are detected.
@@ -87,9 +121,21 @@ private:
         for (const auto& p : ps) typeRef(p.type, p.pos);
     }
 
+    // P37 C6: operator support is graded per sub-capability, not one blanket flag — PHP supports
+    // `:eq` (structural equality) and `:indexers` (get/set) while refusing `:arithmetic`/`:comparison`/
+    // `:conversion`. The bare `operatorOverloading` manifest stance umbrella-covers undeclared sub-keys.
+    static std::string operatorCategory(const std::string& method) {
+        if (method == "eq") return "eq";
+        if (method == "lt" || method == "le" || method == "gt" || method == "ge") return "comparison";
+        if (method == "get" || method == "set") return "indexers";
+        if (method == "explicit" || method == "implicit") return "conversion";
+        return "arithmetic"; // plus/minus/times/div/rem/band/bor/bxor/shl/shr/neg/bnot
+    }
+
     void typeBody(const std::vector<Member>& members) {
         for (const auto& m : members) {
-            if (m.kind == MemberKind::Operator) mark(Feature::OperatorOverloading, m.pos);
+            if (m.kind == MemberKind::Operator)
+                mark("operatorOverloading:" + operatorCategory(m.name), m.pos);
             if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
             if (m.kind == MemberKind::Property && m.hasSetter) mark(Feature::PropertySetters, m.pos); // #39c
             if (m.isAsync) mark(Feature::Async, m.pos);
@@ -131,10 +177,14 @@ private:
         if (e->kind == ExprKind::Await)  mark(Feature::Async, e->pos);
         if (e->kind == ExprKind::CharLit) mark(Feature::Utf16Strings, e->pos);
         if (e->kind == ExprKind::Cast)   typeRef(e->castType, e->pos);
+        // P37 B4: an interface-typed runtime test gates per-target (TS interfaces erase — no instanceof).
+        if ((e->kind == ExprKind::Is || e->kind == ExprKind::As) &&
+            e->castType.kind == TypeRef::Kind::Named && interfaces_.count(e->castType.name))
+            mark("interfaces:runtimeIdentity", e->pos);
         for (const auto& ta : e->typeArgs) typeRef(ta, e->pos); // explicit generic args, e.g. List<u32>()
         if (e->kind == ExprKind::Call && e->lhs && e->lhs->kind == ExprKind::Name) {
             calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`
-            memberUses.push_back({{e->lhs->text + ".init"}, e->pos}); // or a construction `Type(args)`
+            memberUses.push_back({{e->lhs->text + ".constructor"}, e->pos}); // or a construction `Type(args)`
         }
         if (e->kind == ExprKind::Member && e->lhs) {
             std::vector<std::string> keys;
@@ -150,10 +200,17 @@ private:
         for (const auto& st : e->block) stmt(st.get());
         for (const auto& f : e->fields) expr(f.value.get());
         for (const auto& arm : e->arms) {
+            pattern(arm.pattern); // typed-arm interface tests (B4)
             expr(arm.guard.get());
             expr(arm.body.get());
             for (const auto& st : arm.block) stmt(st.get());
         }
+    }
+
+    void pattern(const Pattern& p) {
+        if (p.hasType && p.type.kind == TypeRef::Kind::Named && interfaces_.count(p.type.name))
+            mark("interfaces:runtimeIdentity", p.pos);
+        for (const auto& s : p.sub) pattern(s);
     }
 };
 
@@ -169,13 +226,13 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
     Collector c;
     c.run(unit);
     for (const auto& use : c.uses) {
-        const std::string stance = backend.capabilityStance(use.feature);
+        const std::string stance = backend.capabilityStance(use.key);
         if (stance == "false")
             diags.error(use.pos, std::string("target '") + backend.name() + "' does not support " +
-                                      featureName(use.feature) + "; remove it or drop that target");
+                                      use.key + "; remove it or drop that target");
         else if (stance == "emulated")
             diags.warn(use.pos, std::string("target '") + backend.name() + "' emulates " +
-                                     featureName(use.feature) + " (runtime behavior is faithful, but the emitted "
+                                     use.key + " (runtime behavior is faithful, but the emitted "
                                      "shape differs from a native construct)");
     }
 
@@ -212,7 +269,7 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
         if (!d.isExtern) continue;
         for (const auto& m : d.members) {
             if (!(m.hasBody && m.body.empty() && !m.exprBody)) continue; // binding-shaped members only
-            const std::string member = m.kind == MemberKind::Init ? "init" : m.name;
+            const std::string member = m.kind == MemberKind::Constructor ? "constructor" : m.name;
             boundMembers[d.name + "." + member] = hasArm(m.bindings);
         }
     }
@@ -228,6 +285,27 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
                                             "'; add an `actual(" + backend.name() +
                                             ")` arm (or a plugin std overlay) or drop that target");
         }
+    }
+
+    // P37 D12 (non-negotiable): a used pass-through attribute must have a non-refuse arm for THIS target —
+    // the backstop that makes emit-only honest (no arm would silently drop the annotation).
+    std::unordered_map<std::string, const ExternAttrDecl*> externAttrs;
+    for (const auto& ea : unit.externAttrs) externAttrs[ea.name] = &ea;
+    for (const AttrUse* a : c.tier1Uses_) {
+        auto it = externAttrs.find(a->name);
+        if (it == externAttrs.end()) continue;
+        const ExternAttrArm* arm = nullptr;
+        bool refused = false;
+        for (const auto& cand : it->second->arms)
+            if (cand.target == backend.name()) { arm = &cand; refused = cand.refuse; }
+        if (!arm)
+            diags.error(a->pos, "attribute '" + a->name + "' has no binding for target '" + backend.name() +
+                                    "'; add an `actual(" + backend.name() +
+                                    ")` arm (or an explicit `refuse`) or drop that target (D12)");
+        else if (refused)
+            diags.error(a->pos, "attribute '" + a->name + "' is refused on target '" + backend.name() +
+                                    "' (its binding declares `refuse`); remove the attribute or drop that "
+                                    "target");
     }
 }
 
@@ -288,7 +366,7 @@ private:
     }
     void members(const std::vector<Member>& ms) {
         for (const auto& m : ms) {
-            if (m.kind != MemberKind::Init) add(m.name, m.namePos);
+            if (m.kind != MemberKind::Constructor) add(m.name, m.namePos);
             params(m.params);
             for (const auto& s : m.body) stmt(s.get());
             expr(m.exprBody.get());

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "mintplayer/polyglot/ast.hpp"       // CompilationUnit, SourcePos
@@ -13,12 +14,15 @@
 
 namespace mintplayer::polyglot {
 
+// A use of a capability, addressed by its string KEY (P37 slice 0): a bare parent (`"iterators"`) or a
+// `parent:child` refinement (`"operatorOverloading:eq"`). Keys come from the closed, load-validated
+// vocabulary (isKnownCapabilityKey); stance lookup applies the umbrella rule (backend.hpp).
 struct FeatureUse {
-    Feature feature;
+    std::string key;
     SourcePos pos; // a representative source position (first occurrence) for the diagnostic
 };
 
-// Every §3.A capability-flagged feature the program uses, each with its first source position.
+// Every capability-keyed feature the program uses, each with its first source position.
 std::vector<FeatureUse> collectFeatureUses(const CompilationUnit& unit);
 
 // Report (into `diags`) every used feature that `backend` cannot emit. Run once per configured target: a

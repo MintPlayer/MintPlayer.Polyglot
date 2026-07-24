@@ -75,19 +75,20 @@ EmitResult compileStd(const std::string& src, const BackendHandle& target) {
 // The two-arg form additionally marks one feature "emulated", to exercise the warn-on-emulated path (slice 0).
 class StubBackend : public Backend {
 public:
-    explicit StubBackend(Feature missing) : missing_(missing) {}
-    StubBackend(Feature missing, Feature emulated) : missing_(missing), emulated_(emulated), hasEmulated_(true) {}
+    explicit StubBackend(Feature missing) : missing_(featureName(missing)) {}
+    StubBackend(Feature missing, Feature emulated)
+        : missing_(featureName(missing)), emulated_(featureName(emulated)), hasEmulated_(true) {}
     std::string name() const override { return "stub"; }
     std::string emit(const ir::Module&) const override { return ""; }
-    bool supports(Feature f) const override { return f != missing_; }
-    std::string capabilityStance(Feature f) const override {
-        if (f == missing_) return "false";
-        if (hasEmulated_ && f == emulated_) return "emulated";
+    std::string capabilityStance(const std::string& key) const override {
+        if (key == missing_) return "false";
+        if (hasEmulated_ && key == emulated_) return "emulated";
         return "native";
     }
+    using Backend::capabilityStance;
 private:
-    Feature missing_;
-    Feature emulated_ = Feature::ExtensionMethods;
+    std::string missing_;
+    std::string emulated_;
     bool hasEmulated_ = false;
 };
 
@@ -273,7 +274,7 @@ int main() {
                    "round-trip: records + members + generics + default params + top-level const/let");
         roundtrips("interface Disposable {\n  fn dispose()\n}\n"
                    "open class Shape {\n  open fn area(): f64 => 0.0\n}\n"
-                   "class Disk : Shape, Disposable {\n  let r: f64\n  init(r: f64) {\n    this.r = r\n  }\n"
+                   "class Disk : Shape, Disposable {\n  let r: f64\n  constructor(r: f64) {\n    this.r = r\n  }\n"
                    "  override fn area(): f64 => 3.14 * this.r * this.r\n"
                    "  override fn dispose() {\n    cleanup()\n  }\n}\n"
                    "extension fn string.shout(): string => this + \"!\"\n",
@@ -361,7 +362,7 @@ int main() {
     // Issue #11 (1.B) — proper module linking: the importer REFERENCES imported symbols (does not re-define
     // them), the imported module is emitted as its own file, and the C# wrappers become `partial`.
     {
-        MapModuleResolver res({{"lib", "class Box { var v: i32\n  init(v: i32) { this.v = v } }\nfn dbl(x: i32): i32 { return x * 2 }\n"}});
+        MapModuleResolver res({{"lib", "class Box { var v: i32\n  constructor(v: i32) { this.v = v } }\nfn dbl(x: i32): i32 { return x * 2 }\n"}});
         EmitResult r = compile("import { dbl, Box } from \"lib\"\nfn compute(): i32 {\n  let b = Box(21)\n  return dbl(b.v)\n}\n",
                                findTarget("csharp"), &res, LibConfig{});
         check(r.ok, "issue#11 1.B: a cross-module program compiles");
@@ -475,7 +476,7 @@ int main() {
 
         std::vector<FeatureUse> uses = collectFeatureUses(unit);
         bool sawExt = false;
-        for (const auto& u : uses) if (u.feature == Feature::ExtensionMethods) sawExt = true;
+        for (const auto& u : uses) if (u.key == featureName(Feature::ExtensionMethods)) sawExt = true;
         check(sawExt, "P5.E: collectFeatureUses detects extensionMethods");
 
         DiagnosticBag dcs;
@@ -528,14 +529,16 @@ int main() {
         for (const auto& d : r.diagnostics) if (has(d.message, "import missing")) named = true;
         check(!r.ok && named, "P36 #56a: unresolvable string method (missing import) is refused");
     }
-    { // #38: a runtime type-test against an INTERFACE is refused (interfaces erase on TS); a concrete
-      // class type-test is allowed (that's the typed_match.pg conformance program).
-        const char* src = "interface Shape {}\nclass Circle : Shape { init() {} }\n"
+    { // #38 (as relaxed by P37 B4): an interface type-test gates per-target — refused iff a configured
+      // target lacks runtime interface identity (TS erases interfaces); a csharp-only build allows it.
+        const char* src = "interface Shape {}\nclass Circle : Shape { constructor() {} }\n"
                           "fn f(s: Circle): i32 => match s {\n  x: Shape => 1\n  _ => 0\n}\n";
-        EmitResult r = compile(src, findTarget("csharp"));
+        check(compile(src, findTarget("csharp")).ok,
+              "P36 #38 / P37 B4: an interface typed-match arm is allowed on a csharp-only build");
+        EmitResult r = compile(src, findTarget("typescript"));
         bool named = false;
-        for (const auto& d : r.diagnostics) if (has(d.message, "interface")) named = true;
-        check(!r.ok && named, "P36 #38: a type-test against an interface is refused");
+        for (const auto& d : r.diagnostics) if (has(d.message, "interfaces:runtimeIdentity")) named = true;
+        check(!r.ok && named, "P36 #38 / P37 B4: an interface typed-match arm is refused when TS is configured");
     }
     { // #53: member overloading is not supported (top-level only) — a duplicate same-named method is
       // refused at the declaration site (was silently shadowed + a misleading call-site arity error).
@@ -1063,15 +1066,15 @@ int main() {
     }
 
     // P13 follow-up — inherited member resolution: a subclass reaches a base's member (findMember walks bases).
-    resolves("open class Base {\n  let id: i32\n  init() { this.id = 0 }\n}\n"
-             "class Sub : Base {\n  init() { super() }\n}\n"
+    resolves("open class Base {\n  let id: i32\n  constructor() { this.id = 0 }\n}\n"
+             "class Sub : Base {\n  constructor() { super() }\n}\n"
              "fn f(s: Sub): i32 => s.id\n", "P13: a subclass reaches an inherited base member");
 
     // P13 follow-up — `Error.message`: resolves on an `: Error` subclass (base walk) and binds per target
     // (C# `.Message` on System.Exception vs JS `.message`), since `Error` isn't a source `extern class`.
     {
         const char* prog =
-            "class MyErr : Error {\n  init(message: string) { super(message) }\n}\n"
+            "class MyErr : Error {\n  constructor(message: string) { super(message) }\n}\n"
             "fn describe(e: MyErr): string => e.message\n"
             "fn main() {}\n";
         EmitResult cs = compileStd(prog, findTarget("csharp"));
@@ -1100,7 +1103,7 @@ int main() {
         const char* prog =
             "extern class Widget {\n"
             "  type {\n    actual(csharp)     extern(\"global::Acme.Widget\")\n    actual(typescript) extern(\"Widget\")\n  }\n"
-            "  init(n: i32) {\n    actual(csharp)     extern(\"new $T($0)\")\n    actual(typescript) extern(\"new $T($0)\")\n  }\n"
+            "  constructor(n: i32) {\n    actual(csharp)     extern(\"new $T($0)\")\n    actual(typescript) extern(\"new $T($0)\")\n  }\n"
             "}\n"
             "fn make(): Widget => Widget(7)\n"
             "fn main() {}\n";
@@ -1210,7 +1213,7 @@ int main() {
     {
         const char* prog =
             "import { List } from \"std.collections\"\n"
-            "class Node {\n  var next: List<Node?>\n  init() { this.next = List<Node?>() }\n}\n"
+            "class Node {\n  var next: List<Node?>\n  constructor() { this.next = List<Node?>() }\n}\n"
             "fn deltas(): List<(i32, i32)> {\n"
             "  var d: List<(i32, i32)> = List<(i32, i32)>()\n"
             "  d.add((1, 2))\n"
@@ -1281,7 +1284,7 @@ int main() {
         check(ts.ok && has(ts.code, "let d: number[] = [];") && !has(ts.code, "let d = [];"),
               "issue#27 Bug1: inferred List<i32>() local carries its type on the declaration (TS)");
         // A null local keeps its declared (parenthesized nullable) type on TS.
-        EmitResult tn = compileStd("class Node {\n  var v: i32\n  init() { this.v = 0 }\n}\n"
+        EmitResult tn = compileStd("class Node {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n"
                                    "fn main() { var x: Node? = null\n  x = Node() }\n", findTarget("typescript"));
         check(tn.ok && has(tn.code, "let x: (Node | null) = null;") && !has(tn.code, "let x = null;"),
               "issue#27 Bug1: null local keeps its declared type on TS");
@@ -1300,7 +1303,7 @@ int main() {
             "fn nullables(): Node?[] { var xs: Node?[] = []\n  return xs }\n"
             "fn firstNum(): i32 => nums()[0]\n"
             "fn n(): i32 => nums().count\n"
-            "class Node { var v: i32\n  init() { this.v = 0 } }\n"
+            "class Node { var v: i32\n  constructor() { this.v = 0 } }\n"
             "fn main() {}\n";
         EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "int[] nums()") && has(cs.code, "new int[] { 1, 2, 3 }")
@@ -1498,6 +1501,349 @@ int main() {
               "P19: loadBackend refuses coverage gaps regardless of claims");
     }
 
+    // ---- P37 slice 0: keyed capability vocabulary (closed + load-validated, umbrella fallback) ----------
+    {
+        // An unknown capability key is a LOAD error — never a silently-defaulted-to-native typo.
+        std::string err;
+        check(!loadBackend(R"({"name":"stubby3","spec":{"name":"stubby3"},
+                              "capabilities":{"operatorOverloadng":"native"},
+                              "rules":{"Program":"x","Type":"x"}})", err) &&
+                  has(err, "unknown capability key 'operatorOverloadng'"),
+              "P37 s0: loadBackend refuses a capability key outside the closed vocabulary");
+        check(isKnownCapabilityKey("operatorOverloading") && isKnownCapabilityKey("interfaces") &&
+                  !isKnownCapabilityKey("operatorOverloadng"),
+              "P37 s0: the vocabulary covers the legacy names + coverage-only entries, nothing else");
+
+        // Umbrella rule on a loaded plugin: a `parent:child` key with no explicit entry inherits the bare
+        // parent's stance; an absent parent stays "native".
+        const Backend* php = findBackend("php");
+        const Backend* cs = findBackend("csharp");
+        check(php && php->capabilityStance(std::string("operatorOverloading:arithmetic")) == "false",
+              "P37 s0: php's blanket operatorOverloading=false umbrella-covers an undeclared sub-key");
+        check(php && php->capabilityStance(std::string("operatorOverloading:eq")) == "native",
+              "P37 s0/C6: an explicit sub-key entry overrides the umbrella (php :eq)");
+        check(cs && cs->capabilityStance(std::string("operatorOverloading:eq")) == "native",
+              "P37 s0: an absent parent leaves a sub-key native");
+    }
+
+    // ---- P37 slice 1: `constructor` keyword (M4 guard) --------------------------------------------------
+    {
+        // `constructor` is a live JS/TS prototype member: the internal member name and the plugin skeleton
+        // keys are lookup keys only, and emitted TS/JS must never contain a bare `.constructor` member
+        // access (which would resolve to Object.prototype.constructor at runtime — a silent miscompile).
+        const char* prog = "class Box {\n  var v: i32\n  constructor(v: i32) { this.v = v }\n"
+                           "  fn get(): i32 => this.v\n}\n"
+                           "fn main() {\n  let b = Box(7)\n  print(b.get())\n}\n";
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok, "P37 s1: a `constructor` class compiles on typescript");
+        check(has(ts.code, "constructor("), "P37 s1: TS emits a native class constructor");
+        check(!has(ts.code, ".constructor"), "P37 s1 (M4): emitted TS never accesses `.constructor`");
+        check(!compile("class B {\n  init() {}\n}\n", findTarget("typescript")).ok,
+              "P37 s1: the old `init` keyword no longer parses as a constructor");
+    }
+
+    // ---- P37 slice 2: `is` / `as` --------------------------------------------------------------------
+    {
+        const char* hier = "open class Shape {\n}\nclass Circle : Shape {\n  var r: i32\n"
+                           "  constructor(r: i32) {\n    super()\n    this.r = r\n  }\n}\n";
+        // The binding form: hoisted narrowed Let + null test; TS uses instanceof, C# uses `as`.
+        std::string prog = std::string(hier) +
+            "fn f(x: Shape): i32 {\n  if x is Circle c && c.r > 1 {\n    return c.r\n  }\n  return 0\n}\n"
+            "fn main() { print(f(Circle(3))) }\n";
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok, "P37 s2: `is` binding compiles on typescript");
+        check(has(ts.code, "instanceof Circle") && !has(ts.code, " as Circle"),
+              "P37 s2 (M1): TS emits a runtime instanceof guard, never a bare `as`");
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "x as Circle"), "P37 s2: C# lowers the binding through `as`");
+        EmitResult py = compileStd(prog, findTarget("python"));
+        check(py.ok && has(py.code, "isinstance"), "P37 s2: Python emits isinstance");
+
+        // `as` yields T? — null on failure — and never a TS type assertion.
+        std::string asProg = std::string(hier) +
+            "fn g(x: Shape): i32 {\n  let c = x as Circle\n  return c?.r ?? -1\n}\n"
+            "fn main() { print(g(Circle(2))) }\n";
+        EmitResult tsAs = compileStd(asProg, findTarget("typescript"));
+        check(tsAs.ok && has(tsAs.code, "instanceof Circle ? x : null"),
+              "P37 s2 (M1): TS `as` is a guarded conditional yielding null");
+
+        // Refusals: binding under `||` (test doesn't dominate the branch); union targets; type params;
+        // provably-unrelated types; redeclaring a binding name later in the same block.
+        auto refuses = [&](const std::string& src, const char* frag, const char* label) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+            check(!r.ok && named, label);
+        };
+        refuses(std::string(hier) + "fn f(x: Shape, b: bool): i32 {\n  if x is Circle c || b {\n    return 1\n  }\n  return 0\n}\nfn main() { }\n",
+                "only allowed on an `if` condition's `&&` chain",
+                "P37 s2 (B3): a binding under `||` is refused");
+        refuses("union U {\n  A(v: i32)\n  B(w: i32)\n}\nfn f(x: U): bool => x is A\nfn main() { }\n",
+                "use 'match'", "P37 s2: `is` on a union case is refused toward match");
+        refuses("open class Shape {\n}\nfn f<T>(x: Shape): bool => x is T\nfn main() { }\n",
+                "type parameter", "P37 s2: `is` on a type parameter is refused (generic-preserving)");
+        refuses(std::string(hier) + "class Other {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n"
+                "fn f(o: Other): bool => o is Circle\nfn main() { }\n",
+                "provably impossible", "P37 s2: an unrelated-type test is refused");
+        refuses(std::string(hier) + "fn f(x: Shape): i32 {\n  if x is Circle c {\n    return c.r\n  }\n  let c = 5\n  return c\n}\nfn main() { }\n",
+                "bound by an `is` test earlier in this block",
+                "P37 s2: redeclaring an `is`-binding name later in the block is refused");
+
+        // B4: interface `is` gates per-target — refused when TS is configured, allowed on C#.
+        std::string iface = "interface Named {\n  fn label(): string\n}\n"
+                            "class Tag2 : Named {\n  constructor() {}\n  fn label(): string => \"t\"\n}\n"
+                            "fn f(x: Named): bool => x is Tag2\nfn main() { print(f(Tag2())) }\n";
+        check(compileStd(iface, findTarget("csharp")).ok,
+              "P37 s2 (B4): a CLASS test on an interface-typed operand passes everywhere");
+        std::string ifaceTest = "interface Named {\n  fn label(): string\n}\n"
+                                "open class Base {\n}\nclass Tag2 : Base, Named {\n  constructor() { super() }\n  fn label(): string => \"t\"\n}\n"
+                                "fn f(x: Base): bool => x is Named\nfn main() { print(f(Tag2())) }\n";
+        check(compileStd(ifaceTest, findTarget("csharp")).ok,
+              "P37 s2 (B4): interface `is` allowed on a csharp-only build");
+        EmitResult tsIface = compileStd(ifaceTest, findTarget("typescript"));
+        bool gated = false;
+        for (const auto& d : tsIface.diagnostics)
+            if (has(d.message, "interfaces:runtimeIdentity")) gated = true;
+        check(!tsIface.ok && gated,
+              "P37 s2 (B4): interface `is` refused when typescript is configured (no runtime identity)");
+    }
+
+    // ---- P37 slice 3: operators complete ---------------------------------------------------------------
+    {
+        const char* vec = "class Vec {\n  var x: i32\n  constructor(x: i32) { this.x = x }\n"
+                          "  operator fn plus(o: Vec): Vec => Vec(this.x + o.x)\n"
+                          "  operator fn eq(o: Vec): bool => this.x == o.x\n"
+                          "  operator fn neg(): Vec => Vec(0 - this.x)\n"
+                          "  operator fn band(o: Vec): Vec => Vec(this.x & o.x)\n}\n";
+        // C5: TS moves to static-on-type; C#/Python stay native.
+        std::string prog = std::string(vec) +
+            "fn main() {\n  let a = Vec(3)\n  let b = Vec(4)\n  print((a + b).x)\n  print(a == b)\n"
+            "  print((-a).x)\n  print((a & b).x)\n}\n";
+        EmitResult ts = compileStd(prog, findTarget("typescript"));
+        check(ts.ok, "P37 s3: TS compiles the full operator surface");
+        check(has(ts.code, "static plus(lhs: Vec") && has(ts.code, "Vec.plus(a, b)"),
+              "P37 s3 (C5): TS operators are static-on-type at decl and call site");
+        check(has(ts.code, "static eq(lhs: Vec | null") && has(ts.code, "Vec.eq(a, b)") &&
+                  has(ts.code, "if (lhs === null ||"),
+              "P37 s3 (C5): TS eq is static and null-tolerant");
+        check(has(ts.code, "Vec.neg(a)"), "P37 s3 (#62): TS routes user unary neg");
+        check(has(ts.code, "Vec.band(a, b)"), "P37 s3 (#63): TS routes user bitwise band");
+        EmitResult cs = compileStd(prog, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "operator +(Vec lhs") && has(cs.code, "operator &(Vec lhs"),
+              "P37 s3: C# operators stay native (incl. bitwise)");
+        EmitResult py = compileStd(prog, findTarget("python"));
+        check(py.ok && has(py.code, "__add__") && has(py.code, "__neg__") && has(py.code, "__and__"),
+              "P37 s3: Python dunders cover arithmetic + unary + bitwise");
+
+        // Explicit conversion: cast-site rewrite on method targets, native explicit operator on C#.
+        std::string conv = "record Cel(deg: f64) {\n  operator fn explicit(): f64 => this.deg * 2.0\n}\n"
+                           "fn main() {\n  let c = Cel(5.0)\n  print((f64)c)\n}\n";
+        EmitResult tsc = compileStd(conv, findTarget("typescript"));
+        check(tsc.ok && has(tsc.code, "Cel.toF64(c)") && has(tsc.code, "static toF64(lhs: Cel)"),
+              "P37 s3: TS rewrites the cast site to the static Cel.toF64(c)");
+        EmitResult csc2 = compileStd(conv, findTarget("csharp"));
+        check(csc2.ok && has(csc2.code, "explicit operator double(Cel lhs)"),
+              "P37 s3: C# emits the native explicit operator");
+
+        // Refusals: implicit conversion; unary without a declared neg; compound with a computed receiver.
+        auto refuses3 = [&](const std::string& src, const char* frag, const char* label) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+            check(!r.ok && named, label);
+        };
+        refuses3("record M(v: f64) {\n  operator fn implicit(): f64 => this.v\n}\nfn main() { }\n",
+                 "refuses implicit user conversions", "P37 s3: implicit conversion refused");
+        refuses3(std::string(vec) + "fn main() {\n  let a = Vec(1)\n  let t = ~a\n}\n",
+                 "declares no 'operator fn bnot'",
+                 "P37 s3 (#62): `~` on a user type without bnot is refused, not mis-emitted");
+        refuses3("class Box {\n  var a: Vec\n  constructor() { this.a = Vec(0) }\n}\n" + std::string(vec) +
+                 "fn mk(): Box => Box()\nfn main() {\n  mk().a += Vec(2)\n}\n",
+                 "needs a simple receiver",
+                 "P37 s3 (C7): a compound through a computed receiver is refused (single-eval)");
+        check(compileStd(std::string(vec) + "fn main() {\n  var v = Vec(1)\n  v += Vec(2)\n  print(v.x)\n}\n",
+                         findTarget("typescript")).ok,
+              "P37 s3 (C7): a simple compound on a user type compiles");
+
+        // C6: PHP gains :eq (+:indexers) while :arithmetic stays refused.
+        std::string eqOnly = "class M {\n  var c: i32\n  constructor(c: i32) { this.c = c }\n"
+                             "  operator fn eq(o: M): bool => this.c == o.c\n}\n"
+                             "fn main() { print(M(1) == M(1)) }\n";
+        EmitResult phpEq = compileStd(eqOnly, findTarget("php"));
+        check(phpEq.ok && has(phpEq.code, "->eq("), "P37 s3 (C6): PHP supports user eq (->eq call)");
+        std::string arith = std::string(vec) + "fn main() { print((Vec(1) + Vec(2)).x) }\n";
+        EmitResult phpAr = compileStd(arith, findTarget("php"));
+        bool namedArith = false;
+        for (const auto& d : phpAr.diagnostics)
+            if (has(d.message, "operatorOverloading:arithmetic")) namedArith = true;
+        check(!phpAr.ok && namedArith, "P37 s3 (C6): PHP still refuses :arithmetic, by sub-key");
+    }
+
+    // ---- P37 slice 4: attributes — Tier 2 portable metadata + Tier 1 pass-through ----------------------
+    {
+        // Tier 2: Meta queries resolve at transpile time and lower to inline constants.
+        const char* meta =
+            "attribute Range(min: i32, max: i32)\n"
+            "[Range(1, 8)]\nclass Box {\n  [Range(0, 100)]\n  var fill: i32\n"
+            "  constructor() { this.fill = 0 }\n}\n"
+            "class Plain {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n";
+        std::string q = std::string(meta) +
+            "fn main() {\n  print(Meta.has<Box, Range>())\n  print(Meta.has<Plain, Range>())\n"
+            "  let r = Meta.get<Box, Range>()\n  print(r?.max ?? -1)\n"
+            "  print(Meta.member<Box, Range>(\"fill\")?.max ?? -1)\n}\n";
+        EmitResult ts = compileStd(q, findTarget("typescript"));
+        check(ts.ok, "P37 s4: Meta queries compile on typescript");
+        check(has(ts.code, "new Range(1, 8)") && has(ts.code, "new Range(0, 100)"),
+              "P37 s4: Meta.get/member lower to inline constructions of the recorded constants");
+        check(!has(ts.code, "Meta"), "P37 s4: no Meta runtime surface exists in the output");
+        EmitResult php = compileStd(q, findTarget("php"));
+        check(php.ok, "P37 s4: Tier 2 metadata needs NO capability — it runs on PHP too");
+
+        // Zero output when unqueried: attach but never query -> the attribute record vanishes.
+        std::string unq = std::string(meta) + "fn main() { print(Box().fill) }\n";
+        EmitResult tsu = compileStd(unq, findTarget("typescript"));
+        check(tsu.ok && !has(tsu.code, "Range"),
+              "P37 s4: an attached-but-unqueried attribute emits ZERO runtime output");
+
+        // Tier 1: the binding IS the native annotation line; imports accumulate once; refuse/D12 gate.
+        const char* bind =
+            "extern attribute JsonProp(name: string) {\n"
+            "  actual(csharp) extern(\"[Newtonsoft.Json.JsonProperty($0)]\") import \"using Newtonsoft.Json;\"\n"
+            "  actual(typescript) extern(\"@JsonProp($name)\")\n"
+            "  actual(python) refuse\n"
+            "}\n";
+        std::string prog1 = std::string(bind) +
+            "[JsonProp(\"x\")]\nclass C {\n  var x: i32\n  constructor() { this.x = 0 }\n}\n"
+            "fn main() { print(C().x) }\n";
+        EmitResult cs = compileStd(prog1, findTarget("csharp"));
+        check(cs.ok && has(cs.code, "[Newtonsoft.Json.JsonProperty(\"x\")]") &&
+                  has(cs.code, "using Newtonsoft.Json;"),
+              "P37 s4 (Tier 1): C# gets the native attribute line + the using once");
+        EmitResult ts1 = compileStd(prog1, findTarget("typescript"));
+        check(ts1.ok && has(ts1.code, "@JsonProp(\"x\")"),
+              "P37 s4 (Tier 1): TS gets the decorator line ($name substitution)");
+        EmitResult py1 = compileStd(prog1, findTarget("python"));
+        bool refusedArm = false;
+        for (const auto& d : py1.diagnostics) if (has(d.message, "declares `refuse`")) refusedArm = true;
+        check(!py1.ok && refusedArm, "P37 s4 (D12): an explicit `refuse` arm refuses loudly");
+        EmitResult ph1 = compileStd(prog1, findTarget("php"));
+        bool noArm = false;
+        for (const auto& d : ph1.diagnostics) if (has(d.message, "no binding for target 'php'")) noArm = true;
+        check(!ph1.ok && noArm, "P37 s4 (D12): a target with NO arm refuses loudly");
+
+        // Attachment-point gating: TS has no function decorators.
+        std::string fnAttr = std::string(bind) +
+            "[JsonProp(\"f\")]\nfn helper(): i32 => 1\nfn main() { print(helper()) }\n";
+        EmitResult tsf = compileStd(fnAttr, findTarget("typescript"));
+        bool gatedFn = false;
+        for (const auto& d : tsf.diagnostics)
+            if (has(d.message, "attributes:target.function")) gatedFn = true;
+        check(!tsf.ok && gatedFn, "P37 s4 (D10): a function attribute gates on TS (no function decorators)");
+        check(compileStd(fnAttr, findTarget("csharp")).ok,
+              "P37 s4 (D10): the same function attribute is fine on C#");
+
+        // M6 + attachment refusals.
+        auto refuses4 = [&](const std::string& src, const char* frag, const char* label) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+            check(!r.ok && named, label);
+        };
+        refuses4(std::string(meta) + "fn f<T>(): bool => Meta.has<T, Range>()\nfn main() { }\n",
+                 "cannot be a type parameter",
+                 "P37 s4 (M6): a type-parameter type arg refuses — permanently");
+        refuses4(std::string(meta) + "fn f(n: string): bool => Meta.member<Box, Range>(n) != null\nfn main() { }\n",
+                 "STRING LITERAL", "P37 s4 (M6): a computed member name refuses");
+        refuses4(std::string(meta) + "fn main() { print(Meta.member<Box, Range>(\"nope\") == null) }\n",
+                 "no member named 'nope'", "P37 s4: an unknown member name refuses");
+        refuses4("attribute Tag()\n[Tag, Tag]\nclass C {\n  var v: i32\n  constructor() { this.v = 0 }\n}\nfn main() { }\n",
+                 "applied more than once", "P37 s4: repeat application refuses (AllowMultiple deferred)");
+        refuses4("attribute Tag(v: i32)\nfn cfg(): i32 => 3\n[Tag(cfg())]\nclass C {\n  var v: i32\n  constructor() { this.v = 0 }\n}\nfn main() { }\n",
+                 "compile-time constants", "P37 s4: a non-const attribute arg refuses");
+        refuses4("attribute Tag()\nfn main() {\n  let t = Tag()\n}\n",
+                 "cannot be constructed directly", "P37 s4: direct construction of an attribute refuses");
+        refuses4("class C {\n  var v: i32\n  constructor() { this.v = 0 }\n  fn m(): i32 => this.v\n}\n"
+                 "fn main() {\n  let c = C()\n  print(c.m<i32>())\n}\n",
+                 "explicit type arguments are not supported",
+                 "P37 s4 (D.3): silently-ignored member-call type args now refuse (anti-silent-drop)");
+    }
+
+    // ---- P37 feature-complete: field/param attributes, enum/array values, Meta.param ------------------
+    {
+        const char* bind =
+            "extern attribute JsonProp(name: string) {\n"
+            "  actual(csharp) extern(\"[Newtonsoft.Json.JsonProperty($0)]\") import \"using Newtonsoft.Json;\"\n"
+            "  actual(php) extern(\"#[JsonProp($0)]\")\n"
+            "}\n";
+        // Tier 1 on a FIELD: the annotation line lands above the field; Python gates the point.
+        std::string fieldProg = std::string(bind) +
+            "class C {\n  [JsonProp(\"x\")]\n  var x: i32\n  constructor() { this.x = 0 }\n}\n"
+            "fn main() { print(C().x) }\n";
+        EmitResult csf = compileStd(fieldProg, findTarget("csharp"));
+        check(csf.ok && has(csf.code, "[Newtonsoft.Json.JsonProperty(\"x\")]"),
+              "P37 fc: a Tier 1 FIELD attribute emits above the field on C#");
+        EmitResult pyf = compileStd(fieldProg, findTarget("python"));
+        bool gatedField = false;
+        for (const auto& d : pyf.diagnostics)
+            if (has(d.message, "attributes:target.field")) gatedField = true;
+        check(!pyf.ok && gatedField, "P37 fc: a field attribute gates on Python (no field annotations)");
+
+        // Tier 1 on a PARAMETER: inline before the param on C#/PHP; TS gates the point.
+        std::string paramProg = std::string(bind) +
+            "fn f([JsonProp(\"p\")] p: i32): i32 => p\nfn main() { print(f(3)) }\n";
+        EmitResult csp = compileStd(paramProg, findTarget("csharp"));
+        check(csp.ok && has(csp.code, "[Newtonsoft.Json.JsonProperty(\"p\")] int p"),
+              "P37 fc: a Tier 1 PARAM attribute emits inline on C#");
+        EmitResult php2 = compileStd(paramProg, findTarget("php"));
+        check(php2.ok && has(php2.code, "#[JsonProp(\"p\")] $p"),
+              "P37 fc: a Tier 1 PARAM attribute emits inline on PHP");
+        EmitResult tsp = compileStd(paramProg, findTarget("typescript"));
+        bool gatedParam = false;
+        for (const auto& d : tsp.diagnostics)
+            if (has(d.message, "attributes:target.param")) gatedParam = true;
+        check(!tsp.ok && gatedParam, "P37 fc: a param attribute gates on TS (TC39 has none)");
+
+        // Enum + array constant values render per plugin SPEC data (never target-name checks in Core).
+        std::string constProg =
+            "enum Sev {\n  Low\n  High\n}\n"
+            "extern attribute Cfg(s: Sev, ids: i32[]) {\n"
+            "  actual(csharp) extern(\"[Cfg($0, $1)]\")\n"
+            "  actual(php) extern(\"#[Cfg($0, $1)]\")\n"
+            "}\n"
+            "[Cfg(Sev.High, [1, 2])]\nclass C {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n"
+            "fn main() { print(C().v) }\n";
+        EmitResult csc3 = compileStd(constProg, findTarget("csharp"));
+        check(csc3.ok && has(csc3.code, "[Cfg(Sev.High, new[] {1, 2})]"),
+              "P37 fc: enum + array values spell per the C# plugin spec (constArray*)");
+        EmitResult phc = compileStd(constProg, findTarget("php"));
+        check(phc.ok && has(phc.code, "#[Cfg(Sev::High, [1, 2])]"),
+              "P37 fc: enum member spells via the PHP plugin's enumMemberOp");
+
+        // Tier 2 param metadata via Meta.param.
+        std::string metaParam =
+            "attribute Range(min: i32, max: i32)\n"
+            "class Box {\n  var v: i32\n  constructor() { this.v = 0 }\n"
+            "  fn scale([Range(1, 4)] k: i32): i32 => this.v * k\n}\n"
+            "fn main() {\n  print(Meta.param<Box, Range>(\"scale\", \"k\")?.max ?? -1)\n}\n";
+        EmitResult mp = compileStd(metaParam, findTarget("typescript"));
+        check(mp.ok && has(mp.code, "new Range(1, 4)"),
+              "P37 fc: Meta.param lowers to the recorded constants");
+        auto refusesFc = [&](const std::string& src, const char* frag, const char* label) {
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            bool named = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+            check(!r.ok && named, label);
+        };
+        refusesFc("attribute Range(min: i32, max: i32)\n"
+                  "class Box {\n  var v: i32\n  constructor() { this.v = 0 }\n"
+                  "  fn scale([Range(1, 4)] k: i32): i32 => this.v * k\n}\n"
+                  "fn main() {\n  print(Meta.param<Box, Range>(\"scale\", \"nope\") == null)\n}\n",
+                  "no parameter named 'nope'", "P37 fc: an unknown param name refuses");
+        refusesFc("attribute Tag(v: i32)\nattribute Wrap([Tag(1)] x: i32)\nfn main() { }\n",
+                  "attribute` declaration's parameters are refused",
+                  "P37 fc: attributes on an attribute's own params refuse");
+    }
+
     // ---- P19 slices 13-15: reserved/forbidden identifiers (identifier hygiene, json-plugins.md §7) -----
     {
         // A name a target's generated code uses is refused for that target only (kind-blind v1).
@@ -1557,7 +1903,7 @@ int main() {
     // `(basis + opt?.v) ?? 0.0` — wrong on both targets and divergent (C# 0.0 vs JS NaN).
     {
         const char* src =
-            "class Box {\n  var v: f64\n  init(v: f64) { this.v = v }\n}\n"
+            "class Box {\n  var v: f64\n  constructor(v: f64) { this.v = v }\n}\n"
             "fn addOpt(basis: f64, opt: Box?): f64 => basis + (opt?.v ?? 0.0)\n"
             "fn main() {\n  print(addOpt(5.0, null))\n}\n";
         EmitResult cs = compileStd(src, findTarget("csharp"));
@@ -1669,7 +2015,7 @@ int main() {
 
         // `this` inside a lambda sets capturesThis (drives TS-arrow / PHP $this / C++ [this]). Asserted in an
         // `init` body, which `ir::dump` renders (method bodies aren't dumped, but the flag is set the same way).
-        std::string self = capIr("class C {\n  let v: i32\n  init() {\n    this.v = 0\n    let f = () => this.v\n  }\n}\n");
+        std::string self = capIr("class C {\n  let v: i32\n  constructor() {\n    this.v = 0\n    let f = () => this.v\n  }\n}\n");
         check(has(self, "[caps this]"), "P25: a lambda referencing `this` sets capturesThis");
 
         // Slice 4 — PHP real closures. PHP has no interpreter in this environment, so the differential gate
@@ -1690,7 +2036,7 @@ int main() {
     {
         auto parseOf = [](const char* src) { DiagnosticBag d; return parse(lex(src, d), d); };
         auto usesFeature = [](const CompilationUnit& u, Feature f) {
-            for (const auto& use : collectFeatureUses(u)) if (use.feature == f) return true;
+            for (const auto& use : collectFeatureUses(u)) if (use.key == featureName(f)) return true;
             return false;
         };
 
@@ -1699,7 +2045,7 @@ int main() {
         check(usesFeature(width, Feature::FixedWidthIntegers), "P26 s0: a sub-64/unsigned width marks fixedWidthIntegers");
         auto ch = parseOf("fn f(c: char): char { return c }\n");
         check(usesFeature(ch, Feature::Utf16Strings), "P26 s0: a `char` type marks utf16Strings");
-        auto mref = parseOf("class Box { var v: i32\n  init() { this.v = 0 } }\n");
+        auto mref = parseOf("class Box { var v: i32\n  constructor() { this.v = 0 } }\n");
         check(usesFeature(mref, Feature::MutableRefClasses), "P26 s0: a mutable-field class marks mutableRefClasses");
         auto immut = parseOf("record P(x: i32)\nfn f(): i32 { let p = P(1)\n  return p.x }\n");
         check(!usesFeature(immut, Feature::MutableRefClasses), "P26 s0: a record (no var field) does not mark mutableRefClasses");
@@ -2814,7 +3160,7 @@ int main() {
             findTarget("csharp"));
         check(!uninit.ok, "G11: never-initialized class field is refused");
         EmitResult initOk = compileStd(
-            "class C {\n  var x: i32\n  init(x: i32) { this.x = x }\n  fn get(): i32 => this.x\n}\nfn main() { print(C(3).get()) }\n",
+            "class C {\n  var x: i32\n  constructor(x: i32) { this.x = x }\n  fn get(): i32 => this.x\n}\nfn main() { print(C(3).get()) }\n",
             findTarget("csharp"));
         check(initOk.ok, "G11: field assigned in init passes");
 

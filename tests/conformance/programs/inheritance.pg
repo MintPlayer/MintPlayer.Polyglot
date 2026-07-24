@@ -5,7 +5,7 @@
 
 class AppError : Error {
   let code: i32
-  init(code: i32) {
+  constructor(code: i32) {
     super("app error")
     this.code = code
   }
@@ -13,7 +13,7 @@ class AppError : Error {
 
 class IoError : Error {
   let code: i32
-  init(code: i32) {
+  constructor(code: i32) {
     super("io error")
     this.code = code
   }

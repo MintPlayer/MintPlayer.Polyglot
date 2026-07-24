@@ -66,11 +66,13 @@ $extOf = @{ csharp = "cs"; typescript = "ts"; python = "py"; php = "php" }
 $labelOf = @{ csharp = "C#"; typescript = "TS"; python = "Python"; php = "PHP" }
 
 # G28 pinned expected-refusal set: exactly the programs that legitimately refuse on the PHP surface today —
-# operatorOverloading (vec2, operators_full, indexer_grid's indexer), async (async_await, async_compose), and
-# a portable fn with no PHP `actual` (expect_actual, extern_ffi). Add here ONLY when the PHP plugin gains a
-# new deliberate gate.
+# operatorOverloading:arithmetic/:conversion (vec2, operators_full, operator_unary/bitwise/compound/convert),
+# async (async_await, async_compose), and a portable fn with no PHP `actual` (expect_actual, extern_ffi).
+# P37 C6 widened PHP to :eq + :indexers, so operator_eq and indexer_grid now RUN on PHP. Add here ONLY when
+# the PHP plugin gains a new deliberate gate.
 $expectedRefusers = @(
-    'async_await', 'async_compose', 'expect_actual', 'extern_ffi', 'indexer_grid', 'operator_eq', 'operators_full', 'prop_accessors', 'vec2'
+    'async_await', 'async_compose', 'expect_actual', 'extern_ffi', 'operators_full', 'prop_accessors', 'vec2',
+    'operator_unary', 'operator_bitwise', 'operator_compound', 'operator_convert'
 )
 
 # Normalize the requested target set; the csharp oracle is always present.

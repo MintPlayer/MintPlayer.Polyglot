@@ -4,7 +4,7 @@
 
 class Counter {
   var n: i32
-  init(n: i32) { this.n = n }
+  constructor(n: i32) { this.n = n }
   fn reader(): () => i32 => () => this.n
   fn adder(k: i32): (i32) => i32 => (x) => x + this.n + k
   fn set(v: i32) { this.n = v }
