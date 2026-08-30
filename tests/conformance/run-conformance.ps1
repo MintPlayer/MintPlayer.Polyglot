@@ -76,8 +76,12 @@ $expectedRefusers = @(
 )
 
 # Normalize the requested target set; the csharp oracle is always present.
+# Split on commas as well as array elements: a cross-process caller (`pwsh run-conformance.ps1 -Targets
+# csharp,typescript`, or any `-File` invocation) hands the whole list over as ONE string — only an
+# in-process `& script.ps1 -Targets csharp, typescript` binds a real array. Accept both spellings so a
+# call site can't silently mis-bind (it blocked the 0.9.8 release: run 30071627886).
 $targetSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($t in $Targets) {
+foreach ($t in (($Targets -split ',') | Where-Object { $_.Trim() })) {
     $lc = $t.Trim().ToLowerInvariant()
     if (-not $extOf.ContainsKey($lc)) { Write-Host "unknown target '$t' (want: $($canonical -join ', '))."; exit 2 }
     $null = $targetSet.Add($lc)
