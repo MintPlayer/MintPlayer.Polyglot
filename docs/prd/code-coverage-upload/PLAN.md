@@ -199,6 +199,23 @@ all four targets, so the count of gate legs is unchanged but the corpus grows.
     pretty-printed manifests. (3) First smoke run: **224/1034 csharp arms** from a single
     `counter.pg` build, with the other three manifests correctly at 0 (denominator-only, since they
     were loaded but not targeted) — the instrument distinguishes loaded from exercised, as intended.
-  - **Not yet done:** slice 0's SP1/SP2/SP3 need a CI run (they are only answerable there), SP5
-    needs OpenCppCoverage installed locally, and slice 7 is unsized until the first full sweep
-    reports its dead arms.
+- **2026-09-11 — slice 7 + SP2, target met.** Per-manifest arm coverage now **csharp 94.5%,
+  php 96.1%, python 94.6%, typescript 94.8%** (maintainer's bar: 90%). Full classification of the
+  residue in PRD §7.1. Four things happened, in the order they were found:
+  - **SP2 answered by the first CI run:** `gcovr --cobertura` doesn't exist on ubuntu-22.04
+    (gcovr 5.0); `--xml` emits the same Cobertura and works on both. Fixed.
+  - **The multi-file programs weren't being swept** the way the conformance runner builds them
+    (`entry.pg` + `--root` + a pgconfig naming every target). Added to both sweeps — the linked-module
+    arms measured ~20% of each manifest on their own.
+  - **Two new conformance programs** for genuinely unexercised shapes, plus **67+2 lines of
+    unreachable untyped-catch templates deleted**, proven behavior-neutral by byte-comparing 24
+    emitted files.
+  - **The big one: the tracer itself had a blind spot.** Decl-flavor rules are interpreted by
+    `EmitterBase::runDeclRule`, not `evalRule`, so every declaration- and statement-shaped rule read
+    as cold — which is precisely why the uncovered list looked like `MethodDecl`/`Program`/`TryStmt`/
+    `ClassDecl`. One line fixed it and the real figure jumped ~13pp. **Lesson worth keeping: the
+    instrument's own blind spot is indistinguishable from missing tests.** Recorded as a permanent
+    invariant in PRD §4.B.
+  - **Still open:** SP1 + SP3 need the CI run now in flight (does the server render a `.json`
+    source; does OIDC authenticate). SP5 needs OpenCppCoverage installed locally. Final full gate
+    + the README badge remain.

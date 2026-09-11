@@ -169,6 +169,16 @@ by hand and stopped looking. Per the single-PR rule these get fixed (or deleted,
 conformance program) **in this same PR**, not deferred. If the count is large, the honest response is
 a conformance program per cluster, not a lowered denominator.
 
+**Both interpreters must mark (as-built, and the trap).** Rules come in two flavors: string-flavor
+ones evaluate through `evalRule`, but **decl-flavor** ones (`Line`/`Block`/`Seq`/`MapDecl`/`Stmts`/
+`Indent`/`MapMembers`) are interpreted by `EmitterBase::runDeclRule` instead. Marking only at
+`evalRule` reported every declaration- and statement-shaped rule as cold — the first measurement read
+80–85% and its uncovered list was dominated by exactly those rules (`MethodDecl`, `Program`,
+`TryStmt`, `ClassDecl`). With both interpreters marking, the real figure is **~95%**. A denominator
+counting arms no instrument can reach is the same class of lie the anti-silent-drop contract exists
+to prevent, so this is a permanent invariant: **a new rule-interpretation path must mark, or the
+number is meaningless.**
+
 ### 4.C Surface 3 — local Windows parity
 
 `coverage.ps1` gains `--export_type cobertura:x64\coverage\cobertura.xml` beside the HTML (it
@@ -357,7 +367,8 @@ green while the targets diverge.
 4. The arm tracer's denominator provably comes from the parse, not a regex: a deliberately
    never-referenced rule added to a manifest shows up as **uncovered**, not absent. (Test fixture.)
 5. Every uncovered arm found by the first real run is resolved in this PR — covered, or deleted,
-   or explicitly listed with a reason.
+   or explicitly listed with a reason. **As built: ≥90% per manifest** (csharp 94.5%, php 96.1%,
+   python 94.6%, typescript 94.8%), with the residue characterized in §7.1.
 6. `pwsh scripts/coverage.ps1` produces cobertura + HTML + a plugin arm report locally, with no CI
    and no NX.
 7. The full gate (`-Tier full`) stays green and no gate leg gets slower (the tracer is off by
@@ -366,6 +377,38 @@ green while the targets diverge.
 9. The path tripwire (§4.E) passes, and fails loudly when fed a deliberately-bad path.
 10. CLAUDE.md + README state the three-instrument split and the Linux-only bias; README carries the
     org-convention badge once the first master upload lands.
+
+### 7.1 The residue, characterized
+
+Baseline after slice 7: **csharp 94.5% (57 uncovered), php 96.1% (37), python 94.6% (55),
+typescript 94.8% (64)**. What the instrument actually found, and what happened to each class:
+
+1. **A measurement bug, not a test gap** — the decl-rule interpreter went unmarked (§4.B). Worth
+   naming first because it was ~13pp of the apparent gap: the instrument's own blind spot looked
+   exactly like missing tests.
+2. **Genuinely unexercised shapes → new conformance programs.** Unguarded multi-catch dispatch
+   (`try_multi_catch.pg`) and block-bodied property accessors (`prop_block_accessors.pg`). Both
+   green on all four targets; the latter is a pinned PHP refuser for the same reason
+   `prop_accessors.pg` is (no property setters before PHP 8.4).
+3. **Genuinely dead templates → deleted.** A catch clause *always* has a type — the parser does
+   `expect(Colon)` + `parseType()` (`parser.cpp:881`), lowering only copies it (`lower.cpp:1027`),
+   and nothing else constructs an `ir::Catch`. So every `item.hasType == false` arm under a
+   `mapDecl: stmt.catches` was unreachable: 67 lines of TS untyped catch-all emission plus the
+   Python `Exception` and PHP `\Throwable` fallback types. Proven behavior-neutral — all 24 emitted
+   files across six catch-heavy programs on four targets are byte-identical before and after.
+4. **Permanently unreachable by construction → documented, not deleted.** PHP's `UnionDecl` (6/6
+   arms, the only entirely-cold rule left) exists *solely* to satisfy the anti-silent-drop load
+   contract: `{"UnionDecl", "patternMatching"}` demands a rule from any plugin claiming
+   `patternMatching: native`, but PHP erases unions to tagged arrays and its `Program` never maps
+   `module.unions`, so the rule is never dispatched. **Deleting it would fail the load.** This is
+   where the two contracts meet awkwardly — the static one requires a rule to *exist*, the dynamic
+   one observes it never *runs*. Both are right; the rule is a structural placeholder. If that
+   friction ever needs resolving, the fix is a manifest-level "declared unreachable" marker, not a
+   deletion and not a lowered denominator.
+5. **The long tail** (~40 arms per manifest, no cluster above 34): per-target niche shapes in
+   `MethodDecl`, `Type`, `InterfaceDecl`, `Cast`, `Match`/`ArmGuard`. Left uncovered deliberately —
+   the ratchet (§6.4) keeps it from regressing, and chasing each one would trade real review
+   surface for a vanity number.
 
 ## 8. Out of scope / follow-ups
 
