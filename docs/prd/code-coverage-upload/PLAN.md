@@ -160,7 +160,7 @@ all four targets, so the count of gate legs is unchanged but the corpus grows.
 |---|---|---|---|---|
 | 1 | master push → finalized build, C++ + 4 plugin reports | 1, 5 | dashboard | ⏳ nothing merged yet |
 | 2 | non-fork PR uploads, cannot red the PR | 1 | PR run | ✅ PR #67 |
-| 3 | manifests browsable per-line | 0 (SP1), 4, 5 | dashboard | ⏳ **blocking — maintainer check** |
+| 3 | manifests browsable per-line | 0 (SP1), 4, 5 | dashboard | ✅ verified — 977/1034 rendered, no server change |
 | 4 | denominator from the parse, not a regex | 3, 4 | fixture test | ✅ unit test |
 | 5 | uncovered arms resolved in this PR | 7 | review | ✅ ≥90% all four (bar reset by maintainer) |
 | 6 | local run → cobertura + HTML + plugin lcov | 6 | `scripts/coverage.ps1` | ⚠️ arm report yes; C++ half unverified (SP5) |
@@ -169,8 +169,8 @@ all four targets, so the count of gate legs is unchanged but the corpus grows.
 | 9 | path tripwire passes + fails loudly on bad input | 4 | tripwire test | ✅ both directions |
 | 10 | docs + badge updated | 6 | review | ⚠️ CLAUDE.md done; README/badge held for master |
 
-**Net: 7 met, 2 partial, 1 blocking.** The blocking one is #3 — whether the coverage server renders
-a `.json` source. Everything else is either done or waits on a master merge.
+**Net: 8 met, 2 partial, nothing blocking.** Both partials wait on things outside the code: a master
+merge (#1, #10) and a local tool install (#6 / SP5).
 
 ## Risks
 
@@ -247,3 +247,18 @@ a `.json` source. Everything else is either done or waits on a master merge.
   - **Still open:** SP5 (needs `choco install opencppcoverage` locally) and the README badge, which
     is deliberately deferred until the first successful *master* upload — a badge pointing at an
     empty project is worse than none.
+
+- **2026-09-11 — SP1 verified in the dashboard. The design bet paid off; no server change needed.**
+  Checked in a maintainer-authenticated browser session (build `8ef9b76`, run `34600174884.1`,
+  *Finalized*):
+  - `plugins 95.0% (4022/4235 lines)` sits beside `src 84.1%`; flag chips `cpp-core` / `linux` /
+    `plugins` all present; repo total 83.9% → **87.3%** on this branch across 44 files.
+  - All four `polyglot-plugin.json` files are browsable, and
+    `plugins/csharp/polyglot-plugin.json` renders **977/1034 lines covered** — matching the local
+    number exactly — with JSON syntax highlighting and **per-line hit counts**: 977 green rows at
+    `1×`, 57 red rows at `0×`.
+  - The payoff is legible at a glance: csharp line 1020 (the `isWildcard` → `"_"` arm) sits red at
+    `0×`. A dead template arm is now a red line in a dashboard rather than something found by
+    reading 3,700 lines of JSON by hand.
+  - Why it worked with no server change: lcov never cared what `SF:` points at, and the manifests
+    are git-tracked, so the server's longest-suffix match resolved them like any other source file.

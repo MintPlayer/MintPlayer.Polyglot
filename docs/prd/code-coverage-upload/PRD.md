@@ -7,10 +7,11 @@
 > **explicitly deferred** both the template-arm tracer and any threshold.
 
 - **Status:** designed + **BUILT (2026-09-11)** on `code-coverage-upload` / **draft PR #67** —
-  as-built markers inline. Full gate green; CI `linux-build` + `coverage` green; the PR-side upload
-  to coverage.mintplayer.com works (5 files, one finalized session). **Not closed out:** §7 criteria
-  1, 3 and 10 are open, and SP5 is unrun — the blocking one is **SP1/criterion 3**, which only the
-  maintainer can check in the dashboard. One PR (CLAUDE.md single-PR rule), ordered commits.
+  as-built markers inline. Full gate green; CI `linux-build` + `coverage` green; the upload to
+  coverage.mintplayer.com works end to end and **the plugin manifests render per-line in the
+  dashboard** (SP1 passed — no server-side change needed). **Remaining:** §7 criteria 1 and 10 wait
+  on a master merge (first master build + the README badge), and SP5 is unrun (OpenCppCoverage not
+  installed locally). Nothing blocking. One PR (CLAUDE.md single-PR rule), ordered commits.
 - **Author:** Pieterjan (with Claude Code).
 - **Provenance:** a two-track investigation — a repo audit (existing instruments, gate topology,
   plugin/rule internals) and an org-convention survey across `MintPlayer.AI`,
@@ -291,13 +292,23 @@ Each is time-boxed and throwaway; a spike that fails changes the design, and §7
   (`<class filename="plugins/…json">`) if only the lcov path is fussy. Do **not** fall back to "a
   percentage in the job summary" — that is the status quo this PRD exists to replace.
 
-  **⚠ PARTLY ANSWERED — the one open item.** The real reports (not a hand-written probe) upload
-  cleanly: the action logs all five files accepted in one session, `finish` acknowledged 202, and
-  the §4.E tripwire passes, so every path resolved against `git ls-files`. What is **not** confirmed
-  is (a)/(c)/(e) — parsing is asynchronous, and `GET /api/uploads/status` is 401 without a token,
-  which this work deliberately does not handle. **So whether the four manifests parse, render with
-  line highlighting, and count toward the project total is visible only to the maintainer in the
-  dashboard.** If they do not, this is the offered server-side change.
+  **✅ DONE — PASSED on every point, and NO server-side change was needed.** Verified in the
+  dashboard (2026-09-11, maintainer-authenticated session, build `8ef9b76` run `34600174884.1`,
+  status *Finalized*):
+  - (a) **Parses.** The build reports `plugins 95.0% (4022/4235 lines)` beside `src 84.1%`, and the
+    flag chips `cpp-core` / `linux` / `plugins` all appear.
+  - (b) **Listed.** `plugins/{csharp,php,python,typescript}/polyglot-plugin.json` are all browsable
+    through the file tree.
+  - (c) **Renders with per-line hit/miss.** `plugins/csharp/polyglot-plugin.json` shows
+    **977/1034 lines covered** — matching the local measurement exactly — with JSON syntax
+    highlighting, per-line **hit counts** (`1×` / `0×`), 977 green rows and 57 red rows.
+  - (d) No extension or language allowlist rejects `.json`.
+  - (e) **Counts toward the project total** (repo-level 83.9% → 87.3% on this branch, 44 files).
+
+  The design bet paid off exactly as reasoned: lcov is format-agnostic about `SF:`, and because the
+  manifests are git-tracked the suffix match resolved them like any other source file. The
+  dashboard even makes single dead arms legible at a glance — e.g. csharp line 1020, the
+  `isWildcard` → `"_"` arm, sits red at `0×`.
 - **SP2 — gcovr Cobertura path shape.** Confirm `--root . --filter 'src/'` yields repo-relative
   `filename="src/..."` that survives the `git ls-files` suffix match with no rebase script. The
   failure is silent (§4.E), so verify against the tripwire, not by eyeballing.
@@ -404,8 +415,8 @@ green while the targets diverge.
 
 ## 7. Acceptance criteria
 
-Status as of 2026-09-11 — **7 of 10 met, 3 open.** ✅ met · ⏳ open (needs the maintainer or a
-master merge) · ⚠️ partly met.
+Status as of 2026-09-11 — **8 of 10 met, nothing blocking.** ✅ met · ⏳ open (waits on a master
+merge) · ⚠️ partly met.
 
 1. ⏳ A master push publishes a build to coverage.mintplayer.com containing **both** a C++ report and
    four per-plugin reports, finalized once.
@@ -416,9 +427,10 @@ master merge) · ⚠️ partly met.
    *Verified on PR #67. "Comparable against its base" is untestable until a master baseline exists —
    the server's `coverage/project`/`coverage/patch` checks correctly report **skipping**, which is
    the documented neutral-on-missing-baseline behavior (§6.4), not a failure.*
-3. ⏳ `plugins/<t>/polyglot-plugin.json` is browsable in the dashboard with per-line hit/miss.
-   *The blocking unknown — see SP1. Upload accepted; render unconfirmed (needs the maintainer's
-   dashboard access).*
+3. ✅ `plugins/<t>/polyglot-plugin.json` is browsable in the dashboard with per-line hit/miss.
+   *Confirmed in the dashboard — all four manifests render with syntax highlighting and per-line
+   hit counts (csharp 977/1034, 977 green rows / 57 red), and they roll into the project total as
+   `plugins 95.0%`. No server-side change was required. See SP1.*
 4. ✅ The arm tracer's denominator provably comes from the parse, not a regex: a deliberately
    never-referenced rule added to a manifest shows up as **uncovered**, not absent. (Test fixture.)
    *Unit-tested: an untaken `case` arm is asserted present-in-denominator and not-hit.*
