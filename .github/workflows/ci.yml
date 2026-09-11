@@ -66,6 +66,12 @@ jobs:
   # measure: the plugin JSON templates — their instrument is the differential conformance suite.
   coverage:
     runs-on: ubuntu-22.04
+    # OIDC instead of a COVERAGE_TOKEN secret: this repo is public, so it authenticates to the
+    # coverage server tokenlessly (the MintPlayer.AI precedent). Fork PRs cannot mint an id-token
+    # and are skipped by the upload step's guard rather than failing.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,13 +99,50 @@ jobs:
 
       - name: Coverage report (gcovr)
         run: |
-          mkdir -p coverage-report
+          mkdir -p coverage-report coverage/cpp
           gcovr --root . --filter 'src/' --print-summary \
+            --cobertura coverage/cpp/cobertura.xml \
             --html-details coverage-report/index.html --txt coverage-report/summary.txt
           { echo '### C++ coverage — Core + CLI (unit suite + conformance transpile sweep)';
             echo '```';
             cat coverage-report/summary.txt;
             echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # SP1 SPIKE — REMOVE before merge (docs/prd/code-coverage-upload/PLAN.md slice 0).
+      # Probes the one assumption the plugin-arm work rests on: can the server ingest and RENDER a
+      # report whose source file is a .json? The path is git-tracked, so the server's longest-suffix
+      # match against `git ls-files` should resolve it like any other source file.
+      - name: SPIKE — hand-written lcov over a plugin manifest
+        run: |
+          mkdir -p coverage/plugins
+          { echo 'TN:'; echo 'SF:plugins/csharp/polyglot-plugin.json';
+            echo 'DA:217,1'; echo 'DA:218,1'; echo 'DA:280,0';
+            echo 'LF:3'; echo 'LH:2'; echo 'end_of_record'; } > coverage/plugins/spike.lcov
+
+      # Publishing to coverage.mintplayer.com (org convention: the shared MintPlayer.Spark action).
+      # NOTE: `partial:` is deliberately NOT set, unlike the nx repos. Those upload an `nx affected`
+      # subset and must declare it partial so the server compares like-for-like; this job uses no NX
+      # and no affected set — it builds cold and sweeps the entire conformance corpus on every run,
+      # so its upload is COMPLETE. Declaring it partial would invite the server to carry stale file
+      # data forward over freshly-measured files.
+      - name: Upload coverage
+        if: >
+          (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && hashFiles('coverage/cpp/cobertura.xml') != ''
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        uses: MintPlayer/MintPlayer.Spark/apps/CodeCoverage/action@coverage-upload-v1
+        with:
+          url: https://coverage.mintplayer.com
+          use-oidc: true
+          files: |
+            coverage/cpp/cobertura.xml
+            coverage/plugins/*.lcov
+          disable-search: true
+          flags: cpp-core,linux
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          finish: true
+          fail-ci-if-error: ${{ github.event_name != 'pull_request' }}
 
       - name: Upload HTML report
         uses: actions/upload-artifact@v4
