@@ -41,3 +41,6 @@ node_modules/
 # and scripts/coverage.ps1, uploaded to coverage.mintplayer.com — never committed.
 coverage/
 coverage-report/
+
+# OpenCppCoverage drops this in the working directory on every local run.
+LastCoverageResults.log
