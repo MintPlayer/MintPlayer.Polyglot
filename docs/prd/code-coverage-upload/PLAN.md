@@ -216,6 +216,23 @@ all four targets, so the count of gate legs is unchanged but the corpus grows.
     `ClassDecl`. One line fixed it and the real figure jumped ~13pp. **Lesson worth keeping: the
     instrument's own blind spot is indistinguishable from missing tests.** Recorded as a permanent
     invariant in PRD §4.B.
-  - **Still open:** SP1 + SP3 need the CI run now in flight (does the server render a `.json`
-    source; does OIDC authenticate). SP5 needs OpenCppCoverage installed locally. Final full gate
-    + the README badge remain.
+- **2026-09-11 — gate green + CI upload working (SP2, SP3 done; SP1 partly).**
+  - **Full gate green:** `scripts/build-and-test.ps1 -Tier full` all legs pass, zero `[FAIL]`
+    (build + unit + every gate leg + differential C#/TS/Python/PHP conformance). PR #67's
+    `linux-build` (the POSIX compile floor) passes too, which is the required second-toolchain leg
+    for this PR's Core C++ changes.
+  - **SP3 answered — OIDC works, no secret added.** The action logs *"Authenticating with GitHub
+    Actions OIDC"*, and the server posts its own `coverage/project` + `coverage/patch` check runs.
+    Both currently report **skipping** — expected: there is no master baseline to compare against
+    until this lands (a missing baseline is neutral, never red — PRD §6.4).
+  - **Upload works end to end:** all 5 files accepted in one session
+    (`coverage/cpp/cobertura.xml` + four `coverage/plugins/*.lcov`), `finish` acknowledged 202, and
+    the path tripwire passed — so every report path resolved against `git ls-files`.
+  - **SP1 half-answered.** The server *accepted* the lcov naming `.json` sources, but parsing is
+    async and `GET /api/uploads/status` is 401 without a token, so whether the plugin manifests
+    **parse, render with line highlighting, and count toward the project total** can only be
+    confirmed in the dashboard by the maintainer. **This is the one open question that could need a
+    server-side change** (the maintainer's standing offer). Everything else is done.
+  - **Still open:** SP5 (needs `choco install opencppcoverage` locally) and the README badge, which
+    is deliberately deferred until the first successful *master* upload — a badge pointing at an
+    empty project is worse than none.
