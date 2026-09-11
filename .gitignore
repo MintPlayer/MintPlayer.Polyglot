@@ -36,3 +36,8 @@ node_modules/
 .nx-libstage/
 
 .playwright-mcp/
+
+# Generated coverage reports (docs/prd/code-coverage-upload): produced by the CI coverage job
+# and scripts/coverage.ps1, uploaded to coverage.mintplayer.com — never committed.
+coverage/
+coverage-report/

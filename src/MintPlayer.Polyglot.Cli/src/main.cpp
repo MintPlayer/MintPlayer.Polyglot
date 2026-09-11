@@ -25,6 +25,7 @@
 #include <io.h>
 #endif
 
+#include "mintplayer/polyglot/arm_trace.hpp"
 #include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/json.hpp"
@@ -1508,13 +1509,41 @@ void loadPluginsNextToExe(const char* argv0) {
 static int run(const std::vector<std::string>& args, const char* argv0);
 
 int main(int argc, char** argv) {
-    const std::vector<std::string> args(argv + 1, argv + argc);
+    std::vector<std::string> args(argv + 1, argv + argc);
+
+    // `--emit-arm-trace <file>`: plugin arm-coverage tracing (docs/prd/code-coverage-upload).
+    // A DEBUG flag, not part of the stable CLI contract. Handled here — before dispatch, and before
+    // run() loads the plugins — because enabling tracing after load would miss the registration
+    // that attributes rules to their manifest. Stripped from `args` so every subcommand parses as
+    // usual and the sweep can trace `build`, `check` and `lsp` alike.
+    std::string armTracePath;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] != "--emit-arm-trace") continue;
+        if (i + 1 >= args.size()) {
+            std::cerr << "polyglot: --emit-arm-trace requires a file path\n";
+            return 64;
+        }
+        armTracePath = args[i + 1];
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i), args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+        armtrace::enable();
+        break;
+    }
+
+    int rc = 1;
     try {
-        return run(args, argv[0]);
+        rc = run(args, argv[0]);
     } catch (const std::exception& e) {
         std::cerr << "polyglot: error: " << e.what() << "\n";
-        return 1;
+        rc = 1;
     }
+
+    // Written even when the command failed: a refusal or a compile error still exercised rules, and
+    // that execution is exactly what the coverage sweep wants to record.
+    if (!armTracePath.empty()) {
+        std::string err;
+        if (!armtrace::write(armTracePath, err)) std::cerr << "polyglot: " << err << "\n";
+    }
+    return rc;
 }
 
 static int run(const std::vector<std::string>& args, const char* argv0) {

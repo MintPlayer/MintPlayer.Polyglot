@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "mintplayer/polyglot/arm_trace.hpp"
 #include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/emitter_base.hpp"
 #include "mintplayer/polyglot/json.hpp"
@@ -229,13 +230,21 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     const json::Value& rulesDoc = doc["rules"];
     if (rulesDoc.kind != json::Value::Kind::Object) { error = "plugin '" + name + "': missing 'rules'"; return nullptr; }
     engine::RuleTable rules;
+    // Arm coverage: register the manifest text so hits can be attributed back to source lines, and
+    // stamp every parsed rule with this manifest's opaque srcId. Both are no-ops (srcId 0) unless
+    // --emit-arm-trace enabled tracing before load. The offsets collected here are the coverage
+    // DENOMINATOR, so they come from this same parse rather than a separate scan of the file.
+    const int srcId = armtrace::registerManifest(name, artifactJson);
+    std::vector<std::size_t> armOffsets;
     for (const auto& kv : rulesDoc.members) {
         bool ok = true;
         std::string err;
         engine::Rule r = engine::parseRule(kv.second, ok, err);
         if (!ok) { error = "plugin '" + name + "': rule '" + kv.first + "': " + err; return nullptr; }
+        if (srcId > 0) engine::indexRule(r, srcId, armOffsets);
         rules.emplace(kv.first, std::move(r));
     }
+    if (srcId > 0) armtrace::addStaticOffsets(srcId, armOffsets);
     for (const char* required : {"Program", "Type"})
         if (rules.find(required) == rules.end()) {
             error = "plugin '" + name + "': missing required rule '" + std::string(required) + "'";
