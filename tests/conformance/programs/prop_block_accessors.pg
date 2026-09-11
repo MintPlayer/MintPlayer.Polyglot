@@ -1,0 +1,62 @@
+// Scenario: property accessors with BLOCK bodies, the shape `prop_accessors.pg` doesn't reach.
+// That program covers `get => expr` and `set(v) { ... }`; the arm tracer showed the block-getter
+// arms (`get { ... }`, in the get-only, get+set and setter-named-`value` shapes) were never
+// emitted on any target.
+//
+// Covers: a multi-statement block getter with a local and a branch; a read-only block getter
+// (no setter); a block getter paired with a setter whose parameter is literally named `value`
+// (the C# emitter special-cases that name — the other arm from `set(v)`); and a `let` (read-only)
+// expression property alongside them so both spellings appear in one class.
+
+class Account {
+  var balanceRaw: i32
+  var limitRaw: i32
+
+  constructor(balance: i32, limit: i32) {
+    this.balanceRaw = balance
+    this.limitRaw = limit
+  }
+
+  // Block getter + setter whose parameter is named `value`.
+  var balance: i32 {
+    get {
+      var b = this.balanceRaw
+      if b < 0 {
+        return 0
+      }
+      return b
+    }
+    set(value) {
+      this.balanceRaw = value
+    }
+  }
+
+  // Read-only property, block getter, no setter.
+  var available: i32 {
+    get {
+      var head = this.limitRaw - this.balanceRaw
+      if head < 0 {
+        return 0
+      }
+      return head
+    }
+  }
+
+  // Read-only expression property (`let` + `=>`), for contrast in the same class.
+  let limit: i32 => this.limitRaw
+}
+
+fn main() {
+  var a = Account(30, 100)
+  print(a.balance)        // 30
+  print(a.available)      // 70
+  print(a.limit)          // 100
+
+  a.balance = 120         // setter (param named `value`)
+  print(a.balance)        // 120
+  print(a.available)      // 0   (clamped: 100 - 120 < 0)
+
+  a.balance = 0 - 5       // negative raw balance
+  print(a.balance)        // 0    (clamped by the block getter's branch)
+  print(a.available)      // 105  (100 - (-5): `available` reads the RAW field, not the clamped one)
+}

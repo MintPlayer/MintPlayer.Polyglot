@@ -63,6 +63,19 @@ foreach (`$p in Get-ChildItem "$(Join-Path $repo 'tests\conformance\programs')" 
         & "$cli" --emit-arm-trace "$armTrace" build `$p.FullName --target `$t --lib io --out "$sweepOut" *> `$null
     }
 }
+# Multi-file programs build the way the conformance runner builds them — entry.pg + --root, with a
+# pgconfig naming every target instead of a single --target. Sweeping them as loose files would miss
+# it entirely: the linked-module arms (`module.linked` -> `partial `, attribute imports, module
+# globals) only fire on a config-sourced multi-module build.
+foreach (`$d in Get-ChildItem "$(Join-Path $repo 'tests\conformance\programs')" -Directory) {
+    `$entry = Join-Path `$d.FullName 'entry.pg'
+    if (-not (Test-Path `$entry)) { continue }
+    `$w = Join-Path "$sweepOut" `$d.Name
+    New-Item -ItemType Directory -Force `$w | Out-Null
+    Copy-Item -Recurse "`$(`$d.FullName)\*" `$w -Force
+    '{ "targets": ["csharp","typescript","python","php"] }' | Set-Content (Join-Path `$w 'pgconfig.json')
+    & "$cli" --emit-arm-trace "$armTrace" build (Join-Path `$w 'entry.pg') --root `$w --lib io --out `$w *> `$null
+}
 # Past `build`, or the diagnostic and front-end-only paths read as dead code: refusals, check, and
 # the LSP protocol leg (reused rather than reinvented — it already drives a scripted stdio session).
 foreach (`$p in Get-ChildItem "$(Join-Path $repo 'tests\refusals\fixtures')" -Filter *.pg) {
