@@ -72,7 +72,9 @@ $labelOf = @{ csharp = "C#"; typescript = "TS"; python = "Python"; php = "PHP" }
 # the PHP plugin gains a new deliberate gate.
 $expectedRefusers = @(
     'async_await', 'async_compose', 'expect_actual', 'extern_ffi', 'operators_full', 'prop_accessors', 'vec2',
-    'operator_unary', 'operator_bitwise', 'operator_compound', 'operator_convert'
+    'operator_unary', 'operator_bitwise', 'operator_compound', 'operator_convert',
+    # Same gate as prop_accessors: PHP has no property setters (< 8.4).
+    'prop_block_accessors'
 )
 
 # Normalize the requested target set; the csharp oracle is always present.

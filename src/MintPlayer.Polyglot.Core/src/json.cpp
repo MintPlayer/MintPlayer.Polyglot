@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/json.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace mintplayer::polyglot::json {
@@ -93,8 +94,18 @@ struct Parser {
         return out;
     }
 
+    // Stamps every parsed value with the offset of its first character. Wrapping the dispatch keeps
+    // the provenance in ONE place — each parseX() below stays unaware of it, so a new value kind
+    // cannot forget to record its position.
     Value parseValue() {
         ws();
+        std::size_t start = i;
+        Value v = parseValueInner();
+        v.offset = start;
+        return v;
+    }
+
+    Value parseValueInner() {
         if (i >= s.size()) return {};
         char c = s[i];
         if (c == '{') return parseObject();
@@ -187,6 +198,19 @@ std::string quote(const std::string& s) {
     }
     out += "\"";
     return out;
+}
+
+LineIndex::LineIndex(const std::string& text) {
+    lineStarts_.push_back(0);
+    for (std::size_t k = 0; k < text.size(); ++k) {
+        if (text[k] == '\n') lineStarts_.push_back(k + 1);
+    }
+}
+
+int LineIndex::lineAt(std::size_t offset) const {
+    // First line start STRICTLY after `offset`; the line containing it is the one before that.
+    auto it = std::upper_bound(lineStarts_.begin(), lineStarts_.end(), offset);
+    return static_cast<int>(it - lineStarts_.begin());
 }
 
 } // namespace mintplayer::polyglot::json

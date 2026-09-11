@@ -61,11 +61,28 @@ the exe before any cache-miss runs). The runners stay directly invocable without
 contract; release.yml never touches NX. CI adoption of the org RO/RW token convention is an opt-in
 follow-up (the source-keying unblocked it; wiring it changes the CI contract, so it needs sign-off).
 
-**Code coverage** (wave 2): two complementary instruments — know which one answers your question.
-C++ line coverage measures the **Core/CLI only**: locally `pwsh scripts/coverage.ps1` (OpenCppCoverage,
-`choco install opencppcoverage`, HTML at `x64/coverage/`); on CI the `coverage` job in `ci.yml`
-(gcovr summary + artifact, report-only). The four backends are **JSON plugin templates** — gcov can't
-see them; their coverage instrument is the differential conformance suite (`tests/conformance/`).
+**Code coverage** — **three** instruments answering three different questions. None substitutes for
+another: a 100% C++ number with dead template arms is a lie, and both can be green while the targets
+diverge at runtime.
+
+| Question | Instrument |
+|---|---|
+| Which **C++ Core/CLI** lines ran? | `ci.yml` `coverage` job (g++ `--coverage` + gcovr) · locally `pwsh scripts/coverage.ps1` (OpenCppCoverage, `choco install opencppcoverage`, HTML at `x64/coverage/`) |
+| Which **plugin template arms** ran? | the arm tracer — `polyglot --emit-arm-trace <file>` + `scripts/arm-trace-to-lcov.ps1`, one lcov per `plugins/<t>/polyglot-plugin.json` |
+| Do the four targets **agree at runtime**? | the differential conformance suite (`tests/conformance/`) |
+
+The arm tracer exists because the backends **are** the JSON manifests (zero compiled in), so gcov is
+structurally blind to them, and the load-time anti-silent-drop contract proves a rule *exists*, never
+that it *ran*. Its denominator comes from the compiler's own parse, so a never-fired arm reports as
+uncovered rather than missing. It is a debug flag, off by default — one pointer test per evaluation.
+
+Both surfaces publish to **coverage.mintplayer.com** from the `coverage` job via the org's shared
+action (OIDC, no token — the repo is public). Report-only: no floor yet, and turning one on is a
+committed `coverage.yml` plus branch protection, not a code change. `scripts/verify-coverage-paths.ps1`
+is the tripwire for the server's one silent failure mode — a report path that doesn't suffix-match
+`git ls-files` is dropped without an error. Design: `docs/prd/code-coverage-upload/`.
+**Known bias:** coverage is measured on Linux only, so `#ifdef _WIN32` branches read as permanently
+uncovered. Don't "fix" the number by deleting a POSIX branch.
 
 **Do NOT run intermediary builds/tests between phases/slices.** The full gate takes ~3–4 min (P35;
 was ~15); running it per slice still multiplies into a lot of waiting. Implement EVERYTHING first, then

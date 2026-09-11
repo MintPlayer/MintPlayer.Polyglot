@@ -2731,74 +2731,7 @@
                                             ]
                                           }
                                         ]
-                                      ],
-                                      "else": {
-                                        "seq": [
-                                          {
-                                            "line": {
-                                              "tmpl": [
-                                                {
-                                                  "case": {
-                                                    "when": [
-                                                      [
-                                                        {
-                                                          "eq": [
-                                                            "item.#",
-                                                            "0"
-                                                          ]
-                                                        },
-                                                        ""
-                                                      ]
-                                                    ],
-                                                    "else": "else "
-                                                  }
-                                                },
-                                                "{"
-                                              ]
-                                            }
-                                          },
-                                          {
-                                            "indent": [
-                                              {
-                                                "case": {
-                                                  "when": [
-                                                    [
-                                                      {
-                                                        "eq": [
-                                                          "item.hasBinding",
-                                                          "true"
-                                                        ]
-                                                      },
-                                                      {
-                                                        "line": {
-                                                          "tmpl": [
-                                                            "const ",
-                                                            {
-                                                              "fn": "ident",
-                                                              "args": [
-                                                                {
-                                                                  "get": "item.binding"
-                                                                }
-                                                              ]
-                                                            },
-                                                            " = __e;"
-                                                          ]
-                                                        }
-                                                      }
-                                                    ]
-                                                  ]
-                                                }
-                                              },
-                                              {
-                                                "stmts": "item.body"
-                                              }
-                                            ]
-                                          },
-                                          {
-                                            "line": "}"
-                                          }
-                                        ]
-                                      }
+                                      ]
                                     }
                                   }
                                 },

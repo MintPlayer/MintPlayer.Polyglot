@@ -66,6 +66,12 @@ jobs:
   # measure: the plugin JSON templates — their instrument is the differential conformance suite.
   coverage:
     runs-on: ubuntu-22.04
+    # OIDC instead of a COVERAGE_TOKEN secret: this repo is public, so it authenticates to the
+    # coverage server tokenlessly (the MintPlayer.AI precedent). Fork PRs cannot mint an id-token
+    # and are skipped by the upload step's guard rather than failing.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,24 +88,97 @@ jobs:
       - name: Unit tests (instrumented)
         run: ./build-cov/polyglot-tests
 
+      # `|| true` throughout: this leg's job is EXECUTION, not verification — correctness is the
+      # Windows differential gate's job, and a failing transpile must not fail the coverage job.
+      # --emit-arm-trace appends to one file across every invocation (the numerator AND the
+      # denominator come from the compiler's own parse — see arm_trace.hpp).
       - name: Conformance transpile sweep (instrumented CLI, all four targets)
         run: |
-          mkdir -p /tmp/cov-out
+          mkdir -p /tmp/cov-out coverage/plugins
           for t in csharp typescript python php; do
             for p in tests/conformance/programs/*.pg; do
-              ./build-cov/polyglot build "$p" --target "$t" --lib io --out /tmp/cov-out >/dev/null 2>&1 || true
+              ./build-cov/polyglot --emit-arm-trace /tmp/arm-trace.tsv \
+                build "$p" --target "$t" --lib io --out /tmp/cov-out >/dev/null 2>&1 || true
             done
+          done
+
+      # Widen past `build`, or the diagnostic and front-end-only paths read as dead code and
+      # dishonestly depress the baseline. Both are runtime-free, so this costs seconds.
+      # Multi-file programs build the way the conformance runner builds them — entry.pg + --root
+      # with a pgconfig naming every target, not a single --target. Swept as loose files they would
+      # miss the linked-module arms entirely (`module.linked` -> `partial `, attribute imports,
+      # module globals), which measured as a ~20% slice of each manifest on their own.
+      - name: Multi-module sweep (config-sourced, all targets at once)
+        run: |
+          for d in tests/conformance/programs/*/; do
+            [ -f "$d/entry.pg" ] || continue
+            w="/tmp/cov-mod/$(basename "$d")"
+            mkdir -p "$w" && cp -r "$d"/* "$w"/
+            echo '{ "targets": ["csharp","typescript","python","php"] }' > "$w/pgconfig.json"
+            ./build-cov/polyglot --emit-arm-trace /tmp/arm-trace.tsv \
+              build "$w/entry.pg" --root "$w" --lib io --out "$w" >/dev/null 2>&1 || true
+          done
+
+      - name: Diagnostic sweep (refusals + check)
+        run: |
+          for p in tests/refusals/fixtures/*.pg; do
+            ./build-cov/polyglot --emit-arm-trace /tmp/arm-trace.tsv \
+              build "$p" --target csharp --lib io --out /tmp/cov-out >/dev/null 2>&1 || true
+          done
+          for p in tests/conformance/programs/*.pg; do
+            ./build-cov/polyglot --emit-arm-trace /tmp/arm-trace.tsv \
+              check "$p" --lib io >/dev/null 2>&1 || true
           done
 
       - name: Coverage report (gcovr)
         run: |
-          mkdir -p coverage-report
+          mkdir -p coverage-report coverage/cpp
+          # `--xml` (not `--cobertura`): both emit Cobertura, but the spelling `--cobertura` only
+          # exists in gcovr >= 5.1 and ubuntu-22.04 ships 5.0. `--xml` works on both.
           gcovr --root . --filter 'src/' --print-summary \
+            --xml coverage/cpp/cobertura.xml \
             --html-details coverage-report/index.html --txt coverage-report/summary.txt
           { echo '### C++ coverage — Core + CLI (unit suite + conformance transpile sweep)';
             echo '```';
             cat coverage-report/summary.txt;
             echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # Plugin arm coverage: fold the trace into one lcov per manifest. This is what SP1 probes —
+      # whether the server ingests and renders a report whose source file is a .json.
+      - name: Plugin arm coverage (trace -> lcov)
+        run: |
+          pwsh -NoProfile -File scripts/arm-trace-to-lcov.ps1 \
+            -Trace /tmp/arm-trace.tsv -OutDir coverage/plugins
+
+      # The server resolves report paths by longest-suffix match against `git ls-files` and drops a
+      # non-matching path SILENTLY — a wrong number, not an error. Fail loudly instead.
+      - name: Verify coverage paths resolve
+        run: pwsh -NoProfile -File scripts/verify-coverage-paths.ps1 -Path coverage
+
+      # Publishing to coverage.mintplayer.com (org convention: the shared MintPlayer.Spark action).
+      # NOTE: `partial:` is deliberately NOT set, unlike the nx repos. Those upload an `nx affected`
+      # subset and must declare it partial so the server compares like-for-like; this job uses no NX
+      # and no affected set — it builds cold and sweeps the entire conformance corpus on every run,
+      # so its upload is COMPLETE. Declaring it partial would invite the server to carry stale file
+      # data forward over freshly-measured files.
+      - name: Upload coverage
+        if: >
+          (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && hashFiles('coverage/cpp/cobertura.xml') != ''
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        uses: MintPlayer/MintPlayer.Spark/apps/CodeCoverage/action@coverage-upload-v1
+        with:
+          url: https://coverage.mintplayer.com
+          use-oidc: true
+          files: |
+            coverage/cpp/cobertura.xml
+            coverage/plugins/*.lcov
+          disable-search: true
+          flags: cpp-core,plugins,linux
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          finish: true
+          fail-ci-if-error: ${{ github.event_name != 'pull_request' }}
 
       - name: Upload HTML report
         uses: actions/upload-artifact@v4

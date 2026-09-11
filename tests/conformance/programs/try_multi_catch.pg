@@ -1,0 +1,74 @@
+// Scenario: MULTIPLE typed catch clauses with NO `when` guard on any of them — the unguarded
+// type-dispatch chain. `catch_when.pg` already covers the guarded path (the `__handled` if-chain);
+// this is the other branch, which the arm tracer showed was never emitted: on TS the second and
+// later clauses lower to `else if (__e instanceof T)` with a `const e = __e;` binding, and Python /
+// PHP take their own unguarded multi-arm shape.
+//
+// Also exercises: first-clause match, later-clause match, a base-class clause catching a derived
+// throw (order matters — the first MATCHING clause wins, not the most specific), and finally
+// ordering on both the caught and the uncaught path.
+
+class NotFound : Error {
+  constructor(message: string) { super(message) }
+}
+
+class Invalid : Error {
+  let field: string
+  constructor(message: string, field: string) {
+    super(message)
+    this.field = field
+  }
+}
+
+class Derived : Invalid {
+  constructor(message: string) { super(message, "derived") }
+}
+
+fn boom(kind: i32) {
+  if kind == 1 { throw NotFound("missing") }
+  if kind == 2 { throw Invalid("bad", "name") }
+  if kind == 3 { throw Derived("sub") }
+  if kind == 4 { throw Error("plain") }
+}
+
+// Three unguarded typed clauses, most-derived first so each one is reachable.
+fn classify(kind: i32): string {
+  try {
+    boom(kind)
+    return "none"
+  } catch (e: NotFound) {
+    return "notfound:" + e.message
+  } catch (e: Invalid) {
+    return "invalid:" + e.field
+  } catch (e: Error) {
+    return "error:" + e.message
+  }
+}
+
+// Two unguarded clauses plus finally, where the finally runs on the caught path.
+fn withFinally(kind: i32): string {
+  var trace = ""
+  try {
+    boom(kind)
+    trace = trace + "ok"
+  } catch (e: NotFound) {
+    trace = trace + "nf"
+  } catch (e: Error) {
+    trace = trace + "err"
+  } finally {
+    trace = trace + "|fin"
+  }
+  return trace
+}
+
+fn main() {
+  print(classify(0))          // none
+  print(classify(1))          // notfound:missing
+  print(classify(2))          // invalid:name
+  print(classify(3))          // invalid:derived  (Derived matches the Invalid clause first)
+  print(classify(4))          // error:plain
+
+  print(withFinally(0))       // ok|fin
+  print(withFinally(1))       // nf|fin
+  print(withFinally(2))       // err|fin
+}

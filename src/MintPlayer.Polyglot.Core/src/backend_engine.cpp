@@ -2,7 +2,29 @@
 
 namespace mintplayer::polyglot::engine {
 
+namespace {
+Test parseTestInner(const json::Value& v, bool& ok, std::string& error);
+Rule parseRuleInner(const json::Value& v, bool& ok, std::string& error);
+} // namespace
+
+// Both public parse entry points stamp source provenance in ONE place, around the dispatch — the
+// many `return` paths inside each parser stay unaware of it, so a new rule kind cannot forget to
+// record where it came from.
 Test parseTest(const json::Value& v, bool& ok, std::string& error) {
+    Test t = parseTestInner(v, ok, error);
+    t.offset = v.offset;
+    return t;
+}
+
+Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
+    Rule r = parseRuleInner(v, ok, error);
+    r.offset = v.offset;
+    return r;
+}
+
+namespace {
+
+Test parseTestInner(const json::Value& v, bool& ok, std::string& error) {
     Test t;
     if (v.kind != json::Value::Kind::Object) {
         ok = false;
@@ -42,7 +64,7 @@ Test parseTest(const json::Value& v, bool& ok, std::string& error) {
     return t;
 }
 
-Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
+Rule parseRuleInner(const json::Value& v, bool& ok, std::string& error) {
     Rule r;
     if (v.kind == json::Value::Kind::String) {
         r.kind = Rule::Kind::Lit;
@@ -186,6 +208,8 @@ Rule parseRule(const json::Value& v, bool& ok, std::string& error) {
     return r;
 }
 
+} // namespace
+
 namespace {
 
 // (ItemCtx moved to the header — the decl-rule interpreter in emitter_base reuses it.)
@@ -237,7 +261,32 @@ private:
 
 } // namespace
 
+namespace {
+TraceSink* g_traceSink = nullptr;
+} // namespace
+
+void setTraceSink(TraceSink* sink) { g_traceSink = sink; }
+TraceSink* traceSink() { return g_traceSink; }
+
+void indexTest(Test& t, int srcId, std::vector<std::size_t>& offsets) {
+    t.srcId = srcId;
+    offsets.push_back(t.offset);
+    for (Test& s : t.subs) indexTest(s, srcId, offsets);
+}
+
+void indexRule(Rule& r, int srcId, std::vector<std::size_t>& offsets) {
+    r.srcId = srcId;
+    offsets.push_back(r.offset);
+    for (Rule& p : r.parts) indexRule(p, srcId, offsets);
+    for (Rule& e : r.elseBody) indexRule(e, srcId, offsets);
+    for (auto& arm : r.arms) {
+        indexTest(arm.first, srcId, offsets);
+        indexRule(arm.second, srcId, offsets);
+    }
+}
+
 bool evalTest(const Test& t, const EvalContext& ctx) {
+    if (g_traceSink) g_traceSink->hit(t.srcId, t.offset);
     switch (t.kind) {
         case Test::Kind::Eq:  return ctx.get(t.path) == t.value;
         case Test::Kind::Has: return ctx.has(t.path);
@@ -253,6 +302,7 @@ bool evalTest(const Test& t, const EvalContext& ctx) {
 }
 
 std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* helpers, int depth) {
+    if (g_traceSink) g_traceSink->hit(r.srcId, r.offset);
     switch (r.kind) {
         case Rule::Kind::Lit:  return r.s;
         case Rule::Kind::Get:  return ctx.get(r.s);

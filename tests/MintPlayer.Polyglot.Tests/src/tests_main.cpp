@@ -1,11 +1,14 @@
+#include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -1444,6 +1447,66 @@ int main() {
               "P18: interpreter Test not+has");
         check(runRule(R"({"case":{"when":[[{"and":[{"has":"node.op"},{"eq":["node.op","+"]}]},"plus"]],"else":"x"}})", ctx) == "plus",
               "P18: interpreter Test and");
+        // --- Arm coverage (docs/prd/code-coverage-upload) ----------------------------------------
+        {
+            // Source provenance: the JSON parser stamps every value with its byte offset, and
+            // LineIndex converts offsets to 1-based lines at the reporting boundary.
+            const std::string doc = "{\n  \"a\": 1,\n  \"b\": [\n    2\n  ]\n}";
+            const json::Value v = json::parse(doc);
+            const json::LineIndex idx(doc);
+            check(idx.lineAt(v.offset) == 1, "coverage: root value on line 1");
+            check(idx.lineAt(v["a"].offset) == 2, "coverage: nested member offset -> line 2");
+            check(idx.lineAt(v["b"].items()[0].offset) == 4, "coverage: array element offset -> line 4");
+            check(idx.lineAt(0) == 1 && idx.lineAt(doc.size() + 99) >= 1, "coverage: LineIndex clamps");
+
+            // A case rule with two arms, one per line. indexRule collects the DENOMINATOR from the
+            // same parse that produces the rule, so an arm that never fires is still counted.
+            const std::string ruleText =
+                "{\n"
+                "  \"case\": {\n"
+                "    \"when\": [\n"
+                "      [{\"eq\": [\"node.kind\", \"Unary\"]}, \"U\"],\n"
+                "      [{\"eq\": [\"node.kind\", \"Binary\"]}, \"B\"]\n"
+                "    ],\n"
+                "    \"else\": \"?\"\n"
+                "  }\n"
+                "}";
+            bool ok = true;
+            std::string err;
+            const json::Value ruleJson = json::parse(ruleText);
+            engine::Rule rule = engine::parseRule(ruleJson, ok, err);
+            check(ok, "coverage: case rule parses");
+
+            std::vector<std::size_t> offsets;
+            engine::indexRule(rule, 7, offsets);
+            check(rule.srcId == 7, "coverage: indexRule stamps srcId");
+            check(rule.arms.size() == 2 && rule.arms[0].second.srcId == 7 && rule.arms[0].first.srcId == 7,
+                  "coverage: indexRule reaches nested arms and their tests");
+            const json::LineIndex ruleLines(ruleText);
+            check(ruleLines.lineAt(rule.arms[0].second.offset) == 4 &&
+                  ruleLines.lineAt(rule.arms[1].second.offset) == 5,
+                  "coverage: sibling case arms land on DISTINCT lines (branch-level signal)");
+
+            // Evaluating picks arm 2; arm 1 is in the denominator but never hit — the guarantee
+            // that a dead template arm reports as UNCOVERED rather than vanishing from the total.
+            struct CollectingSink : engine::TraceSink {
+                std::set<std::pair<int, std::size_t>> hits;
+                void hit(int srcId, std::size_t offset) override { hits.insert({srcId, offset}); }
+            } sink;
+            MockEval armCtx;
+            armCtx.fields["node.kind"] = "Binary";
+            engine::setTraceSink(&sink);
+            const std::string armOut = engine::evalRule(rule, armCtx);
+            engine::setTraceSink(nullptr);
+
+            check(armOut == "B", "coverage: tracing does not change evaluation");
+            check(sink.hits.count({7, rule.arms[1].second.offset}) == 1, "coverage: taken arm is recorded hit");
+            check(sink.hits.count({7, rule.arms[0].second.offset}) == 0, "coverage: untaken arm is NOT hit");
+            check(std::find(offsets.begin(), offsets.end(), rule.arms[0].second.offset) != offsets.end(),
+                  "coverage: untaken arm IS in the denominator (uncovered, not absent)");
+            check(engine::traceSink() == nullptr, "coverage: sink is off by default");
+        }
+
         // emit / emitChild route to the context's child-recursion (marker output in the mock).
         check(runRule(R"({"tmpl":[{"emitChild":"node.lhs","side":"l"}," + ",{"emit":"node.rhs"}]})", ctx) ==
               "<node.lhs:l> + <node.rhs>", "P18: interpreter emit / emitChild");

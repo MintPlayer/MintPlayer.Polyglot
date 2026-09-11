@@ -1,5 +1,7 @@
 # MintPlayer.Polyglot
 
+[![Coverage](https://coverage.mintplayer.com/badge/MintPlayer/MintPlayer.Polyglot.svg)](https://coverage.mintplayer.com/r/MintPlayer/MintPlayer.Polyglot)
+
 > A **cross-SDK transpiler**: write logic once in a small, deliberately-scoped source language (`.pg`)
 > and emit idiomatic, readable code for multiple target SDKs — **C# / .NET**, **TypeScript / JavaScript**,
 > and **Python** (full §3.A surface), plus **PHP** (a **partial** target today — see
@@ -200,6 +202,32 @@ dotnet add package MintPlayer.Polyglot.MSBuild
 The `.pg` sources are registered as `Watch` items, so **`dotnet watch build|run` re-transpiles on every
 `.pg` edit** — which is also the watch story inside Visual Studio for .NET hosts (opt out with
 `Watch="false"` metadata or `PolyglotWatch=false`). The end-to-end gate is `tests/msbuild/run-nuget.ps1`.
+
+## Testing & code coverage
+
+`pwsh scripts/build-and-test.ps1` is the one-shot gate (build → unit suite → every gate leg →
+differential C#/TS/Python/PHP conformance). Coverage is reported by **three instruments that answer
+three different questions** — none substitutes for another, because a 100% C++ number with dead
+template arms is a lie, and both can be green while the four targets disagree at runtime:
+
+| Question | Instrument |
+|---|---|
+| Which **C++ Core/CLI** lines ran? | the `coverage` job in `ci.yml` (g++ `--coverage` + gcovr) · locally `pwsh scripts/coverage.ps1` (OpenCppCoverage) |
+| Which **plugin template arms** ran? | the arm tracer — `polyglot --emit-arm-trace <file>`, folded into one lcov per manifest by `scripts/arm-trace-to-lcov.ps1` |
+| Do the four targets **agree at runtime**? | the differential conformance suite ([`tests/conformance/`](tests/conformance/)) |
+
+The middle one exists because **the backends *are* their JSON manifests** — zero are compiled in — so
+gcov and OpenCppCoverage are structurally blind to them, and the load-time anti-silent-drop contract
+proves a rule *exists*, never that it ever *ran*. The tracer marks each rule as the interpreter
+evaluates it and takes its denominator from the compiler's own parse, so an arm that never fires is
+reported **uncovered** rather than quietly missing from the total. It is a debug flag, off by default.
+Both surfaces publish to [coverage.mintplayer.com](https://coverage.mintplayer.com/r/MintPlayer/MintPlayer.Polyglot),
+where each `polyglot-plugin.json` is browsable with per-line hit counts.
+
+Two honest caveats: coverage is measured on Linux only, so `#ifdef _WIN32` branches read as
+permanently uncovered (don't "improve" the number by deleting a POSIX branch); and reporting is
+advisory — there is no coverage floor gating merges today. Design notes:
+[`docs/prd/code-coverage-upload/`](docs/prd/code-coverage-upload/).
 
 ## Layout
 
