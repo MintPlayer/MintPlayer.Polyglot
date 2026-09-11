@@ -69,8 +69,10 @@ plugin-load tests unchanged. Pure mechanism, zero behavioral delta.
 
 ## Slice 3 — rule provenance + the trace sink
 
-- `Rule` and `Test` (`backend_engine.hpp:53-74`) gain `int line = 0`, populated in
-  `parseRule`/`parseTest` from the source `Value.offset`. Nested arms each carry their own line.
+- `Rule` and `Test` (`backend_engine.hpp:53-74`) gain `offset` + an opaque `srcId`, populated in
+  `parseRule`/`parseTest` from the source `Value.offset`. Nested arms each carry their own.
+  *(As built: offset + srcId rather than a resolved `line`, so the engine stays as free of line
+  counting as the parser — conversion happens once, at the reporting boundary.)*
 - A trace sink in `engine`: null by default, recording `(pluginName, line)` into a set. Marked in
   `evalRule` and `evalTest` (`backend_engine.hpp:120-121`) — the single choke point.
 - **Language-agnostic:** the sink keys on the plugin's own name string as loaded. No target-name
@@ -101,9 +103,14 @@ fails on a deliberately-corrupted path.
 ## Slice 5 — wire both surfaces into CI
 
 - Coverage job: pass `--emit-arm-trace` through the existing four-target sweep (`ci.yml:85-92`).
-- Widen the sweep beyond `build` (PRD §4.A.2): add the `tests/refusals/` fixtures and a short `lsp`
-  request script, so diagnostic and LSP Core paths stop reading as dead code. No language runtimes
-  needed — seconds, not minutes.
+- Widen the sweep beyond `build` (PRD §4.A.2): add the `tests/refusals/` fixtures and `check`, so
+  diagnostic and front-end-only paths stop reading as dead code. No language runtimes needed —
+  seconds, not minutes.
+  *(As built: the LSP leg is swept LOCALLY only. `tests/lsp/run-lsp.ps1` already drives a scripted
+  stdio session and takes a `-Cli` path, so the local Windows sweep reuses it rather than
+  reinventing one; it is left out of the ubuntu job because that driver is Windows-proven and a
+  hung stdio session in CI costs more than the coverage it adds. Enabling it there is a follow-up
+  worth doing only if the LSP paths prove materially under-reported.)*
 - Run the aggregator + tripwire, then extend the single upload's `files:` with
   `coverage/plugins/*.lcov`.
 - Keep `|| true` on the sweep: execution, not verification (correctness is the Windows gate's job).
@@ -172,4 +179,26 @@ all four targets, so the count of gate legs is unchanged but the corpus grows.
 
 *(append per slice: date, what shipped, surprises)*
 
-- *(not started)*
+- **2026-09-11 — slices 1–6 built** (local build + unit suite green; full gate still pending).
+  - *Slice 1:* gcovr `--cobertura`, `id-token: write`, the org upload step. OIDC rather than a
+    token — the repo is public, so the `MintPlayer.AI` precedent applies and no secret is added.
+  - *Slices 2–4:* `json::Value.offset` (stamped once around the parse dispatch) + `json::LineIndex`;
+    `Rule`/`Test` offset + srcId; `TraceSink` marked at `evalRule`/`evalTest`; `indexRule`/
+    `indexTest` collecting the denominator from the same parse; `armtrace` module; the
+    `--emit-arm-trace` CLI flag (pre-dispatch, so it traces `build`/`check`/`lsp` alike, and writes
+    even on failure — a refusal still exercised rules); `scripts/arm-trace-to-lcov.ps1` and
+    `scripts/verify-coverage-paths.ps1`. 11 unit checks, including the denominator guarantee (an
+    untaken `case` arm is present-and-uncovered, never absent) and distinct lines for sibling arms.
+  - *Slice 5:* trace wired through the CI sweep, plus a refusals + `check` sweep; aggregator and
+    tripwire run before the single upload.
+  - *Slice 6:* `coverage.ps1` emits Cobertura, sweeps refusals/check/LSP, and runs the aggregator;
+    CLAUDE.md now carries the three-instrument table and the Linux-only bias.
+  - **Surprises:** (1) The premise "this repo has no coverage" was wrong — two report-only
+    instruments already existed; the real gap was publishing, plus the plugin blindness. (2) The
+    tracer plumbing was shallower than wave 2 feared: one choke point, a 192-line parser, and
+    pretty-printed manifests. (3) First smoke run: **224/1034 csharp arms** from a single
+    `counter.pg` build, with the other three manifests correctly at 0 (denominator-only, since they
+    were loaded but not targeted) — the instrument distinguishes loaded from exercised, as intended.
+  - **Not yet done:** slice 0's SP1/SP2/SP3 need a CI run (they are only answerable there), SP5
+    needs OpenCppCoverage installed locally, and slice 7 is unsized until the first full sweep
+    reports its dead arms.

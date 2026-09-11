@@ -88,13 +88,31 @@ jobs:
       - name: Unit tests (instrumented)
         run: ./build-cov/polyglot-tests
 
+      # `|| true` throughout: this leg's job is EXECUTION, not verification — correctness is the
+      # Windows differential gate's job, and a failing transpile must not fail the coverage job.
+      # --emit-arm-trace appends to one file across every invocation (the numerator AND the
+      # denominator come from the compiler's own parse — see arm_trace.hpp).
       - name: Conformance transpile sweep (instrumented CLI, all four targets)
         run: |
-          mkdir -p /tmp/cov-out
+          mkdir -p /tmp/cov-out coverage/plugins
           for t in csharp typescript python php; do
             for p in tests/conformance/programs/*.pg; do
-              ./build-cov/polyglot build "$p" --target "$t" --lib io --out /tmp/cov-out >/dev/null 2>&1 || true
+              ./build-cov/polyglot --emit-arm-trace /tmp/arm-trace.tsv \
+                build "$p" --target "$t" --lib io --out /tmp/cov-out >/dev/null 2>&1 || true
             done
+          done
+
+      # Widen past `build`, or the diagnostic and front-end-only paths read as dead code and
+      # dishonestly depress the baseline. Both are runtime-free, so this costs seconds.
+      - name: Diagnostic sweep (refusals + check)
+        run: |
+          for p in tests/refusals/fixtures/*.pg; do
+            ./build-cov/polyglot --emit-arm-trace /tmp/arm-trace.tsv \
+              build "$p" --target csharp --lib io --out /tmp/cov-out >/dev/null 2>&1 || true
+          done
+          for p in tests/conformance/programs/*.pg; do
+            ./build-cov/polyglot --emit-arm-trace /tmp/arm-trace.tsv \
+              check "$p" --lib io >/dev/null 2>&1 || true
           done
 
       - name: Coverage report (gcovr)
@@ -108,16 +126,17 @@ jobs:
             cat coverage-report/summary.txt;
             echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      # SP1 SPIKE — REMOVE before merge (docs/prd/code-coverage-upload/PLAN.md slice 0).
-      # Probes the one assumption the plugin-arm work rests on: can the server ingest and RENDER a
-      # report whose source file is a .json? The path is git-tracked, so the server's longest-suffix
-      # match against `git ls-files` should resolve it like any other source file.
-      - name: SPIKE — hand-written lcov over a plugin manifest
+      # Plugin arm coverage: fold the trace into one lcov per manifest. This is what SP1 probes —
+      # whether the server ingests and renders a report whose source file is a .json.
+      - name: Plugin arm coverage (trace -> lcov)
         run: |
-          mkdir -p coverage/plugins
-          { echo 'TN:'; echo 'SF:plugins/csharp/polyglot-plugin.json';
-            echo 'DA:217,1'; echo 'DA:218,1'; echo 'DA:280,0';
-            echo 'LF:3'; echo 'LH:2'; echo 'end_of_record'; } > coverage/plugins/spike.lcov
+          pwsh -NoProfile -File scripts/arm-trace-to-lcov.ps1 \
+            -Trace /tmp/arm-trace.tsv -OutDir coverage/plugins
+
+      # The server resolves report paths by longest-suffix match against `git ls-files` and drops a
+      # non-matching path SILENTLY — a wrong number, not an error. Fail loudly instead.
+      - name: Verify coverage paths resolve
+        run: pwsh -NoProfile -File scripts/verify-coverage-paths.ps1 -Path coverage
 
       # Publishing to coverage.mintplayer.com (org convention: the shared MintPlayer.Spark action).
       # NOTE: `partial:` is deliberately NOT set, unlike the nx repos. Those upload an `nx affected`
@@ -139,7 +158,7 @@ jobs:
             coverage/cpp/cobertura.xml
             coverage/plugins/*.lcov
           disable-search: true
-          flags: cpp-core,linux
+          flags: cpp-core,plugins,linux
           base-sha: ${{ github.event.pull_request.base.sha }}
           finish: true
           fail-ci-if-error: ${{ github.event_name != 'pull_request' }}
