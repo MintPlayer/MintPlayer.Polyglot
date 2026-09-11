@@ -19,6 +19,14 @@ ships standalone value even if the plugin work later stalls.
 Run SP1 **before writing any C++**. Record each outcome in the Log below; a spike that fails
 changes the design per PRD §5, it does not get worked around.
 
+> **As built — the ordering did NOT hold, and that is worth recording rather than quietly
+> reordering.** SP1/SP2/SP3 turn out to be answerable *only* from a CI run, and `ci.yml` fires only
+> on PRs and master pushes — so slice 1 (the workflow change) had to land before any spike could run
+> at all. The tracer was built on the reasoning that de-risked SP1, not on its answer. SP2 then
+> failed on first contact (`--cobertura` doesn't exist on gcovr 5.0) — cheap to fix, but exactly the
+> kind of thing the spike-first order exists to catch before the surrounding work is built.
+> Outcomes per spike are in PRD §5; the remaining open one is SP1's render check.
+
 - **SP1** (`~30 min`) — hand-write `spike/plugin.lcov` with `SF:plugins/csharp/polyglot-plugin.json`
   and a handful of `DA:` records; upload under flag `spike-json` from a throwaway branch. Verify
   parse / listing / source rendering / no extension allowlist / counts toward the total.
@@ -148,18 +156,21 @@ all four targets, so the count of gate legs is unchanged but the corpus grows.
 
 ## Acceptance matrix
 
-| # | Criterion (PRD §7) | Slice | Verified by |
-|---|---|---|---|
-| 1 | master push → finalized build, C++ + 4 plugin reports | 1, 5 | dashboard |
-| 2 | non-fork PR uploads, cannot red the PR | 1 | PR run |
-| 3 | manifests browsable per-line | 0 (SP1), 4, 5 | dashboard |
-| 4 | denominator from the parse, not a regex | 3, 4 | fixture test |
-| 5 | uncovered arms resolved in this PR | 7 | review |
-| 6 | local run → cobertura + HTML + plugin lcov | 6 | `scripts/coverage.ps1` |
-| 7 | full gate green, no leg slower | all | `-Tier full` (once, at end) |
-| 8 | zero target-name comparisons in Core | 3 | diff grep |
-| 9 | path tripwire passes + fails loudly on bad input | 4 | tripwire test |
-| 10 | docs + badge updated | 6 | review |
+| # | Criterion (PRD §7) | Slice | Verified by | Status |
+|---|---|---|---|---|
+| 1 | master push → finalized build, C++ + 4 plugin reports | 1, 5 | dashboard | ⏳ nothing merged yet |
+| 2 | non-fork PR uploads, cannot red the PR | 1 | PR run | ✅ PR #67 |
+| 3 | manifests browsable per-line | 0 (SP1), 4, 5 | dashboard | ⏳ **blocking — maintainer check** |
+| 4 | denominator from the parse, not a regex | 3, 4 | fixture test | ✅ unit test |
+| 5 | uncovered arms resolved in this PR | 7 | review | ✅ ≥90% all four (bar reset by maintainer) |
+| 6 | local run → cobertura + HTML + plugin lcov | 6 | `scripts/coverage.ps1` | ⚠️ arm report yes; C++ half unverified (SP5) |
+| 7 | full gate green, no leg slower | all | `-Tier full` (once, at end) | ✅ green, zero `[FAIL]` |
+| 8 | zero target-name comparisons in Core | 3 | diff grep | ✅ clean |
+| 9 | path tripwire passes + fails loudly on bad input | 4 | tripwire test | ✅ both directions |
+| 10 | docs + badge updated | 6 | review | ⚠️ CLAUDE.md done; README/badge held for master |
+
+**Net: 7 met, 2 partial, 1 blocking.** The blocking one is #3 — whether the coverage server renders
+a `.json` source. Everything else is either done or waits on a master merge.
 
 ## Risks
 

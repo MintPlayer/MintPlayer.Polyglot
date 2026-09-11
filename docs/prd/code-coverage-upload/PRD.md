@@ -6,7 +6,11 @@
 > Successor to `docs/prd/e2e-coverage-wave2/` slice 7, which built the *local* instruments and
 > **explicitly deferred** both the template-arm tracer and any threshold.
 
-- **Status:** designed (2026-09-11), not started. One PR (CLAUDE.md single-PR rule), ordered commits.
+- **Status:** designed + **BUILT (2026-09-11)** on `code-coverage-upload` / **draft PR #67** —
+  as-built markers inline. Full gate green; CI `linux-build` + `coverage` green; the PR-side upload
+  to coverage.mintplayer.com works (5 files, one finalized session). **Not closed out:** §7 criteria
+  1, 3 and 10 are open, and SP5 is unrun — the blocking one is **SP1/criterion 3**, which only the
+  maintainer can check in the dashboard. One PR (CLAUDE.md single-PR rule), ordered commits.
 - **Author:** Pieterjan (with Claude Code).
 - **Provenance:** a two-track investigation — a repo audit (existing instruments, gate topology,
   plugin/rule internals) and an org-convention survey across `MintPlayer.AI`,
@@ -262,6 +266,18 @@ Two consequences for this design:
 
 Each is time-boxed and throwaway; a spike that fails changes the design, and §7 says how.
 
+> **Outcomes (2026-09-11).** SP2 **done** (failed as written → fixed). SP3 **done** (passed).
+> SP4 **done** (passed, with a caveat). SP1 **partly answered — the one open item, and the one that
+> may need a server-side change.** SP5 **not run — blocked.** Details under each.
+>
+> **Honest note on ordering:** the plan said SP1 runs *first, before any C++ is written*. It did
+> not. SP1/SP2/SP3 are only answerable from a CI run, and `ci.yml` fires only on PRs and master
+> pushes, so the workflow change (slice 1) had to exist before any spike could run at all. The
+> tracer was therefore built on the *reasoning* that de-risked SP1 (lcov is format-agnostic about
+> `SF:`; the manifests are git-tracked so the suffix match resolves) rather than on a confirmed
+> answer. That reasoning has held so far — the server accepted the files — but the final render
+> check is still outstanding, so the risk the ordering was meant to remove was carried, not removed.
+
 - **SP1 — Does the server accept and render a report whose source file is `.json`?**
   *The one spike that may need a change on coverage.mintplayer.com — the maintainer has offered
   exactly this.* Hand-write a ~10-line lcov naming `plugins/csharp/polyglot-plugin.json` with a few
@@ -274,19 +290,48 @@ Each is time-boxed and throwaway; a spike that fails changes the design, and §7
   *If it fails:* ask for `.json` support (the offer), or re-emit the same data as Cobertura
   (`<class filename="plugins/…json">`) if only the lcov path is fussy. Do **not** fall back to "a
   percentage in the job summary" — that is the status quo this PRD exists to replace.
+
+  **⚠ PARTLY ANSWERED — the one open item.** The real reports (not a hand-written probe) upload
+  cleanly: the action logs all five files accepted in one session, `finish` acknowledged 202, and
+  the §4.E tripwire passes, so every path resolved against `git ls-files`. What is **not** confirmed
+  is (a)/(c)/(e) — parsing is asynchronous, and `GET /api/uploads/status` is 401 without a token,
+  which this work deliberately does not handle. **So whether the four manifests parse, render with
+  line highlighting, and count toward the project total is visible only to the maintainer in the
+  dashboard.** If they do not, this is the offered server-side change.
 - **SP2 — gcovr Cobertura path shape.** Confirm `--root . --filter 'src/'` yields repo-relative
   `filename="src/..."` that survives the `git ls-files` suffix match with no rebase script. The
   failure is silent (§4.E), so verify against the tripwire, not by eyeballing.
+
+  **DONE — failed as written, then fixed.** `gcovr --cobertura` does not exist on ubuntu-22.04
+  (gcovr 5.0); the flag was only added in 5.1. `--xml` emits the same Cobertura on both and is now
+  what CI uses. Paths *are* repo-relative and need no rebase script — confirmed by the tripwire
+  passing, not by eyeballing.
 - **SP3 — OIDC from this repo.** Largely settled by precedent (`MintPlayer.AI` is public and
   tokenless), so this is a confirmation, not an exploration: add `id-token: write` and prove a
   non-fork PR run authenticates, with no `COVERAGE_TOKEN` secret added to this repo.
+
+  **DONE — passed.** The action logs *"Authenticating with GitHub Actions OIDC"* and the server
+  posts its own `coverage/project` + `coverage/patch` check runs. No secret was added to this repo.
 - **SP4 — Tracer plumbing cost.** Prototype offset→`Rule.line`→`evalRule` hit recording and measure
   (a) the CI sweep wall-clock delta (448 CLI invocations; budget: <10% and no new gate leg), (b)
   that nested `case` arms genuinely land on distinct lines across all four manifests, (c) that a
   disabled tracer is unmeasurable in the normal build.
+
+  **DONE — passed, with a caveat about what was measured.** (b) is pinned by a unit test (sibling
+  arms land on distinct lines). (c) holds by construction — a null pointer test. (a): 80 paired CLI
+  invocations timed tracing-off vs tracing-on came out **negative (−11%)**, which is not a speedup
+  but proof that **process startup (~0.6 s × N) dominates any per-evaluation cost** — i.e. the
+  overhead is below the noise floor at this granularity, comfortably inside the <10% budget, but
+  the measurement does *not* isolate the tracer itself. No new gate leg was added, and the full
+  gate is green with tracing off, which is the property that actually matters.
 - **SP5 — OpenCppCoverage cobertura export.** Needs `choco install opencppcoverage` (absent on the
   dev machine — itself evidence for §1.2). Confirm `--export_type cobertura:` composes with
   `--cover_children` and the two-`binary:` merge.
+
+  **NOT RUN — blocked.** OpenCppCoverage is still not installed, so the `cobertura:` export added to
+  `coverage.ps1` in slice 6 is **written but unverified**. The plugin-lcov half of that script *is*
+  verified (the aggregator ran against real traces); the C++ Cobertura half is not. Installing the
+  tool and running `pwsh scripts/coverage.ps1 -IncludeConformanceSweep` once closes it.
 
 ## 6. Decisions and their consequences
 
@@ -359,24 +404,50 @@ green while the targets diverge.
 
 ## 7. Acceptance criteria
 
-1. A master push publishes a build to coverage.mintplayer.com containing **both** a C++ report and
+Status as of 2026-09-11 — **7 of 10 met, 3 open.** ✅ met · ⏳ open (needs the maintainer or a
+master merge) · ⚠️ partly met.
+
+1. ⏳ A master push publishes a build to coverage.mintplayer.com containing **both** a C++ report and
    four per-plugin reports, finalized once.
-2. A non-fork PR publishes the same, comparable against its base, and cannot red the PR on an
+   *Not yet — nothing has merged to master. The equivalent PR-side upload works (5 files, one
+   session, `finish` 202), so this is expected to follow on merge rather than being unproven.*
+2. ✅ A non-fork PR publishes the same, comparable against its base, and cannot red the PR on an
    upload failure.
-3. `plugins/<t>/polyglot-plugin.json` is browsable in the dashboard with per-line hit/miss.
-4. The arm tracer's denominator provably comes from the parse, not a regex: a deliberately
+   *Verified on PR #67. "Comparable against its base" is untestable until a master baseline exists —
+   the server's `coverage/project`/`coverage/patch` checks correctly report **skipping**, which is
+   the documented neutral-on-missing-baseline behavior (§6.4), not a failure.*
+3. ⏳ `plugins/<t>/polyglot-plugin.json` is browsable in the dashboard with per-line hit/miss.
+   *The blocking unknown — see SP1. Upload accepted; render unconfirmed (needs the maintainer's
+   dashboard access).*
+4. ✅ The arm tracer's denominator provably comes from the parse, not a regex: a deliberately
    never-referenced rule added to a manifest shows up as **uncovered**, not absent. (Test fixture.)
-5. Every uncovered arm found by the first real run is resolved in this PR — covered, or deleted,
+   *Unit-tested: an untaken `case` arm is asserted present-in-denominator and not-hit.*
+5. ✅ Every uncovered arm found by the first real run is resolved in this PR — covered, or deleted,
    or explicitly listed with a reason. **As built: ≥90% per manifest** (csharp 94.5%, php 96.1%,
    python 94.6%, typescript 94.8%), with the residue characterized in §7.1.
-6. `pwsh scripts/coverage.ps1` produces cobertura + HTML + a plugin arm report locally, with no CI
+   *Note the bar moved: the original wording was "zero unexplained uncovered arms". The first sweep
+   showed no dead rules at all, so driving ~750 sub-arm variants to zero was open-ended; the
+   maintainer set 90% per manifest instead, and §7.1 classifies what remains.*
+6. ⚠️ `pwsh scripts/coverage.ps1` produces cobertura + HTML + a plugin arm report locally, with no CI
    and no NX.
-7. The full gate (`-Tier full`) stays green and no gate leg gets slower (the tracer is off by
+   *Plugin arm report: verified. C++ Cobertura + HTML: **written but unverified** — OpenCppCoverage
+   isn't installed on the dev machine (SP5).*
+7. ✅ The full gate (`-Tier full`) stays green and no gate leg gets slower (the tracer is off by
    default).
-8. Core contains **zero** target-name comparisons introduced by this work.
-9. The path tripwire (§4.E) passes, and fails loudly when fed a deliberately-bad path.
-10. CLAUDE.md + README state the three-instrument split and the Linux-only bias; README carries the
+   *All legs pass, zero `[FAIL]`. "No leg slower" holds by construction (tracing off = one null
+   test) rather than by timing each leg.*
+8. ✅ Core contains **zero** target-name comparisons introduced by this work.
+   *Verified: `git diff master...HEAD -- src/` has exactly one match for a quoted target name, and
+   it is the comment in `backend_engine.hpp` stating the rule.*
+9. ✅ The path tripwire (§4.E) passes, and fails loudly when fed a deliberately-bad path.
+   *Both directions exercised: green on the real reports in CI, and exit 1 on a deliberately
+   corrupted `SF:` path locally.*
+10. ⚠️ CLAUDE.md + README state the three-instrument split and the Linux-only bias; README carries the
     org-convention badge once the first master upload lands.
+    *CLAUDE.md: done (three-instrument table + the `#ifdef _WIN32` bias). **README: not touched** —
+    the badge is deliberately held until the first master upload, since a badge pointing at an empty
+    project is worse than none. The README carries no coverage prose either; that lands with the
+    badge.*
 
 ### 7.1 The residue, characterized
 
