@@ -1587,8 +1587,7 @@
                                 "type": "item.type"
                               }
                             ]
-                          ],
-                          "else": "\\Throwable"
+                          ]
                         }
                       },
                       " $__e)"
