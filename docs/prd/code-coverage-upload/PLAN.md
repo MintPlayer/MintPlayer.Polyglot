@@ -163,14 +163,13 @@ all four targets, so the count of gate legs is unchanged but the corpus grows.
 | 3 | manifests browsable per-line | 0 (SP1), 4, 5 | dashboard | ✅ verified — 977/1034 rendered, no server change |
 | 4 | denominator from the parse, not a regex | 3, 4 | fixture test | ✅ unit test |
 | 5 | uncovered arms resolved in this PR | 7 | review | ✅ ≥90% all four (bar reset by maintainer) |
-| 6 | local run → cobertura + HTML + plugin lcov | 6 | `scripts/coverage.ps1` | ⚠️ arm report yes; C++ half unverified (SP5) |
+| 6 | local run → cobertura + HTML + plugin lcov | 6 | `scripts/coverage.ps1` | ✅ all three (SP5 found + fixed a path bug) |
 | 7 | full gate green, no leg slower | all | `-Tier full` (once, at end) | ✅ green, zero `[FAIL]` |
 | 8 | zero target-name comparisons in Core | 3 | diff grep | ✅ clean |
 | 9 | path tripwire passes + fails loudly on bad input | 4 | tripwire test | ✅ both directions |
-| 10 | docs + badge updated | 6 | review | ⚠️ CLAUDE.md done; README/badge held for master |
+| 10 | docs + badge updated | 6 | review | ✅ CLAUDE.md + README + live badge (83.9%) |
 
-**Net: 8 met, 2 partial, nothing blocking.** Both partials wait on things outside the code: a master
-merge (#1, #10) and a local tool install (#6 / SP5).
+**Net: 9 met, 1 open.** The open one is #1 — the first *master* build — which follows from merging.
 
 ## Risks
 
@@ -262,3 +261,22 @@ merge (#1, #10) and a local tool install (#6 / SP5).
     reading 3,700 lines of JSON by hand.
   - Why it worked with no server change: lcov never cared what `SF:` points at, and the manifests
     are git-tracked, so the server's longest-suffix match resolved them like any other source file.
+
+- **2026-09-17 — README badge + SP5 done. 9 of 10 criteria met; only the master build remains.**
+  - **Badge + README section** (criterion 10). The badge endpoint was checked before trusting it —
+    HTTP 200, `image/svg+xml`, reading **83.9%** — so it points at real data. README also gained a
+    *Testing & code coverage* section with the three-instrument table and both caveats.
+  - **SP5 done, and it earned its keep.** `pwsh scripts/coverage.ps1` now produces
+    `x64\coverage\cobertura.xml` (valid, 39 classes, line-rate 0.845) + HTML. **It exposed a latent
+    silent-drop bug:** OpenCppCoverage writes drive-relative backslash paths
+    (`<source>C:</source>`, `filename="Repos\MintPlayer.Polyglot\src\..."`) where gcovr writes
+    repo-relative forward-slash ones. The tripwire rejected all 39 — doing precisely the job it was
+    added for, on a real case rather than a synthetic one. Root-caused in `coverage.ps1`
+    (`Repair-CoberturaPaths`) instead of softening the docs; tripwire now 39/39. Never live, since
+    the local script deliberately never uploads — it would have bitten whoever wired it up first.
+  - **One thing stays unverified, deliberately:** `-IncludeConformanceSweep` under OpenCppCoverage is
+    impractically slow (two runs killed after ~50 min without reaching the `--input_coverage` merge),
+    so that merge path is untested. Recorded as PRD §6.7 with the consequence: the C++ number comes
+    from CI, and **arm coverage needs no OpenCppCoverage at all** — the tracer is a CLI flag, so the
+    full 482-invocation arm sweep runs in minutes on its own.
+  - **Remaining:** criterion 1 only — the first master build, which follows from merging PR #67.

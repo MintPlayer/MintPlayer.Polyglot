@@ -339,10 +339,25 @@ Each is time-boxed and throwaway; a spike that fails changes the design, and §7
   dev machine — itself evidence for §1.2). Confirm `--export_type cobertura:` composes with
   `--cover_children` and the two-`binary:` merge.
 
-  **NOT RUN — blocked.** OpenCppCoverage is still not installed, so the `cobertura:` export added to
-  `coverage.ps1` in slice 6 is **written but unverified**. The plugin-lcov half of that script *is*
-  verified (the aggregator ran against real traces); the C++ Cobertura half is not. Installing the
-  tool and running `pwsh scripts/coverage.ps1 -IncludeConformanceSweep` once closes it.
+  **DONE — passed, and it caught a real latent bug.** OpenCppCoverage installed 2026-09-17.
+  `pwsh scripts/coverage.ps1` produces `x64\coverage\cobertura.xml` (416 KB, valid XML, 39 classes,
+  line-rate 0.845) alongside the HTML, and `--export_type cobertura:` composes with `--cover_children`
+  as designed.
+
+  **The bug it found:** OpenCppCoverage writes **drive-relative backslash** paths — `<source>C:</source>`
+  plus `filename="Repos\MintPlayer.Polyglot\src\..."` — where gcovr on CI writes repo-relative
+  forward-slash ones. The §4.E tripwire failed on all 39, which is exactly its job: those paths would
+  have been **silently dropped** by the server's suffix match, yielding a wrong number rather than an
+  error. So slice 6's claim that a local run yields "the same artifacts CI uploads" was false as
+  written. Fixed at the root (`Repair-CoberturaPaths` in `coverage.ps1` normalizes `<source>` and every
+  `filename=` before the script exits) rather than by weakening the claim; the tripwire now passes 39/39.
+
+  Note this was a *latent* trap, never a live one: `coverage.ps1` deliberately never uploads (§4.C),
+  so nothing wrong was ever published. It would have bitten the first person to wire the local report
+  into an upload.
+
+  **Still unverified:** the `-IncludeConformanceSweep` merge path (two `binary:` intermediates →
+  `--input_coverage` merge). Two attempts were killed by session end after ~50 min; see §6.7.
 
 ## 6. Decisions and their consequences
 
@@ -390,6 +405,20 @@ permanently-uncovered `#ifdef _WIN32` lines depress the absolute number but not 
 is the number a ratchet actually enforces. Should a fixed target ever be set, it must be set with
 the Windows-fork bias in mind.
 
+### 6.7 The local OpenCppCoverage sweep is impractically slow — prefer the unit-only mode
+
+`scripts/coverage.ps1` **without** `-IncludeConformanceSweep` runs in a couple of minutes and is the
+mode to reach for. **With** it, OpenCppCoverage instruments every child of a 482-invocation sweep, and
+two attempts were still running after ~50 minutes (killed by session end, never reaching the
+`--input_coverage` merge). That is inherent — `--cover_children` across hundreds of short-lived CLI
+processes pays the instrumentation cost per process.
+
+Consequence for how the three instruments are actually used: **the C++ number comes from CI** (gcovr on
+ubuntu, where the same sweep is cheap), and the local script is for ad-hoc inspection of the unit
+suite. **Plugin arm coverage does NOT need OpenCppCoverage at all** — the tracer is a CLI flag, so the
+full 482-invocation arm sweep runs in a few minutes unassisted. Anyone wanting local arm numbers
+should run the tracer directly rather than through `-IncludeConformanceSweep`.
+
 ### 6.5 Badge
 
 Org convention puts it at README line 3:
@@ -415,8 +444,7 @@ green while the targets diverge.
 
 ## 7. Acceptance criteria
 
-Status as of 2026-09-11 — **8 of 10 met, nothing blocking.** ✅ met · ⏳ open (waits on a master
-merge) · ⚠️ partly met.
+Status as of 2026-09-17 — **9 of 10 met; the last one waits on a master merge.** ✅ met · ⏳ open.
 
 1. ⏳ A master push publishes a build to coverage.mintplayer.com containing **both** a C++ report and
    four per-plugin reports, finalized once.
@@ -440,10 +468,12 @@ merge) · ⚠️ partly met.
    *Note the bar moved: the original wording was "zero unexplained uncovered arms". The first sweep
    showed no dead rules at all, so driving ~750 sub-arm variants to zero was open-ended; the
    maintainer set 90% per manifest instead, and §7.1 classifies what remains.*
-6. ⚠️ `pwsh scripts/coverage.ps1` produces cobertura + HTML + a plugin arm report locally, with no CI
+6. ✅ `pwsh scripts/coverage.ps1` produces cobertura + HTML + a plugin arm report locally, with no CI
    and no NX.
-   *Plugin arm report: verified. C++ Cobertura + HTML: **written but unverified** — OpenCppCoverage
-   isn't installed on the dev machine (SP5).*
+   *All three verified. The Cobertura run exposed drive-relative backslash paths that the tripwire
+   correctly rejected; fixed at the root in `coverage.ps1` (SP5). The one caveat is speed, not
+   correctness: `-IncludeConformanceSweep` is impractically slow under OpenCppCoverage (§6.7), and
+   its merge path remains unverified — arm coverage needs no OpenCppCoverage anyway.*
 7. ✅ The full gate (`-Tier full`) stays green and no gate leg gets slower (the tracer is off by
    default).
    *All legs pass, zero `[FAIL]`. "No leg slower" holds by construction (tracing off = one null
@@ -454,12 +484,12 @@ merge) · ⚠️ partly met.
 9. ✅ The path tripwire (§4.E) passes, and fails loudly when fed a deliberately-bad path.
    *Both directions exercised: green on the real reports in CI, and exit 1 on a deliberately
    corrupted `SF:` path locally.*
-10. ⚠️ CLAUDE.md + README state the three-instrument split and the Linux-only bias; README carries the
+10. ✅ CLAUDE.md + README state the three-instrument split and the Linux-only bias; README carries the
     org-convention badge once the first master upload lands.
-    *CLAUDE.md: done (three-instrument table + the `#ifdef _WIN32` bias). **README: not touched** —
-    the badge is deliberately held until the first master upload, since a badge pointing at an empty
-    project is worse than none. The README carries no coverage prose either; that lands with the
-    badge.*
+    *Both done. The badge went in once the endpoint served a live SVG (verified: HTTP 200,
+    `image/svg+xml`, reading 83.9%), so it points at real data rather than an empty project. README
+    also gained a **Testing & code coverage** section carrying the three-instrument table and both
+    caveats (Linux-only bias, no floor).*
 
 ### 7.1 The residue, characterized
 

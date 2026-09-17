@@ -38,6 +38,30 @@ if (-not (Test-Path $tests)) {
     exit 2
 }
 
+# OpenCppCoverage writes DRIVE-relative backslash paths (`<source>C:</source>` plus
+# `filename="Repos\MintPlayer.Polyglot\src\x.cpp"`), where gcovr on CI writes repo-relative
+# forward-slash ones. The coverage server resolves paths by longest-suffix match against
+# `git ls-files` and drops a non-matching path SILENTLY, so without this the local report would only
+# LOOK like the one CI uploads — a wrong number rather than an error, the §4.E trap.
+# `scripts/verify-coverage-paths.ps1` is the guard that catches it if this ever regresses.
+function Repair-CoberturaPaths {
+    param([string]$XmlPath, [string]$RepoRoot)
+    if (-not (Test-Path $XmlPath)) { return }
+    $drive = $RepoRoot.Substring(0, 2)                                    # "C:"
+    $prefix = (($RepoRoot -replace '^[A-Za-z]:[\\/]', '') -replace '/', '\').TrimEnd('\') + '\'
+    $text = [System.IO.File]::ReadAllText($XmlPath)
+    $text = $text.Replace("<source>$drive</source>", '<source>.</source>')
+    $text = [regex]::Replace($text, 'filename="([^"]*)"', {
+        param($m)
+        $p = $m.Groups[1].Value
+        if ($p.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $p = $p.Substring($prefix.Length)
+        }
+        'filename="' + ($p -replace '\\', '/') + '"'
+    })
+    [System.IO.File]::WriteAllText($XmlPath, $text)
+}
+
 $out = Join-Path $repo "x64\coverage"
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -98,6 +122,8 @@ if (Test-Path "$lspLeg") { & "$lspLeg" -Cli "$cli" *> `$null }
     & $occ.Source --sources $srcFilter --export_type "html:$out" --export_type "cobertura:$out\cobertura.xml" `
         --cover_children -- $tests | Out-Null
 }
+
+Repair-CoberturaPaths -XmlPath "$out\cobertura.xml" -RepoRoot $repo
 
 Write-Host ""
 Write-Host "C++ coverage (Core/CLI): $out\index.html"
