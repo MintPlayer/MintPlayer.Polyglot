@@ -146,9 +146,25 @@ private:
     fs::path entryDir_;
 };
 
+// P38/issue #69: resolve a diagnostic's own file. Before compile() carried a SourceMap every position was
+// fileId 0, so an error inside an IMPORTED module was printed under the entry file's name with the
+// module's line number — a wrong file:line:col pointing at innocent source. fileId 0 (unknown/synthetic)
+// and 1 (the entry) keep printing the input path exactly as the user spelled it, so single-file output is
+// byte-identical to before; only cross-module diagnostics change, and they change from wrong to right.
+const std::string& diagFile(const fs::path& input, const EmitResult& result, const Diagnostic& d,
+                            std::string& scratch) {
+    if (d.pos.fileId > 1) {
+        const std::string& canon = result.sources.canon(d.pos.fileId);
+        if (!canon.empty()) return canon;
+    }
+    scratch = input.string();
+    return scratch;
+}
+
 void reportDiagnostics(const fs::path& input, const EmitResult& result) {
     for (const auto& d : result.diagnostics) {
-        std::cerr << input.string() << ":" << d.pos.line << ":" << d.pos.col
+        std::string scratch;
+        std::cerr << diagFile(input, result, d, scratch) << ":" << d.pos.line << ":" << d.pos.col
                   << ": error: " << d.message << "\n";
     }
 }
@@ -223,7 +239,8 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
              const PgConfig& pc, bool flagRouted,
              std::map<std::string, std::string>* seen = nullptr) {
     EmitResult result = compile(source, target, resolver,
-                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir));
+                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir),
+                                fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
     if (!result.ok) {
         reportDiagnostics(input, result);
         return false;
@@ -302,8 +319,16 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         std::cout << line << "\n";
         if (sev == Severity::Error) ++c.errors;
     };
-    auto emitDiagAt = [&](const Diagnostic& d) {
-        emitDiag(absInput.string() + "(" + std::to_string(d.pos.line) + "," + std::to_string(d.pos.col) +
+    // P38/issue #69: `sources` (when the caller has one) names the module a diagnostic actually came from;
+    // without it — or for the entry / an unstamped position — the watched input's path is used, so the
+    // frozen watch console protocol is byte-identical for single-file programs.
+    auto emitDiagAt = [&](const Diagnostic& d, const SourceMap* sources = nullptr) {
+        std::string file = absInput.string();
+        if (sources && d.pos.fileId > 1) {
+            const std::string& canon = sources->canon(d.pos.fileId);
+            if (!canon.empty()) file = canon;
+        }
+        emitDiag(file + "(" + std::to_string(d.pos.line) + "," + std::to_string(d.pos.col) +
                      "): " + severityName(d.severity) + ": " + d.message,
                  d.severity);
     };
@@ -372,9 +397,10 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
             continue;
         }
         EmitResult result = compile(source, h, &resolver,
-                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg));
+                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg),
+                                    absInput.string()); // P38: already canonical-ish (absolute+normalized)
         if (!result.ok) {
-            for (const auto& d : result.diagnostics) emitDiagAt(d);
+            for (const auto& d : result.diagnostics) emitDiagAt(d, &result.sources);
             if (result.diagnostics.empty()) emitTopLevel("compilation failed for target '" + t + "'");
             continue; // last-good outputs stay in place
         }
@@ -670,14 +696,22 @@ std::string jsonEscape(const std::string& s) {
 // Serialize diagnostics as a JSON array of {line,col,endLine,endCol,severity,message}. Shared by
 // `check --json` and the LSP `polyglot/emit` preview response (whole-file list, no identifier-widening —
 // that widening is a squiggle-only concern of publishDiagnostics).
-std::string diagnosticsToJson(const std::vector<Diagnostic>& diags) {
+// P38/issue #69: `sources` (when given) names the file a diagnostic came from. A `"file"` member is added
+// ONLY for a position that resolves to a non-entry module, so every row a single-file program produces is
+// byte-identical to before and the field's presence means "this is not the file you asked about".
+std::string diagnosticsToJson(const std::vector<Diagnostic>& diags, const SourceMap* sources = nullptr) {
     std::string out = "[";
     for (std::size_t i = 0; i < diags.size(); ++i) {
         const auto& d = diags[i];
         if (i) out += ",";
         out += "{\"line\":" + std::to_string(d.pos.line) + ",\"col\":" + std::to_string(d.pos.col) +
                ",\"endLine\":" + std::to_string(d.end.line) + ",\"endCol\":" + std::to_string(d.end.col) +
-               ",\"severity\":\"" + severityName(d.severity) + "\",\"message\":\"" + jsonEscape(d.message) + "\"}";
+               ",\"severity\":\"" + severityName(d.severity) + "\",\"message\":\"" + jsonEscape(d.message) + "\"";
+        if (sources && d.pos.fileId > 1) {
+            const std::string& canon = sources->canon(d.pos.fileId);
+            if (!canon.empty()) out += ",\"file\":\"" + jsonEscape(canon) + "\"";
+        }
+        out += "}";
     }
     out += "]";
     return out;
@@ -732,10 +766,11 @@ int runCheck(const std::vector<std::string>& args) {
         std::cerr << "polyglot: no full-coverage reference target is loaded (no plugins found?)\n";
         return 69;
     }
-    EmitResult result = compile(source, findTarget(ref->name()), &resolver, lib);
+    EmitResult result = compile(source, findTarget(ref->name()), &resolver, lib,
+                                fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
 
     if (json) {
-        std::cout << diagnosticsToJson(result.diagnostics) << "\n";
+        std::cout << diagnosticsToJson(result.diagnostics, &result.sources) << "\n";
     } else {
         reportDiagnostics(input, result);
         if (result.ok) std::cout << "polyglot: no problems in " << input.string() << "\n";
@@ -1040,10 +1075,11 @@ struct LspServer {
         DocContext ctx = contextFor(uri);
         FileModuleResolver disk(ctx.root, ctx.entryDir);
         BufferResolver resolver(disk, text_); // preview reflects unsaved edits in open imported modules
-        EmitResult r = compile(text_[uri], tgt, &resolver, parseLibList(ctx.libStr));
+        EmitResult r = compile(text_[uri], tgt, &resolver, parseLibList(ctx.libStr),
+                               uriToPath(uri)); // P38: the open document is the entry (fileId 1)
         return "{\"target\":" + json::quote(targetName) + ",\"code\":" + json::quote(r.code) +
                ",\"ok\":" + (r.ok ? "true" : "false") +
-               ",\"diagnostics\":" + diagnosticsToJson(r.diagnostics) + "}";
+               ",\"diagnostics\":" + diagnosticsToJson(r.diagnostics, &r.sources) + "}";
     }
 
     void publishDiagnostics(const std::string& uri, const std::vector<Diagnostic>& diags) {

@@ -16,6 +16,41 @@
 
 namespace mintplayer::polyglot {
 
+// P38/issue #69 — how a target records the origin of each emitted line, as DATA (plugin manifest
+// `originMapping`). Two sinks exist because the two ecosystems disagree about where origin info lives:
+// C# writes `#line` pragmas INTO the source (Roslyn puts them in the PDB, so .NET coverage tools report
+// against the `.pg` with no post-processing at all), while TS writes a Source Map v3 BESIDE it.
+//
+// `Style` is a closed, load-validated vocabulary — an unknown value is a plugin LOAD ERROR, never a silent
+// default (the `blockStyle` precedent). That is what makes version skew loud: a manifest asking for a style
+// an older CLI does not implement refuses instead of quietly emitting nothing.
+//
+// A target that declares nothing gets `Style::None` and emits byte-for-byte as it always has.
+struct OriginMapping {
+    enum class Style {
+        None,        // no origin info (the default; Python and PHP today)
+        Directive,   // an in-source pragma per emitted line (C# `#line`)
+        SourceMapV3, // a sidecar .map file beside the emitted source (TypeScript)
+    };
+    Style style = Style::None;
+    // Directive: the per-line templates. `$n` = the 1-based source line, `$f` = the source path.
+    std::string line;             // e.g. `#line $n "$f"`
+    std::string hidden;           // e.g. `#line hidden` — emitted for a line with no known origin
+    // Directive: the column the pragma is written at. C# `#line` is conventionally at column 0, which is
+    // NOT the emitter's current indent — so this is data, not a hardcoded choice.
+    int column = 0;
+    // SourceMapV3: the sidecar's extension (e.g. ".ts.map") and the footer that points the emitted file at
+    // it (`$f` = the sidecar's file name).
+    std::string sidecarExtension;
+    std::string footer;
+
+    bool emitsDirectives() const { return style == Style::Directive && !line.empty(); }
+    bool emitsSourceMap() const { return style == Style::SourceMapV3; }
+    // Does this target want per-line origins recorded at all? Both sinks are fed by the same hook in
+    // EmitterBase::line(); only where the result GOES differs.
+    bool recordsOrigins() const { return style != Style::None; }
+};
+
 // A §3.A language feature that a backend may or may not be able to emit on its target (PRD §3.E). The set
 // is deliberately finite and closed — one flag per supported-surface feature whose availability genuinely
 // varies across SDKs. The usable surface for a build is the *intersection* of the configured backends'
@@ -110,6 +145,15 @@ public:
     // host may spread one closure across directories. False (default): specifiers are bare
     // basenames and the host must keep a closure in one directory (the CLI refuses a split).
     virtual bool crossDirImports() const { return false; }
+    // P38/issue #69: how (and whether) this target records where each emitted line came from, so a
+    // coverage tool can attribute generated code back to the `.pg` source. Plugin manifest
+    // `originMapping`; absent = this target says nothing about origins and emits exactly as before.
+    // The Core never asks "is this C#?" — `#line` is C# syntax and a v3 map is a TS convention, and BOTH
+    // are carried here as data.
+    virtual const OriginMapping& originMapping() const {
+        static const OriginMapping kNone;
+        return kNone;
+    }
     // The names this target's GENERATED code claims (`identifiers.reserved` — scaffolding, synthesized
     // temps; trailing `*` = prefix family) and its runtime globals (`identifiers.globals`). A user
     // identifier colliding with either refuses at compile time (checkReservedNames, P19 §7).

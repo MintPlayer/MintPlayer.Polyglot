@@ -626,7 +626,8 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
     return out;
 }
 
-EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib) {
+EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib,
+                   const std::string& entryPath) {
     EmitResult result;
     DiagnosticBag diags;
 
@@ -636,14 +637,21 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         return result;
     }
 
-    std::vector<Token> tokens = lex(source, diags);
+    // P38/issue #69: stamp real fileIds on the BUILD path too. Before this, compile() lexed with no fileId
+    // and handed runFrontEnd a null SourceMap, so every token of every module in the closure was fileId 0 —
+    // origin info was unavailable to the emitter, and every diagnostic was misattributed to the entry file.
+    // The entry keeps id 1 (analyze() establishes that invariant and the LSP's `fileId != 1` filter relies
+    // on it). The path is stored verbatim; canonicalization is the caller's job (the Core does no IO).
+    const int entryFileId = result.sources.add(entryPath.empty() ? "<entry>" : entryPath);
+
+    std::vector<Token> tokens = lex(source, diags, entryFileId);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     CompilationUnit unit = parse(tokens, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     ImportGraph importGraph; // §4.5: user cross-module import edges, keyed by importer ("" = entry)
-    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr, &importGraph)) { result.diagnostics = diags.items(); return result; }
+    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, &result.sources, &importGraph)) { result.diagnostics = diags.items(); return result; }
 
     injectStdOverlays(unit, *target.backend()); // the plugin's std arms land on the skeletons (P19 s9b)
 

@@ -38,9 +38,45 @@ The manifest's top-level keys (all of them):
 | `rules` | yes | The emission rule tables; `Program` and `Type` are mandatory. |
 | `fileExtension` | no | Output extension; defaults to `.<name>`. |
 | `crossDirImports` | no | `true` when the target's emitted import specifiers may span directories (the compiler then hands the import rules a full relative specifier like `../shared/name` instead of a bare basename, and a pgconfig `include` layout may split an import closure across directories). Default `false`: all files of one closure must share an output directory — the CLI refuses a split. TS declares it; Python/PHP don't (dot-package / include semantics). |
+| `originMapping` | no | How this target records where each emitted line came from, so a coverage tool can attribute generated code back to the `.pg` (P38 / issue #69). Absent = the target says nothing about origins and emits byte-for-byte as before — the default, and what Python/PHP do today. See §3a. |
 
 Plugins register through `loadBackend()`, which strictly parses and validates the whole artifact
 (§5) — a malformed plugin fails to load with a named error, never degrades output.
+
+### 3a. `originMapping` — attributing emitted lines to the `.pg` source
+
+Opt-in, off unless the build asks for it (`--line-directives` / the pgconfig key). The point is that
+*where origin info lives* differs per ecosystem, and that difference is **data, not a target-name check in
+the Core**: C# writes `#line` pragmas INTO the source (Roslyn records them as PDB sequence points, so .NET
+coverage tools report against the `.pg` with no post-processing), while TypeScript writes a **Source Map
+v3 sidecar** beside the emitted file.
+
+| Key | Applies to | What it is |
+|---|---|---|
+| `style` | both | **Closed vocabulary**: `"directive"` or `"sourceMapV3"`. An unknown value is a **load error** — never a silent default. |
+| `line` | `directive` | Per-line template. `$n` = the 1-based source line, `$f` = the source path. Required. |
+| `hidden` | `directive` | Template for a line whose origin is unknown (braces, scaffolding, std helpers). Required. |
+| `column` | `directive` | Column the pragma is written at; C# wants `0`, which is *not* the emitter's current indent. |
+| `sidecarExtension` | `sourceMapV3` | The sidecar's extension, e.g. `".ts.map"`. Required. |
+| `footer` | `sourceMapV3` | Line appended to the emitted file pointing at the sidecar; `$f` = the sidecar's file name. |
+
+```jsonc
+// plugins/csharp
+"originMapping": { "style": "directive", "line": "#line $n \"$f\"", "hidden": "#line hidden", "column": 0 }
+
+// plugins/typescript
+"originMapping": { "style": "sourceMapV3", "sidecarExtension": ".ts.map", "footer": "//# sourceMappingURL=$f" }
+```
+
+**Every** emitted line carries a directive when the style is `directive` — a positioned one where the
+origin is known, `hidden` everywhere else. That is not over-caution: emitting a directive only when the
+source line *changes* lets the following lines drift onto unrelated `.pg` lines and reports them as
+covered, which silently inflates the number. `hidden` removes a line from the report entirely, so
+scaffolding leaves the denominator rather than counting against it.
+
+A declared-but-unusable sink refuses at load: `"directive"` without both templates, or `"sourceMapV3"`
+without a `sidecarExtension`, is a manifest bug rather than a silent no-op. Declaring nothing is always
+fine — that is what "this target has no origin story" looks like, and it changes no output.
 
 ## 2. Quick start
 

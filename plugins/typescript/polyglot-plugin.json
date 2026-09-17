@@ -2,6 +2,11 @@
   "schema": 1,
   "name": "typescript",
   "crossDirImports": true,
+  "originMapping": {
+    "style": "sourceMapV3",
+    "sidecarExtension": ".ts.map",
+    "footer": "//# sourceMappingURL=$f"
+  },
   "capabilities": {
     "interfaces:runtimeIdentity": false,
     "attributes:target.function": false,

@@ -47,10 +47,11 @@ class LoadedBackend : public Backend {
 public:
     LoadedBackend(std::string name, std::string fileExtension, BackendSpec spec, engine::RuleTable rules,
                   std::unordered_map<std::string, std::string> capabilities,
-                  std::unordered_map<std::string, std::string> overlays, bool crossDirImports = false)
+                  std::unordered_map<std::string, std::string> overlays, bool crossDirImports = false,
+                  OriginMapping originMapping = {})
         : name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
           rules_(std::move(rules)), capabilities_(std::move(capabilities)), overlays_(std::move(overlays)),
-          crossDirImports_(crossDirImports) {}
+          crossDirImports_(crossDirImports), originMapping_(std::move(originMapping)) {}
 
     std::string name() const override { return name_; }
 
@@ -84,11 +85,13 @@ public:
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }
+    const OriginMapping& originMapping() const override { return originMapping_; }
     const std::vector<std::string>& reservedIdentifiers() const override { return spec_.reservedNames; }
     const std::vector<std::string>& globalIdentifiers() const override { return spec_.globalNames; }
 
 private:
     bool crossDirImports_ = false;
+    OriginMapping originMapping_;
     std::string name_;
     std::string ext_;
     BackendSpec spec_;
@@ -227,6 +230,40 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
         return nullptr;
     }
 
+    // P38/issue #69: origin mapping, as data. Absent = Style::None = emit exactly as before (Python/PHP
+    // declare nothing). An unknown `style` is a LOAD ERROR, following `blockStyle`: it is the one place a
+    // manifest's unknown VALUE refuses instead of defaulting, which is what keeps version skew loud.
+    // Validated here, before the rule tables, because it is independent of them — a manifest that misspells
+    // its origin style should hear about THAT, not about whichever construct rule it also happens to lack.
+    OriginMapping origin;
+    const json::Value& om = doc["originMapping"];
+    if (om.kind == json::Value::Kind::Object) {
+        const std::string style = om["style"].asString();
+        if (style == "directive")         origin.style = OriginMapping::Style::Directive;
+        else if (style == "sourceMapV3")  origin.style = OriginMapping::Style::SourceMapV3;
+        else {
+            error = "plugin '" + name + "': unknown originMapping style '" + style + "'";
+            return nullptr;
+        }
+        origin.line             = om["line"].asString();
+        origin.hidden           = om["hidden"].asString();
+        origin.column           = static_cast<int>(om["column"].asNumber(0));
+        origin.sidecarExtension = om["sidecarExtension"].asString();
+        origin.footer           = om["footer"].asString();
+        // A declared sink that cannot actually emit is a manifest bug, not a silent no-op.
+        if (origin.style == OriginMapping::Style::Directive && (origin.line.empty() || origin.hidden.empty())) {
+            error = "plugin '" + name + "': originMapping style 'directive' needs both 'line' and 'hidden'";
+            return nullptr;
+        }
+        if (origin.style == OriginMapping::Style::SourceMapV3 && origin.sidecarExtension.empty()) {
+            error = "plugin '" + name + "': originMapping style 'sourceMapV3' needs 'sidecarExtension'";
+            return nullptr;
+        }
+    } else if (om.kind != json::Value::Kind::Null) {
+        error = "plugin '" + name + "': 'originMapping' must be an object";
+        return nullptr;
+    }
+
     const json::Value& rulesDoc = doc["rules"];
     if (rulesDoc.kind != json::Value::Kind::Object) { error = "plugin '" + name + "': missing 'rules'"; return nullptr; }
     engine::RuleTable rules;
@@ -325,7 +362,7 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     const bool crossDir = doc["crossDirImports"].asBool(false);
 
     return std::make_unique<LoadedBackend>(name, std::move(ext), std::move(spec.spec), std::move(rules),
-                                           std::move(caps), std::move(overlays), crossDir);
+                                           std::move(caps), std::move(overlays), crossDir, std::move(origin));
 }
 
 } // namespace

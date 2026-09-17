@@ -483,6 +483,14 @@ struct RecordField {
 };
 enum class MethodKind { Method, Operator, Property };
 struct Method {
+    // P38/issue #69: where this method was declared in the .pg. Statement bodies carry their own positions,
+    // but the DECLARATION does not — and Roslyn hangs a sequence point on a method body's opening brace, so
+    // without this, method entry is attributed to nothing and the `.pg` declaration line never registers a
+    // hit. Measured in spike SP1: stamping the body brace with this position turns method entry into a real
+    // coverage contribution. Default-constructed (line 1, fileId 0) means "unknown" => emit a hidden
+    // directive. `ir::dump()` deliberately does NOT print it, so golden IR dumps are unaffected.
+    // ClassField/Global need no equivalent: their `init` is an ir::Expr, which is already positioned.
+    SourcePos pos;
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     // P37 C5: the owning type is a record. C#'s user-eq emission differs: a record's `==` already
     // routes through the strongly-typed Equals; a CLASS needs a synthesized operator ==/!= pair.

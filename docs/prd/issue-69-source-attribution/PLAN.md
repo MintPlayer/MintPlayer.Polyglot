@@ -327,6 +327,36 @@ instrument whose job is to convert silent drops into loud failures is precisely 
 while unsure. Slice 6 therefore surfaces the direction rather than accepting it, pending SP1 / the
 consumer's S6.
 
+## As-built notes — deviations decided during implementation
+
+**Slice 1 — `SourceMap::add()` does NOT canonicalize (PRD §4.C said it would).** `polyglot.hpp` states the
+Core does no IO, and `weakly_canonical` queries the filesystem. Canonicalization therefore stays at the
+boundary, which turned out to cost nothing: `FileModuleResolver::resolve` (`main.cpp:129`) already answers
+`fs::weakly_canonical(file).string()` for imported modules, so only the *entry* path needed it, and the CLI
+now passes `fs::weakly_canonical(input).string()` at each `compile()` call site. Consequence: the latent
+"relative canon kills cross-file go-to-definition" bug is fixed **for the CLI** but remains possible for an
+in-memory resolver that answers a relative canonical path (as `tests_main.cpp:851` does) — that is the
+resolver's contract to keep, and it is now documented on `SourceMap`.
+
+**Slice 1 — separators are left alone.** `weakly_canonical` yields native separators (`\` on Windows), and
+the LSP's `file://` conversion expects that. The forward-slash normalization the design wants applies to the
+**directive text** (slice 5), not to the `SourceMap`. SP1 also found coverlet re-normalizes the separator in
+its report regardless, so this is cosmetic on the coverage path.
+
+**Slice 1 — diagnostics change only for non-entry modules.** `diagFile()` and the watch-mode `emitDiagAt`
+resolve through the map only when `fileId > 1`; fileId 0/1 keep printing the input path exactly as the user
+spelled it. Single-file diagnostics — which `tests/refusals`' 17 fixtures pin — are byte-identical; only the
+previously-misattributed cross-module case changes. Likewise `check --json` adds `"file"` **only** to rows
+from a non-entry module, so existing rows are unchanged and the field's presence is meaningful.
+
+**Slice 2 — one struct, not three (PRD §4.D / D3 said three).** `ir::ClassField` and `ir::Global` already
+hold `ExprPtr init`, and every `ir::Expr` carries a `SourcePos` — so a field/global initializer's origin is
+already reachable and needs no new field. Only `ir::Method` genuinely lacked one, because the
+*declaration* (not its body statements) is what the method-entry sequence point must attribute to. Same
+outcome as D3, strictly less IR churn. `ir::dump()` untouched, so golden IR dumps are unaffected.
+A synthesized member (std overlay/skeleton) lowers with `fileId == 0`, which the emitter reads as "no known
+origin" — the hidden-directive path.
+
 ## Log
 
 *(append per slice: date, what shipped, surprises)*
