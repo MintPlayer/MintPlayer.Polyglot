@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
+#include <string_view>
 
 // The shared walk machinery for the hand-written backends — see emitter_base.hpp for the abstraction.
 
@@ -1648,11 +1649,10 @@ std::string EmitterBase::hideRawBlock(const std::string& text) const {
 
 // P38/issue #69 — substitute every occurrence of `hole` in `s`. The origin templates are plugin data
 // (`#line $n "$f"`), so the holes are filled here rather than by any target-specific code.
-static void substHole(std::string& s, const char* hole, const std::string& value) {
-    const std::size_t hl = std::strlen(hole);
+static void substHole(std::string& s, std::string_view hole, const std::string& value) {
     std::size_t at = 0;
     while ((at = s.find(hole, at)) != std::string::npos) {
-        s.replace(at, hl, value);
+        s.replace(at, hole.size(), value);
         at += value.size();
     }
 }
