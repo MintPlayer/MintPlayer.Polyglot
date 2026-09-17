@@ -54,6 +54,11 @@ struct Test {
     std::string path;         // Eq / Has: the field path
     std::string value;        // Eq: the expected value
     std::vector<Test> subs;   // And / Or (n) / Not (1)
+    // Arm-coverage provenance (see `TraceSink`): where this node was parsed from. `offset` is a byte
+    // offset into the manifest text, converted to a line only at the reporting boundary; `srcId`
+    // names which manifest, stamped by the loader via `indexRule`.
+    std::size_t offset = 0;
+    int srcId = 0;
 };
 
 // A parsed emission Rule. String-flavor kinds evaluate to a string (expressions/heads); DECL-flavor kinds
@@ -71,6 +76,9 @@ struct Rule {
     std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule
+    // Arm-coverage provenance — see the identical fields on `Test`.
+    std::size_t offset = 0;
+    int srcId = 0;
 };
 
 // Scopes a `map`/`mapDecl` item template to one list element: `item`/`item.…` paths are rewritten onto the
@@ -119,5 +127,30 @@ Test parseTest(const json::Value& v, bool& ok, std::string& error);
 // non-Turing-complete (a helper cycle bottoms out instead of looping).
 std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* helpers = nullptr, int depth = 0);
 bool evalTest(const Test& t, const EvalContext& ctx);
+
+// --- Arm coverage (docs/prd/code-coverage-upload) ---------------------------------------------
+//
+// The four backends ARE the plugin manifests — no backend is compiled in — so gcov/OpenCppCoverage
+// are structurally blind to them. The load-time anti-silent-drop contract proves every IR construct
+// HAS a rule; it cannot say a rule ever RAN. This sink closes that gap: every rule/test evaluation
+// funnels through evalRule/evalTest, so marking there records exactly which manifest arms fired.
+//
+// Deliberately target-agnostic: a manifest is identified by an opaque `srcId` the loader assigns,
+// never by a target name (no `if (name == "csharp")` anywhere in Core).
+struct TraceSink {
+    virtual ~TraceSink() = default;
+    virtual void hit(int srcId, std::size_t offset) = 0;
+};
+
+// Process-global, null by default — the cost when tracing is off is one pointer test per
+// evaluation, so the normal gate is untouched by construction.
+void setTraceSink(TraceSink* sink);
+TraceSink* traceSink();
+
+// Stamps `srcId` through a freshly-parsed rule tree and appends every node's offset to `offsets`.
+// This is where the coverage DENOMINATOR comes from: the same parse that produces the numerator, so
+// an arm that is never evaluated is reported uncovered rather than quietly missing from the total.
+void indexRule(Rule& r, int srcId, std::vector<std::size_t>& offsets);
+void indexTest(Test& t, int srcId, std::vector<std::size_t>& offsets);
 
 } // namespace mintplayer::polyglot::engine

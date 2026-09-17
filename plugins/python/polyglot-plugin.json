@@ -1030,8 +1030,7 @@
                                 "type": "item.type"
                               }
                             ]
-                          ],
-                          "else": "Exception"
+                          ]
                         }
                       },
                       {

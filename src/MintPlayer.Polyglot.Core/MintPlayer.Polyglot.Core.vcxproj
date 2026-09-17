@@ -77,6 +77,7 @@
     <ClInclude Include="include\mintplayer\polyglot\lower.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\capture_analysis.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\hoist_block_lambdas.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\arm_trace.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend_engine.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\backend_spec.hpp" />
@@ -96,6 +97,7 @@
     <ClCompile Include="src\lower.cpp" />
     <ClCompile Include="src\capture_analysis.cpp" />
     <ClCompile Include="src\hoist_block_lambdas.cpp" />
+    <ClCompile Include="src\arm_trace.cpp" />
     <ClCompile Include="src\backend.cpp" />
     <ClCompile Include="src\backend_engine.cpp" />
     <ClCompile Include="src\backend_spec_json.cpp" />

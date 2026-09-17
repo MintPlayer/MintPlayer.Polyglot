@@ -1369,6 +1369,11 @@ const std::vector<ir::StmtPtr>* StmtCtx::stmtList(const std::string& path) const
 
 void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& ctx, const IrDeclCtx& root,
                               const engine::RuleTable* helpers) {
+    // Arm coverage: DECL-flavor rules (Line/Block/Seq/MapDecl/Stmts/Indent/MapMembers) are
+    // interpreted here, not by evalRule, so marking only there left every declaration- and
+    // statement-shaped rule reported as cold. Both interpreters must mark, or the denominator
+    // silently counts arms no instrument can ever reach.
+    if (engine::TraceSink* sink = engine::traceSink()) sink->hit(r.srcId, r.offset);
     using K = engine::Rule::Kind;
     switch (r.kind) {
         case K::Line:
