@@ -109,7 +109,7 @@ try {
         return $ok
     }
 
-    # ---- P38 / issue #69: --line-directives, the standing flag-on witness (PRD A10) -----------------
+    # ---- P38 / issue #69: --origin-info, the standing flag-on witness (PRD A10) -----------------
     # The feature is deliberately NOT an arm-trace arm (it is manifest data, not a rule), so without a
     # gate leg that turns it ON nothing would ever observe it running and the next refactor of the
     # emitter's line() chokepoint would break it silently.
@@ -139,12 +139,12 @@ try {
         $offDir = Join-Path $ld "off"; $onDir = Join-Path $ld "on"
         & $Cli build $src --target csharp --lib io --out $offDir 2>&1 | Out-Null
         $offRc = $LASTEXITCODE
-        & $Cli build $src --target csharp --lib io --line-directives --out $onDir 2>&1 | Out-Null
+        & $Cli build $src --target csharp --lib io --origin-info --out $onDir 2>&1 | Out-Null
         $onRc = $LASTEXITCODE
         $offFile = Join-Path $offDir "origin.cs"
         $onFile  = Join-Path $onDir "origin.cs"
         Check ($offRc -eq 0 -and $onRc -eq 0 -and (Test-Path $offFile) -and (Test-Path $onFile)) `
-            "P38: build succeeds with and without --line-directives"
+            "P38: build succeeds with and without --origin-info"
 
         if ((Test-Path $offFile) -and (Test-Path $onFile)) {
             $onLines = Get-Content -LiteralPath $onFile
@@ -168,12 +168,12 @@ try {
         }
 
         # A target that declares no originMapping cannot honour the flag; asking ONLY such targets refuses.
-        & $Cli build $src --target python --lib io --line-directives --out (Join-Path $ld "py") 2>&1 | Out-Null
-        Check ($LASTEXITCODE -eq 64) "P38: --line-directives refuses when no selected target records origins"
+        & $Cli build $src --target python --lib io --origin-info --out (Join-Path $ld "py") 2>&1 | Out-Null
+        Check ($LASTEXITCODE -eq 64) "P38: --origin-info refuses when no selected target records origins"
 
         # TypeScript answers the same flag with a v3 sidecar plus a footer pointing at it.
         $tsDir = Join-Path $ld "ts"
-        & $Cli build $src --target typescript --lib io --line-directives --out $tsDir 2>&1 | Out-Null
+        & $Cli build $src --target typescript --lib io --origin-info --out $tsDir 2>&1 | Out-Null
         $tsMap = Join-Path $tsDir "origin.ts.map"
         $tsOk = (Test-Path $tsMap)
         if ($tsOk) {

@@ -45,7 +45,7 @@ Plugins register through `loadBackend()`, which strictly parses and validates th
 
 ### 3a. `originMapping` — attributing emitted lines to the `.pg` source
 
-Opt-in, off unless the build asks for it (`--line-directives` / the pgconfig key). The point is that
+Opt-in, off unless the build asks for it (`--origin-info` / the pgconfig key). The point is that
 *where origin info lives* differs per ecosystem, and that difference is **data, not a target-name check in
 the Core**: C# writes `#line` pragmas INTO the source (Roslyn records them as PDB sequence points, so .NET
 coverage tools report against the `.pg` with no post-processing), while TypeScript writes a **Source Map

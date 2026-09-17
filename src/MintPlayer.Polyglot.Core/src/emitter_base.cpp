@@ -1686,24 +1686,44 @@ void EmitterBase::emitOriginDirective() {
     out_.append(static_cast<std::size_t>(origin_->column), ' '); // column 0 for C#, not the current indent
     out_ += text;
     out_ += '\n';
+    // A directive occupies a physical output line, so it MUST be counted. Without this, recorded output
+    // line numbers are correct only for a target that emits no directives — which happens to hold today
+    // because `directive` and `sourceMapV3` are mutually exclusive styles, but would be a silent
+    // off-by-N for any future target that wanted both sinks. Counting here keeps `originRecords_`
+    // physically accurate for every style, so the invariant is structural rather than coincidental.
+    ++outLine_;
 }
 
 void EmitterBase::line(const std::string& s) {
     // A string carrying embedded newlines is N output lines from ONE call (module.attrImportsBlock joins
     // the `using` lines this way, and an `extern`/FFI template may contain a decoded \n). Split it so the
     // one-directive-per-line invariant holds, instead of letting one directive cover N lines.
+    //
+    // The split is BYTE-PRESERVING: only the first piece takes the `indent_` prefix, exactly as the
+    // unsplit append did — the embedded newlines were never followed by indentation. Re-indenting the
+    // continuations would be harmless on C# and TS (whitespace-insensitive) and would happen to be
+    // unreachable on Python (no `originMapping`, so it never takes this path), but relying on that
+    // coincidence would make "strip the directives and you get the flag-off output" true by luck rather
+    // than by construction — and that equivalence is the feature's main correctness test.
     if (recordingOrigins() && s.find('\n') != std::string::npos) {
         std::size_t start = 0;
+        bool first = true;
         while (start <= s.size()) {
             const std::size_t nl = s.find('\n', start);
             const std::size_t end = (nl == std::string::npos) ? s.size() : nl;
-            line(s.substr(start, end - start));
+            emitLineWithOrigin(s.substr(start, end - start), /*applyIndent=*/first);
+            first = false;
             if (nl == std::string::npos) break;
             start = nl + 1;
             if (start == s.size()) break; // a trailing newline already ended the last line
         }
         return;
     }
+    emitLineWithOrigin(s, /*applyIndent=*/true);
+}
+
+// One physical output line: its origin directive (when recording), then the text itself.
+void EmitterBase::emitLineWithOrigin(const std::string& s, bool applyIndent) {
     if (recordingOrigins()) {
         emitOriginDirective();
         if (posValid_) {
@@ -1711,7 +1731,7 @@ void EmitterBase::line(const std::string& s) {
             if (!path.empty()) originRecords_.emplace_back(outLine_ + 1, curPos_);
         }
     }
-    out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
+    if (applyIndent) out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
     out_ += s;
     out_ += '\n';
     ++outLine_;

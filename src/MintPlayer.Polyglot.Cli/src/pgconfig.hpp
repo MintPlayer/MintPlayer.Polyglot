@@ -78,7 +78,7 @@ struct PgConfig {
     std::string lib;  // comma-joined lib names
     std::string access;
     // P38/issue #69: emit source-origin info (C# `#line` directives, TS v3 source map) so generated code
-    // attributes back to the `.pg`. `--line-directives` overrides this; false = emit exactly as before.
+    // attributes back to the `.pg`. `--origin-info` overrides this; false = emit exactly as before.
     bool originInfo = false; // emitted C# accessibility ("public"/"internal"); empty = target default
     std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
     std::vector<std::pair<std::string, std::string>> dependencies; // package -> spec ("file:<dir>", "1.2.3", "^1.2.3", …)
@@ -102,7 +102,7 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
             pc.access = v["access"].asString();
-            pc.originInfo = v["lineDirectives"].asBool(false); // P38/issue #69
+            pc.originInfo = v["originInfo"].asBool(false); // P38/issue #69
             for (const auto& e : v["targets"].items())
                 if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
             for (const auto& kv : v["dependencies"].members)

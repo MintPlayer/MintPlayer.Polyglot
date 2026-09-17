@@ -8,6 +8,16 @@
 
   <PropertyGroup>
     <PolyglotOutDir>$(IntermediateOutputPath)polyglot\</PolyglotOutDir>
+    <!-- The incrementality stamp's NAME encodes every option that changes the emitted bytes, so flipping
+         one invalidates incrementality by construction (P38 / issue #69). Without this, `PolyglotOriginInfo`
+         is in neither Inputs nor Outputs: setting it without also touching a .pg or upgrading the tool
+         leaves MSBuild skipping the target as up-to-date, so the consumer rebuilds, finds directive-free
+         .cs still sitting in obj/, and concludes the feature does not work. A package upgrade masks it on
+         the first build (the tool path changes, so the target runs once), which makes the failure surface
+         later as a toggle-off-then-on mystery. Options that do NOT affect the bytes must stay out of the
+         name, or every build after a harmless property change pays a full re-transpile. -->
+    <_PolyglotOriginInfoTag Condition="'$(PolyglotOriginInfo)' == 'true'">-origin</_PolyglotOriginInfoTag>
+    <_PolyglotStamp>$(PolyglotOutDir)__polyglot$(_PolyglotOriginInfoTag).stamp</_PolyglotStamp>
     <!-- Host RID: the SDK's portable RID (e.g. win-x64, linux-x64, osx-arm64), overridable. Resolved
          here (not the .props) because the SDK defines it after NuGet's top-of-project props import. -->
     <PolyglotHostRid Condition="'$(PolyglotHostRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</PolyglotHostRid>
@@ -55,7 +65,7 @@
           DependsOnTargets="_PolyglotVerifyTool"
           Condition="'@(PolyglotFile)' != ''"
           Inputs="@(PolyglotFile);$(PolyglotTool)"
-          Outputs="$(PolyglotOutDir)__polyglot.stamp">
+          Outputs="$(_PolyglotStamp)">
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>
       <_PolyglotLibArg Condition="'$(PolyglotLib)' != ''"> --lib &quot;$(PolyglotLib)&quot;</_PolyglotLibArg>
@@ -63,12 +73,12 @@
            hand-written facade); unset keeps C#'s modifier-less default (internal). -->
       <_PolyglotAccessArg></_PolyglotAccessArg>
       <_PolyglotAccessArg Condition="'$(PolyglotAccess)' != ''"> --access &quot;$(PolyglotAccess)&quot;</_PolyglotAccessArg>
-      <!-- PolyglotLineDirectives=true records where each emitted line came from (P38 / issue #69), so a
+      <!-- PolyglotOriginInfo=true records where each emitted line came from (P38 / issue #69), so a
            coverage run over the generated C# in obj/ reports against the .pg file with .pg line numbers
            instead of being invisible. Roslyn writes the #line pragmas into the PDB, so nothing needs
            post-processing. Off by default: the generated code is byte-identical without it. -->
-      <_PolyglotLineDirectivesArg></_PolyglotLineDirectivesArg>
-      <_PolyglotLineDirectivesArg Condition="'$(PolyglotLineDirectives)' == 'true'"> --line-directives</_PolyglotLineDirectivesArg>
+      <_PolyglotOriginInfoArg></_PolyglotOriginInfoArg>
+      <_PolyglotOriginInfoArg Condition="'$(PolyglotOriginInfo)' == 'true'"> --origin-info</_PolyglotOriginInfoArg>
     </PropertyGroup>
     <RemoveDir Directories="$(PolyglotOutDir)" />
     <MakeDir Directories="$(PolyglotOutDir)" />
@@ -78,8 +88,8 @@
          lands in obj/ and compiles exactly as before; other targets route through the pgconfig `include`
          rules (e.g. TypeScript twins into a web app's src) and are deliberately NOT in @(FileWrites) —
          they are committed source artifacts `dotnet clean` must never delete. -->
-    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)$(_PolyglotLineDirectivesArg)" />
-    <Touch Files="$(PolyglotOutDir)__polyglot.stamp" AlwaysCreate="true" />
+    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)$(_PolyglotOriginInfoArg)" />
+    <Touch Files="$(_PolyglotStamp)" AlwaysCreate="true" />
   </Target>
 
   <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler still
@@ -95,7 +105,7 @@
       <Compile Include="@(_PolyglotGenerated)" />
       <FileWrites Include="@(_PolyglotGenerated)" />
       <!-- The incrementality stamp (not a .cs, so never compiled) — register it so `dotnet clean` removes it. -->
-      <FileWrites Include="$(PolyglotOutDir)__polyglot.stamp" />
+      <FileWrites Include="$(PolyglotOutDir)__polyglot*.stamp" />
     </ItemGroup>
   </Target>
 

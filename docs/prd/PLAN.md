@@ -2384,7 +2384,7 @@ Windows** (the existing gates prove it).
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
 - ~~**Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug
-  story.~~ — **done in P38** (issue #69): `--line-directives` emits C# `#line` pragmas and a TS v3 source
+  story.~~ — **done in P38** (issue #69): `--origin-info` emits C# `#line` pragmas and a TS v3 source
   map from the same recorded origins. The C# debug story is decided: PDB sequence points, so .NET coverage
   tools attribute generated code to the `.pg` with no post-processing. Debugger *stepping* stays a non-goal.
 - **Editor tooling — full detail (now tracked above):**
@@ -3510,8 +3510,8 @@ the transpiled sources instead of ignoring them. Motivation: in `MintPlayer.AI` 
 the repo's most heavily exercised code *depress* its coverage number. Design + evidence in
 `{PRD,PLAN,ANALYSIS}.md`; the spikes are logged in PLAN.md §Log.
 
-- **Opt-in, one flag, two sinks.** `--line-directives` (or pgconfig `"lineDirectives": true`, or MSBuild
-  `PolyglotLineDirectives=true`). C# emits `#line` pragmas that Roslyn records as PDB sequence points — so
+- **Opt-in, one flag, two sinks.** `--origin-info` (or pgconfig `"originInfo": true`, or MSBuild
+  `PolyglotOriginInfo=true`). C# emits `#line` pragmas that Roslyn records as PDB sequence points — so
   .NET coverage tools report against the `.pg`, with `.pg` line numbers, **with no post-processing**.
   TypeScript answers the same flag with a Source Map v3 sidecar carrying embedded `sourcesContent`.
 - **`originMapping` is manifest DATA, not a target-name check.** A new top-level plugin key with a closed,

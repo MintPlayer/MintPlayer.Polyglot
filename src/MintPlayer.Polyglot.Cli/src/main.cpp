@@ -59,7 +59,7 @@ void printUsage() {
         << "Usage:\n"
         << "  polyglot --version\n"
         << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
-        << "                            [--line-directives] [--watch]\n"
+        << "                            [--origin-info] [--watch]\n"
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
@@ -71,11 +71,11 @@ void printUsage() {
         << "         emitted file (glob -> output template; the target extension is appended); with\n"
         << "         no input args, build discovers its inputs from those patterns.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
-        << "         --line-directives records where each emitted line came from, so coverage tools\n"
+        << "         --origin-info records where each emitted line came from, so coverage tools\n"
         << "         attribute generated code back to the .pg (C#: #line pragmas; TypeScript: a v3\n"
         << "         source map). Off by default - output is byte-identical without it. A target\n"
         << "         declares how it records origins in its plugin manifest; a build whose targets all\n"
-        << "         lack one refuses. Also settable as pgconfig.json \"lineDirectives\": true.\n"
+        << "         lack one refuses. Also settable as pgconfig.json \"originInfo\": true.\n"
         << "         --watch rebuilds whenever the input, an imported .pg, or pgconfig.json changes\n"
         << "         (a failed rebuild keeps watching and never touches the last good outputs).\n"
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
@@ -205,7 +205,7 @@ bool writeDedup(const fs::path& out, const std::string& content,
             if (originInfo)
                 std::cerr << "polyglot:   source-origin info is on, so two .pg files that used to emit "
                              "identical code now differ by origin. Give them distinct outputs with a "
-                             "pgconfig.json `include` rule, or turn off --line-directives.\n";
+                             "pgconfig.json `include` rule, or turn off --origin-info.\n";
             return false;
         }
         (*seen)[key] = content;
@@ -579,7 +579,7 @@ std::vector<fs::path> discoverIncludeInputs(const PgConfig& pc) {
 // with outputs routed through the group's `include` rules.
 int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::string& target,
                const fs::path& outDir, bool outDirGiven, fs::path root, std::string libArg,
-               const std::string& accessArg, bool lineDirectivesFlag) {
+               const std::string& accessArg, bool originInfoFlag) {
     for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
     if (!pc.errors.empty()) return 64;
 
@@ -597,9 +597,9 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
         std::cerr << "polyglot: --access must be 'public' or 'internal' (got '" << lib.access << "')\n";
         return 64;
     }
-    // P38/issue #69: --line-directives wins over the pgconfig key (the --access precedent).
-    lib.originInfo = lineDirectivesFlag || pc.originInfo;
-    const char* originSource = lineDirectivesFlag ? "--line-directives" : "pgconfig.json \"lineDirectives\"";
+    // P38/issue #69: --origin-info wins over the pgconfig key (the --access precedent).
+    lib.originInfo = originInfoFlag || pc.originInfo;
+    const char* originSource = originInfoFlag ? "--origin-info" : "pgconfig.json \"originInfo\"";
 
     resolveConfiguredTargets(pc); // pgconfig `dependencies` + lock-first cache + registry (P30)
 
@@ -700,7 +700,7 @@ int runBuild(const std::vector<std::string>& args) {
     std::string target; // empty => the pgconfig `targets` set
     std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
     std::string accessArg; // --access public|internal (C# emitted-type accessibility)
-    bool lineDirectives = false; // --line-directives (P38/issue #69: emit origin info)
+    bool originInfo = false; // --origin-info (P38/issue #69: emit origin info)
     bool watch = false;
 
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -715,11 +715,12 @@ int runBuild(const std::vector<std::string>& args) {
             libArg = args[++i];
         } else if (a == "--access" && i + 1 < args.size()) {
             accessArg = args[++i];
-        } else if (a == "--line-directives") {
-            // P38/issue #69: emit origin info so generated code attributes back to the `.pg`. Spelled for
-            // what it means on C# (`#line` pragmas); a target declares HOW it records origins in its
-            // plugin manifest, so TypeScript answers the same flag with a v3 source map.
-            lineDirectives = true;
+        } else if (a == "--origin-info") {
+            // P38/issue #69: emit origin info so generated code attributes back to the `.pg`. Named for the
+            // BEHAVIOUR, not for one target's spelling of it — C# answers with `#line` pragmas and
+            // TypeScript with a v3 source map, each declared in its own plugin manifest (`originMapping`).
+            // It matches `LibConfig::originInfo` and the manifest key, so the whole chain reads the same.
+            originInfo = true;
         } else if (a == "--watch") {
             watch = true;
         } else if (!a.empty() && a[0] == '-') {
@@ -750,7 +751,7 @@ int runBuild(const std::vector<std::string>& args) {
     if (watch) {
         if (inputs.size() > 1) { std::cerr << "polyglot: --watch takes a single input file\n"; return 64; }
         return runWatch(firstInput, outDir, root, target, libArg, /*checkOnly=*/false,
-                        !target.empty() && outDirGiven, lineDirectives);
+                        !target.empty() && outDirGiven, originInfo);
     }
 
     std::cout << "polyglot build";
@@ -773,7 +774,7 @@ int runBuild(const std::vector<std::string>& args) {
     int worst = 0;
     for (auto& [key, group] : groups) {
         const int rc = buildGroup(group.first, group.second, target, outDir, outDirGiven, root, libArg,
-                                  accessArg, lineDirectives);
+                                  accessArg, originInfo);
         if (rc > worst) worst = rc;
     }
     return worst;

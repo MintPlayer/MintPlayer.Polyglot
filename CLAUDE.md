@@ -70,7 +70,7 @@ diverge at runtime.
 | Which **C++ Core/CLI** lines ran? | `ci.yml` `coverage` job (g++ `--coverage` + gcovr) · locally `pwsh scripts/coverage.ps1` (OpenCppCoverage, `choco install opencppcoverage`, HTML at `x64/coverage/`) |
 | Which **plugin template arms** ran? | the arm tracer — `polyglot --emit-arm-trace <file>` + `scripts/arm-trace-to-lcov.ps1`, one lcov per `plugins/<t>/polyglot-plugin.json` |
 | Do the four targets **agree at runtime**? | the differential conformance suite (`tests/conformance/`) |
-| Which **`.pg` lines ran in a CONSUMER's** coverage run? | `--line-directives` (P38, issue #69) — C# `#line` → PDB sequence points; TS → a v3 sidecar. Opt-in; off = byte-identical output |
+| Which **`.pg` lines ran in a CONSUMER's** coverage run? | `--origin-info` (P38, issue #69) — C# `#line` → PDB sequence points; TS → a v3 sidecar. Opt-in; off = byte-identical output |
 
 The arm tracer exists because the backends **are** the JSON manifests (zero compiled in), so gcov is
 structurally blind to them, and the load-time anti-silent-drop contract proves a rule *exists*, never

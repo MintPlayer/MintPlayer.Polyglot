@@ -394,11 +394,11 @@ CLI flag (`main.cpp:584-585`, and note `runBuild:588-590` hard-refuses unknown o
 config, flag wins (`:491-495`) → `LibConfig` field (`polyglot.hpp:113-117`) → `ir::Module` (`ir.hpp:624`,
 set `compiler.cpp:677/716`) → `EmitterHooks` (`emitter_base.cpp:1569`, struct `emitter_base.hpp:136-140`).
 
-- CLI: `--line-directives` on `build`; usage text `main.cpp:54-79`. The provenance (flag vs config) is
+- CLI: `--origin-info` on `build`; usage text `main.cpp:54-79`. The provenance (flag vs config) is
   retained for §4.B.1's diagnostic.
 - pgconfig: one field on `PgConfig` (`pgconfig.hpp:79`, next to `access`) + one read (`:101`). No schema
   file exists; docs are `README.md:127-141` + the annotated `editors/vscode/testbench/pgconfig.json`.
-- MSBuild: `<PolyglotLineDirectives>` defaulted in the `.props`, appended as `_PolyglotLineDirectivesArg`
+- MSBuild: `<PolyglotOriginInfo>` defaulted in the `.props`, appended as `_PolyglotOriginInfoArg`
   inside `PolyglotTranspile`'s `<PropertyGroup>`, exactly like `_PolyglotAccessArg`. Note the
   `_PolyglotAddGenerated` glob is `*.cs`, so a `.map` sidecar is not swept into `@(Compile)`/`@(FileWrites)`.
 - LSP: `analyze()`/`compile()` already take `LibConfig`, so the preview can opt in later; diagnostics do
@@ -542,7 +542,7 @@ fact it doesn't own — which is how it drifted six minor versions out of date.
   `writeDedup` (`main.cpp:174-177`) with a message that names the flag as the cause and points at
   `include` output rules as the fix — it must not silently pick one origin. With the flag **off**, the
   collapse behaves exactly as today. The shared prelude, being `hidden`-only, keeps collapsing either way.
-- **A9.** `--line-directives`, the pgconfig key, and `<PolyglotLineDirectives>` all reach the emitter, and
+- **A9.** `--origin-info`, the pgconfig key, and `<PolyglotOriginInfo>` all reach the emitter, and
   the flag wins over config (the `--access` precedent).
 - **A10.** **Standing flag-on witnesses for both sinks.** A curated conformance subset runs flag-on —
   curated from the emitter's *irregular* paths (`inlineBlock`'d block lambdas, `TryStmt`/`ForStmt` rule
@@ -579,7 +579,7 @@ the report**, never phantom-covered. The failure mode is always "attributes less
 
 ## 9. Open questions
 
-- **Q0 (new, from implementation).** The CLI flag is spelled `--line-directives`, as the issue and this PRD
+- **Q0 (new, from implementation).** The CLI flag is spelled `--origin-info`, as the issue and this PRD
   specified — but since D1 un-gated phase 2, that one flag also turns on the **TypeScript source map**, so
   the name now reads narrower than the behaviour. The Core field is target-neutral (`originInfo`), so this
   is purely the user-facing spelling. It is off by default and brand new, so renaming (`--origin-info`?)

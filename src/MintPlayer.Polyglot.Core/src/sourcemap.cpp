@@ -48,7 +48,13 @@ std::string buildSourceMapV3(const SourceMapInput& in) {
 
         const int targetLine = r.outputLine - 1; // v3 output lines are 0-based
         if (targetLine < emittedLine) continue;  // defensive: never walk backwards
+        // Two records on the SAME output line must be separated by ',' — appending a bare second segment
+        // would corrupt the mappings string rather than merely misplace a mapping. Cannot arise today
+        // (one record per emitted line, outLine_ strictly increasing), so this is purely defensive, but
+        // it is the case that produces a malformed map rather than a wrong one.
+        const bool sameLine = (targetLine == emittedLine) && wroteAny;
         while (emittedLine < targetLine) { mappings += ';'; ++emittedLine; }
+        if (sameLine) mappings += ',';
 
         // Fields: generatedColumn, sourceIndex, sourceLine, sourceColumn — all deltas except the first,
         // which resets to an absolute 0 on every new output line.

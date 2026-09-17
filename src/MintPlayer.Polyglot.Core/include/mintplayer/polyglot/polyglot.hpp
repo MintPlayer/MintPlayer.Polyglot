@@ -164,7 +164,7 @@ struct LibConfig {
     bool sharedPrelude = false;
     // P38/issue #69: emit origin information so generated code can be attributed back to the `.pg` source
     // (a coverage run then reports against the `.pg`, with `.pg` line numbers). Opt-in — the CLI spells it
-    // `--line-directives`, which is what it means for C#; a target expresses HOW it records origins in its
+    // `--origin-info`, which is what it means for C#; a target expresses HOW it records origins in its
     // plugin manifest's `originMapping`, so this flag stays target-neutral. Off (the default) = every
     // target emits byte-for-byte as before. A build whose targets ALL lack `originMapping` refuses rather
     // than silently doing nothing.

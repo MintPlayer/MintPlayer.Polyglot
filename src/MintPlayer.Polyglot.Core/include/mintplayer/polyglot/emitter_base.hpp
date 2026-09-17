@@ -376,9 +376,11 @@ protected:
     // line rather than between two, breaking compilation. Suppression is mandatory, not cosmetic.
     bool suppressDirectives_ = false;
     // (outputLine, pos) for every emitted line whose origin is known — the source-map sink's raw material.
-    // Recorded for any style; only the sidecar writer consumes it.
+    // Recorded for any style; only the sidecar writer consumes it. The line numbers are PHYSICAL lines of
+    // the emitted file: directive lines are counted too (see emitOriginDirective), so the records stay
+    // accurate even for a target that emitted directives above them.
     std::vector<std::pair<int, SourcePos>> originRecords_;
-    int outLine_ = 0;           // 1-based count of lines appended to out_
+    int outLine_ = 0;           // count of physical lines appended to out_, directives included
 
     bool recordingOrigins() const { return origin_ != nullptr && !suppressDirectives_; }
     // Resolve a position to an on-disk path, or "" when it has none — an unstamped position (fileId 0) or
@@ -408,6 +410,9 @@ protected:
     };
 
     void line(const std::string& s);
+    // One physical output line: its origin directive (when recording) then the text. `applyIndent` is
+    // false for the continuations of a split multi-line string, which carried no indentation before.
+    void emitLineWithOrigin(const std::string& s, bool applyIndent);
     // Emit `s` with NO origin (scaffolding): braces, declaration headers, blank separators, prelude text.
     void lineHidden(const std::string& s) { HiddenScope h(*this); line(s); }
     // Wrap verbatim text that never passes through line() (a prelude, prepended after the walk) so each of

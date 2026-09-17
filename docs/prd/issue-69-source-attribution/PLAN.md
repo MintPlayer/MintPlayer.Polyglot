@@ -107,7 +107,7 @@ PRD §4.G + §4.B.1 — copy `--access` end to end.
 
 1. `LibConfig` field (`polyglot.hpp:113-117`); `PgConfig` field + read (`pgconfig.hpp:79`, `:101`).
    **Retain provenance** (CLI flag vs config key) for the diagnostic.
-2. `--line-directives` in `runBuild`'s parse loop (`main.cpp:584-585`) — note `:588-590` hard-refuses
+2. `--origin-info` in `runBuild`'s parse loop (`main.cpp:584-585`) — note `:588-590` hard-refuses
    unknown options; update `printUsage` (`:54-79`); merge with config so the **flag wins** (`:491-495`).
 3. Carry on `ir::Module` (set at `compiler.cpp:677` and `:716`), then into `EmitterHooks`
    (`emitter_base.cpp:1569`, struct `emitter_base.hpp:136-140`).
@@ -190,7 +190,7 @@ rewrites nothing; the tripwire reports the match direction and still rejects a g
 
 ## Slice 7 — MSBuild, docs, and the flag-on gate witnesses
 
-1. `<PolyglotLineDirectives>` defaulted in `MintPlayer.Polyglot.MSBuild.props`; `_PolyglotLineDirectivesArg`
+1. `<PolyglotOriginInfo>` defaulted in `MintPlayer.Polyglot.MSBuild.props`; `_PolyglotOriginInfoArg`
    appended inside `PolyglotTranspile`'s `<PropertyGroup>` and to the `<Exec Command=…>`, exactly like
    `_PolyglotAccessArg`. Property-gated — the targets deliberately pass no language flag.
 2. Docs: `README.md` flag list + the pgconfig block (`:127-141`); the annotated
@@ -368,7 +368,7 @@ needs it and `backend_spec.hpp` is the dependency-free home of per-target emissi
 produced `solver.ts.ts.map`. The key now means "suffix appended to the emitted file's name", so `".map"`
 gives the `solver.ts.map` that TS tooling looks for.
 
-**Slice 4 — the Core field is `originInfo`, the CLI flag is `--line-directives`.** A Core field named for
+**Slice 4 — the Core field is `originInfo`, the CLI flag is `--origin-info`.** A Core field named for
 C#'s `#line` spelling would bake target vocabulary into a Core that must not know what languages exist.
 The user-facing spelling stays as the issue and PRD specified it. *Open naming concern, not acted on:* the
 flag reads as C#-specific but also turns on the TS source map (a consequence of D1 un-gating phase 2). It
