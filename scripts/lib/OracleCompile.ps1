@@ -50,12 +50,26 @@ function Get-OracleContext {
         Set-Content -Path $rsp -Value $lines -Encoding UTF8
     }
 
+    # The runtime the generated runtimeconfig will ask for. This must name a runtime that is actually
+    # INSTALLED, not the release-shaped "$major.0.0" guess: when the active SDK is a PRERELEASE (e.g.
+    # 11.0.100-rc.1), the only matching runtime is itself a prerelease (11.0.0-rc.1...), and .NET's
+    # roll-forward deliberately refuses to select a prerelease runtime for a release-shaped request. The
+    # host then fails to start EVERY compiled program with an opaque exit code (observed: -2147450730 on
+    # all 116 conformance programs), which reads like a total conformance failure but is purely a host
+    # resolution error. Prefer a stable runtime for the major; fall back to the newest prerelease.
+    $runtimes = @(& $dotnet --list-runtimes) |
+        Where-Object { $_.StartsWith("Microsoft.NETCore.App $major.") } |
+        ForEach-Object { ($_ -split ' ')[1] }
+    $stable = @($runtimes | Where-Object { $_ -notmatch '-' } | Sort-Object { [version]$_ })
+    $pre    = @($runtimes | Where-Object { $_ -match '-' } | Sort-Object { [version]($_ -replace '-.*$', '') })
+    $runtimeVersion = if ($stable.Count) { $stable[-1] } elseif ($pre.Count) { $pre[-1] } else { "$major.0.0" }
+
     $script:OracleCtx = @{
         Dotnet = $dotnet
         CscDll = $cscDll
         Rsp = $rsp
         Tfm = $tfm
-        RuntimeVersion = "$major.0.0"
+        RuntimeVersion = $runtimeVersion
         SdkVersion = $sdkVersion
     }
     return $script:OracleCtx

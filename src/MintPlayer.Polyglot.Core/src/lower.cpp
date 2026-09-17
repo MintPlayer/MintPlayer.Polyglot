@@ -328,6 +328,7 @@ public:
         for (const auto& ext : unit.extensions) {
             if (!ext.bindings.empty()) continue; // a bound extension isn't emitted — it's a call-site template
             ir::Function f;
+            f.pos = ext.pos; // P38: ExtensionDecl has no namePos (ast.hpp) — the decl start is the anchor
             f.name = ext.name;
             f.isExtension = true;
             f.generics = generics(ext.generics);
@@ -345,6 +346,7 @@ public:
         for (const auto& fn : unit.functions) {
             if (fn.isExpect) continue; // capability signature only — the `actual`s carry the implementation
             ir::Function f;
+            f.pos = fn.namePos.fileId != 0 ? fn.namePos : fn.pos; // P38: the function-entry anchor
             f.name = fn.name;
             f.mangledName = fn.mangledName.empty() ? fn.name : fn.mangledName;
             f.actualTarget = fn.actualTarget;

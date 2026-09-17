@@ -357,9 +357,88 @@ outcome as D3, strictly less IR churn. `ir::dump()` untouched, so golden IR dump
 A synthesized member (std overlay/skeleton) lowers with `fileId == 0`, which the emitter reads as "no known
 origin" — the hidden-directive path.
 
+**Slice 3 — `originMapping` is validated BEFORE the rule tables.** First written next to `crossDirImports`
+near the end of `buildBackend`, which made every refusal test fail: `validateBackend` hit the
+construct-coverage contract first, so a manifest that misspelled its origin style heard about an unrelated
+missing rule. Moved ahead of the rule parsing (it is independent of it) — better diagnostics, not just a
+test fix. Also: `OriginMapping` lives in `backend_spec.hpp`, not `backend.hpp`, because the emit engine
+needs it and `backend_spec.hpp` is the dependency-free home of per-target emission data.
+
+**Slice 3 — `sidecarExtension` is APPENDED, not substituted.** The manifest first said `".ts.map"`, which
+produced `solver.ts.ts.map`. The key now means "suffix appended to the emitted file's name", so `".map"`
+gives the `solver.ts.map` that TS tooling looks for.
+
+**Slice 4 — the Core field is `originInfo`, the CLI flag is `--line-directives`.** A Core field named for
+C#'s `#line` spelling would bake target vocabulary into a Core that must not know what languages exist.
+The user-facing spelling stays as the issue and PRD specified it. *Open naming concern, not acted on:* the
+flag reads as C#-specific but also turns on the TS source map (a consequence of D1 un-gating phase 2). It
+is off by default and brand new, so renaming later is cheap — flagged rather than decided unilaterally.
+
+**Slice 5 — braces INHERIT the enclosing construct's origin; they are not forced hidden.** A first pass
+added a `methodBrace_` flag to special-case the method-entry brace. RAII scoping turned out to make the
+flag unnecessary and the result more correct: `emitStmt` opens an `OriginScope` for the whole statement
+(so an `if`'s braces belong to the `if` line, which really does execute), the member/function decl rule
+opens one for the whole declaration (so the body's opening brace carries the method position — the
+measured SP1 win), and both restore on exit, so class-level scaffolding falls back to hidden. Forcing
+braces hidden would throw away method entry; leaving the origin un-scoped would let a brace inherit some
+unrelated earlier statement's line, which is the phantom the design exists to prevent.
+
+**Slice 5 — the `hidden` rule generalized to "any origin that is not an on-disk path".** SP1 found that
+std/lib helpers are emitted into the *same* file as user code, with their origin stored as a logical name
+(`std.io`) rather than a path. `originPathFor()` therefore returns empty for anything without a path
+separator, which covers std modules, synthesized preludes and unstamped nodes in one rule — and keeps a
+directive from ever naming a document that cannot be resolved.
+
+**Slice 5 — `ir::Function` needed a position too (the plan said `Method`).** A top-level `fn` lowers to a
+`Function`, not a `Method`, so the whole function-entry attribution silently applied to methods only.
+Caught by inspecting real emitted output — `main`'s signature and brace were `hidden`.
+
+**Slice 8 — `inlineBlock` must save/restore the output-line counter.** It renders into a scratch buffer
+that is then flattened into part of one real line; counting those lines inflated every subsequent line
+number, shifting the entire source map by one line per block lambda (observed: `const add = …` recorded as
+output line 5 instead of 4). Found by decoding a generated map and comparing against the source — the kind
+of off-by-one that no compile check and no byte-identity check can catch.
+
+**Slice 8 — the sidecar is written by the CLI, not the Core.** `sources` must be relative to the MAP, and
+only the host knows where an emitted file was routed (the consumer's `include` rules put the `.ts` in a
+different tree from the `.pg`). The Core hands back `(outputLine, fileId, sourceLine)` triples and a pure
+`buildSourceMapV3()`; the CLI resolves paths, reads `sourcesContent`, and appends the footer.
+
+**Drive-by fix, in scope: the conformance oracle could not run under a PRERELEASE SDK.**
+`scripts/lib/OracleCompile.ps1` derived the generated runtimeconfig's framework version as
+`"$major.0.0"` from the **active SDK's** major. With a prerelease SDK active (here 11.0.100-rc.1) that
+asks the host for runtime `11.0.0`, while the only installed 11 runtime is `11.0.0-rc.1…` — and .NET's
+roll-forward deliberately refuses to select a **prerelease** runtime for a release-shaped request. Every
+compiled program then failed to start with an opaque host code (`-2147450730`), which the runner reported
+as **"116 of 116 conformance programs diverged"** — indistinguishable at a glance from a catastrophic
+codegen regression. Confirmed pre-existing by reproducing it with the *previous release* binary, which
+predates every P38 change. The fix names a runtime that actually exists: prefer the newest stable runtime
+for that major, else the newest prerelease. Deliberately NOT fixed with a `global.json` SDK pin — that
+would change the repo's SDK contract (and `release.yml` installs `10.0.x`) to work around a bug that is
+genuinely in the runner.
+
 ## Log
 
 *(append per slice: date, what shipped, surprises)*
+
+- **2026-09-17 — slices 1–9 built.** All nine slices implemented, with the deviations above. Verification
+  beyond the unit tests:
+  - **A1 measured, not assumed:** a script compared flag-off output from this build against the previous
+    RELEASE binary across every conformance program × 4 targets — **444 identical, 0 different** (the
+    skips are programs one side refuses, e.g. the pinned PHP refusers). Re-run after every emitter change.
+  - **A2 proved without a golden file:** cli-smoke strips the `#line` lines from flag-on output and asserts
+    the remainder equals the flag-off output byte for byte, plus `directives.Count == body.Count`
+    (62/62 on the fixture). That is "exactly one directive per line" and "no drift" in one comparison.
+  - **A3:** directive-laden C# compiled and ran correctly under `dotnet` (printed the expected values).
+  - **A11:** a generated `.ts.map` was decoded line by line and every mapping pointed at the right `.pg`
+    line; Node still runs the emitted `.ts` with the footer present.
+  - **Slice 1 verified against the OLD binary:** an error inside an imported module used to print
+    `entry.pg:3:51` — a line that holds `fn main() {` — and now prints `helper.pg:3:51`.
+  - **Surprises:** (1) a *parallel* MSBuild left the CLI exe older than the Core lib it links, so two
+    rounds of "the fix didn't work" were actually a stale binary — serial builds after that. (2) The
+    source-map off-by-one (see As-built, slice 8) was invisible to every other check and only surfaced by
+    decoding a map. (3) The cli-smoke fixture initially used C-style `for` and `catch (e: Exception)`,
+    neither of which is Polyglot syntax — worth remembering that gate fixtures are real `.pg` programs.
 
 - **2026-09-17 — slice 0 spikes run (SP1, SP2, SP3). All three changed the design.**
 

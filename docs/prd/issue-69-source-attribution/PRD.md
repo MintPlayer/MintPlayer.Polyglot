@@ -579,9 +579,15 @@ the report**, never phantom-covered. The failure mode is always "attributes less
 
 ## 9. Open questions
 
+- **Q0 (new, from implementation).** The CLI flag is spelled `--line-directives`, as the issue and this PRD
+  specified — but since D1 un-gated phase 2, that one flag also turns on the **TypeScript source map**, so
+  the name now reads narrower than the behaviour. The Core field is target-neutral (`originInfo`), so this
+  is purely the user-facing spelling. It is off by default and brand new, so renaming (`--origin-info`?)
+  is cheap now and gets expensive once a consumer's build scripts use it. **Maintainer's call.**
 - **Q1.** Does the directive volume (roughly doubling the line count) measurably slow `csc` or coverlet on
-  the consumer's real output? Measure in SP1; if it hurts, the fallback is directives on statement-bearing
-  lines plus collapsed `hidden` runs — which SP1 must then re-prove phantom-free.
+  the consumer's real output? Not yet measured at that scale — SP1 used small programs. If it hurts, the
+  fallback is directives on statement-bearing lines plus collapsed `hidden` runs, which must then be
+  re-proved phantom-free.
 - **Q2.** Milestone number (P38 vs renumber) — see the header note.
 - **Q3.** The `CLAUDE.md` status-block audit (D7) covers the "In flight / gated" list — P23's marketplace
   publish, the P22 tail, P16d, P20. Anything resting on an interactive step performed outside the repo

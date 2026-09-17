@@ -2383,7 +2383,10 @@ Windows** (the existing gates prove it).
 
 ## Stretch (unordered, post-P10)
 - **Further targets** as downloadable declarative backends (the IR is target-neutral by design).
-- **Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug story.
+- ~~**Source maps:** thread positions through every pass for debuggable JS output; decide the C# debug
+  story.~~ — **done in P38** (issue #69): `--line-directives` emits C# `#line` pragmas and a TS v3 source
+  map from the same recorded origins. The C# debug story is decided: PDB sequence points, so .NET coverage
+  tools attribute generated code to the `.pg` with no post-processing. Debugger *stepping* stays a non-goal.
 - **Editor tooling — full detail (now tracked above):**
   - **Syntax highlighting** — a TextMate grammar (`.tmLanguage`/`.json`) for `.pg`. Independent of the
     compiler (no frontend reuse needed) and **can land early/cheaply**: it gives VS Code (and most editors)
@@ -3498,3 +3501,48 @@ across C#/TS/Python/PHP (11 php-refused by design). Registry + POSIX legs run on
 Deferred follow-ups (recorded, not built): cross-package operator *resolution*; `return:`/type-param
 attributes; auto-included attribute stdlib package; Tier 2 param metadata; `AllowMultiple`;
 `Meta.getInherited`/`Meta.all<T>()`; dual-tier declarations; the P30 binding-only package kind.
+
+## P38 — Origin attribution: `#line` directives (C#) + a v3 source map (TS) — ✅ built + gated locally (2026-09-17; issue #69, PRD `docs/prd/issue-69-source-attribution/`, 5-agent investigation + maintainer design review (D1–D8) + 3 slice-0 spikes)
+
+Generated code can now be attributed back to the `.pg` it came from, so a consumer's coverage run counts
+the transpiled sources instead of ignoring them. Motivation: in `MintPlayer.AI` the 9 `.pg` solvers
+(7,097 lines) transpile into `obj/` and contribute to **neither** numerator nor denominator, which makes
+the repo's most heavily exercised code *depress* its coverage number. Design + evidence in
+`{PRD,PLAN,ANALYSIS}.md`; the spikes are logged in PLAN.md §Log.
+
+- **Opt-in, one flag, two sinks.** `--line-directives` (or pgconfig `"lineDirectives": true`, or MSBuild
+  `PolyglotLineDirectives=true`). C# emits `#line` pragmas that Roslyn records as PDB sequence points — so
+  .NET coverage tools report against the `.pg`, with `.pg` line numbers, **with no post-processing**.
+  TypeScript answers the same flag with a Source Map v3 sidecar carrying embedded `sourcesContent`.
+- **`originMapping` is manifest DATA, not a target-name check.** A new top-level plugin key with a closed,
+  load-validated `style` vocabulary (`directive` | `sourceMapV3`). C#/TS declare one; Python/PHP declare
+  nothing and are byte-for-byte unaffected. Unknown style, a `directive` missing a template, or a
+  non-object value all refuse at LOAD. No `kCoverage` entry and no new capability key — deliberately, so
+  an off-by-default feature never lands in the arm-trace denominator as permanently-uncovered.
+- **Every emitted line carries exactly one directive** — positioned where the origin is known, `hidden`
+  everywhere else. Emitting one only when the source line *changes* is not merely imprecise: the following
+  lines drift onto unrelated `.pg` lines and report as covered, silently inflating the number.
+- **Blocking prerequisite fixed:** `compile()` passed a null `SourceMap` and lexed with no fileId, so every
+  token of every module was fileId 0. It now stamps the entry as fileId 1 and returns the map. Same root
+  cause, so it landed here: an error inside an **imported** module used to be reported under the ENTRY
+  file's name with the module's line number — a wrong `file:line:col` pointing at innocent source.
+- **Refusal is scoped (D6):** asking for origins when **no** selected target records them is an error
+  naming the group, the targets, and the setting's provenance; a mixed set proceeds and annotates what it can.
+
+**Built (2026-09-17, one PR — branch `issue-69-origin-attribution`).** Slices 0–9 as designed, with the
+deviations recorded in `docs/prd/issue-69-source-attribution/PLAN.md` §As-built (headline: `SourceMap::add`
+does **not** canonicalize — the Core does no IO, and `FileModuleResolver` already answered
+`weakly_canonical`; and only `ir::Function`/`ir::Method` needed a new position, because `ClassField`/`Global`
+reach theirs through an already-positioned `init` expression).
+
+**Acceptance coverage:** 40+ new unit assertions (SourceMap threading, decl positions, manifest parity +
+3 load refusals, Base64-VLQ vectors, v3 envelope), 8 new cli-smoke checks as the standing flag-on witness
+(placement, `hidden` scaffolding, no mid-line splice, the refusal, and a decoded TS sidecar), plus a
+measured **433/433 byte-identical** comparison of flag-off output against the previous release binary
+across every conformance program × 4 targets. Directive-laden C# compiles and runs correctly; the TS
+sidecar decodes to exactly the right `.pg` lines and Node still runs the emitted file.
+
+Deferred follow-ups (recorded, not built): Python/PHP `originMapping` data; column-level mapping;
+`ast::ExtensionDecl.namePos`; the LSP preview honouring the flag; retiring `compiler.cpp`'s
+`target.name() == "csharp"` into a `sharesPreludeFile` trait flag; and consuming the TS map downstream
+(the consumer's own spike S5).

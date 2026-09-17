@@ -24,6 +24,7 @@
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 #include "mintplayer/polyglot/json.hpp"
+#include "mintplayer/polyglot/sourcemap.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
@@ -3003,7 +3004,7 @@ int main() {
                   cs.hidden == "#line hidden" && cs.column == 0,
               "P38 s3: C# declares the directive style with both templates");
         check(ts.style == OriginMapping::Style::SourceMapV3 && ts.emitsSourceMap() &&
-                  ts.sidecarExtension == ".ts.map" && has(ts.footer, "sourceMappingURL"),
+                  ts.sidecarExtension == ".map" && has(ts.footer, "sourceMappingURL"),
               "P38 s3: TypeScript declares the v3-sidecar style");
         const Backend* py = findBackend("python");
         const Backend* php = findBackend("php");
@@ -3026,6 +3027,35 @@ int main() {
         err.clear();
         check(!validateBackend(head + "\"originMapping\":\"yes\"}", err) && has(err, "must be an object"),
               "P38 s3: a non-object originMapping refuses");
+    }
+
+    // ---- P38/issue #69 slice 8: Base64-VLQ + the v3 source map ------------------------------------
+    {
+        // The encoding the v3 `mappings` field is built from: sign in the low bit, 5-bit groups
+        // little-endian, bit 6 = "another group follows". These are the values every v3 reference
+        // implementation agrees on, so a wrong encoder shows up here rather than in a consumer's tooling.
+        check(vlqEncode(0) == "A", "P38 s8: VLQ 0");
+        check(vlqEncode(1) == "C", "P38 s8: VLQ 1");
+        check(vlqEncode(-1) == "D", "P38 s8: VLQ -1");
+        check(vlqEncode(15) == "e", "P38 s8: VLQ 15");
+        check(vlqEncode(16) == "gB", "P38 s8: VLQ 16 (two groups)");
+        check(vlqEncode(-16) == "hB", "P38 s8: VLQ -16");
+        check(vlqEncode(123) == "2H", "P38 s8: VLQ 123");
+
+        SourceMapInput in;
+        in.file = "out.ts";
+        in.sources = {"../src/a.pg"};
+        in.sourcesContent = {"fn main() {}\n"};
+        in.fileIdToSourceIndex = {-1, 0};        // fileId 0 = unknown, fileId 1 -> sources[0]
+        in.origins = {{1, 1, 4}, {3, 1, 5}, {4, 9, 9}}; // the last has an unmapped fileId
+        const std::string doc = buildSourceMapV3(in);
+        check(has(doc, "\"version\":3"), "P38 s8: the map declares v3");
+        check(has(doc, "\"file\":\"out.ts\""), "P38 s8: the map names the emitted file");
+        check(has(doc, "\"sources\":[\"../src/a.pg\"]"), "P38 s8: sources are map-relative, as given");
+        check(has(doc, "fn main()"), "P38 s8: sourcesContent is embedded (survives bundling/relocation)");
+        // Output line 1 -> source line 4, then line 3 -> line 5. Two ';' separate them (line 2 is
+        // unmapped), and the out-of-range fileId is skipped rather than poisoning the table.
+        check(has(doc, "\"mappings\":\"AAGA;;AACA\""), "P38 s8: mappings encode line deltas and skip unmapped origins");
     }
 
     // ---- P30 slice 8: cross-directory import specifiers (crossDirImports) ---------------------

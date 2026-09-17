@@ -457,6 +457,10 @@ struct LocalFunc : Stmt {
     LocalFunc(SourcePos p, std::string n) : Stmt(StmtKind::LocalFunc, p), name(std::move(n)) {}
 };
 struct Function {
+    // P38/issue #69: where this function was declared in the .pg — same role as ir::Method::pos. A
+    // top-level `fn` lowers to a Function rather than a Method, so without this the whole function-entry
+    // attribution (the `fn foo() {` line registering a hit) would silently apply to methods only.
+    SourcePos pos;
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
@@ -630,6 +634,16 @@ struct Module {
     std::vector<ModuleImport> imports;   // §4.5: this file's cross-module imports (empty for single-file builds)
     bool linked = false;                 // §4.5: this is one file of a multi-module build (drives C# `partial`)
     std::string access;                  // requested accessibility for emitted C# types ("public"/"internal"); "" = target default
+    // P38/issue #69: emit origin information (LibConfig::originInfo). Off = every target emits
+    // byte-for-byte as before. On = a target that declares `originMapping` records where each emitted line
+    // came from; targets that declare nothing are unaffected. Deliberately named for the CONCEPT, not for
+    // C#'s `#line` spelling — the Core knows nothing about either target's syntax.
+    bool originInfo = false;
+    // The SourceMap's file table (index = SourcePos::fileId; 0 = unknown/synthetic), copied in so the
+    // emitter can turn a position into a path without depending on the compiler's types. An entry that is
+    // not an on-disk path — a logical "std.io", or the empty slot 0 — is exactly how the emitter
+    // recognizes "no resolvable origin" and falls back to a hidden directive.
+    std::vector<std::string> sourceFiles;
 };
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).

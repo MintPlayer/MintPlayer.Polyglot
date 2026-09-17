@@ -131,6 +131,7 @@ A `pgconfig.json` next to (or above) your `.pg` files replaces the flags:
   "root": ".",
   "lib": ["io", "math"],
   "targets": ["csharp", "typescript"],
+  "lineDirectives": false,
   "forbiddenIdentifiers": { "*": ["temp"] }
 }
 ```
@@ -139,6 +140,14 @@ A `pgconfig.json` next to (or above) your `.pg` files replaces the flags:
 ambient std prelude (so `print`/`Math` resolve without imports), `targets` is the project's target set —
 a bare `polyglot build foo.pg` then emits **all** of them — and `forbiddenIdentifiers` bans names
 project-wide or per target.
+
+`lineDirectives` (or `--line-directives`, which wins) records where each emitted line came from, so a
+coverage run over the **generated** code attributes hits back to the `.pg` — the path *and* the line
+numbers. C# gets `#line` pragmas, which Roslyn writes into the PDB, so .NET coverage tools need no
+post-processing whatsoever; TypeScript gets a Source Map v3 sidecar (`solver.ts.map`) with the `.pg`
+text embedded, so it survives bundling and relocation. How a target records origins is declared in its
+own plugin manifest (`originMapping`), so a build whose targets *all* lack one refuses rather than
+silently doing nothing. Off by default: output is byte-identical without it.
 
 ## Targets are plugins
 
@@ -215,6 +224,7 @@ template arms is a lie, and both can be green while the four targets disagree at
 | Which **C++ Core/CLI** lines ran? | the `coverage` job in `ci.yml` (g++ `--coverage` + gcovr) · locally `pwsh scripts/coverage.ps1` (OpenCppCoverage) |
 | Which **plugin template arms** ran? | the arm tracer — `polyglot --emit-arm-trace <file>`, folded into one lcov per manifest by `scripts/arm-trace-to-lcov.ps1` |
 | Do the four targets **agree at runtime**? | the differential conformance suite ([`tests/conformance/`](tests/conformance/)) |
+| Which **`.pg` lines ran downstream**, in a consumer's own coverage run? | `--line-directives` (P38 / issue #69) — C# `#line` pragmas into the PDB, a v3 source map for TS |
 
 The middle one exists because **the backends *are* their JSON manifests** — zero are compiled in — so
 gcov and OpenCppCoverage are structurally blind to them, and the load-time anti-silent-drop contract

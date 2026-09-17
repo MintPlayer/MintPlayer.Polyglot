@@ -58,10 +58,22 @@ BackendHandle findTarget(const std::string& name);
 // names it after the input). `sourcePath` is the module's canonical origin (an absolute file path for
 // disk-resolved modules) — the host routes per-file outputs by it (P30 slice 7); empty for the synthesized
 // `__polyglot_prelude` file, which has no source.
+// P38/issue #69: one emitted line's origin — "output line N came from line `sourceLine` of the source the
+// SourceMap calls `fileId`". Line-granular by design (PRD N1): column tracking would mean threading
+// positions through the expression rule interpreter, which returns bare strings, and coverage only needs
+// lines. Recorded for any target that declares an `originMapping`; the `#line` sink writes the information
+// into the source instead, so only the source-map sink actually consumes these.
+struct OriginRecord {
+    int outputLine = 0; // 1-based line in the emitted file
+    int fileId = 0;     // index into the EmitResult's SourceMap
+    int sourceLine = 0; // 1-based line in that source
+};
+
 struct ModuleFile {
     std::string basename;
     std::string code;
     std::string sourcePath;
+    std::vector<OriginRecord> origins; // P38: empty unless origin info was requested
 };
 
 // Maps a SourcePos.fileId to the source it came from, so cross-module positions stay unambiguous after the
@@ -99,6 +111,10 @@ struct EmitResult {
     // SourceMap at all and every token was stamped fileId 0 — meaning a diagnostic from an imported module
     // was reported under the ENTRY file's name. Populated whenever compile() is given an `entryPath`.
     SourceMap sources;
+    // P38: per-line origins for `code` (the entry file); each ModuleFile carries its own. Empty unless the
+    // build asked for origin info AND the target declares a mapping. The HOST turns these into a sidecar:
+    // the Core never learns where a file is routed, so it cannot compute map-relative source paths itself.
+    std::vector<OriginRecord> origins;
 };
 
 // A module's source, as answered by a ModuleResolver. `canonicalPath` is the stable identity used for
@@ -146,6 +162,13 @@ struct LibConfig {
     // independent link roots don't each emit it (which collides as CS0101/CS8863 in one assembly). Off = the
     // single-file behavior (prelude inlined) — byte-identical. C#-only; TS/Python/PHP inline it per file safely.
     bool sharedPrelude = false;
+    // P38/issue #69: emit origin information so generated code can be attributed back to the `.pg` source
+    // (a coverage run then reports against the `.pg`, with `.pg` line numbers). Opt-in — the CLI spells it
+    // `--line-directives`, which is what it means for C#; a target expresses HOW it records origins in its
+    // plugin manifest's `originMapping`, so this flag stays target-neutral. Off (the default) = every
+    // target emits byte-for-byte as before. A build whose targets ALL lack `originMapping` refuses rather
+    // than silently doing nothing.
+    bool originInfo = false;
 };
 
 // Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->

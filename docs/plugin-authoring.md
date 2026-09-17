@@ -57,7 +57,7 @@ v3 sidecar** beside the emitted file.
 | `line` | `directive` | Per-line template. `$n` = the 1-based source line, `$f` = the source path. Required. |
 | `hidden` | `directive` | Template for a line whose origin is unknown (braces, scaffolding, std helpers). Required. |
 | `column` | `directive` | Column the pragma is written at; C# wants `0`, which is *not* the emitter's current indent. |
-| `sidecarExtension` | `sourceMapV3` | The sidecar's extension, e.g. `".ts.map"`. Required. |
+| `sidecarExtension` | `sourceMapV3` | Suffix **appended to the emitted file's name** to name its sidecar: `".map"` turns `solver.ts` into `solver.ts.map`. Required. |
 | `footer` | `sourceMapV3` | Line appended to the emitted file pointing at the sidecar; `$f` = the sidecar's file name. |
 
 ```jsonc
@@ -65,7 +65,7 @@ v3 sidecar** beside the emitted file.
 "originMapping": { "style": "directive", "line": "#line $n \"$f\"", "hidden": "#line hidden", "column": 0 }
 
 // plugins/typescript
-"originMapping": { "style": "sourceMapV3", "sidecarExtension": ".ts.map", "footer": "//# sourceMappingURL=$f" }
+"originMapping": { "style": "sourceMapV3", "sidecarExtension": ".map", "footer": "//# sourceMappingURL=$f" }
 ```
 
 **Every** emitted line carries a directive when the style is `directive` — a positioned one where the

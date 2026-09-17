@@ -56,8 +56,16 @@ public:
     std::string name() const override { return name_; }
 
     std::string emit(const ir::Module& m) const override {
-        InterpretedEmitter emitter([this]() -> const BackendSpec& { return spec_; }, rules_);
+        InterpretedEmitter emitter([this]() -> const BackendSpec& { return spec_; }, rules_, &originMapping_);
         return emitter.emit(m);
+    }
+    std::string emitWithOrigins(const ir::Module& m, std::vector<std::array<int, 3>>& origins) const override {
+        InterpretedEmitter emitter([this]() -> const BackendSpec& { return spec_; }, rules_, &originMapping_);
+        std::string code = emitter.emit(m);
+        origins.clear();
+        for (const auto& r : emitter.originRecords())
+            origins.push_back({r.first, r.second.fileId, r.second.line});
+        return code;
     }
 
     // Tri-state capabilities (PRD §4.11 / P37 slice 0): keyed lookup with the umbrella rule — exact key,

@@ -63,6 +63,12 @@
            hand-written facade); unset keeps C#'s modifier-less default (internal). -->
       <_PolyglotAccessArg></_PolyglotAccessArg>
       <_PolyglotAccessArg Condition="'$(PolyglotAccess)' != ''"> --access &quot;$(PolyglotAccess)&quot;</_PolyglotAccessArg>
+      <!-- PolyglotLineDirectives=true records where each emitted line came from (P38 / issue #69), so a
+           coverage run over the generated C# in obj/ reports against the .pg file with .pg line numbers
+           instead of being invisible. Roslyn writes the #line pragmas into the PDB, so nothing needs
+           post-processing. Off by default: the generated code is byte-identical without it. -->
+      <_PolyglotLineDirectivesArg></_PolyglotLineDirectivesArg>
+      <_PolyglotLineDirectivesArg Condition="'$(PolyglotLineDirectives)' == 'true'"> --line-directives</_PolyglotLineDirectivesArg>
     </PropertyGroup>
     <RemoveDir Directories="$(PolyglotOutDir)" />
     <MakeDir Directories="$(PolyglotOutDir)" />
@@ -72,7 +78,7 @@
          lands in obj/ and compiles exactly as before; other targets route through the pgconfig `include`
          rules (e.g. TypeScript twins into a web app's src) and are deliberately NOT in @(FileWrites) —
          they are committed source artifacts `dotnet clean` must never delete. -->
-    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)" />
+    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)$(_PolyglotLineDirectivesArg)" />
     <Touch Files="$(PolyglotOutDir)__polyglot.stamp" AlwaysCreate="true" />
   </Target>
 

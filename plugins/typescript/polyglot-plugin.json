@@ -4,7 +4,7 @@
   "crossDirImports": true,
   "originMapping": {
     "style": "sourceMapV3",
-    "sidecarExtension": ".ts.map",
+    "sidecarExtension": ".map",
     "footer": "//# sourceMappingURL=$f"
   },
   "capabilities": {

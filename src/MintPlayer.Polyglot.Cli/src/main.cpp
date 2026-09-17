@@ -29,6 +29,7 @@
 #include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/json.hpp"
+#include "mintplayer/polyglot/sourcemap.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
 #include "exe_path.hpp"
@@ -57,7 +58,8 @@ void printUsage() {
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
-        << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>] [--watch]\n"
+        << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
+        << "                            [--line-directives] [--watch]\n"
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
@@ -69,6 +71,11 @@ void printUsage() {
         << "         emitted file (glob -> output template; the target extension is appended); with\n"
         << "         no input args, build discovers its inputs from those patterns.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
+        << "         --line-directives records where each emitted line came from, so coverage tools\n"
+        << "         attribute generated code back to the .pg (C#: #line pragmas; TypeScript: a v3\n"
+        << "         source map). Off by default - output is byte-identical without it. A target\n"
+        << "         declares how it records origins in its plugin manifest; a build whose targets all\n"
+        << "         lack one refuses. Also settable as pgconfig.json \"lineDirectives\": true.\n"
         << "         --watch rebuilds whenever the input, an imported .pg, or pgconfig.json changes\n"
         << "         (a failed rebuild keeps watching and never touches the last good outputs).\n"
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
@@ -182,7 +189,7 @@ const char* severityName(Severity s) {
 // appear in several roots' closures — identical content is written once; a genuine content conflict (two
 // distinct modules resolving to the same output path) is a hard error, never a silent clobber.
 bool writeDedup(const fs::path& out, const std::string& content,
-                std::map<std::string, std::string>* seen) {
+                std::map<std::string, std::string>* seen, bool originInfo = false) {
     if (seen) {
         auto key = fs::weakly_canonical(out).string();
         auto it = seen->find(key);
@@ -190,6 +197,15 @@ bool writeDedup(const fs::path& out, const std::string& content,
             if (it->second == content) return true; // already written, identical — skip
             std::cerr << "polyglot: conflicting output for '" << out.string()
                       << "' (two modules emit the same file with different content)\n";
+            // P38/issue #69: two DISTINCT .pg files that happen to emit identical code collapse silently
+            // without origin info — one of them is simply unrepresented in the output. Turning origins on
+            // makes them genuinely different, so this previously-quiet case starts failing here. The
+            // conflict is correct (we must never pick one origin and lie about the other), but it is not
+            // obvious, so say what changed and how to fix it.
+            if (originInfo)
+                std::cerr << "polyglot:   source-origin info is on, so two .pg files that used to emit "
+                             "identical code now differ by origin. Give them distinct outputs with a "
+                             "pgconfig.json `include` rule, or turn off --line-directives.\n";
             return false;
         }
         (*seen)[key] = content;
@@ -234,6 +250,42 @@ LibConfig libForTarget(const LibConfig& lib, const BackendHandle& target, const 
     return out;
 }
 
+// P38/issue #69: write the v3 sidecar for one emitted file. `sources` are made relative to the MAP's own
+// directory (a v3 consumer resolves them that way), and each source's text is embedded as
+// `sourcesContent` — which is what lets the map survive bundling, relocation, and output routed into a
+// different tree than the `.pg`, because then no path resolution is needed at all. An origin whose file
+// cannot be resolved to a real path (a logical "std.io", the synthesized prelude) is simply not mapped.
+bool writeSourceMap(const fs::path& mapPath, const fs::path& emitted,
+                    const std::vector<OriginRecord>& origins, const SourceMap& sources) {
+    SourceMapInput in;
+    in.file = emitted.filename().string();
+    in.fileIdToSourceIndex.assign(sources.files.size(), -1);
+    std::error_code ec;
+    const fs::path mapDir = mapPath.has_parent_path() ? mapPath.parent_path() : fs::path(".");
+    for (std::size_t fid = 1; fid < sources.files.size(); ++fid) {
+        const std::string& canon = sources.files[fid];
+        if (canon.empty() || canon.find('/') == std::string::npos) {
+            if (canon.find('\\') == std::string::npos) continue; // a logical std name, not a path
+        }
+        fs::path rel = fs::relative(fs::path(canon), mapDir, ec);
+        std::string relStr = ec || rel.empty() ? canon : rel.generic_string();
+        if (!ec && !rel.empty()) relStr = rel.generic_string();
+        in.fileIdToSourceIndex[fid] = static_cast<int>(in.sources.size());
+        in.sources.push_back(relStr);
+        std::string text;
+        in.sourcesContent.push_back(readFile(fs::path(canon), text) ? text : std::string());
+    }
+    in.origins = origins;
+    if (in.sources.empty()) return true; // nothing resolvable to map — don't write an empty sidecar
+    const std::string doc = buildSourceMapV3(in);
+    if (!writeFile(mapPath, doc)) {
+        std::cerr << "polyglot: cannot write '" << mapPath.string() << "'\n";
+        return false;
+    }
+    std::cout << "  -> " << mapPath.string() << "\n";
+    return true;
+}
+
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& fallbackDir,
              const BackendHandle& target, const char* ext, ModuleResolver* resolver, const LibConfig& lib,
              const PgConfig& pc, bool flagRouted,
@@ -252,10 +304,32 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
         std::cerr << "polyglot: " << rerr << "\n";
         return false;
     }
-    if (!writeDedup(outs[0], result.code, seen)) return false;
+    // P38/issue #69: a `sourceMapV3` target gets a sidecar beside each emitted file, plus a footer line
+    // pointing at it. This happens HERE, not in the Core, because only the host knows where a file was
+    // routed — and `sources` must be relative to the MAP, which the consumer's include rules can put in a
+    // completely different tree from the `.pg` (that is exactly the MintPlayer.AI layout).
+    const OriginMapping& om = target.backend()->originMapping();
+    auto writeOne = [&](const fs::path& out, std::string code, const std::vector<OriginRecord>& origins) {
+        if (lib.originInfo && om.emitsSourceMap() && !origins.empty()) {
+            const fs::path mapPath = out.string() + om.sidecarExtension;
+            if (!om.footer.empty()) {
+                std::string footer = om.footer;
+                const std::string mapName = mapPath.filename().string();
+                for (std::size_t at = 0; (at = footer.find("$f", at)) != std::string::npos; at += mapName.size())
+                    footer.replace(at, 2, mapName);
+                if (!code.empty() && code.back() != '\n') code += '\n';
+                code += footer;
+                code += '\n';
+            }
+            if (!writeDedup(out, code, seen, lib.originInfo)) return false;
+            return writeSourceMap(mapPath, out, origins, result.sources);
+        }
+        return writeDedup(out, std::move(code), seen, lib.originInfo);
+    };
+    if (!writeOne(outs[0], result.code, result.origins)) return false;
     // §4.5 module linking: a multi-module program emits one file per imported user module alongside the entry.
     for (std::size_t i = 0; i < result.modules.size(); ++i)
-        if (!writeDedup(outs[i + 1], result.modules[i].code, seen)) return false;
+        if (!writeOne(outs[i + 1], result.modules[i].code, result.modules[i].origins)) return false;
     return true;
 }
 
@@ -308,7 +382,7 @@ struct WatchCycle {
 
 WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, const fs::path& rootArg,
                           const std::string& targetArg, const std::string& libArgIn, bool checkOnly,
-                          bool flagRouted) {
+                          bool flagRouted, bool originInfo) {
     WatchCycle c;
     const fs::path absInput = fs::absolute(input).lexically_normal();
     c.watched.push_back(absInput);
@@ -370,6 +444,9 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
+    // P38/issue #69: watch mode builds its own LibConfig, so an option threaded only through buildGroup
+    // would silently not apply here. (`access` is exactly that pre-existing gap — don't widen it.)
+    lib.originInfo = originInfo || pc.originInfo;
 
     resolveConfiguredTargets(pc); // safe per-cycle: already-registered names are skipped
 
@@ -437,7 +514,8 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 }
 
 int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root,
-             const std::string& target, const std::string& libArg, bool checkOnly, bool flagRouted) {
+             const std::string& target, const std::string& libArg, bool checkOnly, bool flagRouted,
+             bool originInfo = false) {
     cli::PollingFileWatcher watcher;
 #ifdef _WIN32
     g_watchStopTarget = &watcher;
@@ -447,7 +525,7 @@ int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root
     const char* verb = "building";
     for (;;) {
         std::cout << clockStamp() << " polyglot watch: " << verb << " " << absInput.string() << "\n";
-        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted);
+        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted, originInfo);
         std::cout << clockStamp() << " polyglot watch: " << c.errors
                   << " error(s) - watching for changes\n";
         std::cout.flush();
@@ -501,7 +579,7 @@ std::vector<fs::path> discoverIncludeInputs(const PgConfig& pc) {
 // with outputs routed through the group's `include` rules.
 int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::string& target,
                const fs::path& outDir, bool outDirGiven, fs::path root, std::string libArg,
-               const std::string& accessArg) {
+               const std::string& accessArg, bool lineDirectivesFlag) {
     for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
     if (!pc.errors.empty()) return 64;
 
@@ -519,6 +597,9 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
         std::cerr << "polyglot: --access must be 'public' or 'internal' (got '" << lib.access << "')\n";
         return 64;
     }
+    // P38/issue #69: --line-directives wins over the pgconfig key (the --access precedent).
+    lib.originInfo = lineDirectivesFlag || pc.originInfo;
+    const char* originSource = lineDirectivesFlag ? "--line-directives" : "pgconfig.json \"lineDirectives\"";
 
     resolveConfiguredTargets(pc); // pgconfig `dependencies` + lock-first cache + registry (P30)
 
@@ -539,6 +620,30 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
         BackendHandle h = findTarget(target); // in-box, file:, or P30-resolved — never a bare-name probe
         if (!h.ok()) { std::cerr << "polyglot: " << h.error() << "\n"; return 64; }
         targets.emplace_back(h, h.backend()->fileExtension());
+    }
+
+    // P38/issue #69: origin info was requested — refuse only if NOTHING in this group's target set can
+    // honour it. A target that declares no `originMapping` emits correct, merely unannotated output, so
+    // refusing a mixed set would break the ordinary C#+TS build this feature exists for; but a request that
+    // NO target can satisfy is a mistake, and silence would leave the user staring at a coverage number
+    // that never moved. The check is per GROUP, because target selection is per nearest pgconfig.json.
+    if (lib.originInfo) {
+        std::vector<std::string> supporting, unsupported;
+        for (const auto& t : targets)
+            (t.first.backend()->originMapping().recordsOrigins() ? supporting : unsupported)
+                .push_back(t.first.backend()->name());
+        if (supporting.empty()) {
+            std::cerr << "polyglot: " << originSource << " asks for source-origin info, but no target in "
+                      << (pc.found ? "'" + (pc.dir / "pgconfig.json").string() + "'" : std::string("this build"))
+                      << " records origins (targets: " << joinNames(unsupported)
+                      << "). A target declares `originMapping` in its plugin manifest; csharp emits #line "
+                         "directives and typescript emits a v3 source map.\n";
+            return 64;
+        }
+        if (!unsupported.empty())
+            std::cout << "polyglot: origin info emitted for " << joinNames(supporting)
+                      << "; not recorded for " << joinNames(unsupported)
+                      << " (no `originMapping` in their plugin manifests)\n";
     }
 
     const bool flagRouted = !target.empty() && outDirGiven; // D7: explicit --target+--out bypasses rules
@@ -595,6 +700,7 @@ int runBuild(const std::vector<std::string>& args) {
     std::string target; // empty => the pgconfig `targets` set
     std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
     std::string accessArg; // --access public|internal (C# emitted-type accessibility)
+    bool lineDirectives = false; // --line-directives (P38/issue #69: emit origin info)
     bool watch = false;
 
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -609,6 +715,11 @@ int runBuild(const std::vector<std::string>& args) {
             libArg = args[++i];
         } else if (a == "--access" && i + 1 < args.size()) {
             accessArg = args[++i];
+        } else if (a == "--line-directives") {
+            // P38/issue #69: emit origin info so generated code attributes back to the `.pg`. Spelled for
+            // what it means on C# (`#line` pragmas); a target declares HOW it records origins in its
+            // plugin manifest, so TypeScript answers the same flag with a v3 source map.
+            lineDirectives = true;
         } else if (a == "--watch") {
             watch = true;
         } else if (!a.empty() && a[0] == '-') {
@@ -639,7 +750,7 @@ int runBuild(const std::vector<std::string>& args) {
     if (watch) {
         if (inputs.size() > 1) { std::cerr << "polyglot: --watch takes a single input file\n"; return 64; }
         return runWatch(firstInput, outDir, root, target, libArg, /*checkOnly=*/false,
-                        !target.empty() && outDirGiven);
+                        !target.empty() && outDirGiven, lineDirectives);
     }
 
     std::cout << "polyglot build";
@@ -662,7 +773,7 @@ int runBuild(const std::vector<std::string>& args) {
     int worst = 0;
     for (auto& [key, group] : groups) {
         const int rc = buildGroup(group.first, group.second, target, outDir, outDirGiven, root, libArg,
-                                  accessArg);
+                                  accessArg, lineDirectives);
         if (rc > worst) worst = rc;
     }
     return worst;
