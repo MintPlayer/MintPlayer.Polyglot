@@ -42,7 +42,7 @@ Open `MintPlayer.Polyglot.sln` in a C++-capable VS (*Desktop development with C+
 from MSBuild:
 ```
 msbuild MintPlayer.Polyglot.sln /p:Configuration=Debug /p:Platform=x64
-x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.3.2
+x64\Debug\MintPlayer.Polyglot.Cli.exe --version      # -> 0.0.0-dev in-tree; the real number is stamped at release
 x64\Debug\MintPlayer.Polyglot.Tests.exe              # -> all tests pass
 ```
 **One-shot gate** (build → unit tests → all gate legs → differential C#/TS/Python/PHP conformance):
@@ -70,6 +70,7 @@ diverge at runtime.
 | Which **C++ Core/CLI** lines ran? | `ci.yml` `coverage` job (g++ `--coverage` + gcovr) · locally `pwsh scripts/coverage.ps1` (OpenCppCoverage, `choco install opencppcoverage`, HTML at `x64/coverage/`) |
 | Which **plugin template arms** ran? | the arm tracer — `polyglot --emit-arm-trace <file>` + `scripts/arm-trace-to-lcov.ps1`, one lcov per `plugins/<t>/polyglot-plugin.json` |
 | Do the four targets **agree at runtime**? | the differential conformance suite (`tests/conformance/`) |
+| Which **`.pg` lines ran in a CONSUMER's** coverage run? | `--origin-info` (P38, issue #69) — C# `#line` → PDB sequence points; TS → a v3 sidecar. Opt-in; off = byte-identical output |
 
 The arm tracer exists because the backends **are** the JSON manifests (zero compiled in), so gcov is
 structurally blind to them, and the load-time anti-silent-drop contract proves a rule *exists*, never
@@ -119,9 +120,14 @@ docs/lang/                      # SPEC.md + grammar.ebnf + samples/*.pg  (P1 des
 ```
 
 ## Status & next step
-The full pipeline is built and shipping — this is a maturing project, not a skeleton. Current versions:
-**CLI + NuGet 0.3.2**, the four target plugins (**csharp / typescript / python / php**) at **0.3.0**, the
-VS Code extension at **0.4.1**.
+The full pipeline is built and shipping — this is a maturing project, not a skeleton.
+
+**Versions ship in LOCKSTEP** — the CLI, the NuGet package, the four target plugins
+(**csharp / typescript / python / php**) and the VS Code extension all carry the same number, enforced in
+`main.cpp` / `pluginresolve.hpp`. Nothing in-tree states it: every manifest says `0.0.0-dev` and the real
+number is stamped at release by `release.yml` / `publish-plugins.yml` / `publish-vscode.yml`. So the source
+of truth is the tags — `git tag --sort=-v:refname | head -1`. (This paragraph used to name a number; it
+duplicated a fact it does not own and drifted six minor versions out of date, which is why it no longer does.)
 
 What exists end-to-end today (per-milestone history + slice logs live in `docs/prd/PLAN.md`; roadmap
 summary in PRD §6 — this file does **not** track milestones):

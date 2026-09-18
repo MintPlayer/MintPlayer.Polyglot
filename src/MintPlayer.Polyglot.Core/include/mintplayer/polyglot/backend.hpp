@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "mintplayer/polyglot/backend_spec.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 
 // A code-generation backend turns the typed IR (ir::Module) into target source. This is the seam the P9
@@ -69,6 +71,15 @@ public:
     virtual ~Backend() = default;
     virtual std::string name() const = 0;                 // stable id, e.g. "csharp" / "typescript"
     virtual std::string emit(const ir::Module& module) const = 0;
+    // P38/issue #69: emit, and also report where each emitted line came from. `origins` is filled with
+    // (outputLine, fileId, sourceLine) triples — empty unless the module asked for origin info and this
+    // target declares an `originMapping`. The default ignores them, so a backend that does not record
+    // origins needs no change at all.
+    virtual std::string emitWithOrigins(const ir::Module& module,
+                                        std::vector<std::array<int, 3>>& origins) const {
+        origins.clear();
+        return emit(module);
+    }
     // The tri-state stance for a capability KEY (PRD §4.11 / P37 slice 0): "native" | "emulated" | "false".
     // supports() is the coarse gate (anything but "false"); the stance additionally lets the compiler WARN
     // on "emulated" — the "we rewrote your call site, here's why" surface. Implementations answering from a
@@ -110,6 +121,15 @@ public:
     // host may spread one closure across directories. False (default): specifiers are bare
     // basenames and the host must keep a closure in one directory (the CLI refuses a split).
     virtual bool crossDirImports() const { return false; }
+    // P38/issue #69: how (and whether) this target records where each emitted line came from, so a
+    // coverage tool can attribute generated code back to the `.pg` source. Plugin manifest
+    // `originMapping`; absent = this target says nothing about origins and emits exactly as before.
+    // The Core never asks "is this C#?" — `#line` is C# syntax and a v3 map is a TS convention, and BOTH
+    // are carried here as data.
+    virtual const OriginMapping& originMapping() const {
+        static const OriginMapping kNone;
+        return kNone;
+    }
     // The names this target's GENERATED code claims (`identifiers.reserved` — scaffolding, synthesized
     // temps; trailing `*` = prefix family) and its runtime globals (`identifiers.globals`). A user
     // identifier colliding with either refuses at compile time (checkReservedNames, P19 §7).

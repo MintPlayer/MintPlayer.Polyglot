@@ -109,6 +109,82 @@ try {
         return $ok
     }
 
+    # ---- P38 / issue #69: --origin-info, the standing flag-on witness (PRD A10) -----------------
+    # The feature is deliberately NOT an arm-trace arm (it is manifest data, not a rule), so without a
+    # gate leg that turns it ON nothing would ever observe it running and the next refactor of the
+    # emitter's line() chokepoint would break it silently.
+    & {
+        $ld = Join-Path $work "origininfo"
+        New-Item -ItemType Directory -Force $ld | Out-Null
+        $src = Join-Path $ld "origin.pg"
+        # Deliberately covers the emitter's IRREGULAR paths, not a representative sample: a block lambda
+        # (flattened by inlineBlock — a directive spliced in there would break compilation), a try/catch
+        # and a for loop (rule-driven statement arms), and a class with a field initializer (the one
+        # declaration kind whose emitted code actually executes).
+        @(
+            'class Counter {',
+            '  var n: i32 = 7',
+            '  fn bump(): i32 { return this.n }',
+            '}',
+            'fn main() {',
+            '  var total = 0',
+            '  let add = (v: i32) => { total += v }',
+            '  add(3)',
+            '  for i in 0..2 { total += i }',
+            '  try { total += Counter().bump() } catch (e: Error) { total = -1 }',
+            '  print(total)',
+            '}'
+        ) | Set-Content -LiteralPath $src -Encoding UTF8
+
+        $offDir = Join-Path $ld "off"; $onDir = Join-Path $ld "on"
+        & $Cli build $src --target csharp --lib io --out $offDir 2>&1 | Out-Null
+        $offRc = $LASTEXITCODE
+        & $Cli build $src --target csharp --lib io --origin-info --out $onDir 2>&1 | Out-Null
+        $onRc = $LASTEXITCODE
+        $offFile = Join-Path $offDir "origin.cs"
+        $onFile  = Join-Path $onDir "origin.cs"
+        Check ($offRc -eq 0 -and $onRc -eq 0 -and (Test-Path $offFile) -and (Test-Path $onFile)) `
+            "P38: build succeeds with and without --origin-info"
+
+        if ((Test-Path $offFile) -and (Test-Path $onFile)) {
+            $onLines = Get-Content -LiteralPath $onFile
+            # Every emitted line carries exactly one directive: strip the directives and what remains must
+            # be the flag-OFF output, byte for byte. That proves placement AND no-drift in one comparison,
+            # without pinning a golden file (PRD A2).
+            $directives = @($onLines | Where-Object { $_ -match '^#line ' })
+            $body = @($onLines | Where-Object { $_ -notmatch '^#line ' })
+            $offLines = @(Get-Content -LiteralPath $offFile)
+            Check ($directives.Count -eq $body.Count) `
+                "P38: every emitted line carries exactly one #line directive ($($directives.Count) directives / $($body.Count) lines)"
+            Check (($body -join "`n") -eq ($offLines -join "`n")) `
+                "P38: stripping the directives reproduces the flag-off output exactly"
+            Check ($directives | Where-Object { $_ -match '\.pg"$' }).Count -gt 0 `
+                "P38: at least one directive names the .pg source"
+            Check (($onLines | Where-Object { $_ -match '^#line hidden$' }).Count -gt 0) `
+                "P38: scaffolding is emitted as #line hidden (no phantom attribution)"
+            # A directive must never be spliced INTO a line — the inlineBlock hazard.
+            Check (($onLines | Where-Object { $_ -match '.\#line ' }).Count -eq 0) `
+                "P38: no directive is spliced mid-line (inlineBlock stays suppressed)"
+        }
+
+        # A target that declares no originMapping cannot honour the flag; asking ONLY such targets refuses.
+        & $Cli build $src --target python --lib io --origin-info --out (Join-Path $ld "py") 2>&1 | Out-Null
+        Check ($LASTEXITCODE -eq 64) "P38: --origin-info refuses when no selected target records origins"
+
+        # TypeScript answers the same flag with a v3 sidecar plus a footer pointing at it.
+        $tsDir = Join-Path $ld "ts"
+        & $Cli build $src --target typescript --lib io --origin-info --out $tsDir 2>&1 | Out-Null
+        $tsMap = Join-Path $tsDir "origin.ts.map"
+        $tsOk = (Test-Path $tsMap)
+        if ($tsOk) {
+            $map = Get-Content -LiteralPath $tsMap -Raw | ConvertFrom-Json
+            $tsOk = ($map.version -eq 3) -and ($map.sources.Count -gt 0) -and
+                    ($map.sourcesContent.Count -gt 0) -and ($map.mappings.Length -gt 0)
+            $tsOk = $tsOk -and ((Get-Content -LiteralPath (Join-Path $tsDir "origin.ts") -Raw) -match 'sourceMappingURL=origin\.ts\.map')
+        }
+        Check $tsOk "P38: TypeScript emits a valid v3 sidecar with sourcesContent and a sourceMappingURL footer"
+    }
+
     $g39Ok = (Test-G39 "counter" $false "counter" @("csharp", "typescript", "python", "php"))
     $g39Ok = (Test-G39 "modular" $true "modular" @("csharp", "typescript", "python", "php")) -and $g39Ok
     $g39Ok = (Test-G39 "operators_full" $false "operators_full" @("csharp", "typescript", "python")) -and $g39Ok

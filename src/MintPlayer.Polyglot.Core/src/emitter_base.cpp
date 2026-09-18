@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
+#include <string_view>
 
 // The shared walk machinery for the hand-written backends — see emitter_base.hpp for the abstraction.
 
@@ -1428,7 +1429,11 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
                     const std::string ac = sub->get("decl.attrLines.count");
                     int an = 0;
                     for (char c : ac) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
-                    for (int j = 0; j < an; ++j) line(sub->get("decl.attrLines." + std::to_string(j)));
+                    // P38: attribute lines are scaffolding above the decl — no origin of their own.
+                    for (int j = 0; j < an; ++j) lineHidden(sub->get("decl.attrLines." + std::to_string(j)));
+                    // P38: the whole member decl (signature, body brace, trailing brace) belongs to the
+                    // declaration; its statements override with their own positions as they are emitted.
+                    OriginScope memberScope(*this, sub->declPos());
                     runDeclRule(it->second, *sub, *sub, helpers);
                 }
             return;
@@ -1528,8 +1533,9 @@ private:
 
 } // namespace
 
-InterpretedEmitter::InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules)
-    : specFn_(spec), rules_(rules), hooks_(spec, *this) {}
+InterpretedEmitter::InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules,
+                                       const OriginMapping* originMapping)
+    : specFn_(spec), rules_(rules), hooks_(spec, *this), originMapping_(originMapping) {}
 
 std::string InterpretedEmitter::renderType(const TypeRef& t) {
     GenericTypeCtx ctx(t, spec(), externMap_, *this);
@@ -1566,6 +1572,15 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     externMap_.clear();
     tmp_ = 0;
     requires_.clear();
+    // P38/issue #69: record origins only when the build asked AND this target declares how. Both conditions
+    // are data — the Core never asks which language it is emitting.
+    originRecords_.clear();
+    outLine_ = 0;
+    curPos_ = SourcePos{};
+    posValid_ = false;
+    suppressDirectives_ = false;
+    origin_ = (m.originInfo && originMapping_ && originMapping_->recordsOrigins()) ? originMapping_ : nullptr;
+    sourceFiles_ = &m.sourceFiles;
     hooks_.access = m.access; // per-emit accessibility for the `{"fn":"access"}` decl builtin (§ access modifier)
     for (const auto& et : m.externTypes) externMap_[et.name] = &et;
     // The two module facts record/class rules read: which named types are records (TS's structural-equals
@@ -1591,14 +1606,142 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     for (const auto& k : requires_)
         if (spec().preludes.count(k)) keys.push_back(k);
     std::sort(keys.begin(), keys.end());
-    for (const auto& k : keys) out_ = spec().preludes.at(k) + out_;
+    // P38/issue #69: a prelude is prepended AFTER the walk, so it never passes through line() — the one
+    // writer of out_ that bypasses the per-line invariant. It is synthesized runtime text with no `.pg`
+    // origin, so it is wrapped in hidden directives (which removes it from coverage entirely) and every
+    // recorded output line shifts down by the number of lines prepended. Without the shift a source map
+    // would point at the wrong lines; the `#line` sink is immune either way, because every directive names
+    // an absolute line and nothing is relative to file position.
+    for (const auto& k : keys) {
+        const std::string& text = spec().preludes.at(k);
+        std::string block = text;
+        if (origin_ && origin_->emitsDirectives() && !origin_->hidden.empty()) block = hideRawBlock(text);
+        out_ = block + out_;
+        if (origin_) {
+            int added = 0;
+            for (char c : block) if (c == '\n') ++added;
+            for (auto& rec : originRecords_) rec.first += added;
+            outLine_ += added;
+        }
+    }
     return out_;
 }
 
+// Wrap verbatim, non-line()-produced text so every one of its lines carries a hidden directive. Used for
+// preludes, which are prepended after the walk and therefore never see line().
+std::string EmitterBase::hideRawBlock(const std::string& text) const {
+    if (!origin_ || !origin_->emitsDirectives()) return text;
+    std::string out;
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t nl = text.find('\n', start);
+        const std::size_t end = (nl == std::string::npos) ? text.size() : nl;
+        out.append(static_cast<std::size_t>(origin_->column), ' ');
+        out += origin_->hidden;
+        out += '\n';
+        out.append(text, start, end - start);
+        out += '\n';
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    return out;
+}
+
+// P38/issue #69 — substitute every occurrence of `hole` in `s`. The origin templates are plugin data
+// (`#line $n "$f"`), so the holes are filled here rather than by any target-specific code.
+static void substHole(std::string& s, std::string_view hole, const std::string& value) {
+    std::size_t at = 0;
+    while ((at = s.find(hole, at)) != std::string::npos) {
+        s.replace(at, hole.size(), value);
+        at += value.size();
+    }
+}
+
+// P38/issue #69 — resolve a position to an on-disk path. Empty means "no resolvable origin": an unstamped
+// position (fileId 0 — synthesized scaffolding, std overlays), or a logical module name like "std.io",
+// which is a real `.pg` inside the compiler but not a file the consumer's coverage tool can open. Both take
+// the hidden path, so a directive never claims a document that cannot be resolved.
+std::string EmitterBase::originPathFor(const SourcePos& p) const {
+    if (!sourceFiles_ || p.fileId <= 0 || static_cast<std::size_t>(p.fileId) >= sourceFiles_->size()) return {};
+    const std::string& canon = (*sourceFiles_)[static_cast<std::size_t>(p.fileId)];
+    // A path has a separator or a drive; a logical std name ("std.io") has neither. Cheap and IO-free.
+    if (canon.find('/') == std::string::npos && canon.find('\\') == std::string::npos) return {};
+    std::string out = canon; // forward slashes everywhere: uniform across platforms, and no escaping worry
+    for (char& c : out) if (c == '\\') c = '/';
+    return out;
+}
+
+void EmitterBase::emitOriginDirective() {
+    if (!origin_ || !origin_->emitsDirectives()) return;
+    const std::string path = posValid_ ? originPathFor(curPos_) : std::string();
+    std::string text;
+    if (path.empty()) {
+        text = origin_->hidden;
+    } else {
+        text = origin_->line;
+        substHole(text, "$n", std::to_string(curPos_.line));
+        substHole(text, "$f", path);
+    }
+    if (text.empty()) return;
+    out_.append(static_cast<std::size_t>(origin_->column), ' '); // column 0 for C#, not the current indent
+    out_ += text;
+    out_ += '\n';
+    // A directive occupies a physical output line, so it MUST be counted. Without this, recorded output
+    // line numbers are correct only for a target that emits no directives — which happens to hold today
+    // because `directive` and `sourceMapV3` are mutually exclusive styles, but would be a silent
+    // off-by-N for any future target that wanted both sinks. Counting here keeps `originRecords_`
+    // physically accurate for every style, so the invariant is structural rather than coincidental.
+    ++outLine_;
+}
+
 void EmitterBase::line(const std::string& s) {
-    out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
+    // A string carrying embedded newlines is N output lines from ONE call (module.attrImportsBlock joins
+    // the `using` lines this way, and an `extern`/FFI template may contain a decoded \n). Split it so the
+    // one-directive-per-line invariant holds, instead of letting one directive cover N lines.
+    //
+    // The split is BYTE-PRESERVING, in two respects, because "strip the directives and you get the
+    // flag-off output" is this feature's main correctness test and should hold by construction rather
+    // than by luck:
+    //
+    //   * Only the FIRST piece takes the `indent_` prefix, exactly as the unsplit append did — the
+    //     embedded newlines were never followed by indentation.
+    //   * A TRAILING newline in `s` yields a final EMPTY piece, which must still be emitted. `line(s)`
+    //     means "append s, then end the line", so a trailing `\n` is a blank line the caller asked for:
+    //     `"a\n"` has to produce `a` + a blank line, not just `a`. An earlier version broke out of the
+    //     loop when the last newline landed at the end of the string, silently dropping that blank line.
+    //
+    // The loop is only entered when `s` CONTAINS a newline, so the no-newline case (`"a"`) never reaches
+    // it — which is why the tail piece needs no special-casing: `while (start <= s.size())` runs once more
+    // after the final `\n` and emits the empty remainder.
+    if (recordingOrigins() && s.find('\n') != std::string::npos) {
+        std::size_t start = 0;
+        bool first = true;
+        while (start <= s.size()) {
+            const std::size_t nl = s.find('\n', start);
+            const std::size_t end = (nl == std::string::npos) ? s.size() : nl;
+            emitLineWithOrigin(s.substr(start, end - start), /*applyIndent=*/first);
+            first = false;
+            if (nl == std::string::npos) break;
+            start = nl + 1;
+        }
+        return;
+    }
+    emitLineWithOrigin(s, /*applyIndent=*/true);
+}
+
+// One physical output line: its origin directive (when recording), then the text itself.
+void EmitterBase::emitLineWithOrigin(const std::string& s, bool applyIndent) {
+    if (recordingOrigins()) {
+        emitOriginDirective();
+        if (posValid_) {
+            const std::string path = originPathFor(curPos_);
+            if (!path.empty()) originRecords_.emplace_back(outLine_ + 1, curPos_);
+        }
+    }
+    if (applyIndent) out_.append(static_cast<std::size_t>(indent_) * 4, ' ');
     out_ += s;
     out_ += '\n';
+    ++outLine_;
 }
 
 void EmitterBase::blockBody(const std::vector<ir::StmtPtr>& body) {
@@ -1608,6 +1751,14 @@ void EmitterBase::blockBody(const std::vector<ir::StmtPtr>& body) {
     --indent_;
 }
 
+// P38: braces deliberately INHERIT the enclosing construct's origin rather than being forced hidden.
+// Scoping is what makes that correct: a statement's origin is set for the whole of `emitStmt` (so an `if`'s
+// braces belong to the `if` line, which really does execute), a method's is set for its whole decl rule (so
+// the body's opening brace — where Roslyn hangs the method-entry sequence point — attributes to the `.pg`
+// declaration line, which SP1 measured as the thing that makes that line register a hit), and both scopes
+// restore on exit, so class-level scaffolding falls back to "no origin" and is hidden. Forcing braces
+// hidden instead would throw away method entry; leaving the origin un-scoped would let a brace inherit some
+// unrelated earlier statement's line, which is the phantom this whole design exists to prevent.
 void EmitterBase::openBlock(const std::string& head) {
     switch (spec().blockStyle) {
         case BlockStyle::BracesAllman: line(head); line("{"); break;
@@ -1643,12 +1794,26 @@ std::string EmitterBase::substBoundTemplate(const std::string& tmpl, const ir::B
 std::string EmitterBase::inlineBlock(const std::vector<ir::StmtPtr>& body) {
     std::string saved = std::move(out_);
     int savedIndent = indent_;
+    // P38/issue #69: the output-line counter must be saved with the buffer. These statements are rendered
+    // into a SCRATCH buffer and then flattened into part of one real line, so counting them would inflate
+    // every subsequent line number — which silently shifts an entire source map by one line per block
+    // lambda. (Observed: `const add = …` recorded as output line 5 instead of 4.)
+    int savedOutLine = outLine_;
     out_.clear();
     indent_ = 0;
+    // P38/issue #69: every newline in here is about to become a SPACE, so a directive emitted inside would
+    // be spliced into the middle of a code line and break compilation. Mandatory, not cosmetic. The cost is
+    // that a C# block lambda's interior is attributed to the statement containing it rather than
+    // line-by-line — a bounded, documented gap (PRD N5), and the reason Python is unaffected (it hoists
+    // block lambdas to real statements instead of flattening them).
+    const bool savedSuppress = suppressDirectives_;
+    suppressDirectives_ = true;
     for (const auto& s : body) emitStmt(*s);
+    suppressDirectives_ = savedSuppress;
     std::string rendered = std::move(out_);
     out_ = std::move(saved);
     indent_ = savedIndent;
+    outLine_ = savedOutLine;
     std::string flat;
     for (char c : rendered) flat += (c == '\n') ? ' ' : c;
     return flat;
@@ -1681,6 +1846,11 @@ static bool sameTypeRef(const TypeRef& a, const TypeRef& b) {
 }
 
 void EmitterBase::emitStmt(const ir::Stmt& s) {
+    // P38/issue #69: every line this statement produces — including the braces of any block it opens —
+    // belongs to this statement's source position, and the scope restores on the way out so nothing leaks
+    // into the class-level scaffolding that follows. This single scope is what makes brace inheritance
+    // correct rather than a drift hazard (see openBlock).
+    OriginScope originScope(*this, s.pos);
     switch (s.kind) {
         case ir::StmtKind::Assign: {
             const auto& a = static_cast<const ir::Assign&>(s);

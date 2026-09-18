@@ -24,6 +24,7 @@
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 #include "mintplayer/polyglot/json.hpp"
+#include "mintplayer/polyglot/sourcemap.hpp"
 #include "mintplayer/polyglot/lexer.hpp"
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
@@ -861,6 +862,66 @@ int main() {
         for (const auto& def : a.model.defs) if (def.name == "main") mainDef = &def;
         check(mainDef && !mainDef->external && mainDef->nameSpan.start.fileId == 1,
               "P16c: the entry file's own symbols are file-local (fileId 1)");
+    }
+
+    // P38/issue #69 slice 1 — compile() stamps real fileIds on the BUILD path (it passed a null SourceMap
+    // before, so every token of every module was fileId 0 and a diagnostic from an imported module was
+    // reported under the ENTRY file's name). The entry keeps id 1; the LSP's `fileId != 1` filter and this
+    // test both depend on that invariant.
+    {
+        MapModuleResolver resolver({ {"./helper", "fn helperValue(): i32 => nope(1)\n"} });
+        const char* prog =
+            "import { helperValue } from \"./helper\"\n"
+            "fn main() {\n"
+            "  print(helperValue())\n"
+            "}\n";
+        EmitResult r = compile(prog, findTarget("csharp"), &resolver, LibConfig{{"io"}}, "entry.pg");
+        check(!r.ok && !r.diagnostics.empty(), "P38 s1: an error inside an imported module still fails the build");
+        const Diagnostic* d = r.diagnostics.empty() ? nullptr : &r.diagnostics.front();
+        check(d && d->pos.fileId > 1, "P38 s1: the diagnostic carries the IMPORTED module's fileId, not 0");
+        check(d && r.sources.canon(d->pos.fileId) == "./helper",
+              "P38 s1: EmitResult::sources names the module the diagnostic came from");
+        check(r.sources.canon(1) == "entry.pg", "P38 s1: the entry keeps fileId 1 (LSP filter invariant)");
+    }
+    {   // An entry-only error stays fileId 1, so single-file diagnostics are unchanged.
+        EmitResult r = compile("fn main() { nope(1) }\n", findTarget("csharp"), nullptr, LibConfig{{"io"}}, "solo.pg");
+        check(!r.ok && !r.diagnostics.empty() && r.diagnostics.front().pos.fileId == 1,
+              "P38 s1: an entry-file diagnostic is fileId 1");
+    }
+    {   // No entryPath given (the historical call shape): still id 1, named "<entry>", never a crash.
+        EmitResult r = compile("fn main() { print(1) }\n", findTarget("csharp"), nullptr, LibConfig{{"io"}});
+        check(r.ok && r.sources.canon(1) == "<entry>", "P38 s1: an unnamed entry is stamped '<entry>'");
+    }
+
+    // P38/issue #69 slice 2 — ir::Method carries its declaration position, so the emitter can attribute a
+    // method-entry sequence point to the .pg line (SP1 measured that this is what makes the declaration
+    // line register a coverage hit). ClassField/Global need no equivalent: their `init` is an ir::Expr,
+    // which is already positioned.
+    {
+        const char* prog =
+            "class Counter {\n"                       // line 1
+            "  var n: i32 = 7\n"                      // line 2: field initializer (an ir::Expr, positioned)
+            "  fn bump(): i32 {\n"                    // line 3: the method declaration
+            "    return this.n\n"
+            "  }\n"
+            "}\n"
+            "fn main() {}\n"; // no std lib on this direct lex/parse/check path — `print` would be undeclared
+        DiagnosticBag d;
+        auto unit = parse(lex(prog, d, 1), d); // fileId 1 = the entry, as compile()/analyze() stamp it
+        mintplayer::polyglot::check(unit, d);
+        check(!d.hasErrors(), "P38 s2: the position-carrying program type-checks");
+        ir::Module m = lower(unit, "csharp");
+        const ir::Class* c = nullptr;
+        for (const auto& cl : m.classes) if (cl.name == "Counter") c = &cl;
+        check(c != nullptr, "P38 s2: the test class lowers");
+        const ir::Method* bump = nullptr;
+        if (c) for (const auto& mm : c->methods) if (mm.name == "bump") bump = &mm;
+        check(bump && bump->pos.line == 3, "P38 s2: a lowered method carries its declaration line");
+        check(bump && bump->pos.fileId == 1, "P38 s2: ... stamped with the entry's fileId");
+        const ir::ClassField* f = nullptr;
+        if (c) for (const auto& ff : c->fields) if (ff.name == "n") f = &ff;
+        check(f && f->init && f->init->pos.line == 2,
+              "P38 s2: a field initializer's origin comes from its already-positioned ir::Expr");
     }
 
     // P16c — find-references: symbolAt + referencesTo find every use of a symbol.
@@ -2931,6 +2992,70 @@ int main() {
         check(!bad.errors.empty() && has(bad.errors[0], "pattern") && has(bad.errors[0], "output"),
               "P30 s7: an include rule missing pattern/output is a manifest error, not a silent no-op");
         fs::remove_all(base, ec);
+    }
+
+    // ---- P38/issue #69 slice 3: originMapping is manifest DATA, never a target-name comparison ----
+    {
+        // Each target's origin story round-trips from its own manifest. C# writes `#line` pragmas into the
+        // source; TS writes a v3 sidecar beside it; Python and PHP say nothing and are unaffected.
+        const OriginMapping& cs = findBackend("csharp")->originMapping();
+        const OriginMapping& ts = findBackend("typescript")->originMapping();
+        check(cs.style == OriginMapping::Style::Directive && cs.emitsDirectives() && cs.line == "#line $n \"$f\"" &&
+                  cs.hidden == "#line hidden" && cs.column == 0,
+              "P38 s3: C# declares the directive style with both templates");
+        check(ts.style == OriginMapping::Style::SourceMapV3 && ts.emitsSourceMap() &&
+                  ts.sidecarExtension == ".map" && has(ts.footer, "sourceMappingURL"),
+              "P38 s3: TypeScript declares the v3-sidecar style");
+        const Backend* py = findBackend("python");
+        const Backend* php = findBackend("php");
+        check(py && !py->originMapping().recordsOrigins() && php && !php->originMapping().recordsOrigins(),
+              "P38 s3: Python/PHP declare no originMapping (Style::None — emit exactly as before)");
+
+        // The vocabulary is CLOSED: an unknown style is a plugin LOAD ERROR, never a silent default —
+        // that is what makes version skew loud (the `blockStyle` precedent).
+        const std::string head =
+            "{\"schema\":1,\"name\":\"t\",\"spec\":{\"name\":\"t\"},"
+            "\"rules\":{\"Program\":{\"line\":\"\"},\"Type\":{\"line\":\"\"}},";
+        std::string err;
+        check(!validateBackend(head + "\"originMapping\":{\"style\":\"dwarf\"}}", err) &&
+                  has(err, "unknown originMapping style"),
+              "P38 s3: an unknown originMapping style refuses at load (never a silent no-op)");
+        err.clear();
+        check(!validateBackend(head + "\"originMapping\":{\"style\":\"directive\",\"line\":\"#line $n\"}}", err) &&
+                  has(err, "needs both"),
+              "P38 s3: a directive style without both templates refuses (a declared-but-dead sink is a bug)");
+        err.clear();
+        check(!validateBackend(head + "\"originMapping\":\"yes\"}", err) && has(err, "must be an object"),
+              "P38 s3: a non-object originMapping refuses");
+    }
+
+    // ---- P38/issue #69 slice 8: Base64-VLQ + the v3 source map ------------------------------------
+    {
+        // The encoding the v3 `mappings` field is built from: sign in the low bit, 5-bit groups
+        // little-endian, bit 6 = "another group follows". These are the values every v3 reference
+        // implementation agrees on, so a wrong encoder shows up here rather than in a consumer's tooling.
+        check(vlqEncode(0) == "A", "P38 s8: VLQ 0");
+        check(vlqEncode(1) == "C", "P38 s8: VLQ 1");
+        check(vlqEncode(-1) == "D", "P38 s8: VLQ -1");
+        check(vlqEncode(15) == "e", "P38 s8: VLQ 15");
+        check(vlqEncode(16) == "gB", "P38 s8: VLQ 16 (two groups)");
+        check(vlqEncode(-16) == "hB", "P38 s8: VLQ -16");
+        check(vlqEncode(123) == "2H", "P38 s8: VLQ 123");
+
+        SourceMapInput in;
+        in.file = "out.ts";
+        in.sources = {"../src/a.pg"};
+        in.sourcesContent = {"fn main() {}\n"};
+        in.fileIdToSourceIndex = {-1, 0};        // fileId 0 = unknown, fileId 1 -> sources[0]
+        in.origins = {{1, 1, 4}, {3, 1, 5}, {4, 9, 9}}; // the last has an unmapped fileId
+        const std::string doc = buildSourceMapV3(in);
+        check(has(doc, "\"version\":3"), "P38 s8: the map declares v3");
+        check(has(doc, "\"file\":\"out.ts\""), "P38 s8: the map names the emitted file");
+        check(has(doc, "\"sources\":[\"../src/a.pg\"]"), "P38 s8: sources are map-relative, as given");
+        check(has(doc, "fn main()"), "P38 s8: sourcesContent is embedded (survives bundling/relocation)");
+        // Output line 1 -> source line 4, then line 3 -> line 5. Two ';' separate them (line 2 is
+        // unmapped), and the out-of-range fileId is skipped rather than poisoning the table.
+        check(has(doc, "\"mappings\":\"AAGA;;AACA\""), "P38 s8: mappings encode line deltas and skip unmapped origins");
     }
 
     // ---- P30 slice 8: cross-directory import specifiers (crossDirImports) ---------------------

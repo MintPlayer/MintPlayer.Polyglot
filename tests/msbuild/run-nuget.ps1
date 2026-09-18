@@ -254,6 +254,21 @@ fck $appResults ((Get-Item $gen).LastWriteTimeUtc -eq $stamp) "incremental build
 dotnet build $app --nologo -v q 2>&1 | Out-Null
 fck $appResults ((Get-Item $gen).LastWriteTimeUtc -ne $stamp) "touching the .pg re-transpiles"
 
+# 2a. P38 / issue #69: flipping PolyglotOriginInfo must re-transpile even though no .pg and no tool path
+# changed. The property is in neither Inputs nor Outputs, so incrementality is invalidated by the STAMP
+# NAME instead ($(_PolyglotStamp) carries a per-option tag). Without that, a consumer sets the property,
+# rebuilds, gets directive-free .cs left over in obj/, and concludes the feature is broken — and a package
+# upgrade masks it on the first build, so it surfaces later as a toggle-off-then-on mystery.
+$originStamp = (Get-Item $gen).LastWriteTimeUtc
+Start-Sleep -Milliseconds 300
+dotnet build $app --nologo -v q -p:PolyglotOriginInfo=true 2>&1 | Out-Null
+$genText = Get-Content -LiteralPath $gen -Raw
+fck $appResults ((Get-Item $gen).LastWriteTimeUtc -ne $originStamp) "flipping PolyglotOriginInfo re-transpiles (stamp name carries the option)"
+fck $appResults ($genText -match '(?m)^#line ') "PolyglotOriginInfo=true actually emits #line directives"
+# ...and flipping it back restores directive-free output rather than leaving the annotated file behind.
+dotnet build $app --nologo -v q 2>&1 | Out-Null
+fck $appResults ((Get-Content -LiteralPath $gen -Raw) -notmatch '(?m)^#line ') "turning PolyglotOriginInfo back off restores undecorated output"
+
 # 2b. dotnet-watch integration (P21 slice 5): the package declares the .pg sources as `Watch` items —
 # the item group dotnet watch honors beyond its Compile/EmbeddedResource defaults — so `dotnet watch
 # build|run` on a consuming project re-transpiles on every .pg edit. -getItem evaluates the project the

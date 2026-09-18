@@ -29,6 +29,7 @@
 #include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/capability.hpp"
 #include "mintplayer/polyglot/json.hpp"
+#include "mintplayer/polyglot/sourcemap.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
 #include "exe_path.hpp"
@@ -57,7 +58,8 @@ void printUsage() {
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
-        << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>] [--watch]\n"
+        << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
+        << "                            [--origin-info] [--watch]\n"
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
@@ -69,6 +71,11 @@ void printUsage() {
         << "         emitted file (glob -> output template; the target extension is appended); with\n"
         << "         no input args, build discovers its inputs from those patterns.\n"
         << "         --out writes outputs to <dir> (default: alongside the input).\n"
+        << "         --origin-info records where each emitted line came from, so coverage tools\n"
+        << "         attribute generated code back to the .pg (C#: #line pragmas; TypeScript: a v3\n"
+        << "         source map). Off by default - output is byte-identical without it. A target\n"
+        << "         declares how it records origins in its plugin manifest; a build whose targets all\n"
+        << "         lack one refuses. Also settable as pgconfig.json \"originInfo\": true.\n"
         << "         --watch rebuilds whenever the input, an imported .pg, or pgconfig.json changes\n"
         << "         (a failed rebuild keeps watching and never touches the last good outputs).\n"
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
@@ -146,9 +153,25 @@ private:
     fs::path entryDir_;
 };
 
+// P38/issue #69: resolve a diagnostic's own file. Before compile() carried a SourceMap every position was
+// fileId 0, so an error inside an IMPORTED module was printed under the entry file's name with the
+// module's line number — a wrong file:line:col pointing at innocent source. fileId 0 (unknown/synthetic)
+// and 1 (the entry) keep printing the input path exactly as the user spelled it, so single-file output is
+// byte-identical to before; only cross-module diagnostics change, and they change from wrong to right.
+const std::string& diagFile(const fs::path& input, const EmitResult& result, const Diagnostic& d,
+                            std::string& scratch) {
+    if (d.pos.fileId > 1) {
+        const std::string& canon = result.sources.canon(d.pos.fileId);
+        if (!canon.empty()) return canon;
+    }
+    scratch = input.string();
+    return scratch;
+}
+
 void reportDiagnostics(const fs::path& input, const EmitResult& result) {
     for (const auto& d : result.diagnostics) {
-        std::cerr << input.string() << ":" << d.pos.line << ":" << d.pos.col
+        std::string scratch;
+        std::cerr << diagFile(input, result, d, scratch) << ":" << d.pos.line << ":" << d.pos.col
                   << ": error: " << d.message << "\n";
     }
 }
@@ -166,7 +189,7 @@ const char* severityName(Severity s) {
 // appear in several roots' closures — identical content is written once; a genuine content conflict (two
 // distinct modules resolving to the same output path) is a hard error, never a silent clobber.
 bool writeDedup(const fs::path& out, const std::string& content,
-                std::map<std::string, std::string>* seen) {
+                std::map<std::string, std::string>* seen, bool originInfo = false) {
     if (seen) {
         auto key = fs::weakly_canonical(out).string();
         auto it = seen->find(key);
@@ -174,6 +197,15 @@ bool writeDedup(const fs::path& out, const std::string& content,
             if (it->second == content) return true; // already written, identical — skip
             std::cerr << "polyglot: conflicting output for '" << out.string()
                       << "' (two modules emit the same file with different content)\n";
+            // P38/issue #69: two DISTINCT .pg files that happen to emit identical code collapse silently
+            // without origin info — one of them is simply unrepresented in the output. Turning origins on
+            // makes them genuinely different, so this previously-quiet case starts failing here. The
+            // conflict is correct (we must never pick one origin and lie about the other), but it is not
+            // obvious, so say what changed and how to fix it.
+            if (originInfo)
+                std::cerr << "polyglot:   source-origin info is on, so two .pg files that used to emit "
+                             "identical code now differ by origin. Give them distinct outputs with a "
+                             "pgconfig.json `include` rule, or turn off --origin-info.\n";
             return false;
         }
         (*seen)[key] = content;
@@ -218,12 +250,49 @@ LibConfig libForTarget(const LibConfig& lib, const BackendHandle& target, const 
     return out;
 }
 
+// P38/issue #69: write the v3 sidecar for one emitted file. `sources` are made relative to the MAP's own
+// directory (a v3 consumer resolves them that way), and each source's text is embedded as
+// `sourcesContent` — which is what lets the map survive bundling, relocation, and output routed into a
+// different tree than the `.pg`, because then no path resolution is needed at all. An origin whose file
+// cannot be resolved to a real path (a logical "std.io", the synthesized prelude) is simply not mapped.
+bool writeSourceMap(const fs::path& mapPath, const fs::path& emitted,
+                    const std::vector<OriginRecord>& origins, const SourceMap& sources) {
+    SourceMapInput in;
+    in.file = emitted.filename().string();
+    in.fileIdToSourceIndex.assign(sources.files.size(), -1);
+    std::error_code ec;
+    const fs::path mapDir = mapPath.has_parent_path() ? mapPath.parent_path() : fs::path(".");
+    for (std::size_t fid = 1; fid < sources.files.size(); ++fid) {
+        const std::string& canon = sources.files[fid];
+        if (canon.empty() || canon.find('/') == std::string::npos) {
+            if (canon.find('\\') == std::string::npos) continue; // a logical std name, not a path
+        }
+        fs::path rel = fs::relative(fs::path(canon), mapDir, ec);
+        std::string relStr = ec || rel.empty() ? canon : rel.generic_string();
+        if (!ec && !rel.empty()) relStr = rel.generic_string();
+        in.fileIdToSourceIndex[fid] = static_cast<int>(in.sources.size());
+        in.sources.push_back(relStr);
+        std::string text;
+        in.sourcesContent.push_back(readFile(fs::path(canon), text) ? text : std::string());
+    }
+    in.origins = origins;
+    if (in.sources.empty()) return true; // nothing resolvable to map — don't write an empty sidecar
+    const std::string doc = buildSourceMapV3(in);
+    if (!writeFile(mapPath, doc)) {
+        std::cerr << "polyglot: cannot write '" << mapPath.string() << "'\n";
+        return false;
+    }
+    std::cout << "  -> " << mapPath.string() << "\n";
+    return true;
+}
+
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& fallbackDir,
              const BackendHandle& target, const char* ext, ModuleResolver* resolver, const LibConfig& lib,
              const PgConfig& pc, bool flagRouted,
              std::map<std::string, std::string>* seen = nullptr) {
     EmitResult result = compile(source, target, resolver,
-                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir));
+                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir),
+                                fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
     if (!result.ok) {
         reportDiagnostics(input, result);
         return false;
@@ -235,10 +304,32 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
         std::cerr << "polyglot: " << rerr << "\n";
         return false;
     }
-    if (!writeDedup(outs[0], result.code, seen)) return false;
+    // P38/issue #69: a `sourceMapV3` target gets a sidecar beside each emitted file, plus a footer line
+    // pointing at it. This happens HERE, not in the Core, because only the host knows where a file was
+    // routed — and `sources` must be relative to the MAP, which the consumer's include rules can put in a
+    // completely different tree from the `.pg` (that is exactly the MintPlayer.AI layout).
+    const OriginMapping& om = target.backend()->originMapping();
+    auto writeOne = [&](const fs::path& out, std::string code, const std::vector<OriginRecord>& origins) {
+        if (lib.originInfo && om.emitsSourceMap() && !origins.empty()) {
+            const fs::path mapPath = out.string() + om.sidecarExtension;
+            if (!om.footer.empty()) {
+                std::string footer = om.footer;
+                const std::string mapName = mapPath.filename().string();
+                for (std::size_t at = 0; (at = footer.find("$f", at)) != std::string::npos; at += mapName.size())
+                    footer.replace(at, 2, mapName);
+                if (!code.empty() && code.back() != '\n') code += '\n';
+                code += footer;
+                code += '\n';
+            }
+            if (!writeDedup(out, code, seen, lib.originInfo)) return false;
+            return writeSourceMap(mapPath, out, origins, result.sources);
+        }
+        return writeDedup(out, std::move(code), seen, lib.originInfo);
+    };
+    if (!writeOne(outs[0], result.code, result.origins)) return false;
     // §4.5 module linking: a multi-module program emits one file per imported user module alongside the entry.
     for (std::size_t i = 0; i < result.modules.size(); ++i)
-        if (!writeDedup(outs[i + 1], result.modules[i].code, seen)) return false;
+        if (!writeOne(outs[i + 1], result.modules[i].code, result.modules[i].origins)) return false;
     return true;
 }
 
@@ -291,7 +382,7 @@ struct WatchCycle {
 
 WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, const fs::path& rootArg,
                           const std::string& targetArg, const std::string& libArgIn, bool checkOnly,
-                          bool flagRouted) {
+                          bool flagRouted, bool originInfo) {
     WatchCycle c;
     const fs::path absInput = fs::absolute(input).lexically_normal();
     c.watched.push_back(absInput);
@@ -302,8 +393,16 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         std::cout << line << "\n";
         if (sev == Severity::Error) ++c.errors;
     };
-    auto emitDiagAt = [&](const Diagnostic& d) {
-        emitDiag(absInput.string() + "(" + std::to_string(d.pos.line) + "," + std::to_string(d.pos.col) +
+    // P38/issue #69: `sources` (when the caller has one) names the module a diagnostic actually came from;
+    // without it — or for the entry / an unstamped position — the watched input's path is used, so the
+    // frozen watch console protocol is byte-identical for single-file programs.
+    auto emitDiagAt = [&](const Diagnostic& d, const SourceMap* sources = nullptr) {
+        std::string file = absInput.string();
+        if (sources && d.pos.fileId > 1) {
+            const std::string& canon = sources->canon(d.pos.fileId);
+            if (!canon.empty()) file = canon;
+        }
+        emitDiag(file + "(" + std::to_string(d.pos.line) + "," + std::to_string(d.pos.col) +
                      "): " + severityName(d.severity) + ": " + d.message,
                  d.severity);
     };
@@ -345,6 +444,9 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
+    // P38/issue #69: watch mode builds its own LibConfig, so an option threaded only through buildGroup
+    // would silently not apply here. (`access` is exactly that pre-existing gap — don't widen it.)
+    lib.originInfo = originInfo || pc.originInfo;
 
     resolveConfiguredTargets(pc); // safe per-cycle: already-registered names are skipped
 
@@ -372,9 +474,10 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
             continue;
         }
         EmitResult result = compile(source, h, &resolver,
-                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg));
+                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg),
+                                    absInput.string()); // P38: already canonical-ish (absolute+normalized)
         if (!result.ok) {
-            for (const auto& d : result.diagnostics) emitDiagAt(d);
+            for (const auto& d : result.diagnostics) emitDiagAt(d, &result.sources);
             if (result.diagnostics.empty()) emitTopLevel("compilation failed for target '" + t + "'");
             continue; // last-good outputs stay in place
         }
@@ -411,7 +514,8 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 }
 
 int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root,
-             const std::string& target, const std::string& libArg, bool checkOnly, bool flagRouted) {
+             const std::string& target, const std::string& libArg, bool checkOnly, bool flagRouted,
+             bool originInfo = false) {
     cli::PollingFileWatcher watcher;
 #ifdef _WIN32
     g_watchStopTarget = &watcher;
@@ -421,7 +525,7 @@ int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root
     const char* verb = "building";
     for (;;) {
         std::cout << clockStamp() << " polyglot watch: " << verb << " " << absInput.string() << "\n";
-        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted);
+        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted, originInfo);
         std::cout << clockStamp() << " polyglot watch: " << c.errors
                   << " error(s) - watching for changes\n";
         std::cout.flush();
@@ -475,7 +579,7 @@ std::vector<fs::path> discoverIncludeInputs(const PgConfig& pc) {
 // with outputs routed through the group's `include` rules.
 int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::string& target,
                const fs::path& outDir, bool outDirGiven, fs::path root, std::string libArg,
-               const std::string& accessArg) {
+               const std::string& accessArg, bool originInfoFlag) {
     for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
     if (!pc.errors.empty()) return 64;
 
@@ -493,6 +597,9 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
         std::cerr << "polyglot: --access must be 'public' or 'internal' (got '" << lib.access << "')\n";
         return 64;
     }
+    // P38/issue #69: --origin-info wins over the pgconfig key (the --access precedent).
+    lib.originInfo = originInfoFlag || pc.originInfo;
+    const char* originSource = originInfoFlag ? "--origin-info" : "pgconfig.json \"originInfo\"";
 
     resolveConfiguredTargets(pc); // pgconfig `dependencies` + lock-first cache + registry (P30)
 
@@ -513,6 +620,30 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
         BackendHandle h = findTarget(target); // in-box, file:, or P30-resolved — never a bare-name probe
         if (!h.ok()) { std::cerr << "polyglot: " << h.error() << "\n"; return 64; }
         targets.emplace_back(h, h.backend()->fileExtension());
+    }
+
+    // P38/issue #69: origin info was requested — refuse only if NOTHING in this group's target set can
+    // honour it. A target that declares no `originMapping` emits correct, merely unannotated output, so
+    // refusing a mixed set would break the ordinary C#+TS build this feature exists for; but a request that
+    // NO target can satisfy is a mistake, and silence would leave the user staring at a coverage number
+    // that never moved. The check is per GROUP, because target selection is per nearest pgconfig.json.
+    if (lib.originInfo) {
+        std::vector<std::string> supporting, unsupported;
+        for (const auto& t : targets)
+            (t.first.backend()->originMapping().recordsOrigins() ? supporting : unsupported)
+                .push_back(t.first.backend()->name());
+        if (supporting.empty()) {
+            std::cerr << "polyglot: " << originSource << " asks for source-origin info, but no target in "
+                      << (pc.found ? "'" + (pc.dir / "pgconfig.json").string() + "'" : std::string("this build"))
+                      << " records origins (targets: " << joinNames(unsupported)
+                      << "). A target declares `originMapping` in its plugin manifest; csharp emits #line "
+                         "directives and typescript emits a v3 source map.\n";
+            return 64;
+        }
+        if (!unsupported.empty())
+            std::cout << "polyglot: origin info emitted for " << joinNames(supporting)
+                      << "; not recorded for " << joinNames(unsupported)
+                      << " (no `originMapping` in their plugin manifests)\n";
     }
 
     const bool flagRouted = !target.empty() && outDirGiven; // D7: explicit --target+--out bypasses rules
@@ -569,6 +700,7 @@ int runBuild(const std::vector<std::string>& args) {
     std::string target; // empty => the pgconfig `targets` set
     std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
     std::string accessArg; // --access public|internal (C# emitted-type accessibility)
+    bool originInfo = false; // --origin-info (P38/issue #69: emit origin info)
     bool watch = false;
 
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -583,6 +715,12 @@ int runBuild(const std::vector<std::string>& args) {
             libArg = args[++i];
         } else if (a == "--access" && i + 1 < args.size()) {
             accessArg = args[++i];
+        } else if (a == "--origin-info") {
+            // P38/issue #69: emit origin info so generated code attributes back to the `.pg`. Named for the
+            // BEHAVIOUR, not for one target's spelling of it — C# answers with `#line` pragmas and
+            // TypeScript with a v3 source map, each declared in its own plugin manifest (`originMapping`).
+            // It matches `LibConfig::originInfo` and the manifest key, so the whole chain reads the same.
+            originInfo = true;
         } else if (a == "--watch") {
             watch = true;
         } else if (!a.empty() && a[0] == '-') {
@@ -613,7 +751,7 @@ int runBuild(const std::vector<std::string>& args) {
     if (watch) {
         if (inputs.size() > 1) { std::cerr << "polyglot: --watch takes a single input file\n"; return 64; }
         return runWatch(firstInput, outDir, root, target, libArg, /*checkOnly=*/false,
-                        !target.empty() && outDirGiven);
+                        !target.empty() && outDirGiven, originInfo);
     }
 
     std::cout << "polyglot build";
@@ -636,7 +774,7 @@ int runBuild(const std::vector<std::string>& args) {
     int worst = 0;
     for (auto& [key, group] : groups) {
         const int rc = buildGroup(group.first, group.second, target, outDir, outDirGiven, root, libArg,
-                                  accessArg);
+                                  accessArg, originInfo);
         if (rc > worst) worst = rc;
     }
     return worst;
@@ -670,14 +808,22 @@ std::string jsonEscape(const std::string& s) {
 // Serialize diagnostics as a JSON array of {line,col,endLine,endCol,severity,message}. Shared by
 // `check --json` and the LSP `polyglot/emit` preview response (whole-file list, no identifier-widening —
 // that widening is a squiggle-only concern of publishDiagnostics).
-std::string diagnosticsToJson(const std::vector<Diagnostic>& diags) {
+// P38/issue #69: `sources` (when given) names the file a diagnostic came from. A `"file"` member is added
+// ONLY for a position that resolves to a non-entry module, so every row a single-file program produces is
+// byte-identical to before and the field's presence means "this is not the file you asked about".
+std::string diagnosticsToJson(const std::vector<Diagnostic>& diags, const SourceMap* sources = nullptr) {
     std::string out = "[";
     for (std::size_t i = 0; i < diags.size(); ++i) {
         const auto& d = diags[i];
         if (i) out += ",";
         out += "{\"line\":" + std::to_string(d.pos.line) + ",\"col\":" + std::to_string(d.pos.col) +
                ",\"endLine\":" + std::to_string(d.end.line) + ",\"endCol\":" + std::to_string(d.end.col) +
-               ",\"severity\":\"" + severityName(d.severity) + "\",\"message\":\"" + jsonEscape(d.message) + "\"}";
+               ",\"severity\":\"" + severityName(d.severity) + "\",\"message\":\"" + jsonEscape(d.message) + "\"";
+        if (sources && d.pos.fileId > 1) {
+            const std::string& canon = sources->canon(d.pos.fileId);
+            if (!canon.empty()) out += ",\"file\":\"" + jsonEscape(canon) + "\"";
+        }
+        out += "}";
     }
     out += "]";
     return out;
@@ -732,10 +878,11 @@ int runCheck(const std::vector<std::string>& args) {
         std::cerr << "polyglot: no full-coverage reference target is loaded (no plugins found?)\n";
         return 69;
     }
-    EmitResult result = compile(source, findTarget(ref->name()), &resolver, lib);
+    EmitResult result = compile(source, findTarget(ref->name()), &resolver, lib,
+                                fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
 
     if (json) {
-        std::cout << diagnosticsToJson(result.diagnostics) << "\n";
+        std::cout << diagnosticsToJson(result.diagnostics, &result.sources) << "\n";
     } else {
         reportDiagnostics(input, result);
         if (result.ok) std::cout << "polyglot: no problems in " << input.string() << "\n";
@@ -1040,10 +1187,11 @@ struct LspServer {
         DocContext ctx = contextFor(uri);
         FileModuleResolver disk(ctx.root, ctx.entryDir);
         BufferResolver resolver(disk, text_); // preview reflects unsaved edits in open imported modules
-        EmitResult r = compile(text_[uri], tgt, &resolver, parseLibList(ctx.libStr));
+        EmitResult r = compile(text_[uri], tgt, &resolver, parseLibList(ctx.libStr),
+                               uriToPath(uri)); // P38: the open document is the entry (fileId 1)
         return "{\"target\":" + json::quote(targetName) + ",\"code\":" + json::quote(r.code) +
                ",\"ok\":" + (r.ok ? "true" : "false") +
-               ",\"diagnostics\":" + diagnosticsToJson(r.diagnostics) + "}";
+               ",\"diagnostics\":" + diagnosticsToJson(r.diagnostics, &r.sources) + "}";
     }
 
     void publishDiagnostics(const std::string& uri, const std::vector<Diagnostic>& diags) {

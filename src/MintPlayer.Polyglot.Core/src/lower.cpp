@@ -328,6 +328,7 @@ public:
         for (const auto& ext : unit.extensions) {
             if (!ext.bindings.empty()) continue; // a bound extension isn't emitted — it's a call-site template
             ir::Function f;
+            f.pos = ext.pos; // P38: ExtensionDecl has no namePos (ast.hpp) — the decl start is the anchor
             f.name = ext.name;
             f.isExtension = true;
             f.generics = generics(ext.generics);
@@ -345,6 +346,7 @@ public:
         for (const auto& fn : unit.functions) {
             if (fn.isExpect) continue; // capability signature only — the `actual`s carry the implementation
             ir::Function f;
+            f.pos = fn.namePos.fileId != 0 ? fn.namePos : fn.pos; // P38: the function-entry anchor
             f.name = fn.name;
             f.mangledName = fn.mangledName.empty() ? fn.name : fn.mangledName;
             f.actualTarget = fn.actualTarget;
@@ -617,6 +619,10 @@ private:
 
     ir::Method method(const Member& m) {
         ir::Method im;
+        // P38/issue #69: the declaration's own origin, for the method-entry sequence point. Prefer the name
+        // token; fall back to the member's start. A synthesized member (std overlay/skeleton) is unstamped
+        // (fileId 0), which the emitter reads as "no known origin" and renders as a hidden directive.
+        im.pos = m.namePos.fileId != 0 ? m.namePos : m.pos;
         im.name = m.name;
         im.attrLines = renderAttrLines(m.attributes);
         im.isAsync = m.isAsync;

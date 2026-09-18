@@ -11,6 +11,10 @@
          .targets file — the SDK hasn't defined NETCoreSdkPortableRuntimeIdentifier yet at props time. -->
     <PolyglotLib Condition="'$(PolyglotLib)' == ''"></PolyglotLib>
     <PolyglotRoot Condition="'$(PolyglotRoot)' == ''">$(MSBuildProjectDirectory)</PolyglotRoot>
+    <!-- P38 / issue #69: opt in to source-origin info so a coverage run over the generated C# attributes
+         hits back to the .pg (path AND line numbers) instead of reporting nothing for code in obj/.
+         Off by default — the generated code is byte-identical without it. -->
+    <PolyglotOriginInfo Condition="'$(PolyglotOriginInfo)' == ''">false</PolyglotOriginInfo>
   </PropertyGroup>
 
   <ItemGroup>

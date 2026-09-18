@@ -1,6 +1,12 @@
 {
   "schema": 1,
   "name": "csharp",
+  "originMapping": {
+    "style": "directive",
+    "line": "#line $n \"$f\"",
+    "hidden": "#line hidden",
+    "column": 0
+  },
   "capabilities": {},
   "spec": {
     "name": "csharp",

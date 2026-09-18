@@ -21,6 +21,45 @@ enum class BlockStyle {
     ColonIndent,  // `head:` … (indent only, no closer)  (Python)
 };
 
+// P38/issue #69 — how a target records the origin of each emitted line, as DATA (top-level plugin manifest
+// key `originMapping`; it lives in this header, rather than backend.hpp, because the emit engine needs it
+// and this header is the dependency-free home of per-target emission data).
+//
+// Two sinks exist because the two ecosystems disagree about where origin info lives: C# writes `#line`
+// pragmas INTO the source (Roslyn records them as PDB sequence points, so .NET coverage tools report
+// against the `.pg` with no post-processing at all), while TypeScript writes a Source Map v3 BESIDE it.
+//
+// `Style` is a closed, load-validated vocabulary — an unknown value is a plugin LOAD ERROR, never a silent
+// default (the `blockStyle` precedent directly above). That is what keeps version skew loud: a manifest
+// asking for a style an older CLI does not implement refuses instead of quietly emitting nothing.
+//
+// A target that declares nothing gets `Style::None` and emits byte-for-byte as it always has.
+struct OriginMapping {
+    enum class Style {
+        None,        // no origin info (the default; Python and PHP today)
+        Directive,   // an in-source pragma per emitted line (C# `#line`)
+        SourceMapV3, // a sidecar .map file beside the emitted source (TypeScript)
+    };
+    Style style = Style::None;
+    // Directive: the per-line templates. `$n` = the 1-based source line, `$f` = the source path.
+    std::string line;             // e.g. `#line $n "$f"`
+    std::string hidden;           // e.g. `#line hidden` — emitted for a line with no known origin
+    // Directive: the column the pragma is written at. C# `#line` is conventionally at column 0, which is
+    // NOT the emitter's current indent — so this is data, not a hardcoded choice.
+    int column = 0;
+    // SourceMapV3: the suffix APPENDED to the emitted file's name to name its sidecar — ".map" turns
+    // `solver.ts` into `solver.ts.map`, which is the convention TS tooling looks for — and the footer that
+    // points the emitted file at it (`$f` = the sidecar's file name).
+    std::string sidecarExtension;
+    std::string footer;
+
+    bool emitsDirectives() const { return style == Style::Directive && !line.empty(); }
+    bool emitsSourceMap() const { return style == Style::SourceMapV3; }
+    // Does this target want per-line origins recorded at all? Both sinks are fed by the same hook in
+    // EmitterBase::line(); only where the result GOES differs.
+    bool recordsOrigins() const { return style != Style::None; }
+};
+
 struct BackendSpec {
     std::string name; // "csharp" / "typescript" / "python"
 

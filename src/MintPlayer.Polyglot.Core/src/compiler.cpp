@@ -626,7 +626,8 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
     return out;
 }
 
-EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib) {
+EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib,
+                   const std::string& entryPath) {
     EmitResult result;
     DiagnosticBag diags;
 
@@ -636,14 +637,21 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         return result;
     }
 
-    std::vector<Token> tokens = lex(source, diags);
+    // P38/issue #69: stamp real fileIds on the BUILD path too. Before this, compile() lexed with no fileId
+    // and handed runFrontEnd a null SourceMap, so every token of every module in the closure was fileId 0 —
+    // origin info was unavailable to the emitter, and every diagnostic was misattributed to the entry file.
+    // The entry keeps id 1 (analyze() establishes that invariant and the LSP's `fileId != 1` filter relies
+    // on it). The path is stored verbatim; canonicalization is the caller's job (the Core does no IO).
+    const int entryFileId = result.sources.add(entryPath.empty() ? "<entry>" : entryPath);
+
+    std::vector<Token> tokens = lex(source, diags, entryFileId);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     CompilationUnit unit = parse(tokens, diags);
     if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     ImportGraph importGraph; // §4.5: user cross-module import edges, keyed by importer ("" = entry)
-    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, nullptr, &importGraph)) { result.diagnostics = diags.items(); return result; }
+    if (!runFrontEnd(unit, resolver, lib, diags, nullptr, nullptr, &result.sources, &importGraph)) { result.diagnostics = diags.items(); return result; }
 
     injectStdOverlays(unit, *target.backend()); // the plugin's std arms land on the skeletons (P19 s9b)
 
@@ -675,7 +683,17 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     if (userOrigins.empty() && !splitPrelude) { // single-file: unchanged (byte-identical)
         ir::Module module = lower(unit, target.name());
         module.access = lib.access; // C# accessibility knob (empty = target default -> byte-identical)
-        result.code = target.backend()->emit(module);
+        module.originInfo = lib.originInfo;      // P38: off => byte-identical
+        module.sourceFiles = result.sources.files;
+        if (lib.originInfo) {
+            // P38: collect per-line origins alongside the code. The host turns them into a sidecar — the
+            // Core never learns where a file is routed, so it cannot compute map-relative paths itself.
+            std::vector<std::array<int, 3>> origins;
+            result.code = target.backend()->emitWithOrigins(module, origins);
+            for (const auto& o : origins) result.origins.push_back(OriginRecord{o[0], o[1], o[2]});
+        } else {
+            result.code = target.backend()->emit(module);
+        }
         result.ok = true;
         return result;
     }
@@ -703,6 +721,9 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
 
     const bool preludeEverywhere = target.name() != "csharp"; // C#: prelude in the entry (or its own file when split)
     // Emit one file: re-lower the unit, keep only `keep`-origin decls, set link/access, resolve imports.
+    // P38: the origin list produced by the most recent emitKeep() call, stashed onto the matching output
+    // below. Each emitted file has its own line numbering, so origins cannot be accumulated across them.
+    std::vector<OriginRecord> lastOrigins;
     auto emitKeep = [&](const std::set<std::string>& keep, const std::string& importOrigin) -> std::string {
         ir::Module m = lower(unit, target.name());
         auto prune = [&](auto& vec) {
@@ -714,10 +735,19 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         m.linked = true;
         m.access = lib.access;
+        m.originInfo = lib.originInfo;      // P38: off => byte-identical
+        m.sourceFiles = result.sources.files;
         m.imports = buildImports(importGraph, importOrigin, baseByCanon,
                                  target.backend()->linksWithoutImports(),
                                  target.backend()->crossDirImports(), lib.moduleOutputDir);
-        return target.backend()->emit(m);
+        if (!lib.originInfo) return target.backend()->emit(m);
+        // P38: same as the single-file path, but each emitted FILE gets its own origin list — the caller
+        // below stashes it on the matching ModuleFile.
+        std::vector<std::array<int, 3>> origins;
+        std::string code = target.backend()->emitWithOrigins(m, origins);
+        lastOrigins.clear();
+        for (const auto& o : origins) lastOrigins.push_back(OriginRecord{o[0], o[1], o[2]});
+        return code;
     };
     auto emitFile = [&](const std::string& fileOrigin) -> std::string {
         std::set<std::string> keep{fileOrigin};
@@ -728,10 +758,17 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     };
 
     result.code = emitFile(""); // the entry file (the CLI names it after the input)
-    for (const auto& canon : userOrigins)
-        result.modules.push_back({baseByCanon[canon], emitFile(canon), canon});
-    if (splitPrelude) // the shared runtime prelude, emitted once (identical across roots -> CLI writeDedup collapses it)
-        result.modules.push_back({kPreludeBasename, emitKeep({kPreludeOrigin}, kPreludeBasename), ""});
+    result.origins = lastOrigins; // P38
+    for (const auto& canon : userOrigins) {
+        std::string code = emitFile(canon);
+        result.modules.push_back({baseByCanon[canon], std::move(code), canon, lastOrigins});
+    }
+    if (splitPrelude) { // the shared runtime prelude, emitted once (identical across roots -> CLI writeDedup collapses it)
+        std::string code = emitKeep({kPreludeOrigin}, kPreludeBasename);
+        // The prelude is synthesized runtime text with no `.pg` origin — its lines are hidden, so it stays
+        // root-independent and writeDedup keeps collapsing it (PRD §4.F / SP2).
+        result.modules.push_back({kPreludeBasename, std::move(code), "", {}});
+    }
     result.ok = true;
     return result;
 }

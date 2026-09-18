@@ -93,6 +93,12 @@ public:
     virtual std::unique_ptr<IrDeclCtx> memberCtx(const std::string& /*path*/, std::size_t /*index*/) const {
         return nullptr;
     }
+    // P38/issue #69: where this declaration was written in the `.pg`, for origin emission. Default =
+    // unstamped (fileId 0) = "no known origin", which renders as a hidden directive. Only declarations
+    // whose emitted code can actually EXECUTE need to answer — a method (its body's opening brace is where
+    // Roslyn hangs the method-entry sequence point) and a field/global with an initializer (which is IL in
+    // the constructor). A bare signature or type header emits no IL, so a position there would buy nothing.
+    virtual SourcePos declPos() const { return {}; }
 };
 
 class DeclHooks;
@@ -187,6 +193,7 @@ public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
     MethodDeclCtx(const ir::Method& m, std::string owner, const DeclHooks& hooks, EmitFn emit)
         : m_(m), owner_(std::move(owner)), hooks_(hooks), emit_(std::move(emit)) {}
+    SourcePos declPos() const override { return m_.pos; } // P38: the method-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
     std::string renderType(const std::string& path) const override;
@@ -260,6 +267,7 @@ public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
     FnDeclCtx(const ir::Function& f, const DeclHooks& hooks, EmitFn emit)
         : f_(f), hooks_(hooks), emit_(std::move(emit)) {}
+    SourcePos declPos() const override { return f_.pos; } // P38: the function-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
     std::string renderType(const std::string& path) const override;
@@ -351,7 +359,65 @@ protected:
     int indent_ = 0;
     int doWhileSeq_ = 0; // fresh-name counter for the Python do-while emulation flag (#39a)
 
+    // ---- P38/issue #69: origin tracking -------------------------------------------------------------
+    // Off unless the build asked for it AND the target's manifest declares an `originMapping`; when off,
+    // every field here is inert and `line()` is byte-for-byte what it always was.
+    //
+    // The rule is that EVERY emitted line carries an origin: a positioned directive where the origin is
+    // known, a hidden one everywhere else (braces, scaffolding, blank separators, std helpers). Emitting
+    // one only when the source line CHANGES is not merely imprecise — the following lines then drift onto
+    // unrelated `.pg` lines and get reported as covered, silently inflating the number.
+    const OriginMapping* origin_ = nullptr;      // the target's declared mapping (null = record nothing)
+    const std::vector<std::string>* sourceFiles_ = nullptr; // fileId -> path (index 0 = unknown)
+    SourcePos curPos_{};        // origin of the construct currently being emitted
+    bool posValid_ = false;     // false => this line has no known origin => hidden
+    // Set while composing text that is NOT a fresh output line. `inlineBlock` flattens a statement body's
+    // newlines into spaces inside a scratch buffer, so a directive emitted there would be spliced INTO a
+    // line rather than between two, breaking compilation. Suppression is mandatory, not cosmetic.
+    bool suppressDirectives_ = false;
+    // (outputLine, pos) for every emitted line whose origin is known — the source-map sink's raw material.
+    // Recorded for any style; only the sidecar writer consumes it. The line numbers are PHYSICAL lines of
+    // the emitted file: directive lines are counted too (see emitOriginDirective), so the records stay
+    // accurate even for a target that emitted directives above them.
+    std::vector<std::pair<int, SourcePos>> originRecords_;
+    int outLine_ = 0;           // count of physical lines appended to out_, directives included
+
+    bool recordingOrigins() const { return origin_ != nullptr && !suppressDirectives_; }
+    // Resolve a position to an on-disk path, or "" when it has none — an unstamped position (fileId 0) or
+    // a logical module name like "std.io", which names a real `.pg` the consumer does not have on disk.
+    // Both mean "no resolvable origin", which is exactly the hidden case.
+    std::string originPathFor(const SourcePos& p) const;
+    // Write one origin directive for the line that is about to be emitted (directive styles only).
+    void emitOriginDirective();
+    // RAII: emit `s` as scaffolding with no origin of its own.
+    struct HiddenScope {
+        EmitterBase& e;
+        bool saved;
+        explicit HiddenScope(EmitterBase& em) : e(em), saved(em.posValid_) { e.posValid_ = false; }
+        ~HiddenScope() { e.posValid_ = saved; }
+    };
+    // RAII: the position every line emitted in this scope belongs to.
+    struct OriginScope {
+        EmitterBase& e;
+        SourcePos savedPos;
+        bool savedValid;
+        OriginScope(EmitterBase& em, const SourcePos& p)
+            : e(em), savedPos(em.curPos_), savedValid(em.posValid_) {
+            e.curPos_ = p;
+            e.posValid_ = p.fileId > 0;
+        }
+        ~OriginScope() { e.curPos_ = savedPos; e.posValid_ = savedValid; }
+    };
+
     void line(const std::string& s);
+    // One physical output line: its origin directive (when recording) then the text. `applyIndent` is
+    // false for the continuations of a split multi-line string, which carried no indentation before.
+    void emitLineWithOrigin(const std::string& s, bool applyIndent);
+    // Emit `s` with NO origin (scaffolding): braces, declaration headers, blank separators, prelude text.
+    void lineHidden(const std::string& s) { HiddenScope h(*this); line(s); }
+    // Wrap verbatim text that never passes through line() (a prelude, prepended after the walk) so each of
+    // its lines still carries a hidden directive.
+    std::string hideRawBlock(const std::string& text) const;
 
     // Emit a block body: the statements, indented one level, with no braces of their own.
     void blockBody(const std::vector<ir::StmtPtr>& body);
@@ -435,9 +501,15 @@ public:
 class InterpretedEmitter : public EmitterBase {
 public:
     using SpecFn = DeclHooks::SpecFn;
-    InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules);
+    // `originMapping` (P38/issue #69) is the target's declared origin story, or nullptr for a target that
+    // declares none — which is also what every caller predating P38 passes, and emits byte-for-byte as before.
+    InterpretedEmitter(SpecFn spec, const engine::RuleTable& rules, const OriginMapping* originMapping = nullptr);
 
     std::string emit(const ir::Module& m);
+
+    // The (outputLine, sourcePos) pairs recorded during the last emit() — the source-map sink's input.
+    // Empty unless the build asked for origins and this target declared a mapping.
+    const std::vector<std::pair<int, SourcePos>>& originRecords() const { return originRecords_; }
 
     // The target's type spelling: the "Type" rule evaluated against a type context whose extern-template
     // pick and recursion route back here.
@@ -461,6 +533,7 @@ private:
 
     SpecFn specFn_;
     const engine::RuleTable& rules_;
+    const OriginMapping* originMapping_ = nullptr; // P38: this target's declared origin story (data, not code)
     Hooks hooks_;
     std::unordered_map<std::string, const ir::ExternType*> externMap_; // the module's extern-class spellings
     int tmp_ = 0;                              // the `fresh` single-eval temp counter
