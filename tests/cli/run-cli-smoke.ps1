@@ -114,7 +114,7 @@ try {
     # gate leg that turns it ON nothing would ever observe it running and the next refactor of the
     # emitter's line() chokepoint would break it silently.
     & {
-        $ld = Join-Path $work "linedirectives"
+        $ld = Join-Path $work "origininfo"
         New-Item -ItemType Directory -Force $ld | Out-Null
         $src = Join-Path $ld "origin.pg"
         # Deliberately covers the emitter's IRREGULAR paths, not a representative sample: a block lambda

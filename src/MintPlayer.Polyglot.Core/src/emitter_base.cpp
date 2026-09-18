@@ -1699,12 +1699,20 @@ void EmitterBase::line(const std::string& s) {
     // the `using` lines this way, and an `extern`/FFI template may contain a decoded \n). Split it so the
     // one-directive-per-line invariant holds, instead of letting one directive cover N lines.
     //
-    // The split is BYTE-PRESERVING: only the first piece takes the `indent_` prefix, exactly as the
-    // unsplit append did — the embedded newlines were never followed by indentation. Re-indenting the
-    // continuations would be harmless on C# and TS (whitespace-insensitive) and would happen to be
-    // unreachable on Python (no `originMapping`, so it never takes this path), but relying on that
-    // coincidence would make "strip the directives and you get the flag-off output" true by luck rather
-    // than by construction — and that equivalence is the feature's main correctness test.
+    // The split is BYTE-PRESERVING, in two respects, because "strip the directives and you get the
+    // flag-off output" is this feature's main correctness test and should hold by construction rather
+    // than by luck:
+    //
+    //   * Only the FIRST piece takes the `indent_` prefix, exactly as the unsplit append did — the
+    //     embedded newlines were never followed by indentation.
+    //   * A TRAILING newline in `s` yields a final EMPTY piece, which must still be emitted. `line(s)`
+    //     means "append s, then end the line", so a trailing `\n` is a blank line the caller asked for:
+    //     `"a\n"` has to produce `a` + a blank line, not just `a`. An earlier version broke out of the
+    //     loop when the last newline landed at the end of the string, silently dropping that blank line.
+    //
+    // The loop is only entered when `s` CONTAINS a newline, so the no-newline case (`"a"`) never reaches
+    // it — which is why the tail piece needs no special-casing: `while (start <= s.size())` runs once more
+    // after the final `\n` and emits the empty remainder.
     if (recordingOrigins() && s.find('\n') != std::string::npos) {
         std::size_t start = 0;
         bool first = true;
@@ -1715,7 +1723,6 @@ void EmitterBase::line(const std::string& s) {
             first = false;
             if (nl == std::string::npos) break;
             start = nl + 1;
-            if (start == s.size()) break; // a trailing newline already ended the last line
         }
         return;
     }
