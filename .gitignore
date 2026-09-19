@@ -39,8 +39,13 @@ node_modules/
 
 # Generated coverage reports (docs/prd/code-coverage-upload): produced by the CI coverage job
 # and scripts/coverage.ps1, uploaded to coverage.mintplayer.com — never committed.
-coverage/
-coverage-report/
+#
+# ROOT-ANCHORED deliberately. Both producers write the repo-root `coverage/`, but an unanchored
+# `coverage/` also matches any nested directory of that name — which silently swallowed the whole of
+# `tests/coverage/` (the P39 attribution gate leg and its committed fixtures), so the leg existed on disk,
+# passed locally, and would not have existed in CI at all.
+/coverage/
+/coverage-report/
 
 # OpenCppCoverage drops this in the working directory on every local run.
 LastCoverageResults.log
