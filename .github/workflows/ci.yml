@@ -141,6 +141,49 @@ jobs:
               check "$p" --lib io >/dev/null 2>&1 || true
           done
 
+      # Same reason as the multi-module sweep above: `coverage remap` is a whole subcommand plus four
+      # report readers and writers that `build` never reaches, so without this sweep it reads as dead
+      # code and dishonestly depresses the baseline. It is exercised for correctness by
+      # tests/coverage/run-coverage.ps1; this step exists only to EXECUTE it under instrumentation.
+      # Both origin styles, every input format, and the error paths that refuse.
+      - name: Coverage-attribution sweep (both origin sinks, every format)
+        run: |
+          w=/tmp/cov-attr && mkdir -p "$w"
+          for t in python csharp; do
+            ./build-cov/polyglot build docs/lang/samples/03_enums_unions_match.pg \
+              --target "$t" --out "$w/$t" --origin-info >/dev/null 2>&1 || true
+          done
+          # sourceMapV3: project the committed real coverage.py reports, every output format.
+          for f in cobertura lcov istanbul clover; do
+            for r in py.cobertura.xml py.lcov; do
+              ./build-cov/polyglot coverage remap "tests/coverage/fixtures/reports/$r" \
+                --target python --generated-dir tests/coverage/fixtures/generated --root . \
+                --out-format "$f" --out "$w/out-$r-$f" >/dev/null 2>&1 || true
+            done
+          done
+          ./build-cov/polyglot coverage remap tests/coverage/fixtures/reports/py.lcov \
+            --target python --generated-dir tests/coverage/fixtures/generated --root . \
+            --branch-arms --out "$w/arms.lcov" >/dev/null 2>&1 || true
+          # directive: a .pg-keyed report passing through, and one that is not (the refusal path).
+          printf '<coverage><packages><package><classes><class name="m" filename="%s"><lines><line number="1" hits="4"/></lines></class></classes></package></packages></coverage>' \
+            "docs/lang/samples/03_enums_unions_match.pg" > "$w/cs.xml"
+          ./build-cov/polyglot coverage remap "$w/cs.xml" --target csharp \
+            --generated-dir "$w/csharp" --root . --out "$w/cs.pg.xml" >/dev/null 2>&1 || true
+          # Refusals: unknown format, unparseable report, no origin data, a target with no sink.
+          mkdir -p "$w/empty"
+          echo 'not a coverage report' > "$w/junk.txt"
+          ./build-cov/polyglot coverage remap "$w/junk.txt" --target python \
+            --generated-dir tests/coverage/fixtures/generated --root . --out "$w/x" >/dev/null 2>&1 || true
+          ./build-cov/polyglot coverage remap tests/coverage/fixtures/reports/py.lcov --target python \
+            --format cobertura --generated-dir tests/coverage/fixtures/generated --root . \
+            --out "$w/x" >/dev/null 2>&1 || true
+          ./build-cov/polyglot coverage remap tests/coverage/fixtures/reports/py.lcov --target python \
+            --generated-dir "$w/empty" --root . --out "$w/x" >/dev/null 2>&1 || true
+          ./build-cov/polyglot coverage remap tests/coverage/fixtures/reports/py.lcov \
+            --target nosuchtarget --root . --out "$w/x" >/dev/null 2>&1 || true
+          ./build-cov/polyglot coverage >/dev/null 2>&1 || true
+          ./build-cov/polyglot coverage --help >/dev/null 2>&1 || true
+
       - name: Coverage report (gcovr)
         run: |
           mkdir -p coverage-report coverage/cpp
