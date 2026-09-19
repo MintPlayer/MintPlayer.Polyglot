@@ -428,6 +428,14 @@ All `std` C++, no new third-party dependency, but all of it in CMake/`.vcxproj` 
 five RIDs. **The XML round-trip is the single hardest part** and the one that threatens A7 (§9) — without
 a real DOM, retaining unknown attributes verbatim takes deliberate design rather than falling out for free.
 
+> **Actual, measured after the fact: ~1,480 lines**, against the ~490 estimated above — **3×**. The
+> estimate was not wrong for what it scoped; it scoped only three items. What it left out is most of the
+> work: the istanbul and clover readers/writers (added later, §3), the projector and its merge rules, and
+> the whole CLI layer — argument handling, origin discovery from sidecars *and* from a `#line` scan, and
+> path re-rooting. A7's withdrawal (D4) pulled in the other direction and removed the DOM problem
+> entirely. Recorded because D2 was argued partly on this cost, and a decision defended by an estimate
+> should carry the number it actually came to.
+
 *(A script in `scripts/` was considered and rejected on reach too: `MintPlayer.Polyglot.MSBuild.csproj`
 packs only `build\**`, so it never arrives at a consumer. `scripts/arm-trace-to-lcov.ps1` remains the
 in-repo precedent for *format conversion as a separate step* — that shape is preserved; only its host
