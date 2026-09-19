@@ -116,6 +116,14 @@
       "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
+    "coverage": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 coverage", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/coverage/**/*", "{workspaceRoot}/docs/lang/samples/03_enums_unions_match.pg", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
     "nuget": {
       "executor": "nx:run-commands",
       "cache": false,

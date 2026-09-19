@@ -167,9 +167,15 @@ try {
                 "P38: no directive is spliced mid-line (inlineBlock stays suppressed)"
         }
 
-        # A target that declares no originMapping cannot honour the flag; asking ONLY such targets refuses.
-        & $Cli build $src --target python --lib io --origin-info --out (Join-Path $ld "py") 2>&1 | Out-Null
-        Check ($LASTEXITCODE -eq 64) "P38: --origin-info refuses when no selected target records origins"
+        # P39/issue #71 INVERTED this check. Through P38 only C# and TypeScript declared an
+        # `originMapping`, so asking only for Python refused with exit 64. All four targets now declare a
+        # sink, so the same command must SUCCEED and write a sidecar — the refusal path survives for a
+        # third-party plugin that declares no originMapping, but has no in-box trigger left to smoke-test.
+        $pyOut = Join-Path $ld "py"
+        & $Cli build $src --target python --lib io --origin-info --out $pyOut 2>&1 | Out-Null
+        Check ($LASTEXITCODE -eq 0) "P39: --origin-info succeeds for python (it now declares a sink)"
+        Check ((Get-ChildItem -Path $pyOut -Filter '*.py.map' -ErrorAction SilentlyContinue).Count -gt 0) `
+            "P39: python --origin-info writes a v3 sidecar"
 
         # TypeScript answers the same flag with a v3 sidecar plus a footer pointing at it.
         $tsDir = Join-Path $ld "ts"

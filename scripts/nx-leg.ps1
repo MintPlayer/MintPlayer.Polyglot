@@ -40,6 +40,7 @@ switch ($Leg) {
     "registry"  { Invoke-Leg { & pwsh -NoProfile -File tests/registry/run-registry.ps1 -Cli $cli } }
     "samples"   { Invoke-Leg { & pwsh -NoProfile -File tests/samples/run-emit.ps1 -Cli $cli } }
     "nullable"  { Invoke-Leg { & pwsh -NoProfile -File tests/nullable/run-nullable.ps1 -Cli $cli } }
+    "coverage"  { Invoke-Leg { & pwsh -NoProfile -File tests/coverage/run-coverage.ps1 -Cli $cli } }
     "conformance" {
         # One merged run: the C# oracle vs TS/Python/PHP, staging the pristine TS for the library check.
         Invoke-Leg { & pwsh -NoProfile -File tests/conformance/run-conformance.ps1 -Cli $cli -StagingOut .nx-libstage }

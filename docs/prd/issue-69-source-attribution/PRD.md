@@ -576,14 +576,25 @@ the report**, never phantom-covered. The failure mode is always "attributes less
   remaining target-name comparison in Core (the issue-#14 shared-prelude hoist). This PRD's §4.B builds
   exactly the kind of trait flag that would retire it (`sharesPreludeFile`). Do it only if slice 6 makes it
   free; otherwise record it.
+  > **Recorded, and now committed by P39** (`docs/prd/issue-71-coverage-attribution/`, slice 1b). Two
+  > corrections to the above: post-merge there are **two** such comparisons, not one — `compiler.cpp:681`
+  > (`splitPrelude`) and `:722` (`preludeEverywhere`) — and retiring them stops being optional once Python
+  > declares `originMapping`, because Python is the only target that declares **preludes** and prelude
+  > prepending shifts every recorded origin line. The trait flags land as `sharedPreludeFile` /
+  > `preludePerFile`.
 
 ## 9. Open questions
 
-- **Q0 (new, from implementation).** The CLI flag is spelled `--origin-info`, as the issue and this PRD
-  specified — but since D1 un-gated phase 2, that one flag also turns on the **TypeScript source map**, so
-  the name now reads narrower than the behaviour. The Core field is target-neutral (`originInfo`), so this
-  is purely the user-facing spelling. It is off by default and brand new, so renaming (`--origin-info`?)
-  is cheap now and gets expensive once a consumer's build scripts use it. **Maintainer's call.**
+- **Q0 (new, from implementation). RESOLVED 2026-09-18 — no rename; closed.** The flag stays
+  `--origin-info`. (Asked during P39, `docs/prd/issue-71-coverage-attribution/`, which is the work that
+  makes consumers depend on the spelling.) As written the question never named an alternative — it
+  proposed renaming `--origin-info` to `--origin-info` — and the premise does not hold: "origin" is
+  already the project's target-neutral vocabulary (`originMapping` in the manifest, `OriginRecord` and
+  `recordsOrigins()` in the Core, `originInfo` in pgconfig). The name read narrow only because the C#
+  `directive` sink shipped first. Every wider-*sounding* candidate is narrower — `--source-maps` is wrong
+  for C#, `--line-directives` is wrong for TS/Python/PHP — and would put one sink's spelling on the
+  user-facing surface, which the Core-is-language-agnostic directive forbids. Keeping it also avoids a
+  three-surface rename (flag, pgconfig `originInfo`, MSBuild `PolyglotOriginInfo`).
 - **Q1.** Does the directive volume (roughly doubling the line count) measurably slow `csc` or coverlet on
   the consumer's real output? Not yet measured at that scale — SP1 used small programs. If it hurts, the
   fallback is directives on statement-bearing lines plus collapsed `hidden` runs, which must then be

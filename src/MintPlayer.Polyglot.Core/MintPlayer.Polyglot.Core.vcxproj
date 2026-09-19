@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -84,6 +84,7 @@
     <ClInclude Include="include\mintplayer\polyglot\backend_spec_json.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\emitter_base.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\capability.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\coverage.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\sourcemap.hpp" />
   </ItemGroup>
   <ItemGroup>
@@ -104,6 +105,7 @@
     <ClCompile Include="src\backend_spec_json.cpp" />
     <ClCompile Include="src\capability.cpp" />
     <ClCompile Include="src\json.cpp" />
+    <ClCompile Include="src\coverage.cpp" />
     <ClCompile Include="src\sourcemap.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

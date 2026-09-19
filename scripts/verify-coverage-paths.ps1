@@ -36,15 +36,35 @@ if ($tracked.Count -eq 0) {
     exit 2
 }
 
-# The server matches by suffix, so accept a report path that is a suffix of a tracked path (or vice
-# versa) rather than demanding an exact string match.
-function Test-Resolvable([string]$reportPath) {
-    $p = $reportPath.Replace('\', '/').TrimStart('./')
-    if ($tracked.Contains($p)) { return $true }
+# Mirrors the ingest's PathNormalizer (MintPlayer.Spark/apps/CodeCoverage), which this used to describe
+# but not implement. Two corrections, in OPPOSITE directions — the old version was both too strict and
+# too permissive, so it rejected reports the server accepts AND passed ones it silently drops:
+#
+#   * BOTH directions match. The server tests `tracked.EndsWith(report) || report.EndsWith(tracked)`, so a
+#     report path LONGER than the tracked one resolves. That is not exotic: coverlet's cobertura filename
+#     is relative to the longest common prefix across all documents in the report, so one document outside
+#     the repo pushes every path into the longer form.
+#   * Exactly ONE candidate. The server requires a unique match; an ambiguous basename resolves to
+#     nothing and the file is stored `Matched = false` — excluded from every number, with no error. That
+#     is precisely the silent drop this tripwire exists to catch, and accepting the first hit missed it.
+function Resolve-ReportPath([string]$reportPath) {
+    $p = $reportPath.Replace('\', '/')
+    while ($p.StartsWith('./')) { $p = $p.Substring(2) }   # literal './', not a character set
+    if ($tracked.Contains($p)) { return @{ Status = 'ok'; Count = 1 } }
+
+    $matches = @()
     foreach ($t in $tracked) {
-        if ($t.EndsWith("/$p", [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+        $endsWith = {
+            param($full, $tail)
+            if ($full.Length -lt $tail.Length) { return $false }
+            if (-not $full.EndsWith($tail, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+            return ($full.Length -eq $tail.Length) -or ($full[$full.Length - $tail.Length - 1] -eq '/')
+        }
+        if ((& $endsWith $t $p) -or (& $endsWith $p $t)) { $matches += $t }
     }
-    return $false
+    if ($matches.Count -eq 1) { return @{ Status = 'ok'; Count = 1 } }
+    if ($matches.Count -gt 1) { return @{ Status = 'ambiguous'; Count = $matches.Count } }
+    return @{ Status = 'unmatched'; Count = 0 }
 }
 
 $checked = 0
@@ -58,7 +78,14 @@ foreach ($report in (Get-ChildItem -Path $Path -Recurse -File -Include *.lcov, *
 
         foreach ($p in $paths) {
             $checked++
-            if (-not (Test-Resolvable $p)) { $bad += "$($report.Name): $p" }
+            $r = Resolve-ReportPath $p
+            if ($r.Status -eq 'unmatched') {
+                $bad += "$($report.Name): $p  (no tracked file matches)"
+            } elseif ($r.Status -eq 'ambiguous') {
+                # Named distinctly: the server would store this file with Matched = false and drop it
+                # from every number without an error, which looks identical to "we have no data".
+                $bad += "$($report.Name): $p  (ambiguous - $($r.Count) tracked files match; the server requires exactly one)"
+            }
         }
     }
 }

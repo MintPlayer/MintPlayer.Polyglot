@@ -32,6 +32,7 @@
 #include "mintplayer/polyglot/sourcemap.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
+#include "coverage_cmd.hpp"
 #include "exe_path.hpp"
 #include "pgconfig.hpp"
 #include "pluginresolve.hpp"
@@ -64,6 +65,7 @@ void printUsage() {
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
         << "  polyglot install <plugin-dir | npm-package>\n"
+        << "  polyglot coverage remap <report> --target <name> --out <path>\n"
         << "\n"
         << "  build  Transpiles <input.pg> for every language in pgconfig.json `targets` (--target\n"
         << "         overrides; missing plugin dependencies download from the npm registry into the\n"
@@ -82,7 +84,10 @@ void printUsage() {
         << "  check  Reports parse/type diagnostics without emitting. --json prints a machine-readable\n"
         << "         array (line/col/severity/message) for editor tooling.\n"
         << "  lsp    Runs the Language Server over stdio (JSON-RPC): diagnostics, go-to-definition,\n"
-        << "         document symbols, hover. Spawned by the editor extensions; not for interactive use.\n";
+        << "         document symbols, hover. Spawned by the editor extensions; not for interactive use.\n"
+        << "  coverage  Projects a coverage report over generated code back onto the .pg source, so\n"
+        << "         every target's test suite contributes to one .pg number. Reads and writes\n"
+        << "         cobertura, lcov, istanbul and clover. See `polyglot coverage --help`.\n";
 }
 
 // Comma-join a target-name list for "loaded targets: ..." diagnostics.
@@ -1718,6 +1723,9 @@ static int run(const std::vector<std::string>& args, const char* argv0) {
     }
     if (args[0] == "install") {
         return runInstall(args);
+    }
+    if (args[0] == "coverage") {
+        return cli::runCoverage(args);
     }
 
     std::cerr << "polyglot: unknown command '" << args[0] << "'\n\n";

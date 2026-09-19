@@ -1,6 +1,12 @@
 {
   "schema": 1,
   "name": "python",
+  "preludePerFile": true,
+  "originMapping": {
+    "style": "sourceMapV3",
+    "sidecarExtension": ".map",
+    "footer": "# sourceMappingURL=$f"
+  },
   "capabilities": {
     "blockLambdas": "emulated",
     "interfaces": "emulated",

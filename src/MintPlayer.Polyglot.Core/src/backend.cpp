@@ -48,10 +48,14 @@ public:
     LoadedBackend(std::string name, std::string fileExtension, BackendSpec spec, engine::RuleTable rules,
                   std::unordered_map<std::string, std::string> capabilities,
                   std::unordered_map<std::string, std::string> overlays, bool crossDirImports = false,
-                  OriginMapping originMapping = {})
-        : name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
-          rules_(std::move(rules)), capabilities_(std::move(capabilities)), overlays_(std::move(overlays)),
-          crossDirImports_(crossDirImports), originMapping_(std::move(originMapping)) {}
+                  OriginMapping originMapping = {}, bool sharedPreludeFile = false,
+                  bool preludePerFile = false)
+        // Initialiser order follows DECLARATION order below, or g++ warns (-Wreorder).
+        : crossDirImports_(crossDirImports), originMapping_(std::move(originMapping)),
+          sharedPreludeFile_(sharedPreludeFile), preludePerFile_(preludePerFile),
+          name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
+          rules_(std::move(rules)), capabilities_(std::move(capabilities)),
+          overlays_(std::move(overlays)) {}
 
     std::string name() const override { return name_; }
 
@@ -93,6 +97,8 @@ public:
     const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }
+    bool sharedPreludeFile() const override { return sharedPreludeFile_; }
+    bool preludePerFile() const override { return preludePerFile_; }
     const OriginMapping& originMapping() const override { return originMapping_; }
     const std::vector<std::string>& reservedIdentifiers() const override { return spec_.reservedNames; }
     const std::vector<std::string>& globalIdentifiers() const override { return spec_.globalNames; }
@@ -100,6 +106,8 @@ public:
 private:
     bool crossDirImports_ = false;
     OriginMapping originMapping_;
+    bool sharedPreludeFile_ = false;
+    bool preludePerFile_ = false;
     std::string name_;
     std::string ext_;
     BackendSpec spec_;
@@ -369,8 +377,15 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     // compiler then hands the import rule a full relative specifier instead of a bare basename).
     const bool crossDir = doc["crossDirImports"].asBool(false);
 
+    // P39/issue #71: prelude placement, as data. Replaces two `target.name() == "csharp"` comparisons in
+    // the compiler — see Backend::sharedPreludeFile / preludePerFile for why this is load-bearing rather
+    // than cosmetic.
+    const bool sharedPreludeFile = doc["sharedPreludeFile"].asBool(false);
+    const bool preludePerFile    = doc["preludePerFile"].asBool(false);
+
     return std::make_unique<LoadedBackend>(name, std::move(ext), std::move(spec.spec), std::move(rules),
-                                           std::move(caps), std::move(overlays), crossDir, std::move(origin));
+                                           std::move(caps), std::move(overlays), crossDir, std::move(origin),
+                                           sharedPreludeFile, preludePerFile);
 }
 
 } // namespace

@@ -2,6 +2,7 @@
   "schema": 1,
   "name": "typescript",
   "crossDirImports": true,
+  "preludePerFile": true,
   "originMapping": {
     "style": "sourceMapV3",
     "sidecarExtension": ".map",
