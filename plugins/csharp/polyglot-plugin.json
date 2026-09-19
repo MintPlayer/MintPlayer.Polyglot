@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "name": "csharp",
+  "sharedPreludeFile": true,
   "originMapping": {
     "style": "directive",
     "line": "#line $n \"$f\"",

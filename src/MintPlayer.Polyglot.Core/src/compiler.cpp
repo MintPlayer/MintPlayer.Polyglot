@@ -675,10 +675,12 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     for (const auto& d : unit.functions)  note(d.originModule);
     for (const auto& d : unit.extensions) note(d.originModule);
 
-    // §4.5 / issue #14: for a multi-file C# PROJECT build, hoist the shared prelude (Option/Some/None + the
-    // PolyglotProgram wrapper) into one reserved `__polyglot_prelude` file instead of inlining it, so N
-    // independent link roots don't each emit it (CS0101/CS8863 in one assembly). C#-only.
-    const bool splitPrelude = (target.name() == "csharp") && lib.sharedPrelude;
+    // §4.5 / issue #14: for a multi-file PROJECT build, a target may hoist the shared prelude
+    // (Option/Some/None + the program wrapper) into one reserved `__polyglot_prelude` file instead of
+    // inlining it, so N independent link roots don't each emit it (C#: CS0101/CS8863 in one assembly).
+    // P39: manifest data (`sharedPreludeFile`), not a target-name comparison — the Core never asks
+    // "is this C#?".
+    const bool splitPrelude = target.backend()->sharedPreludeFile() && lib.sharedPrelude;
 
     if (userOrigins.empty() && !splitPrelude) { // single-file: unchanged (byte-identical)
         ir::Module module = lower(unit, target.name());
@@ -719,7 +721,11 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         baseByCanon[canon] = base;
     }
 
-    const bool preludeEverywhere = target.name() != "csharp"; // C#: prelude in the entry (or its own file when split)
+    // P39: manifest data (`preludePerFile`). Targets whose modules don't share a link root (TS/Python/PHP)
+    // need the prelude in every emitted file; C# keeps it in the entry, or in its own file when split.
+    // This is load-bearing for origins, not cosmetic: prelude prepending shifts every recorded origin
+    // line, and Python — the only target declaring preludes — gains a source-map sink in this milestone.
+    const bool preludeEverywhere = target.backend()->preludePerFile();
     // Emit one file: re-lower the unit, keep only `keep`-origin decls, set link/access, resolve imports.
     // P38: the origin list produced by the most recent emitKeep() call, stashed onto the matching output
     // below. Each emitted file has its own line numbering, so origins cannot be accumulated across them.

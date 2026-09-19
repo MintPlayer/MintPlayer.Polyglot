@@ -121,6 +121,22 @@ public:
     // host may spread one closure across directories. False (default): specifiers are bare
     // basenames and the host must keep a closure in one directory (the CLI refuses a split).
     virtual bool crossDirImports() const { return false; }
+    // P39/issue #71: WHERE the shared prelude (Option/Some/None + the program wrapper) goes in a
+    // multi-file project build. Two independent knobs, because they gate two different things:
+    //
+    //   sharedPreludeFile — hoist it into one reserved `__polyglot_prelude` file instead of inlining it,
+    //                       so N independent link roots don't each emit it (C#: CS0101/CS8863 in one
+    //                       assembly). Only consulted when the host asked for a shared prelude.
+    //   preludePerFile    — inline it into EVERY emitted file. Targets whose modules don't share a link
+    //                       root (TS/Python/PHP) need their own copy; C# does not.
+    //
+    // These replace two `target.name() == "csharp"` comparisons in the compiler (issue #14's prelude
+    // hoist). That was never a stylistic point: prelude prepending SHIFTS every recorded origin line
+    // (EmitterBase, style-agnostic), Python is the only target that declares preludes, and P39 gives
+    // Python a source-map sink — so correct line numbers would have depended on a string comparison.
+    // Both default false: prelude in the entry file only, not split.
+    virtual bool sharedPreludeFile() const { return false; }
+    virtual bool preludePerFile() const { return false; }
     // P38/issue #69: how (and whether) this target records where each emitted line came from, so a
     // coverage tool can attribute generated code back to the `.pg` source. Plugin manifest
     // `originMapping`; absent = this target says nothing about origins and emits exactly as before.

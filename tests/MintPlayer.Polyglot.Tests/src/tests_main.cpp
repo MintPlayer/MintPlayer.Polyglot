@@ -22,6 +22,7 @@
 #include "mintplayer/polyglot/backend_engine.hpp"
 #include "mintplayer/polyglot/backend_spec_json.hpp"
 #include "mintplayer/polyglot/capability.hpp"
+#include "mintplayer/polyglot/coverage.hpp"
 #include "mintplayer/polyglot/ir.hpp"
 #include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/sourcemap.hpp"
@@ -3006,10 +3007,18 @@ int main() {
         check(ts.style == OriginMapping::Style::SourceMapV3 && ts.emitsSourceMap() &&
                   ts.sidecarExtension == ".map" && has(ts.footer, "sourceMappingURL"),
               "P38 s3: TypeScript declares the v3-sidecar style");
+        // P39/issue #71 reversed this: Python and PHP now declare the SAME v3-sidecar sink, and doing so
+        // took a manifest entry and no engine change — origin recording was always target-neutral, so
+        // they were missing a sink DECLARATION, not the data.
         const Backend* py = findBackend("python");
         const Backend* php = findBackend("php");
-        check(py && !py->originMapping().recordsOrigins() && php && !php->originMapping().recordsOrigins(),
-              "P38 s3: Python/PHP declare no originMapping (Style::None — emit exactly as before)");
+        check(py && py->originMapping().emitsSourceMap() && py->originMapping().sidecarExtension == ".map" &&
+                  has(py->originMapping().footer, "sourceMappingURL"),
+              "P39: Python declares the v3-sidecar style (was Style::None through P38)");
+        check(php && php->originMapping().emitsSourceMap() &&
+                  php->originMapping().sidecarExtension == ".map" &&
+                  has(php->originMapping().footer, "sourceMappingURL"),
+              "P39: PHP declares the v3-sidecar style (was Style::None through P38)");
 
         // The vocabulary is CLOSED: an unknown style is a plugin LOAD ERROR, never a silent default —
         // that is what makes version skew loud (the `blockStyle` precedent).
@@ -3372,6 +3381,293 @@ int main() {
         // Slice-2 shift rule: the count is i32; shiftee type is preserved (C# has no long<<long).
         EmitResult csShift = compileStd("fn main() {\n  let b: i64 = 1\n  print(b << 65)\n}\n", findTarget("csharp"));
         check(csShift.ok && !has(csShift.code, "(long)(65)"), "G4: shift count stays i32 on C#");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // P39 / issue #71 — coverage attribution.
+    {
+        using namespace mintplayer::polyglot::coverage;
+
+        // --- the source-map read side -------------------------------------------------------------
+        {
+            bool roundTrips = true;
+            for (int v : {0, 1, -1, 15, 16, -16, 1023, -1024, 123456, -123456}) {
+                std::string enc = vlqEncode(v);
+                std::size_t pos = 0;
+                int back = 0;
+                if (!vlqDecode(enc, pos, back) || back != v || pos != enc.size()) roundTrips = false;
+            }
+            check(roundTrips, "P39: vlqDecode round-trips vlqEncode");
+
+            std::size_t pos = 0;
+            int dummy = 0;
+            check(!vlqDecode("$", pos, dummy), "P39: vlqDecode refuses a non-Base64 character");
+            pos = 0;
+            check(!vlqDecode("g", pos, dummy), "P39: vlqDecode refuses a truncated continuation run");
+
+            DecodedSourceMap decoded;
+            std::string err;
+            // A map that is not v3 REFUSES rather than yielding an empty map, which would silently
+            // become "nothing was covered".
+            check(!parseSourceMapV3("{\"version\":2,\"mappings\":\"\"}", decoded, err),
+                  "P39: parseSourceMapV3 refuses a non-3 version");
+            check(!parseSourceMapV3("{\"version\":3}", decoded, err),
+                  "P39: parseSourceMapV3 refuses a map with no mappings");
+            check(!parseSourceMapV3("{\"version\":3,\"sources\":[\"a.pg\"],\"mappings\":\"A$\"}", decoded, err),
+                  "P39: parseSourceMapV3 refuses a malformed VLQ run");
+
+            // Two segments on ONE generated line: both are kept. First-wins is the interim tool's
+            // under-reporting bug (PRD §4.6).
+            const std::string twoSegs =
+                "{\"version\":3,\"file\":\"o.ts\",\"sources\":[\"a.pg\",\"b.pg\"],"
+                "\"sourcesContent\":[null,null],\"mappings\":\"" + vlqEncode(0) + vlqEncode(0) +
+                vlqEncode(0) + vlqEncode(0) + "," + vlqEncode(4) + vlqEncode(1) + vlqEncode(2) +
+                vlqEncode(0) + "\"}";
+            check(parseSourceMapV3(twoSegs, decoded, err) && decoded.segments.size() == 2 &&
+                      decoded.segments[0].sourceIndex == 0 && decoded.segments[0].sourceLine == 1 &&
+                      decoded.segments[1].sourceIndex == 1 && decoded.segments[1].sourceLine == 3,
+                  "P39: every segment on a generated line is decoded, not just the first");
+        }
+
+        // --- format sniffing ----------------------------------------------------------------------
+        check(sniffFormat("TN:\nSF:a.ts\n") == Format::Lcov, "P39: sniffs lcov");
+        check(sniffFormat("{\"a.ts\":{\"statementMap\":{}}}") == Format::Istanbul, "P39: sniffs istanbul");
+        check(sniffFormat("<?xml version=\"1.0\"?>\n<coverage><packages><package><classes>"
+                          "<class filename=\"a.ts\"/></classes></package></packages></coverage>") ==
+                  Format::Cobertura,
+              "P39: sniffs cobertura");
+        // Cobertura and clover SHARE a <coverage> root — the discriminator must be structural, or a
+        // clover file parses as an empty cobertura and is rejected as "no files".
+        check(sniffFormat("<coverage generated=\"0\" clover=\"3.2.0\"><project><file name=\"a.php\"/>"
+                          "</project></coverage>") == Format::Clover,
+              "P39: clover is not mistaken for cobertura");
+
+        // --- readers ------------------------------------------------------------------------------
+        {
+            Report r;
+            std::string err;
+            check(parseReport("TN:\nSF:a.ts\nDA:3,7\nDA:3,2\nBRDA:5,0,0,4\nBRDA:5,0,1,-\nend_of_record\n",
+                              Format::Lcov, r, err) &&
+                      r.files.size() == 1 && r.files[0].lines[3].hits == 7,
+                  "P39: lcov duplicate DA records merge with max, not sum");
+            check(r.files[0].lines[5].arms.size() == 2 && r.files[0].lines[5].arms[0].takenKnown &&
+                      !r.files[0].lines[5].arms[1].takenKnown,
+                  "P39: lcov BRDA '-' stays distinct from 0");
+
+            // Several <class> elements legitimately share one filename (coverlet emits one per type AND
+            // per closed generic instantiation); a <methods> section repeats the same lines.
+            Report cob;
+            check(parseReport("<coverage><packages><package><classes>"
+                              "<class filename=\"a.ts\"><methods><method><lines>"
+                              "<line number=\"1\" hits=\"99\"/></lines></method></methods>"
+                              "<lines><line number=\"1\" hits=\"2\"/></lines></class>"
+                              "<class filename=\"a.ts\"><lines>"
+                              "<line number=\"1\" hits=\"5\"/>"
+                              "<line number=\"2\" hits=\"0\" branch=\"true\" "
+                              "condition-coverage=\"50% (1/2)\"/></lines></class>"
+                              "</classes></package></packages></coverage>",
+                              Format::Cobertura, cob, err) &&
+                      cob.files.size() == 1 && cob.files[0].lines[1].hits == 5,
+                  "P39: cobertura merges <class> elements sharing a filename, ignoring <methods>");
+            check(cob.files[0].lines[2].countCovered == 1 && cob.files[0].lines[2].countTotal == 2,
+                  "P39: cobertura condition-coverage reads as a count, with no arm identity");
+
+            // truecount/falsecount are the numbers of TAKEN and UNTAKEN arms on the line, aggregated over
+            // every branch on it — NOT a true-arm/false-arm pair. Reading them as two arms would flip
+            // every partial line.
+            Report clo;
+            check(parseReport("<coverage clover=\"3.2.0\"><project><file name=\"a.php\">"
+                              "<line num=\"9\" type=\"cond\" truecount=\"4\" falsecount=\"0\"/>"
+                              "</file></project></coverage>",
+                              Format::Clover, clo, err) &&
+                      clo.files[0].lines[9].countCovered == 4 && clo.files[0].lines[9].countTotal == 4 &&
+                      clo.files[0].lines[9].arms.empty(),
+                  "P39: clover is count-only (truecount=4 is four taken arms, not a true/false pair)");
+
+            // Arms attribute to the BRANCH's line, not to each arm's own start line: per-arm attribution
+            // renders every multi-line ternary as two partial lines.
+            Report ist;
+            check(parseReport("{\"a.ts\":{\"path\":\"a.ts\","
+                              "\"statementMap\":{\"0\":{\"start\":{\"line\":4},\"end\":{\"line\":4}}},"
+                              "\"s\":{\"0\":3},"
+                              "\"branchMap\":{\"0\":{\"line\":7,\"locations\":["
+                              "{\"start\":{\"line\":7}},{\"start\":{\"line\":9}}]}},"
+                              "\"b\":{\"0\":[1,0]}}}",
+                              Format::Istanbul, ist, err) &&
+                      ist.files[0].lines[4].hits == 3 && ist.files[0].lines[7].arms.size() == 2 &&
+                      ist.files[0].lines.count(9) == 0,
+                  "P39: istanbul arms attribute to the branch line, not to each arm's start line");
+
+            Report bad;
+            check(!parseReport("not a report", Format::Lcov, bad, err),
+                  "P39: a reader refuses rather than returning an empty report");
+        }
+
+        // --- merge semantics ----------------------------------------------------------------------
+        {
+            Line a, b;
+            a.hits = 3; a.hitsKnown = true;
+            b.hits = 5; b.hitsKnown = true;
+            mergeLine(a, b);
+            check(a.hits == 5, "P39: line hits merge with MAX (a sum would read as an execution count)");
+
+            Line unknown, known;
+            unknown.hitsKnown = false;          // "executed, count unknown" — all JaCoCo can say
+            known.hits = 0; known.hitsKnown = true;
+            mergeLine(unknown, known);
+            check(!unknown.hitsKnown || unknown.hits == 0,
+                  "P39: unknown hits are not silently demoted to 0 by a merge");
+
+            // §4.3: two generated 2-arm branches at 1/2 each onto ONE .pg line give 2/4, not 1/2. Within
+            // one report the keys come from one instrumenter, so union is correct.
+            Line l1, l2;
+            l1.arms.push_back(BranchArm{"0:0", 1, true});
+            l1.arms.push_back(BranchArm{"0:1", 0, true});
+            l2.arms.push_back(BranchArm{"1:0", 1, true});
+            l2.arms.push_back(BranchArm{"1:1", 0, true});
+            mergeLine(l1, l2);
+            int covered = 0;
+            for (const auto& arm : l1.arms) if (arm.taken > 0) ++covered;
+            check(l1.arms.size() == 4 && covered == 2,
+                  "P39: branch arms UNION across generated lines - 2/4, not 1/2");
+
+            Line c1, c2;
+            c1.countCovered = 1; c1.countTotal = 2;
+            c2.countCovered = 1; c2.countTotal = 2;
+            mergeLine(c1, c2);
+            check(c1.countCovered == 2 && c1.countTotal == 4,
+                  "P39: count-only pairs sum, matching what union does on distinct keys");
+        }
+
+        // --- projection ---------------------------------------------------------------------------
+        {
+            OriginIndex index;
+            // Generated lines 10 and 11 both come from .pg line 7; .pg line 9 is mappable but never
+            // reached; b.pg is mappable and never appears in the report at all.
+            index.byGenerated["out/a.ts"][10] = {{"src/a.pg", 7}};
+            index.byGenerated["out/a.ts"][11] = {{"src/a.pg", 7}};
+            index.mappedLines["src/a.pg"] = {7, 9};
+            index.mappedLines["src/b.pg"] = {1, 2};
+
+            Report gen;
+            {
+                File& f = gen.fileFor("out/a.ts");
+                Line l10; l10.hits = 3; l10.hitsKnown = true;
+                l10.arms.push_back(BranchArm{"0:0", 1, true});
+                l10.arms.push_back(BranchArm{"0:1", 0, true});
+                Line l11; l11.hits = 8; l11.hitsKnown = true;
+                l11.arms.push_back(BranchArm{"1:0", 0, true});
+                l11.arms.push_back(BranchArm{"1:1", 1, true});
+                Line l99; l99.hits = 4; l99.hitsKnown = true; // no origin: leaves the report
+                f.lines[10] = l10;
+                f.lines[11] = l11;
+                f.lines[99] = l99;
+            }
+
+            ProjectionStats stats;
+            Report pg = projectReport(gen, index, stats);
+            const File* a = nullptr;
+            const File* b = nullptr;
+            for (const auto& f : pg.files) {
+                if (f.path == "src/a.pg") a = &f;
+                if (f.path == "src/b.pg") b = &f;
+            }
+            check(a && a->lines.count(7) && a->lines.at(7).hits == 8,
+                  "P39: many generated lines onto one .pg line take the MAX hit count");
+            check(a && a->lines.at(7).arms.size() == 4,
+                  "P39: projection unions the arms of every contributing generated line");
+            check(a && a->lines.size() == 2 && a->lines.count(9) && a->lines.at(9).hits == 0,
+                  "P39: the denominator is the MAPPED set - an unreached mapped line reports at zero");
+            check(a && !a->lines.count(99), "P39: a generated line with no origin leaves the report");
+            // D7: a module no test touched is emitted at zero rather than vanishing, which would inflate
+            // the percentage precisely when a module is least tested.
+            check(b && b->lines.size() == 2 && b->lines.at(1).hits == 0 && b->lines.at(2).hits == 0,
+                  "P39: a .pg file absent from the report is emitted at zero, not dropped");
+            check(stats.pgFilesWithoutReportData == 1 && stats.pgLinesMappable == 4 &&
+                      stats.pgLinesCovered == 1,
+                  "P39: projection stats count the mapped set, not the report");
+
+            // Either direction of suffix match resolves; an ambiguous basename resolves to nothing.
+            check(matchGeneratedPath("/abs/repo/out/a.ts", index.byGenerated) == "out/a.ts",
+                  "P39: a report path longer than the known path still matches");
+            check(matchGeneratedPath("a.ts", index.byGenerated) == "out/a.ts",
+                  "P39: a report path shorter than the known path still matches");
+            OriginIndex ambiguous;
+            ambiguous.byGenerated["x/a.ts"][1] = {{"x.pg", 1}};
+            ambiguous.byGenerated["y/a.ts"][1] = {{"y.pg", 1}};
+            check(matchGeneratedPath("a.ts", ambiguous.byGenerated).empty(),
+                  "P39: an ambiguous basename resolves to nothing rather than to the wrong file");
+        }
+
+        // --- writers, and the count-only emission rule ---------------------------------------------
+        {
+            Report r;
+            File& f = r.fileFor("src/a.pg");
+            Line l;
+            l.hits = 2;
+            l.hitsKnown = true;
+            l.arms.push_back(BranchArm{"0:0", 1, true});
+            l.arms.push_back(BranchArm{"0:1", 0, true});
+            f.lines[7] = l;
+
+            // §4.4a: branch data is emitted COUNT-ONLY. lcov's BRDA is arm-KEYED, and our keys are not
+            // comparable with another target's for the same .pg line, so a union would OVER-credit
+            // whenever both suites cover the same arm.
+            const std::string lcovOut = writeReport(r, Format::Lcov);
+            check(has(lcovOut, "SF:src/a.pg") && has(lcovOut, "DA:7,2") && !has(lcovOut, "BRDA:"),
+                  "P39: lcov output carries no arm records by default (count-only emission)");
+            WriteOptions arms;
+            arms.branchArms = true;
+            check(has(writeReport(r, Format::Lcov, arms), "BRDA:7,0,0,1"),
+                  "P39: --branch-arms opts back into arm-keyed lcov output");
+
+            const std::string cobOut = writeReport(r, Format::Cobertura);
+            check(has(cobOut, "filename=\"src/a.pg\"") && has(cobOut, "condition-coverage=\"50% (1/2)\""),
+                  "P39: cobertura expresses the branch pair as a count");
+            check(has(cobOut, "hits=\"2\""),
+                  "P39: cobertura always writes hits (a missing hits attribute reads as NOT covered)");
+
+            const std::string cloOut = writeReport(r, Format::Clover);
+            check(has(cloOut, "truecount=\"1\"") && has(cloOut, "falsecount=\"1\""),
+                  "P39: clover expresses the branch pair as taken/untaken counts");
+
+            // Read-back stability: what we write, we can read.
+            Report back;
+            std::string err;
+            check(parseReport(cobOut, Format::Cobertura, back, err) && back.files.size() == 1 &&
+                      back.files[0].path == "src/a.pg" && back.files[0].lines[7].hits == 2 &&
+                      back.files[0].lines[7].countCovered == 1 && back.files[0].lines[7].countTotal == 2,
+                  "P39: cobertura round-trips through its own reader");
+            Report backLcov;
+            check(parseReport(lcovOut, Format::Lcov, backLcov, err) &&
+                      backLcov.files[0].lines[7].hits == 2,
+                  "P39: lcov round-trips through its own reader");
+            Report backIst;
+            const std::string istOut = writeReport(r, Format::Istanbul);
+            check(parseReport(istOut, Format::Istanbul, backIst, err) &&
+                      backIst.files[0].lines[7].hits == 2,
+                  "P39: istanbul round-trips through its own reader");
+            Report backClo;
+            check(parseReport(cloOut, Format::Clover, backClo, err) &&
+                      backClo.files[0].lines[7].countTotal == 2,
+                  "P39: clover round-trips through its own reader");
+        }
+
+        // --- the manifests slice 1 added ----------------------------------------------------------
+        {
+            BackendHandle py = findTarget("python");
+            BackendHandle php = findTarget("php");
+            check(py.ok() && py.backend()->originMapping().emitsSourceMap(),
+                  "P39: python declares a sourceMapV3 origin sink");
+            check(php.ok() && php.backend()->originMapping().emitsSourceMap(),
+                  "P39: php declares a sourceMapV3 origin sink");
+            // The Core must never compare target names: prelude placement is manifest data.
+            BackendHandle cs = findTarget("csharp");
+            check(cs.ok() && cs.backend()->sharedPreludeFile() && !cs.backend()->preludePerFile(),
+                  "P39: csharp declares sharedPreludeFile, not preludePerFile");
+            check(py.ok() && py.backend()->preludePerFile() && !py.backend()->sharedPreludeFile(),
+                  "P39: python declares preludePerFile");
+        }
     }
 
     if (g_failures == 0) {
