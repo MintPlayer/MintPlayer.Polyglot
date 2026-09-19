@@ -103,6 +103,10 @@ Write-Host "`n==> Nullable / NRT gate (annotations preserved + clean under <Null
 & pwsh -NoProfile -File (Join-Path $repo "tests\nullable\run-nullable.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nNULLABLE GATE FAILED."; exit 1 }
 
+Write-Host "`n==> Coverage-attribution gate (origin sinks land; a real report projects onto the .pg)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\coverage\run-coverage.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nCOVERAGE GATE FAILED."; exit 1 }
+
 Write-Host "`n==> Library-consumption gate (emitted TS is an importable, strict-clean ES module)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\library\run-library.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe") -Staged $confStaging
 $libExit = $LASTEXITCODE

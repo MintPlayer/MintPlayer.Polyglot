@@ -50,10 +50,12 @@ public:
                   std::unordered_map<std::string, std::string> overlays, bool crossDirImports = false,
                   OriginMapping originMapping = {}, bool sharedPreludeFile = false,
                   bool preludePerFile = false)
-        : name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
-          rules_(std::move(rules)), capabilities_(std::move(capabilities)), overlays_(std::move(overlays)),
-          crossDirImports_(crossDirImports), originMapping_(std::move(originMapping)),
-          sharedPreludeFile_(sharedPreludeFile), preludePerFile_(preludePerFile) {}
+        // Initialiser order follows DECLARATION order below, or g++ warns (-Wreorder).
+        : crossDirImports_(crossDirImports), originMapping_(std::move(originMapping)),
+          sharedPreludeFile_(sharedPreludeFile), preludePerFile_(preludePerFile),
+          name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
+          rules_(std::move(rules)), capabilities_(std::move(capabilities)),
+          overlays_(std::move(overlays)) {}
 
     std::string name() const override { return name_; }
 

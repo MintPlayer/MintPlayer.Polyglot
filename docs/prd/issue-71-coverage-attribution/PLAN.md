@@ -51,8 +51,8 @@ fails changes the design per PRD §9, it does not get worked around.
 | **SP5** — the `sourcesContent` shortcut | **ANSWERED** | `sourcesContent` is **already emitted**, one entry per source, `null` where unreadable. Path resolution becomes a fallback only, removing the whole class of path-rooting bug that already bit once. |
 | **SP6** — reuse the CLI's plugin resolution | **DISSOLVED by D2** | In-process reuse is now free. No `--plugin-dir`, no `polyglot plugins --json`. |
 | **SP7** — Does coverage.mintplayer.com merge `<class>` entries sharing a `filename`? | **ANSWERED 2026-09-18 — read from `MintPlayer.Spark/apps/CodeCoverage`** | **Yes.** `CoberturaParser` groups by `filename` across `root.Descendants("class")`; lines land one-per-number in a `SortedDictionary`; rates are computed from the stored set and **the report's own rate attributes are never read**. So the coverlet double-count never reaches the numbers, and **slice 6 (`normalize`) is CUT.** Four findings the design did not anticipate: (1) the **`BranchFormat` stamping hazard** — branch edges arriving in a *second* format for an already-stamped file are silently discarded, which lands squarely on the C#-cobertura + TS-lcov overlay (PRD §4.4a); (2) `verify-coverage-paths.ps1` is wrong in **two opposite directions** (too strict *and* too permissive — slice 9); (3) the ingest supports **only lcov, cobertura and JaCoCo** — istanbul JSON and clover are rejected, which constrains what a consumer **uploads** but *not* what this tool reads or writes (both stay in scope, slice 3b; the constraint belongs in the CI recipe, never as a hardcoded refusal); (4) a branch-less report **cannot dilute** existing branch numbers (the merge skips the block entirely), refuting the risk recorded in the consuming repo's PRD. |
-| **SP8** — XML round-trip fidelity with a subset parser in C++ | **MOSTLY DISSOLVED by D4** | The hard half was A7's "unknown attributes survive verbatim", and A7 was withdrawn as incoherent for a translation between different entities. What remains is small and no longer blocking: extractive readers for three XML dialects, and a **strict wrapper** over the Core's JSON reader for istanbul (it is lenient by design — returns `Null` on malformed input, the wrong posture for a third-party file). Residual spike: confirm an extractive reader handles real coverlet, vitest and php-code-coverage output without a DOM. |
-| **SP9** — *new.* PHP branch data | **TO RUN — non-blocking** | Branch/path coverage needs **Xdebug**; PCOV is line-only. Establish which the PG-C7 proof uses and state it, so an absent branch number is understood rather than read as a defect. |
+| **SP8** — XML round-trip fidelity with a subset parser in C++ | **DONE — an extractive scanner suffices** | Built and proved against a real `coverage xml` document and our own writers: a ~90-line tag scanner (comments, PIs, CDATA, entity-decoded attributes) plus per-format extraction handles cobertura and clover with no DOM. Two real defects it surfaced, both found by running the actual tool rather than by reasoning: a **self-closing `<methods/>`** was treated as an open section and silently skipped every following `<line>`; and `<sources>` must **not** be prepended to the filename — `coverage.py` writes an absolute `<source>` whose case does not match the filesystem, so joining it produced a path that then failed to match, while the bare filename matches by suffix without it. Path resolution belongs to the matcher, which is now case-insensitive and bidirectional like the ingest's. | The hard half was A7's "unknown attributes survive verbatim", and A7 was withdrawn as incoherent for a translation between different entities. What remains is small and no longer blocking: extractive readers for three XML dialects, and a **strict wrapper** over the Core's JSON reader for istanbul (it is lenient by design — returns `Null` on malformed input, the wrong posture for a third-party file). Residual spike: confirm an extractive reader handles real coverlet, vitest and php-code-coverage output without a DOM. |
+| **SP9** — PHP branch data | **ANSWERED — neither driver is present** | The local PHP 8.5.8 has **no Xdebug and no PCOV**, so php-code-coverage cannot collect *any* coverage here, let alone branches. The PHP half of PG-C7 is therefore proved structurally (the sidecar + footer land, and the projector is format- and language-neutral) rather than by a live php-code-coverage run. This is a statement about this machine, not about the design: the PHP path needs no engine code, and its report — in whatever format that consumer emits — goes through the same reader set as everything else. A consumer wanting PHP **branch** data needs Xdebug; under PCOV the branch number is simply absent, which the count-only emission rule already treats as harmless. |
 
 **Acceptance:** nine recorded outcomes; PRD §4–§6 amended in place where a spike contradicts them.
 
@@ -216,7 +216,22 @@ stay correct.
 
 ---
 
-## Slice 7 — prove Python and PHP end to end (PG-C7)
+## Slice 7 — prove Python and PHP end to end (PG-C7) — **DONE for Python, structurally for PHP**
+
+**Python: proved live, and the gate is met.** A real `coverage.py 7.16.1` run over the generated Python —
+`coverage run`, then `coverage xml` *and* `coverage lcov` — projected onto `docs/lang/samples/…​.pg` in
+both formats. **Zero lines of engine code** beyond slice 1a's four-line manifest entry (A9). The two
+defects it exposed were in the new tool, not the compiler, which is exactly the boundary the milestone
+asserts. Both reports are committed as gate fixtures so the leg needs no Python.
+
+**PHP: structural.** SP9 found no Xdebug and no PCOV on this machine, so php-code-coverage cannot collect
+anything here. What *is* proved: the sidecar and footer land, the footer stays inside `<?php` mode, and
+the projector is language-neutral by construction — PHP's report goes through the same readers as
+Python's. No engine code was needed for PHP either.
+
+---
+
+## Slice 7 (original scope, for reference)
 
 *Not* new adapters: slice 1's manifest entries, then a real `coverage.py` and a real php-code-coverage run
 — in whichever format that consumer emits — projected onto a `.pg`. **The gate is that neither needs a
@@ -297,6 +312,24 @@ Record SP9's answer here: which PHP driver produced the proof, and whether branc
   `BranchFormat` stamping hazard — the single most consequential finding for an *overlay*, since C#
   cobertura branches landing first would silently discard TypeScript lcov branches for the same `.pg`
   file (PRD §4.4a) — and refuted the feared branch-dilution risk outright.
+- **2026-09-19 — IMPLEMENTED.** All slices landed on `p39-coverage-attribution`; slice 6 stayed cut. Full
+  gate green (build + unit + every leg + differential conformance across the four targets), plus the POSIX
+  leg: WSL `cmake`/g++ 13.3 Release builds clean, its unit run passes, and `polyglot coverage remap`
+  produces a byte-identical `.pg`-keyed report on Linux and Windows. The registry leg skipped under the
+  documented local loopback opt-out; CI runs it.
+  - **SP8 and SP9 answered by doing** (see the spike table). SP8's two findings were real defects a
+    real `coverage.py` run exposed and reasoning had not: a self-closing `<methods/>` silently swallowed
+    every following `<line>`, and prepending `<sources>` produced a path whose case did not match the
+    filesystem's, breaking the match that the bare filename would have made. Matching is now
+    case-insensitive and bidirectional, like the ingest's.
+  - **Two in-tree tests had encoded the old behaviour as intent** and were inverted deliberately, not
+    deleted: the unit test asserting Python/PHP declare *no* `originMapping`, and the cli-smoke check
+    asserting `--origin-info` *refuses* for a Python-only build. The refusal path itself survives for a
+    third-party plugin that declares no sink, but now has no in-box trigger to smoke-test — worth knowing
+    before someone reads its absence as dead code.
+  - Drive-by, as planned: `scripts/verify-coverage-paths.ps1` now mirrors the ingest's `PathNormalizer`
+    in both directions **and** requires a unique match, so an ambiguous basename — previously a silent
+    pass here and a silent drop there — is now a named finding.
 - **2026-09-18** — maintainer widened the format scope: **istanbul JSON and clover join cobertura and lcov**
   as readers *and* writers (slice 3b). This corrected an over-narrow reading of SP7 on my part — the
   ingest's three-format limit constrains what a consumer uploads, not what this tool can read. Istanbul is

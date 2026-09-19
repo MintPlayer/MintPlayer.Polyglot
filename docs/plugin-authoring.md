@@ -38,7 +38,9 @@ The manifest's top-level keys (all of them):
 | `rules` | yes | The emission rule tables; `Program` and `Type` are mandatory. |
 | `fileExtension` | no | Output extension; defaults to `.<name>`. |
 | `crossDirImports` | no | `true` when the target's emitted import specifiers may span directories (the compiler then hands the import rules a full relative specifier like `../shared/name` instead of a bare basename, and a pgconfig `include` layout may split an import closure across directories). Default `false`: all files of one closure must share an output directory — the CLI refuses a split. TS declares it; Python/PHP don't (dot-package / include semantics). |
-| `originMapping` | no | How this target records where each emitted line came from, so a coverage tool can attribute generated code back to the `.pg` (P38 / issue #69). Absent = the target says nothing about origins and emits byte-for-byte as before — the default, and what Python/PHP do today. See §3a. |
+| `originMapping` | no | How this target records where each emitted line came from, so a coverage tool can attribute generated code back to the `.pg` (P38 / issue #69). Absent = the target says nothing about origins and emits byte-for-byte as before. All four first-party targets declare one. See §3a. |
+| `sharedPreludeFile` | no | `true` to hoist the shared prelude (Option/Some/None + the program wrapper) into one reserved `__polyglot_prelude` file in a multi-file project build, instead of inlining it — so N independent link roots don't each emit it (C#: CS0101/CS8863 in one assembly). Only consulted when the host asked for a shared prelude. C# declares it. Default `false`. |
+| `preludePerFile` | no | `true` to inline the prelude into **every** emitted file. Targets whose modules don't share a link root (TS/Python/PHP) need their own copy. Default `false` = prelude in the entry file only. **Load-bearing for origins, not cosmetic:** prelude prepending shifts every recorded origin line, so a target that declares preludes and an origin sink must get this right. |
 
 Plugins register through `loadBackend()`, which strictly parses and validates the whole artifact
 (§5) — a malformed plugin fails to load with a named error, never degrades output.
@@ -66,7 +68,20 @@ v3 sidecar** beside the emitted file.
 
 // plugins/typescript
 "originMapping": { "style": "sourceMapV3", "sidecarExtension": ".map", "footer": "//# sourceMappingURL=$f" }
+
+// plugins/python — added in P39 with NO engine change (see below)
+"originMapping": { "style": "sourceMapV3", "sidecarExtension": ".map", "footer": "# sourceMappingURL=$f" }
+
+// plugins/php — the footer must be a PHP comment, because output never leaves `<?php` mode
+"originMapping": { "style": "sourceMapV3", "sidecarExtension": ".map", "footer": "// sourceMappingURL=$f" }
 ```
+
+**Giving a target an origin sink costs a manifest entry and nothing else.** Origin recording is
+target-neutral: `EmitterBase` collects `(outputLine, fileId, sourceLine)` for *every* backend whenever the
+style is not `None`, and `style` only selects the serialiser. Python and PHP were missing a sink
+*declaration*, not the data — P39 added the four lines above and no C++ at all. The footer is substituted
+generically (`$f` → the sidecar's name) with no comment-syntax knowledge anywhere in the CLI, which is why
+`#` and `//` both work without a code path.
 
 **Every** emitted line carries a directive when the style is `directive` — a positioned one where the
 origin is known, `hidden` everywhere else. That is not over-caution: emitting a directive only when the

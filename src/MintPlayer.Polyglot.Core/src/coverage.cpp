@@ -380,17 +380,12 @@ bool parseCobertura(const std::string& text, Report& out, std::string& error) {
         }
     }
     if (!sawClass) { error = "no <class filename=…> elements — not a cobertura report"; return false; }
-
-    // Re-root against <sources> when that makes a path longer and therefore more resolvable. Purely
-    // additive: a report whose paths already resolve is untouched.
-    if (!sourceRoots.empty()) {
-        for (auto& f : out.files) {
-            if (f.path.empty() || f.path[0] == '/' || f.path.find(':') != std::string::npos) continue;
-            // Only one root can apply; the first is what the producer meant.
-            const std::string joined = sourceRoots.front().empty() ? f.path : sourceRoots.front() + "/" + f.path;
-            if (sourceRoots.front() != ".") f.path = normalizePath(joined);
-        }
-    }
+    // `<sources>` is deliberately NOT prepended. Measured against a real `coverage xml` run: its
+    // <source> is an absolute directory whose spelling need not match the filesystem's case, so joining
+    // it produces a path that then fails to match, while the bare `filename` matches by suffix without
+    // it. Path resolution belongs to the matcher, which accepts either side being longer — the same rule
+    // the upload ingest applies.
+    (void)sourceRoots;
     return true;
 }
 
@@ -763,9 +758,17 @@ std::string matchGeneratedPath(
     const std::string p = normalizePath(reportPath);
     if (byGenerated.count(p)) return p;
 
+    // Case-INSENSITIVE, because a producer's own spelling of a path need not match the filesystem's:
+    // `coverage xml` writes a `<sources>` entry whose drive-relative segments differ in case from the
+    // real directory, and coverlet re-normalizes separators to the platform's. Matching case-sensitively
+    // silently produces an empty report, which reads as "nothing was covered".
     auto endsWithPath = [](const std::string& full, const std::string& tail) {
         if (full.size() < tail.size()) return false;
-        if (full.compare(full.size() - tail.size(), tail.size(), tail) != 0) return false;
+        for (std::size_t i = 0; i < tail.size(); ++i) {
+            const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(full[full.size() - tail.size() + i])));
+            const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(tail[i])));
+            if (a != b) return false;
+        }
         return full.size() == tail.size() || full[full.size() - tail.size() - 1] == '/';
     };
     std::vector<std::string> candidates;
