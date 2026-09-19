@@ -43,12 +43,49 @@ $failures = 0
 function Check([bool]$ok, [string]$name) {
     if ($ok) { Write-Host "[PASS] $name" }
     else { Write-Host "[FAIL] $name" -ForegroundColor Red; $script:failures++ }
+    # Under a CI task runner this leg's whole output is a few hundred bytes, which sits in the pipe
+    # buffer until the process exits — so a hang shows up as a task that printed NOTHING, and the
+    # failure cannot be located. Flush every line so the last line printed is the last step reached.
+    [Console]::Out.Flush()
+}
+
+# Every CLI invocation goes through here, bounded. A leg that hangs burns the job's entire time budget
+# and reports nothing useful (measured: 37 minutes to a cancellation with no output); a leg that times
+# out names the command that did it.
+function Invoke-Cli([string[]]$CliArgs, [int]$TimeoutSec = 60) {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = (Resolve-Path $Cli).Path
+    foreach ($a in $CliArgs) { [void]$psi.ArgumentList.Add($a) }
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.WorkingDirectory = $repo
+    $p = [System.Diagnostics.Process]::Start($psi)
+    # Drain both pipes on background tasks: a child that fills a redirected pipe blocks forever if the
+    # parent only waits, which is its own classic deadlock.
+    $so = $p.StandardOutput.ReadToEndAsync()
+    $se = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        try { $p.Kill($true) } catch { }
+        Write-Host "[TIMEOUT] polyglot $($CliArgs -join ' ')" -ForegroundColor Red
+        [Console]::Out.Flush()
+        $script:failures++
+        return [pscustomobject]@{ ExitCode = 124; Output = ''; TimedOut = $true }
+    }
+    return [pscustomobject]@{
+        ExitCode = $p.ExitCode
+        Output   = ($so.Result + $se.Result)
+        TimedOut = $false
+    }
 }
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("pg-coverage-" + [guid]::NewGuid().ToString('n').Substring(0, 8))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 try {
+    Write-Host "coverage: CLI = $Cli; repo = $repo; work = $work"
+    [Console]::Out.Flush()
+
     # ---------------------------------------------------------------------------------------------
     # 1. LIVE: each target's declared origin sink actually lands.
     $sample = Join-Path $repo 'docs/lang/samples/03_enums_unions_match.pg'
@@ -59,8 +96,14 @@ try {
             @{ name = 'csharp';     ext = '.cs';  sink = 'directive' })) {
         $out = Join-Path $work $t.name
         New-Item -ItemType Directory -Path $out -Force | Out-Null
-        & $Cli build $sample --target $t.name --out $out --origin-info > $null 2>&1
+        $built = Invoke-Cli @('build', $sample, '--target', $t.name, '--out', $out, '--origin-info')
+        Check ($built.ExitCode -eq 0) "$($t.name): builds with --origin-info"
+        if ($built.TimedOut) { continue }
         $emitted = Join-Path $out ("03_enums_unions_match" + $t.ext)
+        if (-not (Test-Path $emitted)) {
+            Check $false "$($t.name): emitted an output file"
+            continue
+        }
         if ($t.sink -eq 'sidecar') {
             $map = "$emitted.map"
             Check ((Test-Path $map) -and ((Get-Content $map -Raw) -match '"version"\s*:\s*3')) `
@@ -86,11 +129,12 @@ try {
     foreach ($case in @(
             @{ report = 'py.cobertura.xml'; expected = 'pg.cobertura.xml'; fmt = 'cobertura' },
             @{ report = 'py.lcov';          expected = 'pg.lcov';          fmt = 'lcov' })) {
-        $input = Join-Path $here "fixtures/reports/$($case.report)"
+        $reportIn = Join-Path $here "fixtures/reports/$($case.report)"
         $actual = Join-Path $work $case.expected
-        & $Cli coverage remap $input --target python --generated-dir $gen --root $repo --out $actual > $null 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Check $false "coverage remap ($($case.fmt)) exits 0"
+        $r = Invoke-Cli @('coverage', 'remap', $reportIn, '--target', 'python',
+                          '--generated-dir', $gen, '--root', $repo, '--out', $actual)
+        if ($r.ExitCode -ne 0) {
+            Check $false "coverage remap ($($case.fmt)) exits 0 -- $($r.Output.Trim())"
             continue
         }
         $expectedPath = Join-Path $here "expected/$($case.expected)"
@@ -119,9 +163,10 @@ try {
         # stay line-only.
         foreach ($fmt in @('cobertura', 'lcov', 'istanbul', 'clover')) {
             $o = Join-Path $work "fmt-$fmt.out"
-            & $Cli coverage remap (Join-Path $here 'fixtures/reports/py.lcov') --target python `
-                --generated-dir $gen --root $repo --out-format $fmt --out $o > $null 2>&1
-            Check (($LASTEXITCODE -eq 0) -and (Test-Path $o) -and
+            $r = Invoke-Cli @('coverage', 'remap', (Join-Path $here 'fixtures/reports/py.lcov'),
+                              '--target', 'python', '--generated-dir', $gen, '--root', $repo,
+                              '--out-format', $fmt, '--out', $o)
+            Check (($r.ExitCode -eq 0) -and (Test-Path $o) -and
                    ((Get-Content $o -Raw) -match 'docs/lang/samples/03_enums_unions_match\.pg')) `
                 "--out-format $fmt writes a .pg-keyed report"
         }
@@ -149,9 +194,9 @@ try {
 "@ | Set-Content $synth -Encoding utf8
 
             $csProjected = Join-Path $work 'cs.pg.xml'
-            & $Cli coverage remap $synth --target csharp --generated-dir $csOut --root $repo `
-                --out $csProjected > $null 2>&1
-            Check ($LASTEXITCODE -eq 0) "csharp: a .pg-keyed report passes through the directive sink"
+            $r = Invoke-Cli @('coverage', 'remap', $synth, '--target', 'csharp',
+                              '--generated-dir', $csOut, '--root', $repo, '--out', $csProjected)
+            Check ($r.ExitCode -eq 0) "csharp: a .pg-keyed report passes through the directive sink"
             $csText = Get-Content $csProjected -Raw
             Check ($csText -match "<line number=`"$pgLine`" hits=`"4`"") `
                 "csharp: the reported line keeps its hits through the pass-through"
@@ -169,9 +214,10 @@ try {
 <class name="m" filename="obj/Debug/net8.0/polyglot/nothing_like_it.cs"><lines><line number="1" hits="1"/></lines></class>
 </classes></package></packages></coverage>
 "@ | Set-Content $wrong -Encoding utf8
-            & $Cli coverage remap $wrong --target csharp --generated-dir $csOut --root $repo `
-                --out (Join-Path $work 'cs.wrong.out') > $null 2>&1
-            Check ($LASTEXITCODE -ne 0) `
+            $r = Invoke-Cli @('coverage', 'remap', $wrong, '--target', 'csharp',
+                              '--generated-dir', $csOut, '--root', $repo,
+                              '--out', (Join-Path $work 'cs.wrong.out'))
+            Check ($r.ExitCode -ne 0) `
                 "csharp: a report that is not .pg-keyed refuses (the --origin-info-was-off signature)"
         }
 
@@ -179,9 +225,10 @@ try {
         # this whole design exists to avoid: it reads downstream as "nothing was covered".
         $empty = Join-Path $work 'empty'
         New-Item -ItemType Directory -Path $empty -Force | Out-Null
-        & $Cli coverage remap (Join-Path $here 'fixtures/reports/py.lcov') --target python `
-            --generated-dir $empty --root $repo --out (Join-Path $work 'nope.lcov') > $null 2>&1
-        Check ($LASTEXITCODE -ne 0) "output with no origin data fails loudly rather than emitting nothing"
+        $r = Invoke-Cli @('coverage', 'remap', (Join-Path $here 'fixtures/reports/py.lcov'),
+                          '--target', 'python', '--generated-dir', $empty, '--root', $repo,
+                          '--out', (Join-Path $work 'nope.lcov'))
+        Check ($r.ExitCode -ne 0) "output with no origin data fails loudly rather than emitting nothing"
         Check (-not (Test-Path (Join-Path $work 'nope.lcov'))) "a failed remap writes no output file"
     }
 } finally {
