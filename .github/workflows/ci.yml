@@ -45,14 +45,17 @@ jobs:
       - name: Install NX (gate orchestration only)
         run: npm ci --no-audit --no-fund
 
-      # Build + unit + the two POSIX harness legs (watch-mode polling + the registry HTTP transport — the
-      # `#ifdef`-forked code that broke every P30 POSIX release leg) run through NX so they read/write the
-      # shared remote cache: an unchanged-source PR gets remote hits from the last master build. The nx
-      # `build` target is OS-aware (cmake+POLYGLOT_VERSION=0.0.0-dev on Linux — the shallow-checkout pin);
-      # `cache: false`, so it always runs, but the cacheable legs skip when their inputs are unchanged.
+      # Build + unit + the POSIX harness legs (watch-mode polling and the registry HTTP transport — the
+      # `#ifdef`-forked code that broke every P30 POSIX release leg; plus coverage attribution, which is
+      # path-resolution-heavy and therefore the same class of risk: it walks output trees, canonicalizes
+      # and re-roots paths, and matches them case-insensitively against a CASE-SENSITIVE filesystem here)
+      # run through NX so they read/write the shared remote cache: an unchanged-source PR gets remote hits
+      # from the last master build. The nx `build` target is OS-aware (cmake+POLYGLOT_VERSION=0.0.0-dev on
+      # Linux — the shallow-checkout pin); `cache: false`, so it always runs, but the cacheable legs skip
+      # when their inputs are unchanged.
       # The runners stay invocable WITHOUT nx (release.yml calls them directly) — nx is orchestration only.
-      - name: Gate (nx run-many — build + unit + watch + registry, remote-cached)
-        run: npx nx run-many -t unit,watch,registry --output-style=stream
+      - name: Gate (nx run-many — build + unit + watch + registry + coverage, remote-cached)
+        run: npx nx run-many -t unit,watch,registry,coverage --output-style=stream
 
       - name: Smoke transpile (plugins found next to the binary, not cwd)
         run: |

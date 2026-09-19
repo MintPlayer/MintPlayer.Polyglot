@@ -251,7 +251,11 @@ Record SP9's answer here: which PHP driver produced the proof, and whether branc
 - `scripts/nx-leg.ps1` switch arm + a `project.json` target with `dependsOn: ["build"]`, `cache: true`,
   `inputs: [tests/coverage/**, scripts/nx-leg.ps1, compilerSources, sharedGlobals]`, `outputs: []`.
   **The runner stays directly invocable without NX** — that is the standing contract.
-- `ci.yml` path triggers already cover `src/**`, `tests/**` and `plugins/**`; confirm nothing new is needed.
+- `ci.yml` path triggers already cover `src/**`, `tests/**` and `plugins/**`, so no new trigger is needed —
+  but the leg **is** added to the `nx run-many` set. It earns a place in a deliberately cheap POSIX gate
+  for the same reason `watch` and `registry` are there: it is path-resolution-heavy (walks output trees,
+  canonicalizes and re-roots, matches case-insensitively against a case-SENSITIVE filesystem), which is
+  the class of bug a green Windows gate does not catch.
 - **Automation is one documented CI line per consumer**, not an MSBuild hook (SP3). If a future option
   changes emitted bytes it must join the incrementality stamp the way `PolyglotOriginInfo` does via
   `_PolyglotOriginInfoTag` — omitting that once already caused a silent "the feature doesn't work" failure.
@@ -312,6 +316,19 @@ Record SP9's answer here: which PHP driver produced the proof, and whether branc
   `BranchFormat` stamping hazard — the single most consequential finding for an *overlay*, since C#
   cobertura branches landing first would silently discard TypeScript lcov branches for the same `.pg`
   file (PRD §4.4a) — and refuted the feared branch-dilution risk outright.
+- **2026-09-19 (later) — gate leg widened, and a `.gitignore` trap found.**
+  - The leg now also pins the **`directive` sink end to end** (a `.pg`-keyed report passes through, keeps
+    its hits, has its file set completed at zero from the `#line` directives, and a report that is *not*
+    `.pg`-keyed refuses — the "`--origin-info` was off" signature), and every **output format** through
+    the CLI rather than only the two the goldens pin.
+  - Added to `ci.yml`'s `nx run-many` set. Verified on POSIX by running the leg's own operations under
+    WSL against the CMake build: all four targets emit their sink, PHP still never emits `?>`, and the
+    committed golden matches **byte-for-byte** on Linux.
+  - **`.gitignore` carried a bare `coverage/`**, which git matches at any depth, so `tests/coverage/` —
+    the entire leg plus fixtures — was silently untracked. The files existed on disk, so the leg ran and
+    passed locally and in the full gate while CI would have had no such directory. Root-anchored to
+    `/coverage/`, which is what both producers actually write. Worth remembering as a shape: a gate that
+    passes locally and cannot possibly run in CI.
 - **2026-09-19 — IMPLEMENTED.** All slices landed on `p39-coverage-attribution`; slice 6 stayed cut. Full
   gate green (build + unit + every leg + differential conformance across the four targets), plus the POSIX
   leg: WSL `cmake`/g++ 13.3 Release builds clean, its unit run passes, and `polyglot coverage remap`

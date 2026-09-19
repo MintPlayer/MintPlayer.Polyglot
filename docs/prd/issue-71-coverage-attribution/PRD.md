@@ -540,6 +540,10 @@ Both land on the same `.pg` files, and the server's existing max-merge over
 
 ## 9. Acceptance criteria
 
+> **Status 2026-09-19: all met** (A6 and A8 as amended; A8's original `normalize` criterion was cut by
+> SP7). Verified by the full gate, the `tests/coverage` leg, ~40 unit tests, and a live `coverage.py`
+> run. Where a criterion was changed rather than met, the change is recorded in place below.
+
 - **A1** — `plugins/python` and `plugins/php` declare `originMapping`; `--origin-info` produces a valid v3
   sidecar plus footer for all four targets, and **no C++ file changes to achieve it** (the trait-flag fix
   of §4.7 is a separate, deliberate change).

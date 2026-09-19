@@ -113,6 +113,68 @@ try {
         $lcov = Get-Content (Join-Path $work 'pg.lcov') -Raw
         Check (-not ($lcov -match 'BRDA:')) "lcov output carries no arm records by default"
 
+        # ----------------------------------------------------------------------------------------
+        # Every output format round-trips through the CLI, not just the two the goldens pin. Cobertura
+        # and clover can express a count, so they carry branch data; lcov and istanbul are arm-keyed and
+        # stay line-only.
+        foreach ($fmt in @('cobertura', 'lcov', 'istanbul', 'clover')) {
+            $o = Join-Path $work "fmt-$fmt.out"
+            & $Cli coverage remap (Join-Path $here 'fixtures/reports/py.lcov') --target python `
+                --generated-dir $gen --root $repo --out-format $fmt --out $o > $null 2>&1
+            Check (($LASTEXITCODE -eq 0) -and (Test-Path $o) -and
+                   ((Get-Content $o -Raw) -match 'docs/lang/samples/03_enums_unions_match\.pg')) `
+                "--out-format $fmt writes a .pg-keyed report"
+        }
+
+        # ----------------------------------------------------------------------------------------
+        # The `directive` sink (C#): the report already names .pg files, so there is nothing to project.
+        # What must still happen is validation, path rebasing, and completing the file set from the
+        # #line directives so untested modules report at zero instead of vanishing.
+        $csOut = Join-Path $work 'csharp'
+        $csGen = Get-ChildItem -Path $csOut -Filter '*.cs' | Select-Object -First 1
+        $firstDirective = (Select-String -Path $csGen.FullName -Pattern '^#line\s+(\d+)\s+"(.+)"' |
+            Select-Object -First 1)
+        if (-not $firstDirective) {
+            Check $false "csharp: the emitted output carries a positioned #line directive"
+        } else {
+            $pgLine = [int]$firstDirective.Matches[0].Groups[1].Value
+            # Synthesize the shape coverlet produces: a report ALREADY keyed on the .pg.
+            $pgRel = 'docs/lang/samples/03_enums_unions_match.pg'
+            $synth = Join-Path $work 'cs.cobertura.xml'
+            @"
+<?xml version="1.0"?>
+<coverage><packages><package><classes>
+<class name="m" filename="$pgRel"><lines><line number="$pgLine" hits="4"/></lines></class>
+</classes></package></packages></coverage>
+"@ | Set-Content $synth -Encoding utf8
+
+            $csProjected = Join-Path $work 'cs.pg.xml'
+            & $Cli coverage remap $synth --target csharp --generated-dir $csOut --root $repo `
+                --out $csProjected > $null 2>&1
+            Check ($LASTEXITCODE -eq 0) "csharp: a .pg-keyed report passes through the directive sink"
+            $csText = Get-Content $csProjected -Raw
+            Check ($csText -match "<line number=`"$pgLine`" hits=`"4`"") `
+                "csharp: the reported line keeps its hits through the pass-through"
+            # The file set comes from the #line directives, so lines the report never mentioned are
+            # present at zero rather than missing (D7).
+            Check (([regex]::Matches($csText, '<line number=')).Count -gt 1) `
+                "csharp: unreported mapped lines are completed at zero from the #line directives"
+
+            # A report that is NOT .pg-keyed is the signature of --origin-info having been off, whose
+            # only other symptom is a mysteriously lower percentage. It must refuse, not emit nothing.
+            $wrong = Join-Path $work 'cs.wrong.xml'
+            @"
+<?xml version="1.0"?>
+<coverage><packages><package><classes>
+<class name="m" filename="obj/Debug/net8.0/polyglot/nothing_like_it.cs"><lines><line number="1" hits="1"/></lines></class>
+</classes></package></packages></coverage>
+"@ | Set-Content $wrong -Encoding utf8
+            & $Cli coverage remap $wrong --target csharp --generated-dir $csOut --root $repo `
+                --out (Join-Path $work 'cs.wrong.out') > $null 2>&1
+            Check ($LASTEXITCODE -ne 0) `
+                "csharp: a report that is not .pg-keyed refuses (the --origin-info-was-off signature)"
+        }
+
         # No origin data at all must fail loudly. Silently emitting an empty report is the failure mode
         # this whole design exists to avoid: it reads downstream as "nothing was covered".
         $empty = Join-Path $work 'empty'
