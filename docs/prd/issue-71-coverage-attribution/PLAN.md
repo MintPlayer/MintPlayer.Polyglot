@@ -316,6 +316,21 @@ Record SP9's answer here: which PHP driver produced the proof, and whether branc
   `BranchFormat` stamping hazard — the single most consequential finding for an *overlay*, since C#
   cobertura branches landing first would silently discard TypeScript lcov branches for the same `.pg`
   file (PRD §4.4a) — and refuted the feared branch-dilution risk outright.
+- **2026-09-19 (CI) — the new leg hung the Linux job twice, and the fix is worth reading.** Its first two
+  CI outings ran for **~38 minutes** and were cancelled, having printed **not one line**. Every other job
+  on this repo finishes in about two minutes.
+  - **Why it was invisible:** a task's output sits in the pipe buffer until the process exits, and this
+    leg's entire output is a few hundred bytes. `watch` and `registry` stream because they print
+    kilobytes. So the leg looked like a task that never started, and the hang could not be located from
+    the log at all — only `nx run polyglot:coverage` appearing in the task list proved it had begun.
+  - **Fixed three ways, and the honest position is that the cause is not fully isolated**: every check
+    now flushes; every CLI call runs through `Invoke-Cli` with a 60-second bound that **drains both
+    redirected pipes on background tasks** (a child filling a redirected pipe blocks forever if the
+    parent only waits — the classic form of this deadlock, and the most likely culprit); and the leg
+    moved out of the `nx run-many` line into its own step with `timeout-minutes: 6`. Whether the trigger
+    was the pipe handling or being a fourth parallel nx task is **not distinguished** by this change.
+  - **The rule it earns:** a new gate leg goes in bounded and flushing from the start. An unbounded leg
+    that prints nothing costs a full job budget per attempt and tells you nothing about itself.
 - **2026-09-19 (later) — gate leg widened, and a `.gitignore` trap found.**
   - The leg now also pins the **`directive` sink end to end** (a `.pg`-keyed report passes through, keeps
     its hits, has its file set completed at zero from the `#line` directives, and a report that is *not*
