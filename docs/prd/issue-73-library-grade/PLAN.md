@@ -1097,3 +1097,55 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Verified:** MSBuild solution build; unit exe green; `-Tier fast` green, including cli-smoke with 15 new
     `P40 review` cases; run-coverage green; run-nuget green with `-Work`; POSIX leg (WSL, CMake + g++) builds,
     and `polyglot-tests` passes. The full tier is left to the orchestrator, before the single push.
+- **2026-10-17 (late night) — Spark review of `612e2fe`, part 2, the language/emitter half: as built.** Every
+  repro was reproduced against the pre-fix build before the fix. (The CLI/gate/docs half, A2–A5, B7–B10 and the
+  A9 gate leg, landed separately.)
+  - **A1:** a bound template wrapping a value only to fold JS `undefined` into `null` (`(m.get(k) ?? null)`) is
+    now spec data, `absentNormalize {prefix, suffix}`. Where the bound call is the left operand of `??`, the
+    emitter strips that wrapper, for std and user `extern` templates alike. Running the library gate under
+    TypeScript 6 also caught `generic_members`' own `Table.get`, which a per-binding variant would have
+    missed. TypeScript 6.0.3 is pinned as a devDependency. The library gate is green with it on PATH;
+    `run-library.ps1` should resolve the repo-local `tsc` (gate-runner half).
+  - **A6:** receiver parenthesization is safe by default. The opt-in `wrapAtom.recv` wrap list (missing C#'s
+    `x switch {…}`, the ternary, `with`, and TS `a ?? b` on a user type) became `wrapAtom.recvPrimary`, the
+    kinds a target spells as primary. Every other receiver is wrapped. Derived: an `opMethod` binary is a call,
+    and a bound template is primary iff it is lexically atomic. The unary twin went the same way:
+    `wrapAtom.unary` is gone, and a prefix operand follows the same rule plus literals, prefix forms and casts.
+    C# had emitted `-1 switch {…}` for `-(match one {…})`, negating the scrutinee.
+  - **A7:** a lambda's result now flows into the function type it meets (`convertLambdaResult`): an expression
+    body, or each `return` of a block body. A block lambda's `return` no longer checks against the enclosing
+    function. Method and extension calls bind their own type params before converting arguments, which ends
+    `new None<U>()`. Element assignment and list-literal elements are covered too (SPEC §4.4 table).
+  - **A8:** overload resolution considers only the overloads visible to the calling module. The D16 predicate
+    `scopeVisible` is shared with the scope pass and passed to sema as `ModuleVisibility`. Before, C# bound the
+    unimported `check(int)`. Now it is refused: `type mismatch (argument 1 of 'check')`. A cross-module
+    duplicate names both modules.
+  - **A9 / B11:** see the A9/B11 commit:
+    - flow-sensitive definite assignment;
+    - `operator fn hash` required with `eq`;
+    - `catch (T)` for an unused binding;
+    - `T?` operator operands;
+    - unreachable code, missing return and self-comparison are errors;
+    - `Math.isNaN`;
+    - `csharp.entryPoint`.
+    The local floor sweep (C# 11, net8.0, Nullable, TreatWarningsAsErrors, every conformance program except
+    the net9 `map`) went from 24 errors to 0 on the merged tree.
+  - **B1:** PHP `match` literal, enum and tag arms use `===`. **B4:** Python emits every `def` before types
+    and module globals. Defs are the one non-hoisted function form among the targets, so this restores
+    hoisting without reordering any initializer. **B5:** the capability gate walks module value initializers.
+  - **B6:** an inclusive range whose end may be the type's maximum (`stmt.inclusiveMayWrap`; only a literal
+    proves otherwise) runs on C# with a wider counter from `tables.rangeWideType` (Int128/UInt128 for 64-bit)
+    and on PHP with `\is_int` guarding a 64-bit counter. Before, both looped forever.
+  - **B2 / B3:** in the B2/B3 commit:
+    - Py/PHP route lone-surrogate searches through the UTF-16 view;
+    - one strict `[+-]?[0-9]+` + range grammar for `parse`/`toXxx` on every target;
+    - `tryParse` exists on all numeric types.
+  - **Found, not fixed:** a PHP class `static let` with a non-constant initializer (`static let Y = f()`)
+    emits `const Y = f();`, a PHP fatal at load. It needs a constant-expression fact plus initialization after
+    the class.
+  - **Tests:** the conformance programs `receiver_parens`, `lambda_option_boundary`, `review_semantics`,
+    `surrogate_consistency`, `parse_strict` and `operator_eq_hash` (each with `.expected`), 7 refusal fixtures,
+    and unit checks for A1, A8 and B5.
+  - **Verified:** MSBuild build, unit exe, `-Tier fast`, full conformance with the culture leg (137 programs),
+    the library gate under TS 6.0.3, the nullable and refusal gates, and the floor sweep at 0. The full tier and
+    the POSIX leg are for the orchestrator. The A9 half adds `flow.cpp` to the CMake glob, but no `#ifdef`.

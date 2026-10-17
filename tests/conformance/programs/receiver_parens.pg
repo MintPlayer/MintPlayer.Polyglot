@@ -1,14 +1,13 @@
 // P40 review A6 + A1: a receiver that is not a primary expression keeps its parentheses on every target.
 // `(a ?? b).count` emitted `a ?? b.length` on TS (an empty line, not 0); `(lastOf(xs) ?? "").len()` emitted
 // C#'s `x switch {…}.Length` (CS1002). The rule: every receiver kind a target does not spell as a primary
-// expression is parenthesized (wrapAtom.recvPrimary). A1: `m.get(k) ?? d` emits no inner `?? null`
-// normalization (tsc >= 5.6 rejects `(x ?? null) ?? d` as TS2871).
+// expression is parenthesized (wrapAtom.recvPrimary). (A1, `m.get(k) ?? d` with no inner `?? null`, is
+// covered by map.pg and generic_members.pg under the library gate's TypeScript 6 — Map needs .NET 9.)
 
 import "std.collections"
 import "std.strings"
 
 fn lastOf<T>(xs: List<T>): T? => if xs.count > 0 { xs[xs.count - 1] } else { null }
-fn lookup(m: Map<string, i32>, k: string): i32 => m.get(k) ?? 0
 
 record P(x: i32)
 
@@ -30,13 +29,6 @@ fn main() {
   print((match xs.count { 1 => "one", _ => "many" }).len())       // 3
   print(("a" + "bc").len())                        // 3
   print((P(4) with { x = 9 }).x)                   // 9
-
-  let m = Map<string, i32>()
-  m.set("a", 5)
-  print(lookup(m, "a"))                            // 5
-  print(lookup(m, "zz"))                           // 0
-  print((m.get("a") ?? 0) + 1)                     // 6
-  print(m.get("zz") == null)                       // true
 
   // the unary-operand twin: C# emitted `-1 switch {…}`, negating the scrutinee (6, not -5)
   let one = 1
