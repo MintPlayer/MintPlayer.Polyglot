@@ -202,7 +202,11 @@ $staleFixture = {
     $obj = Join-Path $p "obj/Debug/net8.0/polyglot"
     $stamp = Join-Path $p "obj/Debug/net8.0/polyglot.stamp"
 
-    $b = dotnet build $p --nologo -v q -p:PolyglotTargets=csharp%3B 2>&1 | Out-String   # "csharp;": a trailing separator (review B7)
+    # "csharp;" — a trailing separator as a consumer writes it in the .csproj (review B7: the CLI now refuses an
+    # empty --only entry, so the .targets must pass PolyglotTargets as an item list). Gated by a test-only switch.
+    $sp = Join-Path $p "Stale.csproj"
+    (Get-Content -Raw $sp).Replace("</Project>", "  <PropertyGroup Condition=`"'`$(PgTrailingSep)' == 'true'`"><PolyglotTargets>csharp;</PolyglotTargets></PropertyGroup>`n</Project>") | Set-Content $sp
+    $b = dotnet build $p --nologo -v q -p:PgTrailingSep=true 2>&1 | Out-String
     ck ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $obj "a.cs")) -and -not (Test-Path (Join-Path $web "gen"))) `
         "P40: PolyglotTargets=csharp (spelled 'csharp;') compiles the C# and writes no .ts twin"
     dotnet build $p --nologo -v q 2>&1 | Out-Null
