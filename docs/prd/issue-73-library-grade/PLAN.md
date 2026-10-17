@@ -1,8 +1,8 @@
 # P40 — Library-grade output (issue #73) — implementation plan (dependency-ordered slices)
 
 > Design contract: `PRD.md`. Investigation evidence: `ANALYSIS.md`. Issue: #73.
-> **Status (2026-10-17):** designed. The decisions **D1–D13** below await maintainer review, and slice 0
-> (spikes) is open. Implementation starts after both.
+> **Status (2026-10-17):** designed, and **slice 0 is done**: all 20 spikes ran (results below). The
+> decisions **D1–D17** await maintainer review; implementation starts after that.
 
 **Build discipline.** Implement ALL slices first, then build and run the full gate **ONCE** at the end
 (`pwsh scripts/build-and-test.ps1` or `/build-and-test`). The mid-flight ceiling is `-Tier fast` or a bare
@@ -66,7 +66,46 @@ routes to the named decision.
 | **S20** | Does MSBuild skip regeneration after a `pgconfig.json` edit today? | `run-nuget` fixture, edit the config, rebuild | confirms the bug (expected) | 15 m | B1/B6 |
 
 S14 and S15 are the risk spikes: a missed reference in the reachability pass fails **only at runtime** on
-Python and PHP. Run them first.
+Python and PHP.
+
+### Slice 0 results (2026-10-17, five parallel spike agents)
+
+All 20 spikes ran. Prototypes are kept on local branches: **`spike/p40-reachability`** (S14/S15, a
+reference for slice 1) and **`spike/p40-nullable-rules`** (S7, a reference for slice 5). The culture hook
+from S10 is committed under `spikes/PgCultureHook/` for slice 13.
+
+| ID | Verdict | Evidence, and what it changes |
+|---|---|---|
+| **S1** | **Python PASS · PHP conditional** | Python UTF-16 helpers (fast path `isascii()`, then a cached surrogate-expanded view): ASCII 0.98–1.25× vs the guarded native call; mixed charAt/codePointAt/indexOf 1.2–1.7×; mixed substring 13× (linear). PHP (ASCII byte scan, then a cached iconv UTF-16LE copy): ASCII 1.4–1.8×, mixed substring 12×, indexOf 9× (the needle is reconverted every call; fixable). PHP **needs iconv**; the pure-PHP fallback is 70×. `utf16Strings` cannot express any of this today: it is marked only on `char`, never on string index calls, and Python/PHP default to "native", which is false. It needs a `utf16Strings:index` child key (the P37 `parent:child` mechanism). → **D2** and new **D15** |
+| S1 surprises | — | **Python crashes printing a lone surrogate** (`UnicodeEncodeError`, even with `-X utf8`) where C# and Node print U+FFFD, so faithful Python needs a surrogate→U+FFFD stdout handler. **`python -I` ignores `PYTHONIOENCODING`**, so the harness must pass `-X utf8`. `len` changes with the other index functions under faithful mode. |
+| **S2** | **PASS** | All four targets give identical UTF-16 units. Templates: C# `\u$H4` / `\U$H8`, interp `{{ }}`; TS `\u{$H}` for both, template context maps `` ` `` and `$`; Python `\u$H4` / `\U$H8`, f-string `{{ }}`; PHP `\u{$H}` for both, `$`→`\$`. Raw **U+0085 (NEL)** is also CS1010 (covered by the C1 set; name it in tests). |
+| **S3** | **PASS** | `\x1d`, `\u001d` and `\u001D` are all silent under `-W error`. Pick `\u$H4`, since `\x` stops at 0xFF. |
+| **S4** | **PASS** | PHP 8.5.8 `bin2hex`: `\u{1D}`→`1d`, `\u{0}1`→`0031`, `\u{1F600}`→`f09f9880`, `\${$x}` = a literal `$` plus the value. **PHP silently accepts `"\u{D83D}"`** (writes WTF-8), so the lexer's surrogate refusal is the only guard. |
+| **S5** | **PASS** | Without `default:`, `/we4062` names exactly `Super` and `Range`; deleting one more arm names exactly that one. Project-wide noise: 20 errors at 5 sites (backend_engine.cpp:382, capture_analysis.cpp:222, ir.cpp:213/304/311). → turn it on project-wide and give those 5 sites an explicit `default:` (an implementation call, not a maintainer one). |
+| **S6** | **PASS** | C# uses the **multi-declarator** `for (int i = 0, __end0 = xs.Count; i < __end0; i++)`. It spells the type (`var` with two declarators is CS0819), keeps start-then-end order, and needs no block. TS `let` and PHP comma init take the same shape; Python's `range()` is already evaluate-once. The capture shim is unaffected. **Today's TS output loops forever** on a mutating bound, which is direct evidence for D7. |
+| **S7** | **PASS, zero fallout** | Prototype N1–N3 over 156 files (118 conformance incl. modular and library, 10 samples, 17 refusal fixtures, 10 MintPlayer.AI `.pg`): **0 hits** on each rule; the unit exe is green with the rules on. The corpus already writes `x!` after `if x != null`. **There is no null flow-narrowing**, so `if a != null { a + 2 }` is rejected by N1 → new **D14**. **Holes N1–N3 miss:** compound `n += 1` on `i32?` (that path skips `checkBinary`); `if bb && true` with `bb: bool?` (`checkIfCond` handles `&&` itself; `requireBool` is lenient on `bool?`); `if c {1} else {null}` typed non-nullable `i32` (an existing typing bug); member access on a nullable receiver. All four go into slice 5. |
+| **S8** | **FAIL (language)** | `Fail => throw Error("x")` **hangs the parser forever** (`parsePrimary` doesn't consume the token; the arm loop at `parser.cpp:1410-1424` has no progress guard). Block arms are refused. All four targets can express a throwing arm natively, except Python, which needs the inline check. → **D12**: lower `opt!` directly as `NullAssert`; no throw-expressions in the language. The parser hang is fixed in slice 4. |
+| **S9** | **helper FAIL · inline PASS** | Python FruitCake twin over 60 drops: helper `_pg_nn` +16.4%, inline check +3.9% (identical checksums). Emit inline: `(x if x is not None else _pg_fail(at))`, with the walrus form the emitter already uses for `?.` when the operand is not a plain name. |
+| **S10** | **PASS** | WSL Ubuntu 24.04 (libicu74, .NET 9.0.4): fa-IR, sv-SE and tr-TR resolve to real data under the hook; invariant mode fails with exit 97 as it should. Set `DOTNET_STARTUP_HOOKS` **only on the `dotnet prog.dll` call** (it leaks into the SDK otherwise). Windows accepts a made-up culture name and gives it the user's locale, so the synthetic hostile culture must **clone a real culture and edit its NumberFormat**. |
+| **S11** | **PASS, with a floor** | `file static class __PgRt` is 0-warning under Nullable + warnings-as-errors on net11 and net8, with `--origin-info`, in a file-scoped namespace, and twice in one assembly. **`LangVersion 10` gives CS8936**, so C# 11 is a hard floor, which rules out netstandard2.0 and net6 consumers → **D8** |
+| **S12** | **guard PASS · `afterFirstLine` FAIL** | The namespaced `function_exists(__NAMESPACE__.'\\x')` guard works across two files, and a same-named global does not shadow it. Today's unqualified guard **silently calls the global instead**. A literal after-`<?php` placement is fatal ("Namespace declaration … has to be the very first statement"); end-of-file is fatal when top-level code calls the helper first. → PRD §0 changes to a `preludeSlot` marker |
+| **S13** | **PRD changed** | Over 65,021 f32 literals, C# `float.ToString("R")` differs from JS `Math.fround` then `toString` on **74.9%**. `((double)f).ToString("R")` vs JS fround: **0 mismatches**. → f32 prints as its exact value widened to f64 under the f64 rule (0.1f prints as `0.10000000149011612`). **Bug:** `let a: f32 = 0.1f` emits C# `float a = 0.1;` (CS0664, the `F` suffix is stripped). |
+| **S14** | **PASS** | The prototype pass after `lower()` follows types, callees, `Var`, `staticType`, `New`, `MakeCase`, pattern ctor cases (via a case→union map) and transitively through prelude declarations. **Identical conformance result lines** (116 programs × 4 targets). Emitted size: C# −32.1%, TS −37.7%, Python −20.8%, PHP −26.2%; no file grew. Every manifest string leaf was scanned: **no template emits a prelude name without a declared reference**. Manifest `preludes` need no modelling, because their `require` fires while emitting a kept declaration. 2 unit tests (issue #14) assert `Option` is always emitted and must change. |
+| **S15** | **PASS** | Naive per-root pruning fails with `conflicting output for __polyglot_prelude.cs`, as predicted. The two-phase version works (roots report reach plus the std modules they link; the CLI compiles one prelude-only unit from the union). 0 warnings under warnings-as-errors; a no-prelude project gets no file. The multi-root loop in `main.cpp` (~670-700) splits into compile-all-roots, then emit the prelude. |
+| **S16** | **PASS** | Hand-written Map bindings: byte-identical on all four (`b,c,a`; absent `get ?? -1`; i64 key 5e9 incl. TS bigint; snapshot mutation). PHP prefixed keys round-trip `"1","01","10","1e1","-1","-0"," 1","9223372036854775808"`. A bare `\ArrayObject` corrupts them, and `"01"==1` under PHP `==`, so **string equality on PHP must be `===`**. The C# else-arm must be typed, `(V?)null` (CS0173 otherwise); duplicate temps are CS0128 as well as CS0136. |
+| **S17** | **PASS** | A PHP helper using `chr()` arithmetic and a `.pg` encoder over `chr` both match UTF-8 for 0x41…0x10FFFF; surrogates, -1 and 0x110000 throw. Use the **PHP helper via `requires`**: the `.pg` version drags i32-mask noise into every `>>`. |
+| **S18** | **PASS (transitive)** | `import "std.collections"` inside `STD_STRINGS` is enough, because `loadImports` recurses. **Side effect:** the namespace is flat, so `List` leaks to user code that never imported it → new **D16** |
+| **S19** | **PASS for coverlet; remap needs B7** | The PDB and cobertura carry the same absolute path for relative and absolute directives, with identical hits. Remap of relative directives breaks from the repo root or a deeper folder (exit 65), which confirms `coverage_cmd.hpp:196`. Today's absolute emission also **lower-cases a folder name**, while Roslyn's resolution of the relative form keeps the real casing: one more reason for B7. |
+| **S20** | **bug CONFIRMED** | After a `pgconfig.json` edit (include output or `targets`), MSBuild prints "Skipping target PolyglotTranspile because all output files are up-to-date". The stale old routed file also stays behind, and B5's `owned` cleanup is skipped for explicit inputs, which is how MSBuild calls the CLI → new **D17** |
+
+**Further pre-existing bugs found by the spikes, all in scope (one PR):**
+- the parser hang on `=> throw` (S8);
+- C# drops explicit type arguments: `failT<T>("..")` is emitted as `failT("..")`, giving CS0411 (S8);
+- the f32 literal loses its `F` suffix in C# (S13);
+- a bare `import "./mod"` of an extension-only module emits no names on Python (NameError) and TS (TS2304) (S16–S20 agent);
+- the Python `print` helper calls `__builtins__.print`, which raises AttributeError when the module is **imported** rather than run, so every Python library module that prints crashes (same agent);
+- PHP's unqualified `function_exists` guard silently uses a same-named global (S12);
+- the four N1 holes listed under S7.
 
 ---
 
@@ -75,8 +114,15 @@ Python and PHP. Run them first.
 - `decl.isPrelude` for every declaration kind.
 - The reachability pass after lowering, in the Core.
 - The binding object form with `requires`, and loader validation.
-- `preludePlacement` (closed vocabulary, refused at load if unknown).
-- The shared C# prelude from the union of roots: compile all roots, then emit.
+- A `{"fn":"preludeSlot"}` marker in each `Program` rule, required by the loader, instead of a line-based
+  placement vocabulary (S12).
+- The reachability pass as a new TU, `src/reachability.cpp`: `pruneUnreachablePrelude(ir::Module&, const
+  std::set<std::string>* forcedReach)`, called from `compile()` and `emitKeep`. It follows the reference set
+  S14 proved. Keep a conservative identifier scan of opaque `extern(...)` text as a backstop for third-party
+  plugins. Start from `spike/p40-reachability`.
+- The shared C# prelude from the union of roots: compile all roots, then emit. Roots report their reach
+  **and the std modules they link**; one prelude-only unit compiles the union (S15). Update the two issue-#14
+  unit tests that assert `Option` is always emitted.
 - C# `file static class __PgRt` scaffolding.
 - TS and PHP prelude declarations become non-exported, and namespace-guarded on PHP.
 - Unit tests: reachability (direct, through `requires`, transitive), placement per vocabulary entry, loader
@@ -92,7 +138,7 @@ Python and PHP. Run them first.
 - PHP: a `namespace` option.
 - The closure-consistency refusal.
 - The LSP preview honours options.
-- `pgconfig.json` is added to the MSBuild `Inputs`.
+- The MSBuild `Inputs` gain the config and lockfile actually used, via the CLI-written depfile (D17, S20).
 
 ## Slice 3 — escapes (A1)
 
@@ -108,18 +154,25 @@ Python and PHP. Run them first.
 
 - The grammar and the parser (loosest, non-chaining). The formatter stops parenthesizing bounds.
 - Sema: `checkRangeBounds` (integers, widening), the range-outside-`for` error, and the `super` refusal.
-- Bounds evaluated once with `rangeEndSimple` hoisting, per S6.
-- `loweringFailures` with an ICE diagnostic, an exhaustive switch, and `/we4062` per S5.
+- Bounds evaluated once with `rangeEndSimple` hoisting, in the C# multi-declarator form from S6.
+- `loweringFailures` with an ICE diagnostic, an exhaustive switch, and `/we4062` project-wide with explicit
+  `default:` at the 5 existing sites (S5).
+- A parser progress guard in the match-arm loop (`parser.cpp:1410-1424`), fixing the S8 hang. Audit the other
+  `parsePrimary` loops for the same shape.
 - The grep gate in `run-conformance.ps1`, `run-library.ps1` and the samples leg.
 
 ## Slice 5 — nullability (A4)
 
 - `ir::NullAssert` and its four manifest rules plus helpers, via §0.
-- Sema N1–N3, checking `.nullable` before `scalarTyOf`.
+- Sema N1–N3, checking `.nullable` before `scalarTyOf` (start from `spike/p40-nullable-rules`). Close the
+  four holes S7 found: compound assignment, `bool?` in `&&` conditions and `requireBool`, if-expression typing
+  with a `null` branch, and member access on a nullable receiver.
+- Null flow-narrowing per D14.
+- Python emits the inline check (S9), not a helper.
 - Generic stringifiers render `null`.
-- PHP `catch` maps to `\Throwable`.
-- Fix the S7 fallout in the corpus.
-- `opt!` if D12 is accepted.
+- PHP `catch` maps to `\Throwable`; the PHP `function_exists` guards become namespace-qualified (S12).
+- `opt!` lowered directly as `NullAssert` (D12).
+- C# keeps explicit type arguments at call sites (S8: `failT<T>(..)` lost its `<T>`).
 - The nullable gate gains `!` cases; the library gate gains a `!` case under `tsc --strict`.
 
 ## Slice 6 — stringification and culture-free C# (A3, A6)
@@ -127,6 +180,9 @@ Python and PHP. Run them first.
 - `__PgRt` (C#), `__pg_str` (PHP), and the Python `fstr` replacement.
 - The rebinds for interpolation, print, parse and case. Remove the `Main` guard.
 - TS `toI32` truncation.
+- f32 text = its exact value widened to f64 under the f64 rule (S13); the C# f32 literal keeps its `F` suffix.
+- The Python `print` helper stops calling `__builtins__.print`, which breaks imported modules; faithful
+  Python gets a surrogate→U+FFFD stdout handler (S1).
 - `toUpperAscii`/`toLowerAscii`.
 - The printable guard reaches holes; enums are refused per D1.
 - `parenIfContains` and the C# hole template (A6).
@@ -147,7 +203,11 @@ Python and PHP. Run them first.
 - The PHP UTF-8 encoder per S17.
 - C# `Ordinal` overloads, with golden pins.
 - `charAt`/`codePointAt` throw out of range.
-- The SPEC:529 rewrite and the index-unit tier per D2 and S1.
+- The SPEC:529 rewrite and the index-unit tier per D2/D15: Python UTF-16 helpers (including `len`); PHP
+  either iconv-backed helpers or the caveat. Add a `utf16Strings:index` capability child, marked at string
+  index calls.
+- `std.strings` imports `std.collections` itself (S18); module scoping per D16.
+- A bare import of an extension-only module emits its names on Python and TS (the S16–S20 agent's finding).
 
 ## Slice 9 — `Map<K,V>` (B4)
 
@@ -209,18 +269,22 @@ Each row is open until the maintainer rules on it; the recommendation is the inv
 | # | Decision | Recommendation | Why |
 |---|---|---|---|
 | **D1** | Enums in `print` and interpolation holes: refuse, or define a canonical spelling? | **Refuse** (point at an explicit mapping) | The targets disagree today (C# `Green`, others `1`). A canonical name needs name tables on every target, which is new scope better driven by demand |
-| **D2** | String index units on Python and PHP: UTF-16-faithful, or a published caveat? | **Decided by S1** (≤ 2× ASCII overhead → faithful) | Faithfulness is the default (§3.C); the caveat is the fallback, published |
+| **D2** | String index units on Python and PHP: UTF-16-faithful, or a published caveat? | **Python: faithful** (S1 passed). **PHP: faithful only with D15**, otherwise a published caveat | S1: Python ASCII ≤ 1.25× the guarded call. PHP ASCII 1.4–1.8×, but only with iconv. Faithful Python also needs the surrogate→U+FFFD stdout handler |
 | **D3** | `PolyglotTargets` default | **Empty = the full pgconfig set** | Keeps P30's "the consumer's pgconfig decides" and the existing NuGet fixture; the Nx recipe is documented |
 | **D4** | Name of the filter flag | `--only` | Distinct from `--target` (an override that bypasses routing); reads as a restriction |
 | **D5** | Owned-directory deletion semantics | **Marker-gated, discovery mode only**; an unmarked extra file is exit 1 and kept | Deleting hand-written source in a routed Angular folder is the worst failure available here |
 | **D6** | `super.m()` / bare `super` | **Refuse** with a diagnostic | Implementing it needs a new IR node, because PHP `parent::` access differs; it is not needed by this issue |
 | **D7** | Range bounds evaluated once | **Yes, same PR** | A2 makes `0..s.len() - 1` common, and the targets already diverge |
-| **D8** | Platform floors | C# 11/.NET 7 (`file` types); .NET 9 for `Map`; **PHP 8.2** | `file` makes helpers collision-proof; `OrderedDictionary<K,V>`; PHP case mapping is locale-free from 8.2 |
+| **D8** | Platform floors | **C# 11** (hard, S11), .NET 9 for `Map`, **PHP 8.2** | `file` makes helpers collision-proof, but `LangVersion 10` is CS8936, which **rules out netstandard2.0 and net6 consumers**. Spark targets .NET 11, so this is fine for the motivating case. `OrderedDictionary<K,V>`; PHP case mapping is locale-free from 8.2 |
 | **D9** | Fold `access` into `targetOptions.csharp` | **Yes** (clean cutover) | It is a C#-only knob at the top level today; no-backward-compat |
 | **D10** | TS prelude: per-file non-exported copy, or a sibling `__polyglot_prelude.ts`? | **Per-file, reached-only, non-exported** | No generated imports or cross-dir routing; a sibling file would export helpers anyway |
 | **D11** | PHP `namespace` option in this PR | **Yes** | The same collision class as B1; SP-B1-S2 proved the output is namespace-safe |
-| **D12** | `opt!` on `Option<T>` | **Yes if S8 passes**, otherwise drop | It completes `!`'s promise, but it is optional for the issue |
+| **D12** | `opt!` on `Option<T>` | **Yes: lower it directly as `NullAssert`** per target (C# switch arm, TS closure throw, PHP match-arm throw, Python inline check). No throw-expressions in the language | S8: the language cannot hold `throw` in an arm, but every target can express the lowering |
 | **D13** | PHP `catch (e: Error)` → `\Throwable` | **Yes** | Otherwise A4's TypeError-class failures and PHP engine errors are uncatchable from `.pg` |
+| **D14** | Null flow-narrowing after `if x != null` | **Add it** (locals and parameters, reusing the `is`-binding scope machinery near `sema.cpp:1277`) | Without it, N1 rejects the most natural code shape and forces `!` noise (S7), and narrowing would also delete the 16 redundant asserts in FruitCake's hot loop (S9). The cheaper alternative is to ship N1 with "assert with `!`" wording, which matches the corpus's current style |
+| **D15** | Make **iconv** a declared requirement of the PHP target | **Yes**, if PHP is to be UTF-16-faithful (D2) | iconv is enabled by default but not guaranteed; the pure-PHP fallback is 70× on substring. The alternative is PHP index functions with a published byte-unit caveat |
+| **D16** | `List` leaking to user code via std's transitive import | **Fix module scoping** (an import makes names visible only to the importing module) rather than accept the leak | A flat namespace is a latent collision source for library code (B1/B2's theme). If the fix proves large, accept and document the leak, with a note pointing at the principled follow-up |
+| **D17** | How MSBuild learns which `pgconfig.json` the CLI used (an `Inputs` entry, S20) | **A CLI-written depfile** (config + lockfile paths) that the targets read as `Inputs` | With A5's upward discovery, MSBuild cannot know which config the CLI found; `$(PolyglotRoot)\pgconfig.json` guesses wrong for nested configs. The stale routed file after a re-route stays a known limitation unless `owned` cleanup is allowed for MSBuild's explicit inputs |
 
 ## Log
 
@@ -232,3 +296,15 @@ Each row is open until the maintainer rules on it; the recommendation is the inv
   - B4 is blocked by a **pre-existing silent miscompile** in generic member typing.
   - A3's proposed `AllowLeadingSign` would itself regress.
   - Six items independently need one missing helper/reachability mechanism, which became PRD §0 and slice 1.
+- **2026-10-17 (later)** — **Slice 0 done**: five parallel spike agents ran all 20 open spikes. Full table
+  above; the prototypes are on `spike/p40-reachability` and `spike/p40-nullable-rules`.
+  - **The risk spike passed.** Reachability pruning keeps every conformance result line identical on all four
+    targets and cuts emitted size by 21–38%. No manifest template names a prelude declaration without a
+    declared reference.
+  - **Three PRD changes:**
+    - PHP prelude placement must follow `namespace`/`use`, so placement becomes a `preludeSlot` marker (S12).
+    - f32 prints widened to f64, because float `"R"` digits mismatch TS on 75% of values (S13).
+    - Python's null-assert is an inline check, because the helper costs 16% in a hot loop (S9).
+  - **Four new decisions:** D14 null narrowing, D15 PHP iconv, D16 module scoping, D17 MSBuild depfile.
+  - **Seven more pre-existing bugs** joined the scope, including a parser hang on `=> throw`, and Python's
+    `print` helper crashing in any imported module.

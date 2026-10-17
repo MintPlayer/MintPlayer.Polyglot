@@ -1,6 +1,7 @@
 # P40 — Library-grade output for a .NET library + Angular entry point (issue #73) — PRD
 
-> **Status:** 🚧 designed (2026-10-17), with spikes open. Not yet implemented.
+> **Status:** 🚧 designed (2026-10-17). All 20 slice-0 spikes have run and are folded in below; decisions
+> D1–D17 (`PLAN.md`) await review. Not yet implemented.
 > **Issue:** [#73](https://github.com/MintPlayer/MintPlayer.Polyglot/issues/73).
 > **Evidence:** `ANALYSIS.md` (6-agent investigation, verified against HEAD `a603dba`).
 > **Plan, spikes and decision log:** `PLAN.md`.
@@ -58,7 +59,7 @@ headline table). This PRD designs for the class.
 | Integer and f64 stringification | §3.A faithful | §3.D already guarantees identical bits for `+ − × ÷ √`, so identical *text* follows |
 | `toUpperAscii`/`toLowerAscii` | faithful | Identical on every target |
 | `toUpper`/`toLower` | **published best-effort tier** (§3.C list) | Three behaviours: JS/Python full Unicode, C# invariant simple mapping, PHP ASCII-only |
-| f32 to string | §3.C relaxation | TS, Python and PHP hold f32 as a double |
+| f32 to string | faithful (exact value widened to f64, S13) | f32 *arithmetic* stays §3.C, because TS, Python and PHP hold f32 as a double |
 | String index units | **published caveat** (or faithful, if SP-S1 says so) | C#/TS UTF-16 units, Python code points, PHP bytes |
 | `compareOrdinal` | faithful on BMP; caveat for astral vs U+E000–FFFF | |
 | `Map<K,V>` | §3.A std collection | Keys limited to `string` and integer scalars; refusals for the rest |
@@ -80,11 +81,11 @@ first.
    - A std binding gains an object form: `{ "template": "...", "requires": ["pgStr"] }`.
    - The loader validates that every required name is a declared prelude, as part of the anti-silent-drop
      contract.
-2. **`preludePlacement`** manifest data, with a closed vocabulary validated at load:
-   - `start`: Python.
-   - `afterFirstLine`: PHP, after `<?php`.
-   - `afterUsings` / `end`: C#. SP-B decides which; end of file avoids CS1529.
-   - TS keeps `start`.
+2. **Placement is a `{"fn":"preludeSlot"}` marker in each `Program` rule**, required by the loader. *(Amended
+   after S12: a line-based vocabulary fails on PHP. Right after `<?php` is fatal before a `namespace`
+   statement, and end of file is fatal when top-level code calls the helper first.)* Each manifest puts the
+   slot where its language needs it: after `namespace`/`use` on PHP, after the usings on C#, at the top on TS
+   and Python.
 3. **A reachability pass** over the lowered IR, run after lowering and before emission.
    - It computes the set of prelude declarations reachable from user code, plus the `requires` of every rule
      and binding that fired.
@@ -92,7 +93,16 @@ first.
    - Only reachable prelude declarations are emitted.
    - **Shared C# prelude** (`sharedPreludeFile`): compile all roots first, then emit **one**
      `__polyglot_prelude.cs` from the **union** of what they reach, or no file at all if nothing is reached.
-     This keeps the identical-file contract in `main.cpp:196-215`.
+     This keeps the identical-file contract in `main.cpp:196-215`. The union covers **which std modules each
+     root links** as well as reached names (S15).
+   - **Two categories of helper, named explicitly** (S14/S15):
+     - `.pg` prelude *declarations* (`Option`/`Some`/`None`, std io functions) are tracked structurally,
+       pruned by reachability, and shared on C#.
+     - *Manifest* helpers (pulled in through `requires`) are emitted per file. On C# they live in the
+       file-local `__PgRt`.
+   - **S14 measured** identical conformance results on all four targets, with emitted size down 21–38%. No
+     manifest template names a prelude declaration without a declared reference. A conservative identifier
+     scan of opaque `extern(...)` text stays as a backstop for third-party plugins.
    - **Per-file preludes** (TS, Python, PHP): each file gets only what it reaches.
 4. **Visibility.**
    - Prelude helpers are never public API.
@@ -158,7 +168,10 @@ per-file copy of only what is reached costs a few lines per file and has no fail
 - **Bounds are evaluated once**, before the first iteration, as in Rust, Kotlin, Swift and Python (**D7**).
   - A non-simple end bound is hoisted into a temporary.
   - An `IR` flag `rangeEndSimple`, like `With::baseIsSimple`, keeps `0..n` readable.
-  - The C# spelling is decided by SP-S6.
+  - The C# spelling is the multi-declarator `for (int i = 0, __end0 = xs.Count; i < __end0; i++)` (S6). TS
+    `let` and PHP comma init take the same shape.
+- **The match-arm parser loop gets a progress guard.** `Fail => throw …` currently hangs the parser forever
+  (S8).
 - **Backstop:**
   - `ir::Module.loweringFailures` collects failures from the `default` arm (`lower.cpp:909`).
   - `compile()` turns them into *internal compiler error: no lowering for <kind> expression — this is a
@@ -183,7 +196,7 @@ per-file copy of only what is reached costs a few lines per file and has no fail
 
 | Target | Helper | How |
 |---|---|---|
-| C# | `__PgRt.Str(int…ulong)`, `Str(double)`, `Str(float)`, `Show(object?)` | Digits from `ToString("R", InvariantCulture)`, layout redone |
+| C# | `__PgRt.Str(int…ulong)`, `Str(double)`, `Str(float)`, `Show(object?)` | Digits from `ToString("R", InvariantCulture)`, layout redone. `Str(float)` widens to double first (S13) |
 | Python | the `fstr` prelude is replaced | Digits from `repr` |
 | PHP | `__pg_str` | `var_export` with `serialize_precision=-1`, set and then restored |
 | TS | none | Native |
@@ -197,6 +210,14 @@ per-file copy of only what is reached costs a few lines per file and has no fail
 - **the invariant guard is removed from `Main`**, so library and program code are identical.
 
 **TS:** `toI32` gains the i32 truncation and is unified with `i32.parse`.
+
+**f32 text is the f32's exact value widened to f64, printed under the f64 rule** (S13). For example, `0.1f`
+prints `0.10000000149011612`. That is faithful on all four targets: over 65,021 literals, widened-double vs
+JS `Math.fround` showed 0 mismatches, whereas C# float `"R"` digits mismatched on 74.9%. f32 *arithmetic*
+stays a §3.C relaxation, because TS, Python and PHP compute f32 as f64. Same change: the C# f32 literal keeps
+its `F` suffix (today `0.1f` emits `float a = 0.1;`, which is CS0664).
+
+**Python `print`** stops calling `__builtins__.print`, which raises AttributeError in any **imported** module.
 
 **Case:**
 - New `toUpperAscii`/`toLowerAscii`, faithful on every target: TS a regex replace, Python `translate`, PHP
@@ -236,7 +257,7 @@ C# hole template.
 |---|---|---|
 | C# | `(x ?? throw new global::System.NullReferenceException("null-assert failed (m.pg:L:C)"))` | NullReferenceException |
 | TS | `(x ?? __pgNullAssert("m.pg:L:C"))` | TypeError (helper, non-exported) |
-| Python | `_pg_nn(x, "…")` | TypeError |
+| Python | inline `(x if x is not None else _pg_fail("…"))`; walrus form for non-name operands (S9: the helper costs +16% in the FruitCake hot loop, inline +3.9%) | TypeError |
 | PHP | `__pg_nn($x, "…")` | `\UnexpectedValueException` |
 
    PHP needs a helper because `?? throw` is illegal in write context.
@@ -246,11 +267,24 @@ C# hole template.
   - **N2.** A nullable value in an interpolation hole, or passed to `print`, is an error.
   - **N3.** `string + <type parameter>` is an error ("interpolate instead"), consistent with `string + i32`
     already being refused.
+  - **Fallout:** S7 prototyped N1–N3 over 156 files, including MintPlayer.AI, and found **zero hits**.
+  - **Four paths the prototype showed N1–N3 must also cover:**
+    - compound assignment (`n += 1` on `i32?`);
+    - `bool?` inside `&&` conditions and in `requireBool`;
+    - an if-expression with a `null` branch, which is typed non-nullable today;
+    - member access on a nullable receiver.
+  - **Null flow-narrowing after `if x != null` (D14).** Without it N1 rejects the most natural shape, so the
+    recommendation is to add narrowing for locals and parameters.
 - **Runtime backstop** for null reaching code through a type parameter: the generic stringifier (§A3 `Show`
   and its siblings) renders null as `null` on every target.
 - **PHP `catch (e: Error)` maps to `catch (\Throwable)`**, so engine errors are catchable (**D13**).
-- **Optional (D12):** `opt!` on the `Option<T>` generic (currently refused at `sema.cpp:1822`), if SP-A4-S2
-  shows a `match` arm can hold `throw`.
+- **`opt!` on the `Option<T>` generic (D12)**, currently refused at `sema.cpp:1822`. It lowers directly as
+  `NullAssert` per target: the C# switch arm, the TS closure throw, the PHP match-arm throw, and the Python
+  inline check. S8 showed the *language* cannot hold `throw` in an arm, so no throw-expression is added.
+- **C# keeps explicit type arguments at call sites.** S8 found `failT<T>(..)` emitted as `failT(..)`, which is
+  CS0411.
+- **PHP `function_exists` guards are namespace-qualified.** Today's unqualified guard silently calls a
+  same-named global function (S12).
 
 ### A5 — Config discovery
 
@@ -282,7 +316,9 @@ C# hole template.
 - **Refusal:** files in one import closure that resolve to different namespaces or classes (`scope: "closure"`).
 - **Same change:**
   - The LSP preview honours `targetOptions` (it ignores `access` today, `main.cpp:1194`).
-  - MSBuild `Inputs` gains `pgconfig.json`.
+  - MSBuild regenerates after a config edit. S20 confirmed it does not today. The CLI writes a **depfile**
+    naming the config and lockfile it used, which the targets read as `Inputs` (**D17**); a fixed
+    `$(PolyglotRoot)\pgconfig.json` would guess wrong under A5's upward discovery.
 
 ### B2 — TS prelude
 
@@ -317,10 +353,22 @@ This is covered by §0: per-file, reached-only and non-exported. On top of that:
 
 - **C# bindings pass `StringComparison.Ordinal`** to `IndexOf`, `StartsWith` and `EndsWith`. Golden tests pin
   this, so the culture-sensitive overloads cannot come back.
-- **Index-unit tier:**
-  - Index-taking functions are faithful on ASCII and BMP-faithful on C#/TS/Python.
-  - Python astral text and PHP non-ASCII text are a published caveat, **unless SP-S1 makes Python and PHP
-    UTF-16-faithful** (**D2**).
+- **Index-unit tier (D2, D15, S1):**
+  - **Python is UTF-16-faithful** through helpers covering `len`, `charAt`, `codePointAt`, `substring` and
+    `indexOf`. The fast path is `isascii()` (O(1)); other strings use a cached surrogate-expanded view. ASCII
+    cost is 0.98–1.25× the guarded call.
+  - Faithful Python needs a **surrogate→U+FFFD stdout handler**, because CPython crashes printing a lone
+    surrogate where C# and Node print U+FFFD.
+  - The test harness must pass `-X utf8`, because `python -I` ignores `PYTHONIOENCODING`.
+  - **PHP is faithful only if iconv becomes a declared requirement** (D15). The helpers use an ASCII scan,
+    then a cached UTF-16LE copy, at 1.4–1.8× on ASCII. Otherwise PHP index functions carry a published
+    byte-unit caveat.
+  - A new `utf16Strings:index` capability child, marked at string index calls, makes the choice explicit.
+    Today `utf16Strings` is marked only on `char`, and Python/PHP wrongly default to "native".
+- **`std.strings` imports `std.collections` itself**, so `split` can return `List<string>` (S18). The resulting
+  flat-namespace leak of `List` is addressed by module scoping (D16).
+- **A bare `import` of an extension-only module emits its names** on Python and TS. Today it is a NameError
+  and TS2304 (found by the S16–S20 spikes).
 
 ### B4 — `Map<K, V>`, and its prerequisites
 
@@ -357,7 +405,7 @@ extern class Map<K: IMapKey, V> {
 
 | Target | Type | Notes |
 |---|---|---|
-| C# | `OrderedDictionary<K,V>` | .NET 9+ (**D8**). `get` uses a per-expansion unique temporary (a small Core token) to avoid CS0136 |
+| C# | `OrderedDictionary<K,V>` | .NET 9+ (**D8**). `get` is `(m.TryGetValue(k, out var __pg_tN) ? __pg_tN : (V?)null)`. The typed else-arm avoids CS0173; a per-expansion unique temporary (a small Core token) avoids CS0136/CS0128 (S16) |
 | TS | `Map` | `get` returns `?? null`, because `==` is emitted as `===` |
 | Python | `dict` | |
 | PHP | `\ArrayObject`, never a bare array | String keys are prefixed (`is_int($k) ? $k : "s".$k`) and stripped on the way out, so `"10"` never becomes `10` |
@@ -454,7 +502,8 @@ already disagreed or the output was already wrong:
 - The header changes every generated file once.
 
 **Proposed floors (D8):**
-- C# 11 / .NET 7 for `file` types.
+- C# 11 for `file` types. This is a hard floor (S11: `LangVersion 10` gives CS8936), which **rules out
+  netstandard2.0 and net6 consumers**. That is fine for the .NET 11 motivating consumer.
 - .NET 9 for programs that use `Map`.
 - PHP 8.2.
 

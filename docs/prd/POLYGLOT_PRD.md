@@ -1551,7 +1551,7 @@ brief, and PLAN.md holds the status lines and slice logs.*
   `docs/prd/issue-69-source-attribution/`).
 - **P39 — Coverage attribution (`polyglot coverage remap`).** ✅ Merged `a603dba` (issue #71,
   `docs/prd/issue-71-coverage-attribution/`).
-- **P40 — Library-grade output for a .NET library + Angular entry point.** 🚧 Designed, spikes open (issue
+- **P40 — Library-grade output for a .NET library + Angular entry point.** 🚧 Designed, slice-0 spikes done, D1–D17 open (issue
   #73, `docs/prd/issue-73-library-grade/`). Covers escapes, range precedence, a throwing `!`, culture-free C#
   and one number-to-text rule on all four targets, `targetOptions` namespaces, prelude reachability, an ordinal
   string std, `Map<K,V>`, `build --check`, a build-time target filter, and relative `#line` paths.

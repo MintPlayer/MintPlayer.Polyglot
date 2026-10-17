@@ -3569,12 +3569,12 @@ A `.pg` line now counts as covered when **any** target reached it — measured 9
 - *Gate:* the `coverage` gate leg (bounded and flushing after the CI hang recorded in the P39 log), goldens
   byte-identical on Windows and WSL.
 
-## P40 — Library-grade output: escapes, ranges, `!`, culture-free C#, namespaces, prelude reachability, ordinal strings, `Map`, `build --check`, target filter — 🚧 designed, spikes open (2026-10-17; issue #73, PRD `docs/prd/issue-73-library-grade/`, 6-agent investigation)
+## P40 — Library-grade output: escapes, ranges, `!`, culture-free C#, namespaces, prelude reachability, ordinal strings, `Map`, `build --check`, target filter — 🚧 designed, slice-0 spikes done (2026-10-17; issue #73, PRD `docs/prd/issue-73-library-grade/`, 6-agent investigation)
 
 MintPlayer.Spark's GS1 core is the motivating consumer: one algorithm runs in a .NET 11 library and an Angular
 entry point. The logic is already faithful. What blocks library use is silent miscompiles that the
 differential suite cannot see, plus packaging gaps. Design in `docs/prd/issue-73-library-grade/PRD.md`,
-evidence in `ANALYSIS.md`, and slices, spikes and decisions D1–D13 in its `PLAN.md`.
+evidence in `ANALYSIS.md`, and slices, spikes and decisions D1–D17 in its `PLAN.md`.
 
 - **The investigation widened nearly every item to its class.**
   - PHP interpolates `$` in literals.
@@ -3587,8 +3587,13 @@ evidence in `ANALYSIS.md`, and slices, spikes and decisions D1–D13 in its `PLA
     bypasses routing, and a `"csharp"` pgconfig key would put a target name into the Core.
 - **One shared foundation first** (PRD §0): binding-level `requires`, `preludePlacement`, and a reachability
   pass, so only referenced helpers are emitted. Six items need it.
-- **Slice 0 = 20 open spikes.** S14 and S15 (reachability) are the risk spikes. Thirteen more were answered
-  during the investigation, including a 258,164-double ECMAScript `Number::toString` clone with 0 mismatches.
+- **Slice 0 done (33 spikes in all).** Thirteen were answered during the investigation, including a
+  258,164-double ECMAScript `Number::toString` clone with 0 mismatches. The other 20 ran afterwards.
+  - The risk spike (S14) passed: reachability pruning keeps every conformance result identical and cuts output
+    21–38%.
+  - Results changed the PRD in three places: PHP prelude placement, f32 printing, and Python's null-assert.
+  - They added decisions D14–D17 and seven more pre-existing bugs to the scope.
+  - The prototypes are on the `spike/p40-reachability` and `spike/p40-nullable-rules` branches.
 - *Gate:* the full gate once, plus the POSIX leg. New legs: culture (a .NET startup hook re-running every
   conformance dll under tr-TR/nl-BE/sv-SE/fa-IR), poison and `CurrentCulture` grep gates, two-library C#/PHP
   consumers, a TS barrel, `--check` and `--only` smoke tests, and origin-info byte-identity across two

@@ -165,9 +165,9 @@ In flight / gated: **P23** (bundle the CLI in the VS Code extension for zero-set
 an interactive vsix install + the first marketplace publish; PR #16), **P22** tail (PHP runtime differential +
 the esbuild-pattern npm CLI sibling), **P16d** (Visual Studio LSP client — built, interactive verify pending),
 **P20** (alternative input "skins" — designed, demand-gated), **P40** (issue #73 library-grade output —
-designed, decisions D1–D13 + slice-0 spikes open; `docs/prd/issue-73-library-grade/`).
+designed, slice-0 spikes done (prototypes on spike/p40-*), decisions D1–D17 open; `docs/prd/issue-73-library-grade/`).
 
-**Next step:** maintainer review of P40's D1–D13, then its slice-0 spikes (S14/S15 reachability first); or
+**Next step:** maintainer review of P40's D1–D17, then slice 1 (the shared prelude foundation); or
 finish P23 verification, or pick up the P22 tail.
 
 To verify a build: `pwsh scripts/build-and-test.ps1` (build → unit tests → differential C#/TS/Python
