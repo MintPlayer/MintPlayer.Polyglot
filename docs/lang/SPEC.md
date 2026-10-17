@@ -38,8 +38,9 @@ have gone another way, the rationale is stated so the alternative can be reconsi
 | Int literal | `42`, `0xFF`, `0b1010`, `1_000`, `42i64`, `255u8` | default type `i32`; `_` separators allowed |
 | Float literal | `3.14`, `1e-9`, `2.0f`, `64f` | default type `f64`; suffix `f`/`f32` = `f32`, `d`/`f64` = `f64` |
 | Bool | `true`, `false` | |
-| Char | `'a'`, `'\n'`, `'\u{1F600}'` | a UTF-16 scalar; see §8 |
+| Char | `'a'`, `'\n'`, `'\u{E9}'` | exactly one UTF-16 code unit (§8): empty, multi-character and astral char literals are errors |
 | String | `"…"`, `"hi ${name}!"` | interpolation with `${ expr }`; UTF-16 (§8) |
+| Escapes | `\n` `\t` `\r` `\0` `\\` `\"` `\'` `\$` `\u{1F600}` | the complete set, shared by strings and chars. `\$` is a literal `$` (`"\${x}"` is the text `${x}`). `\u{…}` takes 1–6 hex digits, ≤ `10FFFF`, never a surrogate. Any other escape — `\q`, `\uXXXX`, `\xHH` — is an error at the backslash. Literals must be well-formed UTF-8. |
 | Null | `null` | only assignable to a nullable type `T?` (§4.3) |
 
 Statements are **newline-terminated**; `;` is an **optional separator**, needed only to place several
@@ -501,7 +502,9 @@ A function whose body uses `yield` is an iterator; its return type is `Iterable<
 ## 8. Strings & characters
 
 Both targets are **UTF-16** — `string` is a sequence of UTF-16 code units on both, so the mapping is near
-1:1. `char` is a single UTF-16 code unit (a `number` in TS, `char` in C#). Code points outside the BMP are
+1:1. `char` is a single UTF-16 code unit (a `number` in TS, `char` in C#). A char literal therefore holds
+exactly one character at or below U+FFFF: `'😀'` / `'\u{1F600}'` is an error (*a char is one UTF-16 code
+unit — use a string*), as are `''` and `'ab'`. Code points outside the BMP are
 surrogate pairs; the std string API exposes code-point iteration for correct handling, and the spec warns
 (as C# and JS both do) that indexing yields code *units*, not code points. String interpolation
 `"hi ${name}"` lowers to C# `$"hi {name}"` and TS template literals — both first-class on each target.
@@ -526,7 +529,7 @@ relaxation is **opt-in and named**, never silent:
 | shifts | count masked (`& 31` / `& 63`, the .NET rule) and result wrapped to the operand width on every target | — |
 | float `%` | C-style `fmod` (result takes the DIVIDEND's sign — the .NET/JS behavior); Python emits `math.fmod`, PHP `fmod()` | — |
 | PHP 64-bit wrap | **published caveat:** PHP has no i64/u64 wrap emulation (no GMP dependency) — i64 arithmetic is faithful only while intermediates stay inside ±2⁶³ (beyond it PHP promotes to float); u64 values above 2⁶³−1 are not representable | a GMP-backed strict mode could be offered later |
-| non-ASCII string content | **published caveat:** PHP's string std is byte-oriented — `len()`/`charAt()`/`codePoints()` count UTF-8 *bytes* on PHP and code points on C#/TS/Python. ASCII content is byte-identical everywhere; the lexer warns on non-ASCII literals | an mbstring-backed PHP string std could be offered later |
+| non-ASCII string content | **published caveat:** the string std counts in each target's native unit — `len()`/`charAt()` index **UTF-16 code units** on C# and TS, **code points** on Python, and UTF-8 **bytes** on PHP (byte-oriented). So `"é".len()` is 1/1/1/2 and `"a😀b".len()` is 4/4/3/6 (C#/TS/Python/PHP). ASCII content is identical everywhere; the lexer warns on every non-ASCII literal, whether the character is written raw or as a `\u{…}` escape, and the CLI prints that warning on successful builds too. P40 slice 8 makes Python's indexing UTF-16-faithful (and PHP's, iconv-backed, or keeps this caveat) | the P40 UTF-16 string std |
 
 **Determinism honesty (PRD §3.D):** only `+ − × ÷ √` are reproducible across .NET and JS (at matched
 width). Transcendentals (`sin`/`cos`/`exp`/`pow`), FMA, and reassociation diverge. Code that needs

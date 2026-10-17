@@ -277,7 +277,7 @@ function Invoke-ProgramWorker {
             $label = $labelOf[$t]
             switch ($t) {
                 'typescript' { $rr = Invoke-WithTimeout -FilePath $node   -Arguments @($file) -WorkingDirectory $dir }
-                'python'     { $rr = Invoke-WithTimeout -FilePath $py     -Arguments @($file) -WorkingDirectory $dir }
+                'python'     { $rr = Invoke-WithTimeout -FilePath $py     -Arguments @('-X', 'utf8', $file) -WorkingDirectory $dir } # S1: UTF-8 stdout on every OS
                 'php'        { $rr = Invoke-WithTimeout -FilePath $phpExe  -Arguments @($file) -WorkingDirectory $dir -MergeStdErr }
             }
             if ($rr.TimedOut) { $lines.Add("[FAIL] $name : timed out after 60s ($t)"); return (& $result $false) }

@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "mintplayer/polyglot/unicode.hpp"
+
 namespace mintplayer::polyglot {
 
 namespace {
@@ -339,17 +341,33 @@ private:
         }
     }
 
+    // P40 A1: the exact inverse of the lexer's decodeEscape — re-lexing the output yields the same decoded
+    // value. `${` in a double-quoted body is written `\${` (it would open a hole), NUL is `\0`, every other
+    // character in the shared must-escape set is `\u{H}`, and printable non-ASCII stays raw UTF-8.
     std::string escapeBody(const std::string& v, char q) {
         std::string s;
-        for (char c : v) {
+        for (std::size_t i = 0; i < v.size();) {
+            const char c = v[i];
             switch (c) {
-                case '\\': s += "\\\\"; break;
-                case '\n': s += "\\n"; break;
-                case '\t': s += "\\t"; break;
-                case '\r': s += "\\r"; break;
-                default:
-                    if (c == q) { s += '\\'; s += q; } else s += c;
-                    break;
+                case '\\': s += "\\\\"; ++i; continue;
+                case '\n': s += "\\n"; ++i; continue;
+                case '\t': s += "\\t"; ++i; continue;
+                case '\r': s += "\\r"; ++i; continue;
+                case '\0': s += "\\0"; ++i; continue;
+                default: break;
+            }
+            if (c == q) { s += '\\'; s += q; ++i; continue; }
+            if (c == '$' && q == '"' && i + 1 < v.size() && v[i + 1] == '{') { s += "\\$"; ++i; continue; }
+            const std::size_t at = i;
+            char32_t cp = 0;
+            if (!unicode::decodeUtf8(v, i, cp)) { s += v[at]; continue; }
+            if (unicode::mustEscape(cp)) {
+                static const char* hex = "0123456789ABCDEF";
+                std::string d;
+                for (char32_t x = cp; x != 0; x >>= 4) d.insert(d.begin(), hex[x & 0xF]);
+                s += "\\u{" + d + "}";
+            } else {
+                s.append(v, at, i - at);
             }
         }
         return s;

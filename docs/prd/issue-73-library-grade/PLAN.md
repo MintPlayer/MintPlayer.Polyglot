@@ -460,3 +460,58 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     one process). Ad hoc: all 102 PHP-runnable conformance programs give identical output with
     `php.namespace=Conf\Ns`; all 114 single-file programs compile into one C# library each in its own
     namespace with `access=public` (0 errors).
+- **2026-10-17 (night, latest)** — **Slice 3 built** (A1: escapes). As built:
+  - **One `decodeEscape`** (lexer.cpp) for string chunks and char literals: `\n \t \r \0 \\ \" \' \$ \u{1–6 hex}`
+    (≤ 10FFFF, never a surrogate — the only guard, since PHP writes WTF-8 for `\u{D83D}`). Every other escape
+    is an error AT THE BACKSLASH; `\uXXXX` and `\xHH` get the guiding "write it in braces" message; `\u{}`
+    errors distinguish malformed / beyond U+10FFFF / surrogate. Ill-formed UTF-8 in a literal is an error (one
+    per literal). Char literals: empty, multi-character and astral are errors with the PRD wording. The G47
+    non-ASCII warning now fires on decoded escapes and on char literals too. UTF-8 primitives + the shared
+    must-escape predicate live in a new header-only `unicode.hpp`.
+  - **`spec.literals`** replaces `renderString` and every `escapes` map: contexts `string`/`interp`/`char`, each
+    `{quote, map, codepoint, astral}` (`quote` is an addition to the PRD's three fields — the loader needs it
+    to check "maps `\` and its own quote", and the new `quoted` builtin wraps with it). Builtins `escapeString`
+    and `escape` are gone; `{"fn":"quoted",[ctx,text]}` (whole literal) and `{"fn":"literal",[ctx,text]}`
+    (body, for interp chunks) replace them — catalog still 17 names. The Core decides WHICH characters escape
+    (`unicode::mustEscape`: C0, DEL, C1 incl. U+0085, U+2028/2029, U+FEFF); `map` keys win, longest first.
+    Templates per S2–S4: C# `\u$H4`/`\U$H8` (char: no astral → surrogate default, unreachable), TS `\u{$H}`,
+    Python `\u$H4`/`\U$H8`, PHP `\u{$H}` + `$`→`\$` in string, interp and char contexts (the `"cost $x"`
+    miscompile). NUL goes through `codepoint` (`\u0000` / `\u{0}`), never `\0`. TS interp now escapes `\n`/`\t`
+    and `\r` (a raw `\r` in a template literal was normalized to `\n` — a latent miscompile).
+  - **Loader**: spec-level shape checks (quote required; map must escape `\` and the quote; `codepoint` must
+    have one `$H4`/`$H8`/`$H` hole — `$H2` refused since it cannot spell U+2028; `astral` is "surrogates" or a
+    `$H8`/`$H` template; unknown keys refused; a leftover `escapes` block refused naming `literals`).
+    Plugin-level: a `string` context is required, and every `literal`/`quoted` rule names a declared context.
+    `backendSpecToJson` serializes the block (sorted) and round-trips.
+  - **Warnings reach the host on success**: `compile()` returned diagnostics only on failure, so the PHP caveat
+    could never print. Every successful return now carries them; the CLI's `reportDiagnostics` prints real
+    severity, is called on success too (emitOne + the shared-prelude phase), and de-duplicates per process
+    (one line, not one per target/root). main.cpp changes are confined to reportDiagnostics and its two call
+    sites (the parallel OutputSink work is untouched).
+  - **`polyglot fmt`** is the lexer's inverse: `\${` for a literal `${`, `\0`, `\u{H}` for the must-escape set,
+    raw printable non-ASCII. **TextMate grammar**: the exact escape set, an `invalid.illegal.escape` catch-all,
+    a char-literal pattern (editors/vs copies the vscode file at build — one source).
+  - **JSON reader**: an escape JSON does not define (and a bad `\uXXXX`) is now an error through the new
+    `json::parse(text, error)`, used by pgconfig (→ `pc.errors`, exit 64), plugin manifests and
+    `loadBackendSpec(string)`. The lenient overload (LSP) keeps both characters instead of dropping `\`.
+  - **Pre-existing miscompile found by `escapes.pg`, fixed here:** a bound FFI template's placeholder used as
+    a receiver (`$this.Length`) was substituted unparenthesized, so `("a\0" + "1").len()` emitted
+    `"a\u0000" + "1".Length` on C# and TS (string + int). `substBoundTemplate` now applies the spec's
+    `wrapAtom.recv` policy to any `$this`/`$N` followed by `.`, `[`, `->` or `?.` (shared `inWrapSet` with the
+    rule-side `recv` operand).
+  - **Docs**: SPEC §2 (escape row; char example `'\u{E9}'`), §8 (astral/empty/multi char are errors), §9 row
+    rewritten with the true per-target counting (C#/TS UTF-16 units, Python code points, PHP bytes —
+    `"a😀b".len()` 4/4/3/6), grammar.ebnf ESCAPE/CHAR_LIT, both dev guides, plugin-authoring §4.2/§4.3.
+  - **Tests**: unit block "P40 s3" (decode table, each error with its caret column, char validation, warning on
+    decoded escape and on a successful compile, four per-target literal goldens incl. NEL/U+2028/NUL+digit,
+    interp contexts, astral + surrogate templates, serializer round-trip, six loader refusals, fmt
+    idempotence + re-lex equality, JSON escape errors); conformance `escapes.pg` + `.expected` (ASCII-only
+    lengths; no astral cases until slice 8); refusal fixtures `unknown_escape`, `astral_char`,
+    `multi_char_literal`; cli-smoke check 7 (a successful 3-target build prints `warning:` exactly once). The
+    conformance runner now runs Python with `-X utf8` (S1).
+  - **Verified:** unit exe green (46 new P40 s3 checks); `-Tier fast` green (build, unit, cli-smoke incl. check 7,
+    refusals incl. the 3 new fixtures, lsp). Conformance: all 117 programs agree across C#/TS/Python/PHP (12 PHP
+    refusers, unchanged); `escapes` passes on all four. Its first run diverged on C# and TS — the receiver
+    miscompile above — and every other result line was identical before and after that fix. All 27 tracked
+    JSON files parse under the stricter reader. Not run here (end gate): the full tier, run-nuget, the library
+    gate and the POSIX leg (no platform-forked code changed).

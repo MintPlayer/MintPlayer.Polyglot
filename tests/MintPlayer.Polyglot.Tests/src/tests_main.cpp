@@ -838,6 +838,191 @@ int main() {
         }
     }
 
+    // ---- P40 slice 3: escapes — one decoder, char validation, per-target `literals`, fmt inverse, JSON -------
+    {
+        // Lex one literal; return its decoded text and the diagnostics.
+        struct Lexed { std::string text; std::vector<Diagnostic> diags; int errors = 0; int warnings = 0; };
+        auto lexOne = [](const std::string& src) {
+            DiagnosticBag d;
+            auto toks = lex(src, d);
+            Lexed l;
+            if (!toks.empty()) l.text = toks[0].text;
+            l.diags = d.items();
+            for (const auto& x : l.diags) (x.severity == Severity::Error ? l.errors : l.warnings)++;
+            return l;
+        };
+        auto errAt = [](const Lexed& l, int col, const std::string& frag) {
+            for (const auto& x : l.diags)
+                if (x.severity == Severity::Error && x.pos.col == col && has(x.message, frag)) return true;
+            return false;
+        };
+
+        // The decode table: every accepted escape, in one literal.
+        std::string want = "\n\t\r";
+        want += '\0';
+        want += "\\\"'$A\xF0\x9F\x98\x80";
+        Lexed all = lexOne("\"\\n\\t\\r\\0\\\\\\\"\\'\\$\\u{41}\\u{1F600}\"");
+        check(all.errors == 0 && all.text == want, "P40 s3: decode table (\\n \\t \\r \\0 \\\\ \\\" \\' \\$ \\u{41} \\u{1F600})");
+        check(lexOne("\"\\u{00001D}\"").text == "\x1D" && lexOne("\"\\u{1d}\"").text == "\x1D",
+              "P40 s3: \\u{} takes 1-6 hex digits, either case");
+        check(lexOne("\"\\${y}\"").text == "${y}", "P40 s3: \\${ is a literal ${, not a hole");
+
+        // Every refused escape is an error AT THE BACKSLASH (col 4 in "ab\…").
+        Lexed q = lexOne("\"ab\\qc\" x");
+        check(q.errors == 1 && errAt(q, 4, "unknown escape sequence `\\q`") && errAt(q, 4, "valid escapes are"),
+              "P40 s3: unknown escape -> one error at the backslash naming the valid set");
+        check(errAt(lexOne("\"ab\\u0041\""), 4, "write the code point in braces"),
+              "P40 s3: \\uXXXX refused with the guiding message");
+        check(errAt(lexOne("\"ab\\x41\""), 4, "`\\u{HH}`"), "P40 s3: \\xHH refused with the guiding message");
+        check(errAt(lexOne("\"ab\\u{}\""), 4, "malformed") && errAt(lexOne("\"ab\\u{1234567}\""), 4, "malformed") &&
+                  errAt(lexOne("\"ab\\u{41\""), 4, "malformed"),
+              "P40 s3: empty / 7-digit / unclosed \\u{} are malformed");
+        check(errAt(lexOne("\"ab\\u{110000}\""), 4, "beyond U+10FFFF"), "P40 s3: \\u{110000} is out of range");
+        check(errAt(lexOne("\"ab\\u{D83D}\""), 4, "surrogate"), "P40 s3: a surrogate \\u{} is refused (PHP would write WTF-8)");
+        check(errAt(lexOne("\"ab\xFF\""), 4, "invalid UTF-8"), "P40 s3: invalid UTF-8 in a literal is an error");
+        check(errAt(lexOne("'\xC3'"), 2, "invalid UTF-8"), "P40 s3: invalid UTF-8 in a char literal is an error");
+
+        // Char literals: exactly one character that fits one UTF-16 code unit.
+        check(errAt(lexOne("''"), 1, "empty char literal"), "P40 s3: an empty char literal is an error");
+        check(errAt(lexOne("'ab'"), 1, "more than one character"), "P40 s3: a multi-character char literal is an error");
+        check(errAt(lexOne("'\\u{1F600}'"), 1, "one UTF-16 code unit"), "P40 s3: an astral char literal is an error");
+        Lexed ca = lexOne("'\\u{41}'");
+        check(ca.errors == 0 && ca.warnings == 0 && ca.text == "A", "P40 s3: '\\u{41}' is the char A");
+        Lexed ce = lexOne("'\\u{E9}'");
+        check(ce.errors == 0 && ce.warnings == 1 && ce.text == "\xC3\xA9", "P40 s3: '\\u{E9}' decodes and warns (non-ASCII char)");
+        check(lexOne("'\\''").text == "'" && lexOne("'\"'").text == "\"" && lexOne("'\\\"'").text == "\"",
+              "P40 s3: quotes in chars, escaped or not");
+
+        // The non-ASCII warning fires on a DECODED escape too, once per literal.
+        Lexed w = lexOne("\"caf\\u{E9} \\u{E8}\"");
+        check(w.errors == 0 && w.warnings == 1, "P40 s3: a decoded non-ASCII escape warns once");
+        check(lexOne("\"plain \\u{7F}\"").warnings == 0, "P40 s3: ASCII escapes do not warn");
+        {
+            EmitResult ok = compile("fn s(): string => \"caf\\u{E9}\"\n", findTarget("php"));
+            bool warned = false;
+            for (const auto& d : ok.diagnostics) warned = warned || (d.severity == Severity::Warning && has(d.message, "non-ASCII"));
+            check(ok.ok && warned, "P40 s3: a SUCCESSFUL compile still reports its warnings to the host");
+        }
+
+        // Emission: per-target goldens of the literal text. The Core picks WHICH characters escape (C0, DEL,
+        // C1 incl. U+0085 NEL, U+2028); printable non-ASCII (é, 😀) passes through; PHP escapes `$`.
+        const std::string body = "fn s(): string => \"a\\u{1D}\\u{85}\\u{2028}\\u{E9}$x\\u{1F600}\\u{0}1\"\n";
+        auto emitted = [&](const char* target) { return compile(body, findTarget(target)).code; };
+        check(has(emitted("csharp"), "\"a\\u001D\\u0085\\u2028\xC3\xA9$x\xF0\x9F\x98\x80\\u00001\""),
+              "P40 s3: C# literal golden (\\u$H4, raw printable non-ASCII, NUL never \\0)");
+        check(has(emitted("typescript"), "\"a\\u{1D}\\u{85}\\u{2028}\xC3\xA9$x\xF0\x9F\x98\x80\\u{0}1\""),
+              "P40 s3: TS literal golden (\\u{$H})");
+        check(has(emitted("python"), "\"a\\u001D\\u0085\\u2028\xC3\xA9$x\xF0\x9F\x98\x80\\u00001\""),
+              "P40 s3: Python literal golden (\\u$H4)");
+        check(has(emitted("php"), "\"a\\u{1D}\\u{85}\\u{2028}\xC3\xA9\\$x\xF0\x9F\x98\x80\\u{0}1\""),
+              "P40 s3: PHP literal golden ($ -> \\$, the \"cost $x\" miscompile)");
+        check(compile("fn s(): string => \"plain ascii \\\"q\\\" \\\\ \\n\"\n", findTarget("csharp")).code.find(
+                  "\"plain ascii \\\"q\\\" \\\\ \\n\"") != std::string::npos,
+              "P40 s3: plain ASCII literals are byte-identical to the pre-P40 output");
+        const std::string interp = "fn f(x: i32): string => \"{${x}}`$\\u{2028}\"\n";
+        check(has(compile(interp, findTarget("csharp")).code, "$\"{{{x}}}`$\\u2028\""),
+              "P40 s3: C# interp context doubles braces and escapes U+2028");
+        check(has(compile(interp, findTarget("typescript")).code, "`{${x}}\\`$\\u{2028}`"),
+              "P40 s3: TS interp context escapes the backtick");
+        check(has(compile(interp, findTarget("php")).code, "\"}`\\$\\u{2028}\""),
+              "P40 s3: PHP interp chunks escape $");
+        check(has(compile("fn c(): char => '\\''\n", findTarget("csharp")).code, "'\\''") &&
+                  has(compile("fn c(): char => '\\u{1D}'\n", findTarget("csharp")).code, "'\\u001D'"),
+              "P40 s3: C# char context (quote ', \\u$H4)");
+
+        // A bound template's receiver placeholder takes the receiver parenthesization policy (found by
+        // escapes.pg: `("a\0" + "1").len()` emitted `"a\u0000" + "1".Length` on C# and TS).
+        {
+            const char* lp = "import \"std.strings\"\nfn n(): i32 => (\"a\" + \"b\").len()\n";
+            check(has(compileStd(lp, findTarget("csharp")).code, "(\"a\" + \"b\").Length") &&
+                      has(compileStd(lp, findTarget("typescript")).code, "(\"a\" + \"b\").length"),
+                  "P40 s3: a binary receiver of a bound member template is parenthesized");
+        }
+
+        // The astral template, and the "surrogates" default.
+        auto specOf = [](const char* target) {
+            std::string m;
+            cli::readFile(cli::executablePath().parent_path() / "plugins" / target / "polyglot-plugin.json", m);
+            return loadBackendSpec(json::parse(m)["spec"]);
+        };
+        SpecLoadResult cs = specOf("csharp"), ts = specOf("typescript"), py = specOf("python"), php = specOf("php");
+        check(cs.ok && ts.ok && py.ok && php.ok, "P40 s3: the four in-box specs load");
+        check(specCodepointEscape(cs.spec.literals.at("string"), 0x1F600) == "\\U0001F600" &&
+                  specCodepointEscape(ts.spec.literals.at("string"), 0x1F600) == "\\u{1F600}" &&
+                  specCodepointEscape(py.spec.literals.at("string"), 0x1F600) == "\\U0001F600" &&
+                  specCodepointEscape(php.spec.literals.at("string"), 0x1F600) == "\\u{1F600}",
+              "P40 s3: astral templates (C#/Python \\U$H8, TS/PHP \\u{$H})");
+        check(specCodepointEscape(cs.spec.literals.at("char"), 0x1F600) == "\\uD83D\\uDE00",
+              "P40 s3: no astral template = UTF-16 surrogate halves through `codepoint`");
+
+        // Serializer round-trip of the literals block.
+        SpecLoadResult back = loadBackendSpec(backendSpecToJson(php.spec));
+        bool same = back.ok && back.spec.literals.size() == php.spec.literals.size();
+        for (const auto& kv : php.spec.literals) {
+            auto it = back.spec.literals.find(kv.first);
+            same = same && it != back.spec.literals.end() && it->second.quote == kv.second.quote &&
+                   it->second.map == kv.second.map && it->second.codepoint == kv.second.codepoint &&
+                   it->second.astral == kv.second.astral;
+        }
+        check(same, "P40 s3: spec.literals round-trips through backendSpecToJson");
+
+        // Loader refusals (anti-silent-drop): codepoint required, string context required, a rule naming an
+        // undeclared context, the retired `escapes` block, a map not escaping its quote.
+        std::string csm;
+        cli::readFile(cli::executablePath().parent_path() / "plugins" / "csharp" / "polyglot-plugin.json", csm);
+        auto refused = [&](const std::string& from, const std::string& to, const std::string& frag) {
+            const std::size_t at = csm.find(from);
+            if (at == std::string::npos) return false;
+            std::string m = csm;
+            m.replace(at, from.size(), to);
+            std::string err;
+            return !validateBackend(m, err) && has(err, frag);
+        };
+        check(refused("\"codepoint\": \"\\\\u$H4\",", "", "needs a 'codepoint'"),
+              "P40 s3: a literal context without a codepoint template is refused");
+        check(refused("\"codepoint\": \"\\\\u$H4\"", "\"codepoint\": \"\\\\x$H2\"", "needs a 'codepoint'"),
+              "P40 s3: a \\x$H2 codepoint template (cannot spell U+2028) is refused");
+        check(refused("\"string\": {", "\"strung\": {", "'string' context"),
+              "P40 s3: a manifest without a string literal context is refused");
+        check(refused("\"interp\",", "\"interpx\",", "'interpx'"),
+              "P40 s3: a rule naming an undeclared literal context is refused");
+        check(refused("\"literals\": {", "\"escapes\": {}, \"literals\": {", "replaced by 'literals'"),
+              "P40 s3: the retired `escapes` block is refused, naming its replacement");
+        check(refused("\"\\\"\": \"\\\\\\\"\",", "", "must escape the backslash and the context's quote"),
+              "P40 s3: a context whose map does not escape its quote is refused");
+
+        // `polyglot fmt` is the exact inverse of the lexer: `\${`, `\0`, `\u{…}` for non-printables, raw é.
+        std::string fsrc = "fn f(x: i32): string => \"a\\${b} \\u{1D}\\0\\u{2028} \\u{E9} \\$ ${x}\"\n"
+                           "fn c(): char => '\\u{0}'\n";
+        EmitResult f1 = format(fsrc);
+        EmitResult f2 = format(f1.code);
+        check(f1.ok && f2.ok && f1.code == f2.code, "P40 s3: fmt is idempotent over escapes");
+        check(has(f1.code, "\"a\\${b} \\u{1D}\\0\\u{2028} \xC3\xA9 $ ${x}\"") && has(f1.code, "'\\0'"),
+              "P40 s3: fmt prints \\${, \\0, \\u{H} for non-printables and raw printable non-ASCII");
+        auto lits = [](const std::string& src) {
+            DiagnosticBag d;
+            std::vector<std::string> out;
+            for (const auto& t : lex(src, d))
+                if (t.kind == TokKind::InterpStart || t.kind == TokKind::InterpEnd || t.kind == TokKind::StringLit ||
+                    t.kind == TokKind::CharLit)
+                    out.push_back(t.text);
+            return out;
+        };
+        check(lits(fsrc) == lits(f1.code), "P40 s3: fmt output re-lexes to the same decoded literal values");
+
+        // The Core JSON reader: an escape JSON does not define is an error, never a silently dropped backslash.
+        std::string jerr;
+        json::Value jv = json::parse("{\"lib\":\"Libs\\Alpha\"}", jerr);
+        check(has(jerr, "invalid escape '\\A'") && jv["lib"].asString() == "Libs\\Alpha",
+              "P40 s3: JSON `\"Libs\\Alpha\"` is a parse error (and never reads as LibsAlpha)");
+        jerr.clear();
+        json::parse("{\"a\":\"x\\\\y\\u0041\\n\"}", jerr);
+        check(jerr.empty(), "P40 s3: valid JSON escapes report no error");
+        jerr.clear();
+        json::parse("{\"a\":\"\\u00G1\"}", jerr);
+        check(has(jerr, "hex digits"), "P40 s3: a malformed JSON \\u escape is an error");
+    }
+
     // P4 — name / type resolution across the declaration surface.
     auto resolves = [&](const char* src, const std::string& name) {
         EmitResult r = compile(src, findTarget("csharp"));

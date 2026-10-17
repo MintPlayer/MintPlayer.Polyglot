@@ -60,8 +60,13 @@ There is **no `decimal`** — refused by design (see "Scope by design" below).
 | `"hi ${name}, ${age * 2} doubled"` | `$"hi {name}, {age * 2} doubled"` |
 | `'A'` (char, UTF-16 code unit) | `'A'` |
 | `"ab" + "c" == "abc"` → `true` | string `==` is value equality, as in C# |
+| `"tab\there"`, `"\u{E9}"`, `'\u{41}'` | `"tab\there"`, `"é"`, `'A'` — code points are written `\u{1–6 hex}` |
+| `"cost \$5"`, `"\${raw}"` | `\$` is a literal dollar, so `"\${raw}"` is the text `${raw}`, not a hole |
 
-Strings are UTF-16 on every target, so indexing/length semantics match C#.
+The escapes are `\n \t \r \0 \\ \" \' \$ \u{…}` — nothing else. C#'s `\uXXXX`, `\xHH` and `\U…` are errors
+(the variable-length `\x` is a known C# trap), and a char literal is exactly one UTF-16 code unit, so
+`'\u{1F600}'` is an error: use a string. Indexing/length count UTF-16 code units on C# and TS; on Python and
+PHP they count in those targets' native units for non-ASCII text (SPEC §9 — the compiler warns).
 
 ## Records (structural equality, `with`)
 

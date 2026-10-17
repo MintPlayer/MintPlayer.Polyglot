@@ -66,6 +66,44 @@
     "trueLit": "True",
     "falseLit": "False",
     "nullLit": "None",
+    "literals": {
+      "string": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
+      },
+      "interp": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
+      },
+      "char": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
+      }
+    },
     "expressionOnlyLambdas": true,
     "identifiers": {
       "keywords": [
@@ -178,8 +216,9 @@
       "get": "spec.nullLit"
     },
     "Str": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "string",
         {
           "get": "node.value"
         }
@@ -2422,8 +2461,9 @@
       "tmpl": [
         "{\"tag\": ",
         {
-          "fn": "escapeString",
+          "fn": "quoted",
           "args": [
+            "string",
             {
               "get": "node.caseName"
             }
@@ -2436,8 +2476,9 @@
             "tmpl": [
               ", ",
               {
-                "fn": "escapeString",
+                "fn": "quoted",
                 "args": [
+                  "string",
                   {
                     "get": "item.name"
                   }
@@ -2784,8 +2825,9 @@
         "lits": "node.chunks",
         "holes": "node.holes",
         "lit": {
-          "fn": "escapeString",
+          "fn": "quoted",
           "args": [
+            "interp",
             {
               "get": "item"
             }
@@ -3288,8 +3330,9 @@
               "tmpl": [
                 "_m[\"tag\"] == ",
                 {
-                  "fn": "escapeString",
+                  "fn": "quoted",
                   "args": [
+                    "string",
                     {
                       "get": "item.pattern.ctorCase"
                     }
@@ -3756,8 +3799,9 @@
       }
     },
     "Char": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "char",
         {
           "get": "node.value"
         }

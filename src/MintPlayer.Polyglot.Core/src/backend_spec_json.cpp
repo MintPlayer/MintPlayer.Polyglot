@@ -20,7 +20,14 @@ void loadStringMap(const json::Value& obj, std::unordered_map<std::string, std::
 } // namespace
 
 SpecLoadResult loadBackendSpec(const std::string& json) {
-    return loadBackendSpec(json::parse(json));
+    std::string err;
+    json::Value doc = json::parse(json, err);
+    if (!err.empty()) {
+        SpecLoadResult r;
+        r.errors.push_back("backend spec: " + err);
+        return r;
+    }
+    return loadBackendSpec(doc);
 }
 
 SpecLoadResult loadBackendSpec(const json::Value& doc) {
@@ -74,8 +81,56 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     r.spec.forbidsShadowedLocals = doc["forbidsShadowedLocals"].asBool(false);
     r.spec.expressionOnlyLambdas = doc["expressionOnlyLambdas"].asBool(false);
 
-    for (const auto& kv : doc["escapes"].members)
-        if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.escapes[kv.first]);
+    // P40 A1: per-context literal spelling. Shape-checked here so a broken context never emits a literal the
+    // target misreads: every context names its quote, maps the backslash and that quote, and carries a
+    // code-point template able to spell any BMP character (the `\x$H2` form cannot carry U+2028).
+    if (doc.has("escapes")) {
+        r.errors.push_back("backend spec: 'escapes' was replaced by 'literals' (P40, manifest schema 2)");
+        return r;
+    }
+    const json::Value& lits = doc["literals"];
+    if (lits.kind != json::Value::Kind::Null && lits.kind != json::Value::Kind::Object) {
+        r.errors.push_back("backend spec: 'literals' must be an object of named contexts");
+        return r;
+    }
+    for (const auto& kv : lits.members) {
+        const std::string where = "backend spec: literals." + kv.first;
+        const json::Value& c = kv.second;
+        if (c.kind != json::Value::Kind::Object) { r.errors.push_back(where + " must be an object"); return r; }
+        for (const auto& m : c.members)
+            if (m.first != "quote" && m.first != "map" && m.first != "codepoint" && m.first != "astral") {
+                r.errors.push_back(where + ": unknown key '" + m.first + "' (quote, map, codepoint, astral)");
+                return r;
+            }
+        BackendSpec::LiteralContext lc;
+        lc.quote = c["quote"].asString();
+        loadStringMap(c["map"], lc.map);
+        lc.codepoint = c["codepoint"].asString();
+        lc.astral = c["astral"].asString();
+        if (lc.quote.empty()) { r.errors.push_back(where + " needs a 'quote'"); return r; }
+        if (!lc.map.count("\\") || !lc.map.count(lc.quote)) {
+            r.errors.push_back(where + ": 'map' must escape the backslash and the context's quote (" + lc.quote + ")");
+            return r;
+        }
+        auto holes = [](const std::string& t) {
+            int n = 0;
+            for (std::size_t p = 0; (p = t.find("$H", p)) != std::string::npos; p += 2) ++n;
+            return n;
+        };
+        const bool bmpOk = holes(lc.codepoint) == 1 && lc.codepoint.find("$H2") == std::string::npos;
+        if (!bmpOk) {
+            r.errors.push_back(where + " needs a 'codepoint' template with one $H4, $H8 or $H hole (one that can "
+                                       "spell any BMP character)");
+            return r;
+        }
+        if (!lc.astral.empty() && lc.astral != "surrogates" &&
+            (holes(lc.astral) != 1 || lc.astral.find("$H4") != std::string::npos ||
+             lc.astral.find("$H2") != std::string::npos)) {
+            r.errors.push_back(where + ": 'astral' is \"surrogates\" or a template with one $H8 or $H hole");
+            return r;
+        }
+        r.spec.literals[kv.first] = std::move(lc);
+    }
     for (const auto& kv : doc["tables"].members)
         if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.tables[kv.first]);
 
@@ -186,13 +241,18 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     }
 
     std::string escs;
-    if (!spec.escapes.empty()) {
-        escs = ",\"escapes\":{";
-        bool firstMap = true;
-        for (const auto& kv : spec.escapes) {
-            if (!firstMap) escs += ",";
-            firstMap = false;
-            escs += json::quote(kv.first) + ":" + mapJson(kv.second);
+    if (!spec.literals.empty()) {
+        std::vector<std::string> names;
+        for (const auto& kv : spec.literals) names.push_back(kv.first);
+        std::sort(names.begin(), names.end()); // deterministic serialization
+        escs = ",\"literals\":{";
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            const auto& c = spec.literals.at(names[i]);
+            if (i) escs += ",";
+            escs += json::quote(names[i]) + ":{\"quote\":" + json::quote(c.quote) + ",\"map\":" + mapJson(c.map) +
+                    ",\"codepoint\":" + json::quote(c.codepoint);
+            if (!c.astral.empty()) escs += ",\"astral\":" + json::quote(c.astral);
+            escs += "}";
         }
         escs += "}";
     }

@@ -48,14 +48,23 @@ struct Parser {
         while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
     }
 
+    std::string error; // first malformation found ("" = none); see parse(text, error)
+
+    void fail(std::size_t at, const std::string& what) {
+        if (error.empty()) error = what + " at byte offset " + std::to_string(at);
+    }
+
     unsigned hex4() {
         unsigned v = 0;
-        for (int k = 0; k < 4 && i < s.size(); ++k) {
+        const std::size_t at = i;
+        for (int k = 0; k < 4; ++k) {
+            if (i >= s.size()) { fail(at, "truncated \\u escape"); return v; }
             char c = s[i++];
             v <<= 4;
             if (c >= '0' && c <= '9') v |= static_cast<unsigned>(c - '0');
             else if (c >= 'a' && c <= 'f') v |= static_cast<unsigned>(c - 'a' + 10);
             else if (c >= 'A' && c <= 'F') v |= static_cast<unsigned>(c - 'A' + 10);
+            else fail(at, "invalid \\u escape (expected 4 hex digits)");
         }
         return v;
     }
@@ -88,7 +97,15 @@ struct Parser {
                     appendUtf8(out, cp);
                     break;
                 }
-                default: out += e; break;
+                default:
+                    // JSON allows only \" \\ \/ \b \f \n \r \t \uXXXX. An unknown escape is an error (it used to
+                    // drop the backslash SILENTLY: pgconfig "Libs\Alpha" read as "LibsAlpha"); the lenient
+                    // result keeps both characters, never a quietly different string.
+                    fail(i - 2, std::string("invalid escape '\\") + e + "' in a JSON string (a Windows path "
+                                "needs '\\\\' or '/')");
+                    out += '\\';
+                    out += e;
+                    break;
             }
         }
         return out;
@@ -174,6 +191,13 @@ struct Parser {
 Value parse(const std::string& text) {
     Parser p{text};
     return p.parseValue();
+}
+
+Value parse(const std::string& text, std::string& error) {
+    Parser p{text};
+    Value v = p.parseValue();
+    error = p.error;
+    return v;
 }
 
 std::string quote(const std::string& s) {

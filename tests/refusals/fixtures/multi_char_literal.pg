@@ -1,0 +1,3 @@
+// REFUSED (P40 A1): a char literal holds exactly one character (pre-P40, 'ab' emitted C# that did not
+// compile and silently became a string on TS/Python).
+fn pair(): char => 'ab'

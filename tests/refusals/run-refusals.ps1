@@ -78,6 +78,9 @@ $cases = [ordered]@{
     "is_union.pg"               = @("union types/cases", "use 'match'")
     "implicit_conversion.pg"    = @("refuses implicit user conversions")
     "meta_typeparam.pg"         = @("cannot be a type parameter")
+    "unknown_escape.pg"         = @("unknown escape sequence", "valid escapes are")
+    "astral_char.pg"            = @("an astral character", "one UTF-16 code unit")
+    "multi_char_literal.pg"     = @("more than one character", "use a string")
 }
 
 foreach ($fx in $cases.Keys) {

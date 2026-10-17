@@ -176,20 +176,26 @@ const std::string& diagFile(const fs::path& input, const EmitResult& result, con
     return scratch;
 }
 
-void reportDiagnostics(const fs::path& input, const EmitResult& result) {
-    for (const auto& d : result.diagnostics) {
-        std::string scratch;
-        std::cerr << diagFile(input, result, d, scratch) << ":" << d.pos.line << ":" << d.pos.col
-                  << ": error: " << d.message << "\n";
-    }
-}
-
 const char* severityName(Severity s) {
     switch (s) {
         case Severity::Warning: return "warning";
         case Severity::Info:    return "info";
         case Severity::Hint:    return "hint";
         default:                return "error";
+    }
+}
+
+// Print a compile's diagnostics with their REAL severity (P40 A1: a warning used to print as `error:` and only
+// when the build failed, so the PHP non-ASCII caveat was invisible). Called for successful compiles too.
+// One-shot commands only (watch has its own per-cycle printer): a frontend diagnostic recurs once per target
+// and per root that imports the module, so each distinct line is printed once per process.
+void reportDiagnostics(const fs::path& input, const EmitResult& result) {
+    static std::set<std::string> printed;
+    for (const auto& d : result.diagnostics) {
+        std::string scratch;
+        const std::string line = diagFile(input, result, d, scratch) + ":" + std::to_string(d.pos.line) + ":" +
+                                 std::to_string(d.pos.col) + ": " + severityName(d.severity) + ": " + d.message;
+        if (printed.insert(line).second) std::cerr << line << "\n";
     }
 }
 
@@ -322,10 +328,8 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
     EmitResult result = compile(source, target, resolver,
                                 libForTarget(lib, target, pc, flagRouted, input, fallbackDir, optionFlags),
                                 fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
-    if (!result.ok) {
-        reportDiagnostics(input, result);
-        return false;
-    }
+    reportDiagnostics(input, result); // warnings too, on success (P40 A1)
+    if (!result.ok) return false;
     std::vector<fs::path> outs;
     std::string rerr;
     if (!cli::resolveClosureOutputs(pc, flagRouted, input, result, target.backend()->name(), ext,
@@ -410,8 +414,8 @@ bool writeSharedPrelude(const SharedPreludePhase& prelude, const BackendHandle& 
         const std::map<std::string, std::string> opts = g.options; // P40 B1: the roots' agreed options
         l.targetOptions = [opts](const std::string&, const std::string&) { return opts; };
         EmitResult r = compileSharedPrelude(target, u, l);
+        reportDiagnostics(g.path, r);
         if (!r.ok) {
-            reportDiagnostics(g.path, r);
             ok = false;
             continue;
         }

@@ -1,0 +1,19 @@
+1
+true
+true
+3
+2
+4
+$x
+cost $x
+${y}
+v=5 ${x}
+$5
+v{5}
+tick`5`
+it's
+a\b "q"
+"
+'
+A
+true

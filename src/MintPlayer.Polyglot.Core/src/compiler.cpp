@@ -751,6 +751,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         } else {
             result.code = target.backend()->emit(module);
         }
+        result.diagnostics = diags.items(); // warnings reach the host on success too (P40 A1)
         result.ok = true;
         return result;
     }
@@ -836,6 +837,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         const std::set<std::string> unionReach(sharedOnly->names.begin(), sharedOnly->names.end());
         result.code = emitKeep({kPreludeOrigin}, kPreludeBasename, &unionReach);
         result.origins = lastOrigins;
+        result.diagnostics = diags.items(); // warnings reach the host on success too (P40 A1)
         result.ok = true;
         return result;
     }
@@ -867,6 +869,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         pf.sharedPrelude = true;
         result.modules.push_back(std::move(pf));
     }
+    result.diagnostics = diags.items(); // warnings reach the host on success too (P40 A1)
     result.ok = true;
     return result;
 }

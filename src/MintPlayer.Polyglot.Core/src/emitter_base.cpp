@@ -446,14 +446,15 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
         auto it = spec_.intSuffix.find(args.empty() ? std::string() : args[0]);
         return it == spec_.intSuffix.end() ? std::string() : it->second;
     }
-    if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
-    if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
+    if (name == "opSpelling")  return spec_.binOp(args.empty() ? std::string() : args[0]);
     // Identifier repair — generic catalog entries parameterized by the spec's `identifiers` block (P19).
     if (name == "ident")      return specIdent(spec_, args.empty() ? std::string() : args[0]);
     if (name == "identFn")    return specIdentFn(spec_, args.empty() ? std::string() : args[0]);
     if (name == "mangleName") return specMangle(spec_, args.empty() ? std::string() : args[0]);
-    // Named escape maps — {"fn":"escape","args":["<map>", <text>]} over the spec's `escapes` data (P19).
-    if (name == "escape" && args.size() >= 2) return specEscape(spec_, args[0], args[1]);
+    // P40 A1: literal text over the spec's `literals` data — {"fn":"literal","args":["<context>", <text>]} is
+    // the escaped body, {"fn":"quoted",…} the same wrapped in the context's quote.
+    if (name == "literal" && args.size() >= 2) return specLiteral(spec_, args[0], args[1]);
+    if (name == "quoted" && args.size() >= 2)  return specQuoted(spec_, args[0], args[1]);
     // §3.C integer wrap — {"fn":"wrap","args":[<width>, <expr>]} over the spec's `wrapInt` templates (P19).
     if (name == "wrap" && args.size() >= 2) return specWrapInt(spec_, args[0], args[1]);
     // Named table lookup — {"fn":"table","args":[<table>, <key>]} over the spec's `tables` data (P19).
@@ -477,8 +478,10 @@ std::string IrExprCtx::renderType(const std::string& path) const {
     return t ? renderTypeRef(*t) : "";
 }
 
-bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
-    const std::vector<std::string>& set = side == "recv" ? spec_.wrapAtomRecv : spec_.wrapAtomUnary;
+namespace {
+// The spec's wrapAtom kind-set membership test, shared by rule operands (IrExprCtx::wrapAtom) and bound FFI
+// templates (EmitterBase::substBoundTemplate).
+bool inWrapSet(const std::vector<std::string>& set, const ir::Expr& c) {
     for (const std::string& k : set) {
         if (k == "binary" && c.kind == ir::ExprKind::Binary) return true;
         if (k == "binaryScalar" && c.kind == ir::ExprKind::Binary &&
@@ -489,6 +492,11 @@ bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
         if (k == "cond" && c.kind == ir::ExprKind::Cond) return true;
     }
     return false;
+}
+} // namespace
+
+bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
+    return inWrapSet(side == "recv" ? spec_.wrapAtomRecv : spec_.wrapAtomUnary, c);
 }
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
@@ -1818,13 +1826,23 @@ void EmitterBase::headBlock(const std::string& head, const std::vector<ir::StmtP
 }
 
 std::string EmitterBase::substBoundTemplate(const std::string& tmpl, const ir::Bound& b) {
+    // A placeholder that the template uses as a member/index RECEIVER (`$this.Length`, `$0[i]`, PHP `$this->x`)
+    // takes the spec's receiver parenthesization policy, exactly like a rule's `recv` operand: unwrapped,
+    // `("a" + "1").len()` emitted `"a" + "1".Length` (a silent miscompile found by P40's escapes.pg).
+    auto placeholder = [&](const ir::Expr& e, std::size_t after) {
+        std::string s = emitExpr(e);
+        const bool recv = after < tmpl.size() &&
+                          (tmpl[after] == '.' || tmpl[after] == '[' || tmpl.compare(after, 2, "->") == 0 ||
+                           tmpl.compare(after, 2, "?.") == 0);
+        return recv && inWrapSet(spec().wrapAtomRecv, e) ? "(" + s + ")" : s;
+    };
     std::string out;
     for (std::size_t i = 0; i < tmpl.size();) {
-        if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
+        if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += placeholder(*b.receiver, i + 5); i += 5; }
         else if (tmpl.compare(i, 2, "$T") == 0) { out += renderType(b.type); i += 2; } // ctor: the mapped type
         else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
             std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-            if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
+            if (idx < b.args.size()) out += placeholder(*b.args[idx], i + 2);
             i += 2;
         } else out += tmpl[i++];
     }

@@ -165,7 +165,7 @@ namespace {
 // SILENTLY before this check existed (the slice-6d gate caught exactly that); now it fails the load.
 const std::unordered_set<std::string>& fnCatalog() {
     static const std::unordered_set<std::string> names = {
-        "intSuffix", "escapeString", "opSpelling", "ident", "identFn", "mangleName", "escape", "wrap", "table",
+        "intSuffix", "literal", "quoted", "opSpelling", "ident", "identFn", "mangleName", "wrap", "table",
         "subst", "require", "inlineBlock", // shared expression catalog
         "generics", "where", "mangle",     // declaration-context catalog
         "substExtern",                     // type-context catalog (extern-class template substitution)
@@ -332,8 +332,10 @@ namespace {
 // duplicate-name check is the caller's (registration) concern — `polyglot install` validates a manifest
 // for a target that may well already be loaded in this process.
 std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std::string& error) {
-    json::Value doc = json::parse(artifactJson);
+    std::string jsonErr;
+    json::Value doc = json::parse(artifactJson, jsonErr);
     if (doc.kind != json::Value::Kind::Object) { error = "plugin artifact must be a JSON object"; return nullptr; }
+    if (!jsonErr.empty()) { error = "plugin artifact: " + jsonErr; return nullptr; }
     const std::string name = doc["name"].asString();
     if (name.empty()) { error = "plugin artifact: missing 'name'"; return nullptr; }
 
@@ -500,6 +502,27 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
                     !spec.spec.preludes.count(r.parts[0].s) && badRequire.empty())
                     badRequire = r.parts[0].s;
             });
+        // P40 A1: a literal context is required data, and every {"fn":"literal"/"quoted"} names a declared one
+        // (a typo would silently fall back to the string context's quoting).
+        if (!spec.spec.literals.count("string")) {
+            error = "plugin '" + name + "': spec.literals must declare a 'string' context (P40)";
+            return nullptr;
+        }
+        std::string badContext;
+        for (const auto& kv : rules)
+            forEachRule(kv.second, [&](const engine::Rule& r) {
+                if (r.kind != engine::Rule::Kind::Fn || (r.s != "literal" && r.s != "quoted")) return;
+                const bool ok = r.parts.size() == 2 && r.parts[0].kind == engine::Rule::Kind::Lit &&
+                                spec.spec.literals.count(r.parts[0].s);
+                if (!ok && badContext.empty())
+                    badContext = r.parts.empty() || r.parts[0].kind != engine::Rule::Kind::Lit ? std::string("?")
+                                                                                              : r.parts[0].s;
+            });
+        if (!badContext.empty()) {
+            error = "plugin '" + name + "': a {\"fn\":\"literal\"/\"quoted\"} names literal context '" + badContext +
+                    "', which spec.literals does not declare (args: [\"<context>\", <text>])";
+            return nullptr;
+        }
         if (!badRequire.empty()) {
             error = "plugin '" + name + "': {\"fn\":\"require\"} names '" + badRequire +
                     "', which is not a declared prelude (spec.preludes)";

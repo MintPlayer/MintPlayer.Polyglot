@@ -53,6 +53,47 @@
     "trueLit": "true",
     "falseLit": "false",
     "nullLit": "null",
+    "literals": {
+      "string": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "$": "\\$"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      },
+      "interp": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "$": "\\$"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      },
+      "char": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "$": "\\$"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      }
+    },
     "wrapInt": {
       "u8": "(($x) & 0xff)",
       "u16": "(($x) & 0xffff)",
@@ -297,16 +338,18 @@
     },
     "Null": "null",
     "Str": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "string",
         {
           "get": "node.value"
         }
       ]
     },
     "Char": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "char",
         {
           "get": "node.value"
         }
@@ -958,8 +1001,9 @@
             "lits": "node.chunks",
             "holes": "node.holes",
             "lit": {
-              "fn": "escapeString",
+              "fn": "quoted",
               "args": [
+                "interp",
                 {
                   "get": "item"
                 }
@@ -1676,8 +1720,9 @@
       "tmpl": [
         "[\"tag\" => ",
         {
-          "fn": "escapeString",
+          "fn": "quoted",
           "args": [
+            "string",
             {
               "get": "node.caseName"
             }
@@ -1690,8 +1735,9 @@
             "tmpl": [
               ", ",
               {
-                "fn": "escapeString",
+                "fn": "quoted",
                 "args": [
+                  "string",
                   {
                     "get": "item.name"
                   }
@@ -1882,8 +1928,9 @@
                     "tmpl": [
                       "$_m[",
                       {
-                        "fn": "escapeString",
+                        "fn": "quoted",
                         "args": [
+                          "string",
                           {
                             "get": "item.field"
                           }
@@ -2037,8 +2084,9 @@
                     "tmpl": [
                       "$_m[",
                       {
-                        "fn": "escapeString",
+                        "fn": "quoted",
                         "args": [
+                          "string",
                           {
                             "get": "item.field"
                           }
@@ -2122,8 +2170,9 @@
               "tmpl": [
                 "$_m[\"tag\"] == ",
                 {
-                  "fn": "escapeString",
+                  "fn": "quoted",
                   "args": [
+                    "string",
                     {
                       "get": "item.pattern.ctorCase"
                     }
@@ -2146,8 +2195,9 @@
                             "tmpl": [
                               " && $_m[",
                               {
-                                "fn": "escapeString",
+                                "fn": "quoted",
                                 "args": [
+                                  "string",
                                   {
                                     "get": "item.field"
                                   }

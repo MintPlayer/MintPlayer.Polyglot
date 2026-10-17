@@ -141,10 +141,12 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
     for (std::filesystem::path d = startDir;; d = d.parent_path()) {
         std::string src;
         if (readFile(d / "pgconfig.json", src)) {
-            json::Value v = json::parse(src);
+            std::string jsonErr;
+            json::Value v = json::parse(src, jsonErr);
             PgConfig pc;
             pc.found = true;
             pc.dir = d;
+            if (!jsonErr.empty()) pc.errors.push_back((d / "pgconfig.json").string() + ": " + jsonErr);
             std::string r = v["root"].asString();
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }

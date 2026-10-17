@@ -87,6 +87,7 @@
     <ClInclude Include="include\mintplayer\polyglot\coverage.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\sourcemap.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\reachability.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\unicode.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />

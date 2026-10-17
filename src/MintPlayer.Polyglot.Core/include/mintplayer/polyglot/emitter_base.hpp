@@ -25,7 +25,7 @@ namespace mintplayer::polyglot {
 // The shared EvalContext over an ir::Expr + a BackendSpec — the seam that plugs the P18 rule interpreter
 // into the real IR. Everything target-INDEPENDENT lives here: the path->IR mapping (`node.lhs`,
 // `node.args.<i>`, `node.fields.<i>.name`, `spec.delimited.…`, …), the binary-operand precedence policy
-// for `side:"l"/"r"`, and the spec-driven builtins (intSuffix / escapeString / opSpelling). A concrete
+// for `side:"l"/"r"`, and the spec-driven builtins (intSuffix / literal / quoted / opSpelling). A concrete
 // backend subclasses with only what genuinely differs per target: extra scalar reads (semantic predicates
 // its rules test), its own builtins (keyword escaping, type rendering, numeric faithfulness), and its
 // atom-wrapping policy (which `recv`/`unary` children need parens).

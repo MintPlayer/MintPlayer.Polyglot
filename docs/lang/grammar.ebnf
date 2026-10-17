@@ -388,9 +388,17 @@ FLOAT_SUFFIX = "f" | "f32" | "f64" | "d" ;             (* f/f32 = f32; d/f64 = f
 STRING_LIT    = '"' , { STRING_CHAR | ESCAPE } , '"' ;
 (* Interpolation: "...${ expr }..." — segments lower to $"" (C#) / `` (TS).    *)
 INTERP_STRING = '"' , { STRING_CHAR | ESCAPE | "${" , expression , "}" } , '"' ;
+(* A char is exactly ONE character that fits one UTF-16 code unit (<= U+FFFF); empty, multi-character
+   and astral char literals are lexer errors (SPEC §8).                                                 *)
 CHAR_LIT      = "'" , ( STRING_CHAR | ESCAPE ) , "'" ;
-ESCAPE        = "\" , ( "n" | "t" | "r" | "0" | "\" | '"' | "'"
-                      | "u{" , HEX_DIGIT , { HEX_DIGIT } , "}" ) ;
+(* The complete escape set (P40 A1). `\$` is a literal dollar (so `\${` is a literal `${`, not a hole).
+   `\u{…}` takes 1-6 hex digits, at most 10FFFF and never a surrogate (D800-DFFF). Every other backslash
+   sequence — `\q`, `\uXXXX`, `\xHH` — is a lexer error at the backslash, never a dropped backslash.     *)
+ESCAPE        = "\" , ( "n" | "t" | "r" | "0" | "\" | '"' | "'" | "$"
+                      | "u{" , HEX_DIGIT , [ HEX_DIGIT ] , [ HEX_DIGIT ] , [ HEX_DIGIT ] ,
+                               [ HEX_DIGIT ] , [ HEX_DIGIT ] , "}" ) ;
+(* STRING_CHAR: any well-formed UTF-8 character except '"', "\" and the "${" opener (CHAR_LIT: except
+   "'" and "\"); ill-formed UTF-8 in a literal is an error.                                              *)
 
 IDENT      = ( LETTER | "_" ) , { LETTER | DIGIT | "_" } ;
 LETTER     = "A".."Z" | "a".."z" ;

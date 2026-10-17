@@ -191,6 +191,18 @@ try {
         Check $tsOk "P38: TypeScript emits a valid v3 sidecar with sourcesContent and a sourceMappingURL footer"
     }
 
+    # 7. P40 A1: a SUCCESSFUL build prints its warnings with their real severity, once — not `error:`, not
+    # only on failure, and not once per target. The non-ASCII caveat fires on a decoded `\u{E9}` escape.
+    $warnDir = Join-Path $work "warn"
+    New-Item -ItemType Directory -Force $warnDir | Out-Null
+    Set-Content -Path (Join-Path $warnDir "pgconfig.json") -Value '{ "targets": ["csharp", "typescript", "python"] }' -NoNewline
+    Set-Content -Path (Join-Path $warnDir "w.pg") -Value "fn main() {`n  print(`"caf\u{E9}`")`n}`n" -NoNewline
+    $warnOut = (& $Cli build (Join-Path $warnDir "w.pg") --lib io --out (Join-Path $work "o-warn") 2>&1 | Out-String)
+    $warnExit = $LASTEXITCODE
+    $warnCount = ([regex]::Matches($warnOut, ':\d+:\d+: warning: non-ASCII')).Count
+    Check ($warnExit -eq 0 -and $warnCount -eq 1 -and $warnOut -notmatch ': error: ') `
+        "a successful 3-target build prints its warning once, as 'warning:' (exit $warnExit, $warnCount warning line(s))"
+
     $g39Ok = (Test-G39 "counter" $false "counter" @("csharp", "typescript", "python", "php"))
     $g39Ok = (Test-G39 "modular" $true "modular" @("csharp", "typescript", "python", "php")) -and $g39Ok
     $g39Ok = (Test-G39 "operators_full" $false "operators_full" @("csharp", "typescript", "python")) -and $g39Ok

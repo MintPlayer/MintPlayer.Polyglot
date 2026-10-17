@@ -107,22 +107,43 @@
     "constArrayClose": "}",
     "linksWithoutImports": true,
     "forbidsShadowedLocals": true,
-    "escapes": {
+    "literals": {
+      "string": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
+      },
       "interp": {
-        "\"": "\\\"",
-        "\\": "\\\\",
-        "\n": "\\n",
-        "\t": "\\t",
-        "\r": "\\r",
-        "{": "{{",
-        "}": "}}"
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "{": "{{",
+          "}": "}}"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
       },
       "char": {
-        "'": "\\'",
-        "\\": "\\\\",
-        "\n": "\\n",
-        "\t": "\\t",
-        "\r": "\\r"
+        "quote": "'",
+        "map": {
+          "\\": "\\\\",
+          "'": "\\'",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4"
       }
     },
     "identifiers": {
@@ -261,8 +282,9 @@
       "get": "spec.nullLit"
     },
     "Str": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "string",
         {
           "get": "node.value"
         }
@@ -684,7 +706,7 @@
             "lits": "node.chunks",
             "holes": "node.holes",
             "lit": {
-              "fn": "escape",
+              "fn": "literal",
               "args": [
                 "interp",
                 {
@@ -733,7 +755,7 @@
       "tmpl": [
         "'",
         {
-          "fn": "escape",
+          "fn": "literal",
           "args": [
             "char",
             {

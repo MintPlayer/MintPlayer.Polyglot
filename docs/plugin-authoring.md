@@ -134,7 +134,7 @@ Every key `loadBackendSpec` reads (all optional except `name`; defaults shown wh
 | `throwKeyword` | string | Default `"throw"` (Python: `"raise"`). |
 | `rethrow` | string | The value-less rethrow statement, terminator included; default `"throw;"` (PHP: `"throw $__e;"`). |
 | `trueLit` / `falseLit` / `nullLit` | string | Literal spellings; defaults `true`/`false`/`null` (Python: `True`/`False`/`None`). |
-| `escapes` | map of maps | Named escape maps for literal contexts (source sequence → replacement, longest match wins); applied via `{"fn":"escape"}`. |
+| `literals` | object of contexts | **Required** `string` context, plus `interp` / `char` as the target needs (P40). Each context has `quote` (its delimiter), `map` (source sequence → replacement, longest match wins; must escape `\` and the quote; PHP adds `$` → `\$`), `codepoint` (how a character the Core must escape is spelled: `\u$H4`, `\u{$H}`; `$H4`/`$H8` pad, `$H` is minimal) and optional `astral` (a `$H8`/`$H` template, or `"surrogates"`, the default). The Core alone decides *which* characters escape — C0, DEL, C1 (incl. U+0085), U+2028/2029, U+FEFF — and printable non-ASCII passes through raw. NUL is never `\0` (the octal trap). Read by `{"fn":"quoted"}` / `{"fn":"literal"}`. |
 | `tables` | map of maps | Named lookup tables for `{"fn":"table"}` / `{"fn":"subst"}`. Two are read by the shared statement walk: `localDecl` (`mutable`/`const` templates, `$x` = the name — PHP `"$$x"`, TS `let $x`/`const $x`) and `yield` (`value`/`empty` — PHP `"yield $x;"` / `"return;"`). TS also carries `opMethod` and `bigNarrow`. |
 | `generics` | object | `{"style", "boundsIntro", "boundsSep", "erase"}`. `style`: `"whereClauses"` (C# `<T> where T : A`) \| `"inlineBounds"` (TS `<T extends A>`) \| `""` (none). `erase` lists compile-time-only bounds (`INumber`). |
 | `wrapAtom` | object | `{"recv": [...], "unary": [...]}` — which child kinds get parenthesized as a member/call receiver or unary operand. Vocabulary: `"binary"`, `"unary"`, `"cast"`, `"cond"`, `"binaryScalar"`. |
@@ -341,10 +341,11 @@ Tests inside `case`/`when`: `{"eq": [path, value]}`, `{"has": path}` (non-empty)
 ### 4.3 The builtin `fn` catalog (the complete, fixed list)
 
 Expression context: **`intSuffix`** (literal suffix for a type, from `spec.intSuffix`) ·
-**`escapeString`** (render a double-quoted string literal with the shared `\\ \" \n \t \r` escapes) ·
+**`quoted`** (`[context, text]` — a complete literal in a `spec.literals` context, quotes included) ·
+**`literal`** (`[context, text]` — the same without the quotes, for interpolation chunks) ·
 **`opSpelling`** (operator via `spec.binaryOp`, verbatim fallback) · **`ident`** (keyword-escape a
 name per `identifiers.escape`) · **`mangleName`** (forbidden-character repair per
-`identifiers.mangle`) · **`escape`** (`[mapName, text]` — apply a named `spec.escapes` map) ·
+`identifiers.mangle`) ·
 **`wrap`** (`[width, expr]` — the `spec.wrapInt` template) · **`table`** (`[table, key]` — a
 `spec.tables` lookup, `""` if absent) · **`subst`** (`[table, key, x]` — look up a template and
 substitute `$x`; identity if absent) · **`require`** (`[key]` — record a prelude key, emit nothing) ·

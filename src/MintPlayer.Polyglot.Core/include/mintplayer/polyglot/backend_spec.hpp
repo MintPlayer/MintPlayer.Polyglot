@@ -5,6 +5,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "mintplayer/polyglot/unicode.hpp"
+
 // Declarative, per-target emission data — the "70% tabular" half of a backend, extracted from the
 // hand-written emitters (see docs/design/backend-spec.md, P9). This grows slice by slice; the shared emit
 // engine + the imperative "Hook" tier land in later P9 slices. For now each emitter consults its own spec
@@ -162,10 +164,23 @@ struct BackendSpec {
     // on C# (whose sub-32 arithmetic promotes to int). A width with no row emits unwrapped.
     std::unordered_map<std::string, std::string> wrapInt;
 
-    // Named escape maps for the target's string-ish literal contexts (source sequence -> replacement):
-    // C# `$"…"` interpolation chunks double braces, TS template literals escape backtick + `${`, C# char
-    // literals escape `'`. Applied by the generic specEscape catalog entry — per-target escape CODE is gone.
-    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> escapes;
+    // P40 A1: how the target spells a literal, per named context (`string`, `interp`, `char`). The Core decides
+    // only WHICH characters need an escape (`unicode::mustEscape`, fixed and language-agnostic, plus the
+    // context's `map` keys); this data decides how each is written:
+    //   quote     — the context's delimiter (the `quoted` builtin wraps with it; the loader checks the map
+    //               escapes it and the backslash);
+    //   map       — source sequence -> replacement, longest match first (`"` -> `\"`, PHP `$` -> `\$`, C# interp
+    //               `{` -> `{{`, TS interp `${` -> `\${`); wins over the code-point templates;
+    //   codepoint — a BMP code point the Core must escape: `$H4` (4 hex digits), `$H8` (8) or `$H` (minimal);
+    //   astral    — a supplementary code point: a template (`$H8`/`$H`) or "surrogates" (two `codepoint`
+    //               escapes of the UTF-16 halves; the default).
+    struct LiteralContext {
+        std::string quote;
+        std::unordered_map<std::string, std::string> map;
+        std::string codepoint;
+        std::string astral; // "" = "surrogates"
+    };
+    std::unordered_map<std::string, LiteralContext> literals;
 
     // Identifier repair (the spec half of P19 §7's `identifiers` manifest block): the target's reserved
     // words and how a colliding `.pg` identifier escapes — "prefix" (C# `@name`) / "suffix" (Python
@@ -263,23 +278,74 @@ inline std::string specSubstTX(const BackendSpec& s, const std::string& table, c
     return it == t->second.end() ? std::string() : substTX(it->second, type, x);
 }
 
-// Apply the named escape map to `text`: at each position the longest declared source sequence wins
-// (2 chars, then 1); unmatched characters pass through. An unknown map name is the identity transform.
-inline std::string specEscape(const BackendSpec& s, const std::string& mapName, const std::string& text) {
-    auto mit = s.escapes.find(mapName);
-    if (mit == s.escapes.end()) return text;
-    const auto& m = mit->second;
+// P40 A1: one code point through a context's `codepoint`/`astral` template. `$H8`/`$H4` pad to 8/4 uppercase
+// hex digits, `$H` is the minimal spelling. A supplementary code point with no astral template (or
+// "surrogates") is written as its two UTF-16 halves through `codepoint`.
+inline std::string specCodepointEscape(const BackendSpec::LiteralContext& c, char32_t cp) {
+    auto fill = [](const std::string& tmpl, char32_t v) {
+        static const char* hex = "0123456789ABCDEF";
+        auto digits = [&](int width) {
+            std::string d;
+            for (char32_t x = v; x != 0; x >>= 4) d.insert(d.begin(), hex[x & 0xF]);
+            if (d.empty()) d = "0";
+            if (static_cast<int>(d.size()) < width) d.insert(0, static_cast<std::size_t>(width) - d.size(), '0');
+            return d;
+        };
+        std::string out;
+        for (std::size_t i = 0; i < tmpl.size(); ++i) {
+            if (tmpl[i] == '$' && i + 1 < tmpl.size() && tmpl[i + 1] == 'H') {
+                const char w = i + 2 < tmpl.size() ? tmpl[i + 2] : '\0';
+                if (w == '8' || w == '4') { out += digits(w - '0'); i += 2; }
+                else { out += digits(0); i += 1; }
+                continue;
+            }
+            out += tmpl[i];
+        }
+        return out;
+    };
+    if (cp > 0xFFFF) {
+        if (!c.astral.empty() && c.astral != "surrogates") return fill(c.astral, cp);
+        const char32_t v = cp - 0x10000;
+        return fill(c.codepoint, 0xD800 + (v >> 10)) + fill(c.codepoint, 0xDC00 + (v & 0x3FF));
+    }
+    return fill(c.codepoint, cp);
+}
+
+// P40 A1: the BODY of a target literal (no delimiters) for the decoded `.pg` value `text` in context `ctx`.
+// At each position the longest `map` key wins; otherwise a character in the fixed `unicode::mustEscape` set
+// goes through the code-point templates; everything else (printable ASCII, printable non-ASCII UTF-8)
+// passes through byte for byte. An undeclared context falls back to `string` (the loader refuses a rule
+// naming an undeclared one, so this is only reached by hand-built test specs).
+inline std::string specLiteral(const BackendSpec& s, const std::string& ctx, const std::string& text) {
+    auto it = s.literals.find(ctx);
+    if (it == s.literals.end()) it = s.literals.find("string");
+    if (it == s.literals.end()) return text;
+    const auto& c = it->second;
+    std::size_t maxKey = 0;
+    for (const auto& kv : c.map) maxKey = kv.first.size() > maxKey ? kv.first.size() : maxKey;
     std::string out;
     for (std::size_t i = 0; i < text.size();) {
-        if (i + 1 < text.size()) {
-            auto it2 = m.find(text.substr(i, 2));
-            if (it2 != m.end()) { out += it2->second; i += 2; continue; }
+        bool mapped = false;
+        for (std::size_t len = maxKey < text.size() - i ? maxKey : text.size() - i; len > 0 && !mapped; --len) {
+            auto m = c.map.find(text.substr(i, len));
+            if (m != c.map.end()) { out += m->second; i += len; mapped = true; }
         }
-        auto it1 = m.find(std::string(1, text[i]));
-        if (it1 != m.end()) { out += it1->second; ++i; continue; }
-        out += text[i++];
+        if (mapped) continue;
+        const std::size_t at = i;
+        char32_t cp = 0;
+        if (!unicode::decodeUtf8(text, i, cp)) { out += text[at]; continue; } // ill-formed: the lexer refused it
+        if (unicode::mustEscape(cp)) out += specCodepointEscape(c, cp);
+        else out.append(text, at, i - at);
     }
     return out;
+}
+
+// The context's literal with its delimiters — the `quoted` builtin.
+inline std::string specQuoted(const BackendSpec& s, const std::string& ctx, const std::string& text) {
+    auto it = s.literals.find(ctx);
+    if (it == s.literals.end()) it = s.literals.find("string");
+    const std::string q = it == s.literals.end() ? std::string("\"") : it->second.quote;
+    return q + specLiteral(s, ctx, text) + q;
 }
 
 // An emitted name with the spec's forbidden-character replacement applied (identity when none declared).
@@ -308,25 +374,6 @@ inline std::string renderDelimited(const BackendSpec::DelimitedTemplate& t,
 // A conditional expression `(c ? t : e)` — the C#/TS spelling (Python's `t if c else e` is its own hook).
 inline std::string renderCond(const std::string& c, const std::string& t, const std::string& e) {
     return "(" + c + " ? " + t + " : " + e + ")";
-}
-
-// A double-quoted string literal with the target-independent escape set. The escape rules (\\ \" \n \t \r)
-// and the `"` delimiter are byte-identical across C#, TS, and Python — the three-backend spike confirmed the
-// per-target `escape()` copies were the same primitive — so string escaping is a shared engine rule, not
-// per-target Spec data.
-inline std::string renderString(const std::string& v) {
-    std::string s = "\"";
-    for (char c : v) {
-        switch (c) {
-            case '\\': s += "\\\\"; break;
-            case '"':  s += "\\\""; break;
-            case '\n': s += "\\n";  break;
-            case '\t': s += "\\t";  break;
-            case '\r': s += "\\r";  break;
-            default:   s += c;      break;
-        }
-    }
-    return s + "\"";
 }
 
 // An argument list `(a, b, c)` — the affix is identical across C# and TS (unlike tuple brackets), so it's a

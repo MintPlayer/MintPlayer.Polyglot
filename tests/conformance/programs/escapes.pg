@@ -1,0 +1,29 @@
+// P40 A1 — escapes: ONE decoder for string and char literals, re-escaped per target from the plugin's
+// `literals` data. Before P40 `\u{1D}` dropped its backslash (emitted "u{1D}", length 5) on all four
+// targets, and PHP interpolated `$x` inside a plain string. ASCII-only lengths on purpose: Python counts
+// code points and PHP bytes for non-ASCII text (SPEC §9).
+
+import "std.strings"
+
+fn main() {
+  let x = 5
+  print("\u{1D}".len())            // 1
+  print("\u{41}" == "A")           // true
+  print("\u{1D}" == "\u{00001D}")  // true
+  print(("a\0" + "1").len())       // 3  (NUL then a digit: never the octal \01)
+  print("\u{0}1".len())            // 2
+  print("a\u{7F}\tb".len())        // 4
+  print("\$x")                     // $x
+  print("cost $x")                 // cost $x
+  print("\${y}")                   // ${y}
+  print("v=${x} \${x}")            // v=5 ${x}
+  print("$${x}")                   // $5
+  print("v{${x}}")                 // v{5}
+  print("tick`${x}`")              // tick`5`
+  print("it\'s")                   // it's
+  print("a\\b \"q\"")              // a\b "q"
+  print('"')                       // "
+  print('\'')                      // '
+  print('\u{41}')                  // A
+  print("x\u{0}y" == "x\0y")       // true
+}
