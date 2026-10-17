@@ -3112,6 +3112,10 @@
                         "\";"
                       ]
                     }
+                  ],
+                  [
+                    { "not": { "eq": ["item.allNames", ""] } },
+                    { "tmpl": ["import { ", { "get": "item.allNames" }, " } from \"", { "get": "item.path" }, "\";"] }
                   ]
                 ],
                 "else": {
@@ -4702,10 +4706,20 @@
       "string.toLower": "$this.toLowerCase()",
       "string.toUpperAscii": "$this.replace(/[a-z]+/g, (__m) => __m.toUpperCase())",
       "string.toLowerAscii": "$this.replace(/[A-Z]+/g, (__m) => __m.toLowerCase())",
-      "string.charAt": "$this.charAt($0)",
-      "string.codePointAt": "$this.codePointAt($0)!",
       "string.codePoints": "Array.from($this)",
-      "string.toI32": "(Number.parseInt($this, 10) | 0)"
+      "string.toI32": "(Number.parseInt($this, 10) | 0)",
+      "string.startsWith": "$this.startsWith($0)",
+      "string.endsWith": "$this.endsWith($0)",
+      "string.contains": "$this.includes($0)",
+      "string.trimAscii": "$this.replace(/^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$/g, \"\")",
+      "compareOrdinal": "(a < b ? -1 : (a > b ? 1 : 0))",
+      "string.__pgCharAt": "$this.charAt($0)",
+      "string.__pgCodePointAt": "$this.codePointAt($0)!",
+      "string.__pgSubstring": "$this.substring($0, $1)",
+      "string.__pgIndexOf": "$this.indexOf($0, $1)",
+      "string.__pgReplaceAll": "$this.split($0).join($1)",
+      "string.__pgSplit": "$this.split($0)",
+      "string.__pgFromCodePoint": "String.fromCodePoint($0)"
     },
     "std.core": {
       "Error.type": "Error",

@@ -80,8 +80,8 @@ so it is a fallible **static method on the type**: `i32.parse(s)` / `f64.parse(s
 Converting `char`→number is **not** a cast either — a char is a native char only on C# but a
 one-character string on TS/Python/PHP, so `(i32)c` cannot be honored uniformly (it printed 65 on C#, 0 on
 TS/PHP, and dropped the cast on Python before it was refused — issue #34). The portable ordinal accessor
-is **`s.codePointAt(i): i32`** in `std.strings` (C# `char.ConvertToUtf32` / TS `codePointAt` / Python
-`ord` / PHP `ord(substr(…))`, byte-oriented like the rest of PHP's string std — exact parity on ASCII).
+is **`s.codePointAt(i): i32`** in `std.strings` — the code point starting at UTF-16 unit `i` (a pair's high
+half yields the whole code point, a lone surrogate its own unit), identical on all four targets (§8).
 
 ---
 
@@ -606,6 +606,36 @@ explicitly (a `match` returning the text you want).
 **Case mapping.** `toUpperAscii()`/`toLowerAscii()` change only `a`–`z`/`A`–`Z` and keep every other
 character — identical on every target. `toUpper()`/`toLower()` are the published **best-effort** tier (§9).
 
+**The string std (`import "std.strings"`, P40 B3).** Every operation is **ordinal** (no culture, no locale:
+C# binds the `StringComparison.Ordinal` overloads), every index is a **UTF-16 code unit**, and every argument
+out of range throws an `Error` with the same message on every target:
+
+| Function | Result | Throws `Error` when |
+|---|---|---|
+| `s.len()` | the length in UTF-16 code units (`"😀".len()` is 2) | — |
+| `s.charAt(i)` | the unit at `i`, as a one-unit string | `i < 0` or `i >= len` |
+| `s.codePointAt(i)` | the code point starting at `i`; a lone surrogate yields its unit | `i < 0` or `i >= len` |
+| `s.substring(start, end)` | units `[start, end)` (may split a surrogate pair) | `start < 0`, `end > len` or `start > end` |
+| `s.indexOf(needle, from = 0)` | the first unit index `>= from`, else `-1`; an empty needle finds `from` | `from < 0` or `from > len` |
+| `s.startsWith(p)`, `s.endsWith(p)`, `s.contains(n)` | ordinal tests | — |
+| `s.replaceAll(needle, replacement)` | every non-overlapping match replaced literally (`$$`/`$&` mean nothing) | `needle` is empty |
+| `s.split(sep)` | a `List<string>`, empty pieces kept (`"a,,b"` → 3) | `sep` is empty |
+| `s.trimAscii()` | strips exactly U+0009–U+000D and U+0020 at both ends (not GS, NBSP or U+FEFF) | — |
+| `string.fromCodePoint(cp)` | the code point as a string (2 units when astral) | a surrogate, `cp < 0` or `cp > 0x10FFFF` |
+| `compareOrdinal(a, b)` | `-1`/`0`/`1` by UTF-16 code unit (never numeric: `"10"` < `"9"`) | — |
+
+The checks are written **once**, in `.pg`, inside `std.strings` itself, over unchecked per-target primitives
+— so the four plugins cannot drift. The primitives (`__pg…`) and the emitted guards (`_pg_…`) use prefixes
+user code may not declare or reference. `split` returning `List<string>` does not make `List` visible to a
+caller that never imported `std.collections` (§11: an import is visible only to the module that writes it).
+
+**Index units on Python and PHP.** C# and TS strings are UTF-16 natively. Python holds code points and PHP
+UTF-8 bytes, so their string std counts through helpers instead (capability `utf16Strings:index`,
+"emulated"): an ASCII-only string takes a fast path (Python `str.isascii()`, a PHP byte scan); any other is
+indexed through a cached UTF-16 view (Python: astral code points expanded to surrogate pairs; PHP: an
+**iconv** UTF-16LE copy — **the PHP target requires `ext-iconv`**, and names it in the `Error` it throws
+when a non-ASCII string is indexed without it). Printing a lone surrogate writes U+FFFD on every target.
+
 ---
 
 ## 9. Faithful-by-default & the published relaxation list (PRD §3.C)
@@ -627,7 +657,9 @@ relaxation is **opt-in and named**, never silent:
 | shifts | count masked (`& 31` / `& 63`, the .NET rule) and result wrapped to the operand width on every target | — |
 | float `%` | C-style `fmod` (result takes the DIVIDEND's sign — the .NET/JS behavior); Python emits `math.fmod`, PHP `fmod()` | — |
 | PHP 64-bit wrap | **published caveat:** PHP has no i64/u64 wrap emulation (no GMP dependency) — i64 arithmetic is faithful only while intermediates stay inside ±2⁶³ (beyond it PHP promotes to float); u64 values above 2⁶³−1 are not representable | a GMP-backed strict mode could be offered later |
-| non-ASCII string content | **published caveat:** the string std counts in each target's native unit — `len()`/`charAt()` index **UTF-16 code units** on C# and TS, **code points** on Python, and UTF-8 **bytes** on PHP (byte-oriented). So `"é".len()` is 1/1/1/2 and `"a😀b".len()` is 4/4/3/6 (C#/TS/Python/PHP). ASCII content is identical everywhere; the lexer warns on every non-ASCII literal, whether the character is written raw or as a `\u{…}` escape, and the CLI prints that warning on successful builds too. P40 slice 8 makes Python's indexing UTF-16-faithful (and PHP's, iconv-backed, or keeps this caveat) | the P40 UTF-16 string std |
+| string index units | **faithful**: `len`/`charAt`/`codePointAt`/`substring`/`indexOf` count **UTF-16 code units** on every target — natively on C#/TS, through helpers on Python and PHP (§8; PHP requires `ext-iconv`). `"é".len()` is 1 and `"a😀b".len()` is 4 everywhere; `compareOrdinal` orders by code unit everywhere (an astral character sorts before U+E000–U+FFFF) | — |
+| lone surrogates | a `substring`/`charAt` that splits a pair holds the lone half faithfully (its `len`, `codePointAt` and printed U+FFFD agree everywhere) | **published caveat:** on Python and PHP, two lone halves joined by `+` are not re-paired for `==` (`"\u{1F600}".substring(0, 1) + "\u{1F600}".substring(1, 2) == "\u{1F600}"` is true on C#/TS, false on Python/PHP); `print` still shows the paired character |
+| `codePoints()` | iterates code points on every target | **published caveat:** a lone surrogate is U+FFFD on C# (`EnumerateRunes`) and kept as is on TS/Python; PHP's `preg_split('//u')` fails on the ill-formed string |
 
 **Determinism honesty (PRD §3.D):** only `+ − × ÷ √` are reproducible across .NET and JS (at matched
 width). Transcendentals (`sin`/`cos`/`exp`/`pow`), FMA, and reassociation diverge. Code that needs
@@ -725,9 +757,19 @@ user modules. An interpolated string (`"…${}…"`) is rejected as a specifier.
 
 **Resolution** (PRD §4.5, PLAN P12): `std.*` resolves from the compiler's embedded registry; other
 specifiers resolve through a pluggable module loader (the CLI maps a logical `a.b.c` to `<root>/a/b/c.pg`
-and a `./x` relative to the importing file; cross-file user-module loading is the P12 deliverable). Selective
-imports are intended to restrict visibility and name collisions are compile errors resolvable with `as` —
-see PRD §4.5. `expect`/`actual` (target-gated capabilities) and `extern` (the FFI hatch) are implemented as
+and a `./x` relative to the importing file; cross-file user-module loading is the P12 deliverable).
+
+**Visibility (P40 D16).** An import makes names visible **only to the module that writes it**: a bare
+import (`import "./x"`, `import "std.strings"`) every name of that module, a selective one only the names it
+lists. A module's own imports do not leak to the modules importing it — `std.strings` imports
+`std.collections` for `split`'s `List<string>`, yet a caller that names `List` imports `std.collections`
+itself (using the returned list without naming its type needs no import). The `lib` prelude
+(`pgconfig.json` / `--lib`) is visible everywhere, and `std.core` (`Error`, `Option`, `Iterable`, …) always
+is. A name used without the import that makes it visible is a compile error naming the import to add. The
+merged closure still shares one namespace, so two modules of one closure may not declare the same name
+(a collision is an error, never a silent pick) — per-module namespaces are a later step. A bare import emits
+real target imports for every name (TS `import { … }`, Python `from x import *`), so an extension-only module
+links. Renaming (`as`) and namespace (`* as ns`) imports are refused (PRD §3.B, #39e). `expect`/`actual` (target-gated capabilities) and `extern` (the FFI hatch) are implemented as
 of P7.
 
 Platform/SDK/environment APIs (`window`, `System.Windows.Forms`, …) are **not** in the core language at

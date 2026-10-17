@@ -1,0 +1,7 @@
+// REFUSED (P40 B3): the `__pg` / `_pg_` prefixes belong to the std library — its unchecked primitives
+// (`__pgCharAt` assumes an in-range index) must not be reachable from user code.
+import "std.strings"
+
+fn main() {
+  let c = "abc".__pgCharAt(7)
+}

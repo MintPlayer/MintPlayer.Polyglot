@@ -154,15 +154,23 @@ extern class Math {
 }
 )PG";
 
-// std.strings — string methods as bound extension methods (a method on the builtin `string`). Each arm maps
-// `s.method(args)` to the target's idiom (C# `.ToUpperInvariant()` / JS `.toUpperCase()`). P40 A3: toUpper /
-// toLower are the published BEST-EFFORT tier (full Unicode on JS/Python, simple invariant mapping on C#,
-// ASCII-only on PHP); toUpperAscii / toLowerAscii map a-z / A-Z only and are identical on every target. Both targets are UTF-16
-// (SPEC §8) so `len`/`charAt` are code-unit operations; `codePoints` iterates code points (surrogate-aware).
-// `codePointAt` yields the code point starting at the index — the portable char→ordinal path. Surrogate-aware
-// on C#/TS; Python indexes by code point (charAt's existing caveat); PHP stays byte-oriented like its charAt
-// (`ord(substr(...))` — mb_ord would demand the mbstring extension), so cross-target parity is exact on ASCII.
+// std.strings — the ordinal string library (P40 B3). Three layers:
+//   * plain bound extensions (`len`, `startsWith`, `trimAscii`, …): one per-target template each, no guard
+//     needed (nothing is out of range);
+//   * unchecked PRIMITIVES (`__pg…`): per-target templates that assume valid arguments. The `__pg` prefix is
+//     refused in user code, and the guards below only ever pass plain identifiers, so a template that reads
+//     an argument twice never double-evaluates;
+//   * the GUARDS, written once here in .pg: the range/argument checks and their Error messages are the same
+//     source on every target, so the four plugins cannot drift. They emit as `_pg_<name>` (lowering).
+// Every index is a UTF-16 code unit on every target (SPEC §9, D2/D15): C#/TS natively, Python and PHP through
+// their `utf16Strings:index` helpers. Every comparison is ordinal (C# binds the `StringComparison.Ordinal`
+// overloads; no culture-sensitive call). toUpper / toLower are the published BEST-EFFORT tier (P40 A3);
+// toUpperAscii / toLowerAscii are identical everywhere. `split` returns a `List<string>`, so this module
+// imports std.collections itself (S18) — visible to this module only (D16): a user who names `List` imports
+// std.collections too.
 const char* STD_STRINGS = R"PG(
+import "std.collections"
+
 extension fn string.isEmpty(): bool {
 }
 extension fn string.len(): i32 {
@@ -175,13 +183,89 @@ extension fn string.toUpperAscii(): string {
 }
 extension fn string.toLowerAscii(): string {
 }
-extension fn string.charAt(index: i32): string {
-}
-extension fn string.codePointAt(index: i32): i32 {
-}
 extension fn string.codePoints(): Iterable<string> {
 }
 extension fn string.toI32(): i32 {
+}
+extension fn string.startsWith(prefix: string): bool {
+}
+extension fn string.endsWith(suffix: string): bool {
+}
+extension fn string.contains(needle: string): bool {
+}
+extension fn string.trimAscii(): string {
+}
+
+expect fn compareOrdinal(a: string, b: string): i32
+
+extension fn string.__pgCharAt(index: i32): string {
+}
+extension fn string.__pgCodePointAt(index: i32): i32 {
+}
+extension fn string.__pgSubstring(start: i32, end: i32): string {
+}
+extension fn string.__pgIndexOf(needle: string, from: i32): i32 {
+}
+extension fn string.__pgReplaceAll(needle: string, replacement: string): string {
+}
+extension fn string.__pgSplit(separator: string): List<string> {
+}
+
+extern class string {
+  static fn __pgFromCodePoint(cp: i32): string {
+  }
+  static fn fromCodePoint(cp: i32): string {
+    if cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) {
+      throw Error("fromCodePoint: ${cp} is not a Unicode scalar value")
+    }
+    return string.__pgFromCodePoint(cp)
+  }
+}
+
+extension fn string.charAt(index: i32): string {
+  let n = this.len()
+  if index < 0 || index >= n {
+    throw Error("charAt: index ${index} is out of range for length ${n}")
+  }
+  return this.__pgCharAt(index)
+}
+
+extension fn string.codePointAt(index: i32): i32 {
+  let n = this.len()
+  if index < 0 || index >= n {
+    throw Error("codePointAt: index ${index} is out of range for length ${n}")
+  }
+  return this.__pgCodePointAt(index)
+}
+
+extension fn string.substring(start: i32, end: i32): string {
+  let n = this.len()
+  if start < 0 || end > n || start > end {
+    throw Error("substring: range [${start}, ${end}) is out of range for length ${n}")
+  }
+  return this.__pgSubstring(start, end)
+}
+
+extension fn string.indexOf(needle: string, from: i32 = 0): i32 {
+  let n = this.len()
+  if from < 0 || from > n {
+    throw Error("indexOf: start ${from} is out of range for length ${n}")
+  }
+  return this.__pgIndexOf(needle, from)
+}
+
+extension fn string.replaceAll(needle: string, replacement: string): string {
+  if needle.isEmpty() {
+    throw Error("replaceAll: the needle is empty")
+  }
+  return this.__pgReplaceAll(needle, replacement)
+}
+
+extension fn string.split(separator: string): List<string> {
+  if separator.isEmpty() {
+    throw Error("split: the separator is empty")
+  }
+  return this.__pgSplit(separator)
 }
 )PG";
 
@@ -310,13 +394,315 @@ void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, Diag
         if (!exports.count(n.name)) diags.error(imp.pos, "module '" + imp.path + "' has no export '" + n.name + "'");
 }
 
+// P40 D16 — module scoping. Every module of a closure merges into ONE unit for sema (a flat namespace), so
+// without this pass a name a module never imported was visible to it anyway: std.strings' own
+// `import "std.collections"` leaked `List` into user code that never imported it, and a user module saw every
+// name of a module its import imported. ScopeRec records, while linking, which module imports what (and
+// under which names); checkModuleScopes then refuses every name a USER module's source spells that its own
+// imports do not make visible. Modules are told apart by their source file id (every token is stamped). It is
+// a refusal layer over the flat namespace: it never changes what a valid program means.
+struct ScopeImport {
+    std::string canon;               // the imported module's canonical id ("std.collections", a user path)
+    std::string spec;                // the specifier as written (messages)
+    std::vector<std::string> names;  // a selective group; empty = every name (a bare or std import)
+};
+struct ScopeRec {
+    std::map<std::string, std::vector<ScopeImport>> edges; // importer canon ("" = the entry) -> its imports
+    std::map<std::string, int> fileOf;                      // canon -> source file id
+    std::set<std::string> userModules;                      // canon of every non-std module ("" = the entry)
+};
+
+// What a user module may name: its own file, std.core, the ambient lib modules, and its direct imports (a
+// selective import only for the names it lists).
+class ScopeChecker {
+public:
+    ScopeChecker(const CompilationUnit& u, const ScopeRec& rec, int coreFile, const std::set<std::string>& ambient,
+                 const SourceMap& src, DiagnosticBag& diags)
+        : unit_(u), rec_(rec), coreFile_(coreFile), ambient_(ambient), src_(src), diags_(diags) {
+        // file id -> module canon (the SourceMap stores each module under its canon; id 1 is the entry, "")
+        for (int i = 1; i < static_cast<int>(src.files.size()); ++i) canonOf_[i] = src.files[i];
+        canonOf_[1] = "";
+        auto note = [](auto& map, const std::string& n, int fid) { if (!n.empty()) map[n].push_back(fid); };
+        for (const auto& d : u.records)    note(types_, d.name, d.pos.fileId);
+        for (const auto& d : u.classes)    note(types_, d.name, d.pos.fileId);
+        for (const auto& d : u.interfaces) note(types_, d.name, d.pos.fileId);
+        for (const auto& d : u.enums)      note(types_, d.name, d.pos.fileId);
+        for (const auto& d : u.unions) {
+            note(types_, d.name, d.pos.fileId);
+            for (const auto& c : d.cases) note(values_, c.name, d.pos.fileId);
+        }
+        for (const auto& d : u.values)     note(values_, d.name, d.pos.fileId);
+        for (const auto& d : u.functions)  note(values_, d.name, d.pos.fileId);
+        for (const auto& d : u.extensions) note(exts_, d.receiver.name + "." + d.name, d.pos.fileId);
+        for (const auto& d : u.classes)
+            for (const auto& m : d.members) members_[d.name].insert(m.name);
+        for (const auto& d : u.records) {
+            for (const auto& m : d.members) members_[d.name].insert(m.name);
+            for (const auto& f : d.fields) members_[d.name].insert(f.name);
+        }
+        for (const auto& d : u.interfaces)
+            for (const auto& m : d.members) members_[d.name].insert(m.name);
+        for (const auto& c : u.classes)
+            for (const auto& m : c.members) note(statics_, c.name + "." + m.name, c.pos.fileId);
+    }
+
+    void run() {
+        for (const auto& d : unit_.functions) {
+            if (!enter(d.pos.fileId)) continue;
+            Locals loc(d.generics);
+            for (const auto& p : d.params) { loc.names.insert(p.name); type(p.type, p.pos, loc); }
+            type(d.returnType, d.namePos, loc);
+            collect(d.body, loc);
+            for (const auto& p : d.params) expr(p.defaultValue.get(), loc);
+            stmts(d.body, loc);
+        }
+        for (const auto& d : unit_.extensions) {
+            if (!enter(d.pos.fileId)) continue;
+            Locals loc(d.generics);
+            type(d.receiver, d.pos, loc);
+            for (const auto& p : d.params) { loc.names.insert(p.name); type(p.type, p.pos, loc); }
+            type(d.returnType, d.pos, loc);
+            collect(d.body, loc);
+            if (d.exprBody) collectExpr(d.exprBody.get(), loc);
+            stmts(d.body, loc);
+            expr(d.exprBody.get(), loc);
+        }
+        for (const auto& d : unit_.values) {
+            if (!enter(d.pos.fileId)) continue;
+            Locals loc({});
+            if (d.hasType) type(d.type, d.pos, loc);
+            collectExpr(d.init.get(), loc);
+            expr(d.init.get(), loc);
+        }
+        for (const auto& d : unit_.records) {
+            if (!enter(d.pos.fileId)) continue;
+            Locals loc(d.generics);
+            for (const auto& f : d.fields) type(f.type, d.pos, loc);
+            for (const auto& b : d.bases) type(b, d.pos, loc);
+            members(d.members, loc);
+        }
+        for (const auto& d : unit_.classes) {
+            if (d.isExtern || !enter(d.pos.fileId)) continue;
+            Locals loc(d.generics);
+            for (const auto& b : d.bases) type(b, d.pos, loc);
+            members(d.members, loc);
+        }
+        for (const auto& d : unit_.interfaces) {
+            if (!enter(d.pos.fileId)) continue;
+            Locals loc(d.generics);
+            for (const auto& b : d.bases) type(b, d.pos, loc);
+            members(d.members, loc);
+        }
+        for (const auto& d : unit_.unions) {
+            if (!enter(d.pos.fileId)) continue;
+            Locals loc(d.generics);
+            for (const auto& c : d.cases)
+                for (const auto& p : c.params) type(p.type, c.pos, loc);
+        }
+    }
+
+private:
+    // A flat per-declaration set of local names (params, lets, loop/catch/lambda/pattern binders): a local
+    // that shares a global's name is never judged — at worst a leak goes unreported, never a false refusal.
+    struct Locals {
+        std::set<std::string> names;
+        std::set<std::string> generics;
+        explicit Locals(const std::vector<GenericParam>& gs) { for (const auto& g : gs) generics.insert(g.name); }
+    };
+
+    const CompilationUnit& unit_;
+    const ScopeRec& rec_;
+    int coreFile_;
+    const std::set<std::string>& ambient_; // lib modules by canon (a lib module the user also imports
+                                           // explicitly survives under the explicit import's file id)
+    const SourceMap& src_;
+    DiagnosticBag& diags_;
+    std::map<int, std::string> canonOf_;
+    std::map<std::string, std::vector<int>> types_, values_, exts_, statics_;
+    std::map<std::string, std::set<std::string>> members_;
+    std::string module_;   // the user module being checked (canon; "" = the entry)
+    int file_ = 0;
+    std::set<std::string> reported_;
+
+    bool enter(int fileId) {
+        auto it = canonOf_.find(fileId);
+        if (it == canonOf_.end() || !rec_.userModules.count(it->second)) return false;
+        module_ = it->second;
+        file_ = fileId;
+        return true;
+    }
+
+    // Is a declaration in file `fid`, spelled `name`, visible to the current module? Writes the reason.
+    bool visible(int fid, const std::string& name, std::string& why, bool anyName = false) const {
+        if (fid == file_ || fid == coreFile_ || fid == 0) return true;
+        if (auto c = canonOf_.find(fid); c != canonOf_.end() && ambient_.count(c->second)) return true;
+        auto ed = rec_.edges.find(module_);
+        if (ed != rec_.edges.end())
+            for (const auto& imp : ed->second) {
+                auto f = rec_.fileOf.find(imp.canon);
+                if (f == rec_.fileOf.end() || f->second != fid) continue;
+                if (anyName || imp.names.empty() ||
+                    std::find(imp.names.begin(), imp.names.end(), name) != imp.names.end())
+                    return true;
+                why = "'" + name + "' is declared in '" + imp.spec + "' but not imported — add it to `import { … } from \"" +
+                      imp.spec + "\"`";
+                return false;
+            }
+        auto c = canonOf_.find(fid);
+        const std::string where = c != canonOf_.end() ? c->second : std::string("another module");
+        why = "'" + name + "' is declared in module '" + where + "', which this module does not import — add `import \"" +
+              where + "\"` (an import makes names visible only to the module that writes it)";
+        return false;
+    }
+    void judge(const std::map<std::string, std::vector<int>>& table, const std::string& key, const std::string& name,
+               SourcePos pos, bool anyName = false) {
+        auto it = table.find(key);
+        if (it == table.end()) return;
+        std::string why;
+        for (int fid : it->second) if (visible(fid, name, why, anyName)) return;
+        if (reported_.insert(std::to_string(pos.fileId) + ":" + std::to_string(pos.line) + ":" + std::to_string(pos.col) + name).second)
+            diags_.error(pos, why);
+    }
+
+    static bool builtinType(const std::string& n) {
+        static const std::set<std::string> b = {"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+                                                "bool", "string", "char", "unit"};
+        return b.count(n) != 0;
+    }
+    void type(const TypeRef& t, SourcePos pos, const Locals& loc) {
+        if (t.kind == TypeRef::Kind::Named && !t.name.empty() && !builtinType(t.name) && !loc.generics.count(t.name))
+            judge(types_, t.name, t.name, pos);
+        for (const auto& a : t.args) type(a, pos, loc);
+        for (const auto& r : t.ret) type(r, pos, loc);
+    }
+
+    // ---- local collection ----
+    void pattern(const Pattern& p, Locals& loc) {
+        if (p.kind == PatKind::Binding && !values_.count(p.name)) loc.names.insert(p.name);
+        for (const auto& s : p.sub) pattern(s, loc);
+    }
+    void collect(const std::vector<StmtPtr>& body, Locals& loc) {
+        for (const auto& s : body) {
+            if (!s) continue;
+            if (s->kind == StmtKind::Let || s->kind == StmtKind::Use) loc.names.insert(s->name);
+            for (const auto& n : s->tupleNames) loc.names.insert(n);
+            if (s->kind == StmtKind::For) pattern(s->forBinding, loc);
+            for (const auto& c : s->catches) { loc.names.insert(c.name); collectExpr(c.guard.get(), loc); collect(c.body, loc); }
+            collectExpr(s->value.get(), loc);
+            collectExpr(s->target.get(), loc);
+            collect(s->thenBody, loc);
+            collect(s->elseBody, loc);
+            collect(s->finallyBody, loc);
+        }
+    }
+    void collectExpr(const Expr* e, Locals& loc) {
+        if (!e) return;
+        for (const auto& p : e->params) loc.names.insert(p.name);
+        if (e->kind == ExprKind::Is && !e->text.empty()) loc.names.insert(e->text);
+        for (const auto& arm : e->arms) {
+            pattern(arm.pattern, loc);
+            collectExpr(arm.guard.get(), loc);
+            collectExpr(arm.body.get(), loc);
+            collect(arm.block, loc);
+        }
+        collectExpr(e->lhs.get(), loc);
+        collectExpr(e->rhs.get(), loc);
+        collectExpr(e->extra.get(), loc);
+        for (const auto& a : e->args) collectExpr(a.get(), loc);
+        for (const auto& f : e->fields) collectExpr(f.value.get(), loc);
+        collect(e->block, loc);
+    }
+
+    // ---- reference checking ----
+    void members(const std::vector<Member>& ms, const Locals& outer) {
+        for (const auto& m : ms) {
+            Locals loc = outer;
+            for (const auto& g : m.generics) loc.generics.insert(g.name);
+            for (const auto& p : m.params) { loc.names.insert(p.name); type(p.type, p.pos, loc); }
+            if (m.hasSetter) loc.names.insert(m.setterParam);
+            type(m.type, m.pos, loc);
+            type(m.returnType, m.pos, loc);
+            collect(m.body, loc);
+            collect(m.setterBody, loc);
+            collectExpr(m.exprBody.get(), loc);
+            collectExpr(m.init.get(), loc);
+            for (const auto& p : m.params) expr(p.defaultValue.get(), loc);
+            stmts(m.body, loc);
+            stmts(m.setterBody, loc);
+            expr(m.exprBody.get(), loc);
+            expr(m.init.get(), loc);
+        }
+    }
+    void patternRefs(const Pattern& p, const Locals& loc) {
+        if ((p.kind == PatKind::Ctor || p.kind == PatKind::Binding) && !loc.names.count(p.name))
+            judge(values_, p.name, p.name, p.pos);
+        if (p.hasType) type(p.type, p.pos, loc);
+        expr(p.literal.get(), loc);
+        for (const auto& s : p.sub) patternRefs(s, loc);
+    }
+    void stmts(const std::vector<StmtPtr>& body, const Locals& loc) {
+        for (const auto& s : body) {
+            if (!s) continue;
+            if (s->hasDeclType) type(s->declType, s->pos, loc);
+            if (s->kind == StmtKind::For) patternRefs(s->forBinding, loc);
+            expr(s->value.get(), loc);
+            expr(s->target.get(), loc);
+            stmts(s->thenBody, loc);
+            stmts(s->elseBody, loc);
+            for (const auto& c : s->catches) { type(c.type, c.pos, loc); expr(c.guard.get(), loc); stmts(c.body, loc); }
+            stmts(s->finallyBody, loc);
+        }
+    }
+    void expr(const Expr* e, const Locals& loc) {
+        if (!e) return;
+        switch (e->kind) {
+            case ExprKind::Name:
+                if (e->staticOwner.empty() && !loc.names.count(e->text)) {
+                    judge(values_, e->text, e->text, e->pos);
+                    if (!builtinType(e->text) && !loc.generics.count(e->text)) judge(types_, e->text, e->text, e->pos);
+                }
+                break;
+            case ExprKind::Member:
+                if (e->lhs && e->lhs->kind == ExprKind::Name && !loc.names.count(e->lhs->text) &&
+                    (types_.count(e->lhs->text) || builtinType(e->lhs->text))) {
+                    // a static `Type.member`: visible with its declaring class — selectively imported by the
+                    // type's name; a builtin type's statics (std's `extern class string`) with their module
+                    judge(statics_, e->lhs->text + "." + e->text, e->lhs->text, e->pos, builtinType(e->lhs->text));
+                } else if (e->lhs && e->lhs->type.kind == TypeRef::Kind::Named && !e->lhs->type.name.empty()) {
+                    // an extension method on the receiver's type (a declared member wins, as in lowering)
+                    const std::string& rt = e->lhs->type.name;
+                    auto mm = members_.find(rt);
+                    if (mm == members_.end() || !mm->second.count(e->text))
+                        judge(exts_, rt + "." + e->text, e->text, e->pos);
+                }
+                break;
+            default: break;
+        }
+        if (e->kind == ExprKind::Cast || e->kind == ExprKind::Is || e->kind == ExprKind::As) type(e->castType, e->pos, loc);
+        for (const auto& ta : e->typeArgs) type(ta, e->pos, loc);
+        for (const auto& p : e->params) type(p.type, e->pos, loc);
+        for (const auto& arm : e->arms) {
+            patternRefs(arm.pattern, loc);
+            expr(arm.guard.get(), loc);
+            expr(arm.body.get(), loc);
+            stmts(arm.block, loc);
+        }
+        expr(e->lhs.get(), loc);
+        expr(e->rhs.get(), loc);
+        expr(e->extra.get(), loc);
+        for (const auto& a : e->args) expr(a.get(), loc);
+        for (const auto& f : e->fields) expr(f.value.get(), loc);
+        stmts(e->block, loc);
+    }
+};
+
 // Recursively resolve+load every module `unit` imports, merging each (and its transitive dependencies,
 // dependencies-first) into `root`. `std.*` is served from the embedded registry; everything else goes
 // through `resolver`. `visited` dedups; `stack` (the in-progress chain) detects import cycles.
 void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::string& selfPath,
                  ModuleResolver* resolver, DiagnosticBag& diags,
                  std::unordered_set<std::string>& visited, std::vector<std::string>& stack, SourceMap* src,
-                 ImportGraph* graph) {
+                 ImportGraph* graph, ScopeRec* scope) {
     stack.push_back(selfPath);
     for (const auto& imp : unit.imports) {
         // #39e (⚑ PRD §2): a renaming (`{ a as b }`) or namespace (`* as ns`) import used to parse but then
@@ -355,16 +741,23 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
         // §4.5 linking: record every USER cross-module reference (even a re-import of an already-loaded
         // module) so the importer emits an import statement for it. std imports are the inlined prelude.
         if (!isStd && graph) (*graph)[selfPath].push_back({canon, imp.names, imp.isNamespace, imp.nsAlias});
+        if (scope) { // D16: what THIS module imports, and under which names
+            ScopeImport si{canon, imp.path, {}};
+            for (const auto& n : imp.names) si.names.push_back(n.name);
+            scope->edges[selfPath].push_back(std::move(si));
+            if (!isStd) scope->userModules.insert(canon);
+        }
         if (!visited.insert(canon).second) continue; // already loaded (imported more than once)
 
         int fileId = src ? src->add(canon) : 0; // stamp this module's tokens so its positions stay unambiguous
+        if (scope) scope->fileOf[canon] = fileId;
         std::vector<Token> toks = lex(source, diags, fileId);
         if (diags.hasErrors()) return;
         CompilationUnit mod = parse(toks, diags);
         if (diags.hasErrors()) return;
 
         validateImportNames(imp, mod, diags);
-        loadImports(root, mod, canon, resolver, diags, visited, stack, src, graph); // dependencies first (post-order)
+        loadImports(root, mod, canon, resolver, diags, visited, stack, src, graph, scope); // dependencies first (post-order)
         mergeDecls(mod, root, isStd ? kPreludeOrigin : canon); // std -> inlined prelude; user module -> its canon
     }
     stack.pop_back();
@@ -373,25 +766,27 @@ void loadImports(CompilationUnit& root, const CompilationUnit& unit, const std::
 // Merge the always-on core prelude (Error/Iterable) into `unit`. Idempotent and user-shadow-safe: a core
 // type already declared in `unit` (e.g. a user `class Error`) is left to collide in sema, not silently
 // double-merged. Runs before any import linking so the core types are authoritative.
-void linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags, SourceMap* src) {
-    std::vector<Token> toks = lex(STD_CORE, diags, src ? src->add(kCoreModuleName) : 0);
-    if (diags.hasErrors()) return;
+int linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags, SourceMap* src) {
+    const int coreFile = src ? src->add(kCoreModuleName) : 0;
+    std::vector<Token> toks = lex(STD_CORE, diags, coreFile);
+    if (diags.hasErrors()) return coreFile;
     CompilationUnit core = parse(toks, diags);
-    if (diags.hasErrors()) return;
+    if (diags.hasErrors()) return coreFile;
     std::unordered_set<std::string> have;
     for (const auto& c : unit.classes) have.insert(c.name);
     for (const auto& u : unit.unions)  have.insert(u.name);
     for (auto& c : core.classes) if (!have.count(c.name)) { c.originModule = kPreludeOrigin; unit.classes.push_back(std::move(c)); }
     for (auto& u : core.unions)  if (!have.count(u.name)) { u.originModule = kPreludeOrigin; unit.unions.push_back(std::move(u)); }
+    return coreFile;
 }
 
 // Resolve and merge the transitive closure of `unit`'s imports into it (see loadImports). `graph` (optional)
 // collects the user cross-module import edges for §4.5 linking; nullptr = don't record (e.g. the lib prelude).
 void linkModules(CompilationUnit& unit, ModuleResolver* resolver, DiagnosticBag& diags, SourceMap* src,
-                 ImportGraph* graph = nullptr) {
+                 ImportGraph* graph = nullptr, ScopeRec* scope = nullptr) {
     std::unordered_set<std::string> visited;
     std::vector<std::string> stack;
-    loadImports(unit, unit, "", resolver, diags, visited, stack, src, graph);
+    loadImports(unit, unit, "", resolver, diags, visited, stack, src, graph, scope);
 }
 
 // A stable identity string for a type (so a lib function only shadows a user function of the SAME signature,
@@ -414,7 +809,7 @@ std::string fnSigKey(const std::string& name, const std::vector<Param>& ps) {
 // lib function survive). Shadowed lib decls are dropped SILENTLY (ambient, lowest priority). A name exported
 // by two different lib entries is left to collide in sema (a prelude must be internally consistent).
 void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver* resolver, DiagnosticBag& diags,
-                    SourceMap* src) {
+                    SourceMap* src, std::set<std::string>* ambient = nullptr) {
     if (lib.libs.empty()) return;
 
     CompilationUnit staging;
@@ -427,8 +822,12 @@ void linkLibModules(CompilationUnit& unit, const LibConfig& lib, ModuleResolver*
         d.path = name.find('.') != std::string::npos ? name : "std." + name;
         staging.imports.push_back(std::move(d));
     }
-    linkModules(staging, resolver, diags, src); // stamp lib modules so their symbols get fileIds (std click-through)
+    ScopeRec libScope;
+    linkModules(staging, resolver, diags, src, nullptr, &libScope); // stamp lib modules so their symbols get fileIds (std click-through)
     if (diags.hasErrors()) return;
+    // D16: the lib entries themselves are ambient (visible to every user module) — not what THEY import.
+    if (ambient)
+        for (const auto& imp : libScope.edges[""]) ambient->insert(imp.canon);
 
     std::unordered_set<std::string> types, values, fns, exts;
     for (const auto& d : unit.records)    types.insert(d.name);
@@ -466,10 +865,15 @@ std::string embeddedModuleSource(const std::string& name) {
 // LSP path can request a semantic model; `compile` passes nullptr and pays nothing.
 bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfig& lib, DiagnosticBag& diags,
                  SemanticModel* model, const SemanticRequest* req, SourceMap* src, ImportGraph* graph = nullptr) {
-    linkCoreModule(unit, diags, src);                     if (diags.hasErrors()) return false; // Error/Iterable (no import)
-    linkModules(unit, resolver, diags, src, graph);       if (diags.hasErrors()) return false; // imported std + user modules
-    linkLibModules(unit, lib, resolver, diags, src);      if (diags.hasErrors()) return false; // ambient prelude (not recorded)
+    ScopeRec scope;
+    scope.userModules.insert(""); // the entry
+    std::set<std::string> ambient;
+    const int coreFile = linkCoreModule(unit, diags, src); if (diags.hasErrors()) return false; // Error/Iterable (no import)
+    linkModules(unit, resolver, diags, src, graph, &scope); if (diags.hasErrors()) return false; // imported std + user modules
+    linkLibModules(unit, lib, resolver, diags, src, &ambient); if (diags.hasErrors()) return false; // ambient prelude (not recorded)
     check(unit, diags, model, req);
+    // D16: names are visible only to the module that imports them. Needs the per-module file ids (src).
+    if (src && !diags.hasErrors()) ScopeChecker(unit, scope, coreFile, ambient, *src, diags).run();
     return !diags.hasErrors();
 }
 
@@ -607,7 +1011,8 @@ static std::string relativeSpecifier(const std::string& fromDir, const std::stri
 static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, const std::string& fileOrigin,
                                                   const std::map<std::string, std::string>& baseByCanon,
                                                   bool linksWithoutImports, bool crossDir,
-                                                  const std::function<std::string(const std::string&)>& outDirOf) {
+                                                  const std::function<std::string(const std::string&)>& outDirOf,
+                                                  const std::map<std::string, std::string>& allNamesByCanon) {
     std::vector<ir::ModuleImport> out;
     if (linksWithoutImports) return out; // modules link by compilation into one unit (plugin trait flag)
     auto it = graph.find(fileOrigin);
@@ -628,6 +1033,11 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
                 joined += n.alias.empty() ? n.name : (n.name + " as " + n.alias);
             }
             mi.names = joined;
+            // P40 B3: a bare `import "./mod"` makes every name of the module visible (D16), so the target
+            // import names them all — a side-effect-only import left an extension-only module's functions
+            // undefined (Python NameError, TS TS2304).
+            if (ri.names.empty())
+                if (auto an = allNamesByCanon.find(ri.fromCanon); an != allNamesByCanon.end()) mi.allNames = an->second;
         }
         out.push_back(std::move(mi));
     }
@@ -817,6 +1227,28 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         ir::Module m = lower(unit, target.name());
         // Every file re-lowers the whole unit, so a failure repeats identically: report it once.
         if (!anyLoweringFailed && loweringFailed(m)) anyLoweringFailed = true;
+        // P40 B3: every name each user module emits (functions under their emitted, possibly mangled, name),
+        // for the importers that import it bare. Read off the lowered module, so it is exactly what is emitted.
+        std::map<std::string, std::string> allNamesByCanon;
+        {
+            std::map<std::string, std::set<std::string>> byOrigin;
+            auto add = [&](const std::string& origin, const std::string& n) {
+                if (!n.empty() && origin != kPreludeOrigin && !origin.empty()) byOrigin[origin].insert(n);
+            };
+            for (const auto& d : m.enums) add(d.originModule, d.name);
+            for (const auto& d : m.unions) add(d.originModule, d.name);
+            for (const auto& d : m.records) add(d.originModule, d.name);
+            for (const auto& d : m.classes) add(d.originModule, d.name);
+            for (const auto& d : m.interfaces) add(d.originModule, d.name);
+            for (const auto& d : m.globals) add(d.originModule, d.name);
+            for (const auto& d : m.extensions) add(d.originModule, d.name);
+            for (const auto& d : m.functions) add(d.originModule, d.mangledName.empty() ? d.name : d.mangledName);
+            for (const auto& [origin, names] : byOrigin) {
+                std::string joined;
+                for (const auto& n : names) { if (!joined.empty()) joined += ", "; joined += n; }
+                allNamesByCanon[origin] = joined;
+            }
+        }
         // P40 §0: a file that holds the prelude on behalf of OTHER files too (the C# entry, or the split
         // prelude file) keeps the union of what every file of the closure reaches — computed over the whole
         // module, before it is partitioned. A per-file-prelude target keeps only what THIS file reaches.
@@ -844,7 +1276,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
             m.originBaseDir = lib.originBaseDir(importOrigin == kPreludeBasename ? std::string() : importOrigin);
         m.imports = buildImports(importGraph, importOrigin, baseByCanon,
                                  target.backend()->linksWithoutImports(),
-                                 target.backend()->crossDirImports(), lib.moduleOutputDir);
+                                 target.backend()->crossDirImports(), lib.moduleOutputDir, allNamesByCanon);
         if (!lib.originInfo) return target.backend()->emit(m);
         // P38: same as the single-file path, but each emitted FILE gets its own origin list — the caller
         // below stashes it on the matching ModuleFile.

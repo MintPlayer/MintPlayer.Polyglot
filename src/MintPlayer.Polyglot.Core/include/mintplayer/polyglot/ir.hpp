@@ -654,6 +654,7 @@ struct ExternType {
 struct ModuleImport {
     std::string path;
     std::string names;
+    std::string allNames; // P40 B3: a bare `import "./mod"` — every name the module emits, joined (else empty)
     bool isNamespace = false;
     std::string ns;
 };

@@ -1,5 +1,4 @@
-// issue #34: string.codePointAt — the portable char→ordinal path. ASCII-only so all four targets
-// (incl. PHP's byte-oriented string std) print identical bytes.
+// issue #34: string.codePointAt — the portable char→ordinal path (non-ASCII and astral cases: strings_astral.pg).
 
 import "std.strings"
 

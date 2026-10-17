@@ -273,7 +273,14 @@ function Invoke-ProgramWorker {
         }
 
         # 6. Run each configured runtime (WorkingDirectory = the program dir), oracle = C# output.
-        $csr = Invoke-WithTimeout -FilePath $dotnet -Arguments @($dll) -WorkingDirectory $dir
+        # P40 B3: on Windows a .NET child writes redirected stdout in its (hidden) console's OEM code page, so
+        # non-ASCII output came back as `?`. Switch that console to UTF-8 first — the C# twin of Python's `-X utf8`
+        # below (a harness setting; the generated program is unchanged). Linux/macOS .NET already writes UTF-8.
+        if ($IsWindows) {
+            $csr = Invoke-WithTimeout -FilePath "$env:ComSpec" -Arguments @('/d', '/c', 'chcp', '65001', '>nul', '&&', $dotnet, $dll) -WorkingDirectory $dir
+        } else {
+            $csr = Invoke-WithTimeout -FilePath $dotnet -Arguments @($dll) -WorkingDirectory $dir
+        }
         if ($csr.TimedOut) { $lines.Add("[FAIL] $name : timed out after 60s (csharp)"); return (& $result $false) }
         if ($csr.ExitCode -ne 0) { $lines.Add("[FAIL] $name : generated C# crashed at runtime (exit $($csr.ExitCode))"); return (& $result $false) }
         $oracle = Format-Golden $csr.Stdout

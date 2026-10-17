@@ -163,6 +163,11 @@ supported. Current keyed entries:
 - `operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}` — graded operator support.
   PHP declares the umbrella `false` plus `:eq` and `:indexers` `"native"` (`->eq(...)`,
   `->get`/`->set`).
+- `utf16Strings:index` — string INDEX operations (`len`/`charAt`/`codePointAt`/`substring`/`indexOf`) count
+  UTF-16 code units (P40 B3). Native on C#/TS; Python and PHP declare `"emulated"` — their std bindings
+  route through UTF-16 helper preludes (Python: `isascii()` fast path + a cached surrogate-expanded view;
+  PHP: a byte-scan fast path + a cached iconv UTF-16LE copy, so the PHP target requires `ext-iconv`). A
+  target that cannot honor the unit declares `false` and such programs are refused.
 - `attributes:target.{type,method,function,field,param}` — where a Tier 1 pass-through attribute may
   attach on this target. TS declares `function` and `param` false (TC39 has neither); Python declares
   `field` and `param` false. Tier 2 portable metadata needs **no capability at all** — the compiler
@@ -243,6 +248,19 @@ Three template flavors:
 
 A std member you don't overlay is refused at its use site for your target — un-overlaid calls never
 silently emit garbage.
+
+**Guarded std functions (P40 B3).** Part of `std.strings` is written in `.pg` inside the compiler — the
+argument checks of `charAt`, `codePointAt`, `substring`, `indexOf`, `replaceAll`, `split` and
+`string.fromCodePoint`, so their `Error` messages are identical on every target. You do NOT bind those
+names; you bind the **unchecked primitives** they call, which may assume valid arguments and are only ever
+called with plain identifiers (a template that reads `$0` twice cannot double-evaluate):
+`string.__pgCharAt`, `string.__pgCodePointAt` (a lone surrogate yields its own unit), `string.__pgSubstring`
+(`$0` = start, `$1` = end), `string.__pgIndexOf` (`$1` = from), `string.__pgReplaceAll`, `string.__pgSplit`
+(returns your `List` spelling) and `string.__pgFromCodePoint`. The plain bindings (`string.len`,
+`startsWith`, `endsWith`, `contains`, `trimAscii`, `compareOrdinal`, …) stay ordinary templates. Every index
+is a UTF-16 code unit: a target whose strings are not UTF-16 routes `len` and the index primitives through
+helper preludes and declares `"utf16Strings:index": "emulated"` (§3.2). The emitted guards are named
+`_pg_<name>`; user code may neither declare nor reference a `__pg`/`_pg_` name.
 
 **A binding that needs a helper** (P40) uses the object form and names the helper's
 `spec.preludes` key(s):

@@ -1,0 +1,92 @@
+// P40 B3: the ordinal string std. Every function, its out-of-range / empty-argument Error (one .pg guard,
+// one message, on every target), and the edges where the four natives disagree: indexOf `from` past the end,
+// JS `$$`/`$&` replacement patterns, Python's strip() eating GS, PHP's numeric-string `<=>`.
+
+import "std.strings"
+
+fn show(label: string, f: () => string) {
+  try {
+    print(label + " = " + f())
+  } catch (e: Error) {
+    print(label + " threw: " + e.message)
+  }
+}
+
+fn n(x: i32): string => "${x}"
+
+fn main() {
+  let s = "hello world"
+  show("charAt 0", () => s.charAt(0))
+  show("charAt 10", () => s.charAt(10))
+  show("charAt -1", () => s.charAt(-1))
+  show("charAt 11", () => s.charAt(11))
+  show("codePointAt 4", () => n(s.codePointAt(4)))
+  show("codePointAt 11", () => n(s.codePointAt(11)))
+  show("substring 0 5", () => "[" + s.substring(0, 5) + "]")
+  show("substring 6 11", () => "[" + s.substring(6, 11) + "]")
+  show("substring 11 11", () => "[" + s.substring(11, 11) + "]")
+  show("substring 3 2", () => s.substring(3, 2))
+  show("substring -1 2", () => s.substring(-1, 2))
+  show("substring 0 12", () => s.substring(0, 12))
+
+  // indexOf: default from, explicit from at -1 / len / len+1, and an empty needle
+  show("indexOf o", () => n(s.indexOf("o")))
+  show("indexOf o 5", () => n(s.indexOf("o", 5)))
+  show("indexOf z", () => n(s.indexOf("z")))
+  show("indexOf o -1", () => n(s.indexOf("o", -1)))
+  show("indexOf o len", () => n(s.indexOf("o", 11)))
+  show("indexOf o len+1", () => n(s.indexOf("o", 12)))
+  show("indexOf empty", () => n(s.indexOf("")))
+  show("indexOf empty 4", () => n(s.indexOf("", 4)))
+  show("indexOf empty len", () => n(s.indexOf("", 11)))
+  show("indexOf NUL", () => n("abc".indexOf("\0")))
+
+  print(s.startsWith("hello"))
+  print(s.startsWith("world"))
+  print(s.startsWith(""))
+  print(s.endsWith("world"))
+  print(s.endsWith("hello"))
+  print(s.contains("o w"))
+  print(s.contains("xyz"))
+  print(s.contains(""))
+
+  // replaceAll: literal replacement (no `$$` / `$&` patterns anywhere), empty needle throws
+  show("replaceAll o", () => s.replaceAll("o", "0"))
+  show("replaceAll $$", () => "a.b.c".replaceAll(".", "$$"))
+  show("replaceAll $&", () => "a.b.c".replaceAll(".", "[$&]"))
+  show("replaceAll overlap", () => "aaaa".replaceAll("aa", "b"))
+  show("replaceAll empty", () => s.replaceAll("", "x"))
+
+  // split: List<string> (no std.collections import needed), empty pieces kept, empty separator throws
+  let parts = "a,b,,c,".split(",")
+  print(parts.count)
+  for p in parts {
+    print("<" + p + ">")
+  }
+  print("abc".split("abc").count)
+  print("".split(",").count)
+  show("split empty", () => n("abc".split("").count))
+
+  // trimAscii: exactly TAB, LF, VT, FF, CR and space — GS (U+001D), NBSP and U+FEFF stay
+  print("[" + " \t\n\r x y \u{B}\u{C} ".trimAscii() + "]")
+  print(" \u{1D}x\u{1D} ".trimAscii().len())
+  print(" \u{A0}x\u{A0} ".trimAscii().len())
+  print("\u{FEFF}x".trimAscii().len())
+  print("[" + "   ".trimAscii() + "]")
+
+  // compareOrdinal: -1 / 0 / 1, ordinal (never numeric, never culture)
+  print(compareOrdinal("10", "9"))
+  print(compareOrdinal("1e1", "10"))
+  print(compareOrdinal("abc", "abc"))
+  print(compareOrdinal("abd", "abc"))
+  print(compareOrdinal("", "a"))
+  print(compareOrdinal("B", "a"))
+
+  // fromCodePoint
+  show("fromCodePoint 65", () => string.fromCodePoint(65))
+  show("fromCodePoint 233", () => n(string.fromCodePoint(233).len()))
+  show("fromCodePoint 0x1F600", () => n(string.fromCodePoint(0x1F600).len()))
+  show("fromCodePoint 0xD800", () => string.fromCodePoint(0xD800))
+  show("fromCodePoint -1", () => string.fromCodePoint(-1))
+  show("fromCodePoint 0x110000", () => string.fromCodePoint(0x110000))
+}

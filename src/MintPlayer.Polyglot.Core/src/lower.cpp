@@ -108,6 +108,27 @@ public:
                 for (const auto& f : c.params) caseFields_[c.name].push_back(f.name);
             }
         for (const auto& e : unit.extensions) { extensions_[e.receiver.name].insert(e.name); extParams_[e.receiver.name + "." + e.name] = &e.params; }
+        // P40 B3: a std (prelude) extension written in .pg — a guard over unchecked primitives — is emitted
+        // under the reserved name `_pg_<name>`. On the targets where an extension is a free function
+        // (TS/Python/PHP) its plain name (`contains`, `split`, …) would share the user's function namespace
+        // and silently shadow a user `fn contains`; the `_pg_` prefix is refused in user code, so it cannot.
+        for (const auto& e : unit.extensions)
+            if (e.bindings.empty() && ir::isPreludeOrigin(e.originModule) && (!e.body.empty() || e.exprBody))
+                extEmitName_[e.receiver.name + "." + e.name] = "_pg_" + e.name;
+        // P40 B3: an `extern class` static with a .pg body (std `string.fromCodePoint`, a guard) is emitted as a
+        // prelude free function `_pg_<Type>_<name>`; `Type.name(args)` calls it.
+        for (const auto& c : unit.classes) {
+            if (!c.isExtern) continue;
+            for (const auto& mem : c.members) {
+                if (mem.kind != MemberKind::Method || !mem.bindings.empty() || mem.body.empty()) continue; // block bodies (free fns emit blocks)
+                bool isStatic = false;
+                for (const auto& mod : mem.modifiers) if (mod == "static") isStatic = true;
+                if (!isStatic) continue;
+                const std::string fn = "_pg_" + c.name + "_" + mem.name;
+                staticRedirect_[c.name + "." + mem.name] = fn;
+                freeFns_.insert(fn);
+            }
+        }
         for (const auto& fn : unit.functions) freeFns_.insert(fn.name); // top-level fns -> C# qualifies as Program.fn
         // Per-target FFI bindings on std types (e.g. List.add): keyed "Type.member" so a call/access on a
         // receiver of that type lowers to a substituted template instead of a member call.
@@ -346,6 +367,7 @@ public:
             ir::Function f;
             f.pos = ext.pos; // P38: ExtensionDecl has no namePos (ast.hpp) — the decl start is the anchor
             f.name = ext.name;
+            if (auto en = extEmitName_.find(ext.receiver.name + "." + ext.name); en != extEmitName_.end()) f.name = en->second;
             f.isExtension = true;
             f.generics = generics(ext.generics);
             f.returnType = ext.returnType;
@@ -358,6 +380,24 @@ public:
             f.originModule = ext.originModule;
             f.globalRefs = scanGlobalRefs(moduleGlobals_, ext.params, ext.body, ext.exprBody.get());
             m.extensions.push_back(std::move(f));
+        }
+        for (const auto& c : unit.classes) { // P40 B3: .pg-bodied extern statics -> prelude free functions
+            if (!c.isExtern) continue;
+            for (const auto& mem : c.members) {
+                auto rd = staticRedirect_.find(c.name + "." + mem.name);
+                if (rd == staticRedirect_.end()) continue;
+                ir::Function f;
+                f.pos = mem.namePos.fileId != 0 ? mem.namePos : mem.pos;
+                f.name = rd->second;
+                f.mangledName = rd->second;
+                f.generics = generics(mem.generics);
+                f.returnType = mem.returnType;
+                for (const auto& p : mem.params) f.params.push_back(irParam(p));
+                f.body = block(mem.body);
+                f.originModule = c.originModule;
+                f.globalRefs = scanGlobalRefs(moduleGlobals_, mem.params, mem.body, mem.exprBody.get());
+                m.functions.push_back(std::move(f));
+            }
         }
         for (const auto& fn : unit.functions) {
             if (fn.isExpect) continue; // capability signature only — the `actual`s carry the implementation
@@ -445,6 +485,8 @@ private:
     std::unordered_map<std::string, BindingEntry> bindings_; // "Type.member" -> FFI arms
     std::unordered_map<std::string, BindingEntry> ctorBindings_; // "Type" -> ctor FFI arms
     std::unordered_map<std::string, const std::vector<Param>*> extParams_; // "Recv.method" -> extension params (defaults)
+    std::unordered_map<std::string, std::string> extEmitName_;    // "Recv.method" -> emitted name (std .pg guards)
+    std::unordered_map<std::string, std::string> staticRedirect_; // "Type.member" -> prelude free fn (extern static with a body)
     std::unordered_set<std::string> freeFns_;                                     // top-level function names
     std::unordered_set<std::string> typeNames_;
     std::unordered_set<std::string> recordNames_;                    // user records (structural `==`)
@@ -867,6 +909,13 @@ private:
                         // `extern class` static): substitute the args into the template, no receiver.
                         if (auto b = bindings_.find(e.lhs->lhs->text + "." + e.lhs->text); b != bindings_.end())
                             return makeBound(e.type, e.pos, nullptr, b->second, &e.args);
+                        if (auto rd = staticRedirect_.find(e.lhs->lhs->text + "." + e.lhs->text); rd != staticRedirect_.end()) {
+                            auto call = std::make_unique<ir::Call>(e.pos, e.type, rd->second, /*isPrint=*/false);
+                            call->isFree = true;
+                            call->mangledCallee = rd->second;
+                            for (const auto& a : e.args) call->args.push_back(expr(*a));
+                            return call;
+                        }
                         auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, nullptr, e.lhs->text);
                         mc->staticType = e.lhs->lhs->text;
                         for (const auto& a : e.args) mc->args.push_back(expr(*a));
@@ -881,6 +930,9 @@ private:
                     if (rt.kind == TypeRef::Kind::Named) {
                         auto it = extensions_.find(rt.name);
                         if (it != extensions_.end() && it->second.count(e.lhs->text)) mc->isExtension = true;
+                        if (mc->isExtension)
+                            if (auto en = extEmitName_.find(rt.name + "." + e.lhs->text); en != extEmitName_.end())
+                                mc->method = en->second;
                     }
                     for (const auto& a : e.args) mc->args.push_back(expr(*a));
                     if (mc->isExtension) // P40 slice 7: an extension's omitted defaults are filled at the call

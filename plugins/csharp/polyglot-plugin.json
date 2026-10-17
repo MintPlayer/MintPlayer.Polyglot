@@ -3127,7 +3127,12 @@
     },
     "csExtSig": {
       "tmpl": [
-        "public static ",
+        {
+          "case": {
+            "when": [[{ "eq": ["decl.isPrelude", "true"] }, "internal static "]],
+            "else": "public static "
+          }
+        },
         {
           "type": "decl.returnType"
         },
@@ -3892,10 +3897,20 @@
       "string.toLower": "$this.ToLowerInvariant()",
       "string.toUpperAscii": { "template": "__PgRt.UpperAscii($this)", "requires": ["pgAscii"] },
       "string.toLowerAscii": { "template": "__PgRt.LowerAscii($this)", "requires": ["pgAscii"] },
-      "string.charAt": "$this[$0].ToString()",
-      "string.codePointAt": "char.ConvertToUtf32($this, $0)",
       "string.codePoints": "global::System.Linq.Enumerable.Select($this.EnumerateRunes(), __r => __r.ToString())",
-      "string.toI32": "int.Parse($this, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)"
+      "string.toI32": "int.Parse($this, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "string.startsWith": "$this.StartsWith($0, global::System.StringComparison.Ordinal)",
+      "string.endsWith": "$this.EndsWith($0, global::System.StringComparison.Ordinal)",
+      "string.contains": "$this.Contains($0)",
+      "string.trimAscii": "$this.Trim('\\t', '\\n', '\\v', '\\f', '\\r', ' ')",
+      "compareOrdinal": "global::System.Math.Sign(string.CompareOrdinal(a, b))",
+      "string.__pgCharAt": "$this[$0].ToString()",
+      "string.__pgCodePointAt": "(char.IsSurrogatePair($this, $0) ? char.ConvertToUtf32($this, $0) : (int)$this[$0])",
+      "string.__pgSubstring": "$this.Substring($0, $1 - $0)",
+      "string.__pgIndexOf": "$this.IndexOf($0, $1, global::System.StringComparison.Ordinal)",
+      "string.__pgReplaceAll": "$this.Replace($0, $1)",
+      "string.__pgSplit": "new global::System.Collections.Generic.List<string>($this.Split($0))",
+      "string.__pgFromCodePoint": "char.ConvertFromUtf32($0)"
     },
     "std.core": {
       "Error.type": "global::System.Exception",

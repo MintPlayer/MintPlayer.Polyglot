@@ -837,3 +837,88 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     - library gate (staged) and nullable gate green.
     Not run (end gate): the full tier, run-nuget, the POSIX leg. No platform-forked code changed, but sema gained
     a recursive member walk, so g++ should still see it.
+- **2026-10-17 (night, slice 8)** — **Slice 8 built** (B3: the ordinal string std, index units D2/D15, module
+  scoping D16). As built:
+  - **Guards once in .pg.** `STD_STRINGS` (compiler.cpp) now holds three layers: plain bound extensions
+    (`len`, `startsWith`, `endsWith`, `contains`, `trimAscii`, the case/parse ones, plus `expect fn
+    compareOrdinal`), unchecked **bound-extension primitives** `string.__pgCharAt/__pgCodePointAt/__pgSubstring/
+    __pgIndexOf/__pgReplaceAll/__pgSplit` (+ `extern class string { static fn __pgFromCodePoint }`), and the
+    `.pg` guards `charAt`, `codePointAt`, `substring`, `indexOf(needle, from = 0)`, `replaceAll`, `split` and
+    `string.fromCodePoint`, each throwing `Error` with one message. **Deviation:** the primitives are bound
+    extensions (call-site templates), not `expect fn`s — one call layer fewer, no C# `PolyglotProgram.`
+    qualification, and the guards only pass plain identifiers so no template double-evaluates (the PRD's
+    stated reason for the identifier rule).
+  - **Emitted names.** A prelude extension with a `.pg` body lowers as `_pg_<name>` (decl + call sites), because
+    on TS/Python/PHP an extension is a free function and `contains`/`split`/… would silently shadow (or be
+    shadowed by) a user `fn` of that name — a pre-existing user-extension hazard (`extension fn string.sub` +
+    `fn sub` collide on Python today) that std would otherwise have spread. A `.pg`-bodied static on an `extern
+    class` (only `string.fromCodePoint`) lowers to a prelude free function `_pg_<Type>_<name>`; `Type.name(…)`
+    calls it (`staticRedirect_`). C# prelude extensions are now `internal static` (`csExtSig` reads
+    `decl.isPrelude`), so a `public` wrapper class never exports `_pg_charAt`.
+  - **Reserved prefixes (language rule, every target).** `checkReservedNames` refuses a user declaration OR
+    reference spelled `__pg…` / `_pg_…` (prelude decls exempt), so the unchecked primitives are unreachable from
+    user code. Python also reserves `_PG_*` (its prelude tables). This is the "kept out of the user namespace"
+    mechanism — a Core language rule rather than pgconfig `forbiddenIdentifiers`, which is per-project data.
+  - **C# ordinal.** `StartsWith`/`EndsWith`/`IndexOf` pass `StringComparison.Ordinal`; `compareOrdinal` is
+    `Math.Sign(string.CompareOrdinal(a, b))`; `Split(string)` (.NET Core 2.0+, within the .NET 8 floor). A unit
+    test scans the whole C# `std.strings` section so a culture overload cannot return. TS `replaceAll` is
+    `split(n).join(r)`; PHP `compareOrdinal` is `strcmp` (never `<=>`); `trimAscii` is exactly TAB..CR + space
+    everywhere (C# `Trim(chars)`, TS regex, Python `strip("\t\n\x0b\x0c\r ")`, PHP `trim` list).
+  - **Index units (D2 + D15): Python and PHP are UTF-16-faithful.** `string.len` and the four index primitives
+    route through a `pgU16` prelude per target. Python: `isascii()` fast path, else a surrogate-expanded view
+    (astral → pair via one regex `sub`), cached as the last long string + an 8-entry LRU by identity; strings
+    under 256 chars are recomputed rather than cached, so short strings indexed inside a loop over a long one
+    never evict it (the first cut, a plain FIFO, went O(n²) on exactly that benchmark); `substring` re-pairs
+    halves via `utf-16-le`/`surrogatepass`. PHP: `preg_match('/[\x80-\xFF]/')` fast path, else an **iconv**
+    UTF-16LE copy (same last + LRU policy, keyed by the string), a hand decoder for WTF-8 (a lone surrogate
+    split off by `substring` is held as WTF-8), the needle reconverted only when it changes; without iconv it
+    throws `Error('… needs the iconv extension (ext-iconv) …')`. `compareOrdinal` compares UTF-16 code units on
+    both (Python `utf-16-be` bytes; PHP LE→BE repack), so the PRD's astral-vs-U+E000 caveat is gone. PHP
+    `codePoints()` is now `preg_split('//u')` (was bytes). There is no manifest requirements mechanism, so
+    ext-iconv is declared in README (toolchain table + PHP note), SPEC §8 and plugin-authoring.
+  - **Lone surrogates print U+FFFD everywhere.** Python's print is `print(_pg_out16(_pg_str(x)))` (`pgOut16`:
+    `utf-16-le` surrogatepass → `replace`, which also re-pairs adjacent halves); PHP's `__pg_str` maps an
+    ill-formed (WTF-8) string the same way. Published caveat (SPEC §9): two lone halves joined with `+` are not
+    re-paired for `==` on Python/PHP.
+  - **`utf16Strings:index`** joins the capability vocabulary, marked at a user's `len`/`charAt`/`codePointAt`/
+    `substring`/`indexOf` on a `string`; Python and PHP declare it `"emulated"` (one warning per build, like
+    `blockLambdas`). The Collector now suppresses feature marks inside prelude declarations (std's own throws
+    and extensions are not the user's feature use; it also retires the old `std.strings:2:1: … emulates
+    extensionMethods` warning on PHP) but still records their calls/member uses, so a target missing a
+    primitive binding still refuses. The lexer's G47 "non-ASCII string content" warning is deleted (the
+    caveat it announced no longer exists); unit tests and the CLI-smoke warning check were moved to the
+    Python `utf16Strings:index` warning.
+  - **S18 + D16 (module scoping) — implemented.** `std.strings` imports `std.collections`. Linking records,
+    per module, what it imports and under which names (`ScopeRec`, keyed by canon, file ids from the
+    SourceMap); after sema a `ScopeChecker` walks every USER module's types, names, statics and extension calls
+    and refuses any name its own imports don't make visible ("'List' is declared in module 'std.collections',
+    which this module does not import — add `import \"std.collections\"`"; "'b' is declared in './m2' but not
+    imported — add it to `import { … }`"). Visible = own file, `std.core`, the `lib` entries (by canon, so a
+    lib module also imported explicitly stays ambient) and direct imports (selective = listed names; a static
+    `T.m` is judged by `T`, a builtin type's statics by the module). Locals are a flat per-declaration set, so a
+    shadowing local can hide a leak but never cause a false refusal. It is a refusal layer: valid programs
+    mean the same. **Residual (documented, SPEC §11):** the closure still shares one namespace, so two
+    modules may not declare the same name (already an error, never a silent pick) — per-module namespaces are
+    the principled follow-up. Fallout: unit tests that did `import { readText } from "std.io"` and then
+    `print`ed now import `print` too; 0 fallout over 149 corpus `.pg` (conformance incl. dirs, samples,
+    MintPlayer.AI; the 1 failure is the old-syntax pilot).
+  - **Bare import of an extension-only module.** `ir::ModuleImport.allNames` (every name the imported module
+    emits, read off the lowered module) is set for a bare import; TS emits `import { … } from "./x";`, Python
+    `from x import *` (a union is a type on TS but no name on Python, so Python cannot list names).
+  - **Tests:** conformance `strings_std`, `strings_oor`, `strings_astral` (+ `.expected`; astral cases, a lone
+    surrogate printed, codePoints) and the modular dir `import_ext_only/`; refusal fixtures
+    `module_scope_leak`, `std_reserved_prefix`; unit block "P40 s8" (27 checks: Ordinal pins incl. the manifest
+    scan, one-message guards on all 4, `_pg_` names, reserved prefixes, helpers, D16 leak/transitive/selective,
+    bare-import names) and updated s1/s3/s6/P8/P19/#34 expectations; SPEC §3/§8/§9/§11, README, plugin-authoring.
+  - **Perf (whole-program, 1 MB string; charAt + codePointAt over every unit, substring(64) every 7th unit,
+    indexOf scan) vs the guarded native call:** Python ASCII 1.22×, mixed (é/€/CJK/😀) 1.41×; PHP ASCII 2.00×
+    (S1 measured 1.4–1.8× per call; the guard + helper call layers show here), PHP mixed not comparable (the
+    byte-unit baseline overruns), absolute 2.6 s vs Python's 2.7 s.
+  - **Harness:** the conformance runner now starts the C# oracle through `cmd /c chcp 65001 && dotnet …` on
+    Windows — a .NET child writes redirected stdout in its hidden console's OEM code page, so the first program
+    printing non-ASCII (`strings_astral`) read back `?`. The C# twin of Python's `-X utf8`; Linux is unchanged.
+  - **Verified:** unit exe green (945 checks); `-Tier fast` green; refusal gate green (incl. the 2 new
+    fixtures); conformance: all **129** programs agree on all four targets (12 PHP refusers, unchanged);
+    library gate (staged) green. Multi-file C# (modular + a 2-root shared prelude) compiles under nullable +
+    warnaserror. Not run (end gate): the full tier, run-nuget, the POSIX leg (no platform-forked code; the new
+    Core code is plain std C++).

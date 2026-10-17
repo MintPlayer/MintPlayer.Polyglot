@@ -1,0 +1,9 @@
+// P40 B3: a BARE import of a module that declares only extension methods. Its names used to be
+// missing on Python (a side-effect `import ext` -> NameError) and TS (`import "./ext"` -> TS2304).
+import "./ext"
+
+fn main() {
+  print("hi".shout())
+  print(21.twice())
+  print("xyz".firstChar())
+}

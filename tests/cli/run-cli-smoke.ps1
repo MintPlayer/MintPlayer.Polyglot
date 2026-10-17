@@ -196,14 +196,15 @@ try {
     }
 
     # 7. P40 A1: a SUCCESSFUL build prints its warnings with their real severity, once — not `error:`, not
-    # only on failure, and not once per target. The non-ASCII caveat fires on a decoded `\u{E9}` escape.
+    # only on failure, and not duplicated. (P40 B3 retired the non-ASCII literal caveat; Python's
+    # `utf16Strings:index` "emulated" stance is the warning now: one target, one line.)
     $warnDir = Join-Path $work "warn"
     New-Item -ItemType Directory -Force $warnDir | Out-Null
     Set-Content -Path (Join-Path $warnDir "pgconfig.json") -Value '{ "targets": ["csharp", "typescript", "python"] }' -NoNewline
-    Set-Content -Path (Join-Path $warnDir "w.pg") -Value "fn main() {`n  print(`"caf\u{E9}`")`n}`n" -NoNewline
+    Set-Content -Path (Join-Path $warnDir "w.pg") -Value "import `"std.strings`"`nfn main() {`n  print(`"caf\u{E9}`".len())`n}`n" -NoNewline
     $warnOut = (& $Cli build (Join-Path $warnDir "w.pg") --lib io --out (Join-Path $work "o-warn") 2>&1 | Out-String)
     $warnExit = $LASTEXITCODE
-    $warnCount = ([regex]::Matches($warnOut, ':\d+:\d+: warning: non-ASCII')).Count
+    $warnCount = ([regex]::Matches($warnOut, ":\d+:\d+: warning: target 'python' emulates utf16Strings:index")).Count
     Check ($warnExit -eq 0 -and $warnCount -eq 1 -and $warnOut -notmatch ': error: ') `
         "a successful 3-target build prints its warning once, as 'warning:' (exit $warnExit, $warnCount warning line(s))"
     # ---- P40 (issue #73): config discovery, --check, the outputs record, --only, relative origins ---------

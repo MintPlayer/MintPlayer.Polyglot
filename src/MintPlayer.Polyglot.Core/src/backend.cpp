@@ -135,6 +135,9 @@ const std::unordered_set<std::string>& capabilityVocabulary() {
         // interface). False on TS (interfaces erase); native elsewhere (C# `is`, Python ABC isinstance,
         // PHP instanceof).
         s.insert("interfaces:runtimeIdentity");
+        // P40 B3 (D2/D15): string index operations (len/charAt/codePointAt/substring/indexOf) count UTF-16
+        // code units. Native on C#/TS; Python (code points) and PHP (bytes) emulate them through helpers.
+        s.insert("utf16Strings:index");
         // P37 C6: graded operator support — PHP supports :eq/:indexers while refusing the rest; the bare
         // `operatorOverloading` stance umbrella-covers undeclared sub-keys.
         s.insert("operatorOverloading:arithmetic");

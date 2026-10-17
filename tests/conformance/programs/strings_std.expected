@@ -1,0 +1,61 @@
+charAt 0 = h
+charAt 10 = d
+charAt -1 threw: charAt: index -1 is out of range for length 11
+charAt 11 threw: charAt: index 11 is out of range for length 11
+codePointAt 4 = 111
+codePointAt 11 threw: codePointAt: index 11 is out of range for length 11
+substring 0 5 = [hello]
+substring 6 11 = [world]
+substring 11 11 = []
+substring 3 2 threw: substring: range [3, 2) is out of range for length 11
+substring -1 2 threw: substring: range [-1, 2) is out of range for length 11
+substring 0 12 threw: substring: range [0, 12) is out of range for length 11
+indexOf o = 4
+indexOf o 5 = 7
+indexOf z = -1
+indexOf o -1 threw: indexOf: start -1 is out of range for length 11
+indexOf o len = -1
+indexOf o len+1 threw: indexOf: start 12 is out of range for length 11
+indexOf empty = 0
+indexOf empty 4 = 4
+indexOf empty len = 11
+indexOf NUL = -1
+true
+false
+true
+true
+false
+true
+false
+true
+replaceAll o = hell0 w0rld
+replaceAll $$ = a$$b$$c
+replaceAll $& = a[$&]b[$&]c
+replaceAll overlap = bb
+replaceAll empty threw: replaceAll: the needle is empty
+5
+<a>
+<b>
+<>
+<c>
+<>
+2
+1
+split empty threw: split: the separator is empty
+[x y]
+3
+3
+2
+[]
+-1
+1
+0
+1
+-1
+-1
+fromCodePoint 65 = A
+fromCodePoint 233 = 1
+fromCodePoint 0x1F600 = 2
+fromCodePoint 0xD800 threw: fromCodePoint: 55296 is not a Unicode scalar value
+fromCodePoint -1 threw: fromCodePoint: -1 is not a Unicode scalar value
+fromCodePoint 0x110000 threw: fromCodePoint: 1114112 is not a Unicode scalar value

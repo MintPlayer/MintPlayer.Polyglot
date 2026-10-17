@@ -102,6 +102,8 @@ $cases = [ordered]@{
     "class_bound_interface.pg"  = @("type argument 'i32' of 'Ladder' does not satisfy the bound 'T: Ranked'")
     "extension_default_nonliteral.pg" = @("the default of 'by' in extension 'i32.shifted' must be a literal")
     "extern_nullable_typeparam.pg" = @("'Shelf.find' yields 'V?' while 'V' is still a type parameter")
+    "module_scope_leak.pg"      = @("'List' is declared in module 'std.collections', which this module does not import", 'import "std.collections"')
+    "std_reserved_prefix.pg"    = @("'__pgCharAt' uses a prefix reserved for the Polyglot std library")
 }
 
 foreach ($fx in $cases.Keys) {

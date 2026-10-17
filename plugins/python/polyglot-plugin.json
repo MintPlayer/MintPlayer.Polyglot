@@ -8,6 +8,7 @@
     "footer": "# sourceMappingURL=$f"
   },
   "capabilities": {
+    "utf16Strings:index": "emulated",
     "blockLambdas": "emulated",
     "interfaces": "emulated",
     "interfaces:runtimeIdentity": "native",
@@ -46,6 +47,8 @@
     },
     "rethrow": "raise",
     "preludes": {
+      "pgU16": "_PG_ASTRAL = __import__('re').compile('[\\U00010000-\\U0010FFFF]')\n_PG_SURR = __import__('re').compile('[\\ud800-\\udfff]')\n_PG_U16_CACHE = {}\n_PG_U16_LAST = [None, None]\ndef _pg_u16_pair(m):\n    c = ord(m.group(0)) - 0x10000\n    return chr(0xD800 + (c >> 10)) + chr(0xDC00 + (c & 0x3FF))\ndef _pg_u16v(s):\n    # the UTF-16 view of a non-ASCII str: each astral code point expanded to its surrogate pair. A short\n    # string is just recomputed; a long one is cached (the last one, plus a small LRU), so indexing a long\n    # string in a loop is O(1) per call even when short strings are indexed in between.\n    last = _PG_U16_LAST\n    if last[0] is s:\n        return last[1]\n    if len(s) < 256:\n        return _PG_ASTRAL.sub(_pg_u16_pair, s)\n    cache = _PG_U16_CACHE\n    e = cache.pop(id(s), None)\n    if e is not None and e[0] is s:\n        v = e[1]\n    else:\n        v = _PG_ASTRAL.sub(_pg_u16_pair, s)\n        if len(cache) >= 8:\n            cache.pop(next(iter(cache)))\n    cache[id(s)] = (s, v)\n    last[0] = s\n    last[1] = v\n    return v\ndef _pg_len16(s):\n    return len(s) if s.isascii() else len(_pg_u16v(s))\ndef _pg_u16_char(s, i):\n    return s[i] if s.isascii() else _pg_u16v(s)[i]\ndef _pg_u16_cp(s, i):\n    if s.isascii():\n        return ord(s[i])\n    v = _pg_u16v(s)\n    c = ord(v[i])\n    if 0xD800 <= c <= 0xDBFF and i + 1 < len(v):\n        d = ord(v[i + 1])\n        if 0xDC00 <= d <= 0xDFFF:\n            return 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00)\n    return c\ndef _pg_u16_sub(s, a, b):\n    if s.isascii():\n        return s[a:b]\n    r = _pg_u16v(s)[a:b]\n    return r.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'surrogatepass') if _PG_SURR.search(r) else r\ndef _pg_u16_find(s, n, f):\n    if s.isascii():\n        return s.find(n, f) if n.isascii() else -1\n    return _pg_u16v(s).find(n if n.isascii() else _pg_u16v(n), f)\ndef _pg_cmp16(a, b):\n    if not (a.isascii() and b.isascii()):\n        a = a.encode('utf-16-be', 'surrogatepass')\n        b = b.encode('utf-16-be', 'surrogatepass')\n    return -1 if a < b else (1 if a > b else 0)\n",
+      "pgOut16": "def _pg_out16(s):\n    # stdout: re-pair adjacent surrogate halves, and print a lone one as U+FFFD (as C# and Node do)\n    return s if s.isascii() else s.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'replace')\n",
       "asyncEntry": "import asyncio\n",
       "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
       "pgFail": "def _pg_fail(at):\n    raise TypeError(\"null-assert failed (\" + at + \")\")\n",
@@ -168,6 +171,7 @@
         "__dw*",
         "tag",
         "__opt*",
+        "_PG_*",
         "__w*"
       ],
       "globals": [
@@ -1375,6 +1379,10 @@
                         }
                       ]
                     }
+                  ],
+                  [
+                    { "not": { "eq": ["item.allNames", ""] } },
+                    { "tmpl": ["from ", { "get": "item.path" }, " import *"] }
                   ]
                 ],
                 "else": {
@@ -3866,7 +3874,7 @@
       "List.removeAt": "$this.pop($0)"
     },
     "std.io": {
-      "print": { "template": "__import__('builtins').print(_pg_str(x))", "requires": ["fstr"] },
+      "print": { "template": "__import__('builtins').print(_pg_out16(_pg_str(x)))", "requires": ["fstr", "pgOut16"] },
       "readText": "__import__('pathlib').Path(path).read_text()",
       "writeText": "__import__('pathlib').Path(path).write_text(content)",
       "appendText": "open(path, 'a').write(content)",
@@ -3908,15 +3916,25 @@
     },
     "std.strings": {
       "string.isEmpty": "(len($this) == 0)",
-      "string.len": "len($this)",
+      "string.len": { "template": "_pg_len16($this)", "requires": ["pgU16"] },
       "string.toUpper": "$this.upper()",
       "string.toLower": "$this.lower()",
       "string.toUpperAscii": { "template": "$this.translate(_PG_UPPER)", "requires": ["pgAscii"] },
       "string.toLowerAscii": { "template": "$this.translate(_PG_LOWER)", "requires": ["pgAscii"] },
-      "string.charAt": "$this[$0]",
-      "string.codePointAt": "ord($this[$0])",
       "string.codePoints": "list($this)",
-      "string.toI32": "int($this)"
+      "string.toI32": "int($this)",
+      "string.startsWith": "$this.startswith($0)",
+      "string.endsWith": "$this.endswith($0)",
+      "string.contains": "($this.find($0) >= 0)",
+      "string.trimAscii": "$this.strip(\"\\t\\n\\x0b\\x0c\\r \")",
+      "compareOrdinal": { "template": "_pg_cmp16(a, b)", "requires": ["pgU16"] },
+      "string.__pgCharAt": { "template": "_pg_u16_char($this, $0)", "requires": ["pgU16"] },
+      "string.__pgCodePointAt": { "template": "_pg_u16_cp($this, $0)", "requires": ["pgU16"] },
+      "string.__pgSubstring": { "template": "_pg_u16_sub($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgIndexOf": { "template": "_pg_u16_find($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgReplaceAll": "$this.replace($0, $1)",
+      "string.__pgSplit": "$this.split($0)",
+      "string.__pgFromCodePoint": "chr($0)"
     },
     "std.core": {
       "Error.type": "Exception",

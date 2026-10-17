@@ -70,10 +70,8 @@ private:
     int fileId_ = 0;
 };
 
-// G47: non-ASCII literal content is a PUBLISHED faithfulness caveat (SPEC §9) — PHP's string std is
-// byte-oriented. Warned once per literal, whether the character is written raw or as a `\u{…}` escape.
-constexpr const char* kNonAsciiWarning =
-    "non-ASCII string content: PHP's string std is byte-oriented (len/charAt/codePoints count bytes there) — see SPEC §9";
+// (G47's "non-ASCII string content" warning is gone since P40 B3: every target's string std now indexes
+// UTF-16 code units — Python and PHP through helpers — so non-ASCII text is faithful, not a caveat.)
 
 std::string hexUpper(unsigned long v) {
     char buf[16];
@@ -143,11 +141,9 @@ bool decodeEscape(Cursor& cur, DiagnosticBag& diags, std::string& out) {
 }
 
 // A non-escape literal character: raw ASCII, or one validated UTF-8 character (ill-formed -> one error per
-// literal, `badUtf8` latches). Sets `nonAscii` when the character is >= U+0080.
-void takeLiteralChar(Cursor& cur, DiagnosticBag& diags, std::string& out, bool& badUtf8, bool& nonAscii,
-                     const char* what) {
+// literal, `badUtf8` latches).
+void takeLiteralChar(Cursor& cur, DiagnosticBag& diags, std::string& out, bool& badUtf8, const char* what) {
     if (static_cast<unsigned char>(cur.peek()) < 0x80) { out += cur.advance(); return; }
-    nonAscii = true;
     const SourcePos p = cur.pos();
     char32_t cp = 0;
     if (!cur.takeChar(out, cp) && !badUtf8) {
@@ -156,34 +152,22 @@ void takeLiteralChar(Cursor& cur, DiagnosticBag& diags, std::string& out, bool& 
     }
 }
 
-bool hasNonAscii(const std::string& s, std::size_t from) {
-    for (std::size_t i = from; i < s.size(); ++i)
-        if (static_cast<unsigned char>(s[i]) >= 0x80) return true;
-    return false;
-}
-
 // One chunk of a (possibly interpolated) string, scanned after the opening quote or a `${...}` hole.
 // Stops at the closing `"` (more=false) or at a `${` interpolation hole (more=true), consuming the
 // terminator. Decodes escapes (decodeEscape).
 struct ChunkResult { std::string text; bool more; };
 ChunkResult scanChunk(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
     std::string value;
-    bool warnedNonAscii = false, badUtf8 = false;
-    auto noteNonAscii = [&]() {
-        if (!warnedNonAscii) { diags.warn(start, kNonAsciiWarning); warnedNonAscii = true; }
-    };
+    bool badUtf8 = false;
     while (!cur.eof()) {
         const char c = cur.peek();
         if (c == '"') { cur.advance(); return {value, false}; }
         if (c == '$' && cur.peek(1) == '{') { cur.advance(); cur.advance(); return {value, true}; }
         if (c == '\\') {
-            const std::size_t before = value.size();
-            if (decodeEscape(cur, diags, value) && hasNonAscii(value, before)) noteNonAscii();
+            decodeEscape(cur, diags, value);
             continue;
         }
-        bool nonAscii = false;
-        takeLiteralChar(cur, diags, value, badUtf8, nonAscii, "a string literal");
-        if (nonAscii) noteNonAscii();
+        takeLiteralChar(cur, diags, value, badUtf8, "a string literal");
     }
     diags.error(start, "unterminated string literal");
     return {value, false};
@@ -193,14 +177,14 @@ ChunkResult scanChunk(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
 // validates the result is exactly ONE character that fits one UTF-16 code unit (SPEC §8).
 std::string scanChar(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
     std::string value;
-    bool terminated = false, bad = false, badUtf8 = false, nonAscii = false;
+    bool terminated = false, bad = false, badUtf8 = false;
     while (!cur.eof()) {
         if (cur.peek() == '\'') { cur.advance(); terminated = true; break; }
         if (cur.peek() == '\\') {
             if (!decodeEscape(cur, diags, value)) bad = true;
             continue;
         }
-        takeLiteralChar(cur, diags, value, badUtf8, nonAscii, "a char literal");
+        takeLiteralChar(cur, diags, value, badUtf8, "a char literal");
     }
     if (!terminated) { diags.error(start, "unterminated char literal"); return value; }
     if (bad || badUtf8) return value;
@@ -218,8 +202,6 @@ std::string scanChar(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
     } else if (first > 0xFFFF) {
         diags.error(start, "char literal holds U+" + hexUpper(first) + ", an astral character — a char is one "
                            "UTF-16 code unit (SPEC §8); use a string");
-    } else if (first >= 0x80) {
-        diags.warn(start, kNonAsciiWarning);
     }
     return value;
 }

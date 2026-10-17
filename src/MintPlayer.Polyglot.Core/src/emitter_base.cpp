@@ -1253,6 +1253,7 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path.rfind("module.imports.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.imports.size()) {
         if (f == "path")        return m_.imports[i].path;
         if (f == "names")       return m_.imports[i].names;
+        if (f == "allNames")    return m_.imports[i].allNames; // P40 B3: bare import -> every name
         if (f == "isNamespace") return m_.imports[i].isNamespace ? "true" : "false";
         if (f == "ns")          return m_.imports[i].ns;
     }

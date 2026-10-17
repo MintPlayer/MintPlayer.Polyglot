@@ -101,7 +101,7 @@ the code emitted for that target** (and to run that target's leg of the differen
 | **C# / .NET** output | .NET SDK 10+ | <https://dotnet.microsoft.com/download> |
 | **TypeScript / JS** output | Node.js (LTS) | <https://nodejs.org/en/download> |
 | **Python** output | Python 3 | <https://www.python.org/downloads/> |
-| **PHP** output | PHP 8 (Windows builds: the NTS x64 zip) | <https://www.php.net/downloads> · Windows: <https://windows.php.net/download/> |
+| **PHP** output | PHP 8 with the **iconv** extension (`ext-iconv`, on by default; the string std indexes non-ASCII text in UTF-16 units through it) (Windows builds: the NTS x64 zip) | <https://www.php.net/downloads> · Windows: <https://windows.php.net/download/> |
 | **Kotlin** output *(P26, in progress)* | Kotlin command-line compiler `kotlinc` + a JDK 17+ | <https://kotlinlang.org/docs/command-line.html> · JDK: <https://adoptium.net/> |
 | **Swift** output *(P26, in progress)* | Swift toolchain (Windows/Linux/macOS) | <https://www.swift.org/install/> |
 | **Dart** output *(P26, in progress)* | Dart SDK | <https://dart.dev/get-dart> |
@@ -218,7 +218,9 @@ plugin is refused rather than silently miscompiling. The four first-party target
 > exceptions, pattern matching, interfaces, closures, with-expressions, extension methods, reference-
 > semantics collections (`\ArrayObject`) — but its plugin still declares **operator overloading** and
 > **async/await** unsupported, so a program using those is **refused with a clear diagnostic** (never
-> miscompiled). The remaining parity work is milestone **P26 ("PHP uplift")** — see
+> miscompiled). Generated PHP **requires `ext-iconv`** (enabled in default PHP builds): the string std
+> indexes non-ASCII strings in UTF-16 code units through it, so `len`/`charAt`/`substring` agree with
+> the other targets (SPEC §8); it throws a named `Error` if the extension is missing. The remaining parity work is milestone **P26 ("PHP uplift")** — see
 > [`docs/prd/PLAN.md`](docs/prd/PLAN.md) §P26.
 
 Resolution order: the `plugins/` folder next to the exe → a pgconfig `dependencies` entry
