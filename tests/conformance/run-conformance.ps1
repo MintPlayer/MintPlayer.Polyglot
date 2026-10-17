@@ -232,6 +232,14 @@ function Invoke-ProgramWorker {
                 return (& $result $false)
             }
         }
+        # P40 A2 grep gate: the lowering poison must never reach emitted code (compile() refuses with an
+        # internal compiler error first; this catches a regression of that backstop).
+        $poison = @(Get-ChildItem $dir -File | Where-Object { $_.Extension -in '.cs', '.ts', '.py', '.php' } |
+                    Select-String -SimpleMatch '__polyglot_unlowered_expr__' -List)
+        if ($poison.Count -gt 0) {
+            $lines.Add("[FAIL] $name : emitted output contains __polyglot_unlowered_expr__ ($(($poison | ForEach-Object { Split-Path $_.Path -Leaf }) -join ', '))")
+            return (& $result $false)
+        }
 
         # 3. Stage the PRISTINE .ts (before the node import rewrite) for the library gate. Race-free: each
         # worker writes only its own program's staging subdir.

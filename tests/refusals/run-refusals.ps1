@@ -81,6 +81,12 @@ $cases = [ordered]@{
     "unknown_escape.pg"         = @("unknown escape sequence", "valid escapes are")
     "astral_char.pg"            = @("an astral character", "one UTF-16 code unit")
     "multi_char_literal.pg"     = @("more than one character", "use a string")
+    "range_operand.pg"          = @("a range ('a..b') is only valid as a for-loop iterable")
+    "range_let.pg"              = @("a range ('a..b') is only valid as a for-loop iterable")
+    "float_range.pg"            = @("range bounds must be integers (got f64)")
+    "super_method.pg"           = @("'super' is only supported as a base-constructor call", "'super.m()'")
+    "super_value.pg"            = @("'super' is only supported as a base-constructor call")
+    "throw_match_arm.pg"        = @("'throw' is a statement, not an expression")
 }
 
 foreach ($fx in $cases.Keys) {

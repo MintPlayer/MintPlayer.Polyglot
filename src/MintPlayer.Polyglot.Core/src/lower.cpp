@@ -393,6 +393,7 @@ public:
             };
             for (auto& c : m.classes) c.baseHasInit = classChains(c);
         }
+        m.loweringFailures = std::move(failures_); // P40 A2 backstop: compile() turns these into an ICE
         return m;
     }
 
@@ -404,6 +405,7 @@ private:
     std::vector<std::string> attrImports_;          // Tier 1 import/using lines (deduped, verbatim)
     Backend::ConstSpelling spell_;                  // the active plugin's constant spellings (data, not names)
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
+    std::vector<ir::LoweringFailure> failures_; // P40 A2: expressions with no lowering (a Polyglot bug)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
     bool inOperator_ = false;   // set while lowering a (non-indexer) operator body; stamps This.insideOperator
@@ -906,12 +908,22 @@ private:
                 }
                 return w;
             }
-            // A surface form with no lowering rule must FAIL LOUDLY, not silently emit a placeholder: a
-            // silent `0` once masked an unlowered `if`-expression as a cross-target-identical miscompile
-            // (both backends were equally wrong, so the differential gate couldn't see it). This poison
-            // identifier breaks the emitted C#/TS build instead. (Still unlowered: CharLit, Super-expr.)
-            default: return std::make_unique<ir::Extern>(e.pos, e.type, "__polyglot_unlowered_expr__");
+            // A surface form with no lowering rule must FAIL LOUDLY, never silently emit a placeholder: a
+            // silent `0` once masked an unlowered `if`-expression as a cross-target-identical miscompile, and
+            // the later poison identifier still let TS/Python/PHP builds exit 0 (failing only at runtime).
+            // P40 A2: sema refuses both forms below (a range outside a `for` iterable — the `for` site lowers
+            // its range directly — and any `super` but the hoisted base-ctor call), so reaching them is a
+            // compiler bug: record it and compile() reports an internal compiler error and writes nothing.
+            // The switch is exhaustive on purpose (no `default:`): a new ExprKind is a build error (/we4062,
+            // -Werror=switch) until it gets an arm here.
+            case ExprKind::Range: return unlowered(e, "range");
+            case ExprKind::Super: return unlowered(e, "super");
         }
+        return unlowered(e, "unknown"); // an out-of-range enum value
+    }
+    ir::ExprPtr unlowered(const Expr& e, const char* kind) {
+        failures_.push_back({e.pos, kind});
+        return std::make_unique<ir::Extern>(e.pos, e.type, "__polyglot_unlowered_expr__");
     }
 
     ir::StmtPtr stmt(const Stmt& s) {
@@ -1008,6 +1020,9 @@ private:
                     node->rangeStart = expr(*s.value->lhs);
                     node->rangeEnd = expr(*s.value->rhs);
                     node->inclusive = s.value->flag;
+                    node->rangeType = s.value->type; // sema's widened bound type = the loop variable's
+                    node->rangeEndSimple = s.value->rangeEndSimple; // D7: else hoisted, evaluated once
+                    if (!node->rangeEndSimple) node->rangeEndTemp = "__end" + std::to_string(tmpCounter_++);
                 } else if (s.value) {
                     node->iterable = expr(*s.value);
                 }

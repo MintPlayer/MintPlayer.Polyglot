@@ -467,8 +467,11 @@ private:
                 return operand(*e.lhs, p, false) + " " + e.text + " " + operand(*e.rhs, p, true);
             }
             case ExprKind::Range: {
+                // P40 A2: a range is the loosest binary form, so no binary bound needs parentheses
+                // (`0..n - 1`, `i + 1..n`, `0..a ?? 5`); operand() still wraps a nested range (they do not
+                // chain), an if/match expression and a lambda.
                 std::string op = e.flag ? "..=" : "..";
-                return operand(*e.lhs, 100, false) + op + operand(*e.rhs, 100, true);
+                return operand(*e.lhs, 0, false) + op + operand(*e.rhs, 0, true);
             }
             case ExprKind::Call:       return atom(*e.lhs) +
                                               (e.typeArgs.empty() ? "" : "<" + typeList(e.typeArgs) + ">") +

@@ -2848,6 +2848,19 @@
         }
       ]
     },
+    "rangeEndDecl": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "false" ] },
+                    { "tmpl": [ ", ", { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] }, " = ", { "emit": "stmt.rangeEnd" } ] } ] ],
+        "else": ""
+      }
+    },
+    "rangeEndRead": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "true" ] }, { "emit": "stmt.rangeEnd" } ] ],
+        "else": { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] }
+      }
+    },
     "ForStmt": {
       "case": {
         "when": [
@@ -2875,6 +2888,7 @@
                     {
                       "emit": "stmt.rangeStart"
                     },
+                    { "call": "rangeEndDecl" },
                     "; ",
                     {
                       "fn": "ident",
@@ -2900,9 +2914,7 @@
                         "else": " < "
                       }
                     },
-                    {
-                      "emit": "stmt.rangeEnd"
-                    },
+                    { "call": "rangeEndRead" },
                     "; ",
                     {
                       "fn": "ident",

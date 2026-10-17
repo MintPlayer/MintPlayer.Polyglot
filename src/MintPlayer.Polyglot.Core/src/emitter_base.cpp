@@ -1282,6 +1282,8 @@ std::string StmtCtx::get(const std::string& path) const {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
         if (path == "stmt.inclusive") return f.inclusive ? "true" : "false";
+        if (path == "stmt.rangeEndSimple") return f.rangeEndSimple ? "true" : "false"; // P40 D7
+        if (path == "stmt.rangeEndTemp")   return f.rangeEndTemp;                      // the hoisted end's name
         if (path == "stmt.binding")   return f.binding;
         if (path == "stmt.captured")  return f.captured ? "true" : "false"; // #46: a closure captures the binding
         if (path == "stmt.driver")    return f.binding + "__it";            // per-iteration copy's loop counter
@@ -1329,6 +1331,8 @@ std::string StmtCtx::builtin(const std::string& name, const std::vector<std::str
 }
 
 std::string StmtCtx::renderType(const std::string& path) const {
+    if (s_.kind == ir::StmtKind::For && path == "stmt.rangeType") // P40 D7: the widened loop-variable type
+        return hooks_.renderTypeRef(static_cast<const ir::For&>(s_).rangeType);
     if (s_.kind == ir::StmtKind::Try && path.rfind("stmt.catches.", 0) == 0) { // stmt.catches.<i>.type
         const auto& t = static_cast<const ir::Try&>(s_);
         std::size_t i = 0;

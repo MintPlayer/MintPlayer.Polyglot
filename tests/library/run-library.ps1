@@ -97,6 +97,13 @@ function Assert-Consumable($name, $stem, $dir) {
     $ts = Join-Path $dir "$stem.ts"
     if (-not (Test-Path $ts)) { Fail "$name (no $stem.ts emitted)"; return }
 
+    # P40 A2 grep gate: the lowering poison must never reach emitted code.
+    $poison = @(Get-ChildItem $dir -Filter *.ts | Select-String -SimpleMatch '__polyglot_unlowered_expr__' -List)
+    if ($poison.Count -gt 0) {
+        Fail "$name : emitted output contains __polyglot_unlowered_expr__ ($(($poison | ForEach-Object { Split-Path $_.Path -Leaf }) -join ', '))"
+        return
+    }
+
     # Regression guard: any top-level declaration (column 0) that is NOT `export`ed is a dropped export.
     $unexported = Select-String -Path $ts -Pattern '^(abstract class|class|function|async function|function\*|interface|type|const|let|enum|namespace) '
     if ($unexported) {

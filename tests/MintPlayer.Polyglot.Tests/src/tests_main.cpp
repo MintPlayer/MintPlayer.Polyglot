@@ -1030,6 +1030,112 @@ int main() {
         check(has(jerr, "hex digits"), "P40 s3: a malformed JSON \\u escape is an error");
     }
 
+    // P40 slice 4 (A2) — Rust-style range precedence, evaluate-once bounds, the super refusal, the parser
+    // progress guard, and the lowering backstop.
+    {
+        auto parseSrc = [](const std::string& src, DiagnosticBag& d) { return parse(lex(src, d), d); };
+        auto firstErr = [](const EmitResult& r) { return r.diagnostics.empty() ? std::string() : r.diagnostics[0].message; };
+
+        // Parse shapes: the range is the loosest binary form, so every binary bound stays inside it.
+        auto iterOf = [&](const std::string& bound, DiagnosticBag& d) -> CompilationUnit {
+            return parseSrc("fn f(n: i32, a: i32?) {\n  for i in " + bound + " { }\n}\n", d);
+        };
+        struct Shape { const char* src; const char* lhs; const char* rhs; bool inclusive; };
+        const Shape shapes[] = {
+            {"0..n - 1", "IntLit", "-", false}, {"-2..2", "-", "IntLit", false},
+            {"0..=n * 2", "IntLit", "*", true}, {"i + 1..n", "+", "Name", false},
+            {"0..a ?? 3", "IntLit", "??", false},
+        };
+        for (const auto& sh : shapes) {
+            DiagnosticBag d;
+            CompilationUnit u = iterOf(sh.src, d);
+            const Expr* r = (!d.hasErrors() && !u.functions.empty() && !u.functions[0].body.empty())
+                                ? u.functions[0].body[0]->value.get() : nullptr;
+            auto tag = [](const Expr& e) -> std::string {
+                if (e.kind == ExprKind::Binary || e.kind == ExprKind::Unary) return e.text;
+                return e.kind == ExprKind::IntLit ? "IntLit" : e.kind == ExprKind::Name ? "Name" : "?";
+            };
+            check(r && r->kind == ExprKind::Range && tag(*r->lhs) == sh.lhs && tag(*r->rhs) == sh.rhs &&
+                      r->flag == sh.inclusive,
+                  std::string("P40 s4: `") + sh.src + "` parses as one range with binary bounds");
+        }
+        {
+            DiagnosticBag d;
+            parseSrc("fn f() {\n  for i in 0..1..2 { }\n}\n", d);
+            check(d.hasErrors() && has(d.items()[0].message, "ranges do not chain"), "P40 s4: ranges do not chain");
+        }
+
+        // S8: the throw arm used to hang the parser forever; now one targeted error (and the parse ends).
+        {
+            DiagnosticBag d;
+            parseSrc("union O { Ok(v: i32), Fail }\nfn f(o: O): i32 => match o {\n  Ok(v) => v,\n  Fail => throw Error(\"x\")\n}\n", d);
+            check(d.items().size() == 1 && has(d.items()[0].message, "'throw' is a statement"),
+                  "P40 s4: a throw match arm is one diagnostic, not a parser hang");
+            DiagnosticBag d2;
+            parseSrc("enum E { 1 }\nunion U { 2 }\n", d2);
+            check(d2.hasErrors(), "P40 s4: enum/union case loops have a progress guard (no hang)");
+        }
+
+        // The formatter stops parenthesizing binary bounds, and stays idempotent.
+        {
+            const std::string src = "fn f(n: i32, a: i32?) {\n  for j in (n + 1)..n { }\n  for i in (0 - 2)..=(n * 2) { }\n"
+                                    "  for k in 0..(a ?? 5) { }\n}\n";
+            EmitResult f1 = format(src);
+            EmitResult f2 = format(f1.code);
+            check(f1.ok && has(f1.code, "for j in n + 1..n") && has(f1.code, "for i in 0 - 2..=n * 2") &&
+                      has(f1.code, "for k in 0..a ?? 5"),
+                  "P40 s4: fmt prints range bounds without parentheses");
+            check(f2.ok && f1.code == f2.code, "P40 s4: fmt is idempotent over ranges");
+        }
+
+        // Sema: a range outside a for iterable, float bounds, incompatible bounds, and the super refusal.
+        EmitResult op = compile("fn f(n: i32): i32 => (0..n) - 1\n", findTarget("csharp"));
+        check(!op.ok && op.diagnostics.size() == 1 && has(firstErr(op), "a range ('a..b') is only valid as a for-loop iterable"),
+              "P40 s4: a range operand is one error (no cascade)");
+        EmitResult lt = compile("fn f() {\n  let r = 0..5\n}\n", findTarget("csharp"));
+        check(!lt.ok && has(firstErr(lt), "only valid as a for-loop iterable"), "P40 s4: a range in a let is an error");
+        EmitResult fl = compile("fn f() {\n  var n = 0\n  for x in 1.5..3 { n += 1 }\n}\n", findTarget("csharp"));
+        check(!fl.ok && has(firstErr(fl), "range bounds must be integers (got f64)"), "P40 s4: float range bounds are an error");
+        EmitResult mix = compile("fn f(a: i64, b: u64) {\n  for i in a..b { }\n}\n", findTarget("csharp"));
+        check(!mix.ok && has(firstErr(mix), "incompatible types i64 and u64"), "P40 s4: an incompatible bound pair is an error");
+        EmitResult sm = compile("open class A {\n  open fn g(): i32 => 1\n}\nclass B : A {\n  override fn g(): i32 => super.g() + 1\n}\n",
+                                findTarget("csharp"));
+        check(!sm.ok && has(firstErr(sm), "'super' is only supported as a base-constructor call"), "P40 s4: super.m() is refused (D6)");
+        EmitResult sc = compileStd("class E2 : Error {\n  constructor() {\n    super(\"x\")\n  }\n}\n", findTarget("csharp"));
+        check(sc.ok, "P40 s4: the hoisted base-constructor super(...) stays legal");
+
+        // Widening + D7: the i32 start widens to the i64 end; a non-simple end is hoisted with the spelled type.
+        const char* wide = "fn f(a: i64, b: i64): i64 {\n  var s: i64 = 0\n  for k in 0..a + b { s += k }\n"
+                           "  for j in 0..a { s += j }\n  return s\n}\n";
+        EmitResult wcs = compile(wide, findTarget("csharp"));
+        check(wcs.ok && has(wcs.code, "for (long k = ") && has(wcs.code, ", __end0 = a + b; k < __end0; k++)"),
+              "P40 s4: C# hoists a non-simple end into a multi-declarator with the widened (long) type");
+        check(wcs.ok && has(wcs.code, "for (var j = ") && has(wcs.code, "; j < a; j++)"),
+              "P40 s4: a parameter end stays readable (re-read, not hoisted)");
+        EmitResult wts = compile(wide, findTarget("typescript"));
+        check(wts.ok && has(wts.code, "for (let k = BigInt(0), __end0 = BigInt.asIntN(64, a + b); k < __end0; k++)"),
+              "P40 s4: TS hoists with `let` (same shape)");
+        EmitResult wphp = compile(wide, findTarget("php"));
+        check(wphp.ok && has(wphp.code, ", $__end0 = $a + $b; $k < $__end0; $k++)"), "P40 s4: PHP hoists with a comma init");
+        const char* mut = "fn f(): i32 {\n  var m = 3\n  var c = 0\n  for i in 0..m { m += 1\n c += 1 }\n  return c\n}\n";
+        EmitResult mcs = compile(mut, findTarget("csharp"));
+        check(mcs.ok && has(mcs.code, "__end0 = m;"), "P40 s4: a mutable-local end is hoisted (evaluated once)");
+
+        // The backstop: lowering records an expression it has no rule for (sema refuses these first, so the
+        // AST is fed to lower() directly), and compile() would turn the record into an ICE.
+        {
+            DiagnosticBag d;
+            CompilationUnit u = parseSrc("fn f() {\n  let r = 0..5\n  let s = super\n}\n", d);
+            ir::Module m = lower(u, "csharp");
+            check(m.loweringFailures.size() == 2 && m.loweringFailures[0].kind == "range" &&
+                      m.loweringFailures[1].kind == "super" && m.loweringFailures[0].pos.line == 2,
+                  "P40 s4: lowering records each unlowerable expression with its kind and position");
+            DiagnosticBag d2;
+            ir::Module ok = lower(parseSrc("fn f(n: i32) {\n  for i in 0..n { }\n}\n", d2), "csharp");
+            check(ok.loweringFailures.empty(), "P40 s4: a for-iterable range lowers without a failure");
+        }
+    }
+
     // P4 — name / type resolution across the declaration surface.
     auto resolves = [&](const char* src, const std::string& name) {
         EmitResult r = compile(src, findTarget("csharp"));

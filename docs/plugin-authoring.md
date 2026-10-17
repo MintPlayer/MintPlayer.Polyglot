@@ -384,7 +384,10 @@ That's the whole catalog — 17 names. Any other `{"fn": …}` fails the load.
   facts (`node.typeIsInt`, `node.typeIsFloat`, `node.typeIsInt64`, `node.castSame`,
   `node.lhsIsRecord`, `node.receiverHasIndexer`, `node.hasOpMethod`, …).
 - **Statement rules** (decl flavor): only `ForStmt` and `TryStmt` — paths read `stmt.…`
-  (`stmt.isRange`, `stmt.binding`, `stmt.iterable`, `stmt.body`, …). Every other statement
+  (`stmt.isRange`, `stmt.binding`, `stmt.iterable`, `stmt.body`, …). A range evaluates its bounds once
+  (P40 D7): when `stmt.rangeEndSimple` is `false`, declare `stmt.rangeEndTemp` alongside the loop variable
+  (initialized from `stmt.rangeEnd`) and compare against it; `{"type": "stmt.rangeType"}` spells the
+  widened loop-variable type for targets whose multi-declarator needs it (C#). Every other statement
   (let/assign/if/while/return/throw/use/break/continue/yield) is the shared engine walking your
   spec data: `blockStyle`, `stmtEnd`, `throwKeyword`, `rethrow`, and the `localDecl`/`yield` tables.
 - **Declaration rules** (decl flavor): `Program` (paths on `module.…` — `module.enums`,

@@ -345,6 +345,21 @@ Loops iterate **either a range or an `Iterable<T>`** — one form, `for x in seq
 are recognized by the backends and emitted as C-style `for` loops where the bound is a plain integer range
 (readable output), or as iterator loops otherwise. `if`/`match` are expressions, so they can produce values.
 
+**Ranges (P40 A2).**
+- **Precedence is Rust's:** `..`/`..=` is the *loosest* binary form and does not chain, so `0..n - 1`,
+  `-2..2`, `i + 1..n`, `0..=n * 2` and `0..a ?? 5` all mean what they read as (`a..b..c` is an error).
+- **A range is only valid as a `for` iterable** — `let r = 0..5`, `(0..n) - 1` or a range argument is an
+  error (*a range ('a..b') is only valid as a for-loop iterable*).
+- **Bounds must be integers** (`range bounds must be integers (got f64)`). The two bound types widen to one
+  (the narrower bound is widened, as for a binary operator), which is the loop variable's type:
+  `for i in 0..n64` gives an `i64` `i`. A pair neither side of which widens (`i64` with `u64`) is an error.
+- **Bounds are evaluated once**, start then end, before the first iteration — as in Rust, Kotlin, Swift and
+  Python. A body that changes what the end expression would read (`n += 1`, `xs.add(…)`) does not change
+  the trip count. Output stays readable: an end that cannot change (a literal, a module value, an immutable
+  local or parameter) is re-read in the condition (`i < n`); any other end is hoisted into a temporary
+  next to the loop variable (C# `for (int i = 0, __end0 = xs.Count; i < __end0; i++)`, TS `let`, PHP comma
+  init; Python's `range()` already evaluates once).
+
 ### 5.1 Exceptions (`try`/`catch`/`when`/`finally`, `throw`)
 
 ```pg
@@ -572,6 +587,10 @@ miscompile.
   attribute cannot exist (P37 §D.1). If a specific transform is ever wanted, it becomes a fixed
   first-party compiler lowering — never a user-programmable macro.
 - **Finalizers / GC hooks** — no `~T()`, no `GC.*`. Deterministic disposal is `use` (§5.2) — that's all.
+- **Base-member access through `super`** — `super.m()`, `super.field` and a bare `super` value are refused
+  (P40 D6). The only `super` is the base-constructor call `super(…)` as a top-level statement of a
+  constructor. (PHP's `parent::` access differs from the other targets' `super.`/`base.`; supporting it
+  would need its own IR node, so it waits for real demand.)
 - **`decimal`** — no `decimal` type or literal (a big-decimal std type may be opted in later).
 - **`unsafe` / pointers** — no `unsafe`, `*T`, `&`-address-of, `stackalloc`, raw `Span`.
 - **`dynamic` / runtime code-gen** — no `dynamic`, `Reflection.Emit`, `Expression.Compile`.

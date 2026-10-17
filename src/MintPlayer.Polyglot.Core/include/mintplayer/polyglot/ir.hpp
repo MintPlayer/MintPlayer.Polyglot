@@ -356,6 +356,13 @@ struct For : Stmt { // `for binding in <seq>`: either an integer range or an arb
     bool isRange = false;
     ExprPtr rangeStart, rangeEnd; // range form: bounds
     bool inclusive = false;       // range form: `..=` (true) vs `..` (false)
+    // P40 D7 — bounds are evaluated ONCE. `rangeEndSimple` (like With::baseIsSimple): the end bound cannot
+    // change, so the condition re-reads it (`i < n`, readable). Otherwise the rule hoists it into `rangeEndTemp`
+    // alongside the binding (C# `for (int i = s, __end0 = e; …)`, TS `let`, PHP comma init) and `rangeType` —
+    // the widened loop-variable type sema chose — spells the declaration where a target needs it.
+    bool rangeEndSimple = true;
+    std::string rangeEndTemp;
+    Type rangeType;
     ExprPtr iterable;             // iterable form: the sequence expression
     std::vector<StmtPtr> body;
     // Capture analysis (P25 §4.18): the loop binding is captured by a lambda created in the body. `needsCell`
@@ -631,7 +638,16 @@ struct ModuleImport {
     std::string ns;
 };
 
+// P40 A2 backstop: a surface expression lowering had no rule for (sema should have refused it first).
+struct LoweringFailure {
+    SourcePos pos;
+    std::string kind; // the surface expression kind, e.g. "range"
+};
+
 struct Module {
+    // P40 A2: non-empty = lowering met an expression it cannot lower. `compile()` reports each as an internal
+    // compiler error and writes nothing; the emitted placeholder (`__polyglot_unlowered_expr__`) never ships.
+    std::vector<LoweringFailure> loweringFailures;
     std::vector<std::string> attrImports; // P37 D Tier 1: verbatim import/using lines (deduped) for used attribute bindings
     std::vector<Enum> enums;
     std::vector<Union> unions;

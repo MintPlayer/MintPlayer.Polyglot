@@ -736,8 +736,18 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
     // "is this C#?".
     const bool splitPrelude = !sharedOnly && target.backend()->sharedPreludeFile() && lib.sharedPrelude;
 
+    // P40 A2 backstop: an expression lowering had no rule for is a compiler bug — report it and write nothing,
+    // instead of shipping the `__polyglot_unlowered_expr__` placeholder (a runtime-only failure on TS/Python/PHP).
+    auto loweringFailed = [&](const ir::Module& m) {
+        for (const auto& f : m.loweringFailures)
+            diags.error(f.pos, "internal compiler error: no lowering for " + f.kind +
+                                   " expression — this is a Polyglot bug, please report it");
+        return !m.loweringFailures.empty();
+    };
+
     if (userOrigins.empty() && !splitPrelude && !sharedOnly) { // single-file
         ir::Module module = lower(unit, target.name());
+        if (loweringFailed(module)) { result.diagnostics = diags.items(); return result; }
         pruneUnreachablePrelude(module); // P40 §0: only the prelude this program reaches
         module.options = optionsOf(""); // P40 B1: rules read `option.<name>` (defaults = byte-identical)
         module.originInfo = lib.originInfo;      // P38: off => byte-identical
@@ -787,11 +797,20 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
     // P38: the origin list produced by the most recent emitKeep() call, stashed onto the matching output
     // below. Each emitted file has its own line numbering, so origins cannot be accumulated across them.
     std::vector<OriginRecord> lastOrigins;
+    bool anyLoweringFailed = false; // P40 A2: set by emitKeep; the whole result is then withheld
+    auto withheld = [&]() {
+        result.code.clear();
+        result.modules.clear();
+        result.origins.clear();
+        result.diagnostics = diags.items();
+    };
     // P40 §0: `forcedReach` names prelude declarations reached ELSEWHERE (the shared prelude's union across
     // roots); null = compute it here.
     auto emitKeep = [&](const std::set<std::string>& keep, const std::string& importOrigin,
                         const std::set<std::string>* forcedReach = nullptr) -> std::string {
         ir::Module m = lower(unit, target.name());
+        // Every file re-lowers the whole unit, so a failure repeats identically: report it once.
+        if (!anyLoweringFailed && loweringFailed(m)) anyLoweringFailed = true;
         // P40 §0: a file that holds the prelude on behalf of OTHER files too (the C# entry, or the split
         // prelude file) keeps the union of what every file of the closure reaches — computed over the whole
         // module, before it is partitioned. A per-file-prelude target keeps only what THIS file reaches.
@@ -841,6 +860,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         const std::set<std::string> unionReach(sharedOnly->names.begin(), sharedOnly->names.end());
         result.code = emitKeep({kPreludeOrigin}, kPreludeBasename, &unionReach);
         result.origins = lastOrigins;
+        if (anyLoweringFailed) { withheld(); return result; }
         result.diagnostics = diags.items(); // warnings reach the host on success too (P40 A1)
         result.ok = true;
         return result;
@@ -873,6 +893,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         pf.sharedPrelude = true;
         result.modules.push_back(std::move(pf));
     }
+    if (anyLoweringFailed) { withheld(); return result; }
     result.diagnostics = diags.items(); // warnings reach the host on success too (P40 A1)
     result.ok = true;
     return result;

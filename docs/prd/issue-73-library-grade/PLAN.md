@@ -594,3 +594,52 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Verified:** the unit exe passes (813 checks) and `-Tier fast` is green. `run-cli-smoke` is green
     (65 checks, `spark-ci-flow` included), and so is `run-nuget -Work` (40 checks, fixtures 9 and 10).
     Conformance: all 117 programs agree on all four targets (12 PHP refusers, unchanged).
+- **2026-10-17 (night, slice 4)** — **Slice 4 built** (A2: ranges and the poison backstop). As built:
+  - **Grammar/parser.** `range_expr = coalesce_expr [ (".."|"..=") coalesce_expr ]` is what `parseExpr` enters
+    (the old postfix-level `parseRange` under `parseUnary` is gone); a second `..` is `ranges do not chain`.
+    grammar.ebnf updated. The formatter passes precedence 0 for bounds, so only a nested range / if / match /
+    lambda bound is parenthesized; idempotent. The corpus `(i + 1)..` / `0..(w * h)` parentheses were left
+    alone (no source churn; `polyglot fmt` would drop them).
+  - **Sema.** The `for` site checks its range through `checkRangeBounds` (both bounds integer and non-nullable
+    — `range bounds must be integers (got f64)` per bad bound; widen via the binary-operator
+    `reconcileNumeric`, so the narrower bound gets the usual cast; a non-widening pair is `range bounds have
+    incompatible types i64 and u64 …`). Any other range reaching `computeType` is the PRD error and types as
+    Unknown (one diagnostic, no cascade). `super`: sema pre-registers the callee of each top-level
+    `super(…)` statement of a constructor (exactly the shape lowering hoists); any other `super` is refused
+    (D6) — `super.m()`, bare `super`, `super(…)` in a method.
+  - **D7.** Sema decides `Expr::rangeEndSimple` (new AST field): an int literal (or its negation), a module
+    value (never assignable), or an immutable local/param. Mutable locals are conservatively hoisted (no
+    closure-mutation analysis). Lowering copies it to `ir::For::rangeEndSimple` plus `rangeEndTemp`
+    (`__endN`, the shared tmp counter) and `rangeType` (sema's widened type). Rules read
+    `stmt.rangeEndSimple` / `stmt.rangeEndTemp` / `{"type":"stmt.rangeType"}` through three helper rules
+    (`csRangeDecl`, `rangeEndDecl`, `rangeEndRead`): C# `for (int i = 0, __end0 = xs.Count; i < __end0; i++)`
+    (also in the captured-binding driver form), TS `let`, PHP `$__end0` comma init; Python's `range()` is
+    unchanged. Simple ends keep `for (var i = 0; i < n; i++)` byte-identical.
+  - **Backstop.** `ir::Module::loweringFailures` (`{pos, kind}`); the lowering switch is exhaustive with
+    explicit `Range`/`Super` arms recording a failure (and a post-switch arm for an out-of-range value).
+    `compile()` reports `internal compiler error: no lowering for <kind> expression — this is a Polyglot
+    bug, please report it` and withholds every output (single-file and partitioned paths; reported once).
+    `/we4062` via `TreatSpecificWarningsAsErrors` in all three `.vcxproj` (Debug + Release) and `/we4062` /
+    `-Werror=switch` in CMakeLists; the 5 S5 sites got an explicit `default:` (only Core had any — Cli and
+    Tests were already clean). The stale "CharLit is unlowered" comment is gone.
+  - **S8.** The match-arm loop has a progress guard: on an arm error (or no progress) it skips, bracket-
+    balanced, to the next top-level `,` or the closing `}` and ends the panic. `throw` in expression position
+    gets `'throw' is a statement, not an expression — it cannot be a match arm or an operand`. Audit: the
+    enum and union case loops had the same no-progress shape (`enum E { 1 }` hung) and got a guard; the
+    member/statement loops already recover on panic; the comma-list loops always advance.
+  - **Grep gate** for `__polyglot_unlowered_expr__`: run-conformance (after the anti-silent-drop check),
+    run-library (`Assert-Consumable`, both paths), samples `run-emit.ps1` (a hit fails even an xfail).
+  - **Tests.** Conformance `range_precedence.pg` + `.expected` (all PRD forms, a mutated bound, a grown
+    list bound, a captured binding with a hoisted end, an i32 start crossing 2³¹ against an i64 end).
+    Refusal fixtures `range_operand`, `range_let`, `float_range`, `super_method`, `super_value`,
+    `throw_match_arm`. Unit block "P40 s4" (parse shapes, no-chain, throw arm + enum/union guards, fmt
+    paren-drop + idempotence, sema errors, super legal/refused, C#/TS/PHP hoist goldens, readable param end,
+    lowering failure records via `lower()` on an un-checked AST — the ICE text itself is unreachable through
+    `compile()` once sema refuses both forms).
+  - **Docs.** SPEC §5 "Ranges" (precedence, iterable-only, integer/widening, evaluated once), §10 `super`
+    refusal; plugin-authoring statement paths.
+  - **Verified:** unit exe green (836 checks, 23 new); `-Tier fast` green (refusals incl. the 6 new
+    fixtures); parser-fidelity round-trip green (10 samples); conformance: all 118 programs agree on all four
+    targets (12 PHP refusers, unchanged; `range_precedence` matches its golden). POSIX leg (WSL Ubuntu,
+    cmake + g++ Release with `-Werror=switch`) compiles and its unit exe passes. Not run (end gate): the full
+    tier — samples `run-emit`, the library gate, run-nuget.

@@ -1,0 +1,56 @@
+// Scenario (P40 A2): Rust-style range precedence and evaluate-once bounds. A range is the loosest binary
+// form, so every bound below reads as written without parentheses. Before P40 `0..n - 1` parsed as
+// `(0..n) - 1` and reached the poison identifier (C# CS0103; TS/Python/PHP failed only at runtime), and a
+// body that grew its end bound looped 6 times on TS/PHP but 3 times on Python. Bounds are now evaluated
+// once on every target, and mixed-width bounds widen (the loop variable takes the wider type).
+
+import { List } from "std.collections"
+
+fn main() {
+  let n = 4
+
+  var digits = 0
+  for i in 0..n - 1 { digits = digits * 10 + i }       // 0, 1, 2
+  print("minus: ${digits}")                              // 12
+
+  var negSum = 0
+  var negCount = 0
+  for i in -2..2 { negSum += i; negCount += 1 }          // -2, -1, 0, 1
+  print("neg: ${negSum} ${negCount}")                    // -2 4
+
+  var incl = 0
+  for i in 0..=n * 2 { incl += i }                       // 0..=8
+  print("times: ${incl}")                                // 36
+
+  var pairs = 0
+  for i in 0..n {
+    for j in i + 1..n { pairs += 1 }                     // the fruitcake `(i + 1)..` shape, unparenthesized
+  }
+  print("pairs: ${pairs}")                               // 6
+
+  let missing: i32? = null
+  var fallback = 0
+  for i in 0..missing ?? 3 { fallback += 1 }             // 0..(missing ?? 3)
+  print("coalesce: ${fallback}")                         // 3
+
+  var m = 3
+  var iters = 0
+  for i in 0..m { m += 1; iters += 1 }                   // the end is read ONCE, before the first iteration
+  print("mutated: ${iters} ${m}")                        // 3 6
+
+  let xs = List<i32>()
+  xs.add(1)
+  xs.add(2)
+  for i in 0..xs.count { xs.add(i) }                     // a member end is hoisted too
+  print("grown: ${xs.count}")                            // 4
+
+  var fns: List<() => i32> = []
+  for i in 0..xs.count - 2 { fns.add(() => i * 10 + 1) } // captured binding + hoisted end (C# driver form)
+  for f in fns { print(f()) }                             // 1 11
+
+  let top: i64 = 2147483649
+  var wide: i64 = 0
+  var wideCount = 0
+  for k in 2147483646..top { wide += k; wideCount += 1 } // i32 start widens to i64: k crosses 2^31
+  print("wide: ${wide} ${wideCount}")                    // 6442450941 3
+}

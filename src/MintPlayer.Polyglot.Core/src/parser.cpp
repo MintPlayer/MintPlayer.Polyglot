@@ -558,6 +558,7 @@ private:
         { Token nt = expect(TokKind::Identifier, "an enum name"); d.name = nt.text; d.namePos = nt.pos; }
         expect(TokKind::LBrace, "'{'");
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            const std::size_t caseStart = idx_; // P40 S8 audit: progress guard (see the match-arm loop)
             EnumCase c;
             c.pos = peek().pos;
             c.name = expect(TokKind::Identifier, "an enum case name").text;
@@ -577,6 +578,7 @@ private:
             }
             d.cases.push_back(std::move(c));
             accept(TokKind::Comma); // optional separator (cases may be newline-separated)
+            if (idx_ == caseStart) advance(); // a token no case parse consumed (`enum E { 1 }`) — skip it
         }
         expect(TokKind::RBrace, "'}'");
         return d;
@@ -590,6 +592,7 @@ private:
         d.generics = parseGenericParams(); // `union Option<T> { … }` — type params shared by all cases
         expect(TokKind::LBrace, "'{'");
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            const std::size_t caseStart = idx_; // P40 S8 audit: progress guard (see the match-arm loop)
             UnionCase c;
             c.pos = peek().pos;
             c.name = expect(TokKind::Identifier, "a union case name").text;
@@ -608,6 +611,7 @@ private:
             }
             d.cases.push_back(std::move(c));
             accept(TokKind::Comma);
+            if (idx_ == caseStart) advance(); // a token no case parse consumed (`union U { 1 }`) — skip it
         }
         expect(TokKind::RBrace, "'}'");
         return d;
@@ -998,7 +1002,23 @@ private:
                 advance();
             return e;
         }
-        return parseCoalesce();
+        return parseRange();
+    }
+
+    // P40 A2: a range is the LOOSEST binary form (Rust-style) — `0..n - 1`, `-2..2`, `i + 1..n` and
+    // `0..a ?? 5` read as written — and ranges do not chain. Sema accepts a range only as a `for` iterable,
+    // so binding looser only ever turns former errors into valid programs.
+    ExprPtr parseRange() {
+        auto l = parseCoalesce();
+        if (!at(TokKind::DotDot) && !at(TokKind::DotDotEq)) return l;
+        const bool inclusive = at(TokKind::DotDotEq);
+        auto p = advance().pos;
+        auto e = mk(ExprKind::Range, p);
+        e->flag = inclusive;
+        e->lhs = std::move(l);
+        e->rhs = parseCoalesce();
+        if (at(TokKind::DotDot) || at(TokKind::DotDotEq)) error("ranges do not chain — 'a..b..c' is not an expression");
+        return e;
     }
 
     ExprPtr makeBinary(ExprPtr l, const char* op, ExprPtr r, SourcePos p) {
@@ -1121,20 +1141,7 @@ private:
             e->lhs = parseUnary();
             return e;
         }
-        return parseRange();
-    }
-    ExprPtr parseRange() {
-        auto l = parsePostfix();
-        if (at(TokKind::DotDot) || at(TokKind::DotDotEq)) {
-            bool inclusive = at(TokKind::DotDotEq);
-            auto p = advance().pos;
-            auto e = mk(ExprKind::Range, p);
-            e->flag = inclusive;
-            e->lhs = std::move(l);
-            e->rhs = parsePostfix();
-            return e;
-        }
-        return l;
+        return parsePostfix();
     }
     ExprPtr parsePostfix() {
         auto e = parsePrimary();
@@ -1408,6 +1415,7 @@ private:
         e->lhs = parseExpr(); // scrutinee
         expect(TokKind::LBrace, "'{'");
         while (!at(TokKind::RBrace) && !at(TokKind::End)) {
+            const std::size_t armStart = idx_;
             MatchArm arm;
             arm.pattern = parsePattern();
             if (accept(TokKind::KwIf)) {
@@ -1420,6 +1428,22 @@ private:
             if (at(TokKind::LBrace)) { arm.bodyIsBlock = true; arm.block = parseBlock(); }
             else { arm.body = parseExpr(); }
             e->arms.push_back(std::move(arm));
+            // P40 S8: progress guard. A token no arm sub-parser consumes (`Fail => throw …`: parsePrimary
+            // reports and stops AT `throw`) used to spin this loop forever. On an arm error, skip to the next
+            // top-level `,` or the match's closing `}` (balanced over nested brackets) so the parse always
+            // advances, then resume with the next arm (the skip is bracket-balanced, so the cursor is exactly
+            // re-synchronized and the panic can end here, like a statement's in parseBlock).
+            if (panicked_ || idx_ == armStart) {
+                if (idx_ == armStart && !at(TokKind::End)) advance();
+                int depth = 0;
+                while (!at(TokKind::End)) {
+                    if (depth == 0 && (at(TokKind::Comma) || at(TokKind::RBrace))) break;
+                    if (at(TokKind::LParen) || at(TokKind::LBrace) || at(TokKind::LBracket)) ++depth;
+                    else if ((at(TokKind::RParen) || at(TokKind::RBrace) || at(TokKind::RBracket)) && depth > 0) --depth;
+                    advance();
+                }
+                panicked_ = false;
+            }
             accept(TokKind::Comma); // optional separator
         }
         expect(TokKind::RBrace, "'}'");
@@ -1486,7 +1510,12 @@ private:
                 return first;
             }
             default:
-                error("expected an expression");
+                // `throw` is a statement: there are no throw-expressions (P40 D12), so `Fail => throw …` gets
+                // a targeted message rather than a bare "expected an expression".
+                if (at(TokKind::KwThrow))
+                    error("'throw' is a statement, not an expression — it cannot be a match arm or an operand");
+                else
+                    error("expected an expression");
                 { auto e = mk(ExprKind::IntLit, p); e->text = "0"; return e; }
         }
     }

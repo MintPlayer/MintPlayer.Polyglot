@@ -34,6 +34,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <!-- P40 A2: a switch over an enum with no default must name every enumerator (exhaustive lowering). -->
+      <TreatSpecificWarningsAsErrors>4062;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
@@ -45,6 +47,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <!-- P40 A2: a switch over an enum with no default must name every enumerator (exhaustive lowering). -->
+      <TreatSpecificWarningsAsErrors>4062;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>

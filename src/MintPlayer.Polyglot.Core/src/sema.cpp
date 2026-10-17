@@ -381,6 +381,7 @@ public:
 
 private:
     DiagnosticBag& diags_;
+    std::unordered_set<const Expr*> allowedSupers_; // D6: the `super` callees of hoisted base-ctor calls
     std::unordered_map<std::string, std::vector<FnSig>> fns_; // name -> overload set
     std::unordered_map<std::string, TypeInfo> types_;
     std::unordered_set<std::string> typeNames_;
@@ -976,6 +977,13 @@ private:
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 for (const auto& p : m.params) declare(p.name, p.type, false, p.pos);
+                // D6: the one legal `super` — a top-level `super(…)` statement in a constructor body, the exact
+                // shape lowering hoists into the base-constructor call. Every other `super` is refused.
+                if (m.kind == MemberKind::Constructor)
+                    for (const auto& st : m.body)
+                        if (st->kind == StmtKind::ExprStmt && st->value && st->value->kind == ExprKind::Call &&
+                            st->value->lhs && st->value->lhs->kind == ExprKind::Super)
+                            allowedSupers_.insert(st->value->lhs.get());
                 if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Constructor) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
@@ -1152,6 +1160,45 @@ private:
         return false;
     }
 
+    // P40 A2: a `for` range's bounds. Both must be integers; they widen to one type (the narrower bound gets
+    // the usual implicit widening cast), which becomes the loop variable's type. An incompatible pair (a
+    // signed/unsigned mix neither side of which widens) is an error. Also decides D7's `rangeEndSimple`.
+    TypeRef checkRangeBounds(Expr& r) {
+        TypeRef lo = checkExpr(*r.lhs);
+        TypeRef hi = checkExpr(*r.rhs);
+        r.rangeEndSimple = rangeEndIsSimple(*r.rhs);
+        auto isInt = [](const TypeRef& t) {
+            return t.kind == TypeRef::Kind::Named && !t.nullable && (isSignedInt(t.name) || isUnsignedInt(t.name));
+        };
+        auto known = [&](const TypeRef& t) {
+            return scalarTyOf(t) != Ty::Unknown || (t.nullable && !t.name.empty()) || nominalKnown(t);
+        };
+        bool ok = true;
+        for (const auto* side : {&lo, &hi}) {
+            if (!known(*side) || isInt(*side)) continue;
+            const Expr& b = side == &lo ? *r.lhs : *r.rhs;
+            diags_.error(b.pos, "range bounds must be integers (got " + side->name + (side->nullable ? "?" : "") + ")");
+            ok = false;
+        }
+        if (!ok) return tUnknown();
+        if (!known(lo) || !known(hi)) return known(lo) ? lo : known(hi) ? hi : tNamed("i32"); // lenient
+        TypeRef common;
+        if (reconcileNumeric(r, lo, hi, common)) return common;
+        diags_.error(r.pos, "range bounds have incompatible types " + lo.name + " and " + hi.name +
+                            " (neither widens to the other); add an explicit cast");
+        return tUnknown();
+    }
+    // D7: may the end bound be re-read by the loop condition on every iteration? Only when it cannot change:
+    // an integer literal (or its negation), a module value (never assignable), or an immutable local/param.
+    // Anything else — a mutable local, a member read, a call — is hoisted into a temp by lowering.
+    bool rangeEndIsSimple(const Expr& e) const {
+        if (e.kind == ExprKind::IntLit) return true;
+        if (e.kind == ExprKind::Unary && e.text == "-" && e.lhs && e.lhs->kind == ExprKind::IntLit) return true;
+        if (e.kind != ExprKind::Name || !e.staticOwner.empty()) return false;
+        if (const Local* l = lookup(e.text)) return !l->isMutable;
+        return values_.count(e.text) != 0;
+    }
+
     // Declare a pattern's bindings, typed from the matched value `scrut`: a binding takes `scrut`; a ctor
     // pattern's sub-bindings take the case's field types with the union's generics substituted from `scrut`'s
     // args (so `match o: Option<i32> { Some(v) => … }` types `v` as i32, not Unknown); tuple sub-patterns
@@ -1291,9 +1338,17 @@ private:
                 checkBlock(s.thenBody);
                 break;
             case StmtKind::For: {
-                TypeRef iter = s.value ? checkExpr(*s.value) : tUnknown();
-                // A range yields its (integer) bound type; a collection yields its element type.
-                TypeRef elem = (s.value && s.value->kind == ExprKind::Range) ? iter : elementType(iter);
+                // A range yields its widened integer bound type (P40 A2); a collection its element type. The
+                // range is checked HERE, never through checkExpr — that path is the "range outside a `for`
+                // iterable" error.
+                TypeRef elem;
+                if (s.value && s.value->kind == ExprKind::Range) {
+                    elem = checkRangeBounds(*s.value);
+                    s.value->type = elem;
+                } else {
+                    TypeRef iter = s.value ? checkExpr(*s.value) : tUnknown();
+                    elem = elementType(iter);
+                }
                 pushScope();
                 declareForBinding(s.forBinding, elem);
                 for (auto& st : s.thenBody) checkStmt(*st);
@@ -1787,7 +1842,6 @@ private:
             case ExprKind::BoolLit:   return tNamed("bool");
             case ExprKind::NullLit:   return tNullableUnknown();
             case ExprKind::This:      return currentThis_;
-            case ExprKind::Super:     return tUnknown();
             case ExprKind::Name:      return checkName(e);
             case ExprKind::Unary:     return checkUnary(e);
             case ExprKind::Await:     { // `await e` unwraps `Awaitable<T>` (an async call's result) to `T` (§4.7)
@@ -1813,7 +1867,16 @@ private:
                     diags_.error(e.pos, "'extern' target code is only allowed in a target-gated 'actual' — "
                                         "portable code must stay target-neutral (PRD §4.4)");
                 return tUnknown();
-            case ExprKind::Range:     { TypeRef lo = checkExpr(*e.lhs); checkExpr(*e.rhs); return isNumericTypeName(lo) ? lo : tNamed("i32"); }
+            case ExprKind::Range: // a `for` iterable never reaches here (checkRangeBounds) — anywhere else is an error
+                diags_.error(e.pos, "a range ('a..b') is only valid as a for-loop iterable");
+                checkExpr(*e.lhs); checkExpr(*e.rhs); // still type the bounds (their own errors, tooling)
+                return tUnknown(); // unknown, so the enclosing expression does not cascade
+            case ExprKind::Super:
+                if (allowedSupers_.count(&e)) return tUnknown(); // the hoisted base-constructor `super(…)`
+                diags_.error(e.pos, "'super' is only supported as a base-constructor call 'super(…)' at the top "
+                                    "level of a constructor — 'super.m()' and bare 'super' are refused (Polyglot "
+                                    "has no portable base-member access; PHP's parent:: differs)");
+                return tUnknown();
             case ExprKind::Call:      return checkCall(e);
             case ExprKind::Member:    return checkMember(e);
             case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); return elementType(recv); }

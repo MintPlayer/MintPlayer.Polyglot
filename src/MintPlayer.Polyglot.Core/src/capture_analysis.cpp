@@ -219,6 +219,7 @@ private:
             walkBlock(t.finallyBody);
             break;
         }
+        default: break; // explicit (P40 A2, /we4062): the other statements hold no closures or binders
         }
     }
 

@@ -210,6 +210,7 @@ private:
                 line("}");
                 break;
             }
+            default: break; // explicit (P40 A2, /we4062): Break/Continue carry nothing to dump
         }
     }
 
@@ -301,6 +302,7 @@ private:
                             repr += ")";
                             break;
                         }
+                        default: break; // explicit (P40 A2, /we4062): TypeTest patterns render nothing extra
                     }
                     if (a.guard) repr += " if " + expr(*a.guard);
                     repr += " => " + expr(*a.body) + ", ";
@@ -308,6 +310,7 @@ private:
                 repr += "}";
                 break;
             }
+            default: break; // explicit (P40 A2, /we4062): the dump leaves the other kinds untranscribed (empty repr)
         }
         return repr + ":" + typeName(e.type);
     }

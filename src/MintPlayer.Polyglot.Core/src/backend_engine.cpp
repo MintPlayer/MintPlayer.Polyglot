@@ -392,6 +392,7 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
             if (it == helpers->end()) return "<unknown-helper:" + r.s + ">";
             return evalRule(it->second, ctx, helpers, depth + 1);
         }
+        default: break; // explicit (P40 A2, /we4062): structural rules have no string value
     }
     return {};
 }

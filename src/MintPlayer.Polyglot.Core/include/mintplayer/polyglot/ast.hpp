@@ -131,6 +131,10 @@ struct Expr {
     std::string text;
     bool boolVal = false;
     bool flag = false;          // Member null-safe | Range inclusive | Lambda has block body
+    // Range (a `for` iterable, set by sema — P40 D7): the end bound reads the same value on every
+    // iteration (a literal, a module value, or an immutable local/param), so it may be re-read in the loop
+    // condition; otherwise lowering hoists it into a temp so it is evaluated exactly once.
+    bool rangeEndSimple = false;
 
     ExprPtr lhs;                // operand/object/left/callee/base/cond/scrutinee
     ExprPtr rhs;                // Binary/Range right | IfExpr then

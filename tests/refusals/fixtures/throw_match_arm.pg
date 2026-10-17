@@ -1,0 +1,8 @@
+// REFUSED (P40 S8): `throw` is a statement, so it cannot be a match arm. Pre-P40 this input hung the parser
+// forever (the arm loop had no progress guard); it must now end with one diagnostic.
+union Outcome { Ok(v: i32), Fail }
+
+fn unwrap(o: Outcome): i32 => match o {
+  Ok(v) => v,
+  Fail => throw Error("x")
+}

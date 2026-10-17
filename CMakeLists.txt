@@ -28,9 +28,11 @@ if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 
 if(MSVC)
-  add_compile_options(/W4 /permissive-)  # match the .vcxproj (WarningLevel=Level4, ConformanceMode=true)
+  # match the .vcxproj (WarningLevel=Level4, ConformanceMode=true, TreatSpecificWarningsAsErrors=4062)
+  add_compile_options(/W4 /permissive- /we4062)
 else()
-  add_compile_options(-Wall -Wextra)
+  # -Werror=switch mirrors /we4062 (P40 A2): an enum switch with no default must name every enumerator.
+  add_compile_options(-Wall -Wextra -Werror=switch)
 endif()
 
 set(REPO_ROOT ${CMAKE_CURRENT_SOURCE_DIR})

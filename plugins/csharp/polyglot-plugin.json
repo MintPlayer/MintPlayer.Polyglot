@@ -2421,6 +2421,25 @@
         }
       ]
     },
+    "csRangeDecl": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "true" ] }, "var " ] ],
+        "else": { "tmpl": [ { "type": "stmt.rangeType" }, " " ] }
+      }
+    },
+    "rangeEndDecl": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "false" ] },
+                    { "tmpl": [ ", ", { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] }, " = ", { "emit": "stmt.rangeEnd" } ] } ] ],
+        "else": ""
+      }
+    },
+    "rangeEndRead": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "true" ] }, { "emit": "stmt.rangeEnd" } ] ],
+        "else": { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] }
+      }
+    },
     "ForStmt": {
       "case": {
         "when": [
@@ -2440,10 +2459,12 @@
                       "block": {
                         "head": {
                           "tmpl": [
-                            "for (var ",
+                            "for (",
+                            { "call": "csRangeDecl" },
                             { "get": "stmt.driver" },
                             " = ",
                             { "emit": "stmt.rangeStart" },
+                            { "call": "rangeEndDecl" },
                             "; ",
                             { "get": "stmt.driver" },
                             {
@@ -2452,7 +2473,7 @@
                                 "else": " < "
                               }
                             },
-                            { "emit": "stmt.rangeEnd" },
+                            { "call": "rangeEndRead" },
                             "; ",
                             { "get": "stmt.driver" },
                             "++)"
@@ -2480,7 +2501,8 @@
                   "block": {
                     "head": {
                       "tmpl": [
-                        "for (var ",
+                        "for (",
+                        { "call": "csRangeDecl" },
                         {
                           "fn": "ident",
                           "args": [
@@ -2493,6 +2515,7 @@
                         {
                           "emit": "stmt.rangeStart"
                         },
+                        { "call": "rangeEndDecl" },
                         "; ",
                         {
                           "fn": "ident",
@@ -2518,9 +2541,7 @@
                             "else": " < "
                           }
                         },
-                        {
-                          "emit": "stmt.rangeEnd"
-                        },
+                        { "call": "rangeEndRead" },
                         "; ",
                         {
                           "fn": "ident",

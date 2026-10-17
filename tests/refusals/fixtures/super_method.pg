@@ -1,0 +1,9 @@
+// REFUSED (P40 D6): `super.m()` — base-member access has no portable lowering (PHP's parent:: differs).
+// Only the base-constructor call `super(…)` at the top level of a constructor is supported.
+open class Animal {
+  open fn speak(): string => "..."
+}
+
+class Dog : Animal {
+  override fn speak(): string => super.speak() + " woof"
+}
