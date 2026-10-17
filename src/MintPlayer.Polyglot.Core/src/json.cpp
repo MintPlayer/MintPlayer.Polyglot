@@ -214,7 +214,13 @@ struct Parser {
         while (i < s.size()) {
             ws();
             if (i >= s.size() || s[i] != '"') { fail(i, "expected a string key in an object"); break; }
+            const std::size_t keyAt = i;
             std::string key = parseString();
+            // P40 review r3: a duplicate key is a malformation. The lookup returns the FIRST member, while
+            // JavaScript, jq and VS Code read the LAST — so `"owned": true, "owned": false` meant one thing to
+            // the CLI and the opposite to every other tool reading the same config. Refused, never resolved.
+            if (std::any_of(v.members.begin(), v.members.end(), [&](const auto& m) { return m.first == key; }))
+                fail(keyAt, "duplicate key \"" + key + "\" in an object");
             ws();
             if (i < s.size() && s[i] == ':') ++i;
             else fail(i, "expected ':' after an object key");

@@ -93,6 +93,14 @@ elseif(APPLE)
   endforeach()
 endif()
 
+# P40 review r3: on Windows, embed the UTF-8 active-code-page manifest (the .vcxproj's <Manifest> item) so
+# every narrow path conversion is UTF-8. POSIX narrow strings are already UTF-8 bytes; nothing to do there.
+if(WIN32)
+  foreach(exe polyglot polyglot-tests)
+    target_sources(${exe} PRIVATE ${CLI_DIR}/utf8.manifest)
+  endforeach()
+endif()
+
 # The CLI is a pure engine — no target is compiled in (P19). Both executables load their backends from a
 # `plugins/` directory next to the binary at runtime, so copy it there after each build (the .vcxproj
 # xcopy PostBuildEvent equivalent). $<TARGET_FILE_DIR:…> resolves per-config for multi-config generators.

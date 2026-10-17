@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- P40 review r3 (#75, gating 1): make UTF-8 the process ANSI code page (Windows 10 1903+).
+     Every narrow string in the CLI is a path or text it reads, prints or writes: argv, std::filesystem's
+     path(std::string) and path::string(), the depfile, the outputs list, the outputs record, source maps,
+     diagnostics. Under the system ANSI code page (e.g. CP1252) those conversions are lossy or throw for
+     a project path outside it, and the files MSBuild reads as UTF-8 held ANSI bytes: in a folder 'pé' the
+     outputs list carried the lone byte 0xE9 and nothing generated compiled; in 'p日' the depfile failed.
+     With activeCodePage=UTF-8 every narrow conversion is UTF-8, which is what POSIX already does. Embedded
+     in both executables (the unit suite exercises the same path code). -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

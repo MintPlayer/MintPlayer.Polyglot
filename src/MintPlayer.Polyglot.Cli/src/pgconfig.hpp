@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -20,10 +21,13 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -46,6 +50,15 @@
 
 namespace mintplayer::polyglot::cli {
 
+// A path as UTF-8 bytes, whatever the process code page — for the files other tools read as UTF-8 (MSBuild's
+// ReadLinesFromFile: the depfile and the outputs list). The executables also run with UTF-8 as their ANSI code
+// page (utf8.manifest), so `.string()` agrees; this keeps those two files right even where the manifest is
+// not honoured (Windows before 10 1903). P40 review r3, gating 1.
+inline std::string utf8(const std::filesystem::path& p) {
+    const auto u = p.u8string();
+    return std::string(u.begin(), u.end());
+}
+
 // Read an entire file into a string. Returns false if it could not be opened.
 inline bool readFile(const std::filesystem::path& path, std::string& out) {
     std::ifstream in(path, std::ios::binary);
@@ -56,33 +69,64 @@ inline bool readFile(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
+// P40 review r3: a temp file a crashed (or killed) run left behind — `<name>.pgtmp.<…>` from writeFile, or
+// `<name>.pgcase.tmp` from a case-only rename. Swept once per directory per process, and only when older than
+// ten minutes: a parallel build (net8;net9 sharing a routed twin) may have its own in-flight temp there.
+inline bool isPolyglotTempName(const std::string& name) {
+    return name.find(".pgtmp.") != std::string::npos ||
+           (name.size() > 11 && name.compare(name.size() - 11, 11, ".pgcase.tmp") == 0);
+}
+inline void sweepStaleTemps(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    static std::mutex mu;
+    static std::set<fs::path> swept;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (!swept.insert(dir).second) return;
+    }
+    std::error_code ec;
+    const auto cutoff = fs::file_time_type::clock::now() - std::chrono::minutes(10);
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code fec;
+        if (!it->is_regular_file(fec) || !isPolyglotTempName(it->path().filename().string())) continue;
+        if (const auto t = fs::last_write_time(it->path(), fec); !fec && t < cutoff) fs::remove(it->path(), fec);
+    }
+}
+
 // Atomic replace (P40 review of #75): write a uniquely named temp file next to `path`, then rename it over
 // `path`. Truncate-then-write let a concurrent reader (parallel TFM builds sharing a routed twin) see a half
 // written file and refuse it as not Polyglot's. Readers now see the old bytes or the new ones, never a mix.
-// If the rename cannot replace the target (e.g. a reader holds it open without delete sharing on Windows),
-// falls back to writing in place rather than failing the build.
+// P40 review r3: when the rename cannot replace the target — on Windows, exactly while a reader holds it open
+// without FILE_SHARE_DELETE, as MSVC's ifstream does — it is RETRIED with a short backoff (~3 s in all), then
+// the write FAILS. It used to fall back to truncate-and-write, which is the torn read the rename exists to
+// prevent, and the run exited 0.
 inline bool writeFile(const std::filesystem::path& path, const std::string& content) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    if (path.has_parent_path()) fs::create_directories(path.parent_path(), ec); // `--out newdir` just works
+    const fs::path dir = path.has_parent_path() ? path.parent_path() : fs::path(".");
+    if (path.has_parent_path()) fs::create_directories(dir, ec); // `--out newdir` just works
+    sweepStaleTemps(dir);
     static std::atomic<unsigned> counter{0};
     const auto stamp = static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count());
     fs::path tmp = path;
     tmp += ".pgtmp." + std::to_string(std::random_device{}()) + "." + std::to_string(stamp % 1000000) + "." +
            std::to_string(counter++);
-    auto writeTo = [&](const fs::path& p) {
-        std::ofstream os(p, std::ios::binary);
+    {
+        std::ofstream os(tmp, std::ios::binary);
         if (!os) return false;
         os << content;
         os.close();
-        return !os.fail();
-    };
-    if (writeTo(tmp)) {
+        if (os.fail()) { fs::remove(tmp, ec); return false; }
+    }
+    for (int attempt = 0, delayMs = 10;; ++attempt, delayMs = std::min(delayMs * 2, 500)) {
+        ec.clear();
         fs::rename(tmp, path, ec);
         if (!ec) return true;
+        if (attempt == 10) break; // 10+20+40+…+500 ms ≈ 3 s
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
     }
     fs::remove(tmp, ec);
-    return writeTo(path);
+    return false;
 }
 
 // One pgconfig `include` file-mapping rule (PRD issue-30 D7): route the files `pattern` matches
@@ -243,10 +287,15 @@ inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>
         errors.push_back("pgconfig.json: the document must be a JSON object");
         return;
     }
+    // P40 review r3: blank means empty — `" "` is no name and no pattern (a blank pattern used to be accepted
+    // and its output landed next to the .pg).
+    auto blank = [](const std::string& s) {
+        return std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c) != 0; });
+    };
     auto stringList = [&](const json::Value& x, const std::string& where) {
         if (x.kind != K::Array) { errors.push_back("pgconfig.json: " + where + " must be an array of strings"); return; }
         for (const auto& e : x.items())
-            if (e.kind != K::String || e.asString().empty()) {
+            if (e.kind != K::String || blank(e.asString())) {
                 errors.push_back("pgconfig.json: " + where + " must be an array of non-empty strings");
                 return;
             }
@@ -260,7 +309,14 @@ inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>
             continue;
         }
         if (key == "root" && val.kind != K::String) errors.push_back("pgconfig.json: \"root\" must be a string");
-        else if (key == "lib" || key == "targets") stringList(val, "\"" + key + "\"");
+        else if (key == "lib" || key == "targets") {
+            stringList(val, "\"" + key + "\"");
+            // P40 review r3: `"targets": []` read as ABSENT for `build` (exit 64) but as a valid config for
+            // `--target` and `check` (exit 0). An empty set builds nothing; it is refused everywhere.
+            if (key == "targets" && val.kind == K::Array && val.items().empty())
+                errors.push_back("pgconfig.json: \"targets\" must name at least one target (e.g. [\"csharp\"]); "
+                                 "omit the key to pass --target instead");
+        }
         else if (key == "originInfo" && val.kind != K::Bool) errors.push_back("pgconfig.json: \"originInfo\" must be true or false");
         else if (key == "dependencies") {
             if (val.kind != K::Object) errors.push_back("pgconfig.json: \"dependencies\" must be an object of package -> version spec");
@@ -277,6 +333,8 @@ inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>
                 for (const auto& [rk, rv] : rule.members) {
                     if (rk == "pattern" || rk == "output") {
                         if (rv.kind != K::String) errors.push_back("pgconfig.json: an include rule's \"" + rk + "\" must be a string");
+                        else if (!rv.asString().empty() && blank(rv.asString()))
+                            errors.push_back("pgconfig.json: an include rule's \"" + rk + "\" is blank");
                     } else if (rk == "target") {
                         if (rv.kind != K::String) stringList(rv, "an include rule's \"target\" (a name or a list of names)");
                     } else if (rk != "targetOptions" && rk != "owned") { // both checked where they are read
@@ -420,11 +478,15 @@ targetOptionsFn(const PgConfig& pc, const TargetOptionsByTarget& flags, const st
 // P40 B1: config-time validation of every targetOptions layer (project, include rules, flags): each key must
 // name a loaded target and each option must be one that target declares, with a value matching its pattern.
 // Done up front so a typo refuses even for a target this run does not build, and before anything is written.
+// `unverified` (offline `check`): targets whose plugin could not be loaded without the network — their options
+// are skipped, not reported as naming an unknown target.
 inline void validateTargetOptions(const PgConfig& pc, const TargetOptionsByTarget& flags,
-                                  std::vector<std::string>& errors) {
+                                  std::vector<std::string>& errors,
+                                  const std::set<std::string>* unverified = nullptr) {
     auto check = [&](const TargetOptionsByTarget& layer, const std::string& where) {
         for (const auto& [target, opts] : layer) {
             const Backend* b = findBackend(target);
+            if (!b && unverified && unverified->count(target)) continue;
             if (!b) {
                 errors.push_back(where + ": targetOptions names unknown target '" + target + "' (loaded targets: " +
                                  [] { std::string s; for (const auto& n : backendNames()) s += (s.empty() ? "" : ", ") + n; return s; }() + ")");
