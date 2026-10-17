@@ -1196,3 +1196,44 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Verified:** MSBuild build, unit exe, `-Tier fast`, full conformance with the culture leg (137 programs),
     the library gate under TS 6.0.3, the nullable and refusal gates, and the floor sweep at 0. The full tier and
     the POSIX leg are for the orchestrator. The A9 half adds `flow.cpp` to the CMake glob, but no `#ifdef`.
+- **2026-10-17 (late night) — merging the two review-2 halves, and the cross-half items: as built.**
+  `p40-review2-cli` merged with `--no-ff` (`c5bfe2b`). The only textual conflict was this log, and both notes are
+  kept in commit order. The MSBuild `.targets` merged cleanly: the `--outputs-list` compile set, `PolyglotAdopt`
+  and the item-list `PolyglotTargets` sit beside `PolyglotEntryPoint` → `csharp.entryPoint`. `main.cpp`,
+  `outputsink.hpp`, `pgconfig.hpp` and the runners were touched by only one side.
+  - **Floor (A9):** the emitter half's fixes left the allow list fully stale. The list and its matching code are
+    deleted, not emptied, because it was temporary by design. `run-floor.ps1` now fails on any diagnostic. Green:
+    137 programs at net8.0, 1 at net9.0, 0 diagnostics.
+  - **Library gate on the pinned TypeScript:** `run-library.ps1` runs `node node_modules/typescript/bin/tsc`, the
+    6.0.3 pinned in `package.json`. When that version is missing or differs, it runs `npm ci`, the same install
+    CI does in `ci.yml`. The nx `conformance` runtime input hashes the same compiler. `Map.get(k) ?? d` was
+    already in the corpus (`map`, `generic_members`, `receiver_parens`).
+  - **B10 leftovers:**
+    - `TypeRef` carries the position of its first token, so a D16 not-imported type errors at its name: 3:11,
+      not the statement at 3:3.
+    - A std `.pg` guard extension (`_pg_charAt`, …) is lowered as a plain prelude free function with the
+      receiver as argument 0. On C# it becomes `internal static string _pg_charAt(string self, int index)` in
+      `PolyglotProgram`, so an InternalsVisibleTo assembly no longer sees a `this string` extension on every
+      string. TS, Python and PHP already spelled these as free functions.
+  - **PHP class statics (found by the language half):** only a literal-initialized `static let` stays a `const`.
+    Every other static is a static property `K::$x`. A non-literal initializer is declared bare and assigned
+    right after the class, in declaration order. A `static var` used to be declared `public static $Z` but read
+    and written as the constant `K::Z`, which was a parse error. The Core supplies only language facts and the
+    manifest chooses the spelling:
+    - `ClassField::initIsLiteral`;
+    - `Member::staticField{,Mutable,InitIsLiteral}`;
+    - `decl.literalStaticInitCount`.
+  - **Same root cause, found on the way:**
+    - Python ran a self-referencing static initializer in the class body, where the class is not bound yet
+      (NameError). It now runs after the class, like PHP.
+    - Sema never type-checked class field initializers, so they had no types: no i32 masking (wrapped on C#
+      only), no conversion and no name errors. They are now checked like any expression.
+    - Conformance `static_field_init` pins all of this.
+  - **Block-lambda missing return:** `convertLambdaResult` stamps `lambdaNeedsValue` when the lambda's result is
+    a concrete non-unit type. The flow pass refuses a reachable end (C# CS1643). Lambdas with an unknown or unit
+    result are not checked. Covered by the refusal fixture `lambda_missing_return`, unit checks, and SPEC §5.
+  - **Verified:** MSBuild build; the unit exe (1052 checks); `-Tier fast`, which includes cli-smoke and the
+    synthetic culture; the floor leg (0 diagnostics); the library gate under TS 6.0.3 (147 io-free programs in
+    the DOM leg); nullable; refusals; `run-nuget -Work` in a private dir (all P11 checks, incl. fixtures 11–13);
+    conformance with the culture leg (138 programs agree on all four targets). The full tier and the POSIX leg
+    are for the orchestrator. No `#ifdef`/platform code changed.
