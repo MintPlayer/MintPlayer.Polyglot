@@ -202,9 +202,13 @@ $staleFixture = {
     $obj = Join-Path $p "obj/Debug/net8.0/polyglot"
     $stamp = Join-Path $p "obj/Debug/net8.0/polyglot.stamp"
 
-    $b = dotnet build $p --nologo -v q -p:PolyglotTargets=csharp 2>&1 | Out-String
+    # "csharp;" — a trailing separator as a consumer writes it in the .csproj (review B7: the CLI now refuses an
+    # empty --only entry, so the .targets must pass PolyglotTargets as an item list). Gated by a test-only switch.
+    $sp = Join-Path $p "Stale.csproj"
+    (Get-Content -Raw $sp).Replace("</Project>", "  <PropertyGroup Condition=`"'`$(PgTrailingSep)' == 'true'`"><PolyglotTargets>csharp;</PolyglotTargets></PropertyGroup>`n</Project>") | Set-Content $sp
+    $b = dotnet build $p --nologo -v q -p:PgTrailingSep=true 2>&1 | Out-String
     ck ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $obj "a.cs")) -and -not (Test-Path (Join-Path $web "gen"))) `
-        "P40: PolyglotTargets=csharp compiles the C# and writes no .ts twin"
+        "P40: PolyglotTargets=csharp (spelled 'csharp;') compiles the C# and writes no .ts twin"
     dotnet build $p --nologo -v q 2>&1 | Out-Null
     ck ((Test-Path (Join-Path $web "gen/a.ts")) -and (Test-Path (Join-Path $web "gen/b.ts"))) `
         "P40: flipping PolyglotTargets back to all targets re-transpiles and writes the twin"
@@ -319,6 +323,180 @@ $staleFixture = {
     $r
 }
 
+# 11. P40 review (B8): Spark's REAL layout — a library .csproj with the package, pgconfig targets
+# [csharp, typescript] and ONLY a typescript include rule (owned, into a sibling web tree), so the C# lands in
+# obj/ via MSBuild and nowhere else. A git repository with a committed twin, then a real `git clone` (no record,
+# no obj/), an importer (so an edit is `would update`), whole-tree snapshots, and Spark's exact commands:
+# `polyglot build --check --only typescript` in CI and `polyglot build --only typescript` as the refresh.
+# The refresh must leave the next `dotnet build` working. A BARE `polyglot build` in this layout also emits
+# C# next to every .pg (no include rule routes it), which the SDK's default **/*.cs glob compiles alongside
+# obj/'s copy -> CS0111; README "MSBuild" documents why the refresh command is `--only typescript`.
+$sparkLayoutFixture = {
+    param($work, $pkgVer, $cli)
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $r = [System.Collections.Generic.List[object]]::new()
+    function ck([bool]$c, [string]$n) { $r.Add([pscustomobject]@{ Name = $n; Passed = [bool]$c }) }
+    function Snap([string]$dir) {
+        (Get-ChildItem -LiteralPath $dir -Recurse -File -Force | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } |
+            Sort-Object FullName | ForEach-Object { "$($_.FullName)=$((Get-FileHash $_.FullName).Hash)" }) -join "`n"
+    }
+    function Pgc([string]$dir, [string[]]$a) {
+        Push-Location $dir
+        try { $o = (& $cli @a 2>&1 | Out-String); $rc = $LASTEXITCODE } finally { Pop-Location }
+        [pscustomobject]@{ Rc = $rc; Out = $o }
+    }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { ck $false "spark-layout: git is required for the real-clone flow"; return $r }
+
+    $origin = Join-Path $work "SparkOrigin"
+    $lib = Join-Path $origin "libs/Gs1"
+    dotnet new classlib -o $lib --framework net8.0 | Out-Null
+    Remove-Item (Join-Path $lib "Class1.cs") -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $origin "nuget.config")
+    "fn checkDigit(n: i32): i32 {`n  return n % 10`n}`n" | Set-Content (Join-Path $lib "digits.pg")
+    "import { checkDigit } from `"./digits`"`nfn valid(n: i32): bool {`n  return checkDigit(n) == 7`n}`n" | Set-Content (Join-Path $lib "gtin.pg")
+    "fn legacy(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $lib "legacy.pg")
+    '{ "targets": ["csharp", "typescript"], "include": [ { "pattern": "*.pg", "target": "typescript", "output": "../../web/src/gen/%(Filename)", "owned": true } ] }' |
+        Set-Content (Join-Path $lib "pgconfig.json")
+    dotnet add $lib package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    $b = dotnet build $lib --nologo -v q 2>&1 | Out-String
+    $gen = Join-Path $origin "web/src/gen"
+    ck ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $gen "gtin.ts")) -and (Test-Path (Join-Path $lib "obj/Debug/net8.0/polyglot/gtin.cs")) -and
+        -not (Test-Path (Join-Path $lib "gtin.cs"))) "spark-layout: dotnet build puts the C# in obj/ only and the TS twin in the owned web folder"
+    "bin/`nobj/`n" | Set-Content (Join-Path $origin ".gitignore")
+    "* -text" | Set-Content (Join-Path $origin ".gitattributes")   # no EOL conversion on checkout (Spark pins eol=lf for its twin)
+    & git -C $origin init -q 2>&1 | Out-Null
+    & git -C $origin -c user.name=gate -c user.email=gate@example.invalid add -A 2>&1 | Out-Null
+    & git -C $origin -c user.name=gate -c user.email=gate@example.invalid commit -q -m "lib + twin" 2>&1 | Out-Null
+
+    $clone = Join-Path $work "SparkClone"
+    & git clone -q $origin $clone 2>&1 | Out-Null
+    $clib = Join-Path $clone "libs/Gs1"
+    $cgen = Join-Path $clone "web/src/gen"
+    ck ((Test-Path (Join-Path $cgen "gtin.ts")) -and -not (Test-Path (Join-Path $clib "obj")) -and -not (Test-Path (Join-Path $clib ".polyglot"))) `
+        "spark-layout: a real git clone has the committed twin, no obj/ and no record"
+    $before = Snap $clone
+    $c = Pgc $clib @("build", "--check", "--only", "typescript")
+    ck ($c.Rc -eq 0 -and (Snap $clone) -eq $before) "spark-layout: CI's check on the clean clone exits 0 and writes nothing (no .polyglot/)"
+
+    # A rename, a deletion and an edit the importer reaches; then CI's check, Spark's refresh, dotnet build.
+    & git -C $clone mv libs/Gs1/legacy.pg libs/Gs1/legacy2.pg 2>&1 | Out-Null
+    "fn checkDigit(n: i32): i32 {`n  return (n + 3) % 10`n}`n" | Set-Content (Join-Path $clib "digits.pg")
+    $before = Snap $clone
+    $c = Pgc $clib @("build", "--check", "--only", "typescript")
+    ck ($c.Rc -eq 3 -and $c.Out -match 'would create .*legacy2\.ts' -and $c.Out -match 'would delete .*legacy\.ts' -and
+        $c.Out -match 'would update .*digits\.ts' -and $c.Out -notmatch '\.cs\b') `
+        "spark-layout: --check --only typescript: would create + would delete + would update, never a .cs (exit 3)"
+    ck ((Snap $clone) -eq $before -and -not (Test-Path (Join-Path $clib ".polyglot"))) "spark-layout: ... and the whole clone is byte-identical afterwards"
+    $c = Pgc $clib @("build", "--only", "typescript")
+    ck ($c.Rc -eq 0 -and -not (Test-Path (Join-Path $cgen "legacy.ts")) -and (Test-Path (Join-Path $cgen "legacy2.ts")) -and
+        @(Get-ChildItem $clib -Filter *.cs).Count -eq 0) "spark-layout: the refresh (build --only typescript) fixes the twin and writes no C# next to the .pg"
+    ck ((Pgc $clib @("build", "--check", "--only", "typescript")).Rc -eq 0) "spark-layout: the full twin check is clean after the refresh"
+    $b = dotnet build $clib --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0 -and $b -notmatch 'CS0111|CS0101') "spark-layout: dotnet build after the refresh succeeds (no duplicate C#)"
+    $r
+}
+
+# 12. P40 review (B9): `access: "internal"` (the C# default) across assemblies. Two class libraries, each with
+# INTERNAL generated code in its own namespace, both granting InternalsVisibleTo to one consumer, which uses both.
+$internalLibsFixture = {
+    param($work, $pkgVer)
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $r = [System.Collections.Generic.List[object]]::new()
+    function ck([bool]$c, [string]$n) { $r.Add([pscustomobject]@{ Name = $n; Passed = [bool]$c }) }
+
+    $root = Join-Path $work "InternalLibs"
+    $libA = Join-Path $root "IntA"; $libB = Join-Path $root "IntB"; $app = Join-Path $root "IntApp"
+    dotnet new classlib -o $libA --framework net8.0 | Out-Null
+    dotnet new classlib -o $libB --framework net8.0 | Out-Null
+    dotnet new console -o $app --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $root "nuget.config")
+    Remove-Item (Join-Path $libA "Class1.cs"), (Join-Path $libB "Class1.cs") -ErrorAction SilentlyContinue
+    "fn find(): Option<i32> => Some(20)`nfn name(): string => `"A`"`n" | Set-Content (Join-Path $libA "a.pg")
+    "fn find(): Option<i32> => Some(22)`nfn name(): string => `"B`"`n" | Set-Content (Join-Path $libB "b.pg")
+    '{ "targets": ["csharp"], "targetOptions": { "csharp": { "namespace": "IntA", "access": "internal" } } }' | Set-Content (Join-Path $libA "pgconfig.json")
+    '{ "targets": ["csharp"], "targetOptions": { "csharp": { "namespace": "IntB" } } }' | Set-Content (Join-Path $libB "pgconfig.json")
+    foreach ($l in @($libA, $libB)) {
+        $proj = Join-Path $l "$(Split-Path $l -Leaf).csproj"
+        (Get-Content $proj -Raw).Replace("</Project>", "  <ItemGroup><InternalsVisibleTo Include=`"IntApp`" /></ItemGroup>`n</Project>") | Set-Content $proj
+        dotnet add $l package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    }
+    dotnet add $app reference (Join-Path $libA "IntA.csproj") (Join-Path $libB "IntB.csproj") | Out-Null
+@"
+var a = IntA.PolyglotProgram.find();
+var b = IntB.PolyglotProgram.find();
+int va = a is IntA.Some<int> sa ? sa.value : 0;
+int vb = b is IntB.Some<int> sb ? sb.value : 0;
+System.Console.WriteLine(IntA.PolyglotProgram.name() + IntB.PolyglotProgram.name() + (va + vb));
+"@ | Set-Content (Join-Path $app "Program.cs")
+    $build = dotnet build $app --nologo -v q 2>&1 | Out-String
+    $genA = Get-Content -Raw (Join-Path $libA "obj/Debug/net8.0/polyglot/a.cs") -ErrorAction SilentlyContinue
+    $genB = Get-Content -Raw (Join-Path $libB "obj/Debug/net8.0/polyglot/b.cs") -ErrorAction SilentlyContinue
+    ck ("$genA$genB" -notmatch '\bpublic\s+(static\s+)?(partial\s+)?(class|record|interface|abstract)' -and "$genA" -match 'static class PolyglotProgram') `
+        "internal libraries: the generated C# carries no `public` type (access internal, explicit and default)"
+    ck ($LASTEXITCODE -eq 0 -and $build -notmatch 'CS0433|CS0122') "internal libraries: an InternalsVisibleTo consumer links both (no CS0433/CS0122)"
+    $run = dotnet run --project $app --no-build 2>&1
+    ck ("$run".Trim() -eq "AB42") "internal libraries: the consumer uses both libraries' internal functions and prelude types (prints AB42)"
+    $r
+}
+
+# 13. P40 review (#75 pre-push, 2a/2b + missing tests): upgrading a 0.10.x consumer through the REAL package.
+#  * obj/…/polyglot/ holds 0.10.x leftovers: a headerless a.cs (overwritten via build-owned) and a headerless
+#    STALE old.cs whose .pg is gone — nothing may delete it, and it must no longer compile (outputs list).
+#  * a headerless 0.10.x TS twin routed outside obj/ blocks the build (exit 1, naming PolyglotAdopt), and
+#    `-p:PolyglotAdopt=true` takes it over once.
+#  * a no-change rebuild leaves the DLL untouched (CoreCompile skipped), and the build output is UTF-8.
+$upgradeFixture = {
+    param($work, $pkgVer)
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $r = [System.Collections.Generic.List[object]]::new()
+    function ck([bool]$c, [string]$n) { $r.Add([pscustomobject]@{ Name = $n; Passed = [bool]$c }) }
+
+    $p = Join-Path $work "Upgrade"
+    dotnet new console -o $p --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $p "nuget.config")
+    "fn alpha(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $p "a.pg")
+    '{ "targets": ["csharp", "typescript"], "include": [ { "pattern": "*.pg", "target": "typescript", "output": "../upgrade-web/gen/%(Filename)" } ] }' |
+        Set-Content (Join-Path $p "pgconfig.json")
+    $flags = "System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic"
+    "System.Console.WriteLine(`$`"{PolyglotProgram.alpha()} {typeof(PolyglotProgram).GetMethod(`"legacy`", $flags) != null}`");" | Set-Content (Join-Path $p "Program.cs")
+    dotnet add $p package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    $obj = Join-Path $p "obj/Debug/net8.0/polyglot"
+    New-Item -ItemType Directory -Force $obj, (Join-Path $work "upgrade-web/gen") | Out-Null
+    # 0.10.x output: no header, partial wrapper like a multi-file emit; old.cs is the stale one (its .pg is gone).
+    "public static partial class PolyglotProgram { public static int alpha() { return 1; } }" | Set-Content (Join-Path $obj "a.cs")
+    "public static partial class PolyglotProgram { public static int legacy() { return 9; } }" | Set-Content (Join-Path $obj "old.cs")
+    "export function alpha(): number { return 1; }" | Set-Content (Join-Path $work "upgrade-web/gen/a.ts")
+
+    $b = dotnet build $p --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -ne 0 -and $b -match 'PolyglotAdopt=true' -and (Get-Content -Raw (Join-Path $work "upgrade-web/gen/a.ts")) -notmatch 'Generated by Polyglot') `
+        "upgrade: a headerless 0.10.x twin outside obj/ blocks the build, untouched, and the error names -p:PolyglotAdopt=true"
+    $b = dotnet build $p --nologo -v q -p:PolyglotAdopt=true 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0 -and (Get-Content -Raw (Join-Path $work "upgrade-web/gen/a.ts")) -match 'Generated by Polyglot' -and
+        (Get-Content -Raw (Join-Path $obj "a.cs")) -match 'Generated by Polyglot') `
+        "upgrade: PolyglotAdopt=true takes the twin over once; the headerless obj/ a.cs is overwritten (build-owned)"
+    $run = "$(dotnet run --project $p --no-build 2>&1)".Trim()
+    ck ((Test-Path (Join-Path $obj "old.cs")) -and $run -eq "1 False") `
+        "upgrade: the stale headerless obj/ old.cs is kept (never deletable) but no longer compiled — legacy() is gone ('$run')"
+    $b = dotnet build $p --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0) "upgrade: the next plain build (no PolyglotAdopt) is fine — the twin now carries the header"
+
+    $dll = Join-Path $p "bin/Debug/net8.0/Upgrade.dll"
+    $t0 = (Get-Item $dll).LastWriteTimeUtc
+    Start-Sleep -Milliseconds 300
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    ck ((Get-Item $dll).LastWriteTimeUtc -eq $t0) "no-change rebuild: the DLL is not rewritten (CoreCompile skipped)"
+
+    "fn café(): i32 {`n  return`n}`n" | Set-Content -Encoding utf8 (Join-Path $p "été.pg")
+    $b = dotnet build $p --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -ne 0 -and $b -match 'été\.pg') "build output is UTF-8: a diagnostic naming 'été.pg' arrives unmangled"
+    Remove-Item (Join-Path $p "été.pg")
+    $r
+}
+
 $packResults = [System.Collections.Generic.List[object]]::new()
 $appResults  = [System.Collections.Generic.List[object]]::new()
 # 9. P40 B1 (issue #73): two class libraries, each with one .pg and public output, referenced by one app.
@@ -383,6 +561,9 @@ if (Test-Path $cached) { Remove-Item -Recurse -Force $cached }
 # can never desync this gate from what actually packs.
 $pkgVer = ([xml](Get-Content (Join-Path $repo "src/MintPlayer.Polyglot.MSBuild/MintPlayer.Polyglot.MSBuild.csproj"))).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 dotnet pack (Join-Path $repo "src/MintPlayer.Polyglot.MSBuild") -c Release -o $feed --nologo -v q | Out-Null
+# The CLI the package ships (the local pack takes x64\Debug's — PolyglotCliDir), for the fixtures that also run
+# the CLI by hand the way a consumer's CI does (fixture 11).
+$cliPath = (Resolve-Path (Join-Path $repo "x64/Debug/MintPlayer.Polyglot.Cli.exe")).Path
 fck $packResults (Test-Path (Join-Path $feed "MintPlayer.Polyglot.MSBuild.$pkgVer.nupkg")) "package packs from the working tree ($pkgVer)"
 
 # Consumer solution: App (uses the package + a .pg) and Downstream (references App, has its own .pg,
@@ -436,8 +617,8 @@ fck $appResults ("$run".Trim() -eq "7") "the .pg record + fn are usable from C# 
 # the rest of the strictly-serial App/Downstream chain below. Recreate each block via
 # [scriptblock]::Create so it is unaffiliated with this runspace; all args are absolute paths.
 if (-not $Sequential) {
-    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture, $twoLibsFixture, $staleFixture) | ForEach-Object {
-        Start-ThreadJob -ScriptBlock ([scriptblock]::Create($_.ToString())) -ArgumentList $work, $pkgVer
+    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture, $twoLibsFixture, $staleFixture, $sparkLayoutFixture, $internalLibsFixture, $upgradeFixture) | ForEach-Object {
+        Start-ThreadJob -ScriptBlock ([scriptblock]::Create($_.ToString())) -ArgumentList $work, $pkgVer, $cliPath
     }
 }
 
@@ -505,6 +686,9 @@ if ($Sequential) {
     $noCfgRes  = @(& $noCfgFixture  $work $pkgVer)
     $twoLibsRes = @(& $twoLibsFixture $work $pkgVer)
     $staleRes  = @(& $staleFixture  $work $pkgVer)
+    $sparkRes  = @(& $sparkLayoutFixture $work $pkgVer $cliPath)
+    $internalRes = @(& $internalLibsFixture $work $pkgVer)
+    $upgradeRes = @(& $upgradeFixture $work $pkgVer)
 } else {
     $sharedRes = @(Receive-Job -Job $jobs[0] -Wait -AutoRemoveJob)
     $multiRes  = @(Receive-Job -Job $jobs[1] -Wait -AutoRemoveJob)
@@ -512,11 +696,14 @@ if ($Sequential) {
     $noCfgRes  = @(Receive-Job -Job $jobs[3] -Wait -AutoRemoveJob)
     $twoLibsRes = @(Receive-Job -Job $jobs[4] -Wait -AutoRemoveJob)
     $staleRes  = @(Receive-Job -Job $jobs[5] -Wait -AutoRemoveJob)
+    $sparkRes  = @(Receive-Job -Job $jobs[6] -Wait -AutoRemoveJob)
+    $internalRes = @(Receive-Job -Job $jobs[7] -Wait -AutoRemoveJob)
+    $upgradeRes = @(Receive-Job -Job $jobs[8] -Wait -AutoRemoveJob)
 }
 
 # ---- Deterministic output: fixed fixture order (identical to the serial run), never interleaved. ----
 $failures = 0
-foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes, $twoLibsRes, $staleRes)) {
+foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes, $twoLibsRes, $staleRes, $sparkRes, $internalRes, $upgradeRes)) {
     foreach ($res in $section) {
         if ($res.Passed) { Write-Host "[PASS] $($res.Name)" }
         else { Write-Host "[FAIL] $($res.Name)" -ForegroundColor Red; $failures++ }

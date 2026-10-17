@@ -9,7 +9,10 @@
 //
 // Contract:
 //   PG_CULTURE unset/empty      -> no-op.
-//   culture applied + probe ok  -> silent (stdout stays byte-identical to the program's own output).
+//   culture applied + probe ok  -> one "PgCultureHook: ok <culture>" line on STDERR (stdout stays byte-identical
+//                                  to the program's own output). The runner REQUIRES that line: it is the positive
+//                                  control, so a hook that never loads (a mistyped path, an ignored
+//                                  DOTNET_STARTUP_HOOKS) cannot pass vacuously with invariant output (P40 review B9).
 //   anything else               -> one "PgCultureHook: ..." line on stderr, exit code 97.
 //
 // PG_CULTURE=pg-hostile is the SYNTHETIC culture (the -Tier fast leg): a writable clone of en-US whose
@@ -50,7 +53,9 @@ internal static class StartupHook
         CultureInfo.CurrentUICulture = ci;
 
         string? why = Probe(name);
-        if (why != null) Fail($"culture '{name}' did not take effect: {why}");
+        if (why != null) { Fail($"culture '{name}' did not take effect: {why}"); return; }
+        Console.Error.WriteLine("PgCultureHook: ok " + name); // the positive control (see the contract above)
+        Console.Error.Flush();
     }
 
     static CultureInfo MakeSynthetic()

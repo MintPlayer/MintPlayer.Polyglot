@@ -115,6 +115,10 @@ Write-Host "`n==> Nullable / NRT gate (annotations preserved + clean under <Null
 & pwsh -NoProfile -File (Join-Path $repo "tests\nullable\run-nullable.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nNULLABLE GATE FAILED."; exit 1 }
 
+Write-Host "`n==> D8 floor gate (the whole corpus' C# at C# 11 + net8.0 + Nullable + TreatWarningsAsErrors)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\floor\run-floor.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nD8 FLOOR GATE FAILED."; exit 1 }
+
 Write-Host "`n==> Number-text corpus (shipped C#/Python/PHP helpers vs ECMAScript String(x), ~247k doubles)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\numfmt\run-numfmt.ps1")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nNUMBER-TEXT CORPUS FAILED."; exit 1 }

@@ -176,9 +176,12 @@ never is — a `.map` goes only with its owner, and a build with any failed grou
 Polyglot's header line nor an entry in the outputs record, the build refuses (exit 1, file untouched)
 and `--check` reports it as an error rather than `would update`. **Upgrading from 0.10.x:** its outputs
 carried no header and it kept no record, so run `polyglot build --adopt` once — it takes over unmarked
-files at this build's output paths (they then carry the header and are recorded). The MSBuild package
-needs nothing: it passes `--build-owned` for its `obj/…/polyglot/` folder, which belongs to the build
-outright. Neither option ever widens what may be *deleted*.
+files at this build's output paths (they then carry the header and are recorded). Under the MSBuild
+package, the `obj/…/polyglot/` folder belongs to the build outright (it passes `--build-owned`), and it
+compiles only the `.cs` files the transpile reported, so a headerless stale `.cs` that 0.10.x left there is
+ignored. A 0.10.x twin routed **outside** `obj/` (a TypeScript twin in a web app) still needs taking over
+once: `dotnet build -p:PolyglotAdopt=true` (the `PolyglotAdopt` property passes `--adopt`; don't leave it
+set). Neither option ever widens what may be *deleted*.
 
 **Build systems.** `--depfile <file>` writes every input the outputs depend on (each `.pg`, every
 `pgconfig.json` and lockfile consulted, `file:` plugins), one path per line, so MSBuild, Nx or make can
@@ -300,6 +303,29 @@ deleting a `.pg`, or editing `pgconfig.json` or the lockfile, re-runs the transp
 is removed, so a deleted function no longer links. The recipe for Nx and other cached monorepos, where a
 TS twin is committed into an Angular project: set `PolyglotTargets=csharp` in the library's `.csproj`,
 and run `polyglot build --check --only typescript` in CI to catch a stale or missing twin.
+
+**Refresh the twin with `polyglot build --only typescript`, never a bare `polyglot build`.** In this layout
+the pgconfig declares `"targets": ["csharp", "typescript"]` but only the TypeScript twin has an `include`
+rule: under MSBuild the C# goes to `obj/` (the package passes the output folder), while a bare CLI build has
+no rule for it and writes each `.cs` **next to its `.pg`**. The SDK's default `**/*.cs` glob then compiles
+those copies *and* the `obj/` ones, and the next `dotnet build` fails with CS0111 (CS0101/CS8863 with a
+record). If that happened, delete the stray `.cs` files beside the `.pg` sources. CI's check and the refresh
+are the same pair of commands, run from the pgconfig's folder:
+
+```
+polyglot build --check --only typescript    # CI: exit 3 when the committed twin is stale, missing or orphaned
+polyglot build --only typescript            # refresh the twin (writes no C#)
+```
+
+The emitted C# needs **C# 11 and a .NET 8 BCL** (`std.collections` `Map<K, V>` needs .NET 9; it is
+`OrderedDictionary<K, V>`); the `tests/floor` gate compiles the whole conformance corpus at that floor with
+`Nullable` and `TreatWarningsAsErrors`.
+
+`csharp.class` renames only the top-level wrapper. Extension-method helpers — `std` receiver rewrites and the
+internal `_pg_*` guards — live in a separate static class, `PolyglotExtensions`, in the same namespace, with
+the same `csharp.access`. The `_pg_*` guards are `internal`, so an assembly you grant `InternalsVisibleTo`
+sees them as `string` extension methods once it imports that namespace. Give each library its own
+`csharp.namespace` and those helpers never meet.
 
 ## Testing & code coverage
 

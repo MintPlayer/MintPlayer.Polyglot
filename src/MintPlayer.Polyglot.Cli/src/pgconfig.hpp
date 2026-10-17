@@ -12,6 +12,8 @@
 //  * loadPluginFile — one manifest file into the Core registry, reporting (not throwing) failures.
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -19,6 +21,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -53,13 +56,33 @@ inline bool readFile(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
+// Atomic replace (P40 review of #75): write a uniquely named temp file next to `path`, then rename it over
+// `path`. Truncate-then-write let a concurrent reader (parallel TFM builds sharing a routed twin) see a half
+// written file and refuse it as not Polyglot's. Readers now see the old bytes or the new ones, never a mix.
+// If the rename cannot replace the target (e.g. a reader holds it open without delete sharing on Windows),
+// falls back to writing in place rather than failing the build.
 inline bool writeFile(const std::filesystem::path& path, const std::string& content) {
+    namespace fs = std::filesystem;
     std::error_code ec;
-    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec); // `--out newdir` just works
-    std::ofstream os(path, std::ios::binary);
-    if (!os) return false;
-    os << content;
-    return true;
+    if (path.has_parent_path()) fs::create_directories(path.parent_path(), ec); // `--out newdir` just works
+    static std::atomic<unsigned> counter{0};
+    const auto stamp = static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count());
+    fs::path tmp = path;
+    tmp += ".pgtmp." + std::to_string(std::random_device{}()) + "." + std::to_string(stamp % 1000000) + "." +
+           std::to_string(counter++);
+    auto writeTo = [&](const fs::path& p) {
+        std::ofstream os(p, std::ios::binary);
+        if (!os) return false;
+        os << content;
+        os.close();
+        return !os.fail();
+    };
+    if (writeTo(tmp)) {
+        fs::rename(tmp, path, ec);
+        if (!ec) return true;
+    }
+    fs::remove(tmp, ec);
+    return writeTo(path);
 }
 
 // One pgconfig `include` file-mapping rule (PRD issue-30 D7): route the files `pattern` matches
@@ -193,7 +216,77 @@ inline bool ownedScope(const std::filesystem::path& configDir, const std::string
         err = "resolves to the config folder or one of its ancestors ('" + dir.string() + "')";
         return false;
     }
+    // P40 review (#75, pre-push): the lexical test above is case-sensitive and blind to aliases, so on a
+    // case-insensitive filesystem `../PROJ/%(Filename)` from `t\Proj` (or `../../T/…`, an 8.3 short name, a
+    // junction) named the config folder or an ancestor and passed. The config folder and its ancestors always
+    // exist, so ask the filesystem: the scope must not BE any of them (fs::equivalent: same file identity).
+    std::error_code ec;
+    if (fs::exists(dir, ec)) {
+        for (fs::path a = base;; a = a.parent_path()) {
+            if (fs::equivalent(dir, a, ec) && !ec) {
+                err = "resolves to the config folder or one of its ancestors ('" + dir.string() + "' is '" + a.string() + "')";
+                return false;
+            }
+            if (!a.has_relative_path() || a.parent_path() == a) break;
+        }
+    }
     return true;
+}
+
+// P40 review (A5): the SHAPE of a pgconfig.json, checked before anything reads it. Every reader below is
+// lenient by design (a wrong-kind value reads as empty), so without this a typo'd key (`"target"`), a string
+// where a list belongs (`"targets": "csharp"`) or a non-object document was silently ignored — and a build
+// with the config ignored exited 0. Each problem is one error naming the key; the caller refuses with 64.
+inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>& errors) {
+    using K = json::Value::Kind;
+    if (v.kind != K::Object) {
+        errors.push_back("pgconfig.json: the document must be a JSON object");
+        return;
+    }
+    auto stringList = [&](const json::Value& x, const std::string& where) {
+        if (x.kind != K::Array) { errors.push_back("pgconfig.json: " + where + " must be an array of strings"); return; }
+        for (const auto& e : x.items())
+            if (e.kind != K::String || e.asString().empty()) {
+                errors.push_back("pgconfig.json: " + where + " must be an array of non-empty strings");
+                return;
+            }
+    };
+    static const char* const kKeys[] = {"$schema", "root", "lib", "targets", "targetOptions", "originInfo",
+                                        "dependencies", "forbiddenIdentifiers", "include", "access"};
+    for (const auto& [key, val] : v.members) {
+        if (std::find_if(std::begin(kKeys), std::end(kKeys), [&](const char* k) { return key == k; }) == std::end(kKeys)) {
+            errors.push_back("pgconfig.json: unknown key \"" + key + "\" (known keys: root, lib, targets, targetOptions, "
+                             "originInfo, dependencies, forbiddenIdentifiers, include)");
+            continue;
+        }
+        if (key == "root" && val.kind != K::String) errors.push_back("pgconfig.json: \"root\" must be a string");
+        else if (key == "lib" || key == "targets") stringList(val, "\"" + key + "\"");
+        else if (key == "originInfo" && val.kind != K::Bool) errors.push_back("pgconfig.json: \"originInfo\" must be true or false");
+        else if (key == "dependencies") {
+            if (val.kind != K::Object) errors.push_back("pgconfig.json: \"dependencies\" must be an object of package -> version spec");
+            else for (const auto& [pkg, spec] : val.members)
+                if (spec.kind != K::String) errors.push_back("pgconfig.json: dependencies." + pkg + " must be a string version spec");
+        } else if (key == "forbiddenIdentifiers") {
+            if (val.kind == K::Array) stringList(val, "\"forbiddenIdentifiers\"");
+            else if (val.kind == K::Object) { for (const auto& [t, names] : val.members) stringList(names, "forbiddenIdentifiers." + t); }
+            else errors.push_back("pgconfig.json: \"forbiddenIdentifiers\" must be an array of names or an object of target -> names");
+        } else if (key == "include") {
+            if (val.kind != K::Array) { errors.push_back("pgconfig.json: \"include\" must be an array of rules"); continue; }
+            for (const auto& rule : val.items()) {
+                if (rule.kind != K::Object) { errors.push_back("pgconfig.json: every \"include\" rule must be an object"); continue; }
+                for (const auto& [rk, rv] : rule.members) {
+                    if (rk == "pattern" || rk == "output") {
+                        if (rv.kind != K::String) errors.push_back("pgconfig.json: an include rule's \"" + rk + "\" must be a string");
+                    } else if (rk == "target") {
+                        if (rv.kind != K::String) stringList(rv, "an include rule's \"target\" (a name or a list of names)");
+                    } else if (rk != "targetOptions" && rk != "owned") { // both checked where they are read
+                        errors.push_back("pgconfig.json: an include rule has an unknown key \"" + rk +
+                                         "\" (known keys: pattern, output, target, targetOptions, owned)");
+                    }
+                }
+            }
+        }
+    }
 }
 
 inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
@@ -205,7 +298,8 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
             PgConfig pc;
             pc.found = true;
             pc.dir = d;
-            if (!jsonErr.empty()) pc.errors.push_back((d / "pgconfig.json").string() + ": " + jsonErr);
+            if (!jsonErr.empty()) pc.errors.push_back((d / "pgconfig.json").string() + ": malformed JSON: " + jsonErr);
+            else validatePgConfigShape(v, pc.errors); // P40 review (A5): a well-formed but invalid config refuses too
             std::string r = v["root"].asString();
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }

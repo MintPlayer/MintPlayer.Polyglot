@@ -2,6 +2,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -1042,6 +1043,28 @@ int main() {
         jerr.clear();
         json::parse("{\"a\":\"\\u00G1\"}", jerr);
         check(has(jerr, "hex digits"), "P40 s3: a malformed JSON \\u escape is an error");
+
+        // P40 review (A5): STRUCTURAL malformations are errors too — `{` used to parse as an empty object with no
+        // error, so a truncated pgconfig.json was silently ignored and the build exited 0.
+        bool allRefused = true;
+        for (const char* bad : {"{", "", "   ", "{\"a\":1", "{\"a\" 1}", "{\"a\":1,}", "[1,]", "[1 2]", "{\"a\":tru}",
+                                "{\"a\":01}", "{\"a\":1.}", "{\"a\":+1}", "{\"a\":\"x}", "{} x", "{\"a\":1}}", "{a:1}"}) {
+            jerr.clear();
+            json::parse(bad, jerr);
+            if (jerr.empty()) { allRefused = false; std::cerr << "    not refused: '" << bad << "'\n"; }
+        }
+        check(allRefused, "P40 review A5: structurally malformed JSON reports an error (truncation, separators, literals, numbers, trailing content)");
+        bool allAccepted = true;
+        for (const char* good : {"{}", "[]", " {\"a\": [1, -2.5e+3, 0, true, false, null, \"s\"], \"b\": {}} \n",
+                                 "\xEF\xBB\xBF{\"targets\": [\"csharp\"]}", "0", "\"x\""}) {
+            jerr.clear();
+            json::parse(good, jerr);
+            if (!jerr.empty()) { allAccepted = false; std::cerr << "    refused: '" << good << "': " << jerr << "\n"; }
+        }
+        check(allAccepted, "P40 review A5: well-formed JSON (incl. a UTF-8 BOM) reports no error");
+        jerr.clear();
+        check(json::parse("\xEF\xBB\xBF{\"targets\": [\"csharp\"]}", jerr)["targets"].items().size() == 1,
+              "P40 review A5: a BOM-prefixed document parses to its value (it used to read as a number 0)");
     }
 
     // P40 slice 4 (A2) — Rust-style range precedence, evaluate-once bounds, the super refusal, the parser
@@ -1493,18 +1516,48 @@ int main() {
             check(cs.ok && !has(cs.code, "StartsWith(\"a\")") && !has(cs.code, "EndsWith(\"b\")") &&
                       !has(cs.code, "CurrentCulture") && !has(cs.code, "IndexOf(needle, from)"),
                   "P40 s8: no culture-sensitive C# string overload is emitted");
-            {   // the pin over the whole manifest: every C# std.strings search/compare call names Ordinal
+            {   // the pin over the WHOLE manifest: every C# std.strings search/compare call names Ordinal.
+                // P40 review (B9): this used to slice the text from `"std.strings": {` to the FIRST `}` — the end
+                // of the first nested object — so the templates after it were never checked (vacuous). Now the
+                // manifest is parsed and EVERY string value under every "std.strings" object is walked; each call
+                // is checked up to its own matching ')'; and the pin must see the calls it exists for.
                 std::string m;
                 cli::readFile(cli::executablePath().parent_path() / "plugins" / "csharp" / "polyglot-plugin.json", m);
-                const std::size_t a = m.find("\"std.strings\": {"), b = m.find("}", a);
-                const std::string sec = a == std::string::npos ? std::string() : m.substr(a, b - a);
-                bool allOrdinal = !sec.empty();
-                for (const char* call : {".IndexOf(", ".StartsWith(", ".EndsWith(", ".LastIndexOf("})
-                    for (std::size_t at = sec.find(call); at != std::string::npos; at = sec.find(call, at + 1)) {
-                        const std::size_t eol = sec.find('\n', at);
-                        if (sec.substr(at, eol - at).find("StringComparison.Ordinal") == std::string::npos) allOrdinal = false;
+                std::string jerr;
+                const json::Value doc = json::parse(m, jerr);
+                std::vector<const json::Value*> sections;
+                std::function<void(const json::Value&)> findSections = [&](const json::Value& v) {
+                    for (const auto& [k, sub] : v.members) {
+                        if (k == "std.strings" && sub.kind == json::Value::Kind::Object) sections.push_back(&sub);
+                        findSections(sub);
                     }
-                check(allOrdinal, "P40 s8: every C# std.strings IndexOf/StartsWith/EndsWith template passes StringComparison.Ordinal");
+                    for (const auto& e : v.items()) findSections(e);
+                };
+                findSections(doc);
+                int calls = 0;
+                bool allOrdinal = jerr.empty() && !sections.empty();
+                std::function<void(const json::Value&)> walk = [&](const json::Value& v) {
+                    if (v.kind == json::Value::Kind::String) {
+                        const std::string& s = v.asString();
+                        for (const char* call : {".IndexOf(", ".StartsWith(", ".EndsWith(", ".LastIndexOf("})
+                            for (std::size_t at = s.find(call); at != std::string::npos; at = s.find(call, at + 1)) {
+                                ++calls;
+                                std::size_t k = s.find('(', at), depth = 0, end = std::string::npos;
+                                for (; k < s.size(); ++k) {
+                                    if (s[k] == '(') ++depth;
+                                    else if (s[k] == ')' && --depth == 0) { end = k; break; }
+                                }
+                                const std::string args = s.substr(at, end == std::string::npos ? std::string::npos : end - at);
+                                if (args.find("StringComparison.Ordinal") == std::string::npos) allOrdinal = false;
+                            }
+                    }
+                    for (const auto& [k, sub] : v.members) walk(sub);
+                    for (const auto& e : v.items()) walk(e);
+                };
+                for (const json::Value* sec : sections) walk(*sec);
+                check(allOrdinal && calls >= 3,
+                      "P40 s8: every C# std.strings IndexOf/StartsWith/EndsWith template passes StringComparison.Ordinal "
+                      "(whole manifest, " + std::to_string(calls) + " call(s) checked)");
             }
             // Guards are written once in .pg: one message on every target; emitted as `_pg_<name>`.
             const std::string at = "import \"std.strings\"\nfn f(s: string): string => s.charAt(1) + s.substring(0, 1)\n";
@@ -5343,6 +5396,114 @@ int main() {
             cli::writeFile(file, "{\"version\": 2, \"sections\": {}}");
             check(cli::loadOutputsRecord(file, back) == cli::RecordLoad::Newer, "P40 D17: a newer record is detected");
             check(cli::loadOutputsRecord(tmp / "none.json", back) == cli::RecordLoad::Missing, "P40 D17: a missing record is detected");
+
+            // P40 review (A4): a record is validated as a WHOLE. A bad section after a good one used to leave the
+            // good one loaded (Corrupt + partial trust: it drove deletions, order-dependently). Every malformed
+            // part, wherever it sits, now yields Corrupt with NOTHING loaded.
+            const std::string good = "\"..|typescript\": {\"inputs\": [\"../a.pg\"], \"outputs\": [{\"path\": \"../gen/b.ts\"}]}";
+            bool allEmpty = true;
+            for (const std::string& bad : {std::string("\"zz|x\": {\"inputs\": [], \"outputs\": [{\"path\": 5}]}"),
+                                           std::string("\"zz|x\": {\"inputs\": [5], \"outputs\": []}"),
+                                           std::string("\"zz|x\": {\"inputs\": [], \"outputs\": [{\"path\": \"a\", \"map\": 1}]}"),
+                                           std::string("\"zz|x\": {\"inputs\": [], \"outputs\": {}}"),
+                                           std::string("\"zz|x\": {\"outputs\": []}"),
+                                           std::string("\"zz|x\": {\"inputs\": [], \"outputs\": [{\"path\": \"\"}]}"),
+                                           std::string("\"nobar\": {\"inputs\": [], \"outputs\": []}"),
+                                           std::string("\"zz|x\": 3")}) {
+                for (int order = 0; order < 2; ++order) {
+                    const std::string secs = order == 0 ? good + ", " + bad : bad + ", " + good;
+                    cli::writeFile(file, "{\"version\": 1, \"sections\": {" + secs + "}}");
+                    back = {};
+                    const cli::RecordLoad rl = cli::loadOutputsRecord(file, back);
+                    if (rl != cli::RecordLoad::Corrupt || !back.sections.empty()) {
+                        allEmpty = false;
+                        std::cerr << "    partial trust: {" << secs << "}\n";
+                    }
+                }
+            }
+            cli::writeFile(file, "{\"version\": 1, \"sections\": {" + good + "}} trailing");
+            const bool trailing = cli::loadOutputsRecord(file, back) == cli::RecordLoad::Corrupt && back.sections.empty();
+            check(allEmpty && trailing, "P40 review A4: any invalid part of a record (either order) -> Corrupt with nothing loaded");
+        }
+        {   // P40 review (A3): a case-only rename really renames on a case-insensitive filesystem.
+            const fs::path dir = tmp / "case";
+            fs::create_directories(dir, ec);
+            const std::string hdr = "// <auto-generated/>\n// Generated by Polyglot. Do not edit.\n";
+            cli::writeFile(dir / "Foo.ts", hdr + "export const x = 1;\n");
+            const bool caseInsensitive = fs::exists(dir / "FOO.TS", ec);
+            auto names = [&] {
+                std::vector<std::string> v;
+                for (const auto& e : fs::directory_iterator(dir, ec)) v.push_back(e.path().filename().string());
+                std::sort(v.begin(), v.end());
+                return v;
+            };
+            cli::OutputSink::Claim claim{"foo.pg", "// Generated by Polyglot.", {}};
+            cli::OutputSink chk(cli::OutputSink::Mode::Check);
+            const auto pc = chk.put(dir / "foo.ts", hdr + "export const x = 1;\n", claim);
+            const bool checkOk = caseInsensitive
+                ? (pc == cli::OutputSink::Put::Unchanged && chk.drifted() && has(chk.driftLines()[0], "would rename") &&
+                   names() == std::vector<std::string>{"Foo.ts"})
+                : (pc == cli::OutputSink::Put::Written && has(chk.driftLines()[0], "would create"));
+            cli::OutputSink w(cli::OutputSink::Mode::Write);
+            const auto pw = w.put(dir / "foo.ts", hdr + "export const x = 1;\n", claim);
+            const bool writeOk = caseInsensitive
+                ? (pw == cli::OutputSink::Put::Unchanged && names() == std::vector<std::string>{"foo.ts"} && w.isProduced(dir / "Foo.ts"))
+                : (pw == cli::OutputSink::Put::Written && names() == std::vector<std::string>{"Foo.ts", "foo.ts"});
+            // A case variant that is NOT Polyglot's is never renamed (the overwrite guard holds for renames too).
+            cli::writeFile(dir / "Bar.ts", "// hand-written\n");
+            cli::OutputSink w2(cli::OutputSink::Mode::Write);
+            const auto pr = w2.put(dir / "bar.ts", hdr, claim);
+            const std::vector<std::string> after = names();
+            const bool guardOk = !caseInsensitive || (pr == cli::OutputSink::Put::Refused &&
+                                                      std::find(after.begin(), after.end(), "Bar.ts") != after.end());
+            check(checkOk && writeOk && guardOk,
+                  std::string("P40 review A3: a case-only rename renames the existing file to the exact case (") +
+                      (caseInsensitive ? "case-insensitive" : "case-sensitive") + " filesystem); --check reports it");
+        }
+        {   // P40 review (#75 pre-push, item 1): the owned-scope ancestor test asks the FILESYSTEM, not the spelling.
+            const fs::path base = tmp / "t" / "Proj";
+            fs::create_directories(base / "keep", ec);
+            const bool ci = fs::exists(tmp / "T" / "PROJ", ec);
+            fs::path dir;
+            bool rec = false;
+            std::string err;
+            const bool aliasSelf = cli::ownedScope(base, "../PROJ/%(RecursiveDir)%(Filename)", dir, rec, err);
+            const bool aliasGrand = cli::ownedScope(base, "../../T/%(RecursiveDir)%(Filename)", dir, rec, err);
+            const bool sibling = cli::ownedScope(base, "../Web/gen/%(Filename)", dir, rec, err);
+            check((ci ? (!aliasSelf && !aliasGrand) : true) && sibling,
+                  std::string("P40 review: an owned scope that is a case alias of the config folder or an ancestor is refused (") +
+                      (ci ? "case-insensitive" : "case-sensitive: aliases are distinct folders there") + "); a sibling still passes");
+        }
+        {   // P40 review: writeFile replaces atomically (temp + rename) and leaves no temp behind.
+            const fs::path f = tmp / "atomic" / "a.ts";
+            const bool w1 = cli::writeFile(f, "one"), w2 = cli::writeFile(f, "two");
+            std::string back;
+            int entries = 0;
+            for (const auto& e : fs::directory_iterator(f.parent_path(), ec)) { (void)e; ++entries; }
+            check(w1 && w2 && cli::readFile(f, back) && back == "two" && entries == 1,
+                  "P40 review: writeFile replaces the file whole and leaves no temp file behind");
+        }
+        {   // P40 review (A5): a pgconfig that fails to parse or validate carries errors (callers refuse with 64).
+            const fs::path cd = tmp / "cfg";
+            fs::create_directories(cd, ec);
+            auto errorsFor = [&](const std::string& text) {
+                cli::writeFile(cd / "pgconfig.json", text);
+                return cli::loadPgConfig(cd).errors;
+            };
+            bool allRefused = true;
+            for (const char* bad : {"{", "[]", "{\"target\": [\"csharp\"]}", "{\"targets\": \"csharp\"}", "{\"targets\": [1]}",
+                                    "{\"targets\": [\"\"]}", "{\"lib\": \"io\"}", "{\"root\": 1}", "{\"originInfo\": \"yes\"}",
+                                    "{\"dependencies\": []}", "{\"include\": {}}", "{\"include\": [3]}",
+                                    "{\"include\": [{\"pattern\": \"*.pg\", \"output\": \"x\", \"outptu\": 1}]}",
+                                    "{\"include\": [{\"pattern\": \"*.pg\", \"output\": \"x\", \"target\": 3}]}",
+                                    "{\"forbiddenIdentifiers\": \"temp\"}", "{\"targets\":[\"csharp\"],\"access\":\"public\"}"}) {
+                if (errorsFor(bad).empty()) { allRefused = false; std::cerr << "    accepted: " << bad << "\n"; }
+            }
+            const bool goodOk = errorsFor("\xEF\xBB\xBF{ \"$schema\": \"x\", \"targets\": [\"csharp\"], \"lib\": [\"io\"], \"originInfo\": true, "
+                                          "\"forbiddenIdentifiers\": {\"*\": [\"temp\"]}, \"dependencies\": {}, "
+                                          "\"include\": [{\"pattern\": \"*.pg\", \"target\": [\"csharp\"], \"output\": \"gen/%(Filename)\", \"owned\": true}] }")
+                                    .empty();
+            check(allRefused && goodOk, "P40 review A5: malformed or invalid pgconfig.json carries errors; a valid one (with a BOM) none");
         }
         fs::remove_all(tmp, ec);
     }

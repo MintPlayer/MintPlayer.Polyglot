@@ -37,6 +37,11 @@
     <_PolyglotRecord>$(IntermediateOutputPath)polyglot.outputs.json</_PolyglotRecord>
     <_PolyglotDepfile>$(IntermediateOutputPath)polyglot.deps</_PolyglotDepfile>
     <_PolyglotInputsCache>$(IntermediateOutputPath)polyglot.inputs.cache</_PolyglotInputsCache>
+    <!-- P40 review (#75 pre-push, 2b): the OUTPUTS LIST — every file the last transpile produced, one absolute
+         path per line. @(Compile) takes exactly its .cs files under PolyglotOutDir instead of globbing the
+         folder, so a stray or stale file there (a headerless .cs a 0.10.x build left behind, which nothing may
+         delete) never compiles. -->
+    <_PolyglotOutputsList>$(IntermediateOutputPath)polyglot.outputs.list</_PolyglotOutputsList>
     <_PolyglotStamp>$(IntermediateOutputPath)polyglot.stamp</_PolyglotStamp>
     <!-- Host RID: the SDK's portable RID (e.g. win-x64, linux-x64, osx-arm64), overridable. Resolved
          here (not the .props) because the SDK defines it after NuGet's top-of-project props import. -->
@@ -108,7 +113,13 @@
           DependsOnTargets="_PolyglotVerifyTool;_PolyglotPrepareInputs"
           Condition="'@(PolyglotFile)' != ''"
           Inputs="@(PolyglotFile);$(PolyglotTool);$(_PolyglotInputsCache);@(_PolyglotDep)"
-          Outputs="$(_PolyglotStamp)">
+          Outputs="$(_PolyglotStamp);$(_PolyglotOutputsList)">
+    <!-- PolyglotTargets as an item list: MSBuild splits it on ';', trims each entry and drops empty ones, so
+         "csharp;" or " csharp ; typescript" reach the CLI as "csharp" / "csharp,typescript". (The CLI refuses an
+         empty name in its only flag since P40 review B7 — an empty entry used to widen the build to ALL targets.) -->
+    <ItemGroup>
+      <_PolyglotTargetName Include="$(PolyglotTargets)" />
+    </ItemGroup>
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>
       <_PolyglotLibArg Condition="'$(PolyglotLib)' != ''"> --lib &quot;$(PolyglotLib)&quot;</_PolyglotLibArg>
@@ -136,7 +147,13 @@
            for the committed TS twin (README; an XML comment cannot spell the double-dash flags). Include routing is unchanged, and the record's sections for the other
            targets carry over untouched — a csharp-only build never deletes a TS twin. -->
       <_PolyglotOnlyArg></_PolyglotOnlyArg>
-      <_PolyglotOnlyArg Condition="'$(PolyglotTargets)' != ''"> --only &quot;$(PolyglotTargets.Replace(';', ','))&quot;</_PolyglotOnlyArg>
+      <_PolyglotOnlyArg Condition="'@(_PolyglotTargetName)' != ''"> --only &quot;@(_PolyglotTargetName, ',')&quot;</_PolyglotOnlyArg>
+      <!-- P40 review (#75 pre-push, 2a): PolyglotAdopt=true passes the CLI's adopt flag for ONE build — the
+           upgrade path for a 0.10.x output routed OUTSIDE obj/ (e.g. a TS twin), which carries no header and
+           has no record entry, so the overwrite guard refuses it. `dotnet build -p:PolyglotAdopt=true` once;
+           don't leave it set (it would let the build take over a hand-written file at an output path). -->
+      <_PolyglotAdoptArg></_PolyglotAdoptArg>
+      <_PolyglotAdoptArg Condition="'$(PolyglotAdopt)' == 'true'"> --adopt</_PolyglotAdoptArg>
     </PropertyGroup>
     <MakeDir Directories="$(PolyglotOutDir)" />
     <!-- P30 slice 7: no language flag — the consumer's pgconfig.json decides the target set (it must
@@ -151,22 +168,34 @@
          overwritten without Polyglot's header — the upgrade path for 0.10.x outputs in obj/, which carried
          none. Routed outputs elsewhere (TS twins) keep the full overwrite guard. -->
     <Exec StdOutEncoding="utf-8" StdErrEncoding="utf-8"
-          Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotTargetOptionArgs)$(_PolyglotOriginInfoArg)$(_PolyglotOnlyArg) --record &quot;$(_PolyglotRecord)&quot; --depfile &quot;$(_PolyglotDepfile)&quot; --build-owned &quot;$(PolyglotOutDir).&quot;" />
+          Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotTargetOptionArgs)$(_PolyglotOriginInfoArg)$(_PolyglotOnlyArg) --record &quot;$(_PolyglotRecord)&quot; --depfile &quot;$(_PolyglotDepfile)&quot; --outputs-list &quot;$(_PolyglotOutputsList)&quot; --build-owned &quot;$(PolyglotOutDir).&quot;$(_PolyglotAdoptArg)" />
     <Touch Files="$(_PolyglotStamp)" AlwaysCreate="true" />
   </Target>
 
   <!-- Always runs (no Inputs/Outputs): when PolyglotTranspile was skipped as up-to-date, the compiler still
-       needs the previously generated files in @(Compile). Glob every generated .cs rather than mapping one
-       per .pg: a 2+-.pg project also emits the shared __polyglot_prelude.cs (issue #14), which has no source
-       .pg. The glob compiles + cleans it too; a single-.pg project still yields just its one .cs. -->
+       needs the previously generated files in @(Compile). They come from the OUTPUTS LIST the transpile wrote
+       (it is an Output of PolyglotTranspile, so a missing list re-runs it): its .cs files under PolyglotOutDir,
+       including the shared __polyglot_prelude.cs of a 2+-.pg project (issue #14), which has no source .pg.
+       P40 review (#75 pre-push, 2b): no longer a `$(PolyglotOutDir)*.cs` glob — a stale headerless .cs from
+       0.10.x stayed in that folder forever (nothing may delete it) and the glob kept linking its functions.
+       `dotnet clean` still sweeps every .cs in the folder (FileWrites), which IS safe: it belongs to the build. -->
   <Target Name="_PolyglotAddGenerated"
           Condition="'@(PolyglotFile)' != ''">
+    <ReadLinesFromFile File="$(_PolyglotOutputsList)" Condition="Exists('$(_PolyglotOutputsList)')">
+      <Output TaskParameter="Lines" ItemName="_PolyglotListed" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <_PolyglotOutDirFull>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PolyglotOutDir)'))</_PolyglotOutDirFull>
+    </PropertyGroup>
     <ItemGroup>
-      <_PolyglotGenerated Include="$(PolyglotOutDir)*.cs" />
+      <!-- The C# emit into PolyglotOutDir is flat (basename.cs), so "directly in that folder" is exact; MSBuild
+           condition string comparison is case-insensitive. -->
+      <_PolyglotGenerated Include="@(_PolyglotListed)"
+                          Condition="'%(Extension)' == '.cs' and '%(RootDir)%(Directory)' == '$(_PolyglotOutDirFull)'" />
       <Compile Include="@(_PolyglotGenerated)" />
-      <FileWrites Include="@(_PolyglotGenerated)" />
+      <FileWrites Include="$(PolyglotOutDir)*.cs" />
       <!-- The bookkeeping (never compiled) — registered so `dotnet clean` removes it. -->
-      <FileWrites Include="$(_PolyglotStamp);$(_PolyglotRecord);$(_PolyglotDepfile);$(_PolyglotInputsCache)" />
+      <FileWrites Include="$(_PolyglotStamp);$(_PolyglotRecord);$(_PolyglotDepfile);$(_PolyglotInputsCache);$(_PolyglotOutputsList)" />
     </ItemGroup>
   </Target>
 

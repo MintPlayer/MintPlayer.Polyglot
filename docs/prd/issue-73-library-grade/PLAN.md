@@ -1097,6 +1097,53 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Verified:** MSBuild solution build; unit exe green; `-Tier fast` green, including cli-smoke with 15 new
     `P40 review` cases; run-coverage green; run-nuget green with `-Work`; POSIX leg (WSL, CMake + g++) builds,
     and `polyglot-tests` passes. The full tier is left to the orchestrator, before the single push.
+- **2026-10-17 (late night) — Spark review part 2 (CLI/gates/docs half) + the pre-push review of `e433f32`: as
+  built** (branch `p40-review2-cli`; the language/emitter half — A1, A6–A8, A9's emitter fixes, B1–B6, B11 —
+  lands separately). Every repro was reproduced first and re-run after the fix.
+  - **A2:** the library gate's DOM leg is ng-spark's `tsconfig.lib.json` flag set verbatim (`importHelpers`,
+    `module ES2022`, lib `ES2022`+`DOM`, declaration + source maps, `types: []`; only `outDir` differs).
+    Consumers import extensionless. 140 io-free programs pass under it.
+  - **A3:** `OutputSink::put` detects an existing file whose name differs only in case and is the same file
+    (`fs::equivalent`), renames it to the exact case under the overwrite guard, and `--check` reports
+    `would rename`; the old spelling counts as produced, so neither the record nor the owned scan deletes the
+    renamed file. Before: `gen/Foo.ts` survived every rebuild; after: `gen/foo.ts`, and `--check` is clean.
+  - **A4:** `loadOutputsRecord` validates the whole record (strict JSON, every section/input/output) before
+    publishing anything; any bad part in any position is Corrupt with nothing loaded (unit test, both orders).
+    (`main.cpp` already reset a corrupt record on `e433f32`; the loader no longer depends on that.)
+  - **A5:** `json::parse(text, err)` reports structural errors (`{` used to read as an empty object) and accepts
+    a BOM; `validatePgConfigShape` refuses unknown keys and wrong kinds; `refuseInvalidConfig` is the one
+    refusal for build (incl. `--target`/`--only`), bare build, `--check`, `check` and `install`, and validates
+    every declared target. Before: exit 0 with the config ignored; after: 64 naming the problem.
+  - **A9 (gate):** `tests/floor/run-floor.ps1` compiles the corpus' C# as one library at C# 11 + net8.0 (Map:
+    net9.0) + Nullable + TreatWarningsAsErrors (full tier, nx `floor`). It reproduces the review's 24 diagnostics
+    exactly; `tests/floor/allowlist.txt` lists them and is matched exactly both ways (stale entries fail) — **it
+    must be empty after the emitter half merges.**
+  - **B7:** an empty `--only` entry exits 64; MSBuild passes `PolyglotTargets` as an item list (`csharp;` works).
+  - **B8:** README documents the twin refresh (`build --only typescript`) and why a bare build breaks the MSBuild
+    layout. NuGet fixture 11 runs Spark's real layout (package, owned TS rule only, git repo + real clone,
+    importer, whole-tree snapshots, CI check, refresh, `dotnet build`). `spark-ci-flow` now uses a real git clone,
+    an importer, whole-tree snapshots, asserts no `.polyglot/`, and runs a full `--check` after the build.
+  - **B9:** conformance/golden/hostile-PHP/culture (and coverage, PHP multi-lib) comparisons are ordinal; the
+    culture hook prints `PgCultureHook: ok <culture>`, which the runner requires; the whole-manifest Ordinal pin
+    parses the manifest and checks every call to its matching `)`; NuGet fixture 12: two internal libraries +
+    an `InternalsVisibleTo` consumer.
+  - **B10:** nupkg description states the floor; README explains `PolyglotExtensions`; `escapes.pg` comment and
+    `grammar.ebnf` (`private`) corrected. Not done here: the D16 error column (sema) and `_pg_*` as plain static
+    methods (emitter) belong to the language half.
+  - **Pre-push review of `e433f32`:** (1) `ownedScope` also refuses a scope that is `fs::equivalent` to the
+    config folder or any ancestor (case aliases, 8.3 names, junctions). (2a) `PolyglotAdopt=true` passes
+    `--adopt`; the refusal and README name it. (2b) `--outputs-list`: MSBuild compiles exactly the listed `.cs`
+    under `PolyglotOutDir` (the list is an Output of the transpile), so a headerless 0.10.x leftover never links.
+    (3) `.pg` + pgconfig + lockfile are `UpToDateCheckInput`s; `writeFile` is temp + rename; overwriting a
+    recorded output whose header was removed warns; tests for the alias, UNC, nested-config refusal,
+    BOM/CRLF/PHP markers, header-removed warning, `--watch --adopt`, and (NuGet fixture 13) the upgrade path
+    through the package, a no-change rebuild leaving the DLL untouched, and UTF-8 build output; doc wording
+    (`lineComment`, `obj/…/polyglot/`).
+  - **Verified:** MSBuild solution build; unit exe green; `-Tier fast` green (cli-smoke incl. the new cases, the
+    culture hook's positive control); run-floor green (24 allow-listed); run-library green (Spark-verbatim DOM leg);
+    run-nuget `-Work` green incl. fixtures 11-13; the conformance runner green with ordinal compares (131 programs,
+    no latent diff surfaced); POSIX leg (WSL, CMake + g++ Release) builds and `polyglot-tests` passes. The full tier
+    is left to the orchestrator after the merge with the language half.
 - **2026-10-17 (late night) — Spark review of `612e2fe`, part 2, the language/emitter half: as built.** Every
   repro was reproduced against the pre-fix build before the fix. (The CLI/gate/docs half, A2–A5, B7–B10 and the
   A9 gate leg, landed separately.)

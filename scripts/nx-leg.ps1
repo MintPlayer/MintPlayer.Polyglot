@@ -40,6 +40,7 @@ switch ($Leg) {
     "registry"  { Invoke-Leg { & pwsh -NoProfile -File tests/registry/run-registry.ps1 -Cli $cli } }
     "samples"   { Invoke-Leg { & pwsh -NoProfile -File tests/samples/run-emit.ps1 -Cli $cli } }
     "nullable"  { Invoke-Leg { & pwsh -NoProfile -File tests/nullable/run-nullable.ps1 -Cli $cli } }
+    "floor"     { Invoke-Leg { & pwsh -NoProfile -File tests/floor/run-floor.ps1 -Cli $cli } }
     "numfmt"    { Invoke-Leg { & pwsh -NoProfile -File tests/numfmt/run-numfmt.ps1 } }
     "culture" {
         # P40 A3 fast-tier synthetic culture (the full tier's four real cultures run inside "conformance").

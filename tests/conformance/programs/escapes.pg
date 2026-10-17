@@ -1,7 +1,7 @@
 // P40 A1 — escapes: ONE decoder for string and char literals, re-escaped per target from the plugin's
 // `literals` data. Before P40 `\u{1D}` dropped its backslash (emitted "u{1D}", length 5) on all four
-// targets, and PHP interpolated `$x` inside a plain string. ASCII-only lengths on purpose: Python counts
-// code points and PHP bytes for non-ASCII text (SPEC §9).
+// targets, and PHP interpolated `$x` inside a plain string. ASCII-only lengths on purpose: this pins escapes,
+// not index units (all four count UTF-16 units; Python/PHP via an emulated UTF-16 view, SPEC §9).
 
 import "std.strings"
 
