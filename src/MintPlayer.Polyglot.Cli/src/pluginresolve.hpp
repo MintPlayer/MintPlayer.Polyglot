@@ -232,9 +232,10 @@ inline std::string configStamp(const PgConfig& pc) {
 }
 
 // Resolve every dependency in a pgconfig (the `resolveConfiguredTargets` engine). `state` may be
-// null (one-shot CLI runs); pass a process-lifetime instance from the LSP/watch loops.
+// null (one-shot CLI runs); pass a process-lifetime instance from the LSP/watch loops. `dryRun`
+// (P40 `build --check`) resolves exactly as usual but never saves the lockfile.
 inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet& http, bool update,
-                                               ResolveState* state) {
+                                               ResolveState* state, bool dryRun = false) {
     ResolveResult res;
     if (!pc.found || pc.dependencies.empty()) return res;
     Lockfile lock = loadLockfile(pc.dir);
@@ -277,7 +278,10 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
         }
     }
 
-    if (res.lockChanged && !saveLockfile(pc.dir, lock)) {
+    // P40 B5: `build --check` writes nothing — the lockfile included. The pin it WOULD record is reported.
+    if (res.lockChanged && dryRun) {
+        res.messages.push_back(lockfilePath(pc.dir).string() + " would change (not written under --check)");
+    } else if (res.lockChanged && !saveLockfile(pc.dir, lock)) {
         res.messages.push_back("warning: could not write " + lockfilePath(pc.dir).string() +
                                " (resolution succeeded; the build is not pinned)");
     }
