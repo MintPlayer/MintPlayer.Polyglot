@@ -1682,7 +1682,7 @@ int main() {
             // P40 review A1: as the left operand of `??` the normalization is dropped — tsc >= 5.6 rejects
             // `(m.get(k) ?? null) ?? d` as TS2871 (always nullish).
             check(has(ts.code, "(m.get(\"a\") ?? 0)") && !has(ts.code, "?? null) ??"),
-                  "A1: TS `m.get(k) ?? d` emits no inner `?? null` (the nullishTemplate)");
+                  "A1: TS `m.get(k) ?? d` emits no inner `?? null` (spec absentNormalize)");
             EmitResult tsg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("typescript"));
             check(tsg.ok && !has(tsg.code, "IMapKey"), "P40 s9: TS erases the IMapKey bound");
             EmitResult py = compileStd(use, findTarget("python"));

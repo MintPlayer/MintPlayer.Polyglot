@@ -328,7 +328,7 @@ converts between them wherever a value crosses from one to the other, and the nu
 
 | Position | `Option<X>` → native `X?` | native `X?` → `Option<X>` |
 |---|---|---|
-| `let`/`var` with an annotation, assignment (local, field, element), argument, return, field / record init | `match o { Some(v) => v, None => null }` | `match n { null => None, v => Some(v) }` — never `Some(null)` |
+| `let`/`var` with an annotation, assignment (local, field, element), list-literal element, argument (incl. a generic method's or extension's `U?`), return, a lambda's result (expression body or each `return` of a block body, against the function type it meets), field / record init | `match o { Some(v) => v, None => null }` | `match n { null => None, v => Some(v) }` — never `Some(null)` |
 | `==` / `!=` against a native operand (`null`, `string?`, `string`) | compares as `X?`: `slot.peek() == null` is an absence test | — |
 | `!`, `?? d` | unwraps (`None` throws / takes `d`) | — |
 | `if o != null` on an `Option` local | the narrowed read is the unwrapped `X` | — |
@@ -471,6 +471,11 @@ are recognized by the backends and emitted as C-style `for` loops where the boun
   local or parameter) is re-read in the condition (`i < n`); any other end is hoisted into a temporary
   next to the loop variable (C# `for (int i = 0, __end0 = xs.Count; i < __end0; i++)`, TS `let`, PHP comma
   init; Python's `range()` already evaluates once).
+- **An inclusive range may end at its type's maximum** (P40 review B6): `for i in 2147483646..=2147483647`
+  runs twice on every target, never wrapping into an endless loop. Where the end is not a literal provably
+  below the maximum, C# drives the loop with a wider counter (`for (long i__it = …; i__it <= n; i__it++) {
+  var i = (int)i__it; … }`; `Int128`/`UInt128` for 64-bit loop types) and PHP stops a 64-bit counter once
+  it overflows (`\is_int($i) && $i <= $n`); TS, Python and other PHP widths cannot overflow there.
 
 ### 5.1 Exceptions (`try`/`catch`/`when`/`finally`, `throw`)
 
@@ -796,7 +801,10 @@ These clarify or bound features surfaced by the wave-2 coverage sweep (issues #3
 - **Block-bodied `match` arms** are refused (#51) — a match arm must be an expression (Python/PHP lower
   `match` to an expression fold with no statement block). Extract the block into a function.
 - **Member method overloading** is refused (#53) — `fn` overloading is **top-level only**; a duplicate
-  same-named method is a declaration-site error. Give the overloads distinct names.
+  same-named method is a declaration-site error. Give the overloads distinct names. Across modules
+  (P40 review A8), a call only considers the overloads **visible to the calling module** (its own and the
+  ones its imports name): another module's never-imported `check(i32)` cannot win `check(5)`. Two modules
+  declaring the same signature is a duplicate, and the error names both modules.
 - **Namespace and renaming imports** are refused (#39e) — `import * as ns` and `{ a as b }`; import members
   by their own name (`import { a, b } from "…"`). Modules merge into one flat namespace.
 - **An unresolvable member on a concrete/primitive receiver** is refused, not emitted verbatim (#56a) —

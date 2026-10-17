@@ -1219,12 +1219,12 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         for (auto& mem : c.members) {
             const std::string key = c.name + "." + (mem.kind == MemberKind::Constructor ? "constructor" : mem.name);
             if (const StdBinding* t = find(key); t && !hasArm(mem.bindings))
-                mem.bindings.push_back({target, t->tmpl, mem.pos, t->preludeKeys, t->nullishTmpl});
+                mem.bindings.push_back({target, t->tmpl, mem.pos, t->preludeKeys});
         }
     }
     for (auto& e : unit.extensions)
         if (const StdBinding* t = find(e.receiver.name + "." + e.name); t && !hasArm(e.bindings))
-            e.bindings.push_back({target, t->tmpl, e.pos, t->preludeKeys, t->nullishTmpl});
+            e.bindings.push_back({target, t->tmpl, e.pos, t->preludeKeys});
     // Expect fns: synthesize the actual — the signature cloned, the body a single opaque extern (every
     // first-party actual was exactly that shape; richer bodies stay expressible as source arms).
     std::vector<FunctionDecl> synthesized;

@@ -156,9 +156,17 @@ struct BackendSpec {
     // ternary, `x with {…}`, PHP's `new`), can never silently re-associate as a receiver. Two refinements are
     // derived, not declared: a Binary that routes to an `opMethod` table method is a call (primary), and a
     // Bound's template is primary iff it is lexically atomic (see `boundTemplateIsAtomic`).
-    // UNARY operand: `wrapAtomUnary` is the (opt-in) kind set that needs parens ("binary", "unary", "cast",
-    // "cond", "binaryScalar" — a binary that keeps operator form).
-    std::vector<std::string> wrapAtomRecvPrimary, wrapAtomUnary;
+    // UNARY operand: the same rule, plus the kinds a prefix operator may precede bare on every target — a
+    // literal (`-5`), another prefix form (`-(-x)` is emitted from its own node) and a cast (`-(int)x`).
+    // (The opt-in `wrapAtom.unary` list it replaces missed C#'s `-x switch {…}`, which negated the scrutinee.)
+    std::vector<std::string> wrapAtomRecvPrimary;
+
+    // P40 review A1 — `absentNormalize: { "prefix", "suffix" }`: the text a bound template wraps around a value
+    // ONLY to fold a second absent form into the language's one `T?` absence (TS `(x ?? null)` turns JS
+    // `undefined` into `null`). Where the bound call is the left operand of `??` — which coalesces every absent
+    // form alike — the emitter strips that wrapper, std and user `extern` templates alike (tsc >= 5.6 rejects
+    // `(m.get(k) ?? null) ?? d` as TS2871 "always nullish"). Empty = no such wrapper on this target.
+    std::string absentNormalizePrefix, absentNormalizeSuffix;
 
     // Named lookup tables — the generic `{"fn":"table","args":[name, key]}` catalog entry (a missing key
     // answers ""). First occupant: TS's operator-overload method names (`"+"` -> `"plus"` — no TS operator

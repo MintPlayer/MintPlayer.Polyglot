@@ -37,4 +37,9 @@ fn main() {
   print(lookup(m, "zz"))                           // 0
   print((m.get("a") ?? 0) + 1)                     // 6
   print(m.get("zz") == null)                       // true
+
+  // the unary-operand twin: C# emitted `-1 switch {…}`, negating the scrutinee (6, not -5)
+  let one = 1
+  print(-(match one { 1 => 5, _ => 6 }))           // -5
+  print(-(s ?? "ab").len())                        // -2
 }

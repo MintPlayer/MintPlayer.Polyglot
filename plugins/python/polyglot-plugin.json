@@ -52,9 +52,6 @@
         "tuple",
         "new",
         "makeCase"
-      ],
-      "unary": [
-        "binary"
       ]
     },
     "rethrow": "raise",

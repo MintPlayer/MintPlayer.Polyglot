@@ -78,9 +78,6 @@
         "new",
         "makeCase",
         "interp"
-      ],
-      "unary": [
-        "binary"
       ]
     },
     "rethrow": "throw;",

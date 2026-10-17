@@ -143,6 +143,14 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
             if (k.kind == json::Value::Kind::String) r.spec.genericsErase.insert(k.asString());
     }
 
+    const json::Value& an = doc["absentNormalize"]; // P40 review A1
+    if (an.kind == json::Value::Kind::Object) {
+        r.spec.absentNormalizePrefix = an["prefix"].asString();
+        r.spec.absentNormalizeSuffix = an["suffix"].asString();
+        if (r.spec.absentNormalizeSuffix.empty())
+            r.errors.push_back("absentNormalize needs a non-empty 'suffix'");
+    }
+
     const json::Value& wa = doc["wrapAtom"];
     if (wa.kind == json::Value::Kind::Object) {
         if (wa["recv"].kind != json::Value::Kind::Null) // P40 review A6: the opt-in wrap list became a primary list
@@ -150,8 +158,8 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
                                "expressions; every other receiver is parenthesized)");
         for (const json::Value& k : wa["recvPrimary"].items())
             if (k.kind == json::Value::Kind::String) r.spec.wrapAtomRecvPrimary.push_back(k.asString());
-        for (const json::Value& k : wa["unary"].items())
-            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomUnary.push_back(k.asString());
+        if (wa["unary"].kind != json::Value::Kind::Null) // P40 review A6: derived from recvPrimary now
+            r.errors.push_back("wrapAtom.unary was removed (a unary operand follows wrapAtom.recvPrimary)");
     }
 
     const json::Value& ids = doc["identifiers"];
@@ -222,14 +230,19 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     }
 
     std::string wa;
-    if (!spec.wrapAtomRecvPrimary.empty() || !spec.wrapAtomUnary.empty()) {
+    if (!spec.wrapAtomRecvPrimary.empty()) {
         auto arr = [](const std::vector<std::string>& v) {
             std::string o = "[";
             for (std::size_t i = 0; i < v.size(); ++i) { if (i) o += ","; o += json::quote(v[i]); }
             return o + "]";
         };
-        wa = ",\"wrapAtom\":{\"recvPrimary\":" + arr(spec.wrapAtomRecvPrimary) +",\"unary\":" + arr(spec.wrapAtomUnary) + "}";
+        wa = ",\"wrapAtom\":{\"recvPrimary\":" + arr(spec.wrapAtomRecvPrimary) + "}";
     }
+
+    std::string an;
+    if (!spec.absentNormalizeSuffix.empty())
+        an = ",\"absentNormalize\":{\"prefix\":" + json::quote(spec.absentNormalizePrefix) +
+             ",\"suffix\":" + json::quote(spec.absentNormalizeSuffix) + "}";
 
     std::string tbls;
     if (!spec.tables.empty()) {
@@ -310,7 +323,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"constArrayClose\":" + json::quote(spec.constArrayClose) +
            std::string(",\"linksWithoutImports\":") + (spec.linksWithoutImports ? "true" : "false") +
            std::string(",\"forbidsShadowedLocals\":") + (spec.forbidsShadowedLocals ? "true" : "false") +
-           std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") + gen + wa + tbls + escs + ids + "}";
+           std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") + gen + wa + an + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

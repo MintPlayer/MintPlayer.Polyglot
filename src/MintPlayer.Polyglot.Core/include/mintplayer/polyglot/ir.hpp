@@ -247,7 +247,7 @@ struct Bound : Expr {
     std::vector<ExprPtr> args;
     std::string tmpl; // the active target's template ("" only when the pre-lowering refusal was bypassed)
     std::vector<std::string> preludeKeys; // P40 §0: the binding's manifest prelude keys (see ir::Extern)
-    std::string nullishTmpl; // P40 review A1: the template when this is the left operand of `??` ("" = tmpl)
+    bool coalesced = false; // P40 review A1: the left operand of `??` (see BackendSpec::absentNormalize)
     Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 

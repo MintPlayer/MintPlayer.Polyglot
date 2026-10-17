@@ -224,7 +224,6 @@ struct TargetBinding {
     // `{ "template": …, "requires": [...] }`. Lowering copies them onto the ir::Bound/ir::Extern, and
     // emitting that node records them, so a helper is emitted exactly where its caller is.
     std::vector<std::string> preludeKeys;
-    std::string nullishCode; // P40 review A1: the `??`-left-operand variant (StdBinding::nullishTmpl), or ""
 };
 
 

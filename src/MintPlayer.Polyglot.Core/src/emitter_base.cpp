@@ -531,23 +531,6 @@ std::string IrExprCtx::renderType(const std::string& path) const {
     return t ? renderTypeRef(*t) : "";
 }
 
-namespace {
-// The spec's wrapAtom kind-set membership test, shared by rule operands (IrExprCtx::wrapAtom) and bound FFI
-// templates (EmitterBase::substBoundTemplate).
-bool inWrapSet(const std::vector<std::string>& set, const ir::Expr& c) {
-    for (const std::string& k : set) {
-        if (k == "binary" && c.kind == ir::ExprKind::Binary) return true;
-        if (k == "binaryScalar" && c.kind == ir::ExprKind::Binary &&
-            !static_cast<const ir::Binary&>(c).lhsIsUserType)
-            return true;
-        if (k == "unary" && c.kind == ir::ExprKind::Unary) return true;
-        if (k == "cast" && c.kind == ir::ExprKind::Cast) return true;
-        if (k == "cond" && c.kind == ir::ExprKind::Cond) return true;
-    }
-    return false;
-}
-} // namespace
-
 // The lowercase kind vocabulary `wrapAtom.recvPrimary` is written in.
 const char* exprKindName(ir::ExprKind k) {
     switch (k) {
@@ -613,7 +596,12 @@ bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c) {
 }
 
 bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
-    return side == "recv" ? receiverNeedsParens(spec_, c) : inWrapSet(spec_.wrapAtomUnary, c);
+    if (side == "recv") return receiverNeedsParens(spec_, c);
+    // "unary": a prefix operator's operand (see BackendSpec::wrapAtomRecvPrimary).
+    if (c.kind == ir::ExprKind::Int || c.kind == ir::ExprKind::Float || c.kind == ir::ExprKind::Unary ||
+        c.kind == ir::ExprKind::Cast)
+        return false;
+    return receiverNeedsParens(spec_, c);
 }
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
@@ -1992,7 +1980,27 @@ void EmitterBase::headBlock(const std::string& head, const std::vector<ir::StmtP
     closeBlock();
 }
 
-std::string EmitterBase::substBoundTemplate(const std::string& tmpl, const ir::Bound& b) {
+// P40 review A1: `tmpl` without the spec's absent-normalization wrapper, when it is exactly one wrapper around a
+// balanced body (`(x ?? null)` -> `x`, but `(a ?? null) + (b ?? null)` is left alone); else `tmpl` itself.
+static std::string stripAbsentNormalize(const BackendSpec& spec, const std::string& tmpl) {
+    const std::string& pre = spec.absentNormalizePrefix;
+    const std::string& suf = spec.absentNormalizeSuffix;
+    if (suf.empty() || tmpl.size() < pre.size() + suf.size() || tmpl.compare(0, pre.size(), pre) != 0 ||
+        tmpl.compare(tmpl.size() - suf.size(), suf.size(), suf) != 0)
+        return tmpl;
+    const std::string body = tmpl.substr(pre.size(), tmpl.size() - pre.size() - suf.size());
+    int depth = 0;
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        const char c = body[i];
+        if (c == '"' || c == '\'') { for (++i; i < body.size() && body[i] != c; ++i) if (body[i] == '\\') ++i; continue; }
+        if (c == '(' || c == '[' || c == '{') ++depth;
+        if (c == ')' || c == ']' || c == '}') { if (--depth < 0) return tmpl; }
+    }
+    return depth == 0 ? body : tmpl;
+}
+
+std::string EmitterBase::substBoundTemplate(const std::string& tmplIn, const ir::Bound& b) {
+    const std::string tmpl = b.coalesced ? stripAbsentNormalize(spec(), tmplIn) : tmplIn;
     // A placeholder that the template uses as a member/index RECEIVER (`$this.Length`, `$0[i]`, PHP `$this->x`)
     // takes the spec's receiver parenthesization policy, exactly like a rule's `recv` operand: unwrapped,
     // `("a" + "1").len()` emitted `"a" + "1".Length` (a silent miscompile found by P40's escapes.pg).

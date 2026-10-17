@@ -284,7 +284,7 @@ public:
             if (entry.params) appendDefaults(*entry.params, args->size(), b->args);
         }
         for (const auto& arm : arms)
-            if (arm.target == target_) { b->tmpl = arm.code; b->preludeKeys = arm.preludeKeys; b->nullishTmpl = arm.nullishCode; }
+            if (arm.target == target_) { b->tmpl = arm.code; b->preludeKeys = arm.preludeKeys; }
         return b;
     }
 
@@ -908,12 +908,10 @@ private:
                 if (e.text == "??" && e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name == "Option")
                     return coalesceOption(e);
                 auto b = std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
-                // P40 review A1: a bound left operand of `??` takes its binding's nullish variant — `??` folds
-                // every absent form, so the main template's absent-value normalization is moot (and TS2871).
-                if (e.text == "??" && b->lhs && b->lhs->kind == ir::ExprKind::Bound) {
-                    auto& lb = static_cast<ir::Bound&>(*b->lhs);
-                    if (!lb.nullishTmpl.empty()) lb.tmpl = lb.nullishTmpl;
-                }
+                // P40 review A1: a bound left operand of `??` — `??` folds every absent form, so the emitter
+                // may drop the template's absent-value normalization there (BackendSpec::absentNormalize).
+                if (e.text == "??" && b->lhs && b->lhs->kind == ir::ExprKind::Bound)
+                    static_cast<ir::Bound&>(*b->lhs).coalesced = true;
                 // Comparing against a null literal is a null TEST, never structural equality — don't
                 // route it to the record equals() (TS/PHP `.equals(null)` would read fields off null).
                 const bool rhsIsNullLit = e.rhs->kind == ExprKind::NullLit;
