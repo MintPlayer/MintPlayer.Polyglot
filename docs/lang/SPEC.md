@@ -496,6 +496,12 @@ differently:
   path through init* / *`init` … returns before field 'x' is assigned*). Both `if` branches must assign; a
   throwing branch needs nothing; an assignment only inside a loop body is not definite. (C# CS8618 otherwise,
   and the field reads 0 / `undefined` / `AttributeError` / `null` per target.)
+- **Writes to immutable members** — a `const` and a `static let` are never assignable (*cannot assign to
+  immutable static field 'K.X' (declared with 'static let')*; C# CS0198, a PHP class `const`). A `let` instance
+  field is assignable only through `this`, directly in a constructor of the class that declares it — not from
+  a method, another receiver, a subclass or a lambda (C# `readonly`, CS0191). Inside a class, a static is
+  named by its bare name for a write exactly as for a read: a local of that name first, then the enclosing
+  class's static (`Counter = Counter + 1` is `K.Counter = K.Counter + 1`), compound operators included.
 
 **Self-comparison is refused (B11).** Comparing a side-effect-free path with itself — `x == x`, `a >= a`,
 `E.A == E.A` — is constant except for NaN (C# CS1718). The NaN test is `Math.isNaN(x)` (std.math, `f64`;

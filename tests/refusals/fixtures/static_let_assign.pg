@@ -1,0 +1,14 @@
+// REFUSED (P40 follow-up): a `static let` is immutable. A bare-name write from inside the class resolves to the
+// static (like a read) and is refused — C# `static readonly` would reject it (CS0198), and a literal-initialized
+// one is a PHP class `const`, which cannot be written at all.
+class Limits {
+  static let Max: i32 = 7
+
+  static fn raise() {
+    Max = Max + 1
+  }
+}
+
+fn main() {
+  Limits.raise()
+}

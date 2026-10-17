@@ -4812,6 +4812,47 @@ int main() {
                           has(php.code, "K::$B = seed();") && has(php.code, "K::$C = ") && has(php.code, "K::A + K::$C"),
                       "P40 follow-up: PHP `static let Y = f()` is a static property assigned after the class, not `const Y = f();`");
             }
+            {
+                // P40 follow-up: a bare-name WRITE to a class static resolves like the read, in static and instance
+                // methods, and lowers to the qualified access on every target; compound ops too.
+                const std::string src = "class K {\n  static var C: i32 = 1\n  static fn up() {\n    C = C + 1\n    C += 2\n  }\n"
+                                        "  fn inst() { C = C * 3 }\n}\nfn main() {\n  K.up()\n  K().inst()\n  print(K.C)\n}\n";
+                EmitResult cs = compileStd(src, findTarget("csharp"));
+                EmitResult ts = compileStd(src, findTarget("typescript"));
+                EmitResult py = compileStd(src, findTarget("python"));
+                EmitResult php = compileStd(src, findTarget("php"));
+                check(cs.ok && has(cs.code, "K.C = K.C + 1;") && has(cs.code, "K.C += 2;") && has(cs.code, "K.C = K.C * 3;"),
+                      "P40 follow-up: C# bare static write `C = C + 1` lowers to the static access");
+                check(ts.ok && has(ts.code, "K.C = (K.C + 1 | 0);") && has(ts.code, "K.C += 2;"),
+                      "P40 follow-up: TS bare static write lowers to `K.C`");
+                check(py.ok && has(py.code, "K.C = ((((K.C + 1)") && has(py.code, "K.C += 2"),
+                      "P40 follow-up: Python bare static write lowers to `K.C`");
+                check(php.ok && has(php.code, "K::$C = ((((K::$C + 1)") && has(php.code, "K::$C += 2;"),
+                      "P40 follow-up: PHP bare static write lowers to the static property `K::$C`");
+                // A local of the same name shadows the static for the write as for the read.
+                EmitResult sh = compileStd("class K {\n  static var C: i32 = 1\n  static fn f(): i32 {\n    var C = 5\n    C = C + 1\n"
+                                           "    return C\n  }\n}\nfn main() { print(K.f()) }\n", findTarget("csharp"));
+                check(sh.ok && has(sh.code, "C = C + 1;") && !has(sh.code, "K.C = "),
+                      "P40 follow-up: a local shadows a static of the same name for a bare write");
+                // Immutable members: `static let` (bare or qualified), `const`, a `let` field outside its own `init`.
+                check(refused("class K {\n  static let M: i32 = 7\n  static fn f() { M = M + 1 }\n}\nfn main() { K.f() }\n",
+                              "cannot assign to immutable static field 'K.M' (declared with 'static let')"),
+                      "P40 follow-up: a bare write to a `static let` is refused");
+                check(refused("class K {\n  static let M: i32 = 7\n}\nfn main() { K.M += 1 }\n",
+                              "cannot assign to immutable static field 'K.M'"),
+                      "P40 follow-up: a qualified write to a `static let` is refused (C# CS0198, a PHP const)");
+                check(refused("class K {\n  let y: i32 = 1\n  fn f() { this.y = 2 }\n}\nfn main() { K().f() }\n",
+                              "cannot assign to immutable field 'K.y' (declared with 'let') outside a constructor of 'K'"),
+                      "P40 follow-up: a `let` field written outside a constructor is refused (C# readonly, CS0191)");
+                check(refused("class K {\n  let y: i32 = 1\n}\nfn main() {\n  let k = K()\n  k.y = 2\n}\n",
+                              "cannot assign to immutable field 'K.y'"),
+                      "P40 follow-up: a `let` field written through another receiver is refused");
+                check(ok("class K {\n  let y: i32\n  constructor(v: i32) { this.y = v }\n}\nfn main() { print(K(3).y) }\n"),
+                      "P40 follow-up: a `let` field is assigned through `this` in its own constructor");
+                check(refused("class K {\n  let y: i32 = 0\n  constructor(v: i32) {\n    let f = () => { this.y = v }\n    f()\n  }\n}\n"
+                              "fn main() { print(K(3).y) }\n", "cannot assign to immutable field 'K.y'"),
+                      "P40 follow-up: a `let` field cannot be assigned from a lambda inside a constructor (C# CS1673/CS0191)");
+            }
             check(refused("fn f(): i32 {\n  throw Error(\"x\")\n  return 1\n}\nfn main() { print(f()) }\n", "unreachable code"),
                   "P40 B11: a statement after `throw` is refused as unreachable");
             check(refused("fn f(x: i32) {\n  for i in 0..x {\n    continue\n    print(i)\n  }\n}\nfn main() { f(1) }\n",

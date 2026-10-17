@@ -107,6 +107,7 @@ $cases = [ordered]@{
     "unreachable_code.pg"       = @("unreachable code", "remove it")
     "missing_return.pg"         = @("function 'sign' can reach the end of its body without returning a value")
     "lambda_missing_return.pg"  = @("this lambda can reach the end of its body without returning a value")
+    "static_let_assign.pg"      = @("cannot assign to immutable static field 'Limits.Max'", "declare it 'static var'")
     "field_one_branch.pg"       = @("field 'name' of class 'Cfg' is not assigned on every path through init")
     "field_early_return.pg"     = @("returns before field 'b' is assigned")
     "self_compare.pg"           = @("compares a value with itself", "Math.isNaN")

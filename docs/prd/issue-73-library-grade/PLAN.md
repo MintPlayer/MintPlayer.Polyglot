@@ -1237,3 +1237,31 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     the DOM leg); nullable; refusals; `run-nuget -Work` in a private dir (all P11 checks, incl. fixtures 11–13);
     conformance with the culture leg (138 programs agree on all four targets). The full tier and the POSIX leg
     are for the orchestrator. No `#ifdef`/platform code changed.
+- **2026-10-18 — bare-name writes to class statics, and immutable-member writes: as built.**
+  - **The gap:** inside a class, `Counter` read a static by its bare name (`checkName` → `enclosingStatic`, stamped
+    `staticOwner`, lowered to the qualified static access), but `Counter = Counter + 1` failed with *assignment
+    to undeclared*: the `Assign` path looked up locals only. A bare write now resolves exactly like the read — a
+    local first, then (unless a module value claims the name) the enclosing class's static — in static and
+    instance methods and in lambdas. It stamps the same `staticOwner`, so lowering needed no change: the target
+    lowers through `expr()` to `ir::Member{staticType}` + `stampStaticField`, i.e. C# `K.Counter`, TS/Python
+    `K.Counter`, PHP `K::$Counter`. Compound operators go the same way. The language has no `++`/`--`, and no
+    bare instance-field access (reads of an instance field by bare name are refused), so neither applies.
+  - **Immutable members, found on the way:** no write to a member slot was ever checked for mutability. `K.X = 1`
+    on a `static let`, and `this.y = 2` on a `let` field in a method, reached the targets: C# refused them at
+    compile time (CS0198/CS0191; a literal `static let` is also a PHP `const`), while TS/Python/PHP silently
+    mutated the field. `MemberInfo::isReadOnly` (a `const`, or a `let` field) and `checkMemberWritable` now
+    refuse a write to a `const` or a `static let` (bare or qualified), and a write to a `let` instance field
+    except through `this`, directly in a constructor of the declaring class (not a lambda, a subclass, a method
+    or another receiver) — the C# `readonly` rule. SPEC §5 is updated.
+  - **Found, not fixed (pre-existing):** a compound op on an integer is not masked on TS/Python/PHP for ANY target
+    kind — `var a: i32 = 2000000000; a += 2000000000` prints 4000000000 there and -294967296 on C#. A plain
+    `a = a + …` is masked. Likewise a string `s += "x"` emits PHP `$s += "x"`, a TypeError at runtime (needs
+    `.=`), again for locals, fields and statics alike. Both are gaps in compound lowering (single evaluation of
+    the target is the design question), not in static resolution, so the new conformance program keeps its
+    compounds on in-range integers.
+  - **Tests:** conformance `static_field_bare_assign` (+ `.expected`); refusal fixture `static_let_assign`; unit
+    checks for the emission on all four targets, local shadowing, and each immutable-write rule.
+  - **Verified:** MSBuild build; the unit exe (1063 checks); `-Tier fast` (incl. refusals with the new fixture,
+    cli-smoke, lsp, synthetic culture); the floor leg (0 diagnostics); conformance with the culture leg (139
+    programs; the new one agrees on all four targets after its string compound was replaced, see above). The
+    full tier and the POSIX leg are for the orchestrator. No `#ifdef`/platform code changed.

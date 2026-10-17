@@ -202,7 +202,9 @@ struct MemberInfo {
     bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
     bool isOpen = false;          // `open`/`abstract` — overridable from a subclass (C#-convention `override`)
     bool isAsync = false;         // an `async` method — its call result is `Awaitable<ret>` (§4.7)
-    std::size_t required = 0;     // leading params with no default — the minimum a call must supply
+    bool isReadOnly = false;      // a `let` field or a `const`: never assignable, except a `let` instance
+                                  // field through `this` in a constructor of its own class (C# `readonly`)
+    std::size_t required = 0;    // leading params with no default — the minimum a call must supply
     std::vector<std::string> generics; // the method's own type-param names (for TypeArg inference)
     std::vector<std::string> numericParams; // subset of `generics` bounded by INumber (must infer to a number)
     std::vector<GenericParam> boundSpecs;   // the method's bounded type params (nominal bounds checked at the call)
@@ -431,6 +433,7 @@ private:
                                 // methods (where currentThis_ is Unknown) so its statics/consts resolve unqualified
     bool inActual_ = false; // checking a target-gated `actual` body — the only place `extern` is allowed
     bool inAsync_ = false;  // checking an `async fn`/method body — the only place `await` is allowed (§4.7)
+    bool inCtor_ = false;   // checking a class constructor body — the only place a `let` instance field is written
     bool isBindingAllowed_ = false; // the next `is` checked sits on an if-condition's `&&` spine (P37 B3)
     CompilationUnit* unit_ = nullptr; // for P37 D: Meta materialization is recorded onto the unit
     std::unordered_map<std::string, const ExternAttrDecl*> externAttrs_; // Tier 1 declarations by name
@@ -806,6 +809,7 @@ private:
             if (mod == "open" || mod == "abstract") mi.isOpen = true;
         }
         mi.isAsync = m.isAsync;
+        mi.isReadOnly = m.kind == MemberKind::Const || (m.kind == MemberKind::Field && !m.isMutable);
         return mi;
     }
     void addMembers(TypeInfo& ti, const std::vector<Member>& members) {
@@ -1320,6 +1324,7 @@ private:
                 currentThis_ = isStatic ? tUnknown() : tNamed(typeName); // no `this` inside a static method
                 currentReturn_ = (m.kind == MemberKind::Constructor) ? namedType("unit") : m.returnType;
                 inAsync_ = m.isAsync;
+                inCtor_ = m.kind == MemberKind::Constructor;
                 scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
@@ -1336,6 +1341,7 @@ private:
                 popScope();
                 scopeStart_ = {}; scopeEnd_ = {};
                 inAsync_ = false;
+                inCtor_ = false;
                 currentThis_ = tNamed(typeName);
             } else if ((m.kind == MemberKind::Field || m.kind == MemberKind::Const) && m.init) {
                 // P40 follow-up: a field initializer is an expression like any other — it was never checked, so it
@@ -1770,7 +1776,22 @@ private:
                 if (s.target && s.target->kind == ExprKind::Name) {
                     const std::string& nm = s.target->text;
                     const Local* local = lookup(nm);
-                    if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
+                    // A bare name resolves for a write exactly as for a read (checkName): a local first, then
+                    // — unless a module value claims the name — a static field of the enclosing class, which
+                    // lowers to the qualified `Owner.name` access every target already writes.
+                    const MemberInfo* st = (!local && !values_.count(nm)) ? enclosingStatic(nm) : nullptr;
+                    if (st) {
+                        s.target->staticOwner = currentClass_;
+                        s.target->type = st->type;
+                        checkMemberWritable(*st, currentClass_, currentClass_ + "." + nm, /*viaThis=*/false, /*isStatic=*/true, s.pos);
+                        if (s.op != "=" && st->type.nullable)
+                            diags_.error(s.pos, "'" + s.op + "' target '" + nm + "' of type '" + showTy(st->type) +
+                                                    "' may be null; read it with '??' or '!' and assign the result");
+                        const bool userCompound = s.op != "=" && st->type.kind == TypeRef::Kind::Named &&
+                                                  !st->type.name.empty() && knownType(st->type) &&
+                                                  !isBuiltinType(st->type.name);
+                        if (!userCompound) checkConvert(s.value, st->type, "assignment to '" + nm + "'");
+                    } else if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
                         s.target->type = local->type; // stamp: the C7 compound rewrite keys on this
                         if (!local->isMutable) diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
@@ -1792,6 +1813,17 @@ private:
                     }
                 } else if (s.target) {
                     const TypeRef tt = checkExpr(*s.target);
+                    if (s.target->kind == ExprKind::Member && s.target->lhs) { // `Type.f = …` / `recv.f = …`
+                        const Expr& r = *s.target->lhs;
+                        if (r.kind == ExprKind::Name && !enumNames_.count(r.text) && types_.count(r.text)) {
+                            if (const MemberInfo* m = findMember(r.text, s.target->text))
+                                checkMemberWritable(*m, r.text, r.text + "." + s.target->text, false, true, s.pos);
+                        } else if (knownType(r.type)) {
+                            if (MemberHit hit = findMemberOn(r.type, s.target->text); hit.m)
+                                checkMemberWritable(*hit.m, hit.owner, hit.owner + "." + s.target->text,
+                                                    r.kind == ExprKind::This, hit.m->isStatic, s.pos);
+                        }
+                    }
                     if (s.op != "=" && tt.nullable) // P40 A4 (N1, S7 hole): the compound op reads a maybe-null value
                         diags_.error(s.pos, "'" + s.op + "' target of type '" + showTy(tt) +
                                                 "' may be null; read it with '??' or '!' and assign the result");
@@ -2520,6 +2552,29 @@ private:
             (m->kind == MemberKind::Const || m->kind == MemberKind::Field || m->kind == MemberKind::Property))
             return m;
         return nullptr;
+    }
+
+    // A write to a member slot (`Owner.f = …`, a bare static `f = …`, `recv.f = …`, compound or plain). A
+    // `const` and a `static let` are never assignable (C# `const`/`static readonly`, a PHP class `const`); a
+    // `let` instance field only through `this`, directly in a constructor of the class that declares it — the
+    // C# `readonly` rule. Every other write used to reach the targets unchecked: C# refused it at compile
+    // time (CS0131/CS0198/CS0191) while TS/Python/PHP silently mutated the "immutable" field.
+    void checkMemberWritable(const MemberInfo& m, const std::string& owner, const std::string& shown,
+                             bool viaThis, bool isStatic, SourcePos pos) {
+        if (!m.isReadOnly) return;
+        if (m.kind == MemberKind::Const) {
+            diags_.error(pos, "cannot assign to constant '" + shown + "'");
+            return;
+        }
+        if (isStatic) {
+            diags_.error(pos, "cannot assign to immutable static field '" + shown + "' (declared with 'static let'); "
+                              "declare it 'static var' to make it assignable");
+            return;
+        }
+        const bool ownInit = viaThis && inCtor_ && lambdaDepth_ == 0 && owner == currentClass_;
+        if (!ownInit)
+            diags_.error(pos, "cannot assign to immutable field '" + shown + "' (declared with 'let') outside a "
+                              "constructor of '" + owner + "'; declare it 'var' to make it assignable");
     }
 
     TypeRef checkName(Expr& e) {
