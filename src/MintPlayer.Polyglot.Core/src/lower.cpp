@@ -172,6 +172,15 @@ public:
         };
         for (const auto& r : unit.records) noteIndexer(r.name, r.members);
         for (const auto& c : unit.classes) noteIndexer(c.name, c.members);
+        // Class static fields: a static access `Owner.name` to one carries its mutability and literal-ness
+        // (ir::Member::staticField*), so a target that spells constants and static variables differently can.
+        for (const auto& c : unit.classes)
+            for (const auto& mem : c.members)
+                if (mem.kind == MemberKind::Field || mem.kind == MemberKind::Const) {
+                    bool isStatic = mem.kind == MemberKind::Const;
+                    for (const auto& mod : mem.modifiers) if (mod == "static") isStatic = true;
+                    if (isStatic) staticFields_[c.name + "." + mem.name] = {mem.isMutable, mem.init && isLiteralInit(*mem.init)};
+                }
         // P37 D: attribute machinery — Tier 1 bindings by name, and the Tier 2 materialized set (attribute
         // records some Meta query constructs; the rest emit nothing).
         unit_ = &unit;
@@ -502,6 +511,29 @@ private:
     std::unordered_set<std::string> indexerTypes_;                   // types declaring `operator fn get`
     std::unordered_set<std::string> userEqTypes_;                    // types declaring `operator fn eq` (#49)
     std::unordered_map<std::string, std::unordered_set<std::string>> propertyMembers_; // type -> computed-property names
+    struct StaticFieldFacts { bool isMutable; bool initIsLiteral; };
+    std::unordered_map<std::string, StaticFieldFacts> staticFields_; // "Class.field" -> its facts (class statics)
+    // A single literal — optionally a negated numeric one — is what every target accepts as a compile-time
+    // constant (ir::ClassField::initIsLiteral).
+    static bool isLiteralInit(const Expr& e) {
+        switch (e.kind) {
+            case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::CharLit:
+            case ExprKind::StringLit: case ExprKind::BoolLit: case ExprKind::NullLit:
+                return true;
+            case ExprKind::Unary:
+                return e.text == "-" && e.lhs && (e.lhs->kind == ExprKind::IntLit || e.lhs->kind == ExprKind::FloatLit);
+            default:
+                return false;
+        }
+    }
+    // Stamps a static Member with the facts of the class static field it names (no-op for anything else).
+    void stampStaticField(ir::Member& m) const {
+        auto it = staticFields_.find(m.staticType + "." + m.field);
+        if (it == staticFields_.end()) return;
+        m.staticField = true;
+        m.staticFieldMutable = it->second.isMutable;
+        m.staticFieldInitIsLiteral = it->second.initIsLiteral;
+    }
     std::unordered_map<std::string, std::unordered_set<std::string>> enumCases_;
     std::unordered_map<std::string, std::string> caseUnion_;                       // case -> union
     std::unordered_map<std::string, std::vector<std::string>> caseFields_;         // case -> field names
@@ -710,7 +742,7 @@ private:
                     f.isStatic = mem.kind == MemberKind::Const;
                     for (const auto& mod : mem.modifiers) if (mod == "static") f.isStatic = true;
                     f.type = mem.type;
-                    if (mem.init) f.init = expr(*mem.init);
+                    if (mem.init) { f.init = expr(*mem.init); f.initIsLiteral = isLiteralInit(*mem.init); }
                     ic.fields.push_back(std::move(f));
                     break;
                 }
@@ -859,6 +891,7 @@ private:
                 if (!e.staticOwner.empty()) { // bare ref to an enclosing-class static/const -> `Owner.name`
                     auto m = std::make_unique<ir::Member>(e.pos, e.type, nullptr, e.text, false);
                     m->staticType = e.staticOwner;
+                    stampStaticField(*m);
                     return m;
                 }
                 return std::make_unique<ir::Var>(e.pos, e.type, e.text);
@@ -949,6 +982,7 @@ private:
                     (typeNames_.count(e.lhs->text) || enumCases_.count(e.lhs->text))) {
                     auto m = std::make_unique<ir::Member>(e.pos, e.type, nullptr, e.text, e.flag);
                     m->staticType = e.lhs->text;
+                    stampStaticField(*m);
                     return m;
                 }
                 if (e.lhs->type.kind == TypeRef::Kind::Named) { // bound std/core property (List.count, Error.message)

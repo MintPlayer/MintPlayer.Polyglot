@@ -106,6 +106,7 @@ $cases = [ordered]@{
     "std_reserved_prefix.pg"    = @("'__pgCharAt' uses a prefix reserved for the Polyglot std library")
     "unreachable_code.pg"       = @("unreachable code", "remove it")
     "missing_return.pg"         = @("function 'sign' can reach the end of its body without returning a value")
+    "lambda_missing_return.pg"  = @("this lambda can reach the end of its body without returning a value")
     "field_one_branch.pg"       = @("field 'name' of class 'Cfg' is not assigned on every path through init")
     "field_early_return.pg"     = @("returns before field 'b' is assigned")
     "self_compare.pg"           = @("compares a value with itself", "Math.isNaN")

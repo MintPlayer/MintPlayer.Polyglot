@@ -1,0 +1,41 @@
+// P40 follow-up: class static fields whose initializer is not a literal. PHP allows only constant expressions
+// in a class `const` or a property default, so `static let Y: i32 = f()` used to emit `const Y = f();` — a fatal
+// error at load — and a `static var` was declared `public static $Z` but read and written as the constant
+// `K::Z`. A literal-initialized `static let` stays a PHP `const`; every other static field is a static property
+// (`K::$Y`), and a non-literal initializer is assigned right after the class, in declaration order. Python had
+// the same root cause (`Derived = Limits.Max * 3` in the class body: NameError, the class is not bound yet).
+// And field initializers are now type-checked like any expression: they carried no types, so no i32 masking.
+
+fn seed(): i32 => 40 + 2
+
+class Limits {
+  static let Max: i32 = 7                       // literal: a PHP const
+  static let Neg: f64 = -1.5                    // negated literal: still a const
+  static let Computed: i32 = seed()             // a call: a static property, assigned after the class
+  static let Derived: i32 = Limits.Max * 3      // reads another static
+  static let Wrapped: i32 = Limits.Max * 400000000  // i32 overflow wraps in an initializer too
+  static let Label: string = "max=${Limits.Max}"     // interpolation: not a literal
+  static var Counter: i32 = 1                   // mutable with a literal default
+  static var Total: i32 = seed() + Limits.Max   // mutable, non-literal
+
+  static fn bump(): i32 {
+    Limits.Counter = Counter + 1
+    Limits.Total = Total + Counter
+    return Total
+  }
+}
+
+fn main() {
+  print(Limits.Max)
+  print(Limits.Neg)
+  print(Limits.Computed)
+  print(Limits.Derived)
+  print(Limits.Wrapped)
+  print(Limits.Label)
+  print(Limits.Counter)
+  print(Limits.Total)
+  print(Limits.bump())
+  Limits.Counter = Limits.Counter + 10
+  print(Limits.bump())
+  print(Limits.Counter)
+}

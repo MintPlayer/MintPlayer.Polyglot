@@ -1830,6 +1830,8 @@
       }
     },
     "ClassDecl": {
+      "seq": [
+      {
       "block": {
         "head": {
           "call": "pyClassHead"
@@ -1838,6 +1840,11 @@
           {
             "mapDecl": "decl.staticInitFields",
             "each": {
+              "case": {
+                "when": [
+                  [
+                    { "eq": ["item.initIsLiteral", "true"] },
+                    {
               "line": {
                 "tmpl": [
                   {
@@ -1852,6 +1859,10 @@
                   {
                     "emit": "item.init"
                   }
+                ]
+              }
+                    }
+                  ]
                 ]
               }
             }
@@ -1993,7 +2004,7 @@
                     "and": [
                       {
                         "eq": [
-                          "decl.staticInitFields.count",
+                          "decl.literalStaticInitCount",
                           "0"
                         ]
                       },
@@ -2020,6 +2031,27 @@
           }
         ]
       }
+      },
+      {
+        "mapDecl": "decl.staticInitFields",
+        "each": {
+          "case": {
+            "when": [
+              [
+                { "eq": ["item.initIsLiteral", "false"] },
+                { "line": { "tmpl": [
+                  { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                  ".",
+                  { "fn": "ident", "args": [ { "get": "item.name" } ] },
+                  " = ",
+                  { "emit": "item.init" }
+                ] } }
+              ]
+            ]
+          }
+        }
+      }
+      ]
     },
     "pyParam": {
       "tmpl": [

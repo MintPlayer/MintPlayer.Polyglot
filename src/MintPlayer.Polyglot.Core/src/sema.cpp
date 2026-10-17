@@ -1337,6 +1337,18 @@ private:
                 scopeStart_ = {}; scopeEnd_ = {};
                 inAsync_ = false;
                 currentThis_ = tNamed(typeName);
+            } else if ((m.kind == MemberKind::Field || m.kind == MemberKind::Const) && m.init) {
+                // P40 follow-up: a field initializer is an expression like any other — it was never checked, so it
+                // carried no types: no i32 overflow masking (`static let D: i32 = K.X * 3` wrapped on C# only),
+                // no conversion into the declared type, no name/type errors. A static one has no `this`.
+                bool isStatic = m.kind == MemberKind::Const;
+                for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
+                currentThis_ = isStatic ? tUnknown() : tNamed(typeName);
+                pushScope();
+                checkExpr(*m.init);
+                checkConvert(m.init, m.type, "initializer of field '" + m.name + "'");
+                popScope();
+                currentThis_ = tNamed(typeName);
             } else if (m.kind == MemberKind::Property && (m.init || !m.body.empty() || m.hasSetter)) {
                 currentReturn_ = m.type;
                 pushScope();
@@ -1494,6 +1506,9 @@ private:
             if (lam.lhs) checkConvert(lam.lhs, ret, "lambda result");
             return;
         }
+        // The block must produce that result on every path (checked by the flow pass, like a function body). An
+        // async result of unit (`Awaitable<unit>`) is a plain completion, not a value.
+        if (!(isAwaitable(ret) && (ret.args.empty() || isUnitT(ret.args[0])))) lam.lambdaNeedsValue = true;
         std::function<void(std::vector<StmtPtr>&)> walk = [&](std::vector<StmtPtr>& body) {
             for (auto& s : body) {
                 if (!s) continue;

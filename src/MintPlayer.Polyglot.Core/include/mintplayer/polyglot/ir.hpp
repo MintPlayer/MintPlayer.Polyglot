@@ -197,6 +197,12 @@ struct Member : Expr { // field / property access `object.field` — or a static
     // this and emit a plain field access; a target that emulates properties as methods (PHP) emits a call
     // `recv->field()`. A target-neutral fact stamped at lowering from the receiver type's members.
     bool isProperty = false;
+    // A static access that names a class's static FIELD (not an enum case or a method): its mutability and
+    // whether its initializer is a literal (ClassField::initIsLiteral). A target that stores constants and
+    // static variables differently (PHP `K::X` vs `K::$X`) picks the spelling from these.
+    bool staticField = false;
+    bool staticFieldMutable = false;
+    bool staticFieldInitIsLiteral = false;
     Member(SourcePos p, Type t, ExprPtr o, std::string f, bool ns)
         : Expr(ExprKind::Member, p, std::move(t)), object(std::move(o)), field(std::move(f)), nullSafe(ns) {}
 };
@@ -603,6 +609,10 @@ struct ClassField {
     bool isStatic = false;  // a `const`/`static` member — accessed `Owner.name`, emitted `static`/`readonly`
     Type type;
     ExprPtr init;   // optional field initializer (may be null)
+    // The initializer is a single literal (`7`, `-1.5`, `"s"`, `true`, `null`): a value every target can spell
+    // where only a compile-time constant is allowed. P40 follow-up: PHP's class `const` (and a static property's
+    // inline default) requires one — `const Y = f();` was a fatal error at load.
+    bool initIsLiteral = false;
 };
 struct Class { // a mutable reference type
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)

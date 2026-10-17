@@ -4791,6 +4791,27 @@ int main() {
                      "  } catch (e: Error) when (x > 5) {\n    return \"big\"\n  } catch (e: Error) {\n    return \"c\"\n  }\n}\n"
                      "fn main() { print(f(1)) }\n"),
                   "P40 A9: a try whose body and catches all return needs no trailing return");
+            // P40 follow-up: the same rule for a block lambda whose result (from the function type it flows into)
+            // is a value; a unit-result block lambda, or one whose every path returns/throws, passes.
+            const std::string applyFn = "fn apply(f: (i32) => i32, x: i32): i32 => f(x)\nfn run(f: (i32) => unit) { f(1) }\n";
+            check(refused(applyFn + "fn main() {\n  print(apply((n) => {\n    if n > 0 { return n }\n  }, 3))\n}\n",
+                          "this lambda can reach the end of its body without returning a value"),
+                  "P40 follow-up: a value-result block lambda with a reachable end is refused");
+            check(ok(applyFn + "fn main() {\n  print(apply((n) => {\n    if n > 0 { return n }\n    throw Error(\"neg\")\n  }, 3))\n}\n"),
+                  "P40 follow-up: a block lambda that returns or throws on every path passes");
+            check(ok(applyFn + "fn main() {\n  run((n) => {\n    if n > 0 { print(n) }\n  })\n}\n"),
+                  "P40 follow-up: a unit-result block lambda needs no return");
+            {
+                // P40 follow-up: PHP class statics. Only a literal-initialized `static let` is a `const`; any other
+                // static is a static property (`K::$x`), a non-literal initializer assigned right after the class.
+                EmitResult php = compileStd("fn seed(): i32 => 42\nclass K {\n  static let A: i32 = 7\n  static let B: i32 = seed()\n"
+                                            "  static var C: i32 = 1\n}\nfn main() {\n  K.C = K.C + K.B\n  print(K.A + K.C)\n}\n",
+                                            findTarget("php"));
+                check(php.ok && has(php.code, "const A = 7;") && has(php.code, "public static $B;") &&
+                          !has(php.code, "const B") && has(php.code, "public static $C = 1;") &&
+                          has(php.code, "K::$B = seed();") && has(php.code, "K::$C = ") && has(php.code, "K::A + K::$C"),
+                      "P40 follow-up: PHP `static let Y = f()` is a static property assigned after the class, not `const Y = f();`");
+            }
             check(refused("fn f(): i32 {\n  throw Error(\"x\")\n  return 1\n}\nfn main() { print(f()) }\n", "unreachable code"),
                   "P40 B11: a statement after `throw` is refused as unreachable");
             check(refused("fn f(x: i32) {\n  for i in 0..x {\n    continue\n    print(i)\n  }\n}\nfn main() { f(1) }\n",

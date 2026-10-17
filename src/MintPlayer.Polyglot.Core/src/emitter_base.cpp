@@ -157,6 +157,9 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.field")      return m.field;
         if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
         if (path == "node.isProperty") return m.isProperty ? "true" : "false";
+        if (path == "node.staticField")               return m.staticField ? "true" : "false";
+        if (path == "node.staticFieldMutable")        return m.staticFieldMutable ? "true" : "false";
+        if (path == "node.staticFieldInitIsLiteral")  return m.staticFieldInitIsLiteral ? "true" : "false";
     }
     if (e_.kind == ir::ExprKind::MethodCall) {
         const auto& mc = static_cast<const ir::MethodCall&>(e_);
@@ -1154,6 +1157,11 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     if (path == "decl.hasExtBase")       return extBase_ >= 0 ? "true" : "false";
     if (path == "decl.ifaceBases.count")         return std::to_string(ifaceBases_.size());
     if (path == "decl.staticInitFields.count")   return std::to_string(staticInit_.size());
+    if (path == "decl.literalStaticInitCount") { // the static inits a target may keep inside the class body
+        std::size_t n = 0;
+        for (std::size_t i : staticInit_) if (c_.fields[i].initIsLiteral) ++n;
+        return std::to_string(n);
+    }
     if (path == "decl.instanceInitFields.count") return std::to_string(instanceInit_.size());
     std::size_t i = 0;
     std::string f;
@@ -1168,6 +1176,7 @@ std::string ClassDeclCtx::get(const std::string& path) const {
         if (f == "isStatic")  return fld.isStatic ? "true" : "false";
         if (f == "isMutable") return fld.isMutable ? "true" : "false";
         if (f == "hasInit")   return fld.init ? "true" : "false";
+        if (f == "initIsLiteral") return fld.initIsLiteral ? "true" : "false";
         if (f == "shadowsBaseRoot") // P40 B2: the plugin's `baseRootMembers` table lists `<root>.<member>`
             return !c_.baseRoot.empty() && !fld.isStatic &&
                            !hooks_.table("baseRootMembers", c_.baseRoot + "." + fld.name).empty()
@@ -1180,6 +1189,8 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     }
     if (path.rfind("decl.staticInitFields.", 0) == 0 && splitIndexed(path, 22, i, f) && i < staticInit_.size()) {
         if (f == "name") return c_.fields[staticInit_[i]].name;
+        if (f == "isMutable")     return c_.fields[staticInit_[i]].isMutable ? "true" : "false";
+        if (f == "initIsLiteral") return c_.fields[staticInit_[i]].initIsLiteral ? "true" : "false";
     }
     if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size()) {
         if (f == "name") return c_.fields[instanceInit_[i]].name;

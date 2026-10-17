@@ -145,6 +145,10 @@ struct Expr {
     // non-null here (`if x != null { … x … }`). `type` is the non-nullable type; lowering keeps the
     // variable's nullable type on the read and converts it (a value-type Nullable<T> needs the unwrap on C#).
     bool narrowedNonNull = false;
+    // Lambda with a block body (set by sema — P40 follow-up): it flows into a function type whose result is a
+    // concrete non-unit type, so every path of the block must `return` a value or `throw` (the flow pass checks
+    // it, as for a function). Unset when the result type is unknown or unit.
+    bool lambdaNeedsValue = false;
 
     ExprPtr lhs;                // operand/object/left/callee/base/cond/scrutinee
     ExprPtr rhs;                // Binary/Range right | IfExpr then

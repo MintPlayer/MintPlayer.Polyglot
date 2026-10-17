@@ -1,0 +1,10 @@
+// REFUSED (P40 follow-up): a block lambda whose result is a value but whose end is reachable. C# refuses it
+// (CS1643); TS, Python and PHP would silently produce undefined/None/null for the negative path.
+fn apply(f: (i32) => i32, x: i32): i32 => f(x)
+
+fn main() {
+  let r = apply((n) => {
+    if n > 0 { return n * 2 }
+  }, 3)
+  print(r)
+}

@@ -69,8 +69,13 @@ public:
         if (e->kind == ExprKind::Lambda && e->flag) { // a block-bodied lambda: its own reachability scope
             std::vector<bool> saved;
             saved.swap(loops_);
-            block(e->block);
+            const bool completes = block(e->block);
             loops_.swap(saved);
+            // P40 follow-up: a block lambda whose result is a value (sema: lambdaNeedsValue) must not fall off its
+            // end — C# refuses it (CS1643) and TS/Python/PHP would silently produce undefined/None/null.
+            if (e->lambdaNeedsValue && completes && !containsYield(e->block))
+                d_.error(e->pos, "this lambda can reach the end of its body without returning a value — every "
+                                 "path must `return` a value or `throw`");
         } else {
             for (const auto& s : e->block) stmt(*s);
         }

@@ -488,7 +488,9 @@ differently:
   the TS guard chain ends in an unconditional rethrow when no catch completes, so tsc proves the end too.
 - **A missing return** — a value-returning function, method, getter or extension whose end is reachable
   (*… can reach the end of its body without returning a value*; C# CS0161, TS TS2366, while Python/PHP would
-  silently return `None`/`null`). Iterators (`yield`) are exempt; block-bodied lambdas are not checked yet.
+  silently return `None`/`null`). Iterators (`yield`) are exempt. A block-bodied lambda is held to the same
+  rule when the function type it flows into has a concrete non-unit result (*this lambda can reach the end of
+  its body without returning a value*; C# CS1643); a lambda whose result type is unknown or unit is not.
 - **Definite assignment of class fields** — a field without an initializer must be assigned on **every**
   path through each `init` that completes, and before every early `return` in it (*… is not assigned on every
   path through init* / *`init` … returns before field 'x' is assigned*). Both `if` branches must assign; a
