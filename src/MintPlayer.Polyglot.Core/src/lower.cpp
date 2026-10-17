@@ -96,6 +96,7 @@ std::vector<std::string> scanGlobalRefs(const std::unordered_set<std::string>& g
 class Lowerer { // per-target since P19 slice 9: binding/extern-type arms are picked here, not at emit
 public:
     Lowerer(const CompilationUnit& unit, std::string target) : target_(std::move(target)) {
+        if (const Backend* b = findBackend(target_)) nativeCompound_ = b->nativeCompoundAssign();
         // Names that denote a constructible type, so `Name(args)` lowers to a construction, not a call.
         // (Error/Iterable arrive as core-prelude `extern class`es in unit.classes — no special-case here.)
         for (const auto& r : unit.records) typeNames_.insert(r.name);
@@ -492,6 +493,11 @@ private:
     std::vector<std::string> attrImports_;          // Tier 1 import/using lines (deduped, verbatim)
     Backend::ConstSpelling spell_;                  // the active plugin's constant spellings (data, not names)
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
+    // P40: the target's native `a op= b` is faithful to its Binary rule (plugin trait); else compounds expand.
+    bool nativeCompound_ = false;
+    // P40: surface sub-expressions of a compound target that were hoisted into a temp — `expr()` lowers each
+    // to that temp's Var, so the write side and the re-read side both see the single evaluation.
+    std::unordered_map<const Expr*, std::string> evalOnce_;
     std::vector<ir::LoweringFailure> failures_; // P40 A2: expressions with no lowering (a Polyglot bug)
     bool sawYield_ = false;     // set while lowering a function body that contains `yield`
     bool inExtension_ = false;  // set while lowering an extension body, so `this` lowers to `self`
@@ -860,6 +866,10 @@ private:
     }
 
     ir::ExprPtr expr(const Expr& e) {
+        // P40: a compound target's impure receiver/index, already evaluated once into a temp.
+        if (!evalOnce_.empty())
+            if (auto it = evalOnce_.find(&e); it != evalOnce_.end())
+                return std::make_unique<ir::Var>(e.pos, e.type, it->second);
         switch (e.kind) {
             case ExprKind::IntLit:    return std::make_unique<ir::IntLit>(e.pos, e.type, stripNumericSuffix(e.text));
             case ExprKind::FloatLit:  return std::make_unique<ir::FloatLit>(e.pos, e.type, stripNumericSuffix(e.text));
@@ -1211,6 +1221,14 @@ private:
                     }
                     return std::make_unique<ir::Assign>(s.pos, expr(*s.target), "=", std::move(b));
                 }
+                // P40: a compound op on a built-in scalar slot (local, field, static, element) is the binary
+                // op plus a store — `t op= v` means `t = t op v` with t's receiver/indices evaluated once. On
+                // a target whose native compound is not faithful to its Binary rule (no §3.C wrap on TS/
+                // Python/PHP, float `/=` on Python, `+=` on a PHP string) lower it to exactly that, so the
+                // Binary rule's masking, integer division and concatenation apply. An impure receiver/index
+                // is evaluated once into a temp first (in source order, ahead of the value, as `op=` does).
+                if (!nativeCompound_ && s.op != "=" && s.op != "??=" && s.target)
+                    return expandCompound(s);
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
             }
             case StmtKind::ExprStmt: {
@@ -1306,6 +1324,65 @@ private:
             default:
                 return nullptr; // statements beyond the current surface are lowered in later P5 increments
         }
+    }
+
+    // P40: may this surface expression be lowered twice (the write and the re-read of a compound target)
+    // without changing behaviour? Names, `this`, literals, field reads off such a base, and built-in
+    // arithmetic over them. A call, a computed property (getter), a bound std member, a user operator or
+    // anything else is not — it is evaluated once into a temp instead.
+    bool rereadable(const Expr& e) const {
+        auto primitive = [](const TypeRef& t) {
+            return t.kind == TypeRef::Kind::Named && !t.nullable && isPrimitiveTypeName(t.name);
+        };
+        switch (e.kind) {
+            case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::CharLit: case ExprKind::StringLit:
+            case ExprKind::BoolLit: case ExprKind::NullLit: case ExprKind::Name: case ExprKind::This:
+                return true;
+            case ExprKind::Member: {
+                if (!e.lhs || e.flag) return false; // a null-safe `?.` read is not a plain field read
+                if (e.lhs->kind == ExprKind::Name &&
+                    (typeNames_.count(e.lhs->text) || enumCases_.count(e.lhs->text)))
+                    return true; // a static field `Owner.f`
+                if (e.lhs->type.kind == TypeRef::Kind::Named) {
+                    if (findBinding(e.lhs->type.name, e.text)) return false;
+                    auto pit = propertyMembers_.find(e.lhs->type.name);
+                    if (pit != propertyMembers_.end() && pit->second.count(e.text)) return false;
+                }
+                return rereadable(*e.lhs);
+            }
+            case ExprKind::Unary:
+                return e.lhs && primitive(e.lhs->type) && rereadable(*e.lhs);
+            case ExprKind::Binary:
+                return e.lhs && e.rhs && e.text != "??" && primitive(e.lhs->type) && primitive(e.rhs->type) &&
+                       rereadable(*e.lhs) && rereadable(*e.rhs);
+            default:
+                return false;
+        }
+    }
+
+    // P40: `t op= v` -> `t = t op v` (ir::Assign::compoundOp keeps the source op for the emitter's fold).
+    ir::StmtPtr expandCompound(const Stmt& s) {
+        const Expr& t = *s.target;
+        std::vector<const Expr*> parts; // the target's receiver, then its indices — source evaluation order
+        if ((t.kind == ExprKind::Member || t.kind == ExprKind::Index) && t.lhs) parts.push_back(t.lhs.get());
+        if (t.kind == ExprKind::Index)
+            for (const auto& a : t.args) parts.push_back(a.get());
+        std::vector<const Expr*> hoisted;
+        for (const Expr* p : parts) {
+            if (rereadable(*p)) continue;
+            std::string name = "__c" + std::to_string(tmpCounter_++);
+            pendingStmts_.push_back(std::make_unique<ir::Let>(p->pos, name, false, p->type, expr(*p)));
+            evalOnce_[p] = name;
+            hoisted.push_back(p);
+        }
+        auto write = expr(t);
+        auto read = expr(t);
+        for (const Expr* p : hoisted) evalOnce_.erase(p);
+        const std::string binOp = s.op.substr(0, s.op.size() - 1);
+        auto b = std::make_unique<ir::Binary>(s.pos, t.type, binOp, std::move(read), expr(*s.value));
+        auto a = std::make_unique<ir::Assign>(s.pos, std::move(write), "=", std::move(b));
+        a->compoundOp = s.op;
+        return a;
     }
 
     std::vector<ir::StmtPtr> block(const std::vector<StmtPtr>& body) {

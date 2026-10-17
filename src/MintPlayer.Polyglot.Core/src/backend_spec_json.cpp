@@ -80,6 +80,7 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     r.spec.linksWithoutImports   = doc["linksWithoutImports"].asBool(false);
     r.spec.forbidsShadowedLocals = doc["forbidsShadowedLocals"].asBool(false);
     r.spec.expressionOnlyLambdas = doc["expressionOnlyLambdas"].asBool(false);
+    r.spec.nativeCompoundAssign  = doc["nativeCompoundAssign"].asBool(false);
 
     // P40 A1: per-context literal spelling. Shape-checked here so a broken context never emits a literal the
     // target misreads: every context names its quote, maps the backslash and that quote, and carries a
@@ -323,7 +324,8 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"constArrayClose\":" + json::quote(spec.constArrayClose) +
            std::string(",\"linksWithoutImports\":") + (spec.linksWithoutImports ? "true" : "false") +
            std::string(",\"forbidsShadowedLocals\":") + (spec.forbidsShadowedLocals ? "true" : "false") +
-           std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") + gen + wa + an + tbls + escs + ids + "}";
+           std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") +
+           std::string(",\"nativeCompoundAssign\":") + (spec.nativeCompoundAssign ? "true" : "false") + gen + wa + an + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

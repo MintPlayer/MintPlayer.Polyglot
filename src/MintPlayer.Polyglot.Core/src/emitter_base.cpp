@@ -2177,6 +2177,21 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
     switch (s.kind) {
         case ir::StmtKind::Assign: {
             const auto& a = static_cast<const ir::Assign&>(s);
+            // P40: an expanded compound `t = t op v` folds back to the idiomatic `t op= v` exactly when the
+            // Binary rule rendered the plain infix `t op v` (or `t op (v)`) — then the native compound means
+            // the same thing. Any masking/helper/concat spelling (TS `(t + v | 0)`, PHP `t . v`) stays expanded.
+            if (!a.compoundOp.empty() && a.value && a.value->kind == ir::ExprKind::Binary) {
+                const auto& b = static_cast<const ir::Binary&>(*a.value);
+                const std::string t = emitExpr(*a.target);
+                const std::string v = emitExpr(*a.value);
+                const std::string r = emitExpr(*b.rhs);
+                const std::string head = t + " " + b.op + " ";
+                if (v == head + r || v == head + "(" + r + ")")
+                    line(t + " " + a.compoundOp + " " + r + spec().stmtEnd);
+                else
+                    line(t + " = " + v + spec().stmtEnd);
+                return;
+            }
             line(emitExpr(*a.target) + " " + a.op + " " + emitExpr(*a.value) + spec().stmtEnd);
             return;
         }

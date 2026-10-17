@@ -4823,11 +4823,11 @@ int main() {
                 EmitResult php = compileStd(src, findTarget("php"));
                 check(cs.ok && has(cs.code, "K.C = K.C + 1;") && has(cs.code, "K.C += 2;") && has(cs.code, "K.C = K.C * 3;"),
                       "P40 follow-up: C# bare static write `C = C + 1` lowers to the static access");
-                check(ts.ok && has(ts.code, "K.C = (K.C + 1 | 0);") && has(ts.code, "K.C += 2;"),
+                check(ts.ok && has(ts.code, "K.C = (K.C + 1 | 0);") && has(ts.code, "K.C = (K.C + 2 | 0);"),
                       "P40 follow-up: TS bare static write lowers to `K.C`");
-                check(py.ok && has(py.code, "K.C = ((((K.C + 1)") && has(py.code, "K.C += 2"),
+                check(py.ok && has(py.code, "K.C = ((((K.C + 1)") && has(py.code, "K.C = ((((K.C + 2)"),
                       "P40 follow-up: Python bare static write lowers to `K.C`");
-                check(php.ok && has(php.code, "K::$C = ((((K::$C + 1)") && has(php.code, "K::$C += 2;"),
+                check(php.ok && has(php.code, "K::$C = ((((K::$C + 1)") && has(php.code, "K::$C = ((((K::$C + 2)"),
                       "P40 follow-up: PHP bare static write lowers to the static property `K::$C`");
                 // A local of the same name shadows the static for the write as for the read.
                 EmitResult sh = compileStd("class K {\n  static var C: i32 = 1\n  static fn f(): i32 {\n    var C = 5\n    C = C + 1\n"
@@ -4852,6 +4852,48 @@ int main() {
                 check(refused("class K {\n  let y: i32 = 0\n  constructor(v: i32) {\n    let f = () => { this.y = v }\n    f()\n  }\n}\n"
                               "fn main() { print(K(3).y) }\n", "cannot assign to immutable field 'K.y'"),
                       "P40 follow-up: a `let` field cannot be assigned from a lambda inside a constructor (C# CS1673/CS0191)");
+            }
+            {
+                // P40: a compound `t op= v` is the binary op plus a store. C# keeps its native compound (the
+                // `nativeCompoundAssign` trait — it narrows back implicitly); TS/Python/PHP expand it so the
+                // Binary rule's §3.C wrap, integer division and concatenation apply, with an impure
+                // receiver/index evaluated once into a temp, and fold back to `op=` where the rule is plain.
+                const std::string src =
+                    "import { List } from \"std.collections\"\n"
+                    "class P {\n  var n: i32 = 0\n  var big: i64 = 0\n  var s: string = \"\"\n}\n"
+                    "fn at(i: i32): i32 => i\nfn pick(p: P): P => p\n"
+                    "fn main() {\n  var a: i32 = 1\n  a += 2\n  a /= 2\n  var w: i64 = 1i64\n  w += 2i64\n"
+                    "  var b: u8 = 1u8\n  b -= 2u8\n  var f: f64 = 1.0\n  f += 0.5\n  var t = \"x\"\n  t += \"y\"\n"
+                    "  var xs: List<i32> = [1, 2]\n  xs[at(0)] += 1\n  let p = P()\n  pick(p).n *= 2\n  p.big += 1\n"
+                    "  p.s += \"z\"\n  print(a)\n  print(w)\n  print(b)\n  print(f)\n  print(t)\n  print(xs[0])\n}\n";
+                EmitResult cs = compileStd(src, findTarget("csharp"));
+                EmitResult ts = compileStd(src, findTarget("typescript"));
+                EmitResult py = compileStd(src, findTarget("python"));
+                EmitResult php = compileStd(src, findTarget("php"));
+                check(cs.ok && has(cs.code, "a += 2;") && has(cs.code, "a /= 2;") && has(cs.code, "b -= 2;") &&
+                          has(cs.code, ".at(0)] += 1;") && has(cs.code, ".pick(p).n *= 2;") && has(cs.code, "t += \"y\";") &&
+                          has(cs.code, "p.big += 1L;") &&
+                          !has(cs.code, "__c"),
+                      "P40: C# keeps native compounds (nativeCompoundAssign) — no expansion, no temps");
+                check(ts.ok && has(ts.code, "a = (a + 2 | 0);") && has(ts.code, "a = (a / 2 | 0);") &&
+                          has(ts.code, "w = BigInt.asIntN(64, w + 2n);") && has(ts.code, "b = (b - 2 & 0xff);") &&
+                          has(ts.code, "f += 0.5;") && has(ts.code, "t += \"y\";") && has(ts.code, "p.s += \"z\";") &&
+                          has(ts.code, "p.big = BigInt.asIntN(64, p.big + 1n);"),
+                      "P40: TS integer compounds wrap like the binary op; float/string compounds fold back to `op=`");
+                check(ts.ok && has(ts.code, "const __c0 = at(0);") && has(ts.code, "xs[__c0] = (xs[__c0] + 1 | 0);") &&
+                          has(ts.code, "const __c1 = pick(p);") && has(ts.code, "__c1.n = Math.imul(__c1.n, 2);"),
+                      "P40: an impure index/receiver of a compound target is evaluated once into a temp");
+                check(py.ok && has(py.code, "a = ((((a + 2)") && has(py.code, "_pg_idiv(a, 2)") &&
+                          has(py.code, "b = ((b - 2) & 0xff)") && has(py.code, "t += \"y\"") &&
+                          has(py.code, "xs[__c0] = ((((xs[__c0] + 1)"),
+                      "P40: Python integer compounds wrap and floor-free divide like the binary op");
+                check(php.ok && has(php.code, "$a = (((($a + 2)") && has(php.code, "$t = $t . \"y\";") &&
+                          has(php.code, "$p->s = $p->s . \"z\";") && !has(php.code, "+= \"") &&
+                          has(php.code, "$xs[$__c0] = (((($xs[$__c0] + 1)"),
+                      "P40: PHP string compounds concatenate with `.` (a `+=` on a string is a TypeError)");
+                check(refused("class P {\n  var n: i32 = 0\n}\nfn main() {\n  let p = P()\n  p.n += 1.5\n}\n",
+                              "cannot implicitly convert f64 to i32"),
+                      "P40: a compound on a field converts its value into the slot (an f64 into an i32 field is refused)");
             }
             check(refused("fn f(): i32 {\n  throw Error(\"x\")\n  return 1\n}\nfn main() { print(f()) }\n", "unreachable code"),
                   "P40 B11: a statement after `throw` is refused as unreachable");

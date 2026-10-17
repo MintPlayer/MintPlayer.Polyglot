@@ -597,6 +597,12 @@ and rewrite the cast site. **Implicit** user conversions are refused (invisible 
 **Compound assignment** on a user type lowers to `target = <op>(target, value)`; through a user indexer
 it becomes the get+set pair; the receiver must be a simple name/`this` (hoist a computed receiver to a
 local — single evaluation by construction).
+On a **built-in** slot (a local, field, static or element of a scalar or `string` type), `t op= v` means
+exactly `t = t op v` — the same §3.C wrap, integer division/modulo truncation and concatenation as the
+binary operator — with `t`'s receiver and indices evaluated **once**, and `v` converts into `t`'s type as
+in a plain assignment. A target whose native compound already means that (the plugin trait
+`nativeCompoundAssign`; C#) keeps it; elsewhere the compound expands, an impure receiver/index goes to a
+temp first, and the output folds back to `op=` only where the binary op needs no wrap or helper.
 
 Operator support is **graded per target** via keyed capabilities
 `operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}`: PHP supports `:eq` (`->eq(...)`)

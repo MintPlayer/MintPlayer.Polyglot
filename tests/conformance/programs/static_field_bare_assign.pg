@@ -2,10 +2,8 @@
 // `Counter = Counter + 1` inside a method of the class used to fail with "assignment to undeclared", although
 // the read `Counter` resolved. A bare write now resolves like the read — a local first, then a static of the
 // enclosing class — and lowers to the qualified access each target already writes (C#/TS/Python
-// `Tally.Counter`, PHP `Tally::$Counter`). Compound operators go the same way. They stay on in-range integers
-// here: an overflowing integer `x += …` is not masked on TS/Python/PHP, and a string `s += …` is a PHP
-// TypeError, for EVERY kind of target (a local too) — separate, pre-existing compound-lowering gaps. A local
-// of the same name still shadows the static.
+// `Tally.Counter`, PHP `Tally::$Counter`). Compound operators go the same way, wrap and concatenation included
+// (`compound_overflow` covers compounds in general). A local of the same name still shadows the static.
 
 class Tally {
   static var Counter: i32 = 0
@@ -25,8 +23,8 @@ class Tally {
     Counter += 10
     Counter -= 1
     Counter *= 2
-    Log = Log + "c"
-    Big = Big + 2000000000     // wraps like i32 on every target
+    Log += "c"                 // a string compound concatenates (PHP `.`)
+    Big += 2000000000          // wraps like i32 on every target
     Scale *= 2.0
   }
 

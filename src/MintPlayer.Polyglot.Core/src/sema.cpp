@@ -1830,7 +1830,6 @@ private:
                     // A field/element is a typed slot like a local: the value converts into it (widening,
                     // list-literal typing, the T?-representation boundary of SPEC §4.4). It used to skip
                     // every conversion, so `this.item = slot.peek()` stored an Option in a `string?` field.
-                    if (s.op == "=") checkConvert(s.value, tt, "assignment");
                     // P37 C7: a compound op on a user-typed Member/Index target — or through a USER
                     // indexer even with scalar elements — re-lowers the target for the read side, so the
                     // base must be pure (a name or `this`) for single evaluation; a computed receiver is
@@ -1841,6 +1840,12 @@ private:
                     const bool userIndexer = s.target->kind == ExprKind::Index && s.target->lhs &&
                                              s.target->lhs->type.kind == TypeRef::Kind::Named &&
                                              findMember(s.target->lhs->type.name, "get") != nullptr;
+                    // P40: a compound op on a built-in slot converts its value into the slot like a local's
+                    // does (it used to skip conversion here, so `this.big += 1` on an i64 field added a JS
+                    // number to a BigInt, and `this.n += 1.5` on an i32 field reached the targets). On a user
+                    // type the operator member's own signature governs instead (C7, as for locals).
+                    if (s.op == "=" || (s.op != "??=" && !userTyped))
+                        checkConvert(s.value, tt, s.op == "=" ? "assignment" : "'" + s.op + "' assignment");
                     if (s.op != "=" &&
                         (s.target->kind == ExprKind::Member || s.target->kind == ExprKind::Index) &&
                         (userTyped || userIndexer)) {

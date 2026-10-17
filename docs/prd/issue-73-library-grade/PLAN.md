@@ -1265,3 +1265,33 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     cli-smoke, lsp, synthetic culture); the floor leg (0 diagnostics); conformance with the culture leg (139
     programs; the new one agrees on all four targets after its string compound was replaced, see above). The
     full tier and the POSIX leg are for the orchestrator. No `#ifdef`/platform code changed.
+- **2026-10-18 — compound assignment goes through the binary operator: as built.**
+  - **The gaps (found in the previous entry):** a compound `t op= v` stayed a native `op=` on every target, so on
+    TS/Python/PHP an integer compound skipped the §3.C wrap (`a += …` printed 4000000000 vs C#'s -294967296),
+    Python's `/=` on an int gave a float, `%=`/`/=` skipped the truncating helpers, and a string `+=` was a PHP
+    TypeError — for locals, fields, statics and elements alike. Also, a compound on a field/element never
+    converted its value: `p.big += 1` on an i64 field added a JS number to a BigInt (TypeError), and
+    `p.n += 1.5` on an i32 field reached the targets.
+  - **Design:** `t op= v` means `t = t op v` with t's receiver and indices evaluated once. A plugin trait,
+    `nativeCompoundAssign` (C# only — its compound narrows back implicitly, so it already equals its Binary
+    rule), keeps the native form. Elsewhere lowering expands the compound (`ir::Assign::compoundOp` keeps the
+    source op): an impure receiver/index (a call, a getter, a bound std member, a user operator — anything but
+    names, `this`, literals, field reads and built-in arithmetic over them) is hoisted into a `__cN` temp in
+    source order, then the target is lowered twice through the same temps. Every op but `??=` goes this way,
+    bitwise and shifts included. The emitter folds an expanded compound back to `t op= v` exactly when the
+    Binary rule rendered the plain infix `t op v`, so float and string compounds on TS/Python keep their
+    idiomatic form, while wrapped/helper/concat spellings stay expanded (PHP `$s = $s . "x"`). Sema now
+    converts a built-in field/element compound's value into the slot, as it already did for locals.
+  - **Not changed:** PHP has no i64 wrap (SPEC's published caveat), for compounds as for the binary op, so the
+    conformance program keeps its i64 compounds inside ±2⁶³ and the TS `BigInt.asIntN` wrap is unit-tested.
+    The C7 user-type/user-indexer path is unchanged (it still requires a simple receiver).
+  - **Tests:** conformance `compound_overflow` (+ `.expected`; the older `compound_assign` stays as it was) — locals, fields through `this` and a receiver,
+    bare and qualified statics, list/array elements with a side-effecting index (evaluated once), a
+    side-effecting receiver, i8/i16/i32/u8/u16/u32 at their wrap boundaries, i64 past 2⁵³, int `/`/`%`
+    truncation, bitwise and shift compounds, floats and strings; `static_field_bare_assign` now uses the
+    overflowing and string compounds it had to avoid; unit checks for each target's emission, the temps, C#'s
+    native form, and the field-conversion refusal. SPEC §6.1 and plugin-authoring document the trait.
+  - **Verified:** MSBuild build; the unit exe (1069 checks); `-Tier fast`; conformance with the culture leg (140
+    programs agree on all four targets — the full corpus run, plus the restored `compound_assign` re-run); the floor
+    leg; the library gate. The full tier and the POSIX leg are
+    for the orchestrator. No `#ifdef`/platform code changed.

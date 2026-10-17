@@ -127,6 +127,12 @@ struct BackendSpec {
     bool linksWithoutImports = false;  // modules link by compilation into one unit (no import statements)
     bool forbidsShadowedLocals = false; // a nested-scope local may not reuse an outer local's name (CS0136)
     bool expressionOnlyLambdas = false; // lambdas are expression-only; block lambdas hoist to local fns
+    // A native `a op= b` on a built-in scalar slot means exactly `a = a op b` as the Binary rule renders it
+    // (same §3.C wrap, integer division, concatenation) — C#'s compound narrows back implicitly. Off (the
+    // default), lowering expands every compound to `a = a op b` with the target's receiver/indices
+    // evaluated once, so the Binary rule's masking applies; the emitter folds the result back to `a op= b`
+    // only where that rule rendered the plain infix form.
+    bool nativeCompoundAssign = false;
 
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming

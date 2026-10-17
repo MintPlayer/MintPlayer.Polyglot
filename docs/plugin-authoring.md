@@ -186,6 +186,7 @@ pass on comes from `spec` properties instead:
 | `linksWithoutImports` | `false` | modules link by compilation into one unit — no import statements (C#) |
 | `forbidsShadowedLocals` | `false` | a nested-scope local may not reuse an outer local's name → the scope-legalization pass runs (C#, CS0136) |
 | `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
+| `nativeCompoundAssign` | `false` | a native `a op= b` on a built-in scalar slot means exactly `a = a op b` as the `Binary` rule renders it — same §3.C wrap, integer division and concatenation (C#, whose compound narrows back implicitly). Off, lowering expands each compound to `a = a op b`, evaluating the target's receiver and indices once (impure ones go to a temp), so the `Binary` rule's masking applies; the emitter folds it back to `a op= b` only where the rule rendered the plain infix `a op b` |
 
 Capabilities also serve the **anti-silent-drop coverage contract** enforced at load time: every IR
 construct the compiler can produce must have a rule, *or* the plugin must declare its stance via the

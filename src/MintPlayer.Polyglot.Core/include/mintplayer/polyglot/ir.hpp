@@ -344,6 +344,10 @@ struct Assign : Stmt {
     // Capture analysis (P25 §4.18): the assignment target is a variable boxed into a shared cell — a
     // value-capture target writes through the cell (mirrors ir::Var.throughCell for the write side).
     bool targetThroughCell = false;
+    // P40: non-empty = lowering EXPANDED a source compound `t op= v` into this `t = t op v` (op "=", value a
+    // Binary whose lhs re-reads the target), so the Binary rule's §3.C masking/division/concat applies. The
+    // emitter folds it back to `t op= v` only when that rule rendered the plain infix `t op v`.
+    std::string compoundOp;
     Assign(SourcePos p, ExprPtr t, std::string o, ExprPtr v)
         : Stmt(StmtKind::Assign, p), target(std::move(t)), op(std::move(o)), value(std::move(v)) {}
 };

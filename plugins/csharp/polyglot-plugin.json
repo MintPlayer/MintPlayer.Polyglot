@@ -138,6 +138,7 @@
     "constArrayClose": "}",
     "linksWithoutImports": true,
     "forbidsShadowedLocals": true,
+    "nativeCompoundAssign": true,
     "literals": {
       "string": {
         "quote": "\"",
