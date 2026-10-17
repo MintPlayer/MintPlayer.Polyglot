@@ -15,8 +15,9 @@
 #      noImplicitOverride, noPropertyAccessFromIndexSignature, noImplicitReturns, noFallthroughCasesInSwitch,
 #      isolatedModules, declaration + emitDeclarationOnly, ES2022 target and lib — P40 D10), so a type error or
 #      an undeclarable export in any emitted module — not just a missing export — fails the gate;
-#   5. re-checks every io-free program under lib ["ES2022","dom"] with NO `process` shim (the DOM leg: proves
-#      unreached std-io code is not emitted — P40 §0 reachability).
+#   5. re-checks every io-free program under MintPlayer.Spark's ng-spark tsconfig.lib.json flags VERBATIM
+#      (importHelpers, module ES2022, lib ["ES2022","DOM"], declaration + source maps, NO `process` shim — the DOM
+#      leg: pins D10 to the consumer's real flag set, and proves unreached std-io code is not emitted — P40 §0).
 # Plus (P40 B2): docs/lang/samples, and an Angular-style `public-api.ts` barrel (`export *`) over the dedicated
 # two-module library in tests/library/barrel — module-local prelude copies must not collide through it.
 #
@@ -76,7 +77,6 @@ declare const process: { getBuiltinModule(id: string): any };
 # P40 B2 / D10: the Angular CLI LIBRARY flag set (what `ng new --strict` + ng-packagr apply), with declaration
 # emit ON (`emitDeclarationOnly` into a scratch outDir) instead of `noEmit` — a library must also produce a
 # clean .d.ts, which catches an exported signature naming something the module cannot describe.
-# `allowImportingTsExtensions` lets a consumer import "./prog.ts" by its real name (legal with emitDeclarationOnly).
 function Write-TsConfig([string]$path, [string[]]$lib, [string[]]$include, [string]$outDir) {
     $cfg = [ordered]@{
         compilerOptions = [ordered]@{
@@ -93,8 +93,41 @@ function Write-TsConfig([string]$path, [string[]]$lib, [string[]]$include, [stri
             lib = $lib
             module = "esnext"
             moduleResolution = "bundler"
-            allowImportingTsExtensions = $true
             skipLibCheck = $true
+            types = @()
+        }
+        include = $include
+        exclude = @("_dts-*/**")
+    }
+    $cfg | ConvertTo-Json -Depth 5 | Set-Content $path
+}
+
+# P40 review (A2): the DOM leg is Spark's flag set VERBATIM — the compilerOptions of MintPlayer.Spark's
+# libs/node_packages/ng-spark/tsconfig.lib.json, the library the TS twin is compiled into by ng-packagr (its
+# tsconfig.base.json adds only `paths`). Nothing is added, dropped or changed except `outDir` (a scratch dir), so
+# D10 is pinned to what the consumer actually runs: importHelpers, module ES2022, lib ["ES2022","DOM"], full JS
+# + declaration + source-map emit. Keep it in sync with that file; the node leg above stays the hermetic variant
+# (lib ES2022 + the env.d.ts Node shim) for the programs that use std io.
+function Write-SparkTsConfig([string]$path, [string[]]$include, [string]$outDir) {
+    $cfg = [ordered]@{
+        compilerOptions = [ordered]@{
+            strict = $true
+            noImplicitOverride = $true
+            noPropertyAccessFromIndexSignature = $true
+            noImplicitReturns = $true
+            noFallthroughCasesInSwitch = $true
+            skipLibCheck = $true
+            isolatedModules = $true
+            experimentalDecorators = $true
+            importHelpers = $true
+            target = "ES2022"
+            module = "ES2022"
+            moduleResolution = "bundler"
+            declaration = $true
+            sourceMap = $true
+            inlineSources = $true
+            outDir = $outDir
+            lib = @("ES2022", "DOM")
             types = @()
         }
         include = $include
@@ -162,7 +195,7 @@ function Assert-Consumable($name, $stem, $dir, $pgSources = $null) {
     # Consume it: a sibling module that imports the emitted one. If the module weren't importable this
     # would not type-check. `void m` references the namespace so it isn't an unused import.
     @"
-import * as m from "./$stem.ts";
+import * as m from "./$stem";
 void m;
 "@ | Set-Content (Join-Path $dir "_consumer.ts")
 
@@ -202,10 +235,10 @@ function Stage-Barrel {
         Assert-Consumable ("barrel " + $m.BaseName) $m.BaseName $dir @($pg)
     }
     # The barrel itself, and a consumer importing NAMED symbols from both modules through it.
-    ($mods | ForEach-Object { "export * from `"./$($_.BaseName).ts`";" }) -join "`n" | Set-Content (Join-Path $dir "public-api.ts")
+    ($mods | ForEach-Object { "export * from `"./$($_.BaseName)`";" }) -join "`n" | Set-Content (Join-Path $dir "public-api.ts")
     @'
-import { shapes, area, total, largest, Slot, Cell } from "./public-api.ts";
-import type { Shape } from "./public-api.ts";
+import { shapes, area, total, largest, Slot, Cell } from "./public-api";
+import type { Shape } from "./public-api";
 const xs: Shape[] = [...shapes(), { tag: "Circle", r: 2 }];
 const sum: number = total(xs) + area(xs[0]!) + largest([1, 2]);
 const s = new Slot<string>("a", true);
@@ -264,7 +297,7 @@ echo \Libs\Alpha\greet() . "+" . \Libs\Beta\greet() . "+" . \Libs\Alpha\tag()->n
 \Libs\Beta\shout();
 '@ | Set-Content (Join-Path $proj "consumer.php")
     $out = (& php (Join-Path $proj "consumer.php") 2>&1 | Out-String).Trim() -replace "`r", ""
-    if ($out -eq "alpha+beta+alpha+beta`nalpha`nbeta") {
+    if ([string]::Equals($out, "alpha+beta+alpha+beta`nalpha`nbeta", [StringComparison]::Ordinal)) {
         Write-Host "[PASS] two PHP libraries with the same names load side by side in distinct namespaces"
     } else {
         Fail "PHP multi-library: unexpected output:`n$out"
@@ -338,11 +371,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "==> DOM leg: $($domDirs.Count) io-free program(s) under lib [ES2022, dom] with NO process shim"
+Write-Host "==> DOM leg: $($domDirs.Count) io-free program(s) under Spark's ng-spark tsconfig.lib.json flags verbatim (lib [ES2022, DOM], NO process shim)"
 if ($domDirs.Count -eq 0) {
     Fail "DOM leg: no io-free program was staged (the leg would pass vacuously)"
 } else {
-    Write-TsConfig (Join-Path $work "tsconfig.dom.json") @("ES2022", "dom") @($domDirs | ForEach-Object { "$_/**/*.ts" }) "_dts-dom"
+    Write-SparkTsConfig (Join-Path $work "tsconfig.dom.json") @($domDirs | ForEach-Object { "$_/**/*.ts" }) "_dts-dom"
     $domOut = & tsc -p (Join-Path $work "tsconfig.dom.json") 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         Write-Host ((($domOut.Trim()) -split "`r?`n" | Select-Object -First 40) -join "`n")

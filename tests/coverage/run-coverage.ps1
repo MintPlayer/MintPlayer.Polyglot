@@ -145,7 +145,7 @@ try {
         }
         $a = (Get-Content $actual -Raw) -replace "`r`n", "`n"
         $e = (Get-Content $expectedPath -Raw) -replace "`r`n", "`n"
-        Check ($a -eq $e) "coverage remap ($($case.fmt)) matches the expected .pg-keyed report"
+        Check ([string]::Equals($a, $e, [StringComparison]::Ordinal)) "coverage remap ($($case.fmt)) matches the expected .pg-keyed report"
         Check ($a -match 'docs/lang/samples/03_enums_unions_match\.pg') `
             "coverage remap ($($case.fmt)) keys the report on a repo-relative .pg path"
     }

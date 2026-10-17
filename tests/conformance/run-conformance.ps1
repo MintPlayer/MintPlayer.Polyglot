@@ -315,7 +315,7 @@ function Invoke-ProgramWorker {
             for ($i = 0; $i -lt $n; $i++) {
                 $wl = if ($i -lt $w.Count) { $w[$i] } else { '<eof>' }
                 $gl = if ($i -lt $g.Count) { $g[$i] } else { '<eof>' }
-                if ($wl -ne $gl) {
+                if (-not [string]::Equals($wl, $gl, [StringComparison]::Ordinal)) {
                     $clip = { param($s) if ($s.Length -gt 160) { $s.Substring(0, 160) + '…' } else { $s } }
                     return "line $($i + 1): want '$(& $clip $wl)' got '$(& $clip $gl)'"
                 }
@@ -345,7 +345,10 @@ function Invoke-ProgramWorker {
                 return (& $result $false)
             }
             $outputs[$t] = $out
-            if ($oracle -ne $out) {
+            # P40 review (B9): every output comparison in this runner is ORDINAL. PowerShell's -ne is
+            # case-insensitive and culture-aware ("1E+21" -ne "1e+21" and "HELLO" -ne "hello" are both False,
+            # and even -cne ignores culture-ignorable code points such as U+00AD), so real divergences passed.
+            if (-not [string]::Equals($oracle, $out, [StringComparison]::Ordinal)) {
                 $lines.Add("[FAIL] $name : C# and $label diverged")
                 $lines.Add("        C#:  $($oracle -replace "`r?`n", ' | ')")
                 $lines.Add("        $($label): $($out -replace "`r?`n", ' | ')")
@@ -357,7 +360,7 @@ function Invoke-ProgramWorker {
                 $hr = Invoke-WithTimeout -FilePath $phpExe -Arguments @('-d', 'precision=17', '-d', 'serialize_precision=17', $file) -WorkingDirectory $dir -MergeStdErr
                 if ($hr.TimedOut) { $lines.Add("[FAIL] $name : timed out after 60s (php, hostile precision)"); return (& $result $false) }
                 $hout = Format-Golden $hr.Stdout
-                if ($hr.ExitCode -ne 0 -or $hout -ne $oracle) {
+                if ($hr.ExitCode -ne 0 -or -not [string]::Equals($hout, $oracle, [StringComparison]::Ordinal)) {
                     $lines.Add("[FAIL] $name : PHP under -d precision=17 -d serialize_precision=17 diverged (exit $($hr.ExitCode)): $(& $firstDiff $oracle $hout)")
                     return (& $result $false)
                 }
@@ -377,8 +380,15 @@ function Invoke-ProgramWorker {
                 $lines.Add("[FAIL] $name : generated C# crashed under culture $cul (exit $($cr.ExitCode)): $(($cr.Stderr.Trim() -split "`n" | Select-Object -First 2) -join ' ')")
                 return (& $result $false)
             }
+            # P40 review (B9): the positive control. A hook that never loaded leaves the run invariant, so its
+            # stdout matches the oracle and the compare below would pass vacuously; the hook's ok line proves
+            # it ran and the culture took effect.
+            if (-not $cr.Stderr.Contains("PgCultureHook: ok $cul", [StringComparison]::Ordinal)) {
+                $lines.Add("[FAIL] $name : culture $cul — the startup hook never reported 'PgCultureHook: ok $cul' (it did not load; the leg must not pass vacuously)")
+                return (& $result $false)
+            }
             $cout = Format-Golden $cr.Stdout
-            if ($cout -ne $oracle) {
+            if (-not [string]::Equals($cout, $oracle, [StringComparison]::Ordinal)) {
                 $lines.Add("[FAIL] $name : C# output changed under culture $cul — $(& $firstDiff $oracle $cout)")
                 return (& $result $false)
             }
@@ -390,7 +400,7 @@ function Invoke-ProgramWorker {
         if (Test-Path $golden) {
             $exp = Format-Golden (Get-Content $golden -Raw)
             foreach ($t in $progTargets) {
-                if ((Format-Golden $outputs[$t]) -ne $exp) {
+                if (-not [string]::Equals((Format-Golden $outputs[$t]), $exp, [StringComparison]::Ordinal)) {
                     $lines.Add("[FAIL] $name : $t output differs from $name.expected")
                     return (& $result $false)
                 }

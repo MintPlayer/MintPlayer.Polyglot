@@ -71,10 +71,12 @@ struct Parser {
 
     std::string parseString() {
         std::string out;
+        const std::size_t open = i;
         ++i; // opening quote
+        bool closed = false;
         while (i < s.size()) {
             char c = s[i++];
-            if (c == '"') break;
+            if (c == '"') { closed = true; break; }
             if (c != '\\') { out += c; continue; }
             if (i >= s.size()) break;
             char e = s[i++];
@@ -108,7 +110,16 @@ struct Parser {
                     break;
             }
         }
+        if (!closed) fail(open, "unterminated string");
         return out;
+    }
+
+    // A bare literal (true/false/null) must be spelled out in full: `tru` or `nul` is a malformed document.
+    bool literal(const char* word) {
+        const std::size_t n = std::char_traits<char>::length(word);
+        if (s.compare(i, n, word) != 0) { fail(i, "invalid literal (expected '" + std::string(word) + "')"); i = s.size(); return false; }
+        i += n;
+        return true;
     }
 
     // Stamps every parsed value with the offset of its first character. Wrapping the dispatch keeps
@@ -123,28 +134,55 @@ struct Parser {
     }
 
     Value parseValueInner() {
-        if (i >= s.size()) return {};
+        if (i >= s.size()) { fail(i, "unexpected end of input (expected a value)"); return {}; }
         char c = s[i];
         if (c == '{') return parseObject();
         if (c == '[') return parseArray();
         if (c == '"') { Value v; v.kind = Value::Kind::String; v.str = parseString(); return v; }
-        if (c == 't') { i += 4; Value v; v.kind = Value::Kind::Bool; v.boolean = true;  return v; }
-        if (c == 'f') { i += 5; Value v; v.kind = Value::Kind::Bool; v.boolean = false; return v; }
-        if (c == 'n') { i += 4; return {}; } // null
+        if (c == 't') { Value v; if (literal("true"))  { v.kind = Value::Kind::Bool; v.boolean = true;  } return v; }
+        if (c == 'f') { Value v; if (literal("false")) { v.kind = Value::Kind::Bool; v.boolean = false; } return v; }
+        if (c == 'n') { literal("null"); return {}; }
         return parseNumber();
     }
 
+    static bool isDigit(char c) { return c >= '0' && c <= '9'; }
+
+    // The JSON number grammar: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)? — anything else (an empty value,
+    // `+1`, `01`, `1.`, a stray character) is a malformed document, never a silent 0.
     Value parseNumber() {
         std::size_t start = i;
         while (i < s.size()) {
             char c = s[i];
-            if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') ++i;
+            if (isDigit(c) || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') ++i;
             else break;
         }
         Value v;
         v.kind = Value::Kind::Number;
         v.str = s.substr(start, i - start);
         v.num = std::strtod(v.str.c_str(), nullptr);
+        const std::string& t = v.str;
+        std::size_t k = 0;
+        bool ok = !t.empty();
+        if (ok && t[k] == '-') ++k;
+        if (ok && k < t.size() && t[k] == '0') ++k;
+        else if (ok && k < t.size() && isDigit(t[k])) { while (k < t.size() && isDigit(t[k])) ++k; }
+        else ok = false;
+        if (ok && k < t.size() && t[k] == '.') {
+            ++k;
+            if (k >= t.size() || !isDigit(t[k])) ok = false;
+            while (k < t.size() && isDigit(t[k])) ++k;
+        }
+        if (ok && k < t.size() && (t[k] == 'e' || t[k] == 'E')) {
+            ++k;
+            if (k < t.size() && (t[k] == '+' || t[k] == '-')) ++k;
+            if (k >= t.size() || !isDigit(t[k])) ok = false;
+            while (k < t.size() && isDigit(t[k])) ++k;
+        }
+        if (!ok || k != t.size()) {
+            fail(start, t.empty() ? std::string("unexpected character '") + (start < s.size() ? s[start] : '?') + "' (expected a value)"
+                                  : "invalid number '" + t + "'");
+            if (t.empty()) i = s.size(); // no progress is possible: stop here rather than loop
+        }
         return v;
     }
 
@@ -154,13 +192,15 @@ struct Parser {
         ++i; // '['
         ws();
         if (i < s.size() && s[i] == ']') { ++i; return v; }
+        bool closed = false;
         while (i < s.size()) {
             v.arr.push_back(parseValue());
             ws();
             if (i < s.size() && s[i] == ',') { ++i; continue; }
-            if (i < s.size() && s[i] == ']') { ++i; break; }
+            if (i < s.size() && s[i] == ']') { ++i; closed = true; break; }
             break;
         }
+        if (!closed) fail(i, i < s.size() ? "expected ',' or ']' in an array" : "unterminated array");
         return v;
     }
 
@@ -170,18 +210,30 @@ struct Parser {
         ++i; // '{'
         ws();
         if (i < s.size() && s[i] == '}') { ++i; return v; }
+        bool closed = false;
         while (i < s.size()) {
             ws();
-            if (i >= s.size() || s[i] != '"') break;
+            if (i >= s.size() || s[i] != '"') { fail(i, "expected a string key in an object"); break; }
             std::string key = parseString();
             ws();
             if (i < s.size() && s[i] == ':') ++i;
+            else fail(i, "expected ':' after an object key");
             v.members.emplace_back(std::move(key), parseValue());
             ws();
             if (i < s.size() && s[i] == ',') { ++i; continue; }
-            if (i < s.size() && s[i] == '}') { ++i; break; }
+            if (i < s.size() && s[i] == '}') { ++i; closed = true; break; }
             break;
         }
+        if (!closed) fail(i, i < s.size() ? "expected ',' or '}' in an object" : "unterminated object");
+        return v;
+    }
+
+    // The whole document: one value (after an optional UTF-8 BOM an editor may add), then only whitespace.
+    Value parseDocument() {
+        if (s.compare(0, 3, "\xEF\xBB\xBF") == 0) i = 3;
+        Value v = parseValue();
+        ws();
+        if (i < s.size()) fail(i, "unexpected content after the JSON value");
         return v;
     }
 };
@@ -190,12 +242,12 @@ struct Parser {
 
 Value parse(const std::string& text) {
     Parser p{text};
-    return p.parseValue();
+    return p.parseDocument();
 }
 
 Value parse(const std::string& text, std::string& error) {
     Parser p{text};
-    Value v = p.parseValue();
+    Value v = p.parseDocument();
     error = p.error;
     return v;
 }

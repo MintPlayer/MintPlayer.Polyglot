@@ -1,0 +1,28 @@
+# D8 floor gate — TEMPORARY allow list (tests/floor/run-floor.ps1). Format: <program> <CSxxxx> <count>.
+#
+# THIS LIST MUST BE EMPTY AFTER THE P40 REVIEW-2 MERGE. Every entry is a diagnostic the Spark review of PR #75
+# (part 2, A9 + B11) found in the corpus' C# at C# 11 + net8.0 + Nullable + TreatWarningsAsErrors, and every one
+# is being fixed on the language/emitter half of the same PR. The gate matches EXACTLY: a diagnostic not listed
+# fails, and a listed one that stops firing fails as "stale", so this file can only shrink — to nothing.
+#
+# A9 — unused catch variable: `catch (T e)` / `catch (Boom _)` with the name unused (emit `catch (T)`).
+async_compose            CS0168 1
+catch_when               CS0168 1
+disposal_throw           CS0168 1
+exceptions               CS0168 1
+try_multi_catch          CS0168 2
+# A9 — the trailing `return` TS needs after a try whose arms all return/throw is unreachable in C#.
+catch_when               CS0162 3
+# B11 — dead code after an always-throwing `use` (the source; consider a diagnostic).
+disposal_throw           CS0162 1
+# A9 — a record with a custom `eq`: Equals(Money) should take Money?, and no matching GetHashCode.
+operator_eq              CS8767 1
+operator_eq              CS8851 1
+# A9 — user operator ==/!= take non-nullable parameters although `m == null` is supported.
+operator_null_eq         CS8604 4
+operator_null_eq         CS8625 4
+# B11 — self-comparisons in the corpus (`a >= a`, `HttpCode.Ok == HttpCode.Ok`, the NaN idiom `v != v`).
+enum_values              CS1718 1
+fruitcake                CS1718 1
+operators_full           CS1718 1
+precedence_null_coalesce CS1718 1

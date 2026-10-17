@@ -65,7 +65,7 @@ void printUsage() {
         << "                            [--lib <a,b>] [--target-option <target>.<name>=<value>]\n"
         << "                            [--origin-info] [--check] [--watch]\n"
         << "                            [--record <file>] [--depfile <file>]\n"
-        << "                            [--adopt] [--build-owned <dir>]\n"
+        << "                            [--outputs-list <file>] [--adopt] [--build-owned <dir>]\n"
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
@@ -91,9 +91,11 @@ void printUsage() {
         << "         output folder (discovery mode); the folder must be a dedicated subfolder.\n"
         << "         An existing file without that header line and not in the outputs record is never\n"
         << "         overwritten (exit 1). --adopt takes such files over once (outputs of polyglot\n"
-        << "         0.10.x carried no header); --build-owned <dir> exempts a directory the caller owns\n"
-        << "         outright (MSBuild passes its obj/ output dir). --depfile <file> lists every input the outputs\n"
-        << "         depend on (configs, lockfiles, every .pg, file: plugins), one path per line.\n"
+        << "         0.10.x carried no header; MSBuild: set PolyglotAdopt=true for one build);\n"
+        << "         --build-owned <dir> exempts a directory the caller owns outright (MSBuild passes its\n"
+        << "         obj/.../polyglot/ folder). --depfile <file> lists every input the outputs depend on\n"
+        << "         (configs, lockfiles, every .pg, file: plugins), one path per line. --outputs-list\n"
+        << "         <file> writes the outputs this run produced, one absolute path per line.\n"
         << "         --origin-info records where each emitted line came from, so coverage tools\n"
         << "         attribute generated code back to the .pg (C#: #line pragmas; TypeScript: a v3\n"
         << "         source map). Off by default - output is byte-identical without it. A target\n"
@@ -152,6 +154,35 @@ void resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false) {
         if (!findTarget(t).ok())
             std::cerr << "polyglot: target '" << t << "' is neither bundled nor provided by a pgconfig "
                       << "dependency; add one, e.g. \"dependencies\": { \"" << t << "\": \"latest\" }\n";
+}
+
+// P40 review (A5): ONE refusal for a pgconfig that fails to parse or validate, shared by every command that
+// reads one (build — `--target` and `--only` included —, check, install). None may run with the config
+// silently ignored and exit 0. Validates the WHOLE config, not only the part this run uses: every declared
+// target must resolve (even when `--only`/`--target` would skip it) and every targetOptions layer must check.
+// Returns 0 when the config is usable (or absent), else 64 after printing every problem.
+int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::TargetOptionsByTarget& flags = {}) {
+    for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
+    if (!pc.errors.empty()) return 64;
+    if (!pc.found) {
+        std::vector<std::string> flagErrors; // --target-option still validates without a config
+        cli::validateTargetOptions(pc, flags, flagErrors);
+        for (const auto& m : flagErrors) std::cerr << "polyglot: " << m << "\n";
+        return flagErrors.empty() ? 0 : 64;
+    }
+    resolveConfiguredTargets(pc, dryRun); // pgconfig `dependencies` + lock-first cache + registry (P30)
+    int rc = 0;
+    for (const auto& t : pc.targets) {
+        BackendHandle h = findTarget(t);
+        if (!h.ok()) {
+            std::cerr << "polyglot: " << (pc.dir / "pgconfig.json").string() << ": " << h.error() << "\n";
+            rc = 64;
+        }
+    }
+    std::vector<std::string> optErrors; // every targetOptions layer, against the loaded plugins (P40 B1)
+    cli::validateTargetOptions(pc, flags, optErrors);
+    for (const auto& m : optErrors) std::cerr << "polyglot: " << m << "\n";
+    return optErrors.empty() ? rc : 64;
 }
 
 // Resolves a cross-`.pg` import to a file. A bare specifier ("a.b.c") is a logical module name resolved
@@ -290,7 +321,8 @@ std::string sinkPut(cli::OutputSink& sink, const fs::path& out, const std::strin
             else
                 m += "does not carry the `" + claim.headerLine + "` line";
             m += " and is not in the outputs record, so it is never overwritten; move it out of the way, or "
-                 "pass --adopt once to take over outputs of a polyglot older than 0.11 (which wrote no header)";
+                 "pass --adopt once to take over outputs of a polyglot older than 0.11 (which wrote no header; "
+                 "under MSBuild, build once with -p:PolyglotAdopt=true)";
             return m;
         }
         case cli::OutputSink::Put::Failed: return "cannot write '" + out.string() + "'";
@@ -850,8 +882,9 @@ struct BuildOpts {
 // merging, dependency resolution, target-set selection, and the single- or multi-file (§4.5) emit,
 // with outputs routed through the group's `include` rules. Every file goes through the run's one sink.
 int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs, const BuildOpts& o) {
-    for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
-    if (!pc.errors.empty()) return 64;
+    // P40 review (A5): parse/shape errors, every declared target, every targetOptions layer — before anything
+    // is written, and whatever --target / --only would have skipped.
+    if (const int refused = refuseInvalidConfig(pc, run.dryRun(), o.optionFlags)) return refused;
 
     const fs::path firstInput = inputs.front();
     // P40 A5: absolute, so the resolver's default root and every relative specifier are cwd-independent.
@@ -880,16 +913,8 @@ int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs,
                 run.deps.insert((pc.dir / spec.substr(5) / "polyglot-plugin.json").lexically_normal().make_preferred().string());
     }
 
-    resolveConfiguredTargets(pc, run.dryRun()); // pgconfig `dependencies` + lock-first cache + registry (P30)
-
-    // P40 B1: every targetOptions layer is validated against the plugins up front — an unknown target or
-    // option, or a value failing its pattern, refuses before anything is written.
-    {
-        std::vector<std::string> optErrors;
-        cli::validateTargetOptions(pc, o.optionFlags, optErrors);
-        for (const auto& m : optErrors) std::cerr << "polyglot: " << m << "\n";
-        if (!optErrors.empty()) return 64;
-    }
+    // (refuseInvalidConfig above already resolved the pgconfig `dependencies` — P30 — and validated every
+    // targetOptions layer against the plugins — P40 B1.)
 
     // The target set to emit, each paired with its output extension.
     std::vector<std::pair<BackendHandle, std::string>> targets;
@@ -1157,6 +1182,7 @@ int runBuild(const std::vector<std::string>& args) {
     bool check = false;   // --check (P40 B5): write nothing, report drift, exit 3
     fs::path recordArg;   // --record <file> (P40 D17/D18): the caller vouches its input set is complete
     fs::path depfileArg;  // --depfile <file> (P40 D17): every input the outputs depend on, for MSBuild
+    fs::path outputsListArg; // --outputs-list <file> (P40 review): the outputs this run produced, for MSBuild's @(Compile)
     bool adopt = false;   // --adopt (P40 review, D21): take over unmarked existing outputs, once (0.10.x upgrade)
     std::vector<fs::path> buildOwned; // --build-owned <dir> (D21): a dir the caller owns outright (MSBuild obj/)
 
@@ -1167,6 +1193,9 @@ int runBuild(const std::vector<std::string>& args) {
             ++targetFlags;
         } else if (a == "--only" && i + 1 < args.size()) {
             // P40 B6: repeatable, comma-separated; intersects with the pgconfig `targets`.
+            // P40 review (B7): every comma-separated entry must name a target. An empty entry (`--only ""`,
+            // `--only ","`, `--only " "`, `--only "a,"`) used to vanish, and an all-empty list then silently
+            // meant ALL targets — the opposite of a narrowing.
             const std::string list = args[++i];
             for (std::size_t b = 0, e; b <= list.size(); b = e + 1) {
                 e = list.find(',', b);
@@ -1174,7 +1203,12 @@ int runBuild(const std::vector<std::string>& args) {
                 std::string n = list.substr(b, e - b);
                 while (!n.empty() && std::isspace(static_cast<unsigned char>(n.back()))) n.pop_back();
                 while (!n.empty() && std::isspace(static_cast<unsigned char>(n.front()))) n.erase(0, 1);
-                if (!n.empty() && std::find(o.only.begin(), o.only.end(), n) == o.only.end()) o.only.push_back(n);
+                if (n.empty()) {
+                    std::cerr << "polyglot: --only '" << list << "' has an empty target name; it takes a "
+                                 "comma-separated list of the pgconfig targets to build (e.g. --only typescript)\n";
+                    return 64;
+                }
+                if (std::find(o.only.begin(), o.only.end(), n) == o.only.end()) o.only.push_back(n);
             }
         } else if (a == "--out" && i + 1 < args.size()) {
             o.outDir = args[++i];
@@ -1192,6 +1226,8 @@ int runBuild(const std::vector<std::string>& args) {
             recordArg = args[++i];
         } else if (a == "--depfile" && i + 1 < args.size()) {
             depfileArg = args[++i];
+        } else if (a == "--outputs-list" && i + 1 < args.size()) {
+            outputsListArg = args[++i];
         } else if (a == "--adopt") {
             adopt = true;
         } else if (a == "--build-owned" && i + 1 < args.size()) {
@@ -1235,8 +1271,8 @@ int runBuild(const std::vector<std::string>& args) {
     PgConfig pc0;
     if (discovery) {
         pc0 = loadPgConfig(fs::current_path());
-        for (const auto& m : pc0.errors) std::cerr << "polyglot: " << m << "\n";
-        if (!pc0.errors.empty()) return 64;
+        // P40 review (A5): the whole config is validated before discovery reads its patterns.
+        if (const int refused = refuseInvalidConfig(pc0, check, o.optionFlags)) return refused;
         inputs = discoverIncludeInputs(pc0);
         if (inputs.empty()) {
             std::cerr << "polyglot: 'build' needs an input file (or a pgconfig.json whose `include` "
@@ -1325,6 +1361,21 @@ int runBuild(const std::vector<std::string>& args) {
     if (rc == 0 && !check && !depfileArg.empty() && !cli::writeDepfile(depfileArg, run.deps)) {
         std::cerr << "polyglot: cannot write the depfile '" << depfileArg.string() << "'\n";
         rc = worseExit(rc, 1);
+    }
+    // P40 review (#75 pre-push, 2b): the outputs THIS run produced, one absolute path per line, so MSBuild
+    // compiles exactly those instead of globbing its folder (a headerless stale .cs a 0.10.x build left in
+    // obj/ is never deleted, and the glob kept compiling it). Rewritten on every successful transpile — it is
+    // an Output of the MSBuild target, so its mtime must advance with the stamp.
+    if (rc == 0 && !check && !outputsListArg.empty()) {
+        std::set<std::string> lines;
+        for (const auto& s : run.sections)
+            for (const auto& [f, map] : s.outputs) lines.insert(fs::absolute(f).lexically_normal().make_preferred().string());
+        std::string doc;
+        for (const auto& l : lines) doc += l + "\n";
+        if (!cli::writeFile(outputsListArg, doc)) {
+            std::cerr << "polyglot: cannot write the outputs list '" << outputsListArg.string() << "'\n";
+            rc = worseExit(rc, 1);
+        }
     }
 
     if (check) {
@@ -1418,6 +1469,8 @@ int runCheck(const std::vector<std::string>& args) {
 
     fs::path entryDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
     PgConfig pc = loadPgConfig(entryDir); // fills root/lib the user didn't pass explicitly
+    // P40 review (A5): never check with the config ignored. Dry-run: `check` writes nothing (no lockfile).
+    if (const int refused = refuseInvalidConfig(pc, /*dryRun=*/true)) return refused;
     if (root.empty() && pc.found && !pc.root.empty()) root = pc.root;
     if (libArg.empty() && pc.found) libArg = pc.lib;
     if (root.empty()) root = entryDir;
@@ -2180,6 +2233,10 @@ int runInstall(const std::vector<std::string>& args) {
 
     // Inside a project, install pins the lock; outside one, it only warms the machine cache.
     const PgConfig pc = loadPgConfig(fs::current_path());
+    // P40 review (A5): a broken pgconfig refuses here too. (Only parse/shape: the target being installed may
+    // be exactly the one the config names but cannot resolve yet.)
+    for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
+    if (!pc.errors.empty()) return 64;
     cli::Lockfile lock = pc.found ? cli::loadLockfile(pc.dir) : cli::Lockfile{};
 
     cli::ResolvedPlugin rp;

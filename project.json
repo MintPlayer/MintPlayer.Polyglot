@@ -133,6 +133,14 @@
       "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
+    "floor": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 floor", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/floor/**/*", "{workspaceRoot}/tests/conformance/programs/**/*", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals", { "runtime": "dotnet --version" }],
+      "outputs": []
+    },
     "numfmt": {
       "executor": "nx:run-commands",
       "cache": true,

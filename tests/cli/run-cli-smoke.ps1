@@ -269,6 +269,73 @@ try {
         Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $d "a.ts")) -and -not (Test-Path (Join-Path $d "a.cs"))) "P40 B6: --only typescript builds only the TS twin"
         $r = Pg $d @("build", "a.pg", "--only", "csharp", "--only", "typescript")
         Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $d "a.cs"))) "P40 B6: --only is repeatable"
+        # P40 review (B7): an empty entry used to vanish, and an all-empty list silently meant ALL targets.
+        foreach ($bad in @("", ",", " ", "csharp,", ", typescript")) {
+            Remove-Item (Join-Path $d "a.cs"), (Join-Path $d "a.ts") -ErrorAction SilentlyContinue
+            $r = Pg $d @("build", "a.pg", "--only", $bad)
+            Check ($r.Rc -eq 64 -and $r.Out -match 'empty target name' -and -not (Test-Path (Join-Path $d "a.cs")) -and -not (Test-Path (Join-Path $d "a.ts"))) `
+                "P40 review B7: --only '$bad' is a usage error (64) that builds nothing"
+        }
+    }
+
+    # -- P40 review (A5): a pgconfig that fails to parse or validate refuses on EVERY command, --target included -
+    & {
+        $d = New-Proj (Join-Path $work "rv-a5") '{' @{ "a.pg" = $fnA }
+        $cases = @(
+            @('{', 'malformed JSON'),
+            @('{"targets":["csharp"],"access":"public"}', 'access" was removed'),
+            @('{"targets":["nosuchtarget"]}', "unknown target 'nosuchtarget'"),
+            @('{"target":["csharp"]}', 'unknown key "target"'),
+            @('{"targets":"csharp"}', 'must be an array')
+        )
+        foreach ($c in $cases) {
+            Set-Content -LiteralPath (Join-Path $d "pgconfig.json") -Value $c[0]
+            Remove-Item (Join-Path $d "a.cs") -ErrorAction SilentlyContinue
+            $ok = $true
+            foreach ($cmd in @(@("build", "a.pg", "--target", "csharp"), @("build", "a.pg"), @("build"), @("check", "a.pg"), @("build", "a.pg", "--check"))) {
+                $r = Pg $d $cmd
+                if ($r.Rc -ne 64 -or $r.Out -notmatch [regex]::Escape($c[1])) { $ok = $false; Write-Host "        '$($cmd -join ' ')' on $($c[0]): exit $($r.Rc)" }
+            }
+            Check ($ok -and -not (Test-Path (Join-Path $d "a.cs"))) "P40 review A5: pgconfig $($c[0]) -> 64 on build (--target too), bare build, check and --check; nothing written"
+        }
+    }
+
+    # -- P40 review (A3): a case-only rename of a .pg renames its output on a case-insensitive filesystem -----
+    & {
+        $d = New-Proj (Join-Path $work "rv-a3") '{"targets":["typescript"],"include":[{"pattern":"src/*.pg","output":"gen/%(Filename)","owned":true}]}' @{ "src/Foo.pg" = $fnA }
+        Check ((Pg $d @("build")).Rc -eq 0) "P40 review A3: build src/Foo.pg"
+        Move-Item (Join-Path $d "src/Foo.pg") (Join-Path $d "src/foo.tmp"); Move-Item (Join-Path $d "src/foo.tmp") (Join-Path $d "src/foo.pg")
+        $caseInsensitive = Test-Path (Join-Path $d "GEN/FOO.TS")
+        $r = Pg $d @("build", "--check")
+        $names = @(Get-ChildItem (Join-Path $d "gen") | ForEach-Object Name)
+        if ($caseInsensitive) {
+            Check ($r.Rc -eq 3 -and $r.Out -match 'would rename .*Foo\.ts -> foo\.ts' -and ($names -join ',') -ceq 'Foo.ts') "P40 review A3: --check reports the case-only rename (exit 3) and renames nothing"
+        } else {
+            Check ($r.Rc -eq 3 -and $r.Out -match 'would create .*foo\.ts' -and $r.Out -match 'would delete .*Foo\.ts') "P40 review A3: --check (case-sensitive fs) reports create + delete (exit 3)"
+        }
+        $r = Pg $d @("build")
+        $names = @(Get-ChildItem (Join-Path $d "gen") | ForEach-Object Name)
+        Check ($r.Rc -eq 0 -and ($names -join ',') -ceq 'foo.ts') "P40 review A3: build leaves exactly gen/foo.ts, in the exact case (was: Foo.ts forever on Windows)"
+        Check ((Pg $d @("build", "--check")).Rc -eq 0) "P40 review A3: ... and --check is then clean"
+    }
+
+    # -- P40 review (A4): a partly corrupt record is EMPTY, whichever position the bad part takes -------------
+    & {
+        foreach ($order in @("after", "before")) {
+            $d = New-Proj (Join-Path $work "rv-a4-$order") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = $fnB }
+            Pg $d @("build") | Out-Null
+            $recp = Join-Path $d ".polyglot/outputs.json"
+            $bad = '"zz|x": {"inputs": [], "outputs": [{"path": 5}]}'
+            $txt = Get-Content -Raw $recp
+            $txt = if ($order -eq "after") { $txt -replace '\]\s*\}\s*\}\s*\}\s*$', "]}, $bad}}" } else { $txt -replace '"sections": \{', "`"sections`": { $bad," }
+            Set-Content -LiteralPath $recp -Value $txt -NoNewline
+            $ok = $true; try { $txt | ConvertFrom-Json | Out-Null } catch { $ok = $false }
+            Move-Item (Join-Path $d "b.pg") (Join-Path $d "c.pg")
+            $r = Pg $d @("build", "--check")
+            Check ($ok -and $r.Rc -eq 3 -and $r.Out -match 'unreadable' -and $r.Out -notmatch 'would delete') "P40 review A4: a record with a bad section $order the good one: --check warns and reports NO deletion"
+            $r = Pg $d @("build")
+            Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $d "gen/b.ts"))) "P40 review A4: ... and build deletes nothing it was told about by that record (b.ts kept, bad section $order)"
+        }
     }
 
     # -- B5: every --check case (explicit inputs) -------------------------------------------------------------
@@ -369,26 +436,103 @@ try {
         Check ($r.Rc -eq 1 -and $r.Out -match "conflicting output .*a\.pg'.* and .*b\.pg'") "P40 review 3b: a conflict names both producers"
     }
 
+    # -- P40 review (#75 pre-push): owned-scope aliases, refusal edges, marker encodings, header-removed warning -
+    & {
+        $hdr = "// <auto-generated/>`n// Generated by Polyglot. Do not edit: regenerate with ``polyglot build``.`nexport const dummy = 1;"
+        # 1. a case alias of the config folder (or an ancestor) is NOT a dedicated subfolder.
+        $proj = New-Proj (Join-Path $work "rv-alias/t/Proj") '{"targets":["typescript"],"include":[{"pattern":"src/*.pg","output":"../PROJ/%(RecursiveDir)%(Filename)","owned":true}]}' `
+            @{ "src/a.pg" = $fnA; "keep/other.ts" = $hdr }
+        if (Test-Path (Join-Path $work "rv-alias/T/PROJ")) {
+            $r = Pg $proj @("build")
+            Check ($r.Rc -eq 64 -and $r.Out -match '"owned": true is refused' -and (Test-Path (Join-Path $proj "keep/other.ts"))) `
+                "P40 review: owned '../PROJ/...' from 'Proj' (a case alias of the config folder) is refused (64), nothing deleted"
+            Set-Content -LiteralPath (Join-Path $proj "pgconfig.json") -Value '{"targets":["typescript"],"include":[{"pattern":"src/*.pg","output":"../../T/%(RecursiveDir)%(Filename)","owned":true}]}'
+            $r = Pg $proj @("build")
+            Check ($r.Rc -eq 64 -and (Test-Path (Join-Path $proj "keep/other.ts"))) "P40 review: owned '../../T/...' (a case alias of the grandparent) is refused (64)"
+        } else { Check $true "P40 review: owned case aliases (skipped: case-sensitive filesystem, where they are distinct folders)" }
+        # UNC and a nested config's own refusal.
+        $u = New-Proj (Join-Path $work "rv-unc") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"\\\\server\\share\\gen\\%(Filename)","owned":true}]}' @{ "a.pg" = $fnA }
+        $r = Pg $u @("build")
+        Check ($r.Rc -eq 64 -and $r.Out -match 'refused') "P40 review: an owned UNC template (\\server\share\...) is refused (64)"
+        $n = New-Proj (Join-Path $work "rv-nested") '{"targets":["typescript"],"include":[{"pattern":"**/*.pg","output":"gen/%(RecursiveDir)%(Filename)"}]}' @{ "top.pg" = $fnA }
+        New-Proj (Join-Path $n "inner") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"./%(Filename)","owned":true}]}' @{ "x.pg" = $fnB; "keep.ts" = $hdr } | Out-Null
+        $r = Pg $n @("build", "inner/x.pg")
+        Check ($r.Rc -eq 64 -and $r.Out -match '"owned": true is refused' -and (Test-Path (Join-Path $n "inner/keep.ts"))) "P40 review: an unbounded owned rule in a NESTED config is refused (64)"
+        # 2. the marker survives a BOM and CRLF, and is found after `<?php` on PHP.
+        $m = New-Proj (Join-Path $work "rv-marker") '{"targets":["typescript","php"],"include":[{"pattern":"*.pg","output":"gen/%(TargetLanguage)/%(Filename)","owned":true}]}' @{ "a.pg" = $fnA }
+        Check ((Pg $m @("build")).Rc -eq 0) "P40 review: marker project builds (TS + PHP)"
+        $ts = [IO.File]::ReadAllText((Join-Path $m "gen/typescript/a.ts")) -replace "`r?`n", "`r`n"
+        [IO.File]::WriteAllText((Join-Path $m "gen/typescript/stale.ts"), $ts, [Text.UTF8Encoding]::new($true))   # BOM + CRLF
+        Copy-Item (Join-Path $m "gen/php/a.php") (Join-Path $m "gen/php/stale.php")
+        $r = Pg $m @("build")
+        Check ($r.Rc -eq 0 -and -not (Test-Path (Join-Path $m "gen/typescript/stale.ts")) -and -not (Test-Path (Join-Path $m "gen/php/stale.php"))) `
+            "P40 review: a stale twin with a BOM + CRLF, and a PHP twin (header after <?php), are recognised and deleted"
+        # 3. a recorded output whose header a human removed: overwritten (the record vouches), with a warning.
+        $w = New-Proj (Join-Path $work "rv-hdr") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+        Pg $w @("build") | Out-Null
+        $f = Join-Path $w "gen/a.ts"
+        (Get-Content $f | Where-Object { $_ -notmatch 'Generated by Polyglot' }) + "// hand edit" | Set-Content $f
+        $r = Pg $w @("build")
+        Check ($r.Rc -eq 0 -and $r.Out -match 'warning: overwriting .*header line was removed' -and (Get-Content -Raw $f) -match 'Generated by Polyglot') `
+            "P40 review: overwriting a recorded output whose header was removed warns"
+        # 4. --adopt in watch mode takes over an unmarked output on the first cycle.
+        $a = New-Proj (Join-Path $work "rv-watch-adopt") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' `
+            @{ "a.pg" = $fnA; "gen/a.ts" = "// 0.10.x output, no header`nexport function alpha(): number { return 1; }" }
+        $wlog = Join-Path $work "rv-watch-adopt.log"
+        $proc = Start-Process -FilePath $Cli -ArgumentList @("build", "a.pg", "--watch", "--adopt") -WorkingDirectory $a `
+            -RedirectStandardOutput $wlog -RedirectStandardError (Join-Path $work "rv-watch-adopt.err") -PassThru -NoNewWindow
+        $deadline = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $deadline -and -not ((Get-Content $wlog -Raw -ErrorAction SilentlyContinue) -match 'watching for changes')) { Start-Sleep -Milliseconds 200 }
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Check ((Get-Content -Raw (Join-Path $a "gen/a.ts")) -match 'Generated by Polyglot') "P40 review: --watch --adopt takes over an unmarked output on its first cycle"
+    }
+
     # -- spark-ci-flow (PLAN slice 13: Spark's review scenario, named so it can be pointed at) --------------
     # Fresh clone, NO record, an owned TS route, C# routed to obj/; rename a .pg; then CI's exact command.
     & {
         $cfg = '{ "targets": ["csharp", "typescript"], "include": [ ' +
                '{ "pattern": "src/*.pg", "target": "csharp", "output": "obj/polyglot/%(Filename)" }, ' +
                '{ "pattern": "src/*.pg", "target": "typescript", "output": "web/gen/%(Filename)", "owned": true } ] }'
-        $s = New-Proj (Join-Path $work "spark-ci-flow") $cfg @{ "src/a.pg" = $fnA; "src/b.pg" = $fnB }
-        Pg $s @("build") | Out-Null
-        Remove-Item -Recurse -Force (Join-Path $s ".polyglot")            # 1. a fresh clone: no record
-        Move-Item (Join-Path $s "src/b.pg") (Join-Path $s "src/c.pg")     #    ... and a rename
-        $objBefore = Snapshot (Join-Path $s "obj")
+        # P40 review (B8/B9): an IMPORTER (main.pg imports a.pg), so an edit to a.pg's signature is `would update`
+        # of a twin whose own .pg did not change.
+        $fnMain = "import { alpha } from `"./a`"`nfn main2(): i32 { return alpha() + 1 }"
+        $origin = New-Proj (Join-Path $work "spark-ci-flow-origin") $cfg @{ "src/a.pg" = $fnA; "src/b.pg" = $fnB; "src/main.pg" = $fnMain }
+        Pg $origin @("build") | Out-Null
+        # 1. A REAL fresh clone when git is available (no record, no obj/, nothing untracked); else a copy minus
+        #    the untracked state (.polyglot/ and obj/ — what a clone never has).
+        $s = Join-Path $work "spark-ci-flow"
+        $haveGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
+        if ($haveGit) {
+            Set-Content -LiteralPath (Join-Path $origin ".gitignore") -Value "obj/`n"
+            Set-Content -LiteralPath (Join-Path $origin ".gitattributes") -Value "* -text"   # no EOL conversion on checkout (Spark pins eol=lf for its twin)
+            & git -C $origin init -q 2>&1 | Out-Null
+            & git -C $origin -c user.name=gate -c user.email=gate@example.invalid add -A 2>&1 | Out-Null
+            & git -C $origin -c user.name=gate -c user.email=gate@example.invalid -c core.autocrlf=false commit -q -m "twin" 2>&1 | Out-Null
+            & git clone -q $origin $s 2>&1 | Out-Null
+            $haveGit = (Test-Path (Join-Path $s "web/gen/a.ts")) -and -not (Test-Path (Join-Path $s ".polyglot")) -and -not (Test-Path (Join-Path $s "obj"))
+        }
+        if (-not $haveGit) {
+            Remove-Item -Recurse -Force $s -ErrorAction SilentlyContinue
+            Copy-Item -Recurse $origin $s
+            Remove-Item -Recurse -Force (Join-Path $s ".polyglot"), (Join-Path $s "obj"), (Join-Path $s ".git") -ErrorAction SilentlyContinue
+        }
+        Check (-not (Test-Path (Join-Path $s ".polyglot")) -and -not (Test-Path (Join-Path $s "obj"))) "spark-ci-flow: a fresh clone (git: $haveGit) has no record and no obj/"
+        $r = Pg $s @("build", "--check", "--only", "typescript")
+        if ($r.Rc -ne 0) { Write-Host "        $($r.Out.Trim() -replace "`r?`n", ' | ')" }
+        Check ($r.Rc -eq 0 -and -not (Test-Path (Join-Path $s ".polyglot"))) "spark-ci-flow: on the clean clone CI's check exits 0 and creates no .polyglot/"
+        Move-Item (Join-Path $s "src/b.pg") (Join-Path $s "src/c.pg")     #    ... a rename
+        Set-Content -LiteralPath (Join-Path $s "src/a.pg") -Value 'fn alpha(): i32 { return 10 }'   # ... and an edit the importer sees
+        $before = Snapshot $s
         $r = Pg $s @("build", "--check", "--only", "typescript")          # 2.
-        Check ($r.Rc -eq 3 -and $r.Out -match 'would create .*c\.ts' -and $r.Out -match 'would delete .*b\.ts') `
-            "spark-ci-flow: --check --only typescript reports would create <new> + would delete <old>, exit 3"
-        Check ((Snapshot (Join-Path $s "obj")) -eq $objBefore -and $r.Out -notmatch 'obj') "spark-ci-flow: obj/ untouched and unreported"
-        Check ((Test-Path (Join-Path $s "web/gen/b.ts")) -and -not (Test-Path (Join-Path $s "web/gen/c.ts"))) "spark-ci-flow: --check wrote and deleted nothing"
+        Check ($r.Rc -eq 3 -and $r.Out -match 'would create .*c\.ts' -and $r.Out -match 'would delete .*b\.ts' -and $r.Out -match 'would update .*a\.ts') `
+            "spark-ci-flow: --check --only typescript reports would create <new> + would delete <old> + would update <edited>, exit 3"
+        Check ((Snapshot $s) -eq $before -and $r.Out -notmatch 'obj' -and -not (Test-Path (Join-Path $s ".polyglot"))) `
+            "spark-ci-flow: --check left the WHOLE tree byte-identical (no .polyglot/, no obj/, nothing written or deleted)"
         $r = Pg $s @("build")                                             # 3.
         Check ($r.Rc -eq 0 -and -not (Test-Path (Join-Path $s "web/gen/b.ts")) -and (Test-Path (Join-Path $s "web/gen/c.ts"))) `
             "spark-ci-flow: a plain build deletes <old> and writes <new> (no record needed)"
         Check ((Pg $s @("build", "--check", "--only", "typescript")).Rc -eq 0) "spark-ci-flow: --check then exits 0"   # 4.
+        Check ((Pg $s @("build", "--check")).Rc -eq 0) "spark-ci-flow: ... and so does a FULL --check (every target)"
 
         # The `--check --only typescript` matrix under a PolyglotTargets=csharp-style setup.
         Add-Content -LiteralPath (Join-Path $s "obj/polyglot/a.cs") -Value "// drift the C# side"

@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -82,6 +83,61 @@ inline std::string outputKey(const std::filesystem::path& p) {
     return (ec ? std::filesystem::absolute(p, ec).lexically_normal() : c).generic_string();
 }
 
+// Two file names that differ at most in case. Wide (Windows) names fold per character; narrow (POSIX, UTF-8)
+// names fold ASCII only — a UTF-8 lead byte must never be "lower-cased" as if it were Latin-1.
+inline bool caseFoldEqual(const std::filesystem::path& a, const std::filesystem::path& b) {
+    const auto& x = a.native();
+    const auto& y = b.native();
+    if (x.size() != y.size()) return false;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        if constexpr (sizeof(x[i]) == 1) {
+            auto lo = [](unsigned char c) { return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + 32) : c; };
+            if (lo(static_cast<unsigned char>(x[i])) != lo(static_cast<unsigned char>(y[i]))) return false;
+        } else {
+            if (std::towlower(static_cast<std::wint_t>(x[i])) != std::towlower(static_cast<std::wint_t>(y[i]))) return false;
+        }
+    }
+    return true;
+}
+
+// P40 review (A3): on a case-INSENSITIVE filesystem (NTFS, APFS by default) `gen/foo.ts` opens the existing
+// `gen/Foo.ts`, so write-if-changed reused it and a case-only rename of the .pg never reached the output name —
+// a Linux checkout then had the wrong file forever. Returns the existing file's on-disk path when its name
+// differs from `p`'s only in case AND it is the same file (fs::equivalent), else empty. On a case-sensitive
+// filesystem `p` does not exist (or exists exactly), so this is always empty there.
+inline std::filesystem::path caseVariantOnDisk(const std::filesystem::path& p) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(p, ec) || ec) return {};
+    const fs::path want = p.filename();
+    const fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
+    fs::path variant;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const fs::path name = it->path().filename();
+        if (name == want) return {}; // the exact spelling is on disk (path comparison is case-sensitive)
+        if (variant.empty() && caseFoldEqual(name, want)) variant = it->path();
+    }
+    if (variant.empty()) return {};
+    return fs::equivalent(variant, p, ec) && !ec ? variant : fs::path();
+}
+
+// The rename itself. A direct rename handles a case-only change on NTFS and APFS; the two-step through a
+// temporary name is the fallback for a filesystem that treats it as a no-op or an error.
+inline bool renameCaseOnly(const std::filesystem::path& from, const std::filesystem::path& to) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::rename(from, to, ec);
+    if (!ec && caseVariantOnDisk(to).empty()) return true;
+    fs::path tmp = from;
+    tmp += ".pgcase.tmp";
+    ec.clear();
+    fs::rename(from, tmp, ec);
+    if (ec) return false;
+    fs::rename(tmp, to, ec);
+    if (ec) { fs::rename(tmp, from, ec); return false; }
+    return true;
+}
+
 class OutputSink {
 public:
     enum class Mode { Write, Check };
@@ -113,6 +169,32 @@ public:
     // watching it does not churn); Check mode compares against disk and records drift. An existing file
     // with different bytes is replaced only when it is Polyglot's (the overwrite guard above) — else Refused.
     Put put(const std::filesystem::path& out, const std::string& content, const Claim& claim = {}) {
+        // P40 review (A3): the existing file answers to `out` only up to case. Rename it to the exact case first
+        // (it is the same file, so the overwrite guard decides, as for any replacement); --check reports it.
+        bool trustedByRename = false;
+        const std::string spelled = std::filesystem::absolute(out).lexically_normal().generic_string();
+        if (const std::filesystem::path variant = caseVariantOnDisk(out); !variant.empty()) {
+            const std::string vkey = outputKey(variant);
+            if (auto r = caseRenamed_.find(vkey); r != caseRenamed_.end() && r->second == spelled) {
+                // the same output again (a module reached from several roots, under --check): handled already
+            } else if (auto it = produced_.find(vkey); it != produced_.end()) { // two spellings of one file in ONE run
+                conflictWith_ = it->second.producer;
+                return Put::Conflict;
+            } else if (!mayOverwrite(variant, vkey, claim)) {
+                return Put::Refused;
+            } else {
+                trustedByRename = true;
+                caseRenamed_[vkey] = spelled; // the old spelling is this output now: never stale, never an extra
+                if (checking()) {
+                    drift_.insert("polyglot: would rename " + variant.string() + " -> " + out.filename().string() + " (case only)");
+                } else if (!renameCaseOnly(variant, out)) {
+                    std::cerr << "polyglot: cannot rename '" << variant.string() << "' to '" << out.filename().string() << "'\n";
+                    return Put::Failed;
+                } else {
+                    std::cout << "  ~> " << variant.string() << " -> " << out.filename().string() << " (case-only rename)\n";
+                }
+            }
+        }
         const std::string key = outputKey(out);
         if (auto it = produced_.find(key); it != produced_.end()) {
             if (it->second.content == content) return Put::Deduped;
@@ -126,7 +208,7 @@ public:
             if (!checking()) std::cout << "  -> " << out.string() << "\n";
             return Put::Unchanged;
         }
-        if (exists && !mayOverwrite(out, key, claim)) return Put::Refused;
+        if (exists && !trustedByRename && !mayOverwrite(out, key, claim)) return Put::Refused;
         if (checking()) {
             drift_.insert(std::string("polyglot: would ") + (exists ? "update " : "create ") + out.string());
             return Put::Written;
@@ -136,7 +218,10 @@ public:
         return Put::Written;
     }
 
-    bool isProduced(const std::filesystem::path& p) const { return produced_.count(outputKey(p)) != 0; }
+    bool isProduced(const std::filesystem::path& p) const {
+        const std::string k = outputKey(p);
+        return produced_.count(k) != 0 || caseRenamed_.count(k) != 0; // an old spelling a case-only rename replaced
+    }
     // After a Conflict: the producer that wrote the path first ("" = unnamed).
     const std::string& conflictingProducer() const { return conflictWith_; }
 
@@ -161,10 +246,21 @@ public:
 
 private:
     bool mayOverwrite(const std::filesystem::path& out, const std::string& key, const Claim& claim) const {
-        if (adopt_ || recorded_.count(key)) return true;
+        if (adopt_) return true;
         for (const auto& d : buildOwned_)
             if (key.size() > d.size() && key.compare(0, d.size(), d) == 0 && key[d.size()] == '/') return true;
-        return claim.sidecarOf.empty() ? carriesGeneratedLine(out, claim.headerLine) : isOwnSidecar(out, claim.sidecarOf);
+        const bool marked = claim.sidecarOf.empty() ? carriesGeneratedLine(out, claim.headerLine) : isOwnSidecar(out, claim.sidecarOf);
+        if (marked) return true;
+        if (recorded_.count(key)) {
+            // P40 review (#75 pre-push): trusted only because the record lists it — its header is gone, so a
+            // human probably edited it. Still ours (the record says so), but never silently.
+            std::cerr << "polyglot: warning: overwriting '" << out.string() << "', a recorded output whose "
+                      << (claim.sidecarOf.empty() ? "`Generated by Polyglot.` header line was removed"
+                                                  : "source-map identity changed")
+                      << " (hand edits to generated files are lost)\n";
+            return true;
+        }
+        return false;
     }
 
     struct Produced {
@@ -173,6 +269,7 @@ private:
     };
     Mode mode_;
     std::map<std::string, Produced> produced_; // outputKey -> what produced it, run-wide
+    std::map<std::string, std::string> caseRenamed_; // old spelling's outputKey -> the output it became (A3)
     std::set<std::string> drift_;
     std::set<std::string> recorded_;
     std::vector<std::string> buildOwned_; // outputKeys of the build-owned directories
@@ -198,27 +295,41 @@ inline constexpr int kOutputsRecordVersion = 1;
 
 enum class RecordLoad { Ok, Missing, Corrupt, Newer };
 
+// P40 review (A4): the record is validated as a WHOLE and published all-or-nothing. It used to fill `rec`
+// section by section and return Corrupt at the first bad one — keeping the sections parsed before it, so a
+// partly corrupt record still drove deletions, depending on where the bad part sat. Now every part must be
+// well-formed (strict JSON; `version`; `sections` an object of "<dir>|<target>" -> {inputs: [string],
+// outputs: [{path: non-empty string, map?: string}]}) before `rec` is touched; anything else is Corrupt with
+// `rec` EMPTY — exactly what the caller's warning ("treating it as empty") promises.
 inline RecordLoad loadOutputsRecord(const std::filesystem::path& file, OutputsRecord& rec) {
+    using K = json::Value::Kind;
     rec = {};
     std::string src;
     if (!readFile(file, src)) return RecordLoad::Missing;
-    const json::Value v = json::parse(src);
-    if (v.kind != json::Value::Kind::Object || v["version"].kind != json::Value::Kind::Number ||
-        v["sections"].kind != json::Value::Kind::Object)
+    std::string jsonErr;
+    const json::Value v = json::parse(src, jsonErr);
+    if (!jsonErr.empty() || v.kind != K::Object || v["version"].kind != K::Number || v["sections"].kind != K::Object)
         return RecordLoad::Corrupt;
     if (v["version"].asInt() > kOutputsRecordVersion) return RecordLoad::Newer;
     if (v["version"].asInt() != kOutputsRecordVersion) return RecordLoad::Corrupt;
+    OutputsRecord parsed;
     for (const auto& [key, sv] : v["sections"].members) {
-        if (sv.kind != json::Value::Kind::Object) return RecordLoad::Corrupt;
+        if (key.find('|') == std::string::npos || sv.kind != K::Object || sv["inputs"].kind != K::Array ||
+            sv["outputs"].kind != K::Array || parsed.sections.count(key))
+            return RecordLoad::Corrupt;
         RecordSection s;
-        for (const auto& i : sv["inputs"].items())
-            if (i.kind == json::Value::Kind::String) s.inputs.push_back(i.asString());
+        for (const auto& i : sv["inputs"].items()) {
+            if (i.kind != K::String || i.asString().empty()) return RecordLoad::Corrupt;
+            s.inputs.push_back(i.asString());
+        }
         for (const auto& o : sv["outputs"].items()) {
-            if (o["path"].kind != json::Value::Kind::String) return RecordLoad::Corrupt;
+            if (o.kind != K::Object || o["path"].kind != K::String || o["path"].asString().empty()) return RecordLoad::Corrupt;
+            if (o.has("map") && o["map"].kind != K::String) return RecordLoad::Corrupt;
             s.outputs.push_back({o["path"].asString(), o["map"].asString()});
         }
-        rec.sections[key] = std::move(s);
+        parsed.sections[key] = std::move(s);
     }
+    rec = std::move(parsed);
     return RecordLoad::Ok;
 }
 

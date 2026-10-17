@@ -41,9 +41,12 @@ struct Value {
 
 // Parse a UTF-8 JSON document. On malformed input returns whatever was parsed so far (Null for total garbage).
 Value parse(const std::string& text);
-// The same, reporting the first string-level malformation (an escape JSON does not define — `\q`, a bad
-// `\uXXXX`) in `error` ("" when none). Config and manifest readers use this: a silently altered string
-// (`"Libs\Alpha"` read as `LibsAlpha`) is a miscompile of the user's configuration.
+// The same, reporting the first malformation in `error` ("" when none): a string-level one (an escape JSON
+// does not define — `\q`, a bad `\uXXXX`; an unterminated string) or a structural one (an unterminated
+// object/array, a missing ':' or ',', a bad literal or number, trailing content after the value). Config and
+// manifest readers use this: a silently altered string (`"Libs\Alpha"` read as `LibsAlpha`) is a miscompile
+// of the user's configuration, and a truncated `{` read as an empty object silently ignored the whole config
+// (P40 review, A5). A leading UTF-8 BOM is accepted.
 Value parse(const std::string& text, std::string& error);
 
 // A JSON-escaped, double-quoted string literal (for building outgoing messages).

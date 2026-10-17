@@ -62,8 +62,10 @@ attr_arm       = "actual" , "(" , IDENT , ")" ,
                  ( "extern" , "(" , STRING , ")" , [ "import" , STRING ]   (* the WHOLE native line *)
                  | "refuse" ) ;
 
-(* Top-level visibility. Default is module-public; `private` confines to the
-   file. No other access levels in v0.1 (hold the surface line). *)
+(* Visibility. Default is public. No other access levels in v0.1 (hold the
+   surface line). NOT YET IMPLEMENTED AT TOP LEVEL: a top-level `private`
+   (confine a declaration to its file) is planned, and the parser refuses it
+   today — every top-level declaration is module-public (SPEC §11). *)
 visibility = [ "private" ] ;
 
 
