@@ -365,29 +365,31 @@ $sparkLayoutFixture = {
         -not (Test-Path (Join-Path $lib "gtin.cs"))) "spark-layout: dotnet build puts the C# in obj/ only and the TS twin in the owned web folder"
     "bin/`nobj/`n" | Set-Content (Join-Path $origin ".gitignore")
     "* -text" | Set-Content (Join-Path $origin ".gitattributes")   # no EOL conversion on checkout (Spark pins eol=lf for its twin)
-    & git -C $origin init -q 2>&1 | Out-Null
-    & git -C $origin -c user.name=gate -c user.email=gate@example.invalid add -A 2>&1 | Out-Null
-    & git -C $origin -c user.name=gate -c user.email=gate@example.invalid commit -q -m "lib + twin" 2>&1 | Out-Null
+    # P40 review r3: the machine's commit signing and hooks must not decide this gate.
+    $gq = @("-c", "user.name=gate", "-c", "user.email=gate@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=")
+    & git @gq -C $origin init -q 2>&1 | Out-Null
+    & git @gq -C $origin add -A 2>&1 | Out-Null
+    & git @gq -C $origin commit -q -m "lib + twin" 2>&1 | Out-Null
 
     $clone = Join-Path $work "SparkClone"
-    & git clone -q $origin $clone 2>&1 | Out-Null
+    & git @gq clone -q $origin $clone 2>&1 | Out-Null
     $clib = Join-Path $clone "libs/Gs1"
     $cgen = Join-Path $clone "web/src/gen"
     ck ((Test-Path (Join-Path $cgen "gtin.ts")) -and -not (Test-Path (Join-Path $clib "obj")) -and -not (Test-Path (Join-Path $clib ".polyglot"))) `
         "spark-layout: a real git clone has the committed twin, no obj/ and no record"
     $before = Snap $clone
     $c = Pgc $clib @("build", "--check", "--only", "typescript")
-    ck ($c.Rc -eq 0 -and (Snap $clone) -eq $before) "spark-layout: CI's check on the clean clone exits 0 and writes nothing (no .polyglot/)"
+    ck ($c.Rc -eq 0 -and (Snap $clone) -ceq $before) "spark-layout: CI's check on the clean clone exits 0 and writes nothing (no .polyglot/)"
 
     # A rename, a deletion and an edit the importer reaches; then CI's check, Spark's refresh, dotnet build.
-    & git -C $clone mv libs/Gs1/legacy.pg libs/Gs1/legacy2.pg 2>&1 | Out-Null
+    & git @gq -C $clone mv libs/Gs1/legacy.pg libs/Gs1/legacy2.pg 2>&1 | Out-Null
     "fn checkDigit(n: i32): i32 {`n  return (n + 3) % 10`n}`n" | Set-Content (Join-Path $clib "digits.pg")
     $before = Snap $clone
     $c = Pgc $clib @("build", "--check", "--only", "typescript")
     ck ($c.Rc -eq 3 -and $c.Out -match 'would create .*legacy2\.ts' -and $c.Out -match 'would delete .*legacy\.ts' -and
         $c.Out -match 'would update .*digits\.ts' -and $c.Out -notmatch '\.cs\b') `
         "spark-layout: --check --only typescript: would create + would delete + would update, never a .cs (exit 3)"
-    ck ((Snap $clone) -eq $before -and -not (Test-Path (Join-Path $clib ".polyglot"))) "spark-layout: ... and the whole clone is byte-identical afterwards"
+    ck ((Snap $clone) -ceq $before -and -not (Test-Path (Join-Path $clib ".polyglot"))) "spark-layout: ... and the whole clone is byte-identical afterwards"
     $c = Pgc $clib @("build", "--only", "typescript")
     ck ($c.Rc -eq 0 -and -not (Test-Path (Join-Path $cgen "legacy.ts")) -and (Test-Path (Join-Path $cgen "legacy2.ts")) -and
         @(Get-ChildItem $clib -Filter *.cs).Count -eq 0) "spark-layout: the refresh (build --only typescript) fixes the twin and writes no C# next to the .pg"
@@ -433,7 +435,7 @@ System.Console.WriteLine(IntA.PolyglotProgram.name() + IntB.PolyglotProgram.name
     $build = dotnet build $app --nologo -v q 2>&1 | Out-String
     $genA = Get-Content -Raw (Join-Path $libA "obj/Debug/net8.0/polyglot/a.cs") -ErrorAction SilentlyContinue
     $genB = Get-Content -Raw (Join-Path $libB "obj/Debug/net8.0/polyglot/b.cs") -ErrorAction SilentlyContinue
-    ck ("$genA$genB" -notmatch '\bpublic\s+(static\s+)?(partial\s+)?(class|record|interface|abstract)' -and "$genA" -match 'static class PolyglotProgram') `
+    ck ("$genA$genB" -notmatch '\bpublic\s+((static|partial|sealed|abstract|readonly|ref|unsafe|file)\s+)*(class|record|interface|enum|struct|delegate)\b' -and "$genA" -match 'static class PolyglotProgram') `
         "internal libraries: the generated C# carries no `public` type (access internal, explicit and default)"
     ck ($LASTEXITCODE -eq 0 -and $build -notmatch 'CS0433|CS0122') "internal libraries: an InternalsVisibleTo consumer links both (no CS0433/CS0122)"
     $run = dotnet run --project $app --no-build 2>&1
@@ -451,7 +453,19 @@ $upgradeFixture = {
     param($work, $pkgVer)
     $ErrorActionPreference = 'Stop'
     $PSNativeCommandUseErrorActionPreference = $false
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    # P40 review r3: this runs in a THREAD job, so it must not set the process-wide [Console]::OutputEncoding.
+    # The one build whose output is decoded as UTF-8 runs through its own process with an explicit encoding.
+    function BuildUtf8([string]$proj, [string[]]$extra) {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new("dotnet")
+        foreach ($a in @("build", $proj, "--nologo") + $extra) { $psi.ArgumentList.Add($a) }
+        $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false
+        $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8; $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+        $pr = [System.Diagnostics.Process]::Start($psi)
+        $errTask = $pr.StandardError.ReadToEndAsync()
+        $out = $pr.StandardOutput.ReadToEnd()
+        $pr.WaitForExit()
+        [pscustomobject]@{ Rc = $pr.ExitCode; Out = $out + $errTask.Result }
+    }
     $r = [System.Collections.Generic.List[object]]::new()
     function ck([bool]$c, [string]$n) { $r.Add([pscustomobject]@{ Name = $n; Passed = [bool]$c }) }
 
@@ -488,12 +502,131 @@ $upgradeFixture = {
     $t0 = (Get-Item $dll).LastWriteTimeUtc
     Start-Sleep -Milliseconds 300
     dotnet build $p --nologo -v q 2>&1 | Out-Null
-    ck ((Get-Item $dll).LastWriteTimeUtc -eq $t0) "no-change rebuild: the DLL is not rewritten (CoreCompile skipped)"
+    $ncRc = $LASTEXITCODE
+    ck ($ncRc -eq 0 -and (Get-Item $dll).LastWriteTimeUtc -eq $t0) "no-change rebuild: exits 0 and the DLL is not rewritten (CoreCompile skipped; exit $ncRc)"
 
     "fn café(): i32 {`n  return`n}`n" | Set-Content -Encoding utf8 (Join-Path $p "été.pg")
-    $b = dotnet build $p --nologo -v q 2>&1 | Out-String
-    ck ($LASTEXITCODE -ne 0 -and $b -match 'été\.pg') "build output is UTF-8: a diagnostic naming 'été.pg' arrives unmangled"
+    # P40 review r3: `-match 'été\.pg'` also matched MSBuild's own MSB3073 command echo, and at -v q the CLI's
+    # line is not shown at all — dropping StdOutEncoding stayed green. At -v n, look for what ONLY the CLI prints
+    # (its `file(line,col): error` diagnostic, which MSBuild re-reports as an error, and the em dash of its
+    # message) on lines that are not MSB3073's.
+    $ub = BuildUtf8 $p @("-v", "n")
+    $cliLines = @($ub.Out -split "`r?`n" | Where-Object { $_ -notmatch 'MSB3073' })
+    ck ($ub.Rc -ne 0 -and @($cliLines | Where-Object { $_ -cmatch 'été\.pg\(\d+,\d+\): error .*—' }).Count -gt 0) `
+        "build output is UTF-8: the CLI's own 'été.pg(<line>,<col>): error ... —' diagnostic arrives unmangled (not MSBuild's command echo)"
     Remove-Item (Join-Path $p "été.pg")
+
+    # P40 review r3: PolyglotAdopt left set. The record exists now, so the CLI ignores the flag (and says so), the
+    # targets warn while it is set, and a NEW hand-written twin at an output path is never overwritten.
+    "fn beta(): i32 {`n  return 2`n}`n" | Set-Content (Join-Path $p "b.pg")
+    "// hand-written`nexport const mine = 1;" | Set-Content (Join-Path $work "upgrade-web/gen/b.ts")
+    $b = dotnet build $p --nologo -v n -p:PolyglotAdopt=true 2>&1 | Out-String
+    ck ($LASTEXITCODE -ne 0 -and $b -match 'PolyglotAdopt=true is set' -and $b -match '--adopt is ignored' -and
+        (Get-Content -Raw (Join-Path $work "upgrade-web/gen/b.ts")) -match 'hand-written') `
+        "upgrade: PolyglotAdopt left set warns, is ignored once the record exists, and never overwrites a new hand-written twin"
+    Remove-Item (Join-Path $p "b.pg"), (Join-Path $work "upgrade-web/gen/b.ts")
+    $r
+}
+
+# 14. P40 review r3 (#75): the MSBuild half of round 3, through the real package.
+#  * gating 1: a project under a non-ASCII path ('é', and '日' outside CP1252) compiles what it generates — the
+#    outputs list and the depfile were ANSI while MSBuild reads UTF-8 (CS0103 under 'pé', "No mapping for the
+#    Unicode character" under 'p日');
+#  * gating 7: flipping PolyglotEntryPoint re-runs the transpile (it was missing from the inputs cache);
+#  * --build-owned unmasked: a C#-only 0.10.x project whose PLAIN build must overwrite its headerless obj/ .cs;
+#  * a listed .cs deleted by hand re-runs the transpile (was CS2001 until a .pg changed);
+#  * a PolyglotFile the csproj adds is an UpToDateCheckInput (the item moved from the .props to the .targets);
+#  * PolyglotTargets accepts ',' ("csharp," used to reach the CLI verbatim and exit 64).
+$r3Fixture = {
+    param($work, $pkgVer)
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $r = [System.Collections.Generic.List[object]]::new()
+    function ck([bool]$c, [string]$n) { $r.Add([pscustomobject]@{ Name = $n; Passed = [bool]$c }) }
+
+    foreach ($ch in @([string][char]0xE9, [string][char]0x65E5)) {
+        $u = Join-Path $work "r3-p$ch"
+        dotnet new console -o $u -n Uni --framework net8.0 | Out-Null
+        Copy-Item (Join-Path $work "nuget.config") (Join-Path $u "nuget.config")
+        "fn twice(x: i32): i32 {`n  return x * 2`n}`n" | Set-Content (Join-Path $u "nn.pg")
+        "import { twice } from `"./nn`"`nfn compute(): i32 {`n  return twice(21)`n}`n" | Set-Content (Join-Path $u "game.pg")
+        '{ "targets": ["csharp"] }' | Set-Content (Join-Path $u "pgconfig.json")
+        "System.Console.WriteLine(PolyglotProgram.compute());" | Set-Content (Join-Path $u "Program.cs")
+        dotnet add $u package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+        $b = dotnet build $u --nologo -v q 2>&1 | Out-String
+        $rc = $LASTEXITCODE
+        $run = "$(dotnet run --project $u --no-build 2>&1)".Trim()
+        ck ($rc -eq 0 -and $run -eq "42") "r3 gating 1: a project under 'r3-p$ch' compiles its generated code (exit $rc, prints '$run')"
+        $stamp = Join-Path $u "obj/Debug/net8.0/polyglot.stamp"
+        $s0 = (Get-Item -LiteralPath $stamp).LastWriteTimeUtc
+        Start-Sleep -Milliseconds 300
+        $b = dotnet build $u --nologo -v q 2>&1 | Out-String
+        $rc2 = $LASTEXITCODE
+        ck ($rc2 -eq 0 -and (Get-Item -LiteralPath $stamp).LastWriteTimeUtc -eq $s0) "r3 gating 1: ... and its no-change rebuild skips the transpile (the depfile reads back; exit $rc2)"
+        "fn twice(x: i32): i32 {`n  return x * 3`n}`n" | Set-Content (Join-Path $u "nn.pg")
+        dotnet build $u --nologo -v q 2>&1 | Out-Null
+        $run = "$(dotnet run --project $u --no-build 2>&1)".Trim()
+        ck ($run -eq "63") "r3 gating 1: ... and an edit under 'r3-p$ch' is picked up (prints '$run')"
+    }
+
+    # Gating 7: PolyglotEntryPoint. An app with top-level statements AND a .pg `fn main`: the generated Main
+    # collides (CS0017/CS7022-as-error) until the app passes PolyglotEntryPoint=false — which must re-transpile.
+    $e = Join-Path $work "R3Entry"
+    dotnet new console -o $e --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $e "nuget.config")
+    "fn main() {`n  print(`"pg main`")`n}`n" | Set-Content (Join-Path $e "app.pg")
+    '{ "targets": ["csharp"], "lib": ["io"] }' | Set-Content (Join-Path $e "pgconfig.json")
+    "PolyglotProgram.main();" | Set-Content (Join-Path $e "Program.cs")
+    $ep = Join-Path $e "R3Entry.csproj"
+    (Get-Content -Raw $ep).Replace("</Project>", "  <PropertyGroup><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>`n</Project>") | Set-Content $ep
+    dotnet add $e package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    $b1 = dotnet build $e --nologo -v q 2>&1 | Out-String
+    $rc1 = $LASTEXITCODE
+    $b2 = dotnet build $e --nologo -v q -p:PolyglotEntryPoint=false 2>&1 | Out-String
+    $rc2 = $LASTEXITCODE
+    $gen = Get-Content -Raw (Join-Path $e "obj/Debug/net8.0/polyglot/app.cs") -ErrorAction SilentlyContinue
+    $run = "$(dotnet run --project $e --no-build 2>&1)".Trim()
+    ck ($rc1 -ne 0 -and $b1 -match 'CS7022|CS0017' -and $rc2 -eq 0 -and "$gen" -cnotmatch 'static void Main\(' -and $run -eq "pg main") `
+        "r3 gating 7: -p:PolyglotEntryPoint=false re-transpiles without Main (exit $rc1 [$(([regex]::Matches($b1, '(CS|MSB|NETSDK|NU)\d+') | ForEach-Object Value | Select-Object -Unique) -join ',')] -> $rc2, prints '$run')"
+
+    # --build-owned through the package, unmasked: C#-only, 0.10.x headerless obj/ a.cs, PLAIN build (no adopt).
+    $o = Join-Path $work "R3Owned"
+    dotnet new console -o $o --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $o "nuget.config")
+    "fn alpha(): i32 {`n  return 5`n}`n" | Set-Content (Join-Path $o "a.pg")
+    '{ "targets": ["csharp"] }' | Set-Content (Join-Path $o "pgconfig.json")
+    "System.Console.WriteLine(PolyglotProgram.alpha());" | Set-Content (Join-Path $o "Program.cs")
+    dotnet add $o package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    $oobj = Join-Path $o "obj/Debug/net8.0/polyglot"
+    New-Item -ItemType Directory -Force $oobj | Out-Null
+    "static class PolyglotProgram { public static int alpha() { return 1; } }" | Set-Content (Join-Path $oobj "a.cs")
+    $b = dotnet build $o --nologo -v q 2>&1 | Out-String
+    $rc = $LASTEXITCODE
+    $run = "$(dotnet run --project $o --no-build 2>&1)".Trim()
+    ck ($rc -eq 0 -and (Get-Content -Raw (Join-Path $oobj "a.cs")) -match 'Generated by Polyglot' -and $run -eq "5") `
+        "r3: a C#-only 0.10.x project's PLAIN build overwrites its headerless obj/ a.cs (build-owned; exit $rc, prints '$run')"
+
+    # A listed .cs deleted by hand re-runs the transpile.
+    Remove-Item (Join-Path $oobj "a.cs")
+    $b = dotnet build $o --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0 -and $b -notmatch 'CS2001' -and (Test-Path (Join-Path $oobj "a.cs"))) "r3: a generated .cs deleted by hand is regenerated by the next build (no CS2001)"
+
+    # A PolyglotFile the csproj adds (outside the project folder) is an UpToDateCheckInput; PolyglotTargets takes ','.
+    $shared = Join-Path $work "r3-shared"
+    New-Item -ItemType Directory -Force $shared | Out-Null
+    "fn shared(): i32 {`n  return 7`n}`n" | Set-Content (Join-Path $shared "s.pg")
+    $op = Join-Path $o "R3Owned.csproj"
+    $plain = Get-Content -Raw $op
+    # Evaluation only (-getItem): the item lists are what Visual Studio's fast up-to-date check reads.
+    $plain.Replace("</Project>", "  <ItemGroup><PolyglotFile Include=`"..\r3-shared\s.pg`" /></ItemGroup>`n</Project>") | Set-Content $op
+    $items = dotnet msbuild $o -getItem:UpToDateCheckInput -nologo 2>&1 | Out-String
+    ck ($items -match 's\.pg' -and $items -match 'a\.pg') "r3: a PolyglotFile added in the csproj is an UpToDateCheckInput (moved to the .targets)"
+    $plain.Replace("</Project>", "  <PropertyGroup><PolyglotTargets>csharp,</PolyglotTargets></PropertyGroup>`n</Project>") | Set-Content $op
+    "fn alpha(): i32 {`n  return 6`n}`n" | Set-Content (Join-Path $o "a.pg")
+    $b = dotnet build $o --nologo -v q 2>&1 | Out-String
+    $tRc = $LASTEXITCODE
+    $run = "$(dotnet run --project $o --no-build 2>&1)".Trim()
+    ck ($tRc -eq 0 -and $run -eq "6") "r3: PolyglotTargets 'csharp,' builds the C# (',' is a separator; exit $tRc, prints '$run')"
     $r
 }
 
@@ -617,7 +750,7 @@ fck $appResults ("$run".Trim() -eq "7") "the .pg record + fn are usable from C# 
 # the rest of the strictly-serial App/Downstream chain below. Recreate each block via
 # [scriptblock]::Create so it is unaffiliated with this runspace; all args are absolute paths.
 if (-not $Sequential) {
-    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture, $twoLibsFixture, $staleFixture, $sparkLayoutFixture, $internalLibsFixture, $upgradeFixture) | ForEach-Object {
+    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture, $twoLibsFixture, $staleFixture, $sparkLayoutFixture, $internalLibsFixture, $upgradeFixture, $r3Fixture) | ForEach-Object {
         Start-ThreadJob -ScriptBlock ([scriptblock]::Create($_.ToString())) -ArgumentList $work, $pkgVer, $cliPath
     }
 }
@@ -689,6 +822,7 @@ if ($Sequential) {
     $sparkRes  = @(& $sparkLayoutFixture $work $pkgVer $cliPath)
     $internalRes = @(& $internalLibsFixture $work $pkgVer)
     $upgradeRes = @(& $upgradeFixture $work $pkgVer)
+    $r3Res = @(& $r3Fixture $work $pkgVer)
 } else {
     $sharedRes = @(Receive-Job -Job $jobs[0] -Wait -AutoRemoveJob)
     $multiRes  = @(Receive-Job -Job $jobs[1] -Wait -AutoRemoveJob)
@@ -699,11 +833,12 @@ if ($Sequential) {
     $sparkRes  = @(Receive-Job -Job $jobs[6] -Wait -AutoRemoveJob)
     $internalRes = @(Receive-Job -Job $jobs[7] -Wait -AutoRemoveJob)
     $upgradeRes = @(Receive-Job -Job $jobs[8] -Wait -AutoRemoveJob)
+    $r3Res = @(Receive-Job -Job $jobs[9] -Wait -AutoRemoveJob)
 }
 
 # ---- Deterministic output: fixed fixture order (identical to the serial run), never interleaved. ----
 $failures = 0
-foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes, $twoLibsRes, $staleRes, $sparkRes, $internalRes, $upgradeRes)) {
+foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes, $twoLibsRes, $staleRes, $sparkRes, $internalRes, $upgradeRes, $r3Res)) {
     foreach ($res in $section) {
         if ($res.Passed) { Write-Host "[PASS] $($res.Name)" }
         else { Write-Host "[FAIL] $($res.Name)" -ForegroundColor Red; $failures++ }

@@ -482,6 +482,12 @@ minus current outputs".)*
     rename; just before writing, the CLI re-reads it and replaces only its own sections.
   - The **depfile** (`--depfile <path>`): one absolute path per line, listing the config, the lockfile, every
     `.pg` in each closure, and `file:` plugin manifests. MSBuild reads it with `ReadLinesFromFile`.
+  - The **outputs list** (`--outputs-list <path>`, review of #75): one absolute path per line, every file the
+    run produced. MSBuild's `@(Compile)` takes exactly its `.cs` files under `PolyglotOutDir` instead of
+    globbing the folder, so a headerless stale `.cs` left by 0.10.x (never deletable) is never compiled; a
+    listed file that has gone missing deletes the stamp and so re-runs the transpile (review r3).
+  - Both files are **UTF-8** (MSBuild reads them as UTF-8): the executables run with UTF-8 as their ANSI code
+    page (`utf8.manifest`), and both are written from `u8string()` (review r3, gating 1).
 - **Only an authoritative run keeps a record (D18).**
   - Discovery mode writes `<configDir>/.polyglot/outputs.json`, for the discovery config's group. The folder
     has its own `.gitignore` of `*`.
@@ -509,8 +515,10 @@ minus current outputs".)*
   owner), the outputs record lists it, it sits under a directory the caller declared build-owned
   (`--build-owned <dir>`; MSBuild passes its `$(PolyglotOutDir)`), or the run passes `--adopt`. Otherwise:
   exit 1, the file untouched, and under `--check` an error rather than `would update`. **Upgrade from
-  0.10.x** (headerless outputs, no record): `polyglot build --adopt` once; MSBuild needs nothing.
-  Neither option widens what may be deleted.
+  0.10.x** (headerless outputs, no record): `polyglot build --adopt` once, honoured only while no outputs
+  record exists, naming every file it takes over (review r3). Under MSBuild the `obj/` folder is
+  build-owned, so the C# needs nothing; a twin routed **outside** `obj/` needs `-p:PolyglotAdopt=true` for
+  one build (the targets warn while it is set). Neither option widens what may be deleted.
 
   So the owned scan deletes stale twins on a fresh clone with no record, during `build` as well as reporting
   them under `--check`. Nobody ever has to delete a file by hand after CI reports `would delete`.
@@ -534,7 +542,8 @@ minus current outputs".)*
     `CoreCompileInputs.cache` and CoreCompile re-runs even when every surviving `.cs` is byte-identical
     (review of #75, item 1 — hooked before `CoreCompile`, a 3-file delete kept linking the stale DLL).
   - `_PolyglotInputsCache` (`WriteLinesToFile WriteOnlyWhenDifferent` over the `.pg` set plus
-    `PolyglotTargets`/`Lib`/`Access`/`OriginInfo`) **replaces the stamp-name tag**.
+    `PolyglotTargets`/`Lib`/`Namespace`/`Class`/`Access`/`EntryPoint`/`OriginInfo`/`Root`) **replaces the
+    stamp-name tag** (`EntryPoint` added in review r3: flipping it used to skip the transpile).
   - `Inputs = @(PolyglotFile);$(PolyglotTool);<cache>;@(_PolyglotDep)`.
   - The record, depfile and cache go into `FileWrites`.
 - **`OutputSink` owns one produced-path set for the whole run**, which turns cross-group collisions into an
@@ -582,7 +591,7 @@ minus current outputs".)*
   - Combined with `--target` → 64.
   - Include routing is unchanged.
 - **A repeated `--target` becomes a usage error** instead of last-wins.
-- **MSBuild:** `PolyglotTargets` passes ` --only "$(PolyglotTargets.Replace(';', ','))"`. It is part of the
+- **MSBuild:** `PolyglotTargets` (`;`- or `,`-separated) is split as an item list and passed as ` --only "a,b"`. It is part of the
   `_PolyglotInputsCache` (§B5 + D17), so switching back to all targets regenerates.
 - **Default (D3, accepted):** empty means the full pgconfig set. This keeps the P30 story and the existing
   NuGet fixture. The documented recipe for Nx and other cached monorepos is Spark's own setup:

@@ -144,10 +144,11 @@
           Outputs="$(_PolyglotStamp);$(_PolyglotOutputsList)">
     <!-- PolyglotTargets as an item list: ',' is turned into ';', then MSBuild splits on ';', trims each entry and
          drops empty ones, so "csharp;", "csharp," or " csharp , typescript" reach the CLI as "csharp" /
-         "csharp,typescript" (P40 review r3: the props documented ',' but "csharp," reached the CLI verbatim). (The CLI refuses an
+         "csharp,typescript" (P40 review r3: the props documented ',' but "csharp," reached the CLI verbatim).
+         Unescape: a property function's result is escaped, so its ';' would not split the item list. (The CLI refuses an
          empty name in its only flag since P40 review B7 — an empty entry used to widen the build to ALL targets.) -->
     <ItemGroup>
-      <_PolyglotTargetName Include="$(PolyglotTargets.Replace(',', ';'))" />
+      <_PolyglotTargetName Include="$([MSBuild]::Unescape($(PolyglotTargets.Replace(',', ';'))))" />
     </ItemGroup>
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>

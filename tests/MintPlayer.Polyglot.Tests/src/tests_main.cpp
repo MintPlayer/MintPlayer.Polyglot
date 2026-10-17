@@ -1553,6 +1553,15 @@ int main() {
                                 const std::string args = s.substr(at, end == std::string::npos ? std::string::npos : end - at);
                                 if (args.find("StringComparison.Ordinal") == std::string::npos) allOrdinal = false;
                             }
+                        // P40 review r3: the pin checked 4 method names. The other culture-sensitive .NET string
+                        // members have no Ordinal overload to require, so they must not appear at all (the
+                        // Invariant/Ordinal spellings — ToUpperInvariant, CompareOrdinal — are what std uses).
+                        for (const char* banned : {".ToUpper(", ".ToLower(", ".CompareTo(", "string.Compare(", "String.Compare(",
+                                                   ".ToString(\"N", "double.Parse(", "float.Parse(", ".ToUpper()", ".ToLower()"})
+                            if (s.find(banned) != std::string::npos) {
+                                allOrdinal = false;
+                                std::cerr << "    culture-sensitive '" << banned << "' in std.strings: " << s << "\n";
+                            }
                     }
                     for (const auto& [k, sub] : v.members) walk(sub);
                     for (const auto& e : v.items()) walk(e);

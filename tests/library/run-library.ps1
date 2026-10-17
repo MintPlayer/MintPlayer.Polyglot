@@ -43,7 +43,8 @@
 param(
     [string]$Cli = "$PSScriptRoot\..\..\x64\Debug\MintPlayer.Polyglot.Cli.exe",
     [string]$Staged = "",
-    [switch]$MultiLibraryOnly
+    [switch]$MultiLibraryOnly,
+    [switch]$InstallTypeScript   # run `npm ci` when the pinned TypeScript is missing (default: fail with the remedy)
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,7 +61,8 @@ if ($Staged -and -not (Test-Path $Staged)) {
 
 # The TypeScript compiler is the REPO-LOCAL one pinned in package.json (devDependencies.typescript, locked in
 # package-lock.json) — never whatever `tsc` is on PATH, whose version drifts per machine (a global TS 5 passed
-# code TS 6 rejects: P40 review A1). Missing or not the pinned version -> `npm ci`, exactly what CI runs.
+# code TS 6 rejects: P40 review A1). Missing or not the pinned version -> fail with the remedy (`npm ci`), unless
+# -InstallTypeScript / POLYGLOT_LIBRARY_NPM_CI=1 opts in to running it here.
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $tscJs = Join-Path $repoRoot "node_modules\typescript\bin\tsc"
 function Get-PinnedTypeScript {
@@ -75,12 +77,22 @@ if (-not $MultiLibraryOnly) {
         Write-Host "node not found on PATH — the library gate runs the repo-local TypeScript compiler under node."
         exit 2
     }
+    # The gate never installs on its own by default (review r3): `npm ci` deletes and rewrites node_modules, which
+    # fails with EPERM while an nx daemon (or an editor's TS server) holds files there, and a test leg should not
+    # mutate the checkout. Install on request only: -InstallTypeScript or POLYGLOT_LIBRARY_NPM_CI=1.
     $pinned = Get-PinnedTypeScript
-    if ((Get-InstalledTypeScript) -ne $pinned) {
-        Write-Host "==> TypeScript $pinned (package.json) is not installed in node_modules — running 'npm ci'"
+    if ((Get-InstalledTypeScript) -cne $pinned) {
+        if (-not ($InstallTypeScript -or $env:POLYGLOT_LIBRARY_NPM_CI -eq '1')) {
+            $have = Get-InstalledTypeScript
+            Write-Host "TypeScript $pinned (package.json) is required, but node_modules has $(if ($have) { $have } else { 'none' })."
+            Write-Host "Run 'npm ci' at the repo root (stop the nx daemon first: 'npx nx daemon --stop'), or rerun this"
+            Write-Host "gate with -InstallTypeScript / POLYGLOT_LIBRARY_NPM_CI=1 to let it run 'npm ci' itself."
+            exit 2
+        }
+        Write-Host "==> TypeScript $pinned (package.json) is not installed in node_modules — running 'npm ci' (opted in)"
         Push-Location $repoRoot
         try { & npm ci --no-audit --no-fund 2>&1 | Out-Host; $npmExit = $LASTEXITCODE } finally { Pop-Location }
-        if ($npmExit -ne 0 -or (Get-InstalledTypeScript) -ne $pinned) {
+        if ($npmExit -ne 0 -or (Get-InstalledTypeScript) -cne $pinned) {
             Write-Host "npm ci failed or did not install TypeScript $pinned — run 'npm ci' at the repo root."
             exit 2
         }
