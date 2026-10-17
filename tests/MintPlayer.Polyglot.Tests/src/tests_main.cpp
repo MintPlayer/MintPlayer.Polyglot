@@ -1573,9 +1573,11 @@ int main() {
                       !has(tsAt.code, "export function _pg_charAt") && has(tsAt.code, "self.charAt(index)"),
                   "P40 s8: TS emits the guard as a module-local function over the unchecked primitive");
             EmitResult csAt = compileStd(at, findTarget("csharp"));
-            check(csAt.ok && has(csAt.code, "internal static string _pg_charAt(this string self, int index)") &&
-                      has(csAt.code, "s._pg_charAt(1)"),
-                  "P40 s8: C# emits the guard as an internal extension method (never public API)");
+            check(csAt.ok && has(csAt.code, "internal static string _pg_charAt(string self, int index)") &&
+                      has(csAt.code, "PolyglotProgram._pg_charAt(s, 1)") && !has(csAt.code, "this string") &&
+                      !has(csAt.code, "PolyglotExtensions"),
+                  "P40 review B10: C# emits the guard as a plain internal static method, not a `this string` "
+                  "extension an InternalsVisibleTo assembly would see on every string");
             EmitResult lenOnly = compileStd("import \"std.strings\"\nfn f(s: string): i32 => s.len()\n", findTarget("typescript"));
             check(lenOnly.ok && !has(lenOnly.code, "_pg_charAt") && !has(lenOnly.code, "_pg_split"),
                   "P40 s8: unused guards are pruned (reachability)");
@@ -1632,6 +1634,13 @@ int main() {
                                        findTarget("csharp"))),
                       "'List' is declared in module 'std.collections', which this module does not import"),
                   "P40 s8 (D16): std.strings' own import of std.collections does not leak `List` to the user");
+            {
+                // P40 review B10: the D16 diagnostic points at the offending type name (3:11), not the statement (3:3).
+                EmitResult r = compile("import \"std.strings\"\nfn f(): i32 {\n  let xs: List<string> = \"a,b\".split(\",\")\n  return xs.count\n}\n",
+                                       findTarget("csharp"));
+                check(!r.diagnostics.empty() && r.diagnostics[0].pos.line == 3 && r.diagnostics[0].pos.col == 11,
+                      "P40 review B10 (D16): the not-imported diagnostic's column is the type name's");
+            }
             check(compile("import \"std.strings\"\nfn f(): i32 => \"a,b\".split(\",\").count\n", findTarget("csharp")).ok,
                   "P40 s8 (S18): split's List<string> is usable without naming List (no collections import)");
             check(compile("import \"std.strings\"\nimport \"std.collections\"\nfn f(): i32 {\n  let xs: List<string> = \"a\".split(\",\")\n  return xs.count\n}\n",

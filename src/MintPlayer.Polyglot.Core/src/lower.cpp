@@ -112,9 +112,14 @@ public:
         // under the reserved name `_pg_<name>`. On the targets where an extension is a free function
         // (TS/Python/PHP) its plain name (`contains`, `split`, …) would share the user's function namespace
         // and silently shadow a user `fn contains`; the `_pg_` prefix is refused in user code, so it cannot.
+        // P40 review B10: and it is lowered as a plain prelude FREE function whose first parameter is the
+        // receiver (`s.charAt(1)` -> `_pg_charAt(s, 1)`), not as an extension: on C# an extension is a `this`
+        // method that every assembly granted InternalsVisibleTo saw on `string`. An internal guard is not API.
         for (const auto& e : unit.extensions)
-            if (e.bindings.empty() && ir::isPreludeOrigin(e.originModule) && (!e.body.empty() || e.exprBody))
+            if (e.bindings.empty() && ir::isPreludeOrigin(e.originModule) && (!e.body.empty() || e.exprBody)) {
                 extEmitName_[e.receiver.name + "." + e.name] = "_pg_" + e.name;
+                freeFns_.insert("_pg_" + e.name);
+            }
         // P40 B3: an `extern class` static with a .pg body (std `string.fromCodePoint`, a guard) is emitted as a
         // prelude free function `_pg_<Type>_<name>`; `Type.name(args)` calls it.
         for (const auto& c : unit.classes) {
@@ -367,8 +372,10 @@ public:
             ir::Function f;
             f.pos = ext.pos; // P38: ExtensionDecl has no namePos (ast.hpp) — the decl start is the anchor
             f.name = ext.name;
-            if (auto en = extEmitName_.find(ext.receiver.name + "." + ext.name); en != extEmitName_.end()) f.name = en->second;
-            f.isExtension = true;
+            const auto en = extEmitName_.find(ext.receiver.name + "." + ext.name);
+            const bool stdGuard = en != extEmitName_.end(); // P40 review B10: a plain free function, not an extension
+            if (stdGuard) { f.name = en->second; f.mangledName = en->second; }
+            f.isExtension = !stdGuard;
             f.generics = generics(ext.generics);
             f.returnType = ext.returnType;
             f.params.push_back({"self", ext.receiver}); // the receiver becomes the leading `self` parameter
@@ -379,7 +386,8 @@ public:
             inExtension_ = false;
             f.originModule = ext.originModule;
             f.globalRefs = scanGlobalRefs(moduleGlobals_, ext.params, ext.body, ext.exprBody.get());
-            m.extensions.push_back(std::move(f));
+            if (stdGuard) m.functions.push_back(std::move(f));
+            else m.extensions.push_back(std::move(f));
         }
         for (const auto& c : unit.classes) { // P40 B3: .pg-bodied extern statics -> prelude free functions
             if (!c.isExtern) continue;
@@ -996,6 +1004,19 @@ private:
                         if (auto arms = findBinding(rt.name, e.lhs->text))
                             return makeBound(e.type, e.pos, e.lhs->lhs.get(), *arms, &e.args);
                     }
+                    if (rt.kind == TypeRef::Kind::Named && extensions_.count(rt.name) &&
+                        extensions_.at(rt.name).count(e.lhs->text))
+                        if (auto en = extEmitName_.find(rt.name + "." + e.lhs->text); en != extEmitName_.end()) {
+                            // P40 review B10: a std .pg guard is a plain free function — the receiver is argument 0.
+                            auto call = std::make_unique<ir::Call>(e.pos, e.type, en->second, /*isPrint=*/false);
+                            call->isFree = true;
+                            call->mangledCallee = en->second;
+                            call->args.push_back(expr(*e.lhs->lhs));
+                            for (const auto& a : e.args) call->args.push_back(expr(*a));
+                            if (auto p = extParams_.find(rt.name + "." + e.lhs->text); p != extParams_.end())
+                                appendDefaults(*p->second, e.args.size(), call->args);
+                            return call;
+                        }
                     auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, expr(*e.lhs->lhs), e.lhs->text);
                     if (rt.kind == TypeRef::Kind::Named) {
                         auto it = extensions_.find(rt.name);

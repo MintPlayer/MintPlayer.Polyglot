@@ -35,6 +35,9 @@ struct TypeRef {
     std::vector<TypeRef> args;    // Named: generic args | Tuple: elements | Function: parameter types
     std::vector<TypeRef> ret;     // Function: the single return type (size 1)
     bool nullable = false;        // trailing '?'
+    // Where the type was spelled (its first token), for diagnostics about the type itself — P40 review B10: a
+    // D16 "not imported" type used to point at the enclosing statement. line 0 = synthesized (no spelling).
+    SourcePos pos{0, 0, 0};
 
     bool absent() const { return kind == Kind::Named && name.empty() && args.empty() && !nullable; }
 };

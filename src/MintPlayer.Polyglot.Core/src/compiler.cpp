@@ -858,7 +858,10 @@ private:
                                                 "bool", "string", "char", "unit"};
         return b.count(n) != 0;
     }
+    // `pos` is the fallback (the enclosing declaration/statement) for a synthesized TypeRef; a spelled one points
+    // the diagnostic at its own name (P40 review B10).
     void type(const TypeRef& t, SourcePos pos, const Locals& loc) {
+        if (t.pos.line > 0) pos = t.pos;
         if (t.kind == TypeRef::Kind::Named && !t.name.empty() && !builtinType(t.name) && !loc.generics.count(t.name))
             judge(types_, t.name, t.name, pos);
         for (const auto& a : t.args) type(a, pos, loc);
