@@ -25,7 +25,7 @@
 # <Nullable>enable</> + <TreatWarningsAsErrors>). Together they gate both targets as libraries, not scripts.
 #
 # Type-checking is hermetic (no @types/node / network): a tiny env.d.ts declares exactly the Node runtime
-# surface the emitted std bindings touch (console, process). Needs `tsc` on PATH (TypeScript >= 5).
+# surface the emitted std bindings touch (console, process). Uses the repo-local TypeScript pinned in package.json.
 #
 # -Staged <dir> (P35 slice 3): consume the PRISTINE .ts already emitted by run-conformance.ps1 (one subdir
 # per program) instead of re-transpiling every program here — the conformance runner and this gate then share
@@ -57,10 +57,37 @@ if ($Staged -and -not (Test-Path $Staged)) {
     Write-Host "staging dir not found at $Staged — run run-conformance.ps1 -StagingOut <dir> first."
     exit 2
 }
-if (-not $MultiLibraryOnly -and -not (Get-Command tsc -ErrorAction SilentlyContinue)) {
-    Write-Host "tsc (TypeScript compiler) not found on PATH — install with 'npm i -g typescript'."
-    exit 2
+
+# The TypeScript compiler is the REPO-LOCAL one pinned in package.json (devDependencies.typescript, locked in
+# package-lock.json) — never whatever `tsc` is on PATH, whose version drifts per machine (a global TS 5 passed
+# code TS 6 rejects: P40 review A1). Missing or not the pinned version -> `npm ci`, exactly what CI runs.
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$tscJs = Join-Path $repoRoot "node_modules\typescript\bin\tsc"
+function Get-PinnedTypeScript {
+    (Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json).devDependencies.typescript
 }
+function Get-InstalledTypeScript {
+    $pj = Join-Path $repoRoot "node_modules\typescript\package.json"
+    if (Test-Path $pj) { (Get-Content $pj -Raw | ConvertFrom-Json).version } else { $null }
+}
+if (-not $MultiLibraryOnly) {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Host "node not found on PATH — the library gate runs the repo-local TypeScript compiler under node."
+        exit 2
+    }
+    $pinned = Get-PinnedTypeScript
+    if ((Get-InstalledTypeScript) -ne $pinned) {
+        Write-Host "==> TypeScript $pinned (package.json) is not installed in node_modules — running 'npm ci'"
+        Push-Location $repoRoot
+        try { & npm ci --no-audit --no-fund 2>&1 | Out-Host; $npmExit = $LASTEXITCODE } finally { Pop-Location }
+        if ($npmExit -ne 0 -or (Get-InstalledTypeScript) -ne $pinned) {
+            Write-Host "npm ci failed or did not install TypeScript $pinned — run 'npm ci' at the repo root."
+            exit 2
+        }
+    }
+    Write-Host "==> tsc: repo-local TypeScript $(Get-InstalledTypeScript) (node_modules)"
+}
+function Invoke-Tsc { & node $tscJs @args }
 
 $progDir = Join-Path $PSScriptRoot "..\conformance\programs"
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "polyglot-library"
@@ -361,7 +388,7 @@ if (Test-Path $naTs) {
 Write-Host ""
 Write-Host "==> Type-checking every emitted module + consumer under the Angular library flag set (node leg: lib ES2022 + env.d.ts)"
 Write-TsConfig (Join-Path $work "tsconfig.json") @("ES2022") @("**/*.ts") "_dts-node"
-$tscOut = & tsc -p (Join-Path $work "tsconfig.json") 2>&1 | Out-String
+$tscOut = Invoke-Tsc -p (Join-Path $work "tsconfig.json") 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) {
     # Bounded: a systemic regression would print one error per module; the first 40 lines say what broke.
     Write-Host ((($tscOut.Trim()) -split "`r?`n" | Select-Object -First 40) -join "`n")
@@ -376,7 +403,7 @@ if ($domDirs.Count -eq 0) {
     Fail "DOM leg: no io-free program was staged (the leg would pass vacuously)"
 } else {
     Write-SparkTsConfig (Join-Path $work "tsconfig.dom.json") @($domDirs | ForEach-Object { "$_/**/*.ts" }) "_dts-dom"
-    $domOut = & tsc -p (Join-Path $work "tsconfig.dom.json") 2>&1 | Out-String
+    $domOut = Invoke-Tsc -p (Join-Path $work "tsconfig.dom.json") 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         Write-Host ((($domOut.Trim()) -split "`r?`n" | Select-Object -First 40) -join "`n")
         Fail "tsc (DOM leg) reported errors — an io-free program still references Node-only surface (unreached std emitted?)"

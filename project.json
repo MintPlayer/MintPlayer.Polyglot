@@ -97,7 +97,7 @@
         "sharedGlobals",
         { "runtime": "python --version" },
         { "runtime": "php --version" },
-        { "runtime": "tsc --version" }
+        { "runtime": "node node_modules/typescript/bin/tsc --version" }
       ],
       "outputs": []
     },

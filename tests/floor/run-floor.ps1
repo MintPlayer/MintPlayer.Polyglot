@@ -15,13 +15,9 @@
 # Both at LangVersion 11, Nullable enable, TreatWarningsAsErrors. A real SDK build (not csc) so the targeting
 # packs come from restore exactly as a consumer's would.
 #
-# THE ALLOW LIST (tests/floor/allowlist.txt) — TEMPORARY. When this leg landed, the emitter still produced the
-# warnings the review's floor sweep found (custom-eq records without GetHashCode, definite assignment, unused
-# catch variables, non-nullable user operator parameters, an unreachable trailing return, self-comparisons in
-# the corpus). Those are fixed on the language/emitter side of the same PR; until that half merges, the list
-# names EXACTLY those diagnostics (program, code, count) so this leg is correct and green on its own. The match
-# is exact in both directions: a diagnostic not on the list fails, and a listed one that no longer fires fails
-# too ("stale: remove it"), so the list can only shrink. AFTER THE MERGE THE LIST MUST BE EMPTY.
+# Zero diagnostics, no allow list: when this leg landed (P40 review of #75) a temporary list named the 24
+# diagnostics the review's sweep found; the emitter half of the same PR fixed every one at its root, and the
+# list went with them. A new diagnostic is fixed in the compiler or the program, never allow-listed.
 #
 # Usage:  pwsh tests/floor/run-floor.ps1 [-Cli <path>] [-Keep]     (build the solution first). Needs dotnet.
 
@@ -117,38 +113,16 @@ $items
         }
     }
 
-    # 3. Exact match against the (temporary) allow list: program code count.
-    $allowFile = Join-Path $PSScriptRoot "allowlist.txt"
-    $allowed = @{}
-    if (Test-Path $allowFile) {
-        foreach ($raw in Get-Content $allowFile) {
-            $l = ($raw -replace '#.*$', '').Trim()
-            if (-not $l) { continue }
-            $f = $l -split '\s+'
-            if ($f.Count -ne 3) { Fail "allowlist.txt: malformed line '$raw' (want: <program> <CSxxxx> <count>)"; continue }
-            $allowed["$($f[0])|$($f[1])"] = [int]$f[2]
-        }
+    # 3. Zero diagnostics. (The temporary allow list that let this leg land before the emitter fixes is gone:
+    #    the floor is a contract, so a diagnostic is fixed at its root, never listed.)
+    $byProgram = $diags | Group-Object Program, Code | Sort-Object Name
+    foreach ($g in $byProgram) {
+        $first = $g.Group[0]
+        Fail "$($first.Program) : $($g.Count) x $($first.Code) at the C# 11 / net8.0 / TreatWarningsAsErrors floor"
+        $g.Group | Select-Object -First 3 | ForEach-Object { Write-Host "        $($_.Line)" }
     }
-    $actual = @{}
-    foreach ($d in $diags) { $k = "$($d.Program)|$($d.Code)"; $actual[$k] = 1 + ($actual[$k] ?? 0) }
-    foreach ($k in ($actual.Keys | Sort-Object)) {
-        $want = $allowed[$k] ?? 0
-        if ($actual[$k] -ne $want) {
-            $parts = $k -split '\|'
-            Fail "$($parts[0]) : $($actual[$k]) x $($parts[1]) at the C# 11 / net8.0 / TreatWarningsAsErrors floor (allow-listed: $want)"
-            $diags | Where-Object { "$($_.Program)|$($_.Code)" -eq $k } | Select-Object -First 3 | ForEach-Object { Write-Host "        $($_.Line)" }
-        }
-    }
-    foreach ($k in ($allowed.Keys | Sort-Object)) {
-        if (-not $actual.ContainsKey($k)) {
-            $parts = $k -split '\|'
-            Fail "allowlist.txt: '$($parts[0]) $($parts[1])' no longer fires — stale, remove it (the list must only shrink, to empty)"
-        }
-    }
-    $allowTotal = ($allowed.Values | Measure-Object -Sum).Sum
     if ($fail -eq 0) {
-        $note = if ($allowTotal) { " ($allowTotal allow-listed diagnostic(s) pending the emitter fixes — the list must be empty after the merge)" } else { "" }
-        Write-Host "[PASS] the conformance corpus' C# compiles at C# 11 + net8.0 (Map: net9.0) + Nullable + TreatWarningsAsErrors$note"
+        Write-Host "[PASS] the conformance corpus' C# compiles at C# 11 + net8.0 (Map: net9.0) + Nullable + TreatWarningsAsErrors"
     }
 }
 finally {
