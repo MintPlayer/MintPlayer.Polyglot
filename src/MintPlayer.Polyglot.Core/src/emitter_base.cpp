@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <functional>
 #include <stdexcept>
 #include <string_view>
@@ -1623,6 +1624,7 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     // P40 B1: the module's resolved target options answer `option.<name>` in every rule context for the
     // duration of this emit (the engine reads them; restored on exit so emits never leak into each other).
     engine::ActiveOptionsScope optionsScope(&m.options);
+    originBaseDir_ = m.originBaseDir;
     for (const auto& et : m.externTypes) externMap_[et.name] = &et;
     // The two module facts record/class rules read: which named types are records (TS's structural-equals
     // dispatch) and which bases are interfaces (TS's extends/implements split). Computed for every target;
@@ -1716,6 +1718,16 @@ std::string EmitterBase::originPathFor(const SourcePos& p) const {
     if (canon.find('/') == std::string::npos && canon.find('\\') == std::string::npos) return {};
     std::string out = canon; // forward slashes everywhere: uniform across platforms, and no escaping worry
     for (char& c : out) if (c == '\\') c = '/';
+    // P40 B7: relative to the generated file's directory, so committed output is checkout-independent
+    // (Roslyn resolves a relative `#line` path against the .cs file's folder; SP-B7a). Both sides were
+    // canonicalised by the host, so a purely LEXICAL relation is exact here and the Core stays IO-free. A
+    // different root (another drive) has no relative form: lexically_relative answers empty, and the
+    // absolute path stands — documented in docs/coverage.md.
+    if (!originBaseDir_.empty()) {
+        const std::filesystem::path rel =
+            std::filesystem::path(out).lexically_relative(std::filesystem::path(originBaseDir_));
+        if (!rel.empty()) out = rel.generic_string();
+    }
     return out;
 }
 

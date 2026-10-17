@@ -375,6 +375,7 @@ protected:
     // unrelated `.pg` lines and get reported as covered, silently inflating the number.
     const OriginMapping* origin_ = nullptr;      // the target's declared mapping (null = record nothing)
     const std::vector<std::string>* sourceFiles_ = nullptr; // fileId -> path (index 0 = unknown)
+    std::string originBaseDir_; // P40 B7: ir::Module::originBaseDir of the module being emitted ("" = absolute)
     SourcePos curPos_{};        // origin of the construct currently being emitted
     bool posValid_ = false;     // false => this line has no known origin => hidden
     // Set while composing text that is NOT a fresh output line. `inlineBlock` flattens a statement body's

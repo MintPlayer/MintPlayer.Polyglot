@@ -10,17 +10,23 @@
 # one-shots. Serial chain: pack (fixture 0) -> App (fixtures 1-3: build -> incremental -> touch ->
 # clean, order-dependent) -> Downstream (fixture 4, references App.csproj, so it rebuilds App and must
 # not run concurrently with the App chain). Independent one-shots (each its own project dir + obj/bin,
-# no cross-dependency): Shared (5), MultiPg (6), Twin (7), NoCfg (8), TwoLibs (9, P40 B1). By default the App first build
+# no cross-dependency): Shared (5), MultiPg (6), Twin (7), NoCfg (8), TwoLibs (9, P40 B1), Stale (10, P40 B6+D17). By default the App first build
 # (the one real cross-fixture race: first-install of the freshly-packed nupkg into the global NuGet
 # cache) warms the cache, then the four one-shots run as ThreadJobs OVERLAPPING the rest of the serial
 # chain. Concurrent restores of an already-cached package are safe; per-fixture dirs never collide.
 # Output is buffered and printed in a fixed fixture order so parallel runs never interleave and the
 # exit code / every assertion is identical to serial. `-Sequential` restores the pure serial run.
-param([switch]$Sequential)
+#
+# P40 (issue #73) adds fixture 10 (Stale): PolyglotTargets, the outputs record + depfile + inputs cache
+# (rename/delete a .pg, pgconfig/lockfile edits, re-routing a twin, net8.0;net10.0 isolation).
+# `-Work <dir>` runs in a private directory with a private NuGet package cache (NUGET_PACKAGES), so two
+# concurrent runs on one machine cannot evict or overwrite each other's freshly-packed package.
+param([switch]$Sequential, [string]$Work)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$work = Join-Path ([IO.Path]::GetTempPath()) "polyglot-nuget-gate"
+$work = if ($Work) { [IO.Path]::GetFullPath($Work) } else { Join-Path ([IO.Path]::GetTempPath()) "polyglot-nuget-gate" }
+if ($Work) { $env:NUGET_PACKAGES = Join-Path $work "packages" }
 $feed = Join-Path $work "feed"
 
 # Buffered check results (never printed inline): each fixture accumulates {Name;Passed} objects that
@@ -87,9 +93,10 @@ $multiFixture = {
     $multi = Join-Path $work "MultiPg"
     dotnet new console -o $multi --framework net8.0 | Out-Null
     Copy-Item (Join-Path $work "nuget.config") (Join-Path $multi "nuget.config")
-    # P40 §0: the shared prelude holds only what a root REACHES — phys.pg uses Option, so one file is emitted.
-    "fn pick(): Option<i32> => Some(1)`nfn step(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $multi "phys.pg")
-    "fn tick(): i32 {`n  return 2`n}`n" | Set-Content (Join-Path $multi "snake.pg")
+    # P40 §0: the prelude is pruned to what is REACHED, so both roots use Option — otherwise there is no
+    # prelude to hoist and no file to assert on.
+    "fn pick(o: Option<i32>, d: i32): i32 => match o {`n  Some(x) => x,`n  None => d,`n}`nfn step(): i32 {`n  return pick(Some(1), 0)`n}`n" | Set-Content (Join-Path $multi "phys.pg")
+    "fn pick2(o: Option<i32>, d: i32): i32 => match o {`n  Some(x) => x,`n  None => d,`n}`nfn tick(): i32 {`n  return pick2(None, 2)`n}`n" | Set-Content (Join-Path $multi "snake.pg")
     '{ "targets": ["csharp"] }' | Set-Content (Join-Path $multi "pgconfig.json")
 @"
 System.Console.WriteLine(PolyglotProgram.step() + PolyglotProgram.tick());
@@ -172,6 +179,93 @@ $noCfgFixture = {
     $r
 }
 
+# 10. P40 (issue #73, B6 + D17): PolyglotTargets, the outputs record and the inputs cache, against the
+# real .props/.targets. Reproduces the two bugs the follow-up found — a deleted .pg's function still
+# linked from a stale obj/ .cs, and a pgconfig.json edit did not regenerate — and the target filter.
+$staleFixture = {
+    param($work, $pkgVer)
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $r = [System.Collections.Generic.List[object]]::new()
+    function ck([bool]$c, [string]$n) { $r.Add([pscustomobject]@{ Name = $n; Passed = [bool]$c }) }
+
+    $p = Join-Path $work "Stale"
+    $web = Join-Path $work "stale-web"
+    dotnet new console -o $p --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $p "nuget.config")
+    "fn alpha(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $p "a.pg")
+    "fn beta(): i32 {`n  return 2`n}`n" | Set-Content (Join-Path $p "b.pg")
+    $cfg = { param($out, $extra) "{ `"targets`": [`"csharp`", `"typescript`"]$extra, `"include`": [ { `"pattern`": `"*.pg`", `"target`": `"typescript`", `"output`": `"$out/%(Filename)`" } ] }" }
+    (& $cfg "../stale-web/gen" "") | Set-Content (Join-Path $p "pgconfig.json")
+    "System.Console.WriteLine(PolyglotProgram.alpha() + PolyglotProgram.beta());" | Set-Content (Join-Path $p "Program.cs")
+    dotnet add $p package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    $obj = Join-Path $p "obj/Debug/net8.0/polyglot"
+    $stamp = Join-Path $p "obj/Debug/net8.0/polyglot.stamp"
+
+    $b = dotnet build $p --nologo -v q -p:PolyglotTargets=csharp 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $obj "a.cs")) -and -not (Test-Path (Join-Path $web "gen"))) `
+        "P40: PolyglotTargets=csharp compiles the C# and writes no .ts twin"
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    ck ((Test-Path (Join-Path $web "gen/a.ts")) -and (Test-Path (Join-Path $web "gen/b.ts"))) `
+        "P40: flipping PolyglotTargets back to all targets re-transpiles and writes the twin"
+    ck ((Test-Path (Join-Path $p "obj/Debug/net8.0/polyglot.outputs.json")) -and (Test-Path (Join-Path $p "obj/Debug/net8.0/polyglot.deps"))) `
+        "P40: the record and depfile live in the intermediate dir, outside PolyglotOutDir"
+
+    Move-Item (Join-Path $p "b.pg") (Join-Path $p "c.pg")
+    $b = dotnet build $p --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0 -and -not (Test-Path (Join-Path $obj "b.cs")) -and (Test-Path (Join-Path $obj "c.cs")) -and
+        -not (Test-Path (Join-Path $web "gen/b.ts")) -and (Test-Path (Join-Path $web "gen/c.ts"))) `
+        "P40: renaming a .pg re-runs the transpile and removes the stale .cs and .ts"
+
+    Remove-Item (Join-Path $p "a.pg")
+    $b = dotnet build $p --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -ne 0 -and $b -match 'CS0117' -and -not (Test-Path (Join-Path $obj "a.cs"))) `
+        "P40: deleting a .pg removes its .cs, so calling its function fails (CS0117) instead of linking stale code"
+    "System.Console.WriteLine(PolyglotProgram.beta());" | Set-Content (Join-Path $p "Program.cs")
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    $run = dotnet run --project $p --no-build 2>&1
+    ck ("$run".Trim() -eq "2") "P40: ... and the project builds and runs again without it (prints 2)"
+
+    (& $cfg "../stale-web/gen" ", `"originInfo`": true") | Set-Content (Join-Path $p "pgconfig.json")
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    ck ((Get-Content -Raw (Join-Path $obj "c.cs")) -match '(?m)^#line ') "P40: a pgconfig.json edit regenerates (it is a depfile input)"
+
+    '{ "lockfileVersion": 1, "packages": {} }' | Set-Content (Join-Path $p "pgconfig.lock.json")
+    (Get-Item (Join-Path $p "pgconfig.json")).LastWriteTime = Get-Date   # pick the new lockfile up
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    $s0 = (Get-Item $stamp).LastWriteTimeUtc
+    Start-Sleep -Milliseconds 300
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    $s1 = (Get-Item $stamp).LastWriteTimeUtc
+    (Get-Item (Join-Path $p "pgconfig.lock.json")).LastWriteTime = Get-Date
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    $s2 = (Get-Item $stamp).LastWriteTimeUtc
+    ck ($s1 -eq $s0 -and $s2 -ne $s1) "P40: an unchanged build skips the transpile, a lockfile edit re-runs it"
+
+    (& $cfg "../stale-web/gen2" ", `"originInfo`": true") | Set-Content (Join-Path $p "pgconfig.json")
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+    ck (-not (Test-Path (Join-Path $web "gen/c.ts")) -and -not (Test-Path (Join-Path $web "gen/c.ts.map")) -and (Test-Path (Join-Path $web "gen2/c.ts"))) `
+        "P40: re-routing the twin deletes the old one (and its .map)"
+
+    # net8;net10 — one record per intermediate dir: a single-TFM build never deletes the other TFM's outputs.
+    $m = Join-Path $work "StaleMulti"
+    dotnet new classlib -o $m --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $m "nuget.config")
+    $csproj = Join-Path $m "StaleMulti.csproj"
+    (Get-Content -Raw $csproj) -replace '<TargetFramework>net8.0</TargetFramework>', '<TargetFrameworks>net8.0;net10.0</TargetFrameworks>' | Set-Content $csproj
+    "fn alpha(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $m "a.pg")
+    '{ "targets": ["csharp"] }' | Set-Content (Join-Path $m "pgconfig.json")
+    dotnet add $m package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    dotnet build $m --nologo -v q 2>&1 | Out-Null
+    $o8 = Join-Path $m "obj/Debug/net8.0/polyglot"; $o10 = Join-Path $m "obj/Debug/net10.0/polyglot"
+    $bothOk = (Test-Path (Join-Path $o8 "a.cs")) -and (Test-Path (Join-Path $o10 "a.cs"))
+    Move-Item (Join-Path $m "a.pg") (Join-Path $m "z.pg")
+    dotnet build $m --nologo -v q -f net8.0 2>&1 | Out-Null
+    ck ($bothOk -and (Test-Path (Join-Path $o8 "z.cs")) -and -not (Test-Path (Join-Path $o8 "a.cs")) -and (Test-Path (Join-Path $o10 "a.cs"))) `
+        "P40: net8.0;net10.0 — a net8.0-only build cleans its own obj and never touches net10.0's"
+    $r
+}
+
 $packResults = [System.Collections.Generic.List[object]]::new()
 $appResults  = [System.Collections.Generic.List[object]]::new()
 # 9. P40 B1 (issue #73): two class libraries, each with one .pg and public output, referenced by one app.
@@ -229,7 +323,7 @@ $downResults = [System.Collections.Generic.List[object]]::new()
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
 New-Item -ItemType Directory -Force $feed | Out-Null
 # Same version every run: evict any cached extraction or restore serves a stale package.
-$cached = Join-Path $env:USERPROFILE ".nuget/packages/mintplayer.polyglot.msbuild"
+$cached = if ($Work) { Join-Path $env:NUGET_PACKAGES "mintplayer.polyglot.msbuild" } else { Join-Path $env:USERPROFILE ".nuget/packages/mintplayer.polyglot.msbuild" }
 if (Test-Path $cached) { Remove-Item -Recurse -Force $cached }
 
 # 0. Pack from the working tree into a private feed. The version is read from the csproj so a bump
@@ -289,7 +383,7 @@ fck $appResults ("$run".Trim() -eq "7") "the .pg record + fn are usable from C# 
 # the rest of the strictly-serial App/Downstream chain below. Recreate each block via
 # [scriptblock]::Create so it is unaffiliated with this runspace; all args are absolute paths.
 if (-not $Sequential) {
-    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture, $twoLibsFixture) | ForEach-Object {
+    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture, $twoLibsFixture, $staleFixture) | ForEach-Object {
         Start-ThreadJob -ScriptBlock ([scriptblock]::Create($_.ToString())) -ArgumentList $work, $pkgVer
     }
 }
@@ -300,21 +394,27 @@ Start-Sleep -Milliseconds 300
 dotnet build $app --nologo -v q 2>&1 | Out-Null
 fck $appResults ((Get-Item $gen).LastWriteTimeUtc -eq $stamp) "incremental build skips transpilation"
 
-# ...and touching the .pg regenerates.
+# ...and touching the .pg re-runs the transpile. P40: the old RemoveDir is gone and every write is
+# write-if-changed, so an identical .cs keeps its mtime (CoreCompile can skip); the transpile's own stamp
+# is what proves it ran.
+$appStamp = Join-Path $app "obj/Debug/net8.0/polyglot.stamp"
+$tStamp = (Get-Item $appStamp).LastWriteTimeUtc
+Start-Sleep -Milliseconds 300
 (Get-Item (Join-Path $app "shapes.pg")).LastWriteTime = Get-Date
 dotnet build $app --nologo -v q 2>&1 | Out-Null
-fck $appResults ((Get-Item $gen).LastWriteTimeUtc -ne $stamp) "touching the .pg re-transpiles"
+fck $appResults ((Get-Item $appStamp).LastWriteTimeUtc -ne $tStamp) "touching the .pg re-transpiles"
+fck $appResults ((Get-Item $gen).LastWriteTimeUtc -eq $stamp) "an identical re-transpile leaves the .cs untouched (write-if-changed)"
 
 # 2a. P38 / issue #69: flipping PolyglotOriginInfo must re-transpile even though no .pg and no tool path
-# changed. The property is in neither Inputs nor Outputs, so incrementality is invalidated by the STAMP
-# NAME instead ($(_PolyglotStamp) carries a per-option tag). Without that, a consumer sets the property,
+# changed. P40: the option is a line of the inputs cache ($(_PolyglotInputsCache), an Input rewritten only
+# when different), which replaced the P38 stamp-name tag. Without that, a consumer sets the property,
 # rebuilds, gets directive-free .cs left over in obj/, and concludes the feature is broken — and a package
 # upgrade masks it on the first build, so it surfaces later as a toggle-off-then-on mystery.
 $originStamp = (Get-Item $gen).LastWriteTimeUtc
 Start-Sleep -Milliseconds 300
 dotnet build $app --nologo -v q -p:PolyglotOriginInfo=true 2>&1 | Out-Null
 $genText = Get-Content -LiteralPath $gen -Raw
-fck $appResults ((Get-Item $gen).LastWriteTimeUtc -ne $originStamp) "flipping PolyglotOriginInfo re-transpiles (stamp name carries the option)"
+fck $appResults ((Get-Item $gen).LastWriteTimeUtc -ne $originStamp) "flipping PolyglotOriginInfo re-transpiles (the inputs cache carries the option)"
 fck $appResults ($genText -match '(?m)^#line ') "PolyglotOriginInfo=true actually emits #line directives"
 # ...and flipping it back restores directive-free output rather than leaving the annotated file behind.
 dotnet build $app --nologo -v q 2>&1 | Out-Null
@@ -351,17 +451,19 @@ if ($Sequential) {
     $twinRes   = @(& $twinFixture   $work $pkgVer)
     $noCfgRes  = @(& $noCfgFixture  $work $pkgVer)
     $twoLibsRes = @(& $twoLibsFixture $work $pkgVer)
+    $staleRes  = @(& $staleFixture  $work $pkgVer)
 } else {
     $sharedRes = @(Receive-Job -Job $jobs[0] -Wait -AutoRemoveJob)
     $multiRes  = @(Receive-Job -Job $jobs[1] -Wait -AutoRemoveJob)
     $twinRes   = @(Receive-Job -Job $jobs[2] -Wait -AutoRemoveJob)
     $noCfgRes  = @(Receive-Job -Job $jobs[3] -Wait -AutoRemoveJob)
     $twoLibsRes = @(Receive-Job -Job $jobs[4] -Wait -AutoRemoveJob)
+    $staleRes  = @(Receive-Job -Job $jobs[5] -Wait -AutoRemoveJob)
 }
 
 # ---- Deterministic output: fixed fixture order (identical to the serial run), never interleaved. ----
 $failures = 0
-foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes, $twoLibsRes)) {
+foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes, $twoLibsRes, $staleRes)) {
     foreach ($res in $section) {
         if ($res.Passed) { Write-Host "[PASS] $($res.Name)" }
         else { Write-Host "[FAIL] $($res.Name)" -ForegroundColor Red; $failures++ }

@@ -194,6 +194,11 @@ struct LibConfig {
     // target emits byte-for-byte as before. A build whose targets ALL lack `originMapping` refuses rather
     // than silently doing nothing.
     bool originInfo = false;
+    // P40 B7: routes a module ORIGIN ("" = the entry file — and the prelude, which follows it — else its
+    // canonical source path) to the CANONICAL directory its emitted file is written into. Origin paths are
+    // then emitted relative to that directory (ir::Module::originBaseDir), so committed origin-info output
+    // does not depend on where the repository is checked out. Unset = absolute paths.
+    std::function<std::string(const std::string& origin)> originBaseDir;
 };
 
 // Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->

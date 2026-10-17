@@ -5,9 +5,13 @@
 # MSBuild/NuGet integration all lean on: version shape, help, exit codes for bad input, and that a single
 # multi-target build emits byte-for-byte what four separate per-target builds do.
 #
-# Multi-target invocation (G39): repeated `--target` flags are LAST-WINS (not additive) and a comma list is
-# rejected, so the real single-invocation multi-target path is a pgconfig.json `targets` array with no
-# --target override — that is what this exercises.
+# Multi-target invocation (G39): `--target` names ONE override target (a repeat is a usage error since P40;
+# `--only a,b` narrows the pgconfig set instead), so the real single-invocation multi-target path is a
+# pgconfig.json `targets` array with no --target override — that is what this exercises.
+#
+# P40 (issue #73) adds: relative config discovery, every `build --check` case, `--only`, the outputs
+# record (stale-output cleanup and the deletion invariant), the named `spark-ci-flow` test, and
+# origin-info byte-identity across two checkout roots.
 #
 # Usage:  pwsh tests/cli/run-cli-smoke.ps1   (build the solution first; see CLAUDE.md)
 
@@ -202,6 +206,247 @@ try {
     $warnCount = ([regex]::Matches($warnOut, ':\d+:\d+: warning: non-ASCII')).Count
     Check ($warnExit -eq 0 -and $warnCount -eq 1 -and $warnOut -notmatch ': error: ') `
         "a successful 3-target build prints its warning once, as 'warning:' (exit $warnExit, $warnCount warning line(s))"
+    # ---- P40 (issue #73): config discovery, --check, the outputs record, --only, relative origins ---------
+    # One CLI call, run from a chosen working directory (relative inputs are the point of A5).
+    function Pg([string]$Dir, [string[]]$PgArgs) {
+        Push-Location $Dir
+        try { $o = (& $Cli @PgArgs 2>&1 | Out-String); $rc = $LASTEXITCODE } finally { Pop-Location }
+        return [pscustomobject]@{ Rc = $rc; Out = $o }
+    }
+    # A project: pgconfig.json text + { relative path = content }.
+    function New-Proj([string]$Dir, [string]$Config, [hashtable]$Files) {
+        New-Item -ItemType Directory -Force $Dir | Out-Null
+        if ($Config) { Set-Content -LiteralPath (Join-Path $Dir "pgconfig.json") -Value $Config }
+        foreach ($k in $Files.Keys) {
+            $p = Join-Path $Dir $k
+            New-Item -ItemType Directory -Force (Split-Path $p -Parent) | Out-Null
+            Set-Content -LiteralPath $p -Value $Files[$k]
+        }
+        return $Dir
+    }
+    function Snapshot([string]$Dir) { # path -> hash, for "untouched" assertions
+        $h = @{}
+        if (Test-Path $Dir) {
+            foreach ($f in Get-ChildItem -LiteralPath $Dir -Recurse -File) { $h[$f.FullName] = (Get-FileHash $f.FullName).Hash }
+        }
+        return ($h.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join "`n"
+    }
+    $fnA = 'fn alpha(): i32 { return 1 }'
+    $fnB = 'fn beta(): i32 { return 2 }'
+
+    # -- A5: relative inputs find their config (3 forms + ./a.pg), and mixed rel/abs is ONE project ---------
+    & {
+        $root = Join-Path $work "p40-a5"
+        $lib = New-Proj (Join-Path $root "LibA") `
+            '{ "targets": ["csharp"], "forbiddenIdentifiers": ["temp"], "include": [ { "pattern": "*.pg", "output": "out/%(Filename)" } ] }' `
+            @{ "a.pg" = $fnA; "b.pg" = $fnB; "bad.pg" = "fn f(): i32 { let temp = 1`n return temp }" }
+        New-Item -ItemType Directory -Force (Join-Path $root "other") | Out-Null
+        $routed = Join-Path $lib "out/a.cs"
+        foreach ($form in @(@($lib, "a.pg"), @($lib, "./a.pg"), @($root, "LibA/a.pg"), @((Join-Path $root "other"), "../LibA/a.pg"))) {
+            Remove-Item -Recurse -Force (Join-Path $lib "out") -ErrorAction SilentlyContinue
+            $r = Pg $form[0] @("build", $form[1])
+            Check ($r.Rc -eq 0 -and (Test-Path $routed)) "P40 A5: 'build $($form[1])' finds LibA/pgconfig.json (include routing applied)"
+        }
+        $r = Pg $lib @("check", "bad.pg")
+        Check ($r.Rc -eq 1) "P40 A5: 'check bad.pg' (relative) applies the config's forbiddenIdentifiers (exit $($r.Rc))"
+        Remove-Item -Recurse -Force (Join-Path $lib "out") -ErrorAction SilentlyContinue
+        $r = Pg (Join-Path $root "other") @("build", "../LibA/a.pg", (Join-Path $lib "b.pg"))
+        $aCs = Join-Path $lib "out/a.cs"
+        Check ($r.Rc -eq 0 -and (Test-Path $aCs) -and ((Get-Content -Raw $aCs) -match 'partial')) `
+            "P40 A5: mixed relative + absolute inputs of one config build as ONE project (partial wrapper)"
+    }
+
+    # -- usage errors ---------------------------------------------------------------------------------------
+    & {
+        $d = New-Proj (Join-Path $work "p40-usage") '{ "targets": ["csharp", "typescript"] }' @{ "a.pg" = $fnA }
+        Check ((Pg $d @("build", "a.pg", "--check", "--watch")).Rc -eq 64) "P40 B5: --check --watch is a usage error (64)"
+        Check ((Pg $d @("build", "a.pg", "--target", "csharp", "--target", "typescript")).Rc -eq 64) "P40 B6: a repeated --target is a usage error (64)"
+        Check ((Pg $d @("build", "a.pg", "--only", "csharp", "--target", "csharp")).Rc -eq 64) "P40 B6: --only with --target is a usage error (64)"
+        $r = Pg $d @("build", "a.pg", "--only", "python")
+        Check ($r.Rc -eq 64 -and $r.Out -match 'csharp, typescript' -and $r.Out -match 'python') "P40 B6: --only outside the pgconfig targets is 64, naming both lists"
+        $r = Pg $d @("build", "a.pg", "--only", "typescript")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $d "a.ts")) -and -not (Test-Path (Join-Path $d "a.cs"))) "P40 B6: --only typescript builds only the TS twin"
+        $r = Pg $d @("build", "a.pg", "--only", "csharp", "--only", "typescript")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $d "a.cs"))) "P40 B6: --only is repeatable"
+    }
+
+    # -- B5: every --check case (explicit inputs) -------------------------------------------------------------
+    & {
+        $d = New-Proj (Join-Path $work "p40-check") '{ "targets": ["csharp"], "include": [ { "pattern": "*.pg", "output": "out/%(Filename)" } ] }' @{ "a.pg" = $fnA }
+        $r = Pg $d @("build", "a.pg", "--check")
+        Check ($r.Rc -eq 3 -and $r.Out -match 'would create .*a\.cs' -and -not (Test-Path (Join-Path $d "out"))) "P40 B5: --check on a fresh project: would create, exit 3, writes nothing (no directory)"
+        Check ((Pg $d @("build", "a.pg")).Rc -eq 0) "P40 B5: build"
+        Check ((Pg $d @("build", "a.pg", "--check")).Rc -eq 0) "P40 B5: --check unchanged -> 0"
+        Add-Content -LiteralPath (Join-Path $d "out/a.cs") -Value "// hand edit"
+        $r = Pg $d @("build", "a.pg", "--check")
+        Check ($r.Rc -eq 3 -and $r.Out -match 'would update .*a\.cs') "P40 B5: --check modified -> would update, 3"
+        Check ((Get-Content -Raw (Join-Path $d "out/a.cs")) -match 'hand edit') "P40 B5: --check left the modified file alone"
+        Pg $d @("build", "a.pg") | Out-Null
+        Set-Content -LiteralPath (Join-Path $d "b.pg") -Value $fnB
+        $r = Pg $d @("build", "a.pg", "b.pg", "--check")
+        Check ($r.Rc -eq 3 -and $r.Out -match 'would create .*b\.cs') "P40 B5: --check new input -> would create, 3"
+        Set-Content -LiteralPath (Join-Path $d "c.pg") -Value "fn broken(: i32 {"
+        $r = Pg $d @("build", "a.pg", "b.pg", "c.pg", "--check")
+        Check ($r.Rc -eq 1) "P40 B5: --check compile error + drift -> 1 (exit codes rank, 1 > 3)"
+        Remove-Item (Join-Path $d "c.pg")
+
+        # owned extras need discovery mode
+        $o = New-Proj (Join-Path $work "p40-owned") '{ "targets": ["typescript"], "include": [ { "pattern": "src/*.pg", "output": "gen/%(Filename)", "owned": true } ] }' @{ "src/a.pg" = $fnA }
+        Check ((Pg $o @("build")).Rc -eq 0) "P40 B5: owned discovery build"
+        Copy-Item (Join-Path $o "gen/a.ts") (Join-Path $o "gen/stale.ts")
+        $r = Pg $o @("build", "--check")
+        Check ($r.Rc -eq 3 -and $r.Out -match 'would delete .*stale\.ts') "P40 B5: --check extra marked file in an owned folder -> would delete, 3"
+        Set-Content -LiteralPath (Join-Path $o "gen/hand.ts") -Value "export const x = 1;"
+        $r = Pg $o @("build", "--check")
+        Check ($r.Rc -eq 1 -and $r.Out -notmatch 'would delete .*hand\.ts') "P40 B5: --check extra UNMARKED file in an owned folder -> 1, never deletable"
+        $r = Pg $o @("build")
+        Check ($r.Rc -eq 1 -and (Test-Path (Join-Path $o "gen/hand.ts")) -and -not (Test-Path (Join-Path $o "gen/stale.ts"))) `
+            "P40 B5: build deletes the marked stale file, keeps the unmarked one, exits 1"
+        Remove-Item (Join-Path $o "gen/hand.ts")
+        Check ((Pg $o @("build", "--check")).Rc -eq 0) "P40 B5: owned folder clean -> --check 0"
+    }
+
+    # -- spark-ci-flow (PLAN slice 13: Spark's review scenario, named so it can be pointed at) --------------
+    # Fresh clone, NO record, an owned TS route, C# routed to obj/; rename a .pg; then CI's exact command.
+    & {
+        $cfg = '{ "targets": ["csharp", "typescript"], "include": [ ' +
+               '{ "pattern": "src/*.pg", "target": "csharp", "output": "obj/polyglot/%(Filename)" }, ' +
+               '{ "pattern": "src/*.pg", "target": "typescript", "output": "web/gen/%(Filename)", "owned": true } ] }'
+        $s = New-Proj (Join-Path $work "spark-ci-flow") $cfg @{ "src/a.pg" = $fnA; "src/b.pg" = $fnB }
+        Pg $s @("build") | Out-Null
+        Remove-Item -Recurse -Force (Join-Path $s ".polyglot")            # 1. a fresh clone: no record
+        Move-Item (Join-Path $s "src/b.pg") (Join-Path $s "src/c.pg")     #    ... and a rename
+        $objBefore = Snapshot (Join-Path $s "obj")
+        $r = Pg $s @("build", "--check", "--only", "typescript")          # 2.
+        Check ($r.Rc -eq 3 -and $r.Out -match 'would create .*c\.ts' -and $r.Out -match 'would delete .*b\.ts') `
+            "spark-ci-flow: --check --only typescript reports would create <new> + would delete <old>, exit 3"
+        Check ((Snapshot (Join-Path $s "obj")) -eq $objBefore -and $r.Out -notmatch 'obj') "spark-ci-flow: obj/ untouched and unreported"
+        Check ((Test-Path (Join-Path $s "web/gen/b.ts")) -and -not (Test-Path (Join-Path $s "web/gen/c.ts"))) "spark-ci-flow: --check wrote and deleted nothing"
+        $r = Pg $s @("build")                                             # 3.
+        Check ($r.Rc -eq 0 -and -not (Test-Path (Join-Path $s "web/gen/b.ts")) -and (Test-Path (Join-Path $s "web/gen/c.ts"))) `
+            "spark-ci-flow: a plain build deletes <old> and writes <new> (no record needed)"
+        Check ((Pg $s @("build", "--check", "--only", "typescript")).Rc -eq 0) "spark-ci-flow: --check then exits 0"   # 4.
+
+        # The `--check --only typescript` matrix under a PolyglotTargets=csharp-style setup.
+        Add-Content -LiteralPath (Join-Path $s "obj/polyglot/a.cs") -Value "// drift the C# side"
+        $r = Pg $s @("build", "--check", "--only", "typescript")
+        Check ($r.Rc -eq 0 -and $r.Out -notmatch 'obj') "check --only typescript: obj/ C# drift is never read or reported (0)"
+        Add-Content -LiteralPath (Join-Path $s "web/gen/a.ts") -Value "// hand edit"
+        Check ((Pg $s @("build", "--check", "--only", "typescript")).Rc -eq 3) "check --only typescript: modified twin -> 3"
+        Pg $s @("build", "--only", "typescript") | Out-Null
+        Remove-Item (Join-Path $s "web/gen/a.ts")
+        Check ((Pg $s @("build", "--check", "--only", "typescript")).Rc -eq 3) "check --only typescript: missing twin -> 3"
+        Pg $s @("build", "--only", "typescript") | Out-Null
+        Set-Content -LiteralPath (Join-Path $s "web/gen/contracts.ts") -Value "// <auto-generated/>`nexport interface C {}"
+        $r = Pg $s @("build", "--check", "--only", "typescript")
+        Check ($r.Out -notmatch 'would delete .*contracts' -and $r.Rc -eq 1) "check --only typescript: an NSwag-style <auto-generated/> file is never reported deletable"
+        Pg $s @("build", "--only", "typescript") | Out-Null
+        Check (Test-Path (Join-Path $s "web/gen/contracts.ts")) "check --only typescript: ... and a build never deletes it"
+    }
+
+    # -- the outputs record (D17-D20) ----------------------------------------------------------------------------
+    & {
+        $cfg = '{ "targets": ["csharp", "typescript"], "originInfo": true, "include": [ ' +
+               '{ "pattern": "src/*.pg", "target": "csharp", "output": "out/cs/%(Filename)" }, ' +
+               '{ "pattern": "src/*.pg", "target": "typescript", "output": "out/ts/%(Filename)" } ] }'
+        $p = New-Proj (Join-Path $work "p40-record") $cfg @{ "src/a.pg" = $fnA; "src/b.pg" = $fnB }
+        $r = Pg $p @("build")
+        $rec = Join-Path $p ".polyglot/outputs.json"
+        Check ($r.Rc -eq 0 -and (Test-Path $rec) -and ((Get-Content -Raw (Join-Path $p ".polyglot/.gitignore")).Trim() -eq '*')) `
+            "record: discovery writes .polyglot/outputs.json with a self-ignoring .gitignore"
+        Check ($r.Out -match 'no outputs record') "record: discovery's first build says it starts a record"
+        $xr = Join-Path $work "p40-explicit.outputs.json"
+        $r2 = Pg $p @("build", "src/a.pg", "src/b.pg", "--record", $xr)
+        Check ($r2.Rc -eq 0 -and (Test-Path $xr) -and $r2.Out -notmatch 'no outputs record') `
+            "record: an explicit --record (MSBuild) starts silently on a fresh clone"
+        Remove-Item $xr
+        $json = Get-Content -Raw $rec | ConvertFrom-Json
+        Check ($json.version -eq 1 -and ($json.sections.PSObject.Properties.Name -join ',') -match '\|csharp' -and (Get-Content -Raw $rec) -notmatch [regex]::Escape($p)) `
+            "record: version 1, per-target sections, paths relative to the record"
+
+        Move-Item (Join-Path $p "src/a.pg") (Join-Path $p "src/z.pg")
+        $r = Pg $p @("build")
+        Check ($r.Rc -eq 0 -and -not (Test-Path (Join-Path $p "out/ts/a.ts")) -and -not (Test-Path (Join-Path $p "out/ts/a.ts.map")) -and
+               -not (Test-Path (Join-Path $p "out/cs/a.cs")) -and (Test-Path (Join-Path $p "out/ts/z.ts"))) `
+            "record: a rename deletes the old twin AND its .map (and the old .cs)"
+
+        $bTs = Join-Path $p "out/ts/b.ts"
+        (Get-Content $bTs | Where-Object { $_ -notmatch 'Generated by Polyglot' }) | Set-Content $bTs
+        Move-Item (Join-Path $p "src/b.pg") (Join-Path $p "src/y.pg")
+        $r = Pg $p @("build")
+        Check ($r.Rc -eq 0 -and (Test-Path $bTs) -and $r.Out -match 'kept') "record: a recorded file whose header was stripped is kept (with a notice)"
+        Remove-Item $bTs
+
+        Pg $p @("build", "--only", "csharp") | Out-Null
+        Pg $p @("build", "--only", "typescript") | Out-Null
+        $r = Pg $p @("build", "--only", "csharp")
+        $secs = (Get-Content -Raw $rec | ConvertFrom-Json).sections.PSObject.Properties.Name
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $p "out/ts/z.ts")) -and ($secs -match 'typescript') -and ($secs -match 'csharp')) `
+            "record: per-target sections survive alternating --only (a csharp-only build never touches the TS twins)"
+
+        Move-Item (Join-Path $p "src/z.pg") (Join-Path $p "src/x.pg")
+        Set-Content -LiteralPath (Join-Path $p "src/broken.pg") -Value "fn broken(: i32 {"
+        $r = Pg $p @("build")
+        Check ($r.Rc -eq 1 -and (Test-Path (Join-Path $p "out/ts/z.ts")) -and (Test-Path (Join-Path $p "out/cs/z.cs"))) "record: a compile error deletes nothing"
+        Remove-Item (Join-Path $p "src/broken.pg")
+        Pg $p @("build") | Out-Null
+
+        Set-Content -LiteralPath $rec -Value "{ this is not json"
+        $r = Pg $p @("build")
+        $ok = $true; try { Get-Content -Raw $rec | ConvertFrom-Json | Out-Null } catch { $ok = $false }
+        Check ($r.Rc -eq 0 -and $r.Out -match 'warning' -and $ok) "record: a corrupt record warns, the build succeeds, and the record is rewritten"
+
+        $before = (Get-FileHash $rec).Hash
+        Move-Item (Join-Path $p "src/x.pg") (Join-Path $p "src/w.pg")
+        $r = Pg $p @("build", "--target", "csharp", "--out", (Join-Path $work "p40-record-tmp"))
+        Check ($r.Rc -eq 0 -and (Get-FileHash $rec).Hash -eq $before -and (Test-Path (Join-Path $p "out/cs/x.cs"))) "record: --target + --out leaves the record alone and deletes nothing"
+        Move-Item (Join-Path $p "src/w.pg") (Join-Path $p "src/x.pg")
+
+        # a copied repo never deletes outside itself
+        $copy = Join-Path $work "p40-record-copy"
+        Copy-Item -Recurse $p $copy
+        Move-Item (Join-Path $copy "src/x.pg") (Join-Path $copy "src/v.pg")
+        $r = Pg $copy @("build")
+        Check ($r.Rc -eq 0 -and -not (Test-Path (Join-Path $copy "out/ts/x.ts")) -and (Test-Path (Join-Path $p "out/ts/x.ts"))) `
+            "record: a copied repository deletes its own stale twin, never the original's"
+
+        # watch never deletes (and never writes the record)
+        Move-Item (Join-Path $p "src/x.pg") (Join-Path $p "src/u.pg")
+        $recBefore = (Get-FileHash $rec).Hash
+        $wlog = Join-Path $work "p40-watch.log"
+        $proc = Start-Process -FilePath $Cli -ArgumentList @("build", "src/u.pg", "--watch") -WorkingDirectory $p `
+            -RedirectStandardOutput $wlog -RedirectStandardError (Join-Path $work "p40-watch.err") -PassThru -NoNewWindow
+        $deadline = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $deadline -and -not ((Get-Content $wlog -Raw -ErrorAction SilentlyContinue) -match 'watching for changes')) { Start-Sleep -Milliseconds 200 }
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Check ((Test-Path (Join-Path $p "out/ts/u.ts")) -and (Test-Path (Join-Path $p "out/ts/u.ts.map")) -and (Test-Path (Join-Path $p "out/ts/x.ts")) -and
+               (Get-FileHash $rec).Hash -eq $recBefore) "record: watch writes the twin + its source map, deletes nothing, leaves the record alone"
+
+        # a cross-group collision is an error
+        $g = Join-Path $work "p40-collide"
+        New-Proj (Join-Path $g "g1") '{ "targets": ["csharp"] }' @{ "a.pg" = $fnA } | Out-Null
+        New-Proj (Join-Path $g "g2") '{ "targets": ["csharp"] }' @{ "a.pg" = $fnB } | Out-Null
+        $r = Pg $g @("build", "g1/a.pg", "g2/a.pg", "--out", "shared")
+        Check ($r.Rc -eq 1 -and $r.Out -match 'conflicting output') "record: two config groups routing to one path is an error, not a silent overwrite"
+    }
+
+    # -- B7: origin-info output is byte-identical across two checkout roots ---------------------------------
+    & {
+        $cfg = '{ "targets": ["csharp", "typescript"], "originInfo": true, "include": [ { "pattern": "src/*.pg", "output": "gen/%(TargetLanguage)/%(Filename)" } ] }'
+        $files = @{ "src/a.pg" = "import { beta } from `"./b`"`nfn alpha(): i32 { return beta() + 1 }"; "src/b.pg" = $fnB }
+        $r1 = New-Proj (Join-Path $work "p40-root1/deeper/proj") $cfg $files
+        $r2 = New-Proj (Join-Path $work "p40-root2") $cfg $files
+        $ok = ((Pg $r1 @("build")).Rc -eq 0) -and ((Pg $r2 @("build")).Rc -eq 0)
+        $g1 = @(Get-ChildItem -Recurse -File (Join-Path $r1 "gen") | Sort-Object FullName)
+        $ok = $ok -and $g1.Count -ge 4
+        foreach ($f in $g1) {
+            $twin = Join-Path $r2 ($f.FullName.Substring($r1.Length))
+            if (-not (Test-Path $twin) -or (Get-FileHash $f.FullName).Hash -ne (Get-FileHash $twin).Hash) { Write-Host "        differs: $($f.Name)"; $ok = $false }
+        }
+        Check $ok "P40 B7: origin-info output (.cs #line, .ts + .map) is byte-identical across two checkout roots"
+        $cs = Get-Content -Raw (Join-Path $r1 "gen/csharp/a.cs")
+        Check ($cs -match '#line \d+ "\.\./\.\./src/a\.pg"') "P40 B7: C# #line paths are relative to the generated file"
+    }
 
     $g39Ok = (Test-G39 "counter" $false "counter" @("csharp", "typescript", "python", "php"))
     $g39Ok = (Test-G39 "modular" $true "modular" @("csharp", "typescript", "python", "php")) -and $g39Ok

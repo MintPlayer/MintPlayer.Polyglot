@@ -657,6 +657,11 @@ struct Module {
     // not an on-disk path — a logical "std.io", or the empty slot 0 — is exactly how the emitter
     // recognizes "no resolvable origin" and falls back to a hidden directive.
     std::vector<std::string> sourceFiles;
+    // P40 B7: the directory the HOST will write this file into, in the same canonical, forward-slashed form
+    // as `sourceFiles` (the host canonicalises both sides; the Core only compares them lexically and stays
+    // IO-free). When set, an origin path is emitted RELATIVE to it, so committed origin-info output is
+    // identical across checkouts. Empty, or a path on a different root (another drive), = absolute.
+    std::string originBaseDir;
 };
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).

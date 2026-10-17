@@ -28,6 +28,14 @@ polyglot coverage remap <report> --target <name> --out <path>
                         [--generated-dir <dir>] [--branch-arms]
 ```
 
+**Origin paths are relative to the generated file** (P40, issue #73). A `#line` directive names the `.pg`
+relative to the folder of the `.cs` that carries it (`#line 3 "../../src/m.pg"`), and a sidecar's
+`sources` are relative to the map, so committed origin-info output is byte-identical in every checkout.
+Roslyn resolves a relative `#line` path against the `.cs` file's folder, so the PDB records the same
+absolute document as before; `coverage remap` resolves it the same way, never against the working
+directory. The one exception: when the `.pg` and the generated file are on **different drives** there is
+no relative form, and the directive keeps the absolute path.
+
 Formats, read **and** written: `cobertura`, `lcov`, `istanbul`, `clover`. `--format` is sniffed by
 default; `--out-format` defaults to the input format, so the tool hands your pipeline back what it already
 consumes rather than becoming a format converter it was never asked to be.
