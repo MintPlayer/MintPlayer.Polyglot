@@ -107,25 +107,25 @@ public:
                 unionCases_[u.name].insert(c.name);
                 for (const auto& f : c.params) caseFields_[c.name].push_back(f.name);
             }
-        for (const auto& e : unit.extensions) extensions_[e.receiver.name].insert(e.name);
+        for (const auto& e : unit.extensions) { extensions_[e.receiver.name].insert(e.name); extParams_[e.receiver.name + "." + e.name] = &e.params; }
         for (const auto& fn : unit.functions) freeFns_.insert(fn.name); // top-level fns -> C# qualifies as Program.fn
         // Per-target FFI bindings on std types (e.g. List.add): keyed "Type.member" so a call/access on a
         // receiver of that type lowers to a substituted template instead of a member call.
         for (const auto& c : unit.classes)
             for (const auto& mem : c.members)
-                if (!mem.bindings.empty()) bindings_[c.name + "." + mem.name] = &mem.bindings;
+                if (!mem.bindings.empty()) bindings_[c.name + "." + mem.name] = {&mem.bindings, &mem.params};
         for (const auto& r : unit.records)
             for (const auto& mem : r.members)
-                if (!mem.bindings.empty()) bindings_[r.name + "." + mem.name] = &mem.bindings;
+                if (!mem.bindings.empty()) bindings_[r.name + "." + mem.name] = {&mem.bindings, &mem.params};
         // A bound extension method (`extension fn string.toUpper() { actual… }`): a method on an existing
         // type — keyed like any member binding, so a call `s.toUpper()` lowers to the substituted template.
         for (const auto& e : unit.extensions)
-            if (!e.bindings.empty()) bindings_[e.receiver.name + "." + e.name] = &e.bindings;
+            if (!e.bindings.empty()) bindings_[e.receiver.name + "." + e.name] = {&e.bindings, &e.params};
         // Bound constructors on an `extern class` (its `init` has binding arms): `Type(args)` lowers to a
         // substituted ctor template instead of a plain `new Type(...)`.
         for (const auto& c : unit.classes)
             for (const auto& mem : c.members)
-                if (mem.kind == MemberKind::Constructor && !mem.bindings.empty()) ctorBindings_[c.name] = &mem.bindings;
+                if (mem.kind == MemberKind::Constructor && !mem.bindings.empty()) ctorBindings_[c.name] = {&mem.bindings, &mem.params};
         // Named base types, so a binding/member inherited from a base resolves on a subclass receiver
         // (e.g. `Error.message`, declared on the core-prelude `extern class Error`, on a `: Error` subclass).
         for (const auto& c : unit.classes) for (const auto& b : c.bases) if (!b.name.empty()) bases_[c.name].push_back(b.name);
@@ -239,13 +239,29 @@ public:
         }
     }
 
+    // A "Type.member" FFI binding: its per-target arms, plus the declared params (for filling defaults).
+    struct BindingEntry { const std::vector<TargetBinding>* arms = nullptr; const std::vector<Param>* params = nullptr; };
+
+    // P40 slice 7: lower the defaults of the parameters a call omitted (from index `given` on). Each call
+    // lowers the declaration's checked default expression afresh, so every call site owns its own IR.
+    void appendDefaults(const std::vector<Param>& params, std::size_t given, std::vector<ir::ExprPtr>& out) {
+        for (std::size_t i = given; i < params.size(); ++i)
+            if (params[i].hasDefault && params[i].defaultValue) out.push_back(expr(*params[i].defaultValue));
+    }
+
     // Build an ir::Bound from a receiver, args and a "Type.member" binding — the ACTIVE target's arm
     // (lowering is per-target since P19 slice 9; a used member with no arm was refused before lowering).
     ir::ExprPtr makeBound(const TypeRef& type, SourcePos pos, const Expr* recv,
-                          const std::vector<TargetBinding>& arms, const std::vector<ExprPtr>* args) {
+                          const BindingEntry& entry, const std::vector<ExprPtr>* args) {
+        const std::vector<TargetBinding>& arms = *entry.arms;
         auto b = std::make_unique<ir::Bound>(pos, type);
         if (recv) b->receiver = expr(*recv); // null for a static member binding (template uses only $0,$1,…)
-        if (args) for (const auto& a : *args) b->args.push_back(expr(*a));
+        if (args) {
+            for (const auto& a : *args) b->args.push_back(expr(*a));
+            // P40 slice 7: a template has no native default to fall back on, so an omitted trailing
+            // parameter's (sema-checked, literal) default is filled in here — `$1` of `indexOf(n, from = 0)`.
+            if (entry.params) appendDefaults(*entry.params, args->size(), b->args);
+        }
         for (const auto& arm : arms)
             if (arm.target == target_) { b->tmpl = arm.code; b->preludeKeys = arm.preludeKeys; }
         return b;
@@ -426,8 +442,9 @@ private:
     bool inEqOperator_ = false; // set while lowering a user `eq` body; stamps This.insideEqOperator (P37 C5)
     std::unordered_set<std::string> moduleGlobals_; // top-level let/const names (PHP `global` fact)
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
-    std::unordered_map<std::string, const std::vector<TargetBinding>*> bindings_; // "Type.member" -> FFI arms
-    std::unordered_map<std::string, const std::vector<TargetBinding>*> ctorBindings_; // "Type" -> ctor FFI arms
+    std::unordered_map<std::string, BindingEntry> bindings_; // "Type.member" -> FFI arms
+    std::unordered_map<std::string, BindingEntry> ctorBindings_; // "Type" -> ctor FFI arms
+    std::unordered_map<std::string, const std::vector<Param>*> extParams_; // "Recv.method" -> extension params (defaults)
     std::unordered_set<std::string> freeFns_;                                     // top-level function names
     std::unordered_set<std::string> typeNames_;
     std::unordered_set<std::string> recordNames_;                    // user records (structural `==`)
@@ -443,8 +460,8 @@ private:
 
     // Resolve a "Type.member" FFI binding, walking base types so an inherited binding (e.g. `message`
     // declared on the `Error` base) fires on a subclass receiver too.
-    const std::vector<TargetBinding>* findBinding(const std::string& typeName, const std::string& member) const {
-        if (auto it = bindings_.find(typeName + "." + member); it != bindings_.end()) return it->second;
+    const BindingEntry* findBinding(const std::string& typeName, const std::string& member) const {
+        if (auto it = bindings_.find(typeName + "." + member); it != bindings_.end()) return &it->second;
         if (auto b = bases_.find(typeName); b != bases_.end())
             for (const auto& base : b->second)
                 if (auto r = findBinding(base, member)) return r;
@@ -801,7 +818,7 @@ private:
                 // the LHS is a type name, the binding template uses no receiver.
                 if (e.lhs->kind == ExprKind::Name && typeNames_.count(e.lhs->text)) {
                     if (auto it = bindings_.find(e.lhs->text + "." + e.text); it != bindings_.end())
-                        return makeBound(e.type, e.pos, nullptr, *it->second, nullptr);
+                        return makeBound(e.type, e.pos, nullptr, it->second, nullptr);
                 }
                 // A static member of a type — an enum case `Color.Green`, or a static const/field
                 // `Owner.NAME`: the LHS is a *type name* (record/class in typeNames_, or an enum), not a
@@ -849,7 +866,7 @@ private:
                         // A bound static method `Type.method(args)` (e.g. a future Math.sqrt as an
                         // `extern class` static): substitute the args into the template, no receiver.
                         if (auto b = bindings_.find(e.lhs->lhs->text + "." + e.lhs->text); b != bindings_.end())
-                            return makeBound(e.type, e.pos, nullptr, *b->second, &e.args);
+                            return makeBound(e.type, e.pos, nullptr, b->second, &e.args);
                         auto mc = std::make_unique<ir::MethodCall>(e.pos, e.type, nullptr, e.lhs->text);
                         mc->staticType = e.lhs->lhs->text;
                         for (const auto& a : e.args) mc->args.push_back(expr(*a));
@@ -866,13 +883,16 @@ private:
                         if (it != extensions_.end() && it->second.count(e.lhs->text)) mc->isExtension = true;
                     }
                     for (const auto& a : e.args) mc->args.push_back(expr(*a));
+                    if (mc->isExtension) // P40 slice 7: an extension's omitted defaults are filled at the call
+                        if (auto p = extParams_.find(rt.name + "." + e.lhs->text); p != extParams_.end())
+                            appendDefaults(*p->second, e.args.size(), mc->args);
                     return mc;
                 }
                 std::string callee = (e.lhs && e.lhs->kind == ExprKind::Name) ? e.lhs->text : "";
                 if (!callee.empty() && typeNames_.count(callee)) { // record/class construction
                     if (auto it = ctorBindings_.find(callee); it != ctorBindings_.end()) { // bound ctor (extern class)
                         TypeRef ct; ct.name = callee; ct.args = e.typeArgs; // full type so `$T` renders `Name<args>`
-                        return makeBound(ct, e.pos, /*recv=*/nullptr, *it->second, &e.args);
+                        return makeBound(ct, e.pos, /*recv=*/nullptr, it->second, &e.args);
                     }
                     auto n = std::make_unique<ir::New>(e.pos, e.type, callee);
                     n->typeArgs = e.typeArgs; // explicit `Box<i32>(7)` type args (empty if inferred)

@@ -222,7 +222,18 @@ Three template flavors:
 - **Bound members** (`List.add`, `Math.min`, `Error.message`, `i32.parse`): call-site templates.
   `$this` = the rendered receiver, `$0`,`$1`,… = the rendered arguments. A template of the form
   `$this = …` emits a **receiver assignment** instead of an expression — Python's
-  `"List.clear": "$this = []"`.
+  `"List.clear": "$this = []"`. `$T` is the call's result type, rendered (handy for a typed null:
+  `($T)null` is `(int?)null` when `V = i32`). An omitted trailing parameter with a default (a literal,
+  checked once at the declaration) is **filled in at the call**, so `$1` of `indexOf(needle, from = 0)` is
+  always populated — a template has no native default to fall back on. The same holds for every
+  extension call, bound or not.
+  **`$tmp`** (P40 slice 7) is a temporary private to *one expansion*: every `$tmp` in a template is the
+  same name, and each expansion gets a fresh one (`__pg_t1`, `__pg_t2`, … per emitted file), so two
+  expansions in one scope never collide — C#
+  `"Map.get": "($this.TryGetValue($0, out var $tmp) ? $tmp : ($T)null)"` used twice in one statement
+  would otherwise be CS0128/CS0136. It is matched only as a whole token (`$tmpx` is left alone); on PHP
+  spell the variable `$$tmp` (a literal `$` then the token → `$__pg_t1`). Names starting `__pg` are the
+  compiler's; don't use them for your own identifiers.
 - **`<Type>.type`** maps an extern class's type spelling (`$0`,`$1` = rendered type args — C#:
   `"List.type": "global::System.Collections.Generic.List<$0>"`); **`<Type>.constructor`** maps its
   construction (`$T` = the mapped type, `$0`,… = ctor args — Python: `"List.constructor": "[]"`).

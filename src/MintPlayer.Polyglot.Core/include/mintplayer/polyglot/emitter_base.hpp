@@ -355,6 +355,7 @@ protected:
     std::string out_;
     int indent_ = 0;
     int doWhileSeq_ = 0; // fresh-name counter for the Python do-while emulation flag (#39a)
+    int boundTmpSeq_ = 0; // P40 slice 7: per-expansion unique names for a binding template's `$tmp` token
 
     // ---- P40 §0: prelude placement -------------------------------------------------------------------
     // The Program rule's `{"fn":"preludeSlot"}` marker records WHERE the manifest preludes go; they are
@@ -442,7 +443,8 @@ protected:
     std::string inlineBlock(const std::vector<ir::StmtPtr>& body);
 
     // Substitute a bound FFI template's placeholders: `$this` -> the receiver, `$T` -> the mapped type
-    // (ctor templates), `$0`…`$9` -> the args — each rendered through this emitter's own walk. One shared
+    // (ctor templates), `$0`…`$9` -> the args — each rendered through this emitter's own walk — and `$tmp` -> a
+    // name unique to this one expansion (`__pg_t1`, `__pg_t2`, …; P40 slice 7). One shared
     // implementation serves every backend (the three hand-written copies were byte-identical).
     std::string substBoundTemplate(const std::string& tmpl, const ir::Bound& b);
 

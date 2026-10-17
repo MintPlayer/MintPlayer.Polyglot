@@ -1316,6 +1316,105 @@ int main() {
                       ets.code.find("override cause") == ets.code.rfind("override cause"),
                   "P40 s6: TS `override` on a field shadowing Error.cause through a user base — only there");
         }
+
+        // ---- P40 slice 7: generics prerequisites (generic member typing, class bounds, extension defaults, $tmp) ----
+        {
+            const std::string cell =
+                "class Cell<V> {\n  var v: V\n  constructor(v: V) { this.v = v }\n  fn first(): V => this.v\n"
+                "  fn put(n: V) { this.v = n }\n  fn apply(f: (V) => V): V => f(this.v)\n}\n";
+            const std::string box =
+                "class Box<T> {\n  var item: T\n  constructor(item: T) { this.item = item }\n  fn get(): T? => this.item\n}\n";
+            // Substitution from the receiver: a method result, a field, a lambda param.
+            const std::string concat = cell + "fn f(c: Cell<string>): string => c.first() + c.v + c.apply(s => s + \"?\")\n";
+            EmitResult ts = compileStd(concat, findTarget("typescript"));
+            check(ts.ok && has(ts.code, "c.first() + c.v + c.apply((s: string) => s + \"?\")") && !has(ts.code, "V.plus"),
+                  "P40 s7: Cell<string>.first()/.v/lambda param type as string on TS (was `V.plus(f, \"!\")`)");
+            EmitResult php = compileStd(concat, findTarget("php"));
+            check(php.ok && has(php.code, "$c->first() . $c->v . ") && has(php.code, "$s . \"?\""),
+                  "P40 s7: PHP concatenates a substituted string with `.` (was `$f + \"!\"`, a TypeError)");
+            EmitResult arith = compileStd(cell + "fn f(c: Cell<i32>): i32 => c.first() * 2 + c.v\n", findTarget("typescript"));
+            check(arith.ok && has(arith.code, "Math.imul(c.first(), 2)") && !has(arith.code, "V.times"),
+                  "P40 s7: arithmetic on a substituted i32 uses the i32 rules (Math.imul), not a user operator");
+            // `T?` of a user generic is an Option of the ARGUMENT after substitution (the body's representation).
+            EmitResult opt = compileStd(box + "fn f(b: Box<i32>): i32 => b.get() ?? 0\n", findTarget("csharp"));
+            check(opt.ok && has(opt.code, "Some<int>(var") && has(opt.code, "None<int> _"),
+                  "P40 s7: Box<i32>.get(): T? is Option<i32> at the call (was Option<T>, CS0246)");
+            // Inferred construction type args are recorded, so C# (no ctor inference) spells them.
+            EmitResult inf = compileStd(cell + "fn f(): i32 {\n  let c = Cell(3)\n  return c.first() + 1\n}\n", findTarget("csharp"));
+            check(inf.ok && has(inf.code, "new Cell<int>(3)"), "P40 s7: `Cell(3)` infers Cell<i32> and C# spells `new Cell<int>(3)`");
+            // Params are substituted too: a wrong argument to an instantiated method is a Polyglot error.
+            check(has(typeErr((cell + "fn f(c: Cell<i32>) { c.put(\"s\") }\n").c_str()), "argument 1 of method 'put'"),
+                  "P40 s7: Cell<i32>.put(\"s\") is refused (the param is i32 after substitution)");
+            check(has(typeErr((box + "fn f() { let b = Box<i32>(\"s\") }\n").c_str()), "argument 1 of 'Box'"),
+                  "P40 s7: construction args are checked against the instantiated ctor params");
+            // Through a generic base.
+            const std::string inh = "open class H<T> {\n  var held: T\n  constructor(held: T) { this.held = held }\n"
+                                    "  fn take(): T => this.held\n}\nclass D<U> : H<List<U>> {\n"
+                                    "  constructor(h: List<U>) { super(h) }\n}\nfn f(d: D<string>): i32 => d.take().count + 1\n";
+            EmitResult ih = compileStd(inh, findTarget("typescript"));
+            check(ih.ok && has(ih.code, "(d.take().length + 1 | 0)"),
+                  "P40 s7: a member inherited through `D<U> : H<List<U>>` substitutes T = List<string>");
+            // Extern generic: `V?` is a native nullable once V is concrete; refused while V is a type parameter.
+            const std::string shelf =
+                "extern class Shelf<V> {\n  type { actual(csharp) extern(\"global::System.Collections.Generic.Dictionary<string, $0>\") }\n"
+                "  fn find(k: string): V? { actual(csharp) extern(\"($this.TryGetValue($0, out var $tmp) ? $tmp : ($T)null)\") }\n"
+                "  fn at(i: i32 = 7): V { actual(csharp) extern(\"$this.ElementAt($0).Value\") }\n}\n";
+            EmitResult sh = compileStd(shelf + "fn f(s: Shelf<i32>): i32 => (s.find(\"a\") ?? 0) + (s.find(\"b\") ?? 0)\n",
+                                       findTarget("csharp"));
+            check(sh.ok && has(sh.code, "(s.TryGetValue(\"a\", out var __pg_t1) ? __pg_t1 : (int?)null)") &&
+                      has(sh.code, "(s.TryGetValue(\"b\", out var __pg_t2) ? __pg_t2 : (int?)null)"),
+                  "P40 s7: extern V? -> native int?; `$tmp` is one fresh name per expansion (no CS0128/CS0136)");
+            check(has(typeErr((shelf + "fn g<V>(s: Shelf<V>): bool => s.find(\"a\") == null\n").c_str()),
+                      "'Shelf.find' yields 'V?' while 'V' is still a type parameter"),
+                  "P40 s7: an extern `V?` read with V unresolved is refused (no faithful native form)");
+            EmitResult bd = compileStd(shelf + "fn f(s: Shelf<i32>): i32 => s.at()\n", findTarget("csharp"));
+            check(bd.ok && has(bd.code, "s.ElementAt(7).Value"), "P40 s7: a bound member's omitted default fills its `$0`");
+            // Class type-parameter bounds (SP-B3-S3), explicit / inferred / annotated; nominal bounds too.
+            const std::string nb = "class NumBox<T: INumber> {\n  var n: T\n  constructor(n: T) { this.n = n }\n}\n";
+            check(has(typeErr((nb + "fn f() { let b = NumBox<string>(\"x\") }\n").c_str()),
+                      "type argument 'string' of 'NumBox' does not satisfy the bound 'T: INumber'"),
+                  "P40 s7: an explicit class type arg violating INumber is refused");
+            check(has(typeErr((nb + "fn f() { let b = NumBox(\"x\") }\n").c_str()), "does not satisfy the bound 'T: INumber'"),
+                  "P40 s7: an inferred class type arg violating INumber is refused");
+            check(has(typeErr((nb + "fn f(b: NumBox<bool>) {}\n").c_str()), "type argument 'bool' of 'NumBox'"),
+                  "P40 s7: an annotation violating a class bound is refused");
+            check(typeErr((nb + "fn f(b: NumBox<f64>): NumBox<i64> => NumBox(5i64)\nfn g<T: INumber>(x: T): NumBox<T> => NumBox<T>(x)\n").c_str()).empty(),
+                  "P40 s7: numeric args and a forwarded in-scope type param satisfy the bound");
+            const std::string rk = "interface Ranked {\n  fn rank(): i32\n}\nrecord R(v: i32) : Ranked {\n  fn rank(): i32 => this.v\n}\n"
+                                   "class Ladder<T: Ranked> {\n  var top: T\n  constructor(top: T) { this.top = top }\n}\n";
+            check(typeErr((rk + "fn f(l: Ladder<R>): i32 => l.top.rank()\n").c_str()).empty(),
+                  "P40 s7: an implementing record satisfies an interface bound (and `l.top` is an R)");
+            check(has(typeErr((rk + "fn f(l: Ladder<string>) {}\n").c_str()), "does not satisfy the bound 'T: Ranked'"),
+                  "P40 s7: a non-implementing type violates an interface bound");
+            check(has(typeErr((rk + "fn best<T: Ranked>(a: T): T => a\nfn f(): i32 => best(3)\n").c_str()),
+                      "type argument 'i32' does not satisfy the bound 'T: Ranked'"),
+                  "P40 s7: a generic FUNCTION's nominal bound is checked on the inferred argument too");
+            // Extension default parameters, filled at the call (bound and plain).
+            const std::string ext =
+                "extension fn string.part(start: i32, len: i32 = 1): string { actual(csharp) extern(\"$this.Substring($0, $1)\") "
+                "actual(typescript) extern(\"$this.substring($0, $0 + $1)\") }\n"
+                "extension fn i32.plus(n: i32, extra: i32 = 100): i32 => this + n + extra\n"
+                "fn f(): string => \"hello\".part(1) + \"hello\".part(1, 3)\nfn g(): i32 => 5.plus(1) + 5.plus(1, 2)\n";
+            EmitResult ec = compileStd(ext, findTarget("csharp"));
+            check(ec.ok && has(ec.code, "\"hello\".Substring(1, 1) + \"hello\".Substring(1, 3)") &&
+                      has(ec.code, "5.plus(1, 100) + 5.plus(1, 2)"),
+                  "P40 s7: extension defaults are filled at the call — the bound template's `$1` and a plain call");
+            EmitResult et = compileStd(ext, findTarget("typescript"));
+            check(et.ok && has(et.code, "\"hello\".substring(1, 1 + 1)"), "P40 s7: the filled default reaches the TS template");
+            check(has(typeErr("let k = 3\nextension fn i32.sh(by: i32 = k): i32 => this + by\n"), "must be a literal"),
+                  "P40 s7: a non-literal extension default is refused (it would be evaluated in the caller's scope)");
+            check(has(typeErr("extension fn i32.sh(a: i32, by: i32 = 1): i32 => this + by\nfn f(): i32 => 1.sh()\n"),
+                      "expects 1-2 argument(s), got 0"),
+                  "P40 s7: an extension still requires its non-default params");
+            // The printable guard now judges substituted member reads, and a never-bound type parameter.
+            check(has(typeErr((cell + "record P(x: i32)\nfn f(c: Cell<P>) { print(c.first()) }\n").c_str()),
+                      "print cannot print a value of type 'P'"),
+                  "P40 s7: print of a substituted member read of record type is refused");
+            check(has(typeErr((cell + "fn f(c: Cell) { print(c.first()) }\n").c_str()), "its type parameter was never bound"),
+                  "P40 s7: print of a member read whose type parameter was never bound is refused (was not judged)");
+            check(typeErr((cell + "fn f(c: Cell<i64>) { print(c.first())\n  print(\"${c.v}\") }\n").c_str()).empty(),
+                  "P40 s7: a substituted numeric member read stays printable");
+        }
     }
 
     // P4 — name / type resolution across the declaration surface.

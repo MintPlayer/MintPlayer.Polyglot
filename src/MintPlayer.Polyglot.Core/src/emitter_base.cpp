@@ -1926,9 +1926,19 @@ std::string EmitterBase::substBoundTemplate(const std::string& tmpl, const ir::B
                            tmpl.compare(after, 2, "?.") == 0);
         return recv && inWrapSet(spec().wrapAtomRecv, e) ? "(" + s + ")" : s;
     };
+    // P40 slice 7: `$tmp` is a temporary private to THIS expansion — every `$tmp` in the template is one name,
+    // and the next expansion gets the next one, so two expansions in one scope never collide (C#
+    // `out var __pg_t1` twice is CS0128/CS0136). Allocated lazily: a template without it consumes no number.
+    std::string tmpName;
+    auto isIdent = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
     std::string out;
     for (std::size_t i = 0; i < tmpl.size();) {
-        if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += placeholder(*b.receiver, i + 5); i += 5; }
+        if (tmpl.compare(i, 4, "$tmp") == 0 && (i + 4 >= tmpl.size() || !isIdent(tmpl[i + 4]))) {
+            if (tmpName.empty()) tmpName = "__pg_t" + std::to_string(++boundTmpSeq_);
+            out += tmpName;
+            i += 4;
+        }
+        else if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += placeholder(*b.receiver, i + 5); i += 5; }
         else if (tmpl.compare(i, 2, "$T") == 0) { out += renderType(b.type); i += 2; } // ctor: the mapped type
         else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
             std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');

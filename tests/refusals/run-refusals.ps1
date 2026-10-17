@@ -97,6 +97,11 @@ $cases = [ordered]@{
     "list_in_hole.pg"           = @("cannot interpolate a value of type 'List<i32>'")
     "enum_in_hole.pg"           = @("cannot interpolate a value of type 'Color'", "an enum has no portable text")
     "enum_in_print.pg"          = @("print cannot print a value of type 'Color'", "map it to a string explicitly")
+    "class_bound_explicit.pg"   = @("type argument 'string' of 'NumBox' does not satisfy the bound 'T: INumber'")
+    "class_bound_inferred.pg"   = @("type argument 'string' of 'NumBox' does not satisfy the bound 'T: INumber'")
+    "class_bound_interface.pg"  = @("type argument 'i32' of 'Ladder' does not satisfy the bound 'T: Ranked'")
+    "extension_default_nonliteral.pg" = @("the default of 'by' in extension 'i32.shifted' must be a literal")
+    "extern_nullable_typeparam.pg" = @("'Shelf.find' yields 'V?' while 'V' is still a type parameter")
 }
 
 foreach ($fx in $cases.Keys) {

@@ -264,6 +264,19 @@ structural). One built-in bound is **`INumber`** — a core marker constraint (l
 `System.Numerics.INumber<T>`) satisfied by the numeric scalars (`i8`..`u64`, `f32`, `f64`); `std.math`'s
 `min`/`max`/`abs`/`round` use it, and a non-numeric type argument is rejected at Polyglot compile time. It is
 compile-time-only — erased from the emitted C#/TS, which already type-check numeric operations.
+Bounds are enforced on **generic types as well as functions** — on every spelled type
+(`let b: NumBox<string>` is refused for `class NumBox<T: INumber>`), on explicit construction type
+arguments, and on inferred ones (`NumBox("x")`). An interface/class bound needs that type or a subtype
+(nominal, by name); a type parameter forwarded from an enclosing generic is not judged.
+
+**Members of a generic type are typed through the receiver** (P40 slice 7): `Cell<string>.first(): V`
+is a `string`, `Box<i32>.value` an `i32`, `Box<i32>.set(v: T)` takes an `i32`, and a member inherited
+through `class D<U> : B<List<U>>` sees `B`'s parameter as `List<…>`. A construction without type arguments
+infers them from the constructor arguments (`Cell(3)` is `Cell<i32>`, and every target spells it). A
+user class's `T?` member reads as `Option<i32>` (the representation its body uses, exactly like a generic
+function's `T?` result); an **`extern class`**'s `V?` member is a *native* nullable once `V` is concrete
+(`int?` on C#), and is refused while `V` is still a type parameter (a binding's native null has no
+faithful form there, §3.C).
 
 ### 4.5 Enums vs unions
 
@@ -509,6 +522,12 @@ extension fn string.shout(): string => this.toUpper() + "!"
 extension fn List<T>.second(): T? => if this.count >= 2 { this[1] } else { null }
 // "hi".shout()  ->  C#: static extension call  |  TS: shout("hi")
 ```
+
+An extension may declare trailing **default parameters** (`extension fn string.indexOf(needle: string,
+from: i32 = 0)`); a call may omit them, and the default is **filled in at the call** on every target —
+for a bound (`actual … extern`) extension that is the only way its template's `$1` gets a value. Because the
+default is evaluated in the caller's scope, it must be a literal (optionally negated) or `null`. The same
+holds for a member of an `extern class`.
 
 ### 6.4 Lambdas & closures
 

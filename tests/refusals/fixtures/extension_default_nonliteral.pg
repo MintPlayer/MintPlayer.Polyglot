@@ -1,0 +1,11 @@
+// REFUSED (P40 slice 7): an extension's default is filled in at each CALL, in the caller's scope, so it
+// must be a literal — `= base` would silently read whatever `base` means at the call site.
+import "std.io"
+
+let base = 10
+
+extension fn i32.shifted(by: i32 = base): i32 => this + by
+
+fn main() {
+  print(1.shifted())
+}

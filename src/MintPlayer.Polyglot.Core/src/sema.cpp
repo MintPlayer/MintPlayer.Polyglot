@@ -195,11 +195,14 @@ struct MemberInfo {
     std::size_t required = 0;     // leading params with no default — the minimum a call must supply
     std::vector<std::string> generics; // the method's own type-param names (for TypeArg inference)
     std::vector<std::string> numericParams; // subset of `generics` bounded by INumber (must infer to a number)
+    std::vector<GenericParam> boundSpecs;   // the method's bounded type params (nominal bounds checked at the call)
 };
 struct TypeInfo {
     std::vector<GenericParam> generics;
     std::vector<MemberInfo> members;
     std::vector<std::string> bases;  // named base class/interfaces — members are inherited from these
+    std::vector<TypeRef> baseRefs;   // the same bases with their type arguments (`: Base<T>`), for member
+                                     // substitution through an inherited generic base (P40 slice 7)
     std::vector<TypeRef> ctorParams; // record positional fields, or class init params
     std::size_t ctorRequired = 0;    // leading ctor params with no default
     bool hasCtor = false;
@@ -211,6 +214,7 @@ struct FnSig {
     TypeRef result = namedType("unit");
     std::vector<std::string> generics; // the function's type-param names (for TypeArg inference)
     std::vector<std::string> numericParams; // subset of `generics` bounded by INumber (must infer to a number)
+    std::vector<GenericParam> boundSpecs;   // the function's bounded type params (nominal bounds checked at the call)
     TypeRef receiver;                  // extensions only: the declared receiver type (for inference from it)
     bool isAsync = false;              // an `async fn` — its call result is `Awaitable<result>` (§4.7)
 };
@@ -372,6 +376,7 @@ public:
             pushGenerics(d.generics);
             pushScope();
             for (const auto& p : d.params) declare(p.name, p.type, false, p.pos);
+            checkCallSiteDefaults(d.params, "extension '" + d.receiver.name + "." + d.name + "'");
             if (d.exprBody) { checkExpr(*d.exprBody); checkConvert(d.exprBody, d.returnType, "extension body"); }
             else checkBlock(d.body);
             popScope();
@@ -404,6 +409,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> enumAllCases_;  // enum  -> all case names
     std::unordered_map<std::string, FnSig> extensions_;        // "RecvType.method" -> extension sig
     std::unordered_set<std::string> genericsInScope_;
+    std::unordered_set<std::string> declaredTypeParams_; // every type-param name any declaration introduces
     std::deque<std::unordered_map<std::string, Local>> scopes_; // deque: a Local* (narrowing saves) survives a push
     TypeRef currentReturn_ = namedType("unit");
     TypeRef currentThis_ = tUnknown();
@@ -567,15 +573,21 @@ private:
         if (t.kind == TypeRef::Kind::Named && t.args.empty() &&
             (kPrintable.count(t.name) || genericsInScope_.count(t.name)))
             return;
-        // Refuse only what is KNOWN to have no portable text. A name that resolves to no declaration (a
-        // generic member read whose `T` was not substituted — the slice-7 member-typing gap) is not judged.
+        // Member reads are typed through the receiver (P40 slice 7), so a bare type-parameter name out of its
+        // scope is no longer an expected "don't know" — it is judged like any other non-printable type (its
+        // run-time text would depend on the target). Only a name that is neither a declaration nor any
+        // declared type parameter (an `unknown type` already reported) is skipped, to avoid a second error.
         const bool known = t.kind != TypeRef::Kind::Named || t.name == "unit" || enumNames_.count(t.name) ||
                            types_.count(t.name) || interfaceNames_.count(t.name) ||
-                           externClassNames_.count(t.name) || unionAllCases_.count(t.name);
+                           externClassNames_.count(t.name) || unionAllCases_.count(t.name) ||
+                           declaredTypeParams_.count(t.name);
         if (!known) return;
         const std::string what = hole ? "cannot interpolate a value of type '" + showTy(t) + "'"
                                       : "print cannot print a value of type '" + showTy(t) + "'";
-        if (t.kind == TypeRef::Kind::Named && enumNames_.count(t.name))
+        if (t.kind == TypeRef::Kind::Named && declaredTypeParams_.count(t.name) && !types_.count(t.name))
+            diags_.error(pos, what + " — its type parameter was never bound (the generic's type arguments are "
+                                     "not known here); spell them, e.g. `Box<i32>(…)` or an annotated `let`");
+        else if (t.kind == TypeRef::Kind::Named && enumNames_.count(t.name))
             diags_.error(pos, what + " — an enum has no portable text (C# prints the case name, the other "
                                      "targets its number); map it to a string explicitly, e.g. with a match");
         else
@@ -740,7 +752,10 @@ private:
         auto setOf = [](const std::vector<GenericParam>& gs) { std::unordered_set<std::string> s; for (const auto& g : gs) s.insert(g.name); return s; };
         for (auto& fn : u.functions)  { auto g = setOf(fn.generics); for (auto& p : fn.params) normalizeOptional(p.type, g); normalizeOptional(fn.returnType, g); }
         for (auto& d : u.records)     { auto g = setOf(d.generics); for (auto& f : d.fields) normalizeOptional(f.type, g); normalizeMembers(d.members, g); }
-        for (auto& d : u.classes)     { auto g = setOf(d.generics); normalizeMembers(d.members, g); }
+        // An `extern class` keeps its class-level `T?` as written: its members are bindings that return a NATIVE
+        // nullable, never an Option, so a member read substitutes `V?` with `V = i32` into a native `i32?`
+        // (P40 slice 7). Only the member's own type params are normalized.
+        for (auto& d : u.classes)     { auto g = d.isExtern ? std::unordered_set<std::string>{} : setOf(d.generics); normalizeMembers(d.members, g); }
         for (auto& d : u.interfaces)  { auto g = setOf(d.generics); normalizeMembers(d.members, g); }
         for (auto& d : u.unions)      { auto g = setOf(d.generics); for (auto& c : d.cases) for (auto& p : c.params) normalizeOptional(p.type, g); }
         for (auto& d : u.extensions)  { auto g = setOf(d.generics); for (auto& p : d.params) normalizeOptional(p.type, g); normalizeOptional(d.returnType, g); }
@@ -755,6 +770,7 @@ private:
         for (const auto& p : m.params) mi.params.push_back(p.type);
         for (const auto& g : m.generics) mi.generics.push_back(g.name);
         mi.numericParams = numericBounded(m.generics);
+        mi.boundSpecs = m.generics;
         mi.required = requiredCount(m.params);
         mi.type = (m.kind == MemberKind::Field || m.kind == MemberKind::Const ||
                    m.kind == MemberKind::Property) ? m.type : m.returnType;
@@ -779,19 +795,30 @@ private:
             if (m.kind == MemberKind::Constructor) { ti.hasCtor = true; ti.ctorRequired = requiredCount(m.params); for (const auto& p : m.params) ti.ctorParams.push_back(p.type); }
         }
     }
-    static void collectBaseNames(const std::vector<TypeRef>& bases, std::vector<std::string>& out) {
-        for (const auto& b : bases) if (b.kind == TypeRef::Kind::Named && !b.name.empty()) out.push_back(b.name);
+    static void collectBaseNames(const std::vector<TypeRef>& bases, TypeInfo& ti) {
+        for (const auto& b : bases)
+            if (b.kind == TypeRef::Kind::Named && !b.name.empty()) { ti.bases.push_back(b.name); ti.baseRefs.push_back(b); }
     }
     void buildTables(CompilationUnit& u) {
+        { // P40 slice 7: the printable guard tells a leaked type parameter from an unknown name
+            auto add = [&](const std::vector<GenericParam>& gs) { for (const auto& g : gs) declaredTypeParams_.insert(g.name); };
+            auto addMembers = [&](const std::vector<Member>& ms) { for (const auto& m : ms) add(m.generics); };
+            for (const auto& d : u.records)    { add(d.generics); addMembers(d.members); }
+            for (const auto& d : u.classes)    { add(d.generics); addMembers(d.members); }
+            for (const auto& d : u.interfaces) { add(d.generics); addMembers(d.members); }
+            for (const auto& d : u.unions)     add(d.generics);
+            for (const auto& d : u.functions)  add(d.generics);
+            for (const auto& d : u.extensions) add(d.generics);
+        }
         for (const auto& d : u.records) {
             TypeInfo ti; ti.generics = d.generics; ti.hasCtor = true; ti.ctorRequired = requiredCount(d.fields);
             for (const auto& f : d.fields) { ti.ctorParams.push_back(f.type); ti.members.push_back({f.name, MemberKind::Field, {}, f.type}); }
-            addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases);
+            addMembers(ti, d.members); collectBaseNames(d.bases, ti);
             types_[d.name] = std::move(ti);
         }
-        for (const auto& d : u.classes)    { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases); types_[d.name] = std::move(ti); }
+        for (const auto& d : u.classes)    { TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti); types_[d.name] = std::move(ti); }
         for (const auto& d : u.interfaces) {
-            TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti.bases);
+            TypeInfo ti; ti.generics = d.generics; addMembers(ti, d.members); collectBaseNames(d.bases, ti);
             types_[d.name] = std::move(ti);
             interfaceNames_.insert(d.name);
             interfaceDecls_[d.name] = &d; // base TypeRefs with their generic args (TypeInfo.bases keeps names only)
@@ -824,6 +851,7 @@ private:
             sig.isAsync = fn.isAsync;
             for (const auto& g : fn.generics) sig.generics.push_back(g.name);
             sig.numericParams = numericBounded(fn.generics);
+            sig.boundSpecs = fn.generics;
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
                 if (sameParamList(existing.params, sig.params))
@@ -843,6 +871,7 @@ private:
             std::string key = e.receiver.name + "." + e.name;
             if (extensions_.count(key)) diags_.error(e.pos, "duplicate extension '" + key + "'");
             FnSig sig; for (const auto& p : e.params) sig.params.push_back(p.type); sig.result = e.returnType;
+            sig.required = requiredCount(e.params); // P40 slice 7: trailing defaults are filled at the call
             sig.receiver = e.receiver;
             for (const auto& g : e.generics) sig.generics.push_back(g.name); // for inference from receiver/args
             extensions_[key] = std::move(sig); // keyed by receiver type + method
@@ -861,6 +890,81 @@ private:
     const TypeInfo* typeInfoOf(const std::string& name) const {
         auto it = types_.find(name);
         return it == types_.end() ? nullptr : &it->second;
+    }
+
+    // ---- P40 slice 7: generic member typing ----
+    // A member found on a receiver, with the bindings of its OWNER's type params taken from the receiver's
+    // type arguments — `Cell<string>.first(): V` binds V = string; through `class D<T> : B<List<T>>` a member
+    // of B binds B's param to `List<T'>` with D's own binding applied. This is the member-side twin of
+    // inferResult: every member read/call types with the instance's arguments, never a bare `V`.
+    struct MemberHit {
+        const MemberInfo* m = nullptr;
+        std::string owner;                              // the declaring type (may be a base of the receiver)
+        bool ownerExtern = false;                       // an `extern class` (its members are native bindings)
+        std::unordered_set<std::string> gen;            // the owner's type-param names
+        std::unordered_map<std::string, TypeRef> binds; // owner param -> the receiver's argument
+    };
+    MemberHit findMemberOn(const std::string& typeName, const std::vector<TypeRef>& args, const std::string& name,
+                           int depth = 0) {
+        MemberHit hit;
+        auto it = types_.find(typeName);
+        if (it == types_.end() || depth > 32) return hit;
+        const TypeInfo& ti = it->second;
+        std::unordered_set<std::string> gen;
+        std::unordered_map<std::string, TypeRef> binds;
+        for (std::size_t i = 0; i < ti.generics.size(); ++i) {
+            gen.insert(ti.generics[i].name);
+            if (i < args.size() && !(args[i].kind == TypeRef::Kind::Named && args[i].name.empty()))
+                binds[ti.generics[i].name] = args[i];
+        }
+        for (const auto& m : ti.members)
+            if (m.name == name) {
+                hit.m = &m; hit.owner = typeName; hit.ownerExtern = externClassNames_.count(typeName) != 0;
+                hit.gen = std::move(gen); hit.binds = std::move(binds);
+                return hit;
+            }
+        for (const auto& b : ti.baseRefs) {
+            TypeRef sb = substGeneric(b, gen, binds); // the base as THIS instance sees it
+            MemberHit h = findMemberOn(sb.name, sb.args, name, depth + 1);
+            if (h.m) return h;
+        }
+        return hit;
+    }
+    MemberHit findMemberOn(const TypeRef& recv, const std::string& name) {
+        if (recv.kind != TypeRef::Kind::Named || recv.name.empty()) return {};
+        return findMemberOn(recv.name, recv.args, name);
+    }
+    // A member's declared type as seen through `hit` (the method's own type params shadow the class's).
+    // An extern member's `V?` becomes a native nullable once V is concrete; while V is still a type
+    // parameter it has no faithful form (a binding returns native null, the language's `T?` is an Option),
+    // so it is refused rather than typed either way.
+    static std::string nullableTypeParamIn(const TypeRef& t, const std::unordered_set<std::string>& a,
+                                           const std::unordered_set<std::string>& b) {
+        if (t.kind == TypeRef::Kind::Named && t.nullable && t.args.empty() && (a.count(t.name) || b.count(t.name)))
+            return t.name;
+        for (const auto& x : t.args) if (auto n = nullableTypeParamIn(x, a, b); !n.empty()) return n;
+        for (const auto& x : t.ret)  if (auto n = nullableTypeParamIn(x, a, b); !n.empty()) return n;
+        return "";
+    }
+    TypeRef memberTypeOf(const MemberHit& hit, const TypeRef& declared, SourcePos pos, bool isResult = true) {
+        if (hit.binds.empty() && hit.gen.empty()) return declared;
+        std::unordered_set<std::string> gen = hit.gen;
+        if (hit.m) for (const auto& g : hit.m->generics) gen.erase(g);
+        TypeRef r = substGeneric(declared, gen, hit.binds);
+        if (hit.ownerExtern && isResult) {
+            std::string leaked = nullableTypeParamIn(r, gen, genericsInScope_);
+            if (!leaked.empty())
+                diags_.error(pos, "'" + hit.owner + "." + (hit.m ? hit.m->name : std::string()) + "' yields '" +
+                                      leaked + "?' while '" + leaked + "' is still a type parameter — a binding "
+                                      "returns a native null, which has no faithful form for an unresolved type "
+                                      "parameter (PRD §3.C); use it where the type argument is concrete");
+        }
+        return r;
+    }
+    std::vector<TypeRef> memberParamsOf(const MemberHit& hit, SourcePos pos) {
+        std::vector<TypeRef> ps;
+        for (const auto& p : hit.m->params) ps.push_back(memberTypeOf(hit, p, pos, /*isResult=*/false));
+        return ps;
     }
     bool knownType(const TypeRef& t) const {
         return t.kind == TypeRef::Kind::Named && !t.name.empty() && types_.count(t.name) != 0;
@@ -1057,6 +1161,7 @@ private:
                         diags_.error(pos, "unknown type '" + t.name + "'");
                 }
                 for (const auto& a : t.args) resolveTypeRef(a, pos);
+                checkTypeArgBounds(t.name, t.args, pos); // P40 slice 7: class type-param bounds
                 break;
             case TypeRef::Kind::Tuple:
                 for (const auto& a : t.args) resolveTypeRef(a, pos);
@@ -1119,14 +1224,41 @@ private:
         }
     }
 
+    // P40 slice 7: a default that is filled in AT THE CALL (an extension's — bound or not — and a binding
+    // member's, whose template has no native default to fall back on) is re-evaluated in the caller's scope,
+    // so it must mean the same thing there: a literal (optionally negated) or `null`. It is type-checked
+    // against its parameter once, here; lowering re-lowers the checked expression at every call.
+    void checkCallSiteDefaults(std::vector<Param>& ps, const std::string& what) {
+        for (auto& p : ps) {
+            if (!p.hasDefault || !p.defaultValue) continue;
+            const Expr* v = p.defaultValue.get();
+            if (v->kind == ExprKind::Unary && v->text == "-" && v->lhs) v = v->lhs.get();
+            const bool literal = v->kind == ExprKind::IntLit || v->kind == ExprKind::FloatLit ||
+                                 v->kind == ExprKind::StringLit || v->kind == ExprKind::CharLit ||
+                                 v->kind == ExprKind::BoolLit || v->kind == ExprKind::NullLit;
+            if (!literal) {
+                diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
+                             "the default of '" + p.name + "' in " + what + " must be a literal — it is filled in "
+                             "at each call, in the caller's scope");
+                continue;
+            }
+            checkExpr(*p.defaultValue);
+            if (!p.type.absent()) checkConvert(p.defaultValue, p.type, "default of '" + p.name + "'");
+        }
+    }
+
     // ---- body checking ----
     void checkTypeBody(const std::string& typeName, const std::vector<GenericParam>& generics,
                        std::vector<Member>& members, std::vector<Param>* recordFields) {
         pushGenerics(generics);
         currentThis_ = tNamed(typeName);
         currentClass_ = typeName;
+        const bool externType = externClassNames_.count(typeName) != 0;
         for (auto& m : members) {
             pushGenerics(m.generics);
+            if ((externType || !m.bindings.empty()) &&
+                (m.kind == MemberKind::Method || m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator))
+                checkCallSiteDefaults(m.params, "'" + typeName + "." + m.name + "'");
             if (m.kind == MemberKind::Operator) { // P37 C: conversion-operator declaration rules
                 if (m.name == "implicit")
                     diags_.error(m.pos, "Polyglot refuses implicit user conversions — an invisible "
@@ -2285,7 +2417,7 @@ private:
             !isBuiltinType(ot.name) && ot.name != "unit") {
             const char* meth = e.text == "-" ? "neg" : e.text == "~" ? "bnot" : nullptr;
             if (meth) {
-                if (const MemberInfo* m = findMember(ot.name, meth)) return m->type;
+                if (MemberHit h = findMemberOn(ot, meth); h.m) return memberTypeOf(h, h.m->type, e.pos); // P40 s7: substituted
                 diags_.error(e.pos, "type '" + ot.name + "' declares no 'operator fn " + meth +
                                         "' for unary '" + e.text + "'");
                 return tUnknown();
@@ -2352,7 +2484,7 @@ private:
             !isBuiltinType(lt.name) && lt.name != "unit") {
             const std::string meth = operatorMethod(op);
             if (!meth.empty())
-                if (const MemberInfo* m = findMember(lt.name, meth)) return m->type;
+                if (MemberHit h = findMemberOn(lt, meth); h.m) return memberTypeOf(h, h.m->type, e.pos); // P40 s7: substituted
         }
         TypeRef common;
         if (op == "==" || op == "!=") {
@@ -2390,7 +2522,7 @@ private:
         }
         if (l != Ty::Unknown && r != Ty::Unknown && (l != r || !isNumeric(l))) { diags_.error(e.pos, "'" + op + "' expects matching numeric operands, found " + tyName(l) + " and " + tyName(r)); return tUnknown(); }
         // a user type with an operator method (e.g. Vec2 + Vec2)
-        if (knownType(lt)) { if (const MemberInfo* m = findMember(lt.name, operatorMethod(op))) return m->type; }
+        if (knownType(lt)) { if (MemberHit h = findMemberOn(lt, operatorMethod(op)); h.m) return memberTypeOf(h, h.m->type, e.pos); }
         return tUnknown();
     }
 
@@ -2419,6 +2551,28 @@ private:
         for (auto& a : r.args) a = substGeneric(a, gen, binds);
         for (auto& rt : r.ret) rt = substGeneric(rt, gen, binds);
         return r;
+    }
+    static bool mentionsName(const TypeRef& t, const std::unordered_set<std::string>& names) {
+        if (t.kind == TypeRef::Kind::Named && names.count(t.name)) return true;
+        for (const auto& a : t.args) if (mentionsName(a, names)) return true;
+        for (const auto& r : t.ret) if (mentionsName(r, names)) return true;
+        return false;
+    }
+    // #56b, generalized (P40 slice 7): a lambda argument with untyped params takes them from the (already
+    // instantiated) function-typed parameter it flows into, then its body is re-checked so members on those
+    // params bind. A param type still naming an open type parameter (`open`) is left alone.
+    void instantiateLambdaArgs(const std::vector<TypeRef>& params, std::vector<ExprPtr>& args,
+                               const std::unordered_set<std::string>& open) {
+        for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) {
+            if (args[i]->kind != ExprKind::Lambda || params[i].kind != TypeRef::Kind::Function) continue;
+            Expr& lam = *args[i];
+            bool retyped = false;
+            for (std::size_t j = 0; j < lam.params.size() && j < params[i].args.size(); ++j)
+                if (lam.params[j].type.absent() && !params[i].args[j].absent() && !mentionsName(params[i].args[j], open)) {
+                    lam.params[j].type = params[i].args[j]; retyped = true;
+                }
+            if (retyped) checkLambda(lam); // re-walk the body with the now-instantiated params
+        }
     }
     TypeRef inferResult(const std::vector<std::string>& generics, const std::vector<TypeRef>& params,
                         const std::vector<TypeRef>& args, const TypeRef& result) {
@@ -2462,6 +2616,53 @@ private:
         }
     }
 
+    // P40 slice 7: does a (concrete) type argument satisfy one bound of its type parameter? INumber wants a
+    // numeric scalar; an interface/class bound wants that type or a subtype (by name — the bound's own args are
+    // not compared, matching the implements-conformance check). An unknown argument, or one that is itself a
+    // type parameter in scope (a generic forwarding its own T), is not judged — the same leniency as
+    // checkNumericBounds. A bound naming anything else (no declaration) was already an `unknown type` error.
+    bool satisfiesBound(const TypeRef& arg, const TypeRef& bound) const {
+        if (arg.kind != TypeRef::Kind::Named || arg.name.empty() || genericsInScope_.count(arg.name)) return true;
+        if (bound.kind != TypeRef::Kind::Named) return true;
+        if (bound.name == "INumber") return !arg.nullable && isNumericTypeName(arg);
+        if (!types_.count(bound.name)) return true;
+        return arg.name == bound.name || inheritsFrom(arg.name, bound.name);
+    }
+    static std::string describeBound(const TypeRef& b) { return b.name == "INumber" ? "INumber" : sigTypeName(b); }
+    // Nominal (non-INumber) bounds of a generic function or method, checked on the inferred arguments.
+    // (INumber keeps its own historical message in checkNumericBounds.)
+    void checkGenericBounds(const std::vector<GenericParam>& specs, const std::vector<std::string>& generics,
+                            const std::vector<TypeRef>& params, const std::vector<TypeRef>& args,
+                            const std::string& what, SourcePos pos) {
+        bool any = false;
+        for (const auto& g : specs) for (const auto& b : g.bounds) if (b.name != "INumber") any = true;
+        if (!any) return;
+        std::unordered_set<std::string> gen(generics.begin(), generics.end());
+        std::unordered_map<std::string, TypeRef> binds;
+        for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) unifyGeneric(gen, params[i], args[i], binds);
+        for (const auto& g : specs) {
+            auto it = binds.find(g.name);
+            if (it == binds.end() || gen.count(it->second.name)) continue;
+            for (const auto& b : g.bounds)
+                if (b.name != "INumber" && !satisfiesBound(it->second, b))
+                    diags_.error(pos, what + ": type argument '" + showTy(it->second) + "' does not satisfy the bound '" +
+                                          g.name + ": " + describeBound(b) + "'");
+        }
+    }
+    // A generic TYPE's arguments against its params' bounds (`class Box<T: INumber>` refuses `Box<string>`),
+    // wherever a type is spelled (annotations, construction type args) or inferred at a construction.
+    void checkTypeArgBounds(const std::string& typeName, const std::vector<TypeRef>& args, SourcePos pos) {
+        auto it = types_.find(typeName);
+        if (it == types_.end() || args.empty()) return;
+        const auto& gs = it->second.generics;
+        for (std::size_t i = 0; i < gs.size() && i < args.size(); ++i)
+            for (const auto& b : gs[i].bounds)
+                if (!satisfiesBound(args[i], b))
+                    diags_.error(pos, "type argument '" + showTy(args[i]) + "' of '" + typeName +
+                                          "' does not satisfy the bound '" + gs[i].name + ": " + describeBound(b) +
+                                          "'" + (b.name == "INumber" ? " (a numeric type is required)" : ""));
+    }
+
     TypeRef checkMember(Expr& e) {
         // Enum case access: `EnumName.Case`.
         if (e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text)) return tNamed(e.lhs->text);
@@ -2480,8 +2681,8 @@ private:
         requireNonNullReceiver(recv, e.text, e.flag, e.pos); // P40 A4 (S7 hole)
         TypeRef result = tUnknown();
         if (knownType(recv)) {
-            if (const MemberInfo* m = findMember(recv.name, e.text)) {
-                result = m->type;
+            if (MemberHit hit = findMemberOn(recv, e.text); hit.m) {
+                result = memberTypeOf(hit, hit.m->type, e.pos); // P40 slice 7: `Box<i32>.value` is i32, not T
                 if (auto it = memberDefId_.find(recv.name + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
             } else diags_.error(e.pos, "type '" + recv.name + "' has no member '" + e.text + "'");
         }
@@ -2552,6 +2753,7 @@ private:
                         std::string what = "static method '" + typeName + "." + method + "'";
                         checkArgs(m->params, argTypes, e.args, what, e.pos, m->required);
                         checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, what, e.pos);
+                        checkGenericBounds(m->boundSpecs, m->generics, m->params, argTypes, what, e.pos);
                         TypeRef r = inferResult(m->generics, m->params, argTypes, m->type);
                         return m->isAsync ? awaitable(r) : r;
                     }
@@ -2579,27 +2781,37 @@ private:
                         std::unordered_set<std::string> gen(it->second.generics.begin(), it->second.generics.end());
                         std::unordered_map<std::string, TypeRef> binds;
                         unifyGeneric(gen, it->second.receiver, recv, binds);
-                        for (std::size_t i = 0; i < it->second.params.size() && i < e.args.size(); ++i) {
-                            if (e.args[i]->kind != ExprKind::Lambda) continue;
-                            TypeRef pt = substGeneric(it->second.params[i], gen, binds);
-                            if (pt.kind != TypeRef::Kind::Function) continue;
-                            Expr& lam = *e.args[i];
-                            bool retyped = false;
-                            for (std::size_t j = 0; j < lam.params.size() && j < pt.args.size(); ++j)
-                                if (lam.params[j].type.absent() && !pt.args[j].absent()) {
-                                    lam.params[j].type = pt.args[j]; retyped = true;
-                                }
-                            if (retyped) checkLambda(lam); // re-walk the body with the now-instantiated params
-                        }
+                        std::vector<TypeRef> ps;
+                        for (const auto& p : it->second.params) ps.push_back(substGeneric(p, gen, binds));
+                        instantiateLambdaArgs(ps, e.args, {}); // (as before: an unbound T is kept as written)
                     }
-                    checkArgs(it->second.params, argTypes, e.args, "extension '" + method + "'", e.pos);
+                    // P40 slice 7: trailing default params may be omitted; lowering fills them in at the call.
+                    checkArgs(it->second.params, argTypes, e.args, "extension '" + method + "'", e.pos, it->second.required);
                     // Infer the extension's type params from the receiver (List<i32> vs List<T> -> T=i32) and
                     // args, then substitute the result — so `xs.secondOrNull()` is Option<i32>, not Option<T>.
                     return inferExtResult(it->second.generics, it->second.receiver, recv, it->second.params, argTypes, it->second.result);
                 }
             }
             if (knownType(recv)) {
-                if (const MemberInfo* m = findMember(recv.name, method)) { if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second); checkArgs(m->params, argTypes, e.args, "method '" + method + "'", e.pos, m->required); checkNumericBounds(m->numericParams, m->generics, m->params, argTypes, "method '" + method + "'", e.pos); TypeRef r = inferResult(m->generics, m->params, argTypes, m->type); return m->isAsync ? awaitable(r) : r; }
+                if (MemberHit hit = findMemberOn(recv, method); hit.m) {
+                    const MemberInfo* m = hit.m;
+                    if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
+                    // P40 slice 7: the class's type params come from the receiver (`Box<i32>.set(v: T)` takes
+                    // an i32), then the method's own params are inferred from the args as for a free fn.
+                    std::vector<TypeRef> ps = memberParamsOf(hit, e.pos);
+                    {
+                        std::unordered_set<std::string> open; // still-unbound class params: never retype with them
+                        for (const auto& g : hit.gen) if (!hit.binds.count(g) && !genericsInScope_.count(g)) open.insert(g);
+                        for (const auto& g : m->generics) open.insert(g);
+                        instantiateLambdaArgs(ps, e.args, open);
+                    }
+                    const std::string what = "method '" + method + "'";
+                    checkArgs(ps, argTypes, e.args, what, e.pos, m->required);
+                    checkNumericBounds(m->numericParams, m->generics, ps, argTypes, what, e.pos);
+                    checkGenericBounds(m->boundSpecs, m->generics, ps, argTypes, what, e.pos);
+                    TypeRef r = inferResult(m->generics, ps, argTypes, memberTypeOf(hit, m->type, e.pos));
+                    return m->isAsync ? awaitable(r) : r;
+                }
                 diags_.error(e.pos, "type '" + recv.name + "' has no method '" + method + "'");
             }
             // #56a: a method call on a CONCRETE primitive receiver (string/i32/bool/char/f64/…) that bound
@@ -2657,7 +2869,37 @@ private:
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
             if (auto it = typeDefId_.find(name); it != typeDefId_.end()) recordRef(e.lhs->pos, name, it->second);
-            if (t->second.hasCtor) checkArgs(t->second.ctorParams, argTypes, e.args, "'" + name + "'", e.pos, t->second.ctorRequired);
+            // P40 slice 7: a generic type's construction binds its type params — from explicit args
+            // (`Box<i32>(7)`), else inferred from the ctor args (`Box(7)` is Box<i32>, and the args are
+            // recorded so every target spells them: C# has no constructor type inference). The ctor params are
+            // then checked against the instantiated types, and the arguments against the params' bounds.
+            const auto& gs = t->second.generics;
+            std::vector<TypeRef> ctorPs = t->second.ctorParams;
+            if (!gs.empty()) {
+                std::unordered_set<std::string> gen; for (const auto& g : gs) gen.insert(g.name);
+                std::unordered_map<std::string, TypeRef> binds;
+                if (!e.typeArgs.empty()) {
+                    if (e.typeArgs.size() != gs.size())
+                        diags_.error(e.pos, "'" + name + "' takes " + std::to_string(gs.size()) +
+                                                " type argument(s), got " + std::to_string(e.typeArgs.size()));
+                    for (auto& ta : e.typeArgs) { normalizeOptional(ta, genericsInScope_); resolveTypeRef(ta, e.pos); }
+                    for (std::size_t i = 0; i < gs.size() && i < e.typeArgs.size(); ++i) binds[gs[i].name] = e.typeArgs[i];
+                    checkTypeArgBounds(name, e.typeArgs, e.pos);
+                } else if (t->second.hasCtor) {
+                    for (std::size_t i = 0; i < ctorPs.size() && i < argTypes.size(); ++i) unifyGeneric(gen, ctorPs[i], argTypes[i], binds);
+                    bool all = true;
+                    for (const auto& g : gs) {
+                        auto b = binds.find(g.name);
+                        if (b == binds.end() || b->second.kind != TypeRef::Kind::Named) { all = false; break; }
+                    }
+                    if (all) {
+                        for (const auto& g : gs) e.typeArgs.push_back(binds[g.name]);
+                        checkTypeArgBounds(name, e.typeArgs, e.pos);
+                    } else binds.clear(); // not fully inferable: lenient, as before (an annotation may supply it)
+                }
+                for (auto& p : ctorPs) p = substGeneric(p, gen, binds);
+            }
+            if (t->second.hasCtor) checkArgs(ctorPs, argTypes, e.args, "'" + name + "'", e.pos, t->second.ctorRequired);
             TypeRef r = tNamed(name); r.args = e.typeArgs; // carry `Box<i32>()`'s args so the result is Box<i32>
             return r;
         }
@@ -2671,6 +2913,7 @@ private:
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
             checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
             checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
+            checkGenericBounds(chosen->boundSpecs, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
             TypeRef r = inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
             if (!e.typeArgs.empty()) { // P40 A4: explicit `f<T>(…)` binds the type params (and is emitted)

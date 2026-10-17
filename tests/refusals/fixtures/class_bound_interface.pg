@@ -1,0 +1,18 @@
+// REFUSED (P40 slice 7): an interface bound on a generic class is checked wherever the type is spelled —
+// here in a parameter annotation: `i32` does not implement `Ranked`.
+import "std.io"
+
+interface Ranked {
+  fn rank(): i32
+}
+
+class Ladder<T: Ranked> {
+  var top: T
+  constructor(top: T) { this.top = top }
+}
+
+fn best(l: Ladder<i32>): i32 => l.top
+
+fn main() {
+  print(0)
+}

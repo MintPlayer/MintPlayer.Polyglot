@@ -1,0 +1,13 @@
+// REFUSED (P40 slice 7): a class bound is checked on INFERRED construction type arguments too —
+// `NumBox("x")` infers T = string, which does not satisfy `T: INumber`.
+import "std.io"
+
+class NumBox<T: INumber> {
+  var n: T
+  constructor(n: T) { this.n = n }
+}
+
+fn main() {
+  let b = NumBox("x")
+  print(b.n)
+}

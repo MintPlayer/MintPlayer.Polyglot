@@ -775,3 +775,65 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     fallout of the new guard: 0 (147 corpus `.pg` incl. MintPlayer.AI; the 3 failures predate this slice).
     Not run (end gate): the full tier, run-nuget, samples, the POSIX leg (no platform-forked code; `strtof`/
     `snprintf` are portable).
+- **2026-10-17 (night, slice 7)** — **Slice 7 built** (generics prerequisites for B3/B4). As built:
+  - **Generic member typing (ANALYSIS §B4 blocker, SP-B4-S5).** Sema's `findMemberOn(recv, name)` returns the
+    member plus its OWNER's type-param bindings taken from the receiver's type args, walking bases through the
+    new `TypeInfo::baseRefs` (the base TypeRefs with args, substituted at each hop, so `D<U> : H<List<U>>` sees
+    `H.T = List<U'>`). `memberTypeOf` substitutes (a method's own type params shadow the class's). Used by member
+    reads, method calls (params AND result — then the method's own generics are inferred as before), and the
+    user-operator result typing (unary, compound, binary). `Cell<string>.first() + "!"` is now `+` on TS and `.`
+    on PHP (was `V.plus(f,"!")` / `$f + "!"`); `Box<i32>.get(): T?` is `Option<int>` on C# (was `Option<T>`,
+    CS0246); `Box<i32>.put("s")` is a Polyglot error.
+  - **The native-`T?` rule, as built.** A **user** class's `T?` member is normalized to `Option<T>` (unchanged)
+    and substitutes to `Option<i32>`, which is what its body actually returns, and the same rule a generic
+    function's `T?` result already followed. An **`extern class`**'s class-level `T?` is no longer normalized
+    (`normalizeOptionalGenerics`): its bindings return a native null, so `V?` with `V = i32` is a native `int?`.
+    While V is still a type parameter, the read is refused (`'Shelf.find' yields 'V?' while 'V' is still a type
+    parameter …`), because neither form is faithful there. **Deviation:** the PRD wording ("`V?` with `V = i32`
+    is native `int?`; `Option<T>` only for an unresolved type parameter") is right for B4's extern `Map`. For a
+    user class, the call-site type has to match the body's representation, so it stays an Option of the argument.
+  - **Construction type args.** `Box(7)` infers its type args from the ctor args (all-or-nothing) and RECORDS
+    them in `e.typeArgs`, so every target spells them (C# has no ctor inference; `new Cell(3)` was CS0305).
+    Explicit args are normalized, resolved, arity-checked; the ctor args are checked against the instantiated
+    params.
+  - **Lambda args (#56b generalized).** `instantiateLambdaArgs` gives untyped lambda params their types from
+    an instantiated function-typed param, for member methods as well as extensions (`List<Body>.removeAll(b =>
+    …)`). The only corpus emission change: C#/TS now annotate those lambdas (`(int v) => v < 25`,
+    `(b: FruitBody) => …`) in `collections`, `fruitcake`, `fruitcake_sketch` and `list_rebind_alias`. Run output
+    is identical.
+  - **Bounds (SP-B3-S3).** `satisfiesBound`: INumber = numeric scalar; an interface/class bound = that type or a
+    subtype (by name). A forwarded in-scope type param and an unknown type are not judged. Enforced on generic
+    types everywhere a type is spelled (`resolveTypeRef` → `checkTypeArgBounds`), on explicit and inferred
+    construction args, and (new, same rule) on nominal bounds of generic functions and methods
+    (`checkGenericBounds`). INumber keeps its historical function message.
+  - **Extension defaults (SP-B3-S4).** Extension sigs carry `required`; lowering fills omitted trailing defaults
+    at the call (`appendDefaults`) for plain extension calls (`5.plus(1, 100)`) and for every bound template
+    (`BindingEntry{arms, params}`: bound members, statics, ctors and bound extensions, so `$1` is populated).
+    Each call re-lowers the declaration's sema-checked default. Because it is evaluated in the caller's scope, a
+    filled-at-call default must be a literal (optionally negated) or `null`; anything else is refused
+    (`checkCallSiteDefaults`, for extensions and for extern/bound members).
+  - **`$tmp` token.** `substBoundTemplate` replaces a whole-token `$tmp` with a name unique to that expansion
+    (`__pg_t<N>`, per emitted file, allocated lazily), so two `TryGetValue(…, out var $tmp)` in one statement no
+    longer give CS0128/CS0136. `$T` in a member template is the call's result type (`($T)null` is `(int?)null`).
+    Documented in `docs/plugin-authoring.md` (PHP spells `$$tmp`).
+  - **Printable guard tightened.** The slice-6 exemption for "a name resolving to no declaration" is gone. A
+    substituted member read is judged like any value. A type parameter that was never bound (`fn f(c: Cell) {
+    print(c.first()) }`) is refused with its own message. Only a name that is neither a declaration nor any
+    declared type param (already an `unknown type`) is skipped.
+  - **Tests:** conformance `generic_members.pg` + `.expected`, covering a user generic (field, method, lambda
+    param, swap, concat, arithmetic, interpolation), `T?` → Option, inferred ctor, an inherited generic member,
+    a generic record, nested `Cell<Cell<string>>` / `Cell<List<i32>>`, an extern generic `Table<V>` (native `V?`,
+    two `$tmp` gets in one statement), and bound and plain extension defaults. 5 refusal fixtures:
+    `class_bound_explicit`, `class_bound_inferred`, `class_bound_interface`, `extension_default_nonliteral`,
+    `extern_nullable_typeparam`. Unit block "P40 s7" (25 checks). SPEC §4.4 (bounds on types, member typing) and
+    §6.3 (extension defaults) are updated.
+  - **Verified:**
+    - unit exe green (918 checks);
+    - `-Tier fast` green;
+    - conformance: all 125 programs agree on all four targets (12 PHP refusers, unchanged);
+    - the emitted-output diff old→new over the 125 conformance programs plus the samples changes only the four
+      lambda-annotation files above;
+    - `polyglot check` over 148 corpus `.pg` (incl. MintPlayer.AI): 0 fallout;
+    - library gate (staged) and nullable gate green.
+    Not run (end gate): the full tier, run-nuget, the POSIX leg. No platform-forked code changed, but sema gained
+    a recursive member walk, so g++ should still see it.
