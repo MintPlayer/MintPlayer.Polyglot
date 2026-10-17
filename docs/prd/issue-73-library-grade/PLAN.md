@@ -1139,3 +1139,8 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     BOM/CRLF/PHP markers, header-removed warning, `--watch --adopt`, and (NuGet fixture 13) the upgrade path
     through the package, a no-change rebuild leaving the DLL untouched, and UTF-8 build output; doc wording
     (`lineComment`, `obj/…/polyglot/`).
+  - **Verified:** MSBuild solution build; unit exe green; `-Tier fast` green (cli-smoke incl. the new cases, the
+    culture hook's positive control); run-floor green (24 allow-listed); run-library green (Spark-verbatim DOM leg);
+    run-nuget `-Work` green incl. fixtures 11-13; the conformance runner green with ordinal compares (131 programs,
+    no latent diff surfaced); POSIX leg (WSL, CMake + g++ Release) builds and `polyglot-tests` passes. The full tier
+    is left to the orchestrator after the merge with the language half.
