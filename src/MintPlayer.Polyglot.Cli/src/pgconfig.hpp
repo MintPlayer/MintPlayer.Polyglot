@@ -149,6 +149,53 @@ inline std::filesystem::path absoluteDir(const std::filesystem::path& p) {
     return d;
 }
 
+// P40 review (#75): ONE normalization for an include rule's output template, shared by routing
+// (routeIncludeOutput) and the owned scan (ownedScope), so the folder a rule writes to and the folder its
+// owned scan deletes in can never disagree. `\` is a separator on every platform (a pgconfig.json is
+// cross-platform; on Windows `<config> / "\gen"` used to mean `<drive>:\gen`), and a leading separator does
+// not root the template: it stays config-relative (an empty %(Directory) leaves a leading '/').
+inline std::string normalizeOutputTemplate(std::string s) {
+    std::replace(s.begin(), s.end(), '\\', '/');
+    while (!s.empty() && s.front() == '/') s.erase(0, 1);
+    return s;
+}
+
+// P40 B5 + review (#75): the scan folder of one `"owned": true` rule — the template's literal folder prefix
+// (everything before the first `%(`, cut back to the last separator), resolved exactly as routing resolves
+// it. Recursive when what follows can introduce directories (`%(RecursiveDir)`, `%(Directory)`, or any
+// later separator, e.g. `gen/%(TargetLanguage)/%(Filename)`).
+// An owned folder's stale marked files are DELETED, so the scope must be a dedicated folder: refused (false,
+// `err` = the reason) when the template is rooted (a leading `/` or `\`) or absolute, when the literal prefix
+// is empty (`%(Filename)`, `gen-%(TargetLanguage)/…`), or when it resolves to a filesystem root, the config
+// folder itself (`./%(Filename)`) or one of its ancestors (`../%(Filename)`). `..` into a SIBLING subtree
+// (`../../web/src/gen/%(Filename)`) stays allowed.
+inline bool ownedScope(const std::filesystem::path& configDir, const std::string& tmpl, std::filesystem::path& dir,
+                       bool& recursive, std::string& err) {
+    namespace fs = std::filesystem;
+    const std::size_t ph = tmpl.find("%(");
+    std::string lit = tmpl.substr(0, ph);
+    std::replace(lit.begin(), lit.end(), '\\', '/');
+    std::string rest = ph == std::string::npos ? std::string() : tmpl.substr(ph);
+    std::replace(rest.begin(), rest.end(), '\\', '/');
+    recursive = rest.find("%(RecursiveDir)") != std::string::npos || rest.find("%(Directory)") != std::string::npos ||
+                rest.find('/') != std::string::npos;
+    dir.clear();
+    if (!lit.empty() && lit.front() == '/') { err = "starts with a path separator"; return false; }
+    if (fs::path(lit).has_root_name() || fs::path(lit).is_absolute()) { err = "is an absolute path"; return false; }
+    const std::size_t slash = lit.rfind('/');
+    const std::string prefix = slash == std::string::npos ? std::string() : normalizeOutputTemplate(lit.substr(0, slash));
+    if (prefix.empty()) { err = "has no literal output folder before its first placeholder"; return false; }
+    const fs::path base = absoluteDir(configDir);
+    dir = absoluteDir(base / prefix);
+    if (dir == dir.root_path()) { err = "resolves to a filesystem root"; return false; }
+    const fs::path up = base.lexically_relative(dir); // "." = the config folder; no leading ".." = an ancestor
+    if (dir == base || (!up.empty() && *up.begin() != "..")) {
+        err = "resolves to the config folder or one of its ancestors ('" + dir.string() + "')";
+        return false;
+    }
+    return true;
+}
+
 inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
     for (std::filesystem::path d = absoluteDir(startDir);; d = d.parent_path()) {
         std::string src;
@@ -201,8 +248,16 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
                 if (ow.kind == json::Value::Kind::Bool) rule.owned = ow.boolean;
                 else if (!ow.isNull())
                     pc.errors.push_back("pgconfig.json: an include rule's \"owned\" must be true or false");
+                std::filesystem::path scope;
+                bool scopeRecursive = false;
+                std::string scopeErr;
                 if (rule.pattern.empty() || rule.output.empty())
                     pc.errors.push_back("pgconfig.json: an include rule needs both \"pattern\" and \"output\"");
+                else if (rule.owned && !ownedScope(d, rule.output, scope, scopeRecursive, scopeErr))
+                    pc.errors.push_back("pgconfig.json: include rule '" + rule.pattern + "': \"owned\": true is refused "
+                                        "because its output '" + rule.output + "' " + scopeErr + ". Stale generated "
+                                        "files in an owned folder are deleted, so it must be a dedicated subfolder "
+                                        "(e.g. \"gen/%(Filename)\", or \"../web/src/gen/%(Filename)\" in a sibling tree)");
                 else
                     pc.include.push_back(std::move(rule));
             }
@@ -308,9 +363,8 @@ inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& p
         vals.targetLanguage = targetName;
         std::string expanded;
         if (!expandOutputTemplate(rule.output, vals, expanded, err)) return std::nullopt; // err set
-        // An empty %(Directory) can leave a leading '/'; the template stays config-relative.
-        while (!expanded.empty() && expanded.front() == '/') expanded.erase(0, 1);
-        return (pc.dir / expanded).lexically_normal();
+        // The one normalization ownedScope shares: `\` is a separator, a leading one stays config-relative.
+        return (pc.dir / normalizeOutputTemplate(expanded)).lexically_normal();
     }
     return std::nullopt;
 }

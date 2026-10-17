@@ -3942,5 +3942,6 @@
       "f64.parse": "double.Parse($0, global::System.Globalization.NumberStyles.Float, global::System.Globalization.CultureInfo.InvariantCulture)"
     }
   },
-  "fileExtension": ".cs"
+  "fileExtension": ".cs",
+  "lineComment": "//"
 }

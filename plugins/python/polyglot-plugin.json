@@ -3970,5 +3970,6 @@
       "f64.parse": "float($0)"
     }
   },
-  "fileExtension": ".py"
+  "fileExtension": ".py",
+  "lineComment": "#"
 }

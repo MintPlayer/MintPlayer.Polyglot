@@ -3622,5 +3622,6 @@
       ]
     }
   },
-  "fileExtension": ".php"
+  "fileExtension": ".php",
+  "lineComment": "//"
 }

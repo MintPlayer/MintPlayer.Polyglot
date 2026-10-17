@@ -4752,5 +4752,6 @@
       "f64.parse": "Number($0)"
     }
   },
-  "fileExtension": ".ts"
+  "fileExtension": ".ts",
+  "lineComment": "//"
 }

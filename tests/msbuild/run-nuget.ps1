@@ -263,6 +263,59 @@ $staleFixture = {
     dotnet build $m --nologo -v q -f net8.0 2>&1 | Out-Null
     ck ($bothOk -and (Test-Path (Join-Path $o8 "z.cs")) -and -not (Test-Path (Join-Path $o8 "a.cs")) -and (Test-Path (Join-Path $o10 "a.cs"))) `
         "P40: net8.0;net10.0 — a net8.0-only build cleans its own obj and never touches net10.0's"
+
+    # P40 review (#75, D17 under MSBuild): with 3+ .pg files the surviving .cs files are byte-identical after
+    # a delete, so nothing they contain changes. The transpile + item injection must therefore run BEFORE the
+    # SDK hashes @(Compile) (_GenerateCompileDependencyCache), or CoreCompile is skipped as up to date and the
+    # stale DLL keeps the deleted function. The 2 -> 1 case above passed only because the survivor flips
+    # from `static partial class` to `static class`. Program.cs is NOT edited between builds here, so only a
+    # correct @(Compile) hash can make CoreCompile run.
+    $flags = "System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic"
+    $three = Join-Path $work "StaleThree"
+    dotnet new console -o $three --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $three "nuget.config")
+    foreach ($fn in @(@("a", "alpha", 1), @("b", "beta", 2), @("c", "gamma", 3), @("d", "delta", 4))) {
+        "fn $($fn[1])(): i32 {`n  return $($fn[2])`n}`n" | Set-Content (Join-Path $three "$($fn[0]).pg")
+    }
+    '{ "targets": ["csharp"] }' | Set-Content (Join-Path $three "pgconfig.json")
+    "System.Console.WriteLine(`$`"{PolyglotProgram.alpha() + PolyglotProgram.beta() + PolyglotProgram.gamma()} {typeof(PolyglotProgram).GetMethod(`"delta`", $flags) != null}`");" |
+        Set-Content (Join-Path $three "Program.cs")
+    dotnet add $three package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    dotnet build $three --nologo -v q 2>&1 | Out-Null
+    $run0 = "$(dotnet run --project $three --no-build 2>&1)".Trim()
+    Remove-Item (Join-Path $three "d.pg")
+    $b = dotnet build $three --nologo -v q 2>&1 | Out-String
+    $bRc = $LASTEXITCODE
+    $run1 = "$(dotnet run --project $three --no-build 2>&1)".Trim()
+    ck ($run0 -eq "6 True" -and $bRc -eq 0 -and $run1 -eq "6 False") `
+        "P40 review: deleting 1 of 4 .pg (3 unchanged survivors) recompiles; run --no-build no longer sees the deleted fn ('$run0' -> '$run1')"
+    Remove-Item (Join-Path $three "c.pg")
+    $b = dotnet build $three --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -ne 0 -and $b -match 'CS0117') `
+        "P40 review: deleting a called .pg with unchanged survivors fails a plain incremental build with CS0117"
+    $b = dotnet build $three --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -ne 0 -and $b -match 'CS0117') "P40 review: ... and keeps failing on the next build (no stale success)"
+
+    # The same under multi-targeting: BOTH TFMs must recompile (each has its own record and hash).
+    $mt = Join-Path $work "StaleMultiDel"
+    dotnet new console -o $mt --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $mt "nuget.config")
+    $mtProj = Join-Path $mt "StaleMultiDel.csproj"
+    (Get-Content -Raw $mtProj) -replace '<TargetFramework>net8.0</TargetFramework>', '<TargetFrameworks>net8.0;net10.0</TargetFrameworks>' | Set-Content $mtProj
+    foreach ($fn in @(@("a", "alpha", 1), @("b", "beta", 2), @("c", "gamma", 3), @("d", "delta", 4))) {
+        "fn $($fn[1])(): i32 {`n  return $($fn[2])`n}`n" | Set-Content (Join-Path $mt "$($fn[0]).pg")
+    }
+    '{ "targets": ["csharp"] }' | Set-Content (Join-Path $mt "pgconfig.json")
+    "System.Console.WriteLine(typeof(PolyglotProgram).GetMethod(`"delta`", $flags) != null);" | Set-Content (Join-Path $mt "Program.cs")
+    dotnet add $mt package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    dotnet build $mt --nologo -v q 2>&1 | Out-Null
+    $before = "$(dotnet run --project $mt --no-build -f net8.0 2>&1)".Trim() + "/" + "$(dotnet run --project $mt --no-build -f net10.0 2>&1)".Trim()
+    Remove-Item (Join-Path $mt "d.pg")
+    dotnet build $mt --nologo -v q 2>&1 | Out-Null
+    $mtRc = $LASTEXITCODE
+    $after = "$(dotnet run --project $mt --no-build -f net8.0 2>&1)".Trim() + "/" + "$(dotnet run --project $mt --no-build -f net10.0 2>&1)".Trim()
+    ck ($before -eq "True/True" -and $mtRc -eq 0 -and $after -eq "False/False") `
+        "P40 review: net8.0;net10.0 — a deleted .pg recompiles BOTH TFMs ('$before' -> '$after')"
     $r
 }
 

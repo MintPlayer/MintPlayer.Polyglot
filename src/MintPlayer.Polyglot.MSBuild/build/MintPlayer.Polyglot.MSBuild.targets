@@ -1,7 +1,8 @@
 <Project>
 
   <!-- Auto-imported near the BOTTOM of the consuming project. Transpiles each @(PolyglotFile) to a .cs
-       in obj/ before CoreCompile (so generated types exist for IntelliSense too — design-time builds are
+       in obj/ before BeforeCompile — so @(Compile) is complete when the SDK hashes it (_PolyglotGenerate,
+       below) — (so generated types exist for IntelliSense too — design-time builds are
        NOT skipped, Grpc.Tools' hard-won lesson), incrementally via Inputs/Outputs (the tool path is an
        input, so a CLI upgrade forces regen). A companion always-run target re-adds the generated files
        when the transpile is skipped, and registers them as FileWrites so `dotnet clean` removes them.
@@ -103,7 +104,6 @@
        linking from the stale .cs. Now the inputs cache re-runs the target on any change to the .pg SET, and
        the CLI's outputs record (`record`, below) deletes exactly the stale outputs, TS twins included. -->
   <Target Name="PolyglotTranspile"
-          BeforeTargets="CoreCompile"
           DependsOnTargets="_PolyglotVerifyTool;_PolyglotPrepareInputs"
           Condition="'@(PolyglotFile)' != ''"
           Inputs="@(PolyglotFile);$(PolyglotTool);$(_PolyglotInputsCache);@(_PolyglotDep)"
@@ -141,7 +141,13 @@
          lands in obj/ and compiles exactly as before; other targets route through the pgconfig `include`
          rules (e.g. TypeScript twins into a web app's src) and are deliberately NOT in @(FileWrites) —
          they are committed source artifacts `dotnet clean` must never delete. -->
-    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotTargetOptionArgs)$(_PolyglotOriginInfoArg)$(_PolyglotOnlyArg) --record &quot;$(_PolyglotRecord)&quot; --depfile &quot;$(_PolyglotDepfile)&quot;" />
+    <!-- P40 review (#75): the CLI writes UTF-8 (its diagnostics use an em dash); without these the console
+         code page mangles it into mojibake in the build output.
+         `build-owned` (D21): PolyglotOutDir belongs to this build outright, so an existing file there may be
+         overwritten without Polyglot's header — the upgrade path for 0.10.x outputs in obj/, which carried
+         none. Routed outputs elsewhere (TS twins) keep the full overwrite guard. -->
+    <Exec StdOutEncoding="utf-8" StdErrEncoding="utf-8"
+          Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotTargetOptionArgs)$(_PolyglotOriginInfoArg)$(_PolyglotOnlyArg) --record &quot;$(_PolyglotRecord)&quot; --depfile &quot;$(_PolyglotDepfile)&quot; --build-owned &quot;$(PolyglotOutDir).&quot;" />
     <Touch Files="$(_PolyglotStamp)" AlwaysCreate="true" />
   </Target>
 
@@ -150,8 +156,6 @@
        per .pg: a 2+-.pg project also emits the shared __polyglot_prelude.cs (issue #14), which has no source
        .pg. The glob compiles + cleans it too; a single-.pg project still yields just its one .cs. -->
   <Target Name="_PolyglotAddGenerated"
-          BeforeTargets="CoreCompile"
-          AfterTargets="PolyglotTranspile"
           Condition="'@(PolyglotFile)' != ''">
     <ItemGroup>
       <_PolyglotGenerated Include="$(PolyglotOutDir)*.cs" />
@@ -161,5 +165,26 @@
       <FileWrites Include="$(_PolyglotStamp);$(_PolyglotRecord);$(_PolyglotDepfile);$(_PolyglotInputsCache)" />
     </ItemGroup>
   </Target>
+
+  <!-- P40 review (#75, D17 under MSBuild): WHEN the generated files join @(Compile) is load-bearing. The SDK's
+       _GenerateCompileDependencyCache (CompileDependsOn: … BeforeCompile; _TimeStampBeforeCompile;
+       _GenerateCompileDependencyCache; CoreCompile) hashes @(Compile) into CoreCompileInputs.cache, and that
+       file is one of CoreCompile's Inputs — it is how the SDK notices a REMOVED source, which no timestamp
+       can show. Hooked BeforeTargets="CoreCompile" (as before), the transpile and the item injection ran
+       AFTER the hash: deleting one .pg of three left the survivors byte-identical, the hash unchanged, and
+       CoreCompile skipped — the stale DLL kept the deleted function (the 2 -> 1 gate passed only because the
+       survivor flipped from `static partial class` to `static class` and so was rewritten).
+       So the pair runs before BeforeCompile, and @(Compile) is complete when it is hashed: a deleted, renamed
+       or added generated file changes the hash exactly like a hand-written one does, and an unchanged build
+       keeps the hash and the file's mtime, so it still skips everything.
+       Not taken: making the stamp a CustomAdditionalCompileInputs. It is a timestamp proxy (the stamp is
+       touched on every transpile, so csc would re-run even when every output is byte-identical) and it
+       leaves @(Compile) wrong when hashed — it patches the symptom, this fixes the order.
+       CoreCompile stays listed as well, as a no-op safety net for flows that reach CoreCompile without
+       BeforeCompile (e.g. WPF's _CompileTemporaryAssembly); a target runs at most once per build. -->
+  <Target Name="_PolyglotGenerate"
+          BeforeTargets="BeforeCompile;CoreCompile"
+          DependsOnTargets="PolyglotTranspile;_PolyglotAddGenerated"
+          Condition="'@(PolyglotFile)' != ''" />
 
 </Project>
