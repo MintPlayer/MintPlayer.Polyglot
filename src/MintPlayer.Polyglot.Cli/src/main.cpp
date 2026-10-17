@@ -291,10 +291,18 @@ bool writeSourceMap(const fs::path& mapPath, const fs::path& emitted,
     return true;
 }
 
+// P40 §0 / S15 — phase 1 of the shared prelude in a multi-root project build: every root's reach and linked
+// std modules, unioned, plus where the shared prelude file goes (each distinct routed path).
+struct SharedPreludePhase {
+    std::set<std::string> names;
+    std::set<std::string> stdModules;
+    std::vector<fs::path> paths;
+};
+
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& fallbackDir,
              const BackendHandle& target, const char* ext, ModuleResolver* resolver, const LibConfig& lib,
              const PgConfig& pc, bool flagRouted,
-             std::map<std::string, std::string>* seen = nullptr) {
+             std::map<std::string, std::string>* seen = nullptr, SharedPreludePhase* prelude = nullptr) {
     EmitResult result = compile(source, target, resolver,
                                 libForTarget(lib, target, pc, flagRouted, input, fallbackDir),
                                 fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
@@ -333,9 +341,46 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
     };
     if (!writeOne(outs[0], result.code, result.origins)) return false;
     // §4.5 module linking: a multi-module program emits one file per imported user module alongside the entry.
-    for (std::size_t i = 0; i < result.modules.size(); ++i)
+    for (std::size_t i = 0; i < result.modules.size(); ++i) {
+        if (prelude && result.modules[i].sharedPrelude) {
+            // P40 §0: deferred to phase 2 (writeSharedPrelude) — each root's share differs once pruned.
+            prelude->names.insert(result.preludeReach.names.begin(), result.preludeReach.names.end());
+            prelude->stdModules.insert(result.preludeReach.stdModules.begin(), result.preludeReach.stdModules.end());
+            const fs::path& p = outs[i + 1];
+            bool known = false;
+            for (const auto& q : prelude->paths) known = known || fs::weakly_canonical(q) == fs::weakly_canonical(p);
+            if (!known) prelude->paths.push_back(p);
+            continue;
+        }
+        if (result.modules[i].sharedPrelude && result.modules[i].code.empty()) continue; // nothing reached
         if (!writeOne(outs[i + 1], result.modules[i].code, result.modules[i].origins)) return false;
+    }
     return true;
+}
+
+// P40 §0 / S15 — phase 2: ONE shared prelude from the union of every root's reach (or no file at all, removing
+// a stale one). Written through writeDedup, so the identical-file contract with `seen` still holds.
+bool writeSharedPrelude(const SharedPreludePhase& prelude, const BackendHandle& target, const LibConfig& lib,
+                        std::map<std::string, std::string>* seen) {
+    if (prelude.paths.empty()) return true;
+    PreludeReach u;
+    u.names.assign(prelude.names.begin(), prelude.names.end());
+    u.stdModules.assign(prelude.stdModules.begin(), prelude.stdModules.end());
+    EmitResult r = compileSharedPrelude(target, u, lib);
+    if (!r.ok) {
+        reportDiagnostics(prelude.paths.front(), r);
+        return false;
+    }
+    bool ok = true;
+    for (const auto& p : prelude.paths) {
+        if (r.code.empty()) {
+            std::error_code ec;
+            if (fs::remove(p, ec)) std::cout << "  x  " << p.string() << " (no prelude reached)\n";
+            continue;
+        }
+        ok &= writeDedup(p, r.code, seen, lib.originInfo);
+    }
+    return ok;
 }
 
 // ============================ watch mode (`--watch`) — PRD §4.13 / PLAN §P21 ============================
@@ -668,8 +713,9 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
     // roots (an imported-only library .pg is emitted within its importer's closure, never also as its own
     // entry), deduping modules shared across roots by output path.
     // §4.5 / issue #14: a multi-file build is a C# PROJECT — hoist the shared prelude into one
-    // __polyglot_prelude.cs. Every root emits identical content there, so the writeDedup below collapses it
-    // to one file. (No-op for TS/Python/PHP, whose per-file prelude inline is collision-free.)
+    // __polyglot_prelude.cs. P40 §0: it is pruned to what is reached, so it is built in two phases — compile
+    // every root (collecting their reach), then emit the one file from the union (writeSharedPrelude).
+    // (No-op for TS/Python/PHP, whose per-file prelude inline is collision-free.)
     lib.sharedPrelude = true;
 
     struct In { fs::path path; std::string canon; std::string source; };
@@ -688,12 +734,17 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
     }
     for (const auto& t : targets) {
         std::map<std::string, std::string> seen; // output path -> content, for cross-root dedup
+        SharedPreludePhase prelude;              // P40 §0: phase 1 collects, phase 2 writes
+        bool targetOk = true;
         for (const auto& e : ins) {
             if (importedCanons.count(e.canon)) continue; // imported by another input — emitted in its closure
             fs::path edir = e.path.has_parent_path() ? e.path.parent_path() : fs::path(".");
             FileModuleResolver r(root, edir);
-            ok &= emitOne(e.source, e.path, outDir, t.first, t.second.c_str(), &r, lib, pc, flagRouted, &seen);
+            targetOk &= emitOne(e.source, e.path, outDir, t.first, t.second.c_str(), &r, lib, pc, flagRouted,
+                                &seen, &prelude);
         }
+        if (targetOk) targetOk = writeSharedPrelude(prelude, t.first, lib, &seen);
+        ok &= targetOk;
     }
     return ok ? 0 : 1;
 }

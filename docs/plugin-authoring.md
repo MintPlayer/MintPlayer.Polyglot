@@ -18,7 +18,7 @@ The manifest's top-level keys (all of them):
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "name": "php",
   "capabilities": { "async": false, "...": "..." },
   "spec": { "...": "..." },
@@ -30,7 +30,7 @@ The manifest's top-level keys (all of them):
 
 | Key | Required | What it is |
 |---|---|---|
-| `schema` | convention | Manifest schema version; first-party plugins declare `1`. |
+| `schema` | yes | Manifest schema version. This compiler reads schema **`2`** and refuses any other value (or a missing one) at load, naming the version it expects — version skew between a plugin and the engine is loud, never a silent misread. Schema 2 (P40) added the `preludeSlot` marker and binding `requires`. |
 | `name` | yes | The target name (`--target <name>`); must equal `spec.name`. |
 | `capabilities` | as needed | Tri-state feature stances: `"native"` / `"emulated"` / `false` (§3 below). |
 | `spec` | yes | The declarative per-target data tables (§3 below). |
@@ -39,7 +39,7 @@ The manifest's top-level keys (all of them):
 | `fileExtension` | no | Output extension; defaults to `.<name>`. |
 | `crossDirImports` | no | `true` when the target's emitted import specifiers may span directories (the compiler then hands the import rules a full relative specifier like `../shared/name` instead of a bare basename, and a pgconfig `include` layout may split an import closure across directories). Default `false`: all files of one closure must share an output directory — the CLI refuses a split. TS declares it; Python/PHP don't (dot-package / include semantics). |
 | `originMapping` | no | How this target records where each emitted line came from, so a coverage tool can attribute generated code back to the `.pg` (P38 / issue #69). Absent = the target says nothing about origins and emits byte-for-byte as before. All four first-party targets declare one. See §3a. |
-| `sharedPreludeFile` | no | `true` to hoist the shared prelude (Option/Some/None + the program wrapper) into one reserved `__polyglot_prelude` file in a multi-file project build, instead of inlining it — so N independent link roots don't each emit it (C#: CS0101/CS8863 in one assembly). Only consulted when the host asked for a shared prelude. C# declares it. Default `false`. |
+| `sharedPreludeFile` | no | `true` to hoist the shared prelude (Option/Some/None + the program wrapper) into one reserved `__polyglot_prelude` file in a multi-file project build, instead of inlining it — so N independent link roots don't each emit it (C#: CS0101/CS8863 in one assembly). Only consulted when the host asked for a shared prelude. The file holds only what some root reaches (P40): the host compiles every root, then emits it once from the union of their reach and linked std modules — or writes no file when nothing is reached. C# declares it. Default `false`. |
 | `preludePerFile` | no | `true` to inline the prelude into **every** emitted file. Targets whose modules don't share a link root (TS/Python/PHP) need their own copy. Default `false` = prelude in the entry file only. **Load-bearing for origins, not cosmetic:** prelude prepending shifts every recorded origin line, so a target that declares preludes and an origin sink must get this right. |
 
 Plugins register through `loadBackend()`, which strictly parses and validates the whole artifact
@@ -127,7 +127,7 @@ Every key `loadBackendSpec` reads (all optional except `name`; defaults shown wh
 | `intSuffix` | map | Integer-literal type → suffix (C#: `{"i64": "L", "u64": "UL", "u32": "U"}`). |
 | `binaryOp` | map | Operator → target spelling for divergent ones (TS: `{"==": "===", "!=": "!=="}`); missing = verbatim. |
 | `wrapInt` | map | §3.C overflow faithfulness: width → wrap template, `$x` = the expression. PHP: `"u8": "(($x) & 0xff)"`. No row = unwrapped. |
-| `preludes` | map | Key → text prepended once when required — by `{"fn":"require"}` in a rule, or automatically for key `asyncEntry` when the entry fn is async (Python's `_pg_idiv`, `asyncio.run`). |
+| `preludes` | map | Key → helper text emitted once per file when required — by `{"fn":"require"}` in a rule, by a std binding's `requires` (§3.3), or automatically for key `asyncEntry` when the entry fn is async (Python's `_pg_idiv`, `asyncio.run`). It lands at the `Program` rule's `{"fn":"preludeSlot"}` marker (§4.3), in descending key order. |
 | `delimited` | map | Node → `{"open","sep","close"}` bracketing (PHP: `"tuple": {"open":"[", "sep":", ", "close":"]"}`). |
 | `blockStyle` | string | `"bracesAllman"` (C#) \| `"bracesKnR"` (default; TS, PHP) \| `"colonIndent"` (Python). |
 | `stmtEnd` | string | Statement terminator; default `";"` (Python: `""`). |
@@ -233,6 +233,20 @@ Three template flavors:
 A std member you don't overlay is refused at its use site for your target — un-overlaid calls never
 silently emit garbage.
 
+**A binding that needs a helper** (P40) uses the object form and names the helper's
+`spec.preludes` key(s):
+
+```json
+"Math.sqrt": { "template": "__PgRt.Sq($0)", "requires": ["sq"] }
+```
+
+The helper is emitted (at the `preludeSlot`) in exactly the files whose code emits that binding —
+for an `expect` function, the files that keep the synthesized `actual`. Every `requires` key must be
+a declared prelude, or the plugin fails to load; a plain string binding requires nothing. A
+`<Type>.type` spelling cannot carry `requires` (it is rendered through the `Type` rule, where
+nothing would record it). Name the helper in the template exactly as the prelude defines it — on C#
+that is a member of the file-local `__PgRt` class.
+
 ### 3.4 `identifiers` (inside `spec`) — keywords, reserved names, globals
 
 ```json
@@ -310,14 +324,30 @@ name per `identifiers.escape`) · **`mangleName`** (forbidden-character repair p
 substitute `$x`; identity if absent) · **`require`** (`[key]` — record a prelude key, emit nothing) ·
 **`inlineBlock`** (a block lambda's body flattened onto one line).
 
+Also in expression context: **`identFn`** (as `ident`, for a function name, honouring
+`identifiers.functionBuiltins`).
+
 Declaration context adds: **`generics`** (spell the generic parameter list per `spec.generics`) ·
 **`where`** (the trailing bounds clauses, for `"whereClauses"` style) · **`mangle`** (as
-`mangleName`, on declared names).
+`mangleName`, on declared names) · **`access`** (the requested accessibility modifier) ·
+**`preludeSlot`** (P40 — see below).
+
+**`preludeSlot`** is a marker, not a value: it says *where* the manifest `preludes` go. Preludes are
+spliced in after the walk (only then is the set of required keys known). The loader requires
+**exactly one** marker, in `Program`, at an **unconditional** declaration position — directly inside
+`seq`/`indent`, never inside a `case`, `block` or expression template — and refuses one anywhere
+else. Put it where your language allows helper definitions: C# after the usings, PHP after `<?php`
+and the `require_once`/`namespace`/`use` lines (right after `<?php` is fatal before a `namespace`
+statement, end-of-file is fatal when top-level code calls the helper first), TS and Python at the
+top. Two optional literal args wrap the helpers when any are emitted — C#'s marker is
+`{"fn":"preludeSlot","args":["file static class __PgRt\n{\n","}\n"]}`, so its helpers are
+file-local and can never collide across partial files or libraries. No helper required = nothing
+emitted, not even the wrapper.
 
 Type context adds: **`substExtern`** (substitute rendered type args into an extern class's
 `…$0…` spelling — how `Type` rules handle `List`/`Error`/`Iterable`); `ident` also works here.
 
-That's the whole catalog — 15 names. Any other `{"fn": …}` fails the load.
+That's the whole catalog — 18 names. Any other `{"fn": …}` fails the load.
 
 ### 4.4 Which construct is which flavor
 
@@ -338,8 +368,18 @@ That's the whole catalog — 15 names. Any other `{"fn": …}` fails the load.
 - **The type rule**: `Type`, reading `type.…` (`type.name`, `type.externTemplate`) — dispatch
   extern-mapped types to `{"fn":"substExtern"}` and spell the rest (see PHP's four-line `Type`).
 
-`Program` is the whole-file scaffold. PHP's is a `seq`: a `<?php` line, `mapMembers` over enums,
-records, classes, a `mapDecl` over globals, `mapMembers` over functions, and a guarded entry call.
+`Program` is the whole-file scaffold. PHP's is a `seq`: a `<?php` line, the `require_once` imports,
+the `{"fn":"preludeSlot"}` marker, `mapMembers` over enums, records, classes, a `mapDecl` over
+globals, `mapMembers` over functions, and a guarded entry call.
+
+**The prelude (P40).** Embedded std/core declarations (`Option`, the `std.io` functions, …) are
+*prelude* declarations, and only the ones the file's code **reaches** are emitted — a program that
+never uses `Option` or `std.io` emits neither. Every declaration context exposes **`decl.isPrelude`**
+(`"true"`/`"false"`; a member reports its owning type's, a global reads `item.isPrelude` inside
+`module.globals`), so a template can treat them differently: TS emits them without `export` (they
+are module-local, never public API), PHP wraps prelude functions in
+`if (!function_exists(__NAMESPACE__.'\\name'))` — namespace-qualified, because an unqualified guard
+silently binds a same-named *global* function instead.
 
 ## 5. Validation and refusals
 
@@ -353,9 +393,14 @@ pipeline (`validateBackend`) by `polyglot install` — rejects, with a named err
 - a **coverage gap**: a construct from §3.2's table with no rule and no declared
   `"false"`/`"emulated"` capability stance — or a capability claiming `"native"` (or any other
   value) with no rule behind it;
-- an unknown `{"fn": …}` builtin (outside the 15-name catalog);
+- an unknown `{"fn": …}` builtin (outside the 18-name catalog);
 - a dangling reference: a `{"call": …}` or `mapMembers` `"rule"` naming a rule that doesn't exist;
-- loading a name that's already registered (`plugin 'x' is already loaded`).
+- loading a name that's already registered (`plugin 'x' is already loaded`);
+- a `schema` other than `2` (or none);
+- a `Program` rule without exactly one unconditional `{"fn":"preludeSlot"}`, or a marker in any
+  other rule;
+- a std binding (or a literal `{"fn":"require"}`) naming a key that is not in `spec.preludes`, an
+  object binding without a string `template`, or `requires` on a `<Type>.type` spelling.
 
 At compile time, a capability declared `false` surfaces to the user as a §3.E refusal diagnostic on
 the offending construct — the build fails loudly; no output file is written for that target. The

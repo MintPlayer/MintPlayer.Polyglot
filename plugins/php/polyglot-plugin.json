@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "php",
   "preludePerFile": true,
   "originMapping": {
@@ -2677,7 +2677,7 @@
               "block": {
                 "head": {
                   "tmpl": [
-                    "if (!function_exists('",
+                    "if (!function_exists(__NAMESPACE__.'\\\\",
                     {
                       "fn": "ident",
                       "args": [
@@ -3354,6 +3354,9 @@
               ]
             }
           }
+        },
+        {
+          "fn": "preludeSlot"
         },
         {
           "mapMembers": "module.enums",

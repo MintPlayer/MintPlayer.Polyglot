@@ -146,6 +146,7 @@ struct Expr {
     std::string overloadName;      // Call: the resolved overload's mangled name (set by sema); empty = none
     std::string staticOwner;       // Name/Call: resolves to a static/const member of this enclosing class
                                    // (set by sema so lowering can qualify it as `Owner.member`); empty = none
+    std::vector<std::string> preludeKeys; // Extern: manifest prelude keys the text needs (P40 §0 binding `requires`)
 };
 
 struct CatchClause {
@@ -208,6 +209,10 @@ struct TargetBinding {
     std::string target;   // "csharp" / "typescript"
     std::string code;     // template, e.g. "$this.Add($0)" or "$this = $this.filter(e => !($0(e)))"
     SourcePos pos;
+    // P40 §0: the manifest prelude keys this template needs — a std binding's object form
+    // `{ "template": …, "requires": [...] }`. Lowering copies them onto the ir::Bound/ir::Extern, and
+    // emitting that node records them, so a helper is emitted exactly where its caller is.
+    std::vector<std::string> preludeKeys;
 };
 
 

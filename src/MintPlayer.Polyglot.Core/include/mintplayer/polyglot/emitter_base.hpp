@@ -191,8 +191,8 @@ private:
 class MethodDeclCtx : public IrDeclCtx {
 public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
-    MethodDeclCtx(const ir::Method& m, std::string owner, const DeclHooks& hooks, EmitFn emit)
-        : m_(m), owner_(std::move(owner)), hooks_(hooks), emit_(std::move(emit)) {}
+    MethodDeclCtx(const ir::Method& m, std::string owner, bool ownerIsPrelude, const DeclHooks& hooks, EmitFn emit)
+        : m_(m), owner_(std::move(owner)), ownerIsPrelude_(ownerIsPrelude), hooks_(hooks), emit_(std::move(emit)) {}
     SourcePos declPos() const override { return m_.pos; } // P38: the method-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
@@ -203,6 +203,7 @@ public:
 private:
     const ir::Method& m_;
     std::string owner_;
+    bool ownerIsPrelude_ = false; // P40 §0: `decl.isPrelude` of a member is its owning type's
     const DeclHooks& hooks_;
     EmitFn emit_;
 };
@@ -358,6 +359,17 @@ protected:
     std::string out_;
     int indent_ = 0;
     int doWhileSeq_ = 0; // fresh-name counter for the Python do-while emulation flag (#39a)
+
+    // ---- P40 §0: prelude placement -------------------------------------------------------------------
+    // The Program rule's `{"fn":"preludeSlot"}` marker records WHERE the manifest preludes go; they are
+    // spliced in there after the walk (only then is the set of required keys known). The loader guarantees
+    // exactly one unconditional marker, so `slotHit_` false only happens for a rule run outside emit().
+    // Optional marker args: [open, close] — literal text wrapped around the preludes when any are emitted
+    // (C# puts them in a file-local `file static class __PgRt`).
+    bool slotHit_ = false;
+    std::size_t slotOffset_ = 0; // byte offset into out_
+    int slotLine_ = 0;           // outLine_ at the marker (origin records past it shift down)
+    std::string slotOpen_, slotClose_;
 
     // ---- P38/issue #69: origin tracking -------------------------------------------------------------
     // Off unless the build asked for it AND the target's manifest declares an `originMapping`; when off,

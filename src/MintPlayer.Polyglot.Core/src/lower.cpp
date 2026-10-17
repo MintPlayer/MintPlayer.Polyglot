@@ -247,7 +247,7 @@ public:
         if (recv) b->receiver = expr(*recv); // null for a static member binding (template uses only $0,$1,…)
         if (args) for (const auto& a : *args) b->args.push_back(expr(*a));
         for (const auto& arm : arms)
-            if (arm.target == target_) b->tmpl = arm.code;
+            if (arm.target == target_) { b->tmpl = arm.code; b->preludeKeys = arm.preludeKeys; }
         return b;
     }
 
@@ -734,7 +734,11 @@ private:
             // `x!` asserts the non-null type sema put on the node: a cast to it (C# unwraps a Nullable<T>
             // value type via `(int)x`; for reference types it's an identity cast — TS strips both).
             case ExprKind::NullAssert: return std::make_unique<ir::Cast>(e.pos, e.type, expr(*e.lhs));
-            case ExprKind::Extern:    return std::make_unique<ir::Extern>(e.pos, e.type, e.text);
+            case ExprKind::Extern: {
+                auto x = std::make_unique<ir::Extern>(e.pos, e.type, e.text);
+                x->preludeKeys = e.preludeKeys; // P40 §0: a synthesized std actual's helper requirements
+                return x;
+            }
             case ExprKind::Binary: {
                 // `opt ?? rhs` on an optional generic desugars to `match opt { Some(v) => v, None => rhs }`,
                 // reusing the existing match machinery (no special-case in either emitter).

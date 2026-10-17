@@ -30,6 +30,7 @@
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
 #include "mintplayer/polyglot/pg_printer.hpp"
+#include "mintplayer/polyglot/reachability.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 #include "mintplayer/polyglot/sema.hpp"
 
@@ -394,8 +395,10 @@ int main() {
     // Issue #14 — a multi-file C# PROJECT build (LibConfig::sharedPrelude) hoists the runtime prelude
     // (Option/Some/None + wrapper) into a separate `__polyglot_prelude` module so N independent roots don't
     // each emit it (CS0101/CS8863). The default (sharedPrelude=false) inlines it -> byte-identical.
+    // P40 §0 changed what "the prelude" means here: only REACHED prelude declarations are emitted, so the
+    // program has to use Option for Option to appear at all.
     {
-        const char* src = "fn fa(): i32 { return 1 }\n";
+        const char* src = "fn fa(): Option<i32> { return Some(1) }\n";
         LibConfig proj; proj.sharedPrelude = true;
         EmitResult r = compile(src, findTarget("csharp"), nullptr, proj);
         check(r.ok, "issue#14: C# project build compiles");
@@ -403,15 +406,221 @@ int main() {
         check(has(r.code, "static partial class PolyglotProgram"), "issue#14: entry wrapper is `partial` (mergeable)");
         bool preludeFile = false;
         for (const auto& mf : r.modules)
-            if (mf.basename == "__polyglot_prelude" && has(mf.code, "record Option")) preludeFile = true;
-        check(preludeFile, "issue#14: the prelude (Option) is emitted once into __polyglot_prelude");
-        // Default (single-file) still inlines the prelude — byte-identical.
+            if (mf.basename == "__polyglot_prelude" && mf.sharedPrelude && has(mf.code, "record Option"))
+                preludeFile = true;
+        check(preludeFile, "issue#14: a reached prelude (Option) is emitted once into __polyglot_prelude");
+        bool reportsOption = false;
+        for (const auto& n : r.preludeReach.names) reportsOption = reportsOption || n == "Option";
+        check(reportsOption, "P40 s1: a shared-prelude root reports the prelude names it reaches");
+        // Default (single-file) still inlines the REACHED prelude.
         EmitResult def = compile(src, findTarget("csharp"));
         check(def.ok && has(def.code, "record Option") && def.modules.empty(),
-              "issue#14: default (non-project) build still inlines the prelude (unchanged)");
+              "issue#14: default (non-project) build inlines the reached prelude");
         // C#-only: a TS project build keeps the prelude per-file (no shared file).
         EmitResult ts = compile(src, findTarget("typescript"), nullptr, proj);
         check(ts.ok && ts.modules.empty(), "issue#14: sharedPrelude is a no-op for non-C# targets");
+        // P40 s1: a program that never touches Option emits no Option at all — and a project root that
+        // reaches nothing reports an empty shared prelude (the host then writes no file).
+        EmitResult none = compile("fn fb(): i32 { return 1 }\n", findTarget("csharp"));
+        check(none.ok && !has(none.code, "Option"), "P40 s1: an unreached prelude Option is not emitted");
+        EmitResult noneProj = compile("fn fb(): i32 { return 1 }\n", findTarget("csharp"), nullptr, proj);
+        bool emptyShare = false;
+        for (const auto& mf : noneProj.modules) emptyShare = emptyShare || (mf.sharedPrelude && mf.code.empty());
+        check(noneProj.ok && emptyShare && noneProj.preludeReach.names.empty(),
+              "P40 s1: a root reaching no prelude has an empty shared-prelude share");
+    }
+
+    // ---- P40 slice 1: manifest schema 2, binding `requires`, the preludeSlot marker, reachability ---------
+    {
+        auto manifestOf = [](const char* target) {
+            std::string m;
+            cli::readFile(cli::executablePath().parent_path() / "plugins" / target / "polyglot-plugin.json", m);
+            return m;
+        };
+        auto replaceAll = [](std::string s, const std::string& from, const std::string& to) {
+            for (std::size_t at = 0; (at = s.find(from, at)) != std::string::npos; at += to.size())
+                s.replace(at, from.size(), to);
+            return s;
+        };
+        auto replaceOnce = [](std::string s, const std::string& from, const std::string& to, bool& found) {
+            const std::size_t at = s.find(from);
+            found = at != std::string::npos;
+            if (found) s.replace(at, from.size(), to);
+            return s;
+        };
+        auto renamed = [&](const char* target, const std::string& newName) {
+            return replaceAll(manifestOf(target), std::string("\"name\": \"") + target + "\"",
+                              "\"name\": \"" + newName + "\"");
+        };
+        const std::string py = renamed("python", "p40py");
+        bool f = false;
+
+        // Schema: the Core validates the field it never read before — schema 1, a missing schema and an
+        // unknown version are all refused, naming the version this compiler reads.
+        std::string err;
+        check(validateBackend(py, err), "P40 s1: the in-box (schema 2) manifest validates");
+        std::string s1 = replaceOnce(py, "\"schema\": 2", "\"schema\": 1", f);
+        err.clear();
+        check(f && !validateBackend(s1, err) && has(err, "schema (1)") && has(err, "reads schema 2"),
+              "P40 s1: a schema-1 manifest is refused, naming the expected schema");
+        std::string s0 = replaceOnce(py, "\"schema\": 2,", "", f);
+        err.clear();
+        check(f && !validateBackend(s0, err) && has(err, "schema (missing)"),
+              "P40 s1: a manifest without a schema is refused");
+        std::string s3 = replaceOnce(py, "\"schema\": 2", "\"schema\": 3", f);
+        err.clear();
+        check(f && !validateBackend(s3, err) && has(err, "schema (3)"),
+              "P40 s1: an unknown (newer) schema is refused");
+
+        // preludeSlot: required, exactly once, unconditional, Program only.
+        std::string noSlot = replaceOnce(py, "\"fn\": \"preludeSlot\"", "\"fn\": \"ident\"", f);
+        err.clear();
+        check(f && !validateBackend(noSlot, err) && has(err, "preludeSlot") && has(err, "found 0"),
+              "P40 s1: a Program rule without a preludeSlot marker is refused");
+        std::string twoSlots = replaceOnce(py, "\"fn\": \"ident\"", "\"fn\": \"preludeSlot\"", f);
+        err.clear();
+        check(f && !validateBackend(twoSlots, err) && has(err, "exactly one"),
+              "P40 s1: a second preludeSlot marker (anywhere) is refused");
+
+        // Binding `requires`: every key must be a declared prelude; object form needs a string template;
+        // a type spelling cannot carry requirements.
+        const std::string sqrtArm = "\"Math.sqrt\": \"__import__('math').sqrt($0)\"";
+        std::string badReq = replaceOnce(py, sqrtArm,
+                                         "\"Math.sqrt\": { \"template\": \"x($0)\", \"requires\": [\"nope\"] }", f);
+        err.clear();
+        check(f && !validateBackend(badReq, err) && has(err, "requires 'nope'") && has(err, "not a declared prelude"),
+              "P40 s1: a binding requiring an undeclared prelude is refused (anti-silent-drop)");
+        std::string noTmpl = replaceOnce(py, sqrtArm, "\"Math.sqrt\": { \"requires\": [] }", f);
+        err.clear();
+        check(f && !validateBackend(noTmpl, err) && has(err, "string 'template'"),
+              "P40 s1: an object binding without a template is refused");
+        std::string typeReq = replaceOnce(py, "\"List.type\": \"list\"",
+                                          "\"List.type\": { \"template\": \"list\", \"requires\": [\"fstr\"] }", f);
+        err.clear();
+        check(f && !validateBackend(typeReq, err) && has(err, "type spelling"),
+              "P40 s1: `requires` on a type spelling is refused (nothing would record it)");
+        std::string badRuleReq = replaceOnce(py, "\"idiv\": \"def _pg_idiv", "\"idivX\": \"def _pg_idiv", f);
+        err.clear();
+        check(f && !validateBackend(badRuleReq, err) && has(err, "\"require\"") && has(err, "'idiv'"),
+              "P40 s1: a rule-level {\"fn\":\"require\"} naming an undeclared prelude is refused");
+
+        // A binding that requires a helper pulls it in — through a member binding (Bound) and through a
+        // synthesized expect-fn actual (Extern) — and ONLY where something calls it.
+        std::string pyReq = replaceOnce(py, sqrtArm,
+                                        "\"Math.sqrt\": { \"template\": \"_pg_sq($0)\", \"requires\": [\"sq\"] }", f);
+        pyReq = replaceOnce(pyReq, "\"readText\": \"__import__('pathlib').Path(path).read_text()\"",
+                            "\"readText\": { \"template\": \"_pg_rd(path)\", \"requires\": [\"rd\"] }", f);
+        pyReq = replaceOnce(pyReq, "\"preludes\": {",
+                            "\"preludes\": { \"sq\": \"def _pg_sq(x):\\n    return x ** 0.5\\n\", "
+                            "\"rd\": \"def _pg_rd(p):\\n    return p\\n\",", f);
+        err.clear();
+        check(f && loadBackend(pyReq, err), "P40 s1: a manifest using the binding object form loads");
+        BackendHandle pyr = findTarget("p40py");
+        EmitResult sq = compile("import { Math } from \"std.math\"\nfn root(): f64 => Math.sqrt(4.0)\n", pyr);
+        check(sq.ok && has(sq.code, "def _pg_sq(x):") && has(sq.code, "_pg_sq(4.0)") && !has(sq.code, "def _pg_rd"),
+              "P40 s1: a member binding's `requires` emits its helper (and only that one)");
+        check(sq.ok && sq.code.find("def _pg_sq") < sq.code.find("def root"),
+              "P40 s1: Python's preludeSlot sits at the top of the file");
+        EmitResult rd = compile("import { readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n", pyr);
+        check(rd.ok && has(rd.code, "def _pg_rd(p):") && !has(rd.code, "def _pg_sq"),
+              "P40 s1: an expect-fn actual's `requires` emits its helper via the kept prelude function");
+        EmitResult neither = compile("fn root(): i32 => 1\n", pyr);
+        check(neither.ok && !has(neither.code, "_pg_sq") && !has(neither.code, "_pg_rd") &&
+                  !has(neither.code, "def readText"),
+              "P40 s1: an unreached binding emits no helper, and an unreached std fn is pruned");
+
+        // C#: manifest helpers land in the file-local `file static class __PgRt`, after the usings.
+        std::string cs = renamed("csharp", "p40cs");
+        cs = replaceOnce(cs, "\"Math.sqrt\": \"global::System.Math.Sqrt($0)\"",
+                         "\"Math.sqrt\": { \"template\": \"__PgRt.Sq($0)\", \"requires\": [\"sq\"] }", f);
+        cs = replaceOnce(cs, "\"spec\": {",
+                         "\"spec\": { \"preludes\": { \"sq\": \"    internal static double Sq(double x) => "
+                         "global::System.Math.Sqrt(x);\\n\" },", f);
+        err.clear();
+        check(f && loadBackend(cs, err), "P40 s1: a C# manifest with a declared prelude loads");
+        EmitResult csq = compile("import { Math } from \"std.math\"\nfn root(): f64 => Math.sqrt(4.0)\n",
+                                 findTarget("p40cs"));
+        const std::size_t pgrt = csq.code.find("file static class __PgRt\n{\n    internal static double Sq(");
+        check(csq.ok && pgrt != std::string::npos && has(csq.code, "__PgRt.Sq(4.0)"),
+              "P40 s1: C# helpers are wrapped in the slot's `file static class __PgRt`");
+        check(csq.ok && csq.code.find("#nullable enable") < pgrt && pgrt < csq.code.find("class PolyglotProgram"),
+              "P40 s1: C#'s preludeSlot sits after the usings, before the first declaration");
+        EmitResult cnone = compile("fn root(): i32 => 1\n", findTarget("p40cs"));
+        check(cnone.ok && !has(cnone.code, "__PgRt"), "P40 s1: no helper required -> no __PgRt class at all");
+
+        // PHP: the slot follows `<?php` (and the require_once lines); prelude functions are guarded by a
+        // NAMESPACE-qualified function_exists, so a same-named global function cannot shadow them (S12).
+        std::string php = renamed("php", "p40php");
+        php = replaceOnce(php, "\"Math.sqrt\": \"sqrt($0)\"",
+                          "\"Math.sqrt\": { \"template\": \"__pg_sq($0)\", \"requires\": [\"sq\"] }", f);
+        php = replaceOnce(php, "\"preludes\": {}",
+                          "\"preludes\": { \"sq\": \"function __pg_sq($x) { return sqrt($x); }\\n\" }", f);
+        err.clear();
+        check(f && loadBackend(php, err), "P40 s1: a PHP manifest with a declared prelude loads");
+        EmitResult psq = compile("import { Math } from \"std.math\"\nfn root(): f64 => Math.sqrt(4.0)\n",
+                                 findTarget("p40php"));
+        const std::size_t ph = psq.code.find("function __pg_sq(");
+        check(psq.ok && ph != std::string::npos && psq.code.find("<?php") < ph &&
+                  ph < psq.code.find("function root"),
+              "P40 s1: PHP's preludeSlot follows <?php, before the declarations");
+        EmitResult pio = compile("import { readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n",
+                                 findTarget("php"));
+        check(pio.ok && has(pio.code, "function_exists(__NAMESPACE__.'\\\\readText')"),
+              "P40 s1: PHP prelude functions are guarded by a namespace-qualified function_exists");
+
+        // TS: prelude declarations are module-local — never exported — while user declarations still are.
+        EmitResult tsio = compile("import { readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n",
+                                  findTarget("typescript"));
+        check(tsio.ok && has(tsio.code, "function readText(") && !has(tsio.code, "export function readText(") &&
+                  has(tsio.code, "export function main("),
+              "P40 s1: TS prelude declarations are not exported; user declarations are");
+        EmitResult tsOpt = compile("fn f(): Option<i32> => None\n", findTarget("typescript"));
+        check(tsOpt.ok && has(tsOpt.code, "type Option") && !has(tsOpt.code, "export type Option"),
+              "P40 s1: a reached prelude union (via a bare case) is emitted, unexported");
+
+        // Reachability on a hand-built module: user -> A -> B -> U (transitive), C unreached; a forced name
+        // keeps an otherwise-unreached declaration (the shared prelude's union across roots).
+        auto fnDecl = [](const std::string& name, const std::string& origin, const std::string& calls,
+                         const std::string& returns) {
+            ir::Function fn;
+            fn.name = fn.mangledName = name;
+            fn.originModule = origin;
+            fn.returnType = namedType(returns.empty() ? "unit" : returns);
+            if (!calls.empty())
+                fn.body.push_back(std::make_unique<ir::ExprStmt>(
+                    SourcePos{}, std::make_unique<ir::Call>(SourcePos{}, namedType("unit"), calls, false)));
+            return fn;
+        };
+        auto buildModule = [&]() {
+            ir::Module m;
+            m.functions.push_back(fnDecl("userMain", "", "A", ""));
+            m.functions.push_back(fnDecl("A", ir::kPreludeOrigin, "B", ""));
+            m.functions.push_back(fnDecl("B", ir::kPreludeOrigin, "", "U"));
+            m.functions.push_back(fnDecl("C", ir::kPreludeOrigin, "", "V"));
+            ir::Union u; u.name = "U"; u.originModule = ir::kPreludeOrigin; m.unions.push_back(std::move(u));
+            ir::Union v; v.name = "V"; v.originModule = ir::kPreludeOrigin; m.unions.push_back(std::move(v));
+            return m;
+        };
+        ir::Module rm = buildModule();
+        const std::set<std::string> reach = preludeReach(rm);
+        check(reach.count("A") && reach.count("B") && reach.count("U") && !reach.count("C") && !reach.count("V"),
+              "P40 s1: reachability is transitive through prelude declarations (A -> B -> U), C/V unreached");
+        pruneUnreachablePrelude(rm);
+        check(rm.functions.size() == 3 && rm.unions.size() == 1 && rm.unions[0].name == "U",
+              "P40 s1: pruning erases exactly the unreached prelude declarations, never user ones");
+        ir::Module forced = buildModule();
+        const std::set<std::string> extra{"C"};
+        pruneUnreachablePrelude(forced, &extra);
+        check(forced.functions.size() == 4 && forced.unions.size() == 2,
+              "P40 s1: a forced name (reached by another root) is kept, with what IT reaches (C -> V)");
+        // The backstop: a prelude name spelled only inside opaque extern text still keeps it alive.
+        ir::Module ext;
+        ir::Function uf = fnDecl("userMain", "", "", "");
+        uf.body.push_back(std::make_unique<ir::ExprStmt>(
+            SourcePos{}, std::make_unique<ir::Extern>(SourcePos{}, namedType("unit"), "C();")));
+        ext.functions.push_back(std::move(uf));
+        ext.functions.push_back(fnDecl("C", ir::kPreludeOrigin, "", ""));
+        check(preludeReach(ext).count("C"), "P40 s1: the extern-text identifier scan keeps a referenced prelude decl");
     }
 
     // P4 — name / type resolution across the declaration surface.
@@ -1614,12 +1823,12 @@ int main() {
               "P19: loadBackend rejects a duplicate name");
         // A minimal artifact missing nearly every rule: the coverage contract must name the first gap
         // (a construct with no rule and no declared stance).
-        check(!loadBackend(R"({"name":"stubby",
+        check(!loadBackend(R"({"schema":2,"name":"stubby",
                               "spec":{"name":"stubby"},"rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "anti-silent-drop"),
               "P19: loadBackend refuses a plugin with undeclared coverage gaps");
         // A "native" capability claim with no rule behind it is also a lie the loader catches.
-        check(!loadBackend(R"({"name":"stubby2","spec":{"name":"stubby2"},
+        check(!loadBackend(R"({"schema":2,"name":"stubby2","spec":{"name":"stubby2"},
                               "capabilities":{"patternMatching":"native"},
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "no rule"),
@@ -1630,7 +1839,7 @@ int main() {
     {
         // An unknown capability key is a LOAD error — never a silently-defaulted-to-native typo.
         std::string err;
-        check(!loadBackend(R"({"name":"stubby3","spec":{"name":"stubby3"},
+        check(!loadBackend(R"({"schema":2,"name":"stubby3","spec":{"name":"stubby3"},
                               "capabilities":{"operatorOverloadng":"native"},
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "unknown capability key 'operatorOverloadng'"),
@@ -2298,7 +2507,7 @@ int main() {
         const std::string endMark(1024, '\0');
 
         // A plain npm-shaped archive: dir + manifest under package/.
-        const std::string manifest = "{ \"schema\": 1, \"name\": \"demo\" }";
+        const std::string manifest = "{ \"schema\": 2, \"name\": \"demo\" }";
         std::string ar = hdr("package/", 0, '5') +
                          hdr("package/polyglot-plugin.json", manifest.size(), '0') + pad512(manifest) + endMark;
         std::vector<cli::TarEntry> es;
@@ -2546,7 +2755,7 @@ int main() {
         setenv("POLYGLOT_CACHE", cache.string().c_str(), 1);
 #endif
         const std::string name = "@mintplayer/polyglot-target-python";
-        const std::string manifest = "{ \"schema\": 1, \"name\": \"python\" }";
+        const std::string manifest = "{ \"schema\": 2, \"name\": \"python\" }";
         std::string err, loaded;
 
         check(!cli::cacheLoad(name, "0.3.1", "", loaded, err) && has(err, "no entry"),
@@ -2563,7 +2772,7 @@ int main() {
 
         // Tamper with the cached manifest on disk: the re-hash refuses it.
         cli::writeFile(cache / "@mintplayer" / "polyglot-target-python" / "0.3.1" / "polyglot-plugin.json",
-                       "{ \"schema\": 1, \"name\": \"python\", \"evil\": true }");
+                       "{ \"schema\": 2, \"name\": \"python\", \"evil\": true }");
         check(!cli::cacheLoad(name, "0.3.1", "sha512-abc", loaded, err) && has(err, "hash mismatch"),
               "P30 s2: a tampered cache entry reads as absent-with-reason");
         // And a fresh store over the refused entry heals it.
@@ -3023,7 +3232,7 @@ int main() {
         // The vocabulary is CLOSED: an unknown style is a plugin LOAD ERROR, never a silent default —
         // that is what makes version skew loud (the `blockStyle` precedent).
         const std::string head =
-            "{\"schema\":1,\"name\":\"t\",\"spec\":{\"name\":\"t\"},"
+            "{\"schema\":2,\"name\":\"t\",\"spec\":{\"name\":\"t\"},"
             "\"rules\":{\"Program\":{\"line\":\"\"},\"Type\":{\"line\":\"\"}},";
         std::string err;
         check(!validateBackend(head + "\"originMapping\":{\"style\":\"dwarf\"}}", err) &&

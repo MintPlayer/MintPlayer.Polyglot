@@ -74,6 +74,17 @@ struct ModuleFile {
     std::string code;
     std::string sourcePath;
     std::vector<OriginRecord> origins; // P38: empty unless origin info was requested
+    // P40 §0: this is the hoisted shared prelude (`__polyglot_prelude`, LibConfig::sharedPrelude). Its `code`
+    // is this root's share only — empty when the root reaches no prelude. A host compiling several roots
+    // writes ONE file from compileSharedPrelude() over the union of their EmitResult::preludeReach instead.
+    bool sharedPrelude = false;
+};
+
+// P40 §0 / S15: which prelude declarations a compile reached, and which std modules it linked — the inputs
+// to the shared prelude's second phase. `names` holds declaration names (source and mangled spellings).
+struct PreludeReach {
+    std::vector<std::string> names;
+    std::vector<std::string> stdModules;
 };
 
 // Maps a SourcePos.fileId to the source it came from, so cross-module positions stay unambiguous after the
@@ -115,6 +126,9 @@ struct EmitResult {
     // build asked for origin info AND the target declares a mapping. The HOST turns these into a sidecar:
     // the Core never learns where a file is routed, so it cannot compute map-relative source paths itself.
     std::vector<OriginRecord> origins;
+    // P40 §0: populated when `modules` carries a shared prelude (ModuleFile::sharedPrelude) — what this root
+    // reaches, for the host's union across roots.
+    PreludeReach preludeReach;
 };
 
 // A module's source, as answered by a ModuleResolver. `canonicalPath` is the stable identity used for
@@ -161,6 +175,8 @@ struct LibConfig {
     // PolyglotProgram wrapper) into a single reserved `__polyglot_prelude` file instead of inlining it, so N
     // independent link roots don't each emit it (which collides as CS0101/CS8863 in one assembly). Off = the
     // single-file behavior (prelude inlined) — byte-identical. C#-only; TS/Python/PHP inline it per file safely.
+    // P40 §0: the prelude is pruned to what is reached, so roots no longer agree on its content — the host
+    // builds the one file in a second phase (compileSharedPrelude) from the union of every root's reach.
     bool sharedPrelude = false;
     // P38/issue #69: emit origin information so generated code can be attributed back to the `.pg` source
     // (a coverage run then reports against the `.pg`, with `.pg` line numbers). Opt-in — the CLI spells it
@@ -180,6 +196,12 @@ struct LibConfig {
 // path when the caller has one; empty keeps the historical behaviour of an unnamed entry ("<entry>").
 EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver = nullptr,
                    const LibConfig& lib = {}, const std::string& entryPath = {});
+
+// P40 §0 / S15 — phase 2 of the shared prelude. A multi-root project build compiles every root first (each
+// reports EmitResult::preludeReach), then calls this ONCE with the union: `code` is the one shared prelude
+// file, pruned to exactly what some root reaches. `ok` with an EMPTY `code` means no root reaches any prelude
+// declaration — the host then writes no prelude file (and removes a stale one).
+EmitResult compileSharedPrelude(const BackendHandle& target, const PreludeReach& unionReach, const LibConfig& lib = {});
 
 // Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.

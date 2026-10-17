@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "csharp",
   "sharedPreludeFile": true,
   "originMapping": {
@@ -2613,6 +2613,13 @@
               ]
             ]
           }
+        },
+        {
+          "fn": "preludeSlot",
+          "args": [
+            "file static class __PgRt\n{\n",
+            "}\n"
+          ]
         },
         {
           "line": ""

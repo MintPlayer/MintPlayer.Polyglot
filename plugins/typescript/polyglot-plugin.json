@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "typescript",
   "crossDirImports": true,
   "preludePerFile": true,
@@ -1578,7 +1578,10 @@
         {
           "line": {
             "tmpl": [
-              "export type ",
+              {
+                "call": "tsExport"
+              },
+              "type ",
               {
                 "fn": "ident",
                 "args": [
@@ -1594,7 +1597,10 @@
         {
           "line": {
             "tmpl": [
-              "export const ",
+              {
+                "call": "tsExport"
+              },
+              "const ",
               {
                 "fn": "ident",
                 "args": [
@@ -2211,7 +2217,10 @@
     },
     "tsRecordHead": {
       "tmpl": [
-        "export class ",
+        {
+          "call": "tsExport"
+        },
+        "class ",
         {
           "fn": "ident",
           "args": [
@@ -2947,6 +2956,9 @@
     "Program": {
       "seq": [
         {
+          "fn": "preludeSlot"
+        },
+        {
           "case": {
             "when": [
               [
@@ -3056,7 +3068,22 @@
           "each": {
             "line": {
               "tmpl": [
-                "export ",
+                {
+                  "case": {
+                    "when": [
+                      [
+                        {
+                          "eq": [
+                            "item.isPrelude",
+                            "true"
+                          ]
+                        },
+                        ""
+                      ]
+                    ],
+                    "else": "export "
+                  }
+                },
                 {
                   "case": {
                     "when": [
@@ -3146,9 +3173,27 @@
         }
       ]
     },
+    "tsExport": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "decl.isPrelude",
+                "true"
+              ]
+            },
+            ""
+          ]
+        ],
+        "else": "export "
+      }
+    },
     "tsFnSig": {
       "tmpl": [
-        "export ",
+        {
+          "call": "tsExport"
+        },
         {
           "case": {
             "when": [
@@ -3231,7 +3276,10 @@
     },
     "tsExtSig": {
       "tmpl": [
-        "export function ",
+        {
+          "call": "tsExport"
+        },
+        "function ",
         {
           "fn": "ident",
           "args": [
@@ -3296,7 +3344,10 @@
     },
     "tsClassHead": {
       "tmpl": [
-        "export class ",
+        {
+          "call": "tsExport"
+        },
+        "class ",
         {
           "fn": "ident",
           "args": [
@@ -3520,7 +3571,10 @@
       "block": {
         "head": {
           "tmpl": [
-            "export interface ",
+            {
+              "call": "tsExport"
+            },
+            "interface ",
             {
               "fn": "ident",
               "args": [
@@ -3641,7 +3695,10 @@
     "UnionDecl": {
       "line": {
         "tmpl": [
-          "export type ",
+          {
+            "call": "tsExport"
+          },
+          "type ",
           {
             "fn": "ident",
             "args": [

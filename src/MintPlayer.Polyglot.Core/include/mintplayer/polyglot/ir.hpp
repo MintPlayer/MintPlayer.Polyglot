@@ -21,6 +21,12 @@ namespace mintplayer::polyglot::ir {
 
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
+// The `originModule` sentinel for embedded std/core/lib declarations — the PRELUDE. Every declaration kind
+// carries `originModule`; templates read the fact as `decl.isPrelude` (P40 §0), and the reachability pass
+// (reachability.hpp) prunes prelude declarations that nothing reaches.
+inline constexpr const char kPreludeOrigin[] = "<prelude>";
+inline bool isPreludeOrigin(const std::string& origin) { return origin == kPreludeOrigin; }
+
 // ---- expressions ----
 enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With, IsTest, AsCast };
 
@@ -143,6 +149,9 @@ struct AsCast : Expr {
 };
 struct Extern : Expr { // `extern("…")`: raw target code emitted verbatim (the FFI hatch)
     std::string code;
+    // P40 §0: manifest prelude keys this text needs (a std binding's `requires`); emitting it records them,
+    // so the helper lands in the file exactly when the text does. Empty for user-written `extern(...)`.
+    std::vector<std::string> preludeKeys;
     Extern(SourcePos p, Type t, std::string c) : Expr(ExprKind::Extern, p, std::move(t)), code(std::move(c)) {}
 };
 struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrinsic
@@ -220,6 +229,7 @@ struct Bound : Expr {
     ExprPtr receiver;
     std::vector<ExprPtr> args;
     std::string tmpl; // the active target's template ("" only when the pre-lowering refusal was bypassed)
+    std::vector<std::string> preludeKeys; // P40 §0: the binding's manifest prelude keys (see ir::Extern)
     Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 

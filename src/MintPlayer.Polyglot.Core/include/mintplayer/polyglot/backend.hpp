@@ -66,6 +66,19 @@ inline constexpr Feature kAllFeatures[] = {
 // override), and an absent parent is "native" (supported) as before.
 bool isKnownCapabilityKey(const std::string& key);
 
+// The plugin manifest schema version this compiler reads (P40). The loader refuses any other value —
+// including a manifest with no `schema` at all — naming this one, so version skew between a plugin and
+// the engine is loud instead of a silent misread.
+inline constexpr int kPluginSchemaVersion = 2;
+
+// One std overlay arm (P40 §0): the template, plus the manifest prelude keys it requires. The manifest
+// spells it either as a plain string (no requirements) or as `{ "template": "...", "requires": [...] }`;
+// the loader validates every required key against the declared `preludes`.
+struct StdBinding {
+    std::string tmpl;
+    std::vector<std::string> preludeKeys;
+};
+
 class Backend {
 public:
     virtual ~Backend() = default;
@@ -162,8 +175,10 @@ public:
     // "<receiver>.<extension>" / "<expectFnName>", flattened across std modules. The compiler injects
     // them onto the skeleton decls before capability-checking/lowering; a used member with no overlay
     // entry refuses (§3.E). Empty for a backend without std support.
-    virtual const std::unordered_map<std::string, std::string>& stdOverlays() const {
-        static const std::unordered_map<std::string, std::string> kEmpty;
+    // P40 §0: each arm is a template plus the manifest prelude keys it `requires` (the binding's object
+    // form); a plain-string binding requires nothing.
+    virtual const std::unordered_map<std::string, StdBinding>& stdOverlays() const {
+        static const std::unordered_map<std::string, StdBinding> kEmpty;
         return kEmpty;
     }
 };

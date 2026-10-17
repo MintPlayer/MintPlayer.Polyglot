@@ -86,6 +86,7 @@
     <ClInclude Include="include\mintplayer\polyglot\capability.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\coverage.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\sourcemap.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\reachability.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />
@@ -107,6 +108,7 @@
     <ClCompile Include="src\json.cpp" />
     <ClCompile Include="src\coverage.cpp" />
     <ClCompile Include="src\sourcemap.cpp" />
+    <ClCompile Include="src\reachability.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

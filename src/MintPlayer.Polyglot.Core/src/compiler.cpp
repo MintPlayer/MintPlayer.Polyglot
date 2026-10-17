@@ -13,6 +13,7 @@
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
 #include "mintplayer/polyglot/pg_printer.hpp"
+#include "mintplayer/polyglot/reachability.hpp"
 #include "mintplayer/polyglot/sema.hpp"
 
 namespace mintplayer::polyglot {
@@ -275,7 +276,7 @@ void mergeDecls(CompilationUnit& mod, CompilationUnit& root, const std::string& 
 }
 
 // The origin sentinel for embedded std/core/lib decls — never emitted as their own module file (§4.5).
-const char* kPreludeOrigin = "<prelude>";
+constexpr const char* kPreludeOrigin = ir::kPreludeOrigin;
 
 // The reserved basename of the shared C# prelude file (issue #14): when a multi-file C# project build hoists
 // the prelude out, all roots emit this one file (identical content -> the CLI's writeDedup collapses it).
@@ -490,7 +491,7 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
     const auto& ov = backend.stdOverlays();
     if (ov.empty()) return;
     const std::string target = backend.name();
-    auto find = [&](const std::string& key) -> const std::string* {
+    auto find = [&](const std::string& key) -> const StdBinding* {
         auto it = ov.find(key);
         return it == ov.end() ? nullptr : &it->second;
     };
@@ -501,17 +502,17 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
     };
     for (auto& c : unit.classes) {
         if (!c.isExtern) continue;
-        if (const std::string* t = find(c.name + ".type"); t && !hasArm(c.typeBindings))
-            c.typeBindings.push_back({target, *t, c.pos});
+        if (const StdBinding* t = find(c.name + ".type"); t && !hasArm(c.typeBindings))
+            c.typeBindings.push_back({target, t->tmpl, c.pos, t->preludeKeys});
         for (auto& mem : c.members) {
             const std::string key = c.name + "." + (mem.kind == MemberKind::Constructor ? "constructor" : mem.name);
-            if (const std::string* t = find(key); t && !hasArm(mem.bindings))
-                mem.bindings.push_back({target, *t, mem.pos});
+            if (const StdBinding* t = find(key); t && !hasArm(mem.bindings))
+                mem.bindings.push_back({target, t->tmpl, mem.pos, t->preludeKeys});
         }
     }
     for (auto& e : unit.extensions)
-        if (const std::string* t = find(e.receiver.name + "." + e.name); t && !hasArm(e.bindings))
-            e.bindings.push_back({target, *t, e.pos});
+        if (const StdBinding* t = find(e.receiver.name + "." + e.name); t && !hasArm(e.bindings))
+            e.bindings.push_back({target, t->tmpl, e.pos, t->preludeKeys});
     // Expect fns: synthesize the actual — the signature cloned, the body a single opaque extern (every
     // first-party actual was exactly that shape; richer bodies stay expressible as source arms).
     std::vector<FunctionDecl> synthesized;
@@ -521,7 +522,7 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         for (const auto& g : unit.functions)
             if (!g.isExpect && g.name == f.name && g.actualTarget == target) have = true;
         if (have) continue;
-        const std::string* t = find(f.name);
+        const StdBinding* t = find(f.name);
         if (!t) continue;
         FunctionDecl a;
         a.name = f.name;
@@ -542,7 +543,8 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         auto ex = std::make_unique<Expr>();
         ex->kind = ExprKind::Extern;
         ex->pos = f.pos;
-        ex->text = *t;
+        ex->text = t->tmpl;
+        ex->preludeKeys = t->preludeKeys; // P40 §0: the actual's helper requirements ride on its extern
         auto st = std::make_unique<Stmt>();
         st->pos = f.pos;
         const bool returnsUnit = a.returnType.kind == TypeRef::Kind::Named && a.returnType.name == "unit";
@@ -626,8 +628,10 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
     return out;
 }
 
-EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib,
-                   const std::string& entryPath) {
+// The one compile pipeline. `sharedOnly` (P40 §0, the shared prelude's phase 2) emits ONLY the prelude,
+// pruned to the union reach handed in; `source` then just links the std modules that union came from.
+static EmitResult compileImpl(const std::string& source, const BackendHandle& target, ModuleResolver* resolver,
+                              const LibConfig& lib, const std::string& entryPath, const PreludeReach* sharedOnly) {
     EmitResult result;
     DiagnosticBag diags;
 
@@ -680,10 +684,11 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     // inlining it, so N independent link roots don't each emit it (C#: CS0101/CS8863 in one assembly).
     // P39: manifest data (`sharedPreludeFile`), not a target-name comparison — the Core never asks
     // "is this C#?".
-    const bool splitPrelude = target.backend()->sharedPreludeFile() && lib.sharedPrelude;
+    const bool splitPrelude = !sharedOnly && target.backend()->sharedPreludeFile() && lib.sharedPrelude;
 
-    if (userOrigins.empty() && !splitPrelude) { // single-file: unchanged (byte-identical)
+    if (userOrigins.empty() && !splitPrelude && !sharedOnly) { // single-file
         ir::Module module = lower(unit, target.name());
+        pruneUnreachablePrelude(module); // P40 §0: only the prelude this program reaches
         module.access = lib.access; // C# accessibility knob (empty = target default -> byte-identical)
         module.originInfo = lib.originInfo;      // P38: off => byte-identical
         module.sourceFiles = result.sources.files;
@@ -730,8 +735,21 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
     // P38: the origin list produced by the most recent emitKeep() call, stashed onto the matching output
     // below. Each emitted file has its own line numbering, so origins cannot be accumulated across them.
     std::vector<OriginRecord> lastOrigins;
-    auto emitKeep = [&](const std::set<std::string>& keep, const std::string& importOrigin) -> std::string {
+    // P40 §0: `forcedReach` names prelude declarations reached ELSEWHERE (the shared prelude's union across
+    // roots); null = compute it here.
+    auto emitKeep = [&](const std::set<std::string>& keep, const std::string& importOrigin,
+                        const std::set<std::string>* forcedReach = nullptr) -> std::string {
         ir::Module m = lower(unit, target.name());
+        // P40 §0: a file that holds the prelude on behalf of OTHER files too (the C# entry, or the split
+        // prelude file) keeps the union of what every file of the closure reaches — computed over the whole
+        // module, before it is partitioned. A per-file-prelude target keeps only what THIS file reaches.
+        const bool holdsPrelude = keep.count(kPreludeOrigin) != 0;
+        const bool holdsForOthers = holdsPrelude && !preludeEverywhere;
+        std::set<std::string> closureReach;
+        if (holdsForOthers && !forcedReach) {
+            closureReach = preludeReach(m);
+            forcedReach = &closureReach;
+        }
         auto prune = [&](auto& vec) {
             vec.erase(std::remove_if(vec.begin(), vec.end(),
                                      [&](const auto& d) { return !keep.count(d.originModule); }),
@@ -739,6 +757,7 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         };
         prune(m.enums); prune(m.unions); prune(m.records); prune(m.classes);
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
+        if (holdsPrelude) pruneUnreachablePrelude(m, holdsForOthers ? forcedReach : nullptr);
         m.linked = true;
         m.access = lib.access;
         m.originInfo = lib.originInfo;      // P38: off => byte-identical
@@ -763,20 +782,63 @@ EmitResult compile(const std::string& source, const BackendHandle& target, Modul
         return emitKeep(keep, fileOrigin);
     };
 
+    if (sharedOnly) { // P40 §0 phase 2: the shared prelude alone, pruned to the union across roots
+        const std::set<std::string> unionReach(sharedOnly->names.begin(), sharedOnly->names.end());
+        result.code = emitKeep({kPreludeOrigin}, kPreludeBasename, &unionReach);
+        result.origins = lastOrigins;
+        result.ok = true;
+        return result;
+    }
+
     result.code = emitFile(""); // the entry file (the CLI names it after the input)
     result.origins = lastOrigins; // P38
     for (const auto& canon : userOrigins) {
         std::string code = emitFile(canon);
         result.modules.push_back({baseByCanon[canon], std::move(code), canon, lastOrigins});
     }
-    if (splitPrelude) { // the shared runtime prelude, emitted once (identical across roots -> CLI writeDedup collapses it)
-        std::string code = emitKeep({kPreludeOrigin}, kPreludeBasename);
-        // The prelude is synthesized runtime text with no `.pg` origin — its lines are hidden, so it stays
-        // root-independent and writeDedup keeps collapsing it (PRD §4.F / SP2).
-        result.modules.push_back({kPreludeBasename, std::move(code), "", {}});
+    if (splitPrelude) {
+        // P40 §0 / S15: report what this root reaches, and which std modules it links, so a host compiling
+        // several roots can build ONE prelude from their union (compileSharedPrelude). The file emitted here
+        // is this root's own share — correct on its own, and empty when the root reaches no prelude at all
+        // (then no file should exist). The prelude is synthesized runtime text with no `.pg` origin — its
+        // lines are hidden, so it stays root-independent (PRD §4.F / SP2).
+        const std::set<std::string> reach = preludeReach(lower(unit, target.name()));
+        result.preludeReach.names.assign(reach.begin(), reach.end());
+        for (std::size_t fid = 1; fid < result.sources.files.size(); ++fid) {
+            const std::string& f = result.sources.files[fid];
+            if (f.rfind("std.", 0) == 0 && f != kCoreModuleName) result.preludeReach.stdModules.push_back(f);
+        }
+        std::sort(result.preludeReach.stdModules.begin(), result.preludeReach.stdModules.end());
+        result.preludeReach.stdModules.erase(
+            std::unique(result.preludeReach.stdModules.begin(), result.preludeReach.stdModules.end()),
+            result.preludeReach.stdModules.end());
+        std::string code = reach.empty() ? std::string() : emitKeep({kPreludeOrigin}, kPreludeBasename, &reach);
+        ModuleFile pf{kPreludeBasename, std::move(code), "", {}};
+        pf.sharedPrelude = true;
+        result.modules.push_back(std::move(pf));
     }
     result.ok = true;
     return result;
+}
+
+EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib,
+                   const std::string& entryPath) {
+    return compileImpl(source, target, resolver, lib, entryPath, nullptr);
+}
+
+EmitResult compileSharedPrelude(const BackendHandle& target, const PreludeReach& unionReach, const LibConfig& lib) {
+    if (unionReach.names.empty()) { // nothing reached by any root: no prelude file at all
+        EmitResult r;
+        r.ok = true;
+        return r;
+    }
+    // The std modules the roots linked, re-linked by a source that declares nothing of its own; the core
+    // prelude (Option, Error, …) is always linked, and `lib` brings the same ambient modules as the roots.
+    std::string synth;
+    for (const auto& m : unionReach.stdModules) synth += "import \"" + m + "\"\n";
+    LibConfig l = lib;
+    l.sharedPrelude = false;
+    return compileImpl(synth, target, nullptr, l, std::string(), &unionReach);
 }
 
 std::vector<std::string> importSpecifiers(const std::string& source) {

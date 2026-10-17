@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <stdexcept>
 #include <string_view>
 
@@ -596,6 +597,7 @@ std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::
 
 std::string EnumDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")        return e_.name;
+    if (path == "decl.isPrelude")   return ir::isPreludeOrigin(e_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.cases.count") return std::to_string(e_.cases.size());
     if (path.rfind("decl.cases.", 0) == 0) { // decl.cases.<i>.{name|value}
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
@@ -617,6 +619,7 @@ std::string EnumDeclCtx::builtin(const std::string& name, const std::vector<std:
 
 std::string UnionDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")        return u_.name;
+    if (path == "decl.isPrelude")   return ir::isPreludeOrigin(u_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.cases.count") return std::to_string(u_.cases.size());
     if (path.rfind("decl.cases.", 0) == 0) { // decl.cases.<i>.{name | fields.count | fields.<j>.name}
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
@@ -699,6 +702,7 @@ std::string DeclHooks::where(const std::vector<ir::GenericParam>& gs) const {
 
 std::string InterfaceDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")          return it_.name;
+    if (path == "decl.isPrelude")     return ir::isPreludeOrigin(it_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.bases.count")   return std::to_string(it_.bases.size());
     if (path == "decl.methods.count") return std::to_string(it_.methods.size());
     if (path.rfind("decl.methods.", 0) == 0) { // decl.methods.<i>.{name | params.count | params.<j>.{name|hasDefault}}
@@ -790,6 +794,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
         }
     }
     if (path == "decl.name")       return m_.name;
+    if (path == "decl.isPrelude")  return ownerIsPrelude_ ? "true" : "false"; // P40 §0: the owner's
     if (path == "decl.opSymbol")   return m_.opSymbol;
     if (path == "decl.ownerIsRecord") return m_.ownerIsRecord ? "true" : "false"; // P37 C5 (C# class eq)
     if (path == "decl.owner")      return owner_;
@@ -878,6 +883,7 @@ std::string RecordDeclCtx::get(const std::string& path) const {
         if (i < r_.attrLines.size()) return r_.attrLines[i];
     }
     if (path == "decl.name")          return r_.name;
+    if (path == "decl.isPrelude")     return ir::isPreludeOrigin(r_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.fields.count")  return std::to_string(r_.fields.size());
     if (path == "decl.bases.count")   return std::to_string(r_.bases.size());
     if (path == "decl.methods.count") return std::to_string(r_.methods.size());
@@ -927,7 +933,7 @@ std::string RecordDeclCtx::renderType(const std::string& path) const {
 
 std::unique_ptr<IrDeclCtx> RecordDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
     if (path == "decl.methods" && index < r_.methods.size())
-        return std::make_unique<MethodDeclCtx>(r_.methods[index], r_.name, hooks_, emit_);
+        return std::make_unique<MethodDeclCtx>(r_.methods[index], r_.name, ir::isPreludeOrigin(r_.originModule), hooks_, emit_);
     return nullptr;
 }
 
@@ -960,6 +966,7 @@ std::string ClassDeclCtx::get(const std::string& path) const {
         if (i < c_.attrLines.size()) return c_.attrLines[i];
     }
     if (path == "decl.name")             return c_.name;
+    if (path == "decl.isPrelude")        return ir::isPreludeOrigin(c_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.bases.count")      return std::to_string(c_.bases.size());
     if (path == "decl.methods.count")    return std::to_string(c_.methods.size());
     if (path == "decl.fields.count")     return std::to_string(c_.fields.size());
@@ -1049,7 +1056,7 @@ const std::vector<ir::StmtPtr>* ClassDeclCtx::stmtList(const std::string& path) 
 
 std::unique_ptr<IrDeclCtx> ClassDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
     if (path == "decl.methods" && index < c_.methods.size())
-        return std::make_unique<MethodDeclCtx>(c_.methods[index], c_.name, hooks_, emit_);
+        return std::make_unique<MethodDeclCtx>(c_.methods[index], c_.name, ir::isPreludeOrigin(c_.originModule), hooks_, emit_);
     return nullptr;
 }
 
@@ -1065,7 +1072,7 @@ std::string FnDeclCtx::get(const std::string& path) const {
     // A std/core/lib prelude function (originModule "<prelude>"), emitted into EVERY module. On a target
     // with one global function namespace (PHP), that redeclares it across `require`d files — the plugin
     // guards such a fn (e.g. `function_exists`). Inert for namespaced targets (C#/TS/Python) that don't read it.
-    if (path == "decl.isPrelude")   return f_.originModule == "<prelude>" ? "true" : "false";
+    if (path == "decl.isPrelude")   return ir::isPreludeOrigin(f_.originModule) ? "true" : "false";
     if (path == "decl.isAsync")     return f_.isAsync ? "true" : "false";
     if (path == "decl.isIterator")  return f_.isIterator ? "true" : "false";
     if (path == "decl.exprBodied")  return f_.exprBodied ? "true" : "false";
@@ -1175,6 +1182,7 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
         if (f == "name")    return m_.globals[i].name;
         if (f == "isConst") return m_.globals[i].isConst ? "true" : "false";
         if (f == "hasInit") return m_.globals[i].init ? "true" : "false";
+        if (f == "isPrelude") return ir::isPreludeOrigin(m_.globals[i].originModule) ? "true" : "false"; // P40 §0
     }
     if (path.rfind("module.imports.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.imports.size()) {
         if (f == "path")        return m_.imports[i].path;
@@ -1376,6 +1384,14 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
     // silently counts arms no instrument can ever reach.
     if (engine::TraceSink* sink = engine::traceSink()) sink->hit(r.srcId, r.offset);
     using K = engine::Rule::Kind;
+    if (r.kind == K::Fn && r.s == "preludeSlot") { // P40 §0: mark the placement; write nothing now
+        slotHit_ = true;
+        slotOffset_ = out_.size();
+        slotLine_ = outLine_;
+        slotOpen_ = r.parts.size() > 0 ? engine::evalRule(r.parts[0], ctx, helpers) : std::string();
+        slotClose_ = r.parts.size() > 1 ? engine::evalRule(r.parts[1], ctx, helpers) : std::string();
+        return;
+    }
     switch (r.kind) {
         case K::Line:
             line(engine::evalRule(r.parts[0], ctx, helpers));
@@ -1552,6 +1568,12 @@ std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
         }
         ~Depth() { --d; }
     } depthGuard(exprDepth_);
+    // P40 §0: a std binding's `requires` — the helper is recorded exactly when its caller is emitted, so a
+    // file only gets the helpers its own code calls.
+    if (e.kind == ir::ExprKind::Bound)
+        for (const auto& k : static_cast<const ir::Bound&>(e).preludeKeys) requires_.insert(k);
+    else if (e.kind == ir::ExprKind::Extern)
+        for (const auto& k : static_cast<const ir::Extern&>(e).preludeKeys) requires_.insert(k);
     if (const char* key = exprRuleKey(e.kind); key[0] != '\0') {
         auto it = rules_.find(key);
         if (it != rules_.end()) {
@@ -1572,6 +1594,11 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     externMap_.clear();
     tmp_ = 0;
     requires_.clear();
+    slotHit_ = false; // P40 §0: set by the Program rule's preludeSlot marker
+    slotOffset_ = 0;
+    slotLine_ = 0;
+    slotOpen_.clear();
+    slotClose_.clear();
     // P38/issue #69: record origins only when the build asked AND this target declares how. Both conditions
     // are data — the Core never asks which language it is emitting.
     originRecords_.clear();
@@ -1602,27 +1629,34 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
             if (fn.isAsync) requires_.insert("asyncEntry");
             break;
         }
-    std::vector<std::string> keys; // ascending order, each prepended => the last key ends up outermost
+    // P40 §0: the manifest preludes this file required, in DESCENDING key order (the order the historical
+    // top-of-file prepend produced — kept so output is byte-identical where the slot sits at the top).
+    std::vector<std::string> keys;
     for (const auto& k : requires_)
         if (spec().preludes.count(k)) keys.push_back(k);
-    std::sort(keys.begin(), keys.end());
-    // P38/issue #69: a prelude is prepended AFTER the walk, so it never passes through line() — the one
-    // writer of out_ that bypasses the per-line invariant. It is synthesized runtime text with no `.pg`
-    // origin, so it is wrapped in hidden directives (which removes it from coverage entirely) and every
-    // recorded output line shifts down by the number of lines prepended. Without the shift a source map
-    // would point at the wrong lines; the `#line` sink is immune either way, because every directive names
-    // an absolute line and nothing is relative to file position.
-    for (const auto& k : keys) {
-        const std::string& text = spec().preludes.at(k);
-        std::string block = text;
-        if (origin_ && origin_->emitsDirectives() && !origin_->hidden.empty()) block = hideRawBlock(text);
-        out_ = block + out_;
-        if (origin_) {
-            int added = 0;
-            for (char c : block) if (c == '\n') ++added;
-            for (auto& rec : originRecords_) rec.first += added;
-            outLine_ += added;
-        }
+    std::sort(keys.begin(), keys.end(), std::greater<std::string>());
+    if (keys.empty()) return out_;
+    // P38/issue #69: preludes are spliced in AFTER the walk, so they never pass through line() — the one
+    // writer of out_ that bypasses the per-line invariant. They are synthesized runtime text with no `.pg`
+    // origin, so each piece is wrapped in hidden directives (which removes it from coverage entirely) and
+    // every recorded output line past the slot shifts down by the number of lines inserted. Without the
+    // shift a source map would point at the wrong lines; the `#line` sink is immune either way, because
+    // every directive names an absolute line and nothing is relative to file position.
+    const bool hide = origin_ && origin_->emitsDirectives() && !origin_->hidden.empty();
+    auto piece = [&](const std::string& text) { return hide ? hideRawBlock(text) : text; };
+    std::string block;
+    if (!slotOpen_.empty()) block += piece(slotOpen_);
+    for (const auto& k : keys) block += piece(spec().preludes.at(k));
+    if (!slotClose_.empty()) block += piece(slotClose_);
+    const std::size_t at = slotHit_ ? std::min(slotOffset_, out_.size()) : 0;
+    const int atLine = slotHit_ ? slotLine_ : 0;
+    out_.insert(at, block);
+    if (origin_) {
+        int added = 0;
+        for (char c : block) if (c == '\n') ++added;
+        for (auto& rec : originRecords_)
+            if (rec.first > atLine) rec.first += added;
+        outLine_ += added;
     }
     return out_;
 }

@@ -373,3 +373,44 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Versioning:** the plugin manifest `"schema"` goes 1 → 2, and the Core starts validating it; package
     versions remain CI-stamped.
   - The follow-up spike sources were preserved under `spikes/F64Exact/`.
+- **2026-10-17 (night)** — **Slice 1 built** (the shared foundation, PRD §0). As built:
+  - **Schema 2.** All four manifests declare `"schema": 2`; `buildBackend` validates it first and refuses
+    a missing, schema-1 or unknown value with `unsupported manifest schema (N); this compiler reads schema 2`
+    (`kPluginSchemaVersion` in `backend.hpp`).
+  - **Reachability** is a new TU (`reachability.{hpp,cpp}`): `preludeReach` + `pruneUnreachablePrelude`, the
+    S14 walker made production code (name-indexed instead of re-scanning every vector per worklist pop; the
+    env-var hacks are gone). Besides `extern(...)` and binding templates, the opaque-text backstop also scans
+    extern-type spellings and attribute lines. When a prelude function is reached, both its source and mangled
+    names are marked, so every overload of a source name is reached together and the set round-trips through
+    the phase-2 re-lowering.
+  - **Two-phase shared prelude (S15).** `compile()` keeps emitting the root's own share of `__polyglot_prelude`
+    (flagged `ModuleFile::sharedPrelude`; empty code = nothing reached) and reports `EmitResult::preludeReach`
+    (names + linked std modules). The new public `compileSharedPrelude(target, unionReach, lib)` is phase 2; it
+    lives in the Core rather than the CLI's synthesized-source trick in the spike, so the `preludeOnly` /
+    `forcedPreludeReach` LibConfig knobs were not needed. The CLI's multi-root loop defers the prelude file,
+    then writes one file per distinct routed path through `writeDedup`, or removes a stale one ("no prelude
+    reached").
+  - **`preludeSlot`** is intercepted in `runDeclRule` (offset + line recorded, nothing written) and the preludes
+    are spliced there after the walk; origin records past the slot shift down. The historical prepend order
+    (descending key order) is kept, so Python output is byte-identical. The loader requires exactly one marker
+    in `Program`, reachable through `seq`/`indent` only (unconditional), and none elsewhere. Optional marker
+    args `[open, close]` are the C# `file static class __PgRt` scaffolding — data, not a C# special case.
+  - **Binding `requires`**: `StdBinding {tmpl, preludeKeys}` replaces the overlay string map; the keys ride on
+    `TargetBinding` → `ir::Bound`/`ir::Extern` (a synthesized expect-fn actual's extern too) and are recorded
+    when the node is emitted. The field is `preludeKeys` in C++ because `requires` is a C++20 keyword. Loader
+    refusals: undeclared key, non-string template, unknown object key, `requires` on a `.type` spelling (the
+    Type rule would never record it). A literal `{"fn":"require"}` naming an undeclared prelude is now refused
+    too (same contract; previously silently dropped at emit).
+  - **Deviation:** no first-party binding uses `requires` yet and C# declares no preludes, so `__PgRt` only
+    appears in unit-test manifests until slice 5/6 add the first helpers. PHP has no namespace option until
+    slice 2, so its slot sits after `<?php` + `require_once`.
+  - `decl.isPrelude` on every decl context (members report their owner's; globals as `item.isPrelude`). TS's
+    nine `export` sites go through one `tsExport` helper rule; PHP's guard is
+    `function_exists(__NAMESPACE__.'\\name')`.
+  - **Verified:** unit exe green (new P40 s1 block: schema, slot, `requires` refusals, Bound + Extern helper
+    emission, C#/PHP/Python placement, TS non-export, hand-built transitive/forced/backstop reachability);
+    `-Tier fast` green; conformance result lines **identical** to the pre-slice baseline on all four targets
+    (116 programs, 12 PHP refusers unchanged). Emitted size over the conformance corpus: C# −31.9%,
+    TS −37.2%, Python −20.3%, PHP −24.6%; Python output is pure deletions (slot placement byte-identical).
+    A manual 3-root C# project wrote one `__polyglot_prelude.cs` holding exactly the union (Option + readText),
+    and a no-reach project removed the stale file. Full gate (run-nuget, library gate, POSIX) is the end gate's.

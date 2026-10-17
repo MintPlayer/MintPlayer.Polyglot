@@ -47,7 +47,7 @@ class LoadedBackend : public Backend {
 public:
     LoadedBackend(std::string name, std::string fileExtension, BackendSpec spec, engine::RuleTable rules,
                   std::unordered_map<std::string, std::string> capabilities,
-                  std::unordered_map<std::string, std::string> overlays, bool crossDirImports = false,
+                  std::unordered_map<std::string, StdBinding> overlays, bool crossDirImports = false,
                   OriginMapping originMapping = {}, bool sharedPreludeFile = false,
                   bool preludePerFile = false)
         // Initialiser order follows DECLARATION order below, or g++ warns (-Wreorder).
@@ -94,7 +94,7 @@ public:
     bool linksWithoutImports() const override { return spec_.linksWithoutImports; }
     bool forbidsShadowedLocals() const override { return spec_.forbidsShadowedLocals; }
     bool expressionOnlyLambdas() const override { return spec_.expressionOnlyLambdas; }
-    const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
+    const std::unordered_map<std::string, StdBinding>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }
     bool sharedPreludeFile() const override { return sharedPreludeFile_; }
@@ -113,7 +113,7 @@ private:
     BackendSpec spec_;
     engine::RuleTable rules_;
     std::unordered_map<std::string, std::string> capabilities_;
-    std::unordered_map<std::string, std::string> overlays_; // flattened std FFI templates
+    std::unordered_map<std::string, StdBinding> overlays_; // flattened std FFI templates (+ their requires)
 };
 
 // ---- Load-time validation (P19 slice 8) ------------------------------------------------------------------
@@ -165,8 +165,30 @@ const std::unordered_set<std::string>& fnCatalog() {
         "subst", "require", "inlineBlock", // shared expression catalog
         "generics", "where", "mangle", "access", // declaration-context catalog (`access` = the requested accessibility modifier)
         "substExtern",                     // type-context catalog (extern-class template substitution)
+        "preludeSlot",                     // P40 §0: the Program rule's prelude placement marker (decl position)
     };
     return names;
+}
+
+// P40 §0: walk a rule tree, calling `f` on every node (the shapes collectRefs walks).
+template <typename F>
+void forEachRule(const engine::Rule& r, const F& f) {
+    f(r);
+    for (const auto& p : r.parts) forEachRule(p, f);
+    for (const auto& arm : r.arms) forEachRule(arm.second, f);
+    for (const auto& e : r.elseBody) forEachRule(e, f);
+}
+
+// P40 §0: does `r` place the prelude slot UNCONDITIONALLY at declaration position — reached through
+// `seq`/`indent` only, never inside a `case` arm, a `block` or an expression template? An unconditional slot
+// is what lets the emitter rely on the marker always having fired.
+bool unconditionalPreludeSlot(const engine::Rule& r) {
+    using K = engine::Rule::Kind;
+    if (r.kind == K::Fn) return r.s == "preludeSlot";
+    if (r.kind == K::Seq || r.kind == K::Indent)
+        for (const auto& p : r.parts)
+            if (unconditionalPreludeSlot(p)) return true;
+    return false;
 }
 
 // Recursively collect every fn name, call target, and mapMembers rule reference in a Rule tree.
@@ -235,6 +257,27 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     if (doc.kind != json::Value::Kind::Object) { error = "plugin artifact must be a JSON object"; return nullptr; }
     const std::string name = doc["name"].asString();
     if (name.empty()) { error = "plugin artifact: missing 'name'"; return nullptr; }
+
+    // P40: the manifest schema version is validated before anything else is read. A schema-1 manifest
+    // (no `preludeSlot`, no binding `requires`) or one from a newer engine would otherwise load with
+    // features silently misread — refuse it, naming the version this compiler expects.
+    {
+        const json::Value& schema = doc["schema"];
+        const bool isNumber = schema.kind == json::Value::Kind::Number;
+        const double v = isNumber ? schema.asNumber(0) : 0;
+        if (!isNumber || v != static_cast<double>(kPluginSchemaVersion)) {
+            std::string got = "missing";
+            if (isNumber) {
+                got = (v == static_cast<double>(static_cast<long long>(v))) ? std::to_string(static_cast<long long>(v))
+                                                                             : std::to_string(v);
+            } else if (schema.kind != json::Value::Kind::Null) {
+                got = "not a number";
+            }
+            error = "plugin '" + name + "': unsupported manifest schema (" + got + "); this compiler reads schema " +
+                    std::to_string(kPluginSchemaVersion) + " — use a plugin built for this engine version";
+            return nullptr;
+        }
+    }
 
     SpecLoadResult spec = loadBackendSpec(doc["spec"]);
     if (!spec.ok) {
@@ -363,12 +406,85 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
             }
     }
 
+    // P40 §0: prelude placement is data. The `Program` rule must carry exactly one `{"fn":"preludeSlot"}`
+    // marker at an unconditional declaration position, and no other rule may carry one — each language
+    // puts it where its helpers are legal (PHP after the namespace/use lines, C# after the usings).
+    // A literal `{"fn":"require"}` key must name a declared prelude, like a binding's `requires`.
+    {
+        int slots = 0;
+        std::string badRequire;
+        for (const auto& kv : rules)
+            forEachRule(kv.second, [&](const engine::Rule& r) {
+                if (r.kind != engine::Rule::Kind::Fn) return;
+                if (r.s == "preludeSlot") ++slots;
+                if (r.s == "require" && !r.parts.empty() && r.parts[0].kind == engine::Rule::Kind::Lit &&
+                    !spec.spec.preludes.count(r.parts[0].s) && badRequire.empty())
+                    badRequire = r.parts[0].s;
+            });
+        if (!badRequire.empty()) {
+            error = "plugin '" + name + "': {\"fn\":\"require\"} names '" + badRequire +
+                    "', which is not a declared prelude (spec.preludes)";
+            return nullptr;
+        }
+        if (slots != 1 || !unconditionalPreludeSlot(rules.at("Program"))) {
+            error = "plugin '" + name + "': the 'Program' rule must contain exactly one {\"fn\":\"preludeSlot\"} "
+                    "marker at an unconditional declaration position (inside 'seq'/'indent' only), and no "
+                    "other rule may contain one (found " + std::to_string(slots) + " in total)";
+            return nullptr;
+        }
+    }
+
     // The std overlay arms, organized by module in the manifest for readability, flattened here (member
     // keys — "List.add", "print" — are unique across the std surface).
-    std::unordered_map<std::string, std::string> overlays;
+    // P40 §0: a binding is a plain template string, or `{ "template": "...", "requires": ["key", ...] }`.
+    // Every required key must be a declared prelude — a typo would otherwise emit a call to a helper that
+    // is never defined (the anti-silent-drop contract, applied to helper references).
+    const auto& preludes = spec.spec.preludes;
+    std::unordered_map<std::string, StdBinding> overlays;
     for (const auto& mod : doc["std"].members)
-        for (const auto& kv : mod.second.members)
-            if (kv.second.kind == json::Value::Kind::String) overlays[kv.first] = kv.second.asString();
+        for (const auto& kv : mod.second.members) {
+            const json::Value& v = kv.second;
+            if (v.kind == json::Value::Kind::String) {
+                overlays[kv.first] = StdBinding{v.asString(), {}};
+                continue;
+            }
+            if (v.kind != json::Value::Kind::Object || v["template"].kind != json::Value::Kind::String) {
+                error = "plugin '" + name + "': std binding '" + kv.first +
+                        "' must be a template string or an object with a string 'template'";
+                return nullptr;
+            }
+            StdBinding b;
+            b.tmpl = v["template"].asString();
+            const json::Value& req = v["requires"];
+            if (req.kind != json::Value::Kind::Null && req.kind != json::Value::Kind::Array) {
+                error = "plugin '" + name + "': std binding '" + kv.first + "': 'requires' must be an array";
+                return nullptr;
+            }
+            for (const json::Value& r : req.items()) {
+                if (r.kind != json::Value::Kind::String || !preludes.count(r.asString())) {
+                    error = "plugin '" + name + "': std binding '" + kv.first + "' requires '" +
+                            (r.kind == json::Value::Kind::String ? r.asString() : std::string("<non-string>")) +
+                            "', which is not a declared prelude (spec.preludes)";
+                    return nullptr;
+                }
+                b.preludeKeys.push_back(r.asString());
+            }
+            for (const auto& m : v.members)
+                if (m.first != "template" && m.first != "requires") {
+                    error = "plugin '" + name + "': std binding '" + kv.first + "': unknown key '" + m.first + "'";
+                    return nullptr;
+                }
+            // A type spelling is rendered through the Type rule, not emitted as an expression, so nothing
+            // would record its requirements — refuse rather than silently drop them.
+            const std::string typeSuffix = ".type";
+            if (!b.preludeKeys.empty() && kv.first.size() > typeSuffix.size() &&
+                kv.first.compare(kv.first.size() - typeSuffix.size(), typeSuffix.size(), typeSuffix) == 0) {
+                error = "plugin '" + name + "': std binding '" + kv.first +
+                        "': 'requires' is not supported on a type spelling";
+                return nullptr;
+            }
+            overlays[kv.first] = std::move(b);
+        }
 
     std::string ext = doc["fileExtension"].asString();
     if (ext.empty()) ext = "." + name; // a reasonable default; first-party plugins declare theirs
