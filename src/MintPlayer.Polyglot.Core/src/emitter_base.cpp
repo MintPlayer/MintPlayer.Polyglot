@@ -548,8 +548,72 @@ bool inWrapSet(const std::vector<std::string>& set, const ir::Expr& c) {
 }
 } // namespace
 
+// The lowercase kind vocabulary `wrapAtom.recvPrimary` is written in.
+const char* exprKindName(ir::ExprKind k) {
+    switch (k) {
+        case ir::ExprKind::Int: return "int";           case ir::ExprKind::Float: return "float";
+        case ir::ExprKind::Bool: return "bool";         case ir::ExprKind::Str: return "str";
+        case ir::ExprKind::Char: return "char";         case ir::ExprKind::Null: return "null";
+        case ir::ExprKind::Var: return "var";           case ir::ExprKind::This: return "this";
+        case ir::ExprKind::Unary: return "unary";       case ir::ExprKind::Await: return "await";
+        case ir::ExprKind::Binary: return "binary";     case ir::ExprKind::Cast: return "cast";
+        case ir::ExprKind::Call: return "call";         case ir::ExprKind::MethodCall: return "methodCall";
+        case ir::ExprKind::Member: return "member";     case ir::ExprKind::New: return "new";
+        case ir::ExprKind::MakeCase: return "makeCase"; case ir::ExprKind::Match: return "match";
+        case ir::ExprKind::Lambda: return "lambda";     case ir::ExprKind::Extern: return "extern";
+        case ir::ExprKind::Index: return "index";       case ir::ExprKind::ListLit: return "listLit";
+        case ir::ExprKind::Tuple: return "tuple";       case ir::ExprKind::Bound: return "bound";
+        case ir::ExprKind::Interp: return "interp";     case ir::ExprKind::Cond: return "cond";
+        case ir::ExprKind::With: return "with";         case ir::ExprKind::IsTest: return "isTest";
+        case ir::ExprKind::AsCast: return "asCast";     case ir::ExprKind::NullAssert: return "nullAssert";
+    }
+    return "";
+}
+
+// A bound FFI template is a primary expression iff, outside brackets and string literals, it is nothing but
+// identifier characters, placeholders and member/scope punctuation (`.`, `->`, `::`, `?.`, PHP's `\`): then
+// `$this.Length`, `String($0)`, `(m.get($0) ?? null)` and `\strlen($0)` are atoms, while `$0 + $1`,
+// `new Foo($0)`, `$0 ?? 0` and `!$0` are not. A template that IS a single placeholder (`$0`) is as primary as
+// its argument. Purely lexical, so it holds for every target's template syntax without knowing it.
+bool boundTemplateIsAtomic(const BackendSpec& spec, const ir::Bound& b) {
+    const std::string& t = b.tmpl;
+    auto isIdent = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '\\'; };
+    if (t == "$this" && b.receiver) return !receiverNeedsParens(spec, *b.receiver);
+    if (t.size() == 2 && t[0] == '$' && std::isdigit(static_cast<unsigned char>(t[1]))) {
+        const std::size_t i = static_cast<std::size_t>(t[1] - '0');
+        return i < b.args.size() && !receiverNeedsParens(spec, *b.args[i]);
+    }
+    int depth = 0;
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        const char c = t[i];
+        if (c == '"' || c == '\'') { // skip a string literal (backslash escapes)
+            for (++i; i < t.size() && t[i] != c; ++i) if (t[i] == '\\') ++i;
+            continue;
+        }
+        if (c == '(' || c == '[' || c == '{') { ++depth; continue; }
+        if (c == ')' || c == ']' || c == '}') { --depth; continue; }
+        if (depth > 0 || isIdent(c) || c == '.') continue;
+        if (c == '-' && i + 1 < t.size() && t[i + 1] == '>') { ++i; continue; }
+        if (c == ':' && i + 1 < t.size() && t[i + 1] == ':') { ++i; continue; }
+        if (c == '?' && i + 1 < t.size() && t[i + 1] == '.') { ++i; continue; }
+        return false;
+    }
+    return true;
+}
+
+bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c) {
+    if (c.kind == ir::ExprKind::Binary) { // an operator routed to a method (`a.plus(b)`) is a call
+        const auto& b = static_cast<const ir::Binary&>(c);
+        return !(b.lhsIsUserType && !specTable(spec, "opMethod", b.op).empty());
+    }
+    if (c.kind == ir::ExprKind::Bound) return !boundTemplateIsAtomic(spec, static_cast<const ir::Bound&>(c));
+    const std::string k = exprKindName(c.kind);
+    for (const std::string& p : spec.wrapAtomRecvPrimary) if (p == k) return false;
+    return true;
+}
+
 bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
-    return inWrapSet(side == "recv" ? spec_.wrapAtomRecv : spec_.wrapAtomUnary, c);
+    return side == "recv" ? receiverNeedsParens(spec_, c) : inWrapSet(spec_.wrapAtomUnary, c);
 }
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
@@ -1342,6 +1406,12 @@ std::string StmtCtx::get(const std::string& path) const {
         if (path == "stmt.inclusive") return f.inclusive ? "true" : "false";
         if (path == "stmt.rangeEndSimple") return f.rangeEndSimple ? "true" : "false"; // P40 D7
         if (path == "stmt.rangeEndTemp")   return f.rangeEndTemp;                      // the hoisted end's name
+        if (path == "stmt.inclusiveMayWrap") return f.inclusiveMayWrap ? "true" : "false"; // P40 review B6
+        if (path == "stmt.rangeTypeName") return f.rangeType.name; // the loop type, as a table key (B6)
+        if (path == "stmt.rangeIs64") { // B6: a 64-bit counter (a target whose native int is 64-bit guards only these)
+            const std::string& n = f.rangeType.name;
+            return n == "i64" || n == "u64" ? "true" : "false";
+        }
         if (path == "stmt.binding")   return f.binding;
         if (path == "stmt.captured")  return f.captured ? "true" : "false"; // #46: a closure captures the binding
         if (path == "stmt.driver")    return f.binding + "__it";            // per-iteration copy's loop counter
@@ -1386,6 +1456,7 @@ std::string StmtCtx::get(const std::string& path) const {
 std::string StmtCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
     if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
+    if (name == "table" && args.size() >= 2) return hooks_.table(args[0], args[1]); // P40 review B6 (rangeWideType)
     return "";
 }
 
@@ -1930,7 +2001,7 @@ std::string EmitterBase::substBoundTemplate(const std::string& tmpl, const ir::B
         const bool recv = after < tmpl.size() &&
                           (tmpl[after] == '.' || tmpl[after] == '[' || tmpl.compare(after, 2, "->") == 0 ||
                            tmpl.compare(after, 2, "?.") == 0);
-        return recv && inWrapSet(spec().wrapAtomRecv, e) ? "(" + s + ")" : s;
+        return recv && receiverNeedsParens(spec(), e) ? "(" + s + ")" : s;
     };
     // P40 slice 7: `$tmp` is a temporary private to THIS expansion — every `$tmp` in the template is one name,
     // and the next expansion gets the next one, so two expansions in one scope never collide (C#

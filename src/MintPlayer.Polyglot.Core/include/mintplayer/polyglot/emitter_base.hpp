@@ -22,6 +22,12 @@ namespace mintplayer::polyglot {
 
 // BlockStyle now lives in backend_spec.hpp — it is per-target Spec data (see BackendSpec::blockStyle).
 
+// P40 review A6 — the receiver parenthesization rule (see BackendSpec::wrapAtomRecvPrimary): true unless `c`
+// is emitted as a primary expression on this target. Shared by rule `recv` operands and bound FFI templates.
+const char* exprKindName(ir::ExprKind k);
+bool boundTemplateIsAtomic(const BackendSpec& spec, const ir::Bound& b);
+bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c);
+
 // The shared EvalContext over an ir::Expr + a BackendSpec — the seam that plugs the P18 rule interpreter
 // into the real IR. Everything target-INDEPENDENT lives here: the path->IR mapping (`node.lhs`,
 // `node.args.<i>`, `node.fields.<i>.name`, `spec.delimited.…`, …), the binary-operand precedence policy

@@ -217,6 +217,7 @@ struct FnSig {
     std::vector<GenericParam> boundSpecs;   // the function's bounded type params (nominal bounds checked at the call)
     TypeRef receiver;                  // extensions only: the declared receiver type (for inference from it)
     bool isAsync = false;              // an `async fn` — its call result is `Awaitable<result>` (§4.7)
+    SourcePos pos;                     // the declaration (its file id = its module: D16 overload visibility)
 };
 
 // The generic-param names bounded by the INumber marker — those whose inferred type argument must be numeric.
@@ -322,8 +323,9 @@ struct Local {
 class Checker {
 public:
     Checker(DiagnosticBag& diags) : diags_(diags) {}
-    Checker(DiagnosticBag& diags, SemanticModel* model, const SemanticRequest* req)
-        : diags_(diags), model_(model), req_(req) {}
+    Checker(DiagnosticBag& diags, SemanticModel* model, const SemanticRequest* req,
+            const ModuleVisibility* modules = nullptr)
+        : diags_(diags), model_(model), req_(req), modules_(modules) {}
 
     void run(CompilationUnit& unit) {
         unit_ = &unit;
@@ -438,6 +440,7 @@ private:
     // ---- semantic model (LSP; §4.8). Populated only when model_ != nullptr, and only for file-local symbols.
     SemanticModel* model_ = nullptr;
     const SemanticRequest* req_ = nullptr;
+    const ModuleVisibility* modules_ = nullptr; // P40 review A8: D16 scoping for overload resolution
     bool recordModel_ = false;                       // true only while checking a file-local (user) decl body
     SourcePos scopeStart_, scopeEnd_;                // enclosing fn/method extent; stamped on Local/Parameter defs (§4.8)
     std::unordered_map<std::string, int> fnDefId_;     // user function name -> its SymbolDef index (for call refs)
@@ -865,10 +868,21 @@ private:
             for (const auto& g : fn.generics) sig.generics.push_back(g.name);
             sig.numericParams = numericBounded(fn.generics);
             sig.boundSpecs = fn.generics;
+            sig.pos = fn.pos;
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
-                if (sameParamList(existing.params, sig.params))
-                    diags_.error(fn.pos, "duplicate function '" + fn.name + "' with the same parameter types");
+                if (sameParamList(existing.params, sig.params)) {
+                    // P40 review A8: name BOTH declarations — across modules the error's own position names
+                    // only one file, and the other declaration was left to be guessed.
+                    std::string other = "line " + std::to_string(existing.pos.line);
+                    if (existing.pos.fileId != fn.pos.fileId && modules_ && modules_->describe)
+                        other = "module '" + modules_->describe(existing.pos.fileId) + "', " + other;
+                    std::string here;
+                    if (existing.pos.fileId != fn.pos.fileId && modules_ && modules_->describe)
+                        here = " in module '" + modules_->describe(fn.pos.fileId) + "'";
+                    diags_.error(fn.pos, "duplicate function '" + fn.name + "' with the same parameter types" + here +
+                                             " (also declared at " + other + ")");
+                }
             set.push_back(std::move(sig));
         }
         for (auto& fn : u.functions) { // assign per-target names: overloaded functions mangle their params
@@ -1444,8 +1458,53 @@ private:
 
     // A value flowing into a typed slot (let/assign/return/argument): widen losslessly if possible, else
     // a numeric mismatch demands an explicit cast and any other known-scalar mismatch is a type error.
+    // A type with no unbound type parameter in it — every name a scalar, a declared type/union/enum, or a type
+    // parameter of the scope being checked. A callee's own still-open `U` is not concrete: converting into it
+    // would stamp the parameter itself into the emitted code (`new Some<U>(…)`).
+    bool concreteType(const TypeRef& t) const {
+        if (t.kind == TypeRef::Kind::Named) {
+            if (t.name.empty()) return false;
+            if (!(isBuiltinType(t.name) || t.name == "unit" || types_.count(t.name) ||
+                  unionAllCases_.count(t.name) || enumAllCases_.count(t.name) || genericsInScope_.count(t.name)))
+                return false;
+        }
+        for (const auto& a : t.args) if (!concreteType(a)) return false;
+        for (const auto& r : t.ret) if (!concreteType(r)) return false;
+        return true;
+    }
+    // P40 review A7: a lambda flowing into a function-typed slot — its RESULT flows into the slot's return
+    // type, exactly as a `return` value flows into a function's declared return type. So an `Option<X>` result
+    // meeting a `X?` return converts (the T?-representation boundary, SPEC §4.4), an `i32` result widens into
+    // `f64`, and a mismatch is refused — before, the lambda was opaque (typed Unknown) and nothing converted:
+    // C# CS0029, TS `[object Object]`. Every `return` of a block lambda (not of a lambda nested in it) counts.
+    void convertLambdaResult(Expr& lam, const TypeRef& ret) {
+        if (isUnitT(ret) || !concreteType(ret)) return;
+        if (!lam.flag) {
+            if (lam.lhs) checkConvert(lam.lhs, ret, "lambda result");
+            return;
+        }
+        std::function<void(std::vector<StmtPtr>&)> walk = [&](std::vector<StmtPtr>& body) {
+            for (auto& s : body) {
+                if (!s) continue;
+                if (s->kind == StmtKind::Return && s->value) checkConvert(s->value, ret, "lambda result");
+                walk(s->thenBody);
+                walk(s->elseBody);
+                for (auto& c : s->catches) walk(c.body);
+                walk(s->finallyBody);
+                for (Expr* x : {s->value.get(), s->target.get()}) // a statement-position match's arm blocks
+                    if (x && x->kind == ExprKind::Match)
+                        for (auto& arm : x->arms) walk(arm.block);
+            }
+        };
+        walk(lam.block);
+    }
+
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
         if (!slot) return;
+        if (slot->kind == ExprKind::Lambda && target.kind == TypeRef::Kind::Function && !target.ret.empty()) {
+            convertLambdaResult(*slot, target.ret[0]);
+            return;
+        }
         // An un-awaited async result (`Awaitable<T>`) used where a plain value is expected — e.g. `return f()`
         // inside an async fn — is the "forgot to await" mistake. Refuse it (as C#/TS do), naming the fix. §4.7
         if (isAwaitable(slot->type) && !isAwaitable(target)) {
@@ -1546,6 +1605,33 @@ private:
     // the usual implicit widening cast), which becomes the loop variable's type. An incompatible pair (a
     // signed/unsigned mix neither side of which widens) is an error. Also decides D7's `rangeEndSimple`.
     TypeRef checkRangeBounds(Expr& r) {
+        TypeRef t = checkRangeBoundsImpl(r);
+        r.rangeEndBelowMax = rangeEndBelowMax(*r.rhs, t);
+        return t;
+    }
+    // P40 review B6: is the end bound PROVABLY below the loop type's maximum? Only a literal is: an inclusive
+    // range whose end may be the maximum would step the counter past it, and a fixed-width counter wraps
+    // (C# `i <= int.MaxValue; i++` never ends; PHP's int overflows to a float that still compares <=).
+    static bool rangeEndBelowMax(const Expr& e, const TypeRef& t) {
+        if (t.kind != TypeRef::Kind::Named) return false;
+        const int w = numWidth(t.name);
+        if (w == 0) return false;
+        if (e.kind == ExprKind::Unary && e.text == "-" && e.lhs && e.lhs->kind == ExprKind::IntLit) return true;
+        if (e.kind != ExprKind::IntLit) return false;
+        std::string digits;
+        for (char c : e.text) {
+            if (c == 'i' || c == 'u') break; // the width suffix
+            if (c != '_') digits += c;
+        }
+        errno = 0;
+        char* end = nullptr;
+        const unsigned long long v = std::strtoull(digits.c_str(), &end, 0);
+        if (errno == ERANGE || end == digits.c_str() || *end != '\0') return false;
+        const unsigned long long max = isUnsignedInt(t.name) ? (w == 64 ? ~0ull : (1ull << w) - 1)
+                                                             : (1ull << (w - 1)) - 1;
+        return v < max;
+    }
+    TypeRef checkRangeBoundsImpl(Expr& r) {
         TypeRef lo = checkExpr(*r.lhs);
         TypeRef hi = checkExpr(*r.rhs);
         r.rangeEndSimple = rangeEndIsSimple(*r.rhs);
@@ -1811,6 +1897,11 @@ private:
                 if (s.hasFinally) checkBlock(s.finallyBody);
                 break;
             case StmtKind::Return: {
+                // Inside a lambda the result type is open here (see checkLambda): any form is accepted.
+                if (currentReturn_.kind == TypeRef::Kind::Named && currentReturn_.name.empty()) {
+                    if (s.value) checkExpr(*s.value);
+                    break;
+                }
                 if (s.value) {
                     checkExpr(*s.value);
                     if (isUnitT(currentReturn_)) diags_.error(s.pos, "this function returns unit; 'return' takes no value");
@@ -2449,8 +2540,13 @@ private:
             if (!p.type.absent()) resolveTypeRef(p.type, p.pos);
             declare(p.name, p.type, false, p.pos);
         }
+        // A block lambda's `return` is the LAMBDA's result, not the enclosing function's: it is checked
+        // against the function type the lambda flows into (convertLambdaResult), so here it is open.
+        TypeRef savedReturn = currentReturn_;
+        currentReturn_ = tUnknown();
         if (e.flag) checkStmts(e.block);
         else if (e.lhs) checkExpr(*e.lhs);
+        currentReturn_ = std::move(savedReturn);
         popScope();
         if (topLevel) { --bodyDepth_; closureAssigned_ = std::move(savedClosureAssigned); }
         --lambdaDepth_;
@@ -2962,7 +3058,18 @@ private:
                         instantiateLambdaArgs(ps, e.args, {}); // (as before: an unbound T is kept as written)
                     }
                     // P40 slice 7: trailing default params may be omitted; lowering fills them in at the call.
-                    checkArgs(it->second.params, argTypes, e.args, "extension '" + method + "'", e.pos, it->second.required);
+                    // P40 review A7: arguments convert into the INSTANTIATED parameters (type params bound from
+                    // the receiver and the arguments), never into a still-open `T?` (`new None<T>()`).
+                    std::vector<TypeRef> psInst = it->second.params;
+                    if (!it->second.generics.empty()) {
+                        std::unordered_set<std::string> gen(it->second.generics.begin(), it->second.generics.end());
+                        std::unordered_map<std::string, TypeRef> binds;
+                        unifyGeneric(gen, it->second.receiver, recv, binds);
+                        for (std::size_t i = 0; i < psInst.size() && i < argTypes.size(); ++i)
+                            unifyGeneric(gen, psInst[i], argTypes[i], binds);
+                        for (auto& p : psInst) p = substGeneric(p, gen, binds);
+                    }
+                    checkArgs(psInst, argTypes, e.args, "extension '" + method + "'", e.pos, it->second.required);
                     // Infer the extension's type params from the receiver (List<i32> vs List<T> -> T=i32) and
                     // args, then substitute the result — so `xs.secondOrNull()` is Option<i32>, not Option<T>.
                     return inferExtResult(it->second.generics, it->second.receiver, recv, it->second.params, argTypes, it->second.result);
@@ -2982,7 +3089,18 @@ private:
                         instantiateLambdaArgs(ps, e.args, open);
                     }
                     const std::string what = "method '" + method + "'";
-                    checkArgs(ps, argTypes, e.args, what, e.pos, m->required);
+                    // P40 review A7: bind the method's OWN type params from the arguments first, so each
+                    // argument converts into its instantiated parameter (as a free fn's do) — a native `string?`
+                    // into `U?` is `Option<string>`, not `Option<U>` (C# `new None<U>()` named the open param).
+                    std::vector<TypeRef> psInst = ps;
+                    if (!m->generics.empty()) {
+                        std::unordered_set<std::string> mg(m->generics.begin(), m->generics.end());
+                        std::unordered_map<std::string, TypeRef> mb;
+                        for (std::size_t i = 0; i < psInst.size() && i < argTypes.size(); ++i)
+                            unifyGeneric(mg, psInst[i], argTypes[i], mb);
+                        for (auto& p : psInst) p = substGeneric(p, mg, mb);
+                    }
+                    checkArgs(psInst, argTypes, e.args, what, e.pos, m->required);
                     checkNumericBounds(m->numericParams, m->generics, ps, argTypes, what, e.pos);
                     checkGenericBounds(m->boundSpecs, m->generics, ps, argTypes, what, e.pos);
                     TypeRef r = inferResult(m->generics, ps, argTypes, memberTypeOf(hit, m->type, e.pos));
@@ -3085,7 +3203,17 @@ private:
         }
         if (auto f = fns_.find(name); f != fns_.end()) {
             if (auto it = fnDefId_.find(name); it != fnDefId_.end()) recordRef(e.lhs->pos, name, it->second);
-            const FnSig* chosen = resolveOverload(f->second, argTypes);
+            // P40 review A8 (D16): only the overloads the CALLING module can see compete — a never-imported
+            // overload in another module must not win (C# bound it, TS called an unimported mangled name). When
+            // none is visible the set is kept whole, and the scope pass refuses the name with its import hint.
+            std::vector<FnSig> visibleSet;
+            const std::vector<FnSig>* candidates = &f->second;
+            if (modules_ && modules_->visible && f->second.size() > 1) {
+                for (const auto& sig : f->second)
+                    if (modules_->visible(e.pos.fileId, sig.pos.fileId, name)) visibleSet.push_back(sig);
+                if (!visibleSet.empty()) candidates = &visibleSet;
+            }
+            const FnSig* chosen = resolveOverload(*candidates, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
             // Bind the type params first — from explicit `f<T>(…)` args (P40 A4, emitted) or inferred from the
             // argument types — so each argument converts into its INSTANTIATED parameter: `present(s)` into
@@ -3217,8 +3345,9 @@ private:
 
 } // namespace
 
-void check(CompilationUnit& unit, DiagnosticBag& diags, SemanticModel* model, const SemanticRequest* req) {
-    Checker checker(diags, model, req);
+void check(CompilationUnit& unit, DiagnosticBag& diags, SemanticModel* model, const SemanticRequest* req,
+           const ModuleVisibility* modules) {
+    Checker checker(diags, model, req, modules);
     checker.run(unit);
 }
 

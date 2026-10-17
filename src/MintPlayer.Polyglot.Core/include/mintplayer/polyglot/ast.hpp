@@ -135,6 +135,9 @@ struct Expr {
     // iteration (a literal, a module value, or an immutable local/param), so it may be re-read in the loop
     // condition; otherwise lowering hoists it into a temp so it is evaluated exactly once.
     bool rangeEndSimple = false;
+    // Range (P40 review B6): the end bound is a literal provably below the loop type's maximum, so an inclusive
+    // range's counter can never step past the maximum. Otherwise a target with a wrapping counter guards it.
+    bool rangeEndBelowMax = false;
     // Name (set by sema — P40 D14): a read of a nullable local/param that null flow-narrowing proved
     // non-null here (`if x != null { … x … }`). `type` is the non-nullable type; lowering keeps the
     // variable's nullable type on the read and converts it (a value-type Nullable<T> needs the unwrap on C#).
@@ -221,6 +224,7 @@ struct TargetBinding {
     // `{ "template": …, "requires": [...] }`. Lowering copies them onto the ir::Bound/ir::Extern, and
     // emitting that node records them, so a helper is emitted exactly where its caller is.
     std::vector<std::string> preludeKeys;
+    std::string nullishCode; // P40 review A1: the `??`-left-operand variant (StdBinding::nullishTmpl), or ""
 };
 
 

@@ -78,6 +78,11 @@ inline constexpr int kPluginSchemaVersion = 2;
 struct StdBinding {
     std::string tmpl;
     std::vector<std::string> preludeKeys;
+    // P40 review A1 — the object form's optional `nullishTemplate`: used instead of `tmpl` where the value is
+    // the left operand of `??`, which coalesces every absent form alike — so a normalization `tmpl` performs
+    // only to reach the language's one `T?` absent value (TS `(m.get(k) ?? null)` folding `undefined` into
+    // `null`) is dropped there (tsc ≥ 5.6 rejects `(x ?? null) ?? d` as TS2871 "always nullish").
+    std::string nullishTmpl;
 };
 
 // One target option a plugin declares in its manifest `options` block (P40 B1). A consumer sets it under

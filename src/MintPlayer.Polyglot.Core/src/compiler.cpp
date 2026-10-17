@@ -440,6 +440,44 @@ struct ScopeRec {
     std::set<std::string> userModules;                      // canon of every non-std module ("" = the entry)
 };
 
+// file id -> module canon (the SourceMap stores each module under its canon; id 1 is the entry, "").
+static std::map<int, std::string> canonsOf(const SourceMap& src) {
+    std::map<int, std::string> m;
+    for (int i = 1; i < static_cast<int>(src.files.size()); ++i) m[i] = src.files[i];
+    m[1] = "";
+    return m;
+}
+
+// The D16 rule: is a declaration in file `fid`, spelled `name`, visible to the module of file `fromFile`?
+// Writes the reason when not. Shared by the ScopeChecker's refusal pass and — P40 review A8 — sema's overload
+// resolution, which must only consider the overloads the calling module can see (a never-imported overload
+// used to win the call: C# bound it, TS emitted an unimported `check$i32`).
+static bool scopeVisible(const ScopeRec& rec, int coreFile, const std::set<std::string>& ambient,
+                  const std::map<int, std::string>& canonOf, int fromFile, int fid, const std::string& name,
+                  std::string& why, bool anyName = false) {
+    if (fid == fromFile || fid == coreFile || fid == 0) return true;
+    if (auto c = canonOf.find(fid); c != canonOf.end() && ambient.count(c->second)) return true;
+    const auto from = canonOf.find(fromFile);
+    if (from == canonOf.end() || !rec.userModules.count(from->second)) return true; // std code: flat namespace
+    auto ed = rec.edges.find(from->second);
+    if (ed != rec.edges.end())
+        for (const auto& imp : ed->second) {
+            auto f = rec.fileOf.find(imp.canon);
+            if (f == rec.fileOf.end() || f->second != fid) continue;
+            if (anyName || imp.names.empty() ||
+                std::find(imp.names.begin(), imp.names.end(), name) != imp.names.end())
+                return true;
+            why = "'" + name + "' is declared in '" + imp.spec + "' but not imported — add it to `import { … } from \"" +
+                  imp.spec + "\"`";
+            return false;
+        }
+    auto c = canonOf.find(fid);
+    const std::string where = c != canonOf.end() ? c->second : std::string("another module");
+    why = "'" + name + "' is declared in module '" + where + "', which this module does not import — add `import \"" +
+          where + "\"` (an import makes names visible only to the module that writes it)";
+    return false;
+}
+
 // What a user module may name: its own file, std.core, the ambient lib modules, and its direct imports (a
 // selective import only for the names it lists).
 class ScopeChecker {
@@ -447,9 +485,7 @@ public:
     ScopeChecker(const CompilationUnit& u, const ScopeRec& rec, int coreFile, const std::set<std::string>& ambient,
                  const SourceMap& src, DiagnosticBag& diags)
         : unit_(u), rec_(rec), coreFile_(coreFile), ambient_(ambient), src_(src), diags_(diags) {
-        // file id -> module canon (the SourceMap stores each module under its canon; id 1 is the entry, "")
-        for (int i = 1; i < static_cast<int>(src.files.size()); ++i) canonOf_[i] = src.files[i];
-        canonOf_[1] = "";
+        canonOf_ = canonsOf(src);
         auto note = [](auto& map, const std::string& n, int fid) { if (!n.empty()) map[n].push_back(fid); };
         for (const auto& d : u.records)    note(types_, d.name, d.pos.fileId);
         for (const auto& d : u.classes)    note(types_, d.name, d.pos.fileId);
@@ -562,25 +598,7 @@ private:
 
     // Is a declaration in file `fid`, spelled `name`, visible to the current module? Writes the reason.
     bool visible(int fid, const std::string& name, std::string& why, bool anyName = false) const {
-        if (fid == file_ || fid == coreFile_ || fid == 0) return true;
-        if (auto c = canonOf_.find(fid); c != canonOf_.end() && ambient_.count(c->second)) return true;
-        auto ed = rec_.edges.find(module_);
-        if (ed != rec_.edges.end())
-            for (const auto& imp : ed->second) {
-                auto f = rec_.fileOf.find(imp.canon);
-                if (f == rec_.fileOf.end() || f->second != fid) continue;
-                if (anyName || imp.names.empty() ||
-                    std::find(imp.names.begin(), imp.names.end(), name) != imp.names.end())
-                    return true;
-                why = "'" + name + "' is declared in '" + imp.spec + "' but not imported — add it to `import { … } from \"" +
-                      imp.spec + "\"`";
-                return false;
-            }
-        auto c = canonOf_.find(fid);
-        const std::string where = c != canonOf_.end() ? c->second : std::string("another module");
-        why = "'" + name + "' is declared in module '" + where + "', which this module does not import — add `import \"" +
-              where + "\"` (an import makes names visible only to the module that writes it)";
-        return false;
+        return scopeVisible(rec_, coreFile_, ambient_, canonOf_, file_, fid, name, why, anyName);
     }
     void judge(const std::map<std::string, std::vector<int>>& table, const std::string& key, const std::string& name,
                SourcePos pos, bool anyName = false) {
@@ -899,7 +917,23 @@ bool runFrontEnd(CompilationUnit& unit, ModuleResolver* resolver, const LibConfi
     const int coreFile = linkCoreModule(unit, diags, src); if (diags.hasErrors()) return false; // Error/Iterable (no import)
     linkModules(unit, resolver, diags, src, graph, &scope); if (diags.hasErrors()) return false; // imported std + user modules
     linkLibModules(unit, lib, resolver, diags, src, &ambient); if (diags.hasErrors()) return false; // ambient prelude (not recorded)
-    check(unit, diags, model, req);
+    // P40 review A8: sema resolves overloads against the calling module's D16 view (needs the file ids).
+    ModuleVisibility vis;
+    std::map<int, std::string> canonOf;
+    if (src) {
+        canonOf = canonsOf(*src);
+        vis.visible = [&](int fromFile, int declFile, const std::string& name) {
+            std::string why;
+            return scopeVisible(scope, coreFile, ambient, canonOf, fromFile, declFile, name, why);
+        };
+        vis.describe = [&](int fileId) {
+            auto c = canonOf.find(fileId);
+            if (fileId >= 1 && fileId < static_cast<int>(src->files.size()) && !src->files[fileId].empty())
+                return src->files[fileId]; // the entry is stored under its path, a module under its canon
+            return c == canonOf.end() ? std::string("?") : c->second;
+        };
+    }
+    check(unit, diags, model, req, src ? &vis : nullptr);
     // D16: names are visible only to the module that imports them. Needs the per-module file ids (src).
     if (src && !diags.hasErrors()) ScopeChecker(unit, scope, coreFile, ambient, *src, diags).run();
     return !diags.hasErrors();
@@ -945,12 +979,12 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         for (auto& mem : c.members) {
             const std::string key = c.name + "." + (mem.kind == MemberKind::Constructor ? "constructor" : mem.name);
             if (const StdBinding* t = find(key); t && !hasArm(mem.bindings))
-                mem.bindings.push_back({target, t->tmpl, mem.pos, t->preludeKeys});
+                mem.bindings.push_back({target, t->tmpl, mem.pos, t->preludeKeys, t->nullishTmpl});
         }
     }
     for (auto& e : unit.extensions)
         if (const StdBinding* t = find(e.receiver.name + "." + e.name); t && !hasArm(e.bindings))
-            e.bindings.push_back({target, t->tmpl, e.pos, t->preludeKeys});
+            e.bindings.push_back({target, t->tmpl, e.pos, t->preludeKeys, t->nullishTmpl});
     // Expect fns: synthesize the actual — the signature cloned, the body a single opaque extern (every
     // first-party actual was exactly that shape; richer bodies stay expressible as source arms).
     std::vector<FunctionDecl> synthesized;

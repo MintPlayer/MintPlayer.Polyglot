@@ -1,0 +1,57 @@
+// P40 review B1 / B4 / B6 — three cross-target divergences, each identical on all four targets now.
+// B4: a module-level `let` that calls a function declared BELOW it — Python
+//     ran the initializer before the `def` existed (NameError at import); defs are now emitted first.
+// B1: PHP `match` on string literals compared with loose `==` ("01" == "1" is true in PHP); strict now.
+// B6: an inclusive range ending at the loop type's maximum — C#'s `i <= int.MaxValue; i++` wrapped into an
+//     endless loop (and PHP's 64-bit counter overflowed into a float that still compared <=).
+
+let X: i32 = three() + 1
+let Y: i32 = twice(three())
+
+fn three(): i32 => 3
+fn twice(n: i32): i32 => n * 2
+
+fn kind(s: string): string => match s {
+  "1" => "one",
+  "01" => "zero-one",
+  _ => "other"
+}
+
+fn main() {
+  print(X)                                         // 4
+  print(Y)                                         // 6
+
+  print(kind("01"))                                // zero-one
+  print(kind("1"))                                 // one
+  print(kind("1.0"))                               // other
+  print(kind("1e0"))                               // other
+
+  var n = 0
+  for i in 2147483646..=2147483647 {
+    n += 1
+    print(i)
+  }
+  print(n)                                         // 2
+
+  let top = 2147483647
+  for i in (top - 2)..=top {
+    if i == 2147483646 {
+      continue
+    }
+    print(i)
+  }
+
+  for i in 9223372036854775806i64..=9223372036854775807i64 {
+    print(i)
+  }
+
+  for b in 254u8..=255u8 {
+    print(b)
+  }
+
+  var m = 0
+  for i in 1..=3 {
+    m += i
+  }
+  print(m)                                         // 6
+}

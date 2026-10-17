@@ -994,7 +994,8 @@ int main() {
               "P40 s3: a \\x$H2 codepoint template (cannot spell U+2028) is refused");
         check(refused("\"string\": {", "\"strung\": {", "'string' context"),
               "P40 s3: a manifest without a string literal context is refused");
-        check(refused("\"interp\",", "\"interpx\",", "'interpx'"),
+        check(refused("\"interp\",", "\"interpx\",", "'interpx'"), // (the first `"interp",` is a literal context use;
+                                                                     //  wrapAtom.recvPrimary spells it last, comma-free)
               "P40 s3: a rule naming an undeclared literal context is refused");
         check(refused("\"literals\": {", "\"escapes\": {}, \"literals\": {", "replaced by 'literals'"),
               "P40 s3: the retired `escapes` block is refused, naming its replacement");
@@ -1583,6 +1584,31 @@ int main() {
                 check(!sel.ok && has(firstErr(sel), "'deep' is declared in './b' but not imported"),
                       "P40 s8 (D16): a name a selective import does not list is refused");
             }
+            // P40 review A8 (D16): overload resolution only considers the overloads the calling module can see.
+            {
+                MapModuleResolver res{{"./ai", "fn check(n: i32): bool => n > 0\nfn aiOk(n: i32): bool => check(n)\n"}};
+                const std::string leak = "import { aiOk } from \"./ai\"\nfn check(s: string): bool => s == \"01\"\n"
+                                         "fn main() { let b = check(5) }\n";
+                for (const char* t : {"csharp", "typescript"}) {
+                    EmitResult r = compile(leak, findTarget(t), &res);
+                    check(!r.ok && has(firstErr(r), "argument 1 of 'check'"),
+                          std::string("A8: a never-imported overload does not win the call (refused, not bound) on ") + t);
+                }
+                // Imported, it competes: check(5) binds ai's i32 overload, check("01") the local one.
+                EmitResult ok = compile("import { aiOk, check } from \"./ai\"\nfn check(s: string): bool => s == \"01\"\n"
+                                        "fn main() { let a = check(5)\n  let b = check(\"01\") }\n",
+                                        findTarget("typescript"), &res);
+                check(ok.ok && has(ok.code, "check$i32(5)") && has(ok.code, "check$string(\"01\")"),
+                      "A8: an imported overload competes with the module's own");
+                // A true duplicate across modules names both declarations.
+                MapModuleResolver dup{{"./date", "fn check(s: string): bool => s == \"x\"\n"}};
+                EmitResult d = compile("import { check } from \"./date\"\nfn check(s: string): bool => s == \"01\"\nfn main() { }\n",
+                                       findTarget("csharp"), &dup);
+                bool both = false;
+                for (const auto& dg : d.diagnostics)
+                    if (has(dg.message, "duplicate function 'check'") && has(dg.message, "module")) both = true;
+                check(!d.ok && both, "A8: the cross-module duplicate-overload error names both modules");
+            }
             // A bare import of an extension-only module names its functions on TS and Python.
             {
                 MapModuleResolver res{{"./ext", "extension fn i32.twice(): i32 => this * 2\n"}};
@@ -1647,10 +1673,14 @@ int main() {
                   "P40 s9: C# OrderedDictionary, typed else-arm, unique temps, List snapshot");
             EmitResult csg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("csharp"));
             check(csg.ok && has(csg.code, "where K : notnull"), "P40 s9: C# spells the IMapKey bound `where K : notnull`");
-            EmitResult ts = compileStd(use, findTarget("typescript"));
+            EmitResult ts = compileStd(use + "fn n(m: Map<string, i32>): i32? => m.get(\"a\")\n", findTarget("typescript"));
             check(ts.ok && has(ts.code, "(m.get(\"a\") ?? null)") && has(ts.code, "[...m.keys()]") &&
                       has(ts.code, "new Map<string, number>()") && has(ts.code, "m.delete(\"a\")"),
                   "P40 s9: TS Map, `?? null`, spread snapshot");
+            // P40 review A1: as the left operand of `??` the normalization is dropped — tsc >= 5.6 rejects
+            // `(m.get(k) ?? null) ?? d` as TS2871 (always nullish).
+            check(has(ts.code, "(m.get(\"a\") ?? 0)") && !has(ts.code, "?? null) ??"),
+                  "A1: TS `m.get(k) ?? d` emits no inner `?? null` (the nullishTemplate)");
             EmitResult tsg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("typescript"));
             check(tsg.ok && !has(tsg.code, "IMapKey"), "P40 s9: TS erases the IMapKey bound");
             EmitResult py = compileStd(use, findTarget("python"));
@@ -1840,6 +1870,17 @@ int main() {
         check(compileStd("expect fn unused(): i32\nactual(csharp) fn unused(): i32 => 1\nfn main() { print(1) }\n",
                          findTarget("python")).ok,
               "P9-V: an unused portable fn missing this target's actual is not refused");
+        // P40 review B5: the same call from a module value's INITIALIZER (`let SEP = sep()`) is refused too —
+        // it used to build with exit 0 and fail at runtime (Python NameError / PHP undefined function).
+        const char* topLet = "expect fn sep(): string\nactual(csharp) fn sep(): string => \"/\"\n"
+                             "actual(typescript) fn sep(): string => \"/\"\nlet SEP = sep()\nfn main() { print(SEP) }\n";
+        for (const char* t : {"python", "php"}) {
+            EmitResult r = compileStd(topLet, findTarget(t));
+            bool namedTop = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, "no 'actual'") && has(d.message, t)) namedTop = true;
+            check(!r.ok && namedTop, std::string("B5: a portable call in a module initializer is refused on ") + t);
+        }
+        check(compileStd(topLet, findTarget("typescript")).ok, "B5: the module-initializer call compiles where the actual exists");
     }
     // P19 (1) — Python's two genuine target limits refuse out loud. Both previously emitted a silent
     // sentinel string (`__py_unsupported_block_lambda__` / `__py_unsupported_expr__`) into "valid" output —

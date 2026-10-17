@@ -188,9 +188,24 @@
       "u64": "BigInt.asUintN(64, $x)"
     },
     "wrapAtom": {
-      "recv": [
-        "unary",
-        "binaryScalar"
+      "recvPrimary": [
+        "var",
+        "this",
+        "call",
+        "methodCall",
+        "member",
+        "index",
+        "str",
+        "char",
+        "bool",
+        "null",
+        "extern",
+        "nullAssert",
+        "listLit",
+        "tuple",
+        "interp",
+        "new",
+        "makeCase"
       ],
       "unary": [
         "binary"
@@ -4662,7 +4677,7 @@
       "Map.type": "Map<$0, $1>",
       "Map.constructor": "new $T()",
       "Map.count": "$this.size",
-      "Map.get": "($this.get($0) ?? null)",
+      "Map.get": { "template": "($this.get($0) ?? null)", "nullishTemplate": "$this.get($0)" },
       "Map.set": "$this.set($0, $1)",
       "Map.has": "$this.has($0)",
       "Map.remove": "$this.delete($0)",

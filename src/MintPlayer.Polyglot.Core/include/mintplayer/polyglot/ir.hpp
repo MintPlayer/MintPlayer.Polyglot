@@ -247,6 +247,7 @@ struct Bound : Expr {
     std::vector<ExprPtr> args;
     std::string tmpl; // the active target's template ("" only when the pre-lowering refusal was bypassed)
     std::vector<std::string> preludeKeys; // P40 §0: the binding's manifest prelude keys (see ir::Extern)
+    std::string nullishTmpl; // P40 review A1: the template when this is the left operand of `??` ("" = tmpl)
     Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 
@@ -377,6 +378,7 @@ struct For : Stmt { // `for binding in <seq>`: either an integer range or an arb
     // alongside the binding (C# `for (int i = s, __end0 = e; …)`, TS `let`, PHP comma init) and `rangeType` —
     // the widened loop-variable type sema chose — spells the declaration where a target needs it.
     bool rangeEndSimple = true;
+    bool inclusiveMayWrap = false; // P40 review B6: `..=` whose end may be the loop type's max (stmt.inclusiveMayWrap)
     std::string rangeEndTemp;
     Type rangeType;
     ExprPtr iterable;             // iterable form: the sequence expression

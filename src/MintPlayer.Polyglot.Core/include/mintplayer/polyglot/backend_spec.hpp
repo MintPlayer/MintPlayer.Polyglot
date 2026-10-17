@@ -148,11 +148,17 @@ struct BackendSpec {
     std::string genericsBoundsSep;   // between two bounds (TS " & ", C# ", ")
     std::unordered_set<std::string> genericsErase;
 
-    // Atom-parenthesization policy: which child node kinds need parens as a member/call receiver ("recv")
-    // or a unary operand ("unary"). Vocabulary: "binary", "unary", "cast", "cond", and "binaryScalar" (a
-    // binary whose lhs is NOT a user type — TS rewrites user-type binaries to high-binding method calls,
-    // so only scalar binaries keep operator form and need receiver parens).
-    std::vector<std::string> wrapAtomRecv, wrapAtomUnary;
+    // Atom-parenthesization policy.
+    // RECEIVER (P40 review A6): the safe default is to parenthesize; `wrapAtomRecvPrimary` lists the IR node
+    // kinds this target emits as a PRIMARY expression (one a `.`/`[`/`->` can follow unparenthesized), in the
+    // lowercase kind vocabulary of `exprKindName` ("var", "call", "member", "new", …). Every kind NOT listed
+    // is wrapped — so a new node kind, or one a target spells as an operator form (C#'s `x switch {…}`, a
+    // ternary, `x with {…}`, PHP's `new`), can never silently re-associate as a receiver. Two refinements are
+    // derived, not declared: a Binary that routes to an `opMethod` table method is a call (primary), and a
+    // Bound's template is primary iff it is lexically atomic (see `boundTemplateIsAtomic`).
+    // UNARY operand: `wrapAtomUnary` is the (opt-in) kind set that needs parens ("binary", "unary", "cast",
+    // "cond", "binaryScalar" — a binary that keeps operator form).
+    std::vector<std::string> wrapAtomRecvPrimary, wrapAtomUnary;
 
     // Named lookup tables — the generic `{"fn":"table","args":[name, key]}` catalog entry (a missing key
     // answers ""). First occupant: TS's operator-overload method names (`"+"` -> `"plus"` — no TS operator

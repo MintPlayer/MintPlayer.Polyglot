@@ -35,11 +35,23 @@
       "i64": "(((($x) & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)"
     },
     "wrapAtom": {
-      "recv": [
-        "binary",
-        "unary",
-        "cond",
-        "cast"
+      "recvPrimary": [
+        "var",
+        "this",
+        "call",
+        "methodCall",
+        "member",
+        "index",
+        "str",
+        "char",
+        "bool",
+        "null",
+        "extern",
+        "nullAssert",
+        "listLit",
+        "tuple",
+        "new",
+        "makeCase"
       ],
       "unary": [
         "binary"
@@ -1418,6 +1430,14 @@
           }
         },
         {
+          "mapMembers": "module.functions",
+          "rule": "FunctionDecl"
+        },
+        {
+          "mapMembers": "module.extensions",
+          "rule": "FunctionDecl"
+        },
+        {
           "mapMembers": "module.interfaces",
           "rule": "InterfaceDecl"
         },
@@ -1472,14 +1492,6 @@
               ]
             }
           }
-        },
-        {
-          "mapMembers": "module.functions",
-          "rule": "FunctionDecl"
-        },
-        {
-          "mapMembers": "module.extensions",
-          "rule": "FunctionDecl"
         },
         {
           "case": {

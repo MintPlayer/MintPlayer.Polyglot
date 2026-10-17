@@ -58,10 +58,26 @@
       "u16": "(ushort)($x)"
     },
     "wrapAtom": {
-      "recv": [
-        "binary",
-        "unary",
-        "cast"
+      "recvPrimary": [
+        "var",
+        "this",
+        "call",
+        "methodCall",
+        "member",
+        "index",
+        "str",
+        "char",
+        "bool",
+        "null",
+        "extern",
+        "nullAssert",
+        "int",
+        "float",
+        "listLit",
+        "tuple",
+        "new",
+        "makeCase",
+        "interp"
       ],
       "unary": [
         "binary"
@@ -75,6 +91,10 @@
       "pgAscii": "    // ASCII-only case mapping: every other character is kept as is (System.Text.Ascii stops at the first one).\n    internal static string UpperAscii(string s)\n    {\n        char[]? buf = null;\n        for (int i = 0; i < s.Length; i++)\n            if (s[i] >= 'a' && s[i] <= 'z') { buf ??= s.ToCharArray(); buf[i] = (char)(s[i] - 32); }\n        return buf == null ? s : new string(buf);\n    }\n    internal static string LowerAscii(string s)\n    {\n        char[]? buf = null;\n        for (int i = 0; i < s.Length; i++)\n            if (s[i] >= 'A' && s[i] <= 'Z') { buf ??= s.ToCharArray(); buf[i] = (char)(s[i] + 32); }\n        return buf == null ? s : new string(buf);\n    }\n"
     },
     "tables": {
+      "rangeWideType": {
+        "i8": "long", "i16": "long", "i32": "long", "u8": "long", "u16": "long", "u32": "long",
+        "i64": "global::System.Int128", "u64": "global::System.UInt128"
+      },
       "floatSuffix": {
         "f32": "f"
       },
@@ -2531,6 +2551,47 @@
             {
               "case": {
                 "when": [
+                  [
+                    { "eq": [ "stmt.inclusiveMayWrap", "true" ] },
+                    {
+                      "block": {
+                        "head": {
+                          "tmpl": [
+                            "for (",
+                            { "fn": "table", "args": [ "rangeWideType", { "get": "stmt.rangeTypeName" } ] },
+                            " ",
+                            { "get": "stmt.driver" },
+                            " = ",
+                            { "emit": "stmt.rangeStart" },
+                            { "call": "rangeEndDecl" },
+                            "; ",
+                            { "get": "stmt.driver" },
+                            " <= ",
+                            { "call": "rangeEndRead" },
+                            "; ",
+                            { "get": "stmt.driver" },
+                            "++)"
+                          ]
+                        },
+                        "body": [
+                          {
+                            "line": {
+                              "tmpl": [
+                                "var ",
+                                { "fn": "ident", "args": [ { "get": "stmt.binding" } ] },
+                                " = (",
+                                { "type": "stmt.rangeType" },
+                                ")",
+                                { "get": "stmt.driver" },
+                                ";"
+                              ]
+                            }
+                          },
+                          { "stmts": "stmt.body" }
+                        ]
+                      }
+                    }
+                  ],
                   [
                     { "eq": [ "stmt.captured", "true" ] },
                     {

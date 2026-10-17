@@ -609,8 +609,14 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
                 }
                 b.preludeKeys.push_back(r.asString());
             }
+            const json::Value& nt = v["nullishTemplate"]; // P40 review A1 (see StdBinding::nullishTmpl)
+            if (nt.kind != json::Value::Kind::Null && nt.kind != json::Value::Kind::String) {
+                error = "plugin '" + name + "': std binding '" + kv.first + "': 'nullishTemplate' must be a string";
+                return nullptr;
+            }
+            b.nullishTmpl = nt.asString();
             for (const auto& m : v.members)
-                if (m.first != "template" && m.first != "requires") {
+                if (m.first != "template" && m.first != "requires" && m.first != "nullishTemplate") {
                     error = "plugin '" + name + "': std binding '" + kv.first + "': unknown key '" + m.first + "'";
                     return nullptr;
                 }

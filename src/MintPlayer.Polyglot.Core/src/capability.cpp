@@ -75,7 +75,13 @@ public:
             typeRef(f.returnType, f.pos);
             for (const auto& s : f.body) stmt(s.get());
         }
-        for (const auto& v : u.values) { prelude_ = ir::isPreludeOrigin(v.originModule); typeRef(v.type, v.pos); }
+        // P40 review B5: a module value's INITIALIZER is code too — a portable call there (`let SEP = sep()`)
+        // must meet the same missing-`actual` / missing-binding refusals as one inside a function body.
+        for (const auto& v : u.values) {
+            prelude_ = ir::isPreludeOrigin(v.originModule);
+            typeRef(v.type, v.pos);
+            expr(v.init.get());
+        }
         for (const auto& d : u.records) { prelude_ = ir::isPreludeOrigin(d.originModule); params(d.fields); typeBody(d.members); }
         for (const auto& d : u.interfaces) { prelude_ = ir::isPreludeOrigin(d.originModule); typeBody(d.members); }
         for (const auto& d : u.classes) {

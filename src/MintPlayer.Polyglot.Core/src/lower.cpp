@@ -284,7 +284,7 @@ public:
             if (entry.params) appendDefaults(*entry.params, args->size(), b->args);
         }
         for (const auto& arm : arms)
-            if (arm.target == target_) { b->tmpl = arm.code; b->preludeKeys = arm.preludeKeys; }
+            if (arm.target == target_) { b->tmpl = arm.code; b->preludeKeys = arm.preludeKeys; b->nullishTmpl = arm.nullishCode; }
         return b;
     }
 
@@ -908,6 +908,12 @@ private:
                 if (e.text == "??" && e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name == "Option")
                     return coalesceOption(e);
                 auto b = std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
+                // P40 review A1: a bound left operand of `??` takes its binding's nullish variant — `??` folds
+                // every absent form, so the main template's absent-value normalization is moot (and TS2871).
+                if (e.text == "??" && b->lhs && b->lhs->kind == ir::ExprKind::Bound) {
+                    auto& lb = static_cast<ir::Bound&>(*b->lhs);
+                    if (!lb.nullishTmpl.empty()) lb.tmpl = lb.nullishTmpl;
+                }
                 // Comparing against a null literal is a null TEST, never structural equality — don't
                 // route it to the record equals() (TS/PHP `.equals(null)` would read fields off null).
                 const bool rhsIsNullLit = e.rhs->kind == ExprKind::NullLit;
@@ -1197,6 +1203,7 @@ private:
                     node->inclusive = s.value->flag;
                     node->rangeType = s.value->type; // sema's widened bound type = the loop variable's
                     node->rangeEndSimple = s.value->rangeEndSimple; // D7: else hoisted, evaluated once
+                    node->inclusiveMayWrap = node->inclusive && !s.value->rangeEndBelowMax; // P40 review B6
                     if (!node->rangeEndSimple) node->rangeEndTemp = "__end" + std::to_string(tmpCounter_++);
                 } else if (s.value) {
                     node->iterable = expr(*s.value);

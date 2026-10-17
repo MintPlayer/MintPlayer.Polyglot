@@ -138,7 +138,7 @@ Every key `loadBackendSpec` reads (all optional except `name`; defaults shown wh
 | `literals` | object of contexts | **Required** `string` context, plus `interp` / `char` as the target needs (P40). Each context has `quote` (its delimiter), `map` (source sequence → replacement, longest match wins; must escape `\` and the quote; PHP adds `$` → `\$`), `codepoint` (how a character the Core must escape is spelled: `\u$H4`, `\u{$H}`; `$H4`/`$H8` pad, `$H` is minimal) and optional `astral` (a `$H8`/`$H` template, or `"surrogates"`, the default). The Core alone decides *which* characters escape — C0, DEL, C1 (incl. U+0085), U+2028/2029, U+FEFF — and printable non-ASCII passes through raw. NUL is never `\0` (the octal trap). Read by `{"fn":"quoted"}` / `{"fn":"literal"}`. |
 | `tables` | map of maps | Named lookup tables for `{"fn":"table"}` / `{"fn":"subst"}`. Two are read by the shared statement walk: `localDecl` (`mutable`/`const` templates, `$x` = the name — PHP `"$$x"`, TS `let $x`/`const $x`) and `yield` (`value`/`empty` — PHP `"yield $x;"` / `"return;"`). TS also carries `opMethod` and `bigNarrow`. |
 | `generics` | object | `{"style", "boundsIntro", "boundsSep", "erase"}`. `style`: `"whereClauses"` (C# `<T> where T : A`) \| `"inlineBounds"` (TS `<T extends A>`) \| `""` (none). `erase` lists compile-time-only bounds (`INumber`, `IMapKey`). A marker bound that is NOT erased renders through its std type binding instead: C# binds `"IMapKey.type": "notnull"`, so `<K: IMapKey>` emits `where K : notnull` (what `OrderedDictionary<K, V>` demands). |
-| `wrapAtom` | object | `{"recv": [...], "unary": [...]}` — which child kinds get parenthesized as a member/call receiver or unary operand. Vocabulary: `"binary"`, `"unary"`, `"cast"`, `"cond"`, `"binaryScalar"`. |
+| `wrapAtom` | object | `{"recvPrimary": [...], "unary": [...]}`. `recvPrimary` lists the IR kinds this target emits as a **primary** expression (`"var"`, `"this"`, `"call"`, `"methodCall"`, `"member"`, `"index"`, `"str"`, `"char"`, `"bool"`, `"null"`, `"int"`, `"float"`, `"listLit"`, `"tuple"`, `"interp"`, `"extern"`, `"new"`, `"makeCase"`, `"nullAssert"`, …); a receiver of **any other** kind is parenthesized, so an unlisted or new kind is safe by default. Derived, not listed: a binary routed to an `opMethod` method is a call, and a bound template is primary iff it is lexically atomic. `unary` lists the kinds a unary operand wraps: `"binary"`, `"unary"`, `"cast"`, `"cond"`, `"binaryScalar"`. |
 | `identifiers` | object | See §3.4. |
 
 ### 3.2 `capabilities` — tri-state, and the coverage contract
@@ -431,7 +431,10 @@ That's the whole catalog — 18 names. Any other `{"fn": …}` fails the load.
   (`stmt.isRange`, `stmt.binding`, `stmt.iterable`, `stmt.body`, …). A range evaluates its bounds once
   (P40 D7): when `stmt.rangeEndSimple` is `false`, declare `stmt.rangeEndTemp` alongside the loop variable
   (initialized from `stmt.rangeEnd`) and compare against it; `{"type": "stmt.rangeType"}` spells the
-  widened loop-variable type for targets whose multi-declarator needs it (C#). Every other statement
+  widened loop-variable type for targets whose multi-declarator needs it (C#). `stmt.inclusiveMayWrap`
+  (P40 review B6) is `true` for a `..=` range whose end is not a literal provably below the loop type's
+  maximum: a target whose counter is fixed-width must not step it past the end (C# drives the loop with a
+  wider counter from `tables.rangeWideType`; PHP stops once a 64-bit counter overflows to a float). Every other statement
   (let/assign/if/while/return/throw/use/break/continue/yield) is the shared engine walking your
   spec data: `blockStyle`, `stmtEnd`, `throwKeyword`, `rethrow`, and the `localDecl`/`yield` tables.
 - **Declaration rules** (decl flavor): `Program` (paths on `module.…` — `module.enums`,

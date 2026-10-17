@@ -145,8 +145,11 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
 
     const json::Value& wa = doc["wrapAtom"];
     if (wa.kind == json::Value::Kind::Object) {
-        for (const json::Value& k : wa["recv"].items())
-            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomRecv.push_back(k.asString());
+        if (wa["recv"].kind != json::Value::Kind::Null) // P40 review A6: the opt-in wrap list became a primary list
+            r.errors.push_back("wrapAtom.recv was replaced by wrapAtom.recvPrimary (the kinds emitted as primary "
+                               "expressions; every other receiver is parenthesized)");
+        for (const json::Value& k : wa["recvPrimary"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomRecvPrimary.push_back(k.asString());
         for (const json::Value& k : wa["unary"].items())
             if (k.kind == json::Value::Kind::String) r.spec.wrapAtomUnary.push_back(k.asString());
     }
@@ -219,13 +222,13 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     }
 
     std::string wa;
-    if (!spec.wrapAtomRecv.empty() || !spec.wrapAtomUnary.empty()) {
+    if (!spec.wrapAtomRecvPrimary.empty() || !spec.wrapAtomUnary.empty()) {
         auto arr = [](const std::vector<std::string>& v) {
             std::string o = "[";
             for (std::size_t i = 0; i < v.size(); ++i) { if (i) o += ","; o += json::quote(v[i]); }
             return o + "]";
         };
-        wa = ",\"wrapAtom\":{\"recv\":" + arr(spec.wrapAtomRecv) + ",\"unary\":" + arr(spec.wrapAtomUnary) + "}";
+        wa = ",\"wrapAtom\":{\"recvPrimary\":" + arr(spec.wrapAtomRecvPrimary) +",\"unary\":" + arr(spec.wrapAtomUnary) + "}";
     }
 
     std::string tbls;

@@ -104,11 +104,21 @@
       "i32": "(((($x) & 0xffffffff) ^ 0x80000000) - 0x80000000)"
     },
     "wrapAtom": {
-      "recv": [
-        "binary",
-        "unary",
-        "cond",
-        "cast"
+      "recvPrimary": [
+        "var",
+        "this",
+        "call",
+        "methodCall",
+        "member",
+        "index",
+        "str",
+        "char",
+        "bool",
+        "null",
+        "extern",
+        "nullAssert",
+        "tuple",
+        "makeCase"
       ],
       "unary": [
         "binary"
@@ -2217,7 +2227,7 @@
             },
             {
               "tmpl": [
-                "$_m == ",
+                "$_m === ",
                 {
                   "emit": "item.pattern.literal"
                 }
@@ -2233,7 +2243,7 @@
             },
             {
               "tmpl": [
-                "$_m == ",
+                "$_m === ",
                 {
                   "get": "item.pattern.enumType"
                 },
@@ -2253,7 +2263,7 @@
             },
             {
               "tmpl": [
-                "$_m[\"tag\"] == ",
+                "$_m[\"tag\"] === ",
                 {
                   "fn": "quoted",
                   "args": [
@@ -2542,7 +2552,19 @@
                       "emit": "stmt.rangeStart"
                     },
                     { "call": "rangeEndDecl" },
-                    "; $",
+                    "; ",
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            { "and": [ { "eq": [ "stmt.inclusiveMayWrap", "true" ] }, { "eq": [ "stmt.rangeIs64", "true" ] } ] },
+                            { "tmpl": [ "\\is_int($", { "fn": "ident", "args": [ { "get": "stmt.binding" } ] }, ") && " ] }
+                          ]
+                        ],
+                        "else": ""
+                      }
+                    },
+                    "$",
                     {
                       "fn": "ident",
                       "args": [
