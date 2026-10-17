@@ -661,10 +661,6 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
 
     // §3.E: refuse any used feature this target can't emit, before lowering/emitting (never miscompile).
     checkCapabilities(unit, *target.backend(), diags);
-    // P19 §7: user identifiers colliding with the target's generated names/globals (or pgconfig-forbidden
-    // names) refuse here — the silent-collision miscompiles, made loud.
-    checkReservedNames(unit, *target.backend(), lib.forbiddenIdentifiers, diags);
-    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
 
     // §4.5 module linking: distinct imported-user-module origins present in the linked unit (non-entry,
     // non-prelude). Empty => a single-file program: take the exact historical path (byte-identical output).
@@ -679,6 +675,60 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
     for (const auto& d : unit.functions)  note(d.originModule);
     for (const auto& d : unit.extensions) note(d.originModule);
 
+    // P40 B1: resolve every emitted file's target options against the plugin's declared `options` (unknown /
+    // pattern-mismatch refuse), then hold closure-scoped options to one value across the closure — files that
+    // reference each other must agree on, e.g., the namespace their declarations live in, or they cannot link.
+    std::map<std::string, std::map<std::string, std::string>> fileOptions; // origin ("" = entry) -> resolved
+    {
+        std::set<std::string> reported;
+        auto resolveFor = [&](const std::string& origin) {
+            std::map<std::string, std::string> given;
+            if (lib.targetOptions) given = lib.targetOptions(target.name(), origin);
+            std::string err;
+            if (!resolveTargetOptions(*target.backend(), given, fileOptions[origin], err) && reported.insert(err).second)
+                diags.error({}, err);
+        };
+        resolveFor("");
+        for (const auto& o : userOrigins) resolveFor(o);
+        if (!diags.hasErrors()) {
+            const std::string entryName = entryPath.empty() ? std::string("<entry>") : entryPath;
+            for (const auto& d : target.backend()->options()) {
+                if (!d.closureScope) continue;
+                const std::string& want = fileOptions[""][d.name];
+                for (const auto& o : userOrigins) {
+                    const std::string& got = fileOptions[o][d.name];
+                    if (got == want) continue;
+                    diags.error({}, "target option '" + target.name() + "." + d.name +
+                                        "' must agree across one import closure (scope \"closure\"): '" + entryName +
+                                        "' resolves '" + want + "' but its import '" + o + "' resolves '" + got + "'");
+                    break;
+                }
+            }
+        }
+        if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
+        result.targetOptions = fileOptions[""];
+    }
+    // A `reserve` option's resolved value is a name the generated code claims (the C# wrapper class).
+    std::vector<std::pair<std::string, std::string>> optionReserved;
+    for (const auto& d : target.backend()->options()) {
+        if (!d.reserve) continue;
+        std::set<std::string> vals;
+        for (const auto& [origin, opts] : fileOptions) {
+            auto it = opts.find(d.name);
+            if (it != opts.end() && !it->second.empty() && vals.insert(it->second).second)
+                optionReserved.push_back({d.name, it->second});
+        }
+    }
+    auto optionsOf = [&](const std::string& origin) -> const std::map<std::string, std::string>& {
+        auto it = fileOptions.find(origin);
+        return it != fileOptions.end() ? it->second : fileOptions[""];
+    };
+
+    // P19 §7: user identifiers colliding with the target's generated names/globals (or pgconfig-forbidden
+    // names) refuse here — the silent-collision miscompiles, made loud.
+    checkReservedNames(unit, *target.backend(), lib.forbiddenIdentifiers, diags, &optionReserved);
+    if (diags.hasErrors()) { result.diagnostics = diags.items(); return result; }
+
     // §4.5 / issue #14: for a multi-file PROJECT build, a target may hoist the shared prelude
     // (Option/Some/None + the program wrapper) into one reserved `__polyglot_prelude` file instead of
     // inlining it, so N independent link roots don't each emit it (C#: CS0101/CS8863 in one assembly).
@@ -689,7 +739,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
     if (userOrigins.empty() && !splitPrelude && !sharedOnly) { // single-file
         ir::Module module = lower(unit, target.name());
         pruneUnreachablePrelude(module); // P40 §0: only the prelude this program reaches
-        module.access = lib.access; // C# accessibility knob (empty = target default -> byte-identical)
+        module.options = optionsOf(""); // P40 B1: rules read `option.<name>` (defaults = byte-identical)
         module.originInfo = lib.originInfo;      // P38: off => byte-identical
         module.sourceFiles = result.sources.files;
         if (lib.originInfo) {
@@ -759,7 +809,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         if (holdsPrelude) pruneUnreachablePrelude(m, holdsForOthers ? forcedReach : nullptr);
         m.linked = true;
-        m.access = lib.access;
+        m.options = optionsOf(importOrigin); // the prelude file (importOrigin = its basename) takes the entry's
         m.originInfo = lib.originInfo;      // P38: off => byte-identical
         m.sourceFiles = result.sources.files;
         m.imports = buildImports(importGraph, importOrigin, baseByCanon,

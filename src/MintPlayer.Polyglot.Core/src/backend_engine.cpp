@@ -263,10 +263,23 @@ private:
 
 namespace {
 TraceSink* g_traceSink = nullptr;
+thread_local const OptionMap* g_activeOptions = nullptr; // P40 B1: the emitting module's resolved options
+
+// `option.<name>` paths answer from the active option map ("" when unset or not declared — the loader
+// refuses a rule naming an undeclared option, so "" here only means "no emit in progress").
+bool isOptionPath(const std::string& p) { return p.rfind(kOptionPathPrefix, 0) == 0; }
+std::string optionValue(const std::string& p) {
+    if (!g_activeOptions) return {};
+    auto it = g_activeOptions->find(p.substr(std::char_traits<char>::length(kOptionPathPrefix)));
+    return it == g_activeOptions->end() ? std::string() : it->second;
+}
 } // namespace
 
 void setTraceSink(TraceSink* sink) { g_traceSink = sink; }
 TraceSink* traceSink() { return g_traceSink; }
+
+ActiveOptionsScope::ActiveOptionsScope(const OptionMap* opts) : prev_(g_activeOptions) { g_activeOptions = opts; }
+ActiveOptionsScope::~ActiveOptionsScope() { g_activeOptions = prev_; }
 
 void indexTest(Test& t, int srcId, std::vector<std::size_t>& offsets) {
     t.srcId = srcId;
@@ -288,8 +301,8 @@ void indexRule(Rule& r, int srcId, std::vector<std::size_t>& offsets) {
 bool evalTest(const Test& t, const EvalContext& ctx) {
     if (g_traceSink) g_traceSink->hit(t.srcId, t.offset);
     switch (t.kind) {
-        case Test::Kind::Eq:  return ctx.get(t.path) == t.value;
-        case Test::Kind::Has: return ctx.has(t.path);
+        case Test::Kind::Eq:  return (isOptionPath(t.path) ? optionValue(t.path) : ctx.get(t.path)) == t.value;
+        case Test::Kind::Has: return isOptionPath(t.path) ? !optionValue(t.path).empty() : ctx.has(t.path);
         case Test::Kind::Not: return t.subs.empty() ? true : !evalTest(t.subs[0], ctx);
         case Test::Kind::And:
             for (const Test& s : t.subs) if (!evalTest(s, ctx)) return false;
@@ -305,7 +318,7 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
     if (g_traceSink) g_traceSink->hit(r.srcId, r.offset);
     switch (r.kind) {
         case Rule::Kind::Lit:  return r.s;
-        case Rule::Kind::Get:  return ctx.get(r.s);
+        case Rule::Kind::Get:  return isOptionPath(r.s) ? optionValue(r.s) : ctx.get(r.s);
         case Rule::Kind::Emit: return ctx.emitChild(r.s, r.side);
         case Rule::Kind::Tmpl: {
             std::string out;

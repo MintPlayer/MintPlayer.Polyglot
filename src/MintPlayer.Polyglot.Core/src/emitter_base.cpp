@@ -613,7 +613,6 @@ std::string EnumDeclCtx::get(const std::string& path) const {
 
 std::string EnumDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access") return hooks_.accessPrefix();
     return "";
 }
 
@@ -644,7 +643,6 @@ std::string UnionDeclCtx::get(const std::string& path) const {
 std::string UnionDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "generics") return hooks_.generics(u_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access")   return hooks_.accessPrefix();
     return "";
 }
 
@@ -735,7 +733,6 @@ std::string InterfaceDeclCtx::builtin(const std::string& name, const std::vector
         const std::size_t i = static_cast<std::size_t>(std::stoul(args[0]));
         return i < it_.methods.size() ? hooks_.generics(it_.methods[i].generics) : "";
     }
-    if (name == "access") return hooks_.accessPrefix();
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
     if (name == "where") return hooks_.where(it_.generics);
     return "";
@@ -913,7 +910,6 @@ std::string RecordDeclCtx::builtin(const std::string& name, const std::vector<st
     if (name == "generics") return hooks_.generics(r_.generics);
     if (name == "where")    return hooks_.where(r_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access")   return hooks_.accessPrefix();
     return "";
 }
 
@@ -1013,7 +1009,6 @@ std::string ClassDeclCtx::builtin(const std::string& name, const std::vector<std
     if (name == "generics") return hooks_.generics(c_.generics);
     if (name == "where")    return hooks_.where(c_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access")   return hooks_.accessPrefix();
     return "";
 }
 
@@ -1160,6 +1155,16 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
     if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.userDecls.count") { // P40 B1: declarations of THIS file's own (non-prelude) code
+        std::size_t n = 0;
+        auto count = [&n](const auto& vec) {
+            for (const auto& d : vec) if (!ir::isPreludeOrigin(d.originModule)) ++n;
+        };
+        count(m_.enums); count(m_.unions); count(m_.interfaces); count(m_.records);
+        count(m_.classes); count(m_.extensions); count(m_.globals);
+        for (std::size_t i : fns_) if (!ir::isPreludeOrigin(m_.functions[i].originModule)) ++n;
+        return std::to_string(n);
+    }
     if (path == "module.attrImportsBlock") { // P37 D Tier 1: verbatim import/using lines, newline-joined
         std::string out;
         for (const auto& l : m_.attrImports) {
@@ -1196,7 +1201,6 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
 std::string ModuleDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
     if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
-    if (name == "access") return hooks_.accessPrefix();
     return "";
 }
 
@@ -1608,7 +1612,9 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     suppressDirectives_ = false;
     origin_ = (m.originInfo && originMapping_ && originMapping_->recordsOrigins()) ? originMapping_ : nullptr;
     sourceFiles_ = &m.sourceFiles;
-    hooks_.access = m.access; // per-emit accessibility for the `{"fn":"access"}` decl builtin (§ access modifier)
+    // P40 B1: the module's resolved target options answer `option.<name>` in every rule context for the
+    // duration of this emit (the engine reads them; restored on exit so emits never leak into each other).
+    engine::ActiveOptionsScope optionsScope(&m.options);
     for (const auto& et : m.externTypes) externMap_[et.name] = &et;
     // The two module facts record/class rules read: which named types are records (TS's structural-equals
     // dispatch) and which bases are interfaces (TS's extends/implements split). Computed for every target;

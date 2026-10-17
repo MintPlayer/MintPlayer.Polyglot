@@ -381,13 +381,17 @@ int main() {
     check(importSpecifiers("import { a } from \"nn\"\nimport { b } from \"std.io\"\nfn f() {}\n") == std::vector<std::string>{"nn"},
           "issue#11 1.B: importSpecifiers returns non-std imports only");
 
-    // Access modifier — `--access public` (LibConfig::access) prefixes emitted C# types + wrappers; the
-    // default (empty) keeps C#'s modifier-less `internal` (byte-identical).
+    // Access modifier — targetOptions.csharp.access (P40 B1/D9; was LibConfig::access) prefixes emitted C#
+    // types + wrappers; the default (empty) keeps C#'s modifier-less `internal` (byte-identical).
     {
-        LibConfig pub; pub.access = "public";
+        LibConfig pub;
+        pub.targetOptions = [](const std::string& t, const std::string&) {
+            return t == "csharp" ? std::map<std::string, std::string>{{"access", "public"}}
+                                 : std::map<std::string, std::string>{};
+        };
         EmitResult r = compile("record Point(x: i32, y: i32)\nfn origin(): Point => Point(0, 0)\n", findTarget("csharp"), nullptr, pub);
         check(r.ok && has(r.code, "public record Point") && has(r.code, "public static class PolyglotProgram"),
-              "issue#11 access: --access public emits public types + wrapper");
+              "issue#11 access: csharp.access=public emits public types + wrapper");
         EmitResult def = compile("record Point(x: i32, y: i32)\n", findTarget("csharp"));
         check(def.ok && !has(def.code, "public record Point"), "issue#11 access: default is internal (no public modifier)");
     }
@@ -621,6 +625,217 @@ int main() {
         ext.functions.push_back(std::move(uf));
         ext.functions.push_back(fnDecl("C", ir::kPreludeOrigin, "", ""));
         check(preludeReach(ext).count("C"), "P40 s1: the extern-text identifier scan keeps a referenced prelude decl");
+    }
+
+    // ---- P40 slice 2: target options (manifest `options`, pgconfig/CLI targetOptions), namespaces + classes --
+    {
+        using OptMap = std::map<std::string, std::string>;
+        // A LibConfig answering `opts` for `target` (every file), nothing for any other target.
+        auto optsFor = [](const std::string& target, OptMap opts) {
+            LibConfig l;
+            l.targetOptions = [target, opts](const std::string& t, const std::string&) {
+                return t == target ? opts : OptMap{};
+            };
+            return l;
+        };
+        const char* prog = "import { print } from \"std.io\"\nrecord Point(x: i32, y: i32)\n"
+                           "fn find(): Option<i32> => Some(1)\nfn main() { print(find()) }\n";
+
+        // Resolution: defaults fill in, an unknown option and a pattern mismatch refuse (naming the fix).
+        {
+            OptMap res;
+            std::string err;
+            check(resolveTargetOptions(*findBackend("csharp"), {}, res, err) && res["class"] == "PolyglotProgram" &&
+                      res["namespace"].empty() && res["access"].empty(),
+                  "P40 s2: unset options resolve to the manifest defaults");
+            check(!resolveTargetOptions(*findBackend("csharp"), {{"nmspace", "X"}}, res, err) &&
+                      has(err, "unknown target option 'csharp.nmspace'") && has(err, "namespace, class, access"),
+                  "P40 s2: an unknown option is refused, listing the declared ones");
+            check(!resolveTargetOptions(*findBackend("csharp"), {{"access", "private"}}, res, err) &&
+                      has(err, "invalid value 'private'"),
+                  "P40 s2: a value failing the option's pattern is refused");
+            check(!resolveTargetOptions(*findBackend("csharp"), {{"namespace", "My..Lib"}}, res, err),
+                  "P40 s2: a malformed namespace is refused");
+            check(!resolveTargetOptions(*findBackend("typescript"), {{"namespace", "X"}}, res, err) &&
+                      has(err, "declares no options"),
+                  "P40 s2: a target declaring no options refuses any");
+            EmitResult bad = compile(prog, findTarget("csharp"), nullptr, optsFor("csharp", {{"access", "nope"}}));
+            check(!bad.ok && !bad.diagnostics.empty() && has(bad.diagnostics[0].message, "csharp.access"),
+                  "P40 s2: compile() refuses an invalid option with a diagnostic");
+        }
+
+        // C#: file-scoped namespace before the usings, the configured wrapper class, access, internal helpers.
+        {
+            EmitResult r = compile(prog, findTarget("csharp"), nullptr,
+                                   optsFor("csharp", {{"namespace", "My.Lib"}, {"class", "Api"}, {"access", "public"}}));
+            check(r.ok && r.code.find("#nullable enable\nnamespace My.Lib;\n") == 0,
+                  "P40 s2: C# namespace is a file-scoped declaration right after #nullable");
+            check(r.ok && has(r.code, "public static class Api") && has(r.code, "Api.print(Api.find())") &&
+                      !has(r.code, "PolyglotProgram"),
+                  "P40 s2: C# `class` renames the wrapper and every qualified call");
+            check(r.ok && has(r.code, "public abstract record Option<T>") && has(r.code, "public record Point"),
+                  "P40 s2: prelude types in the namespace follow `access`");
+            check(r.ok && has(r.code, "internal static void print<T>") && has(r.code, "public static Option<int> find()"),
+                  "P40 s2: prelude helper functions stay internal under access=public");
+            EmitResult g = compile("let LIMIT: i32 = 3\nfn f(): i32 => LIMIT\n", findTarget("csharp"), nullptr,
+                                   optsFor("csharp", {{"namespace", "N"}, {"class", "Api"}}));
+            check(g.ok && g.code.find("namespace N;\nusing static Api;") != std::string::npos,
+                  "P40 s2: `using static <class>` follows the namespace (resolves inside it)");
+            EmitResult def = compile(prog, findTarget("csharp"));
+            check(def.ok && !has(def.code, "namespace ") && has(def.code, "static class PolyglotProgram"),
+                  "P40 s2: no options = no namespace and the PolyglotProgram wrapper (unchanged output)");
+        }
+
+        // The wrapper class is emitted only when it has members.
+        {
+            EmitResult types = compile("record Point(x: i32, y: i32)\nenum Color { Red, Green }\n", findTarget("csharp"));
+            check(types.ok && !has(types.code, "PolyglotProgram") && has(types.code, "record Point"),
+                  "P40 s2: a C# file with no functions/globals emits no empty wrapper class");
+            check(types.ok && types.code.back() == '\n' && types.code.find("\n\n\n") == std::string::npos,
+                  "P40 s2: dropping the wrapper leaves no dangling blank lines");
+        }
+
+        // `reserve`: the configured wrapper name is claimed like an identifiers.reserved entry.
+        {
+            EmitResult clash = compile("record Api(x: i32)\n", findTarget("csharp"), nullptr,
+                                       optsFor("csharp", {{"class", "Api"}}));
+            check(!clash.ok && !clash.diagnostics.empty() && has(clash.diagnostics[0].message, "'Api' is reserved") &&
+                      has(clash.diagnostics[0].message, "option 'class'"),
+                  "P40 s2: a user identifier spelled like the configured class is refused");
+            EmitResult dflt = compile("record PolyglotProgram(x: i32)\n", findTarget("csharp"));
+            check(!dflt.ok, "P40 s2: the DEFAULT class name stays reserved (via the option default)");
+            EmitResult freed = compile("record PolyglotProgram(x: i32)\n", findTarget("csharp"), nullptr,
+                                       optsFor("csharp", {{"class", "Api"}}));
+            check(freed.ok, "P40 s2: renaming the wrapper frees the old name");
+        }
+
+        // Closure consistency: a closure-scoped option must agree across files that import each other.
+        {
+            MapModuleResolver res({{"lib", "fn twice(x: i32): i32 => x * 2\n"}});
+            LibConfig split;
+            split.targetOptions = [](const std::string& t, const std::string& origin) {
+                if (t != "csharp") return OptMap{};
+                return origin.empty() ? OptMap{{"namespace", "A"}} : OptMap{{"namespace", "B"}};
+            };
+            EmitResult r = compile("import { twice } from \"lib\"\nfn f(): i32 => twice(2)\n", findTarget("csharp"),
+                                   &res, split, "entry.pg");
+            check(!r.ok && !r.diagnostics.empty() && has(r.diagnostics[0].message, "must agree across one import closure") &&
+                      has(r.diagnostics[0].message, "csharp.namespace"),
+                  "P40 s2: files of one closure resolving different namespaces are refused");
+            EmitResult same = compile("import { twice } from \"lib\"\nfn f(): i32 => twice(2)\n", findTarget("csharp"),
+                                      &res, optsFor("csharp", {{"namespace", "A"}}), "entry.pg");
+            check(same.ok && same.modules.size() == 1 && has(same.code, "namespace A;") &&
+                      has(same.modules[0].code, "namespace A;"),
+                  "P40 s2: an agreeing closure puts every emitted file in the namespace");
+        }
+
+        // PHP: `namespace X;` right after <?php, before the prelude slot (the guarded helpers follow it).
+        {
+            EmitResult p = compile("import { readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n",
+                                   findTarget("php"), nullptr, optsFor("php", {{"namespace", "My\\Lib"}}));
+            const std::size_t ns = p.code.find("<?php\nnamespace My\\Lib;\n");
+            check(p.ok && ns == 0 && p.code.find("function_exists(__NAMESPACE__") > ns,
+                  "P40 s2: PHP namespace follows <?php and precedes the guarded prelude");
+        }
+
+        // TS: a file whose declarations are all (unexported) prelude stays an ES module.
+        {
+            EmitResult empty = compile("import { readText } from \"std.io\"\n", findTarget("typescript"));
+            check(empty.ok && has(empty.code, "export {};"), "P40 s2: a TS file with no exports emits `export {};`");
+            EmitResult some = compile("fn f(): i32 => 1\n", findTarget("typescript"));
+            check(some.ok && !has(some.code, "export {};"), "P40 s2: a TS file with exports emits no `export {};`");
+        }
+
+        // Loader: the options block is validated, and a rule may only read declared options.
+        {
+            auto manifest = [](const char* target) {
+                std::string m;
+                cli::readFile(cli::executablePath().parent_path() / "plugins" / target / "polyglot-plugin.json", m);
+                return m;
+            };
+            auto swap = [](std::string s, const std::string& from, const std::string& to) {
+                const std::size_t at = s.find(from);
+                if (at != std::string::npos) s.replace(at, from.size(), to);
+                return s;
+            };
+            std::string err;
+            std::string php = manifest("php"); // renamed everywhere (top-level + spec.name must agree)
+            for (std::size_t at = 0; (at = php.find("\"name\": \"php\"", at)) != std::string::npos;)
+                php.replace(at, 13, "\"name\": \"p40s2php\"");
+            check(!validateBackend(swap(php, "\"namespace\": {\n      \"default\": \"\",",
+                                        "\"namespace\": {\n      \"default\": \"\", \"colour\": \"x\","), err) &&
+                      has(err, "unknown key 'colour'"),
+                  "P40 s2: an unknown key in an option declaration is refused");
+            check(!validateBackend(swap(php, "\"default\": \"\",", "\"default\": \"a-b\","), err) &&
+                      has(err, "does not match its own pattern"),
+                  "P40 s2: a default failing its own pattern is refused");
+            check(!validateBackend(swap(php, "\"scope\": \"closure\"", "\"scope\": \"file\""), err) &&
+                      has(err, "'scope' must be"),
+                  "P40 s2: an unknown scope is refused");
+            check(!validateBackend(swap(php, "\"get\": \"option.namespace\"", "\"get\": \"option.nmspace\""), err) &&
+                      has(err, "option.nmspace"),
+                  "P40 s2: a rule reading an undeclared option is refused");
+            check(!validateBackend(swap(php, "\"pattern\": \"^(", "\"pattern\": \"^(("), err) &&
+                      has(err, "not a valid regular expression"),
+                  "P40 s2: an uncompilable pattern is refused");
+        }
+
+        // CLI layering: project < include rule < --target-option; flags parse; validation names the layer.
+        {
+            namespace fs = std::filesystem;
+            const fs::path proj = (fs::temp_directory_path() / "p40-s2-opts" / "proj").lexically_normal();
+            cli::PgConfig pc;
+            pc.found = true;
+            pc.dir = proj;
+            pc.targetOptions["csharp"] = {{"namespace", "Proj"}, {"access", "public"}};
+            cli::IncludeRule rule{"libs/**/*.pg", {}, "gen/%(Filename)"};
+            rule.targetOptions["csharp"] = {{"namespace", "Proj.Libs"}};
+            pc.include.push_back(rule);
+            cli::TargetOptionsByTarget flags;
+            std::string err;
+            check(cli::parseTargetOptionFlag("csharp.class=Api", flags, err) && flags["csharp"]["class"] == "Api",
+                  "P40 s2: --target-option <target>.<name>=<value> parses");
+            check(cli::parseTargetOptionFlag("csharp.namespace=A.B=C", flags, err) && flags["csharp"]["namespace"] == "A.B=C",
+                  "P40 s2: --target-option keeps everything after the first '=' as the value");
+            check(!cli::parseTargetOptionFlag("csharp=x", flags, err) && !cli::parseTargetOptionFlag("namespace", flags, err),
+                  "P40 s2: a malformed --target-option is refused");
+            const auto top = cli::fileTargetOptions(pc, {}, proj / "main.pg", "csharp");
+            const auto lib = cli::fileTargetOptions(pc, {}, proj / "libs/x/strings.pg", "csharp");
+            check(top.at("namespace") == "Proj" && lib.at("namespace") == "Proj.Libs" && lib.at("access") == "public",
+                  "P40 s2: an include rule's targetOptions overlay the project level for the files it matches");
+            cli::TargetOptionsByTarget f2;
+            f2["csharp"]["namespace"] = "Flag";
+            check(cli::fileTargetOptions(pc, f2, proj / "libs/x/strings.pg", "csharp").at("namespace") == "Flag",
+                  "P40 s2: --target-option wins over every pgconfig layer");
+            check(cli::fileTargetOptions(pc, {}, proj / "main.pg", "php").empty(),
+                  "P40 s2: another target's options never leak (a lookup by target name)");
+            std::vector<std::string> errs;
+            cli::PgConfig badPc = pc;
+            badPc.targetOptions["csharpp"] = {{"namespace", "X"}};
+            badPc.include[0].targetOptions["csharp"] = {{"klass", "X"}};
+            cli::validateTargetOptions(badPc, {}, errs);
+            check(errs.size() == 2 && has(errs[0] + errs[1], "unknown target 'csharpp'") &&
+                      has(errs[0] + errs[1], "include rule 'libs/**/*.pg'"),
+                  "P40 s2: config validation names the unknown target and the offending include rule");
+
+            // pgconfig parsing: targetOptions shape errors and the removed top-level `access` are refused.
+            const fs::path base = fs::temp_directory_path() / "polyglot-p40-s2-cfg";
+            fs::create_directories(base);
+            cli::writeFile(base / "pgconfig.json",
+                           "{ \"access\": \"public\", \"targetOptions\": { \"csharp\": { \"namespace\": 3 } },"
+                           " \"include\": [ { \"pattern\": \"*.pg\", \"output\": \"%(Filename)\","
+                           " \"targetOptions\": { \"php\": { \"namespace\": \"R\" } } } ] }");
+            const cli::PgConfig parsed = cli::loadPgConfig(base);
+            bool accessRefused = false, shapeRefused = false;
+            for (const auto& e : parsed.errors) {
+                accessRefused = accessRefused || has(e, "top-level \"access\" was removed");
+                shapeRefused = shapeRefused || has(e, "targetOptions.csharp.namespace must be a string");
+            }
+            check(accessRefused && shapeRefused && parsed.include.size() == 1 &&
+                      parsed.include[0].targetOptions.at("php").at("namespace") == "R",
+                  "P40 s2: pgconfig parses rule targetOptions and refuses a bad shape and the old top-level access");
+            fs::remove_all(base);
+        }
     }
 
     // P4 — name / type resolution across the declaration surface.

@@ -271,6 +271,32 @@ that is a member of the file-local `__PgRt` class.
   diagnostic — this is what makes generated-name collisions loud instead of miscompiles.
 - `globals`: runtime globals user code must not shadow (Python's `str`); same refusal mechanism.
 
+### 3.5 `options` — consumer-set target options (P40)
+
+A target may accept options the consumer sets per target — pgconfig `targetOptions.<target>` (project
+level or on an `include` rule), `--target-option <target>.<name>=<value>`, or an MSBuild property. The
+manifest declares each one; rules read the resolved value as **`option.<name>`** (through `get` and the
+`eq`/`has` tests, in every rule context):
+
+```json
+"options": {
+  "namespace": { "default": "", "pattern": "^([A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*)?$", "scope": "closure" },
+  "class":     { "default": "PolyglotProgram", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "scope": "closure", "reserve": true }
+}
+```
+
+- `default` — the value when nothing sets it; it must match its own `pattern`.
+- `pattern` — an ECMAScript regex the **whole** value must match; a consumer value that does not is refused.
+- `scope: "closure"` — every file of one import closure must resolve the same value (a namespace that
+  differs between files referencing each other cannot link); a mismatch is refused.
+- `reserve: true` — the resolved value names generated code, so a user identifier spelled the same is
+  refused exactly like an `identifiers.reserved` entry.
+
+The loader refuses an unknown key, a bad `scope`, an uncompilable pattern, and any rule reading an
+`option.<name>` the block does not declare. A consumer setting an option the plugin does not declare is
+refused too. The Core never interprets an option — what `namespace` means is entirely your rules (the C#
+plugin emits `namespace X;` plus `using static <class>;`, PHP emits `namespace X;` after `<?php`).
+
 ## 4. The rule language
 
 A rule is either a bare JSON string (a literal) or an object whose single distinguishing key names
@@ -329,8 +355,7 @@ Also in expression context: **`identFn`** (as `ident`, for a function name, hono
 
 Declaration context adds: **`generics`** (spell the generic parameter list per `spec.generics`) ·
 **`where`** (the trailing bounds clauses, for `"whereClauses"` style) · **`mangle`** (as
-`mangleName`, on declared names) · **`access`** (the requested accessibility modifier) ·
-**`preludeSlot`** (P40 — see below).
+`mangleName`, on declared names) · **`preludeSlot`** (P40 — see below).
 
 **`preludeSlot`** is a marker, not a value: it says *where* the manifest `preludes` go. Preludes are
 spliced in after the walk (only then is the set of required keys known). The loader requires
@@ -347,7 +372,7 @@ emitted, not even the wrapper.
 Type context adds: **`substExtern`** (substitute rendered type args into an extern class's
 `…$0…` spelling — how `Type` rules handle `List`/`Error`/`Iterable`); `ident` also works here.
 
-That's the whole catalog — 18 names. Any other `{"fn": …}` fails the load.
+That's the whole catalog — 17 names. Any other `{"fn": …}` fails the load.
 
 ### 4.4 Which construct is which flavor
 

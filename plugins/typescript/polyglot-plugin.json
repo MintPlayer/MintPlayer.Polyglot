@@ -3170,6 +3170,11 @@
               ]
             ]
           }
+        },
+        {
+          "case": {
+            "when": [[{ "eq": ["module.userDecls.count", "0"] }, { "line": "export {};" }]]
+          }
         }
       ]
     },

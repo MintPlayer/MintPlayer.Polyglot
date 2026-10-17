@@ -14,8 +14,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -33,6 +35,7 @@
 #undef Yield // winbase.h macro; ir::StmtKind::Yield must survive
 #endif
 
+#include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
@@ -66,7 +69,51 @@ struct IncludeRule {
     std::vector<std::string> targets;
     std::string output;  // template for the emitted file's path STEM (config-relative); the
                          // target's manifest fileExtension() is always appended by the CLI
+    // P40 B1: per-rule target options (target -> option -> value), layered over the project-level
+    // `targetOptions` for the files this rule matches (first-match-wins, like the routing itself).
+    std::map<std::string, std::map<std::string, std::string>> targetOptions;
 };
+
+// P40 B1: target options keyed target -> option -> value. Which map applies is a lookup by target NAME
+// (data, like forbiddenIdentifiers); what an option MEANS is the target plugin's business.
+using TargetOptionsByTarget = std::map<std::string, std::map<std::string, std::string>>;
+
+// Parse a `targetOptions` object (`{ "<target>": { "<option>": "<value>" } }`). A malformed shape is an
+// ERROR, never a silent no-op — a mistyped block would leave every default in force with no hint why.
+inline void parseTargetOptions(const json::Value& v, TargetOptionsByTarget& out, std::vector<std::string>& errors,
+                               const std::string& where) {
+    if (v.kind == json::Value::Kind::Null) return;
+    if (v.kind != json::Value::Kind::Object) {
+        errors.push_back(where + ": \"targetOptions\" must be an object keyed by target name");
+        return;
+    }
+    for (const auto& t : v.members) {
+        if (t.second.kind != json::Value::Kind::Object) {
+            errors.push_back(where + ": targetOptions." + t.first + " must be an object of option values");
+            continue;
+        }
+        auto& opts = out[t.first];
+        for (const auto& o : t.second.members) {
+            if (o.second.kind != json::Value::Kind::String) {
+                errors.push_back(where + ": targetOptions." + t.first + "." + o.first + " must be a string");
+                continue;
+            }
+            opts[o.first] = o.second.asString();
+        }
+    }
+}
+
+// P40 B1: `--target-option <target>.<name>=<value>` into `out` (a later flag for the same option wins).
+inline bool parseTargetOptionFlag(const std::string& arg, TargetOptionsByTarget& out, std::string& err) {
+    const std::size_t dot = arg.find('.');
+    const std::size_t eq = arg.find('=');
+    if (dot == std::string::npos || eq == std::string::npos || dot == 0 || eq < dot + 2) {
+        err = "--target-option expects <target>.<name>=<value> (got '" + arg + "')";
+        return false;
+    }
+    out[arg.substr(0, dot)][arg.substr(dot + 1, eq - dot - 1)] = arg.substr(eq + 1);
+    return true;
+}
 
 // The minimal project manifest (PRD §4.8): `{ "root": <dir>, "lib": ["io","math"] }`. `root` is resolved
 // against the pgconfig.json that declares it; `lib` is the ambient prelude. Found by walking up from a start
@@ -76,10 +123,10 @@ struct PgConfig {
     bool found = false;
     std::string root; // absolute, resolved against the config's directory
     std::string lib;  // comma-joined lib names
-    std::string access;
+    TargetOptionsByTarget targetOptions; // P40 B1: project-level `targetOptions` (include rules override per file)
     // P38/issue #69: emit source-origin info (C# `#line` directives, TS v3 source map) so generated code
     // attributes back to the `.pg`. `--origin-info` overrides this; false = emit exactly as before.
-    bool originInfo = false; // emitted C# accessibility ("public"/"internal"); empty = target default
+    bool originInfo = false;
     std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
     std::vector<std::pair<std::string, std::string>> dependencies; // package -> spec ("file:<dir>", "1.2.3", "^1.2.3", …)
     // project-policy identifier bans (P19 slices 13-15): (target-or-"*", name) fed to checkReservedNames.
@@ -101,7 +148,12 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
             std::string r = v["root"].asString();
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
-            pc.access = v["access"].asString();
+            parseTargetOptions(v["targetOptions"], pc.targetOptions, pc.errors, "pgconfig.json");
+            // P40 B1 (D9): the top-level C# `access` key moved under targetOptions.csharp — a clean
+            // cutover, so the old spelling is refused with the new one named rather than silently ignored.
+            if (v["access"].kind != json::Value::Kind::Null)
+                pc.errors.push_back("pgconfig.json: top-level \"access\" was removed; set it per target instead: "
+                                    "\"targetOptions\": { \"csharp\": { \"access\": \"" + v["access"].asString() + "\" } }");
             pc.originInfo = v["originInfo"].asBool(false); // P38/issue #69
             for (const auto& e : v["targets"].items())
                 if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
@@ -126,6 +178,8 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
                 if (t.kind == json::Value::Kind::String) rule.targets.push_back(t.asString());
                 else for (const auto& te : t.items())
                     if (te.kind == json::Value::Kind::String) rule.targets.push_back(te.asString());
+                parseTargetOptions(e["targetOptions"], rule.targetOptions, pc.errors,
+                                   "pgconfig.json include rule '" + rule.pattern + "'");
                 if (rule.pattern.empty() || rule.output.empty())
                     pc.errors.push_back("pgconfig.json: an include rule needs both \"pattern\" and \"output\"");
                 else
@@ -142,14 +196,15 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
 // the target's manifest fileExtension() — or nullopt when no rule matches (the caller falls back to
 // --out / the input's directory). A template error sets `err` (distinct from a clean no-match; the
 // caller must check it) — a typo'd placeholder is a refusal, never a silent fallback.
-inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& pc,
-                                                               const std::filesystem::path& sourceAbs,
-                                                               const std::string& targetName,
-                                                               std::string& err) {
-    if (!pc.found || pc.include.empty() || sourceAbs.empty()) return std::nullopt;
+// The first `include` rule (in rule order) that applies to `sourceAbs` for `targetName` — the one rule that
+// both routes the file and contributes its per-rule targetOptions. nullptr = no rule applies.
+inline const IncludeRule* matchIncludeRule(const PgConfig& pc, const std::filesystem::path& sourceAbs,
+                                           const std::string& targetName, std::filesystem::path* relOut = nullptr,
+                                           GlobResult* globOut = nullptr) {
+    if (!pc.found || pc.include.empty() || sourceAbs.empty()) return nullptr;
     std::error_code ec;
     const std::filesystem::path rel = std::filesystem::relative(sourceAbs, pc.dir, ec);
-    if (ec || rel.empty() || *rel.begin() == "..") return std::nullopt; // outside the config's tree
+    if (ec || rel.empty() || *rel.begin() == "..") return nullptr; // outside the config's tree
     const std::string relStr = rel.generic_string();
     for (const auto& rule : pc.include) {
         if (!rule.targets.empty() &&
@@ -157,6 +212,74 @@ inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& p
             continue;
         const GlobResult g = globMatch(rule.pattern, relStr);
         if (!g.matched) continue;
+        if (relOut) *relOut = rel;
+        if (globOut) *globOut = g;
+        return &rule;
+    }
+    return nullptr;
+}
+
+// P40 B1: the target options one file sees for one target: the project-level `targetOptions.<target>`,
+// overlaid by its first matching include rule's, overlaid by `--target-option` (the most explicit wins).
+inline std::map<std::string, std::string> fileTargetOptions(const PgConfig& pc, const TargetOptionsByTarget& flags,
+                                                            const std::filesystem::path& sourceAbs,
+                                                            const std::string& targetName) {
+    std::map<std::string, std::string> out;
+    auto overlay = [&](const TargetOptionsByTarget& layer) {
+        auto it = layer.find(targetName);
+        if (it == layer.end()) return;
+        for (const auto& kv : it->second) out[kv.first] = kv.second;
+    };
+    if (pc.found) {
+        overlay(pc.targetOptions);
+        if (const IncludeRule* r = matchIncludeRule(pc, sourceAbs, targetName)) overlay(r->targetOptions);
+    }
+    overlay(flags);
+    return out;
+}
+
+// P40 B1: the LibConfig::targetOptions callback for one compiled closure: origin "" is `entryAbs`, any other
+// origin is a module's canonical path. Captures by value — the callback may outlive the caller's locals.
+inline std::function<std::map<std::string, std::string>(const std::string&, const std::string&)>
+targetOptionsFn(const PgConfig& pc, const TargetOptionsByTarget& flags, const std::filesystem::path& entryAbs) {
+    return [pc, flags, entryAbs](const std::string& target, const std::string& origin) {
+        return fileTargetOptions(pc, flags, origin.empty() ? entryAbs : std::filesystem::path(origin), target);
+    };
+}
+
+// P40 B1: config-time validation of every targetOptions layer (project, include rules, flags): each key must
+// name a loaded target and each option must be one that target declares, with a value matching its pattern.
+// Done up front so a typo refuses even for a target this run does not build, and before anything is written.
+inline void validateTargetOptions(const PgConfig& pc, const TargetOptionsByTarget& flags,
+                                  std::vector<std::string>& errors) {
+    auto check = [&](const TargetOptionsByTarget& layer, const std::string& where) {
+        for (const auto& [target, opts] : layer) {
+            const Backend* b = findBackend(target);
+            if (!b) {
+                errors.push_back(where + ": targetOptions names unknown target '" + target + "' (loaded targets: " +
+                                 [] { std::string s; for (const auto& n : backendNames()) s += (s.empty() ? "" : ", ") + n; return s; }() + ")");
+                continue;
+            }
+            std::map<std::string, std::string> resolved;
+            std::string err;
+            if (!resolveTargetOptions(*b, opts, resolved, err)) errors.push_back(where + ": " + err);
+        }
+    };
+    if (pc.found) {
+        check(pc.targetOptions, "pgconfig.json");
+        for (const auto& r : pc.include) check(r.targetOptions, "pgconfig.json include rule '" + r.pattern + "'");
+    }
+    check(flags, "--target-option");
+}
+
+inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& pc,
+                                                               const std::filesystem::path& sourceAbs,
+                                                               const std::string& targetName,
+                                                               std::string& err) {
+    std::filesystem::path rel;
+    GlobResult g;
+    if (const IncludeRule* r = matchIncludeRule(pc, sourceAbs, targetName, &rel, &g)) {
+        const IncludeRule& rule = *r;
         TemplateValues vals;
         vals.filename = sourceAbs.stem().string();
         vals.directory = rel.parent_path().generic_string(); // config-relative, no trailing '/'

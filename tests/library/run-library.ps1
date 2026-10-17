@@ -27,9 +27,16 @@
 # Usage:  pwsh tests/library/run-library.ps1   (build the solution first; see CLAUDE.md)
 #         pwsh tests/library/run-library.ps1 -Staged <library-staging-dir>
 
+#
+# P40 B1 (issue #73): a multi-library case — two PHP libraries defining the SAME function names, each in its
+# own namespace (set per pgconfig `include` rule via `targetOptions.php.namespace`), loaded by one consumer.
+# Without namespaces PHP fails with "Cannot redeclare". -MultiLibraryOnly runs just that case. (The C#
+# two-assembly case lives in tests/msbuild/run-nuget.ps1, fixture 9, because it needs the MSBuild package.)
+
 param(
     [string]$Cli = "$PSScriptRoot\..\..\x64\Debug\MintPlayer.Polyglot.Cli.exe",
-    [string]$Staged = ""
+    [string]$Staged = "",
+    [switch]$MultiLibraryOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,7 +50,7 @@ if ($Staged -and -not (Test-Path $Staged)) {
     Write-Host "staging dir not found at $Staged — run run-conformance.ps1 -StagingOut <dir> first."
     exit 2
 }
-if (-not (Get-Command tsc -ErrorAction SilentlyContinue)) {
+if (-not $MultiLibraryOnly -and -not (Get-Command tsc -ErrorAction SilentlyContinue)) {
     Write-Host "tsc (TypeScript compiler) not found on PATH — install with 'npm i -g typescript'."
     exit 2
 }
@@ -122,6 +129,59 @@ function Stage-Program($name, $stem, $cliArgs) {
     Assert-Consumable $name $stem $dir
 }
 
+# P40 B1: two PHP libraries with the same function names, namespaced per include rule, in one process.
+function Test-PhpMultiLibrary {
+    if (-not (Get-Command php -ErrorAction SilentlyContinue)) {
+        Write-Host "[SKIP] PHP multi-library case: php not on PATH"
+        return
+    }
+    $proj = Join-Path $work "_php_multilib"
+    New-Item -ItemType Directory -Force $proj | Out-Null
+    # Same names in both: a function, a record, and (through `print`) the guarded io prelude.
+    foreach ($lib in "alpha", "beta") {
+        @"
+record Tag(name: string)
+fn greet(): string => "$lib"
+fn tag(): Tag => Tag("$lib")
+fn shout() { print(greet()) }
+"@ | Set-Content (Join-Path $proj "$lib.pg")
+    }
+    @'
+{
+  "targets": ["php"],
+  "lib": ["io"],
+  "include": [
+    { "pattern": "alpha.pg", "output": "out/%(Filename)", "targetOptions": { "php": { "namespace": "Libs\\Alpha" } } },
+    { "pattern": "beta.pg",  "output": "out/%(Filename)", "targetOptions": { "php": { "namespace": "Libs\\Beta" } } }
+  ]
+}
+'@ | Set-Content (Join-Path $proj "pgconfig.json")
+    Push-Location $proj
+    try { & $Cli build *> (Join-Path $proj "build.log") } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { Fail "PHP multi-library: polyglot build failed (see $proj\build.log)"; return }
+    @'
+<?php
+require __DIR__ . '/out/alpha.php';
+require __DIR__ . '/out/beta.php';
+echo \Libs\Alpha\greet() . "+" . \Libs\Beta\greet() . "+" . \Libs\Alpha\tag()->name . "+" . \Libs\Beta\tag()->name . "\n";
+\Libs\Alpha\shout();
+\Libs\Beta\shout();
+'@ | Set-Content (Join-Path $proj "consumer.php")
+    $out = (& php (Join-Path $proj "consumer.php") 2>&1 | Out-String).Trim() -replace "`r", ""
+    if ($out -eq "alpha+beta+alpha+beta`nalpha`nbeta") {
+        Write-Host "[PASS] two PHP libraries with the same names load side by side in distinct namespaces"
+    } else {
+        Fail "PHP multi-library: unexpected output:`n$out"
+    }
+}
+
+if ($MultiLibraryOnly) {
+    Test-PhpMultiLibrary
+    if ($fail -eq 0) { Write-Host "Multi-library case green."; exit 0 }
+    Write-Host "$fail multi-library check(s) failed."
+    exit 1
+}
+
 if ($Staged) {
     # -Staged: consume the pristine .ts run-conformance already emitted (one subdir per program). The entry
     # stem is the program name for a single-file program, "entry" for a multi-file one.
@@ -155,6 +215,10 @@ if ($LASTEXITCODE -ne 0) {
 } else {
     Write-Host "[PASS] all emitted modules type-check clean as importable ES modules"
 }
+
+Write-Host ""
+Write-Host "==> Multi-library consumption (P40 B1)"
+Test-PhpMultiLibrary
 
 Write-Host ""
 if ($fail -eq 0) {

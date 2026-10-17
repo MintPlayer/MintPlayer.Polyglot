@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -643,7 +644,9 @@ struct Module {
     std::vector<ExternType> externTypes; // native-backed `extern class` type/ctor spellings (see ExternType)
     std::vector<ModuleImport> imports;   // §4.5: this file's cross-module imports (empty for single-file builds)
     bool linked = false;                 // §4.5: this is one file of a multi-module build (drives C# `partial`)
-    std::string access;                  // requested accessibility for emitted C# types ("public"/"internal"); "" = target default
+    // P40 B1: this file's RESOLVED target options (every option the plugin manifest declares, defaults filled
+    // in, validated against its `pattern`). Rules read them as `option.<name>`; the Core never interprets them.
+    std::map<std::string, std::string> options;
     // P38/issue #69: emit origin information (LibConfig::originInfo). Off = every target emits
     // byte-for-byte as before. On = a target that declares `originMapping` records where each emitted line
     // came from; targets that declare nothing are unaffected. Deliberately named for the CONCEPT, not for

@@ -239,6 +239,21 @@ import "./physics"                        // relative user module
 TypeScript-style imports, not `using` directives. One `.pg` file is one module; top-level
 declarations are module-public.
 
+There is no `namespace` statement in `.pg` source: where the emitted C# lives is build configuration,
+not language. Top-level functions and globals land in a static wrapper class (`PolyglotProgram` by
+default), and the generated types are `internal` unless you ask otherwise. For a library, set the C#
+target options in `pgconfig.json` (or the matching MSBuild properties `PolyglotNamespace` /
+`PolyglotClass` / `PolyglotAccess`):
+
+```json
+{ "targets": ["csharp"],
+  "targetOptions": { "csharp": { "namespace": "MyCompany.Strings", "class": "StringsApi", "access": "public" } } }
+```
+
+The emitted file then starts `namespace MyCompany.Strings;`, callers write `StringsApi.trim(...)`, and two
+libraries built from `.pg` can be referenced by one app without CS0433 clashes. Runtime helpers such as
+`print` stay `internal` even when `access` is `public`.
+
 ## False friends — where your C# intuition misleads
 
 - **`let` is not C# `var`.** `let` is immutable (closer to a readonly local); mutable locals are

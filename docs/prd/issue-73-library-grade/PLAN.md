@@ -414,3 +414,49 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     TS −37.2%, Python −20.3%, PHP −24.6%; Python output is pure deletions (slot placement byte-identical).
     A manual 3-root C# project wrote one `__polyglot_prelude.cs` holding exactly the union (Option + readText),
     and a no-reach project removed the stale file. Full gate (run-nuget, library gate, POSIX) is the end gate's.
+- **2026-10-17 (night, later)** — **Slice 2 built** (B1: `targetOptions`, namespaces, wrapper class). As built:
+  - **Manifest `options` block** (`TargetOptionDecl`: `default`, `pattern` (ECMAScript, whole-value), `scope:
+    "closure"`, `reserve`), exposed as `Backend::options()`. The loader refuses an unknown key, a bad scope, an
+    uncompilable pattern, a default failing its own pattern, and any rule reading an undeclared `option.<name>`.
+  - **`option.<name>`** is answered by the interpreter itself (`evalRule` Get, `evalTest` eq/has) from a
+    thread-local map the emitter installs per emit (`engine::ActiveOptionsScope`), so it works in every rule
+    context without touching any context class. `ir::Module::access` and the `{"fn":"access"}` builtin are
+    deleted; the module carries its resolved `options` instead (catalog now 17 names).
+  - **Core resolution:** `LibConfig::targetOptions` is a `(target, origin) -> map` callback (the
+    `moduleOutputDir` convention; selecting by target name is the caller's data lookup). `compile()` resolves
+    every emitted file's options through the public `resolveTargetOptions` (unknown / pattern refusals as
+    diagnostics), refuses a closure-scoped option that differs between the entry and an import, passes the
+    `reserve` values to `checkReservedNames` (new optional arg), and reports the entry's resolved map as
+    `EmitResult::targetOptions`.
+  - **CLI:** pgconfig `targetOptions` at project level and per `include` rule (shape errors refused; the old
+    top-level `access` is refused naming its replacement), `--target-option <target>.<name>=<value>`
+    (repeatable). Layering: project < first matching include rule (the routing rule, `matchIncludeRule`) <
+    flag. `validateTargetOptions` checks every layer against the loaded plugins before anything is written
+    (build and each watch cycle). `--access` is gone. The shared C# prelude is grouped per routed path:
+    roots that reach the prelude of one file must agree on closure-scoped options (refused otherwise), and
+    phase 2 compiles each group with its agreed options. `check` and the **LSP preview + reserved-name
+    squiggles** honour the same options.
+  - **MSBuild:** `PolyglotNamespace` / `PolyglotClass` / `PolyglotAccess` become `--target-option csharp.*`
+    in the Exec args (only the arg token changed). These properties are not part of the stamp/Inputs — the
+    depfile/Inputs work is slice 10's (D17).
+  - **C#:** options `namespace` (file-scoped `namespace X;` right after `#nullable`, before the usings, so
+    `using static <class>;` resolves inside it), `class` (default `PolyglotProgram`, `reserve` — removed from
+    the static `identifiers.reserved` list), `access`. Free-call qualification reads `option.class`. The
+    wrapper (and the blank line before it) is emitted only when it has globals or functions. Prelude
+    functions are `internal static` (`decl.isPrelude`); prelude types follow `access`.
+  - **PHP:** `namespace` option, `namespace X;` right after `<?php`, before the slot; slice 1's
+    `function_exists(__NAMESPACE__.'\\name')` guards work unchanged.
+  - **TS:** `export {};` when a file has no user declarations (new `module.userDecls.count`), manifest data.
+  - **Deviation from PLAN slice 2:** the MSBuild depfile/`Inputs` bullet is left to slice 10 (owned by the
+    parallel output-writing work, D17). Note the JSON reader silently drops an unknown escape (`"Libs\Alpha"`
+    reads `LibsAlpha`) — pre-existing, not addressed here.
+  - **Verified:** unit exe green (new P40 s2 block, 35 checks: resolution/refusals, C# namespace/class/access/
+    internal helpers, wrapper omission, `reserve`, closure refusal, PHP placement, TS `export {}`, loader
+    refusals, CLI layering/flag parsing/config validation/pgconfig parsing); `-Tier fast` green. NuGet gate
+    green including the new **fixture 9** (two classlibs, one via pgconfig `targetOptions.csharp`, one via the
+    MSBuild properties, referenced by one app: builds without CS0433, prints `AB42`); fixture 6 now uses
+    `Option` so it still exercises the shared prelude after slice 1's pruning. Library gate's new
+    `-MultiLibraryOnly` PHP case green (two files, same function/record names, namespaces per include rule,
+    one process). Ad hoc: all 102 PHP-runnable conformance programs give identical output with
+    `php.namespace=Conf\Ns`; all 114 single-file programs compile into one C# library each in its own
+    namespace with `access=public` (0 errors).

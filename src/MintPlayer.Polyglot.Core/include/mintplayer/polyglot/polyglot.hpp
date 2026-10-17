@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -129,6 +130,10 @@ struct EmitResult {
     // P40 §0: populated when `modules` carries a shared prelude (ModuleFile::sharedPrelude) — what this root
     // reaches, for the host's union across roots.
     PreludeReach preludeReach;
+    // P40 B1: the ENTRY file's resolved target options (every declared option, defaults filled in). A host
+    // sharing one prelude file between roots compares these: roots that disagree on a closure-scoped option
+    // cannot share it (the prelude's types live in that namespace).
+    std::map<std::string, std::string> targetOptions;
 };
 
 // A module's source, as answered by a ModuleResolver. `canonicalPath` is the stable identity used for
@@ -165,11 +170,15 @@ struct LibConfig {
     // pgconfig `forbiddenIdentifiers` (P19 design note 7): (target-or-"*", name) pairs refused by checkReservedNames
     // when compiling for a matching target. Project policy, carried with the lib config for plumbing economy.
     std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;
-    // Requested accessibility of emitted top-level C# declarations ("public" / "internal"). Empty = the target
-    // default (C# modifier-less top-level types are `internal`), which keeps output byte-identical. Lets a
-    // consumer expose the generated types across assemblies without a hand-written public facade. C#-only
-    // (TS already `export`s everything; Python/PHP have no equivalent), carried with the lib config.
-    std::string access;
+    // P40 B1: the target options a consumer set (pgconfig `targetOptions`, an `include` rule's
+    // `targetOptions`, `--target-option`), as (target, file origin) -> option -> value. `origin` is "" for the
+    // entry file, else a module's canonical source path (the moduleOutputDir convention). The Core calls it
+    // once per emitted file with the ACTIVE target's name — a data lookup, like forbiddenIdentifiers; it
+    // never compares the name — then validates the answer against the plugin's declared `options` (unknown
+    // option / pattern mismatch refuse) and fills in the defaults. Unset = nothing set: every option takes
+    // its manifest default (byte-identical output).
+    std::function<std::map<std::string, std::string>(const std::string& target, const std::string& origin)>
+        targetOptions;
     // §4.5 / issue #14: this compile is one unit of a multi-file C# PROJECT build (the CLI sets it when given
     // 2+ inputs). When set, the C# backend hoists the shared runtime prelude (Option/Some/None + the
     // PolyglotProgram wrapper) into a single reserved `__polyglot_prelude` file instead of inlining it, so N

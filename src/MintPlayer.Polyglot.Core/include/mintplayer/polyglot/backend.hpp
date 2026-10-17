@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -77,6 +78,23 @@ inline constexpr int kPluginSchemaVersion = 2;
 struct StdBinding {
     std::string tmpl;
     std::vector<std::string> preludeKeys;
+};
+
+// One target option a plugin declares in its manifest `options` block (P40 B1). A consumer sets it under
+// pgconfig `targetOptions.<target>.<name>` (project level or per `include` rule), `--target-option
+// <target>.<name>=<value>`, or an MSBuild property; rules read the resolved value as `option.<name>`.
+//   defaultValue  — used when nothing sets it (must itself match `pattern`)
+//   pattern       — an ECMAScript regex the WHOLE value must match; empty = any string
+//   closureScope  — `"scope": "closure"`: every file of one import closure must resolve the same value
+//                   (a namespace/wrapper name that differs between files that reference each other cannot link)
+//   reserve       — the resolved value is claimed by the generated code, so a user identifier spelled the
+//                   same is refused like an `identifiers.reserved` entry (the C# wrapper class name)
+struct TargetOptionDecl {
+    std::string name;
+    std::string defaultValue;
+    std::string pattern;
+    bool closureScope = false;
+    bool reserve = false;
 };
 
 class Backend {
@@ -181,7 +199,20 @@ public:
         static const std::unordered_map<std::string, StdBinding> kEmpty;
         return kEmpty;
     }
+    // P40 B1: the options this target accepts (manifest `options`), in declaration order. Empty = none — any
+    // option set for this target is then refused as unknown.
+    virtual const std::vector<TargetOptionDecl>& options() const {
+        static const std::vector<TargetOptionDecl> kEmpty;
+        return kEmpty;
+    }
 };
+
+// P40 B1: resolve the options a consumer set for `backend` against its declared `options`: every declared
+// option gets a value (the given one, else its default). Returns false with `error` naming the problem on an
+// option the target does not declare, or a value that does not match the option's `pattern` — never a silent
+// ignore (a typo'd option would otherwise leave the default in force with no hint why).
+bool resolveTargetOptions(const Backend& backend, const std::map<std::string, std::string>& given,
+                          std::map<std::string, std::string>& resolved, std::string& error);
 
 // The registered backend with this name, or nullptr if none.
 const Backend* findBackend(const std::string& name);

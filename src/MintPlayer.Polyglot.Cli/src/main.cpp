@@ -60,7 +60,7 @@ void printUsage() {
         << "Usage:\n"
         << "  polyglot --version\n"
         << "  polyglot build <input.pg> [--target <name>] [--out <dir>] [--root <dir>] [--lib <a,b>]\n"
-        << "                            [--origin-info] [--watch]\n"
+        << "                            [--target-option <target>.<name>=<value>] [--origin-info] [--watch]\n"
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
@@ -78,6 +78,9 @@ void printUsage() {
         << "         source map). Off by default - output is byte-identical without it. A target\n"
         << "         declares how it records origins in its plugin manifest; a build whose targets all\n"
         << "         lack one refuses. Also settable as pgconfig.json \"originInfo\": true.\n"
+        << "         --target-option sets an option a target plugin declares (csharp.namespace=My.Lib,\n"
+        << "         csharp.class, csharp.access=public, php.namespace=...). It wins over pgconfig\n"
+        << "         \"targetOptions\" (project level or per include rule). Repeatable.\n"
         << "         --watch rebuilds whenever the input, an imported .pg, or pgconfig.json changes\n"
         << "         (a failed rebuild keeps watching and never touches the last good outputs).\n"
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
@@ -237,9 +240,15 @@ bool writeDedup(const fs::path& out, const std::string& content,
 // Build the LibConfig the compiler sees for one (closure, target): on a `crossDirImports` target
 // with include rules in play, it carries the output-dir router so emitted import specifiers span
 // directories correctly (P30 slice 8); otherwise it's the caller's lib unchanged (flat "./<name>").
+// P40 B1: it always carries the per-file target-options lookup (project / include rule / --target-option).
 LibConfig libForTarget(const LibConfig& lib, const BackendHandle& target, const PgConfig& pc,
-                       bool flagRouted, const fs::path& input, const fs::path& fallbackDir) {
+                       bool flagRouted, const fs::path& input, const fs::path& fallbackDir,
+                       const cli::TargetOptionsByTarget& optionFlags) {
     LibConfig out = lib;
+    {
+        std::error_code aec;
+        out.targetOptions = cli::targetOptionsFn(pc, optionFlags, fs::absolute(input, aec));
+    }
     if (flagRouted || !target.backend()->crossDirImports() || !pc.found || pc.include.empty()) return out;
     std::error_code ec;
     const std::string tname = target.backend()->name();
@@ -292,19 +301,26 @@ bool writeSourceMap(const fs::path& mapPath, const fs::path& emitted,
 }
 
 // P40 §0 / S15 — phase 1 of the shared prelude in a multi-root project build: every root's reach and linked
-// std modules, unioned, plus where the shared prelude file goes (each distinct routed path).
-struct SharedPreludePhase {
+// std modules, unioned, per distinct routed path of the shared prelude file.
+// P40 B1: the prelude's types live in the roots' namespace, so every root that REACHES the prelude of one file
+// must resolve the same closure-scoped target options (`options`, fixed by the first such root, `owner`).
+struct SharedPreludeGroup {
+    fs::path path;
     std::set<std::string> names;
     std::set<std::string> stdModules;
-    std::vector<fs::path> paths;
+    std::map<std::string, std::string> options;
+    std::string owner; // the first root that reached the prelude ("" = none yet)
+};
+struct SharedPreludePhase {
+    std::vector<SharedPreludeGroup> groups;
 };
 
 bool emitOne(const std::string& source, const fs::path& input, const fs::path& fallbackDir,
              const BackendHandle& target, const char* ext, ModuleResolver* resolver, const LibConfig& lib,
-             const PgConfig& pc, bool flagRouted,
+             const PgConfig& pc, bool flagRouted, const cli::TargetOptionsByTarget& optionFlags,
              std::map<std::string, std::string>* seen = nullptr, SharedPreludePhase* prelude = nullptr) {
     EmitResult result = compile(source, target, resolver,
-                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir),
+                                libForTarget(lib, target, pc, flagRouted, input, fallbackDir, optionFlags),
                                 fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
     if (!result.ok) {
         reportDiagnostics(input, result);
@@ -344,12 +360,35 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
     for (std::size_t i = 0; i < result.modules.size(); ++i) {
         if (prelude && result.modules[i].sharedPrelude) {
             // P40 §0: deferred to phase 2 (writeSharedPrelude) — each root's share differs once pruned.
-            prelude->names.insert(result.preludeReach.names.begin(), result.preludeReach.names.end());
-            prelude->stdModules.insert(result.preludeReach.stdModules.begin(), result.preludeReach.stdModules.end());
             const fs::path& p = outs[i + 1];
-            bool known = false;
-            for (const auto& q : prelude->paths) known = known || fs::weakly_canonical(q) == fs::weakly_canonical(p);
-            if (!known) prelude->paths.push_back(p);
+            SharedPreludeGroup* g = nullptr;
+            for (auto& q : prelude->groups)
+                if (fs::weakly_canonical(q.path) == fs::weakly_canonical(p)) g = &q;
+            if (!g) {
+                prelude->groups.push_back(SharedPreludeGroup{p, {}, {}, {}, {}});
+                g = &prelude->groups.back();
+            }
+            if (result.preludeReach.names.empty()) continue; // reaches nothing: no claim on the shared file
+            if (g->owner.empty()) {
+                g->owner = input.string();
+                g->options = result.targetOptions;
+            } else {
+                // P40 B1: closure-scoped options must agree among the roots sharing this prelude file.
+                for (const auto& d : target.backend()->options()) {
+                    if (!d.closureScope) continue;
+                    const std::string& want = g->options[d.name];
+                    const std::string& got = result.targetOptions[d.name];
+                    if (want == got) continue;
+                    std::cerr << "polyglot: target option '" << target.backend()->name() << "." << d.name
+                              << "' must agree across files sharing one prelude (scope \"closure\"): '" << g->owner
+                              << "' resolves '" << want << "' but '" << input.string() << "' resolves '" << got
+                              << "', and both use the shared prelude '" << p.string()
+                              << "' (route them to different output directories, or give them the same value)\n";
+                    return false;
+                }
+            }
+            g->names.insert(result.preludeReach.names.begin(), result.preludeReach.names.end());
+            g->stdModules.insert(result.preludeReach.stdModules.begin(), result.preludeReach.stdModules.end());
             continue;
         }
         if (result.modules[i].sharedPrelude && result.modules[i].code.empty()) continue; // nothing reached
@@ -362,23 +401,26 @@ bool emitOne(const std::string& source, const fs::path& input, const fs::path& f
 // a stale one). Written through writeDedup, so the identical-file contract with `seen` still holds.
 bool writeSharedPrelude(const SharedPreludePhase& prelude, const BackendHandle& target, const LibConfig& lib,
                         std::map<std::string, std::string>* seen) {
-    if (prelude.paths.empty()) return true;
-    PreludeReach u;
-    u.names.assign(prelude.names.begin(), prelude.names.end());
-    u.stdModules.assign(prelude.stdModules.begin(), prelude.stdModules.end());
-    EmitResult r = compileSharedPrelude(target, u, lib);
-    if (!r.ok) {
-        reportDiagnostics(prelude.paths.front(), r);
-        return false;
-    }
     bool ok = true;
-    for (const auto& p : prelude.paths) {
-        if (r.code.empty()) {
-            std::error_code ec;
-            if (fs::remove(p, ec)) std::cout << "  x  " << p.string() << " (no prelude reached)\n";
+    for (const auto& g : prelude.groups) {
+        PreludeReach u;
+        u.names.assign(g.names.begin(), g.names.end());
+        u.stdModules.assign(g.stdModules.begin(), g.stdModules.end());
+        LibConfig l = lib;
+        const std::map<std::string, std::string> opts = g.options; // P40 B1: the roots' agreed options
+        l.targetOptions = [opts](const std::string&, const std::string&) { return opts; };
+        EmitResult r = compileSharedPrelude(target, u, l);
+        if (!r.ok) {
+            reportDiagnostics(g.path, r);
+            ok = false;
             continue;
         }
-        ok &= writeDedup(p, r.code, seen, lib.originInfo);
+        if (r.code.empty()) {
+            std::error_code ec;
+            if (fs::remove(g.path, ec)) std::cout << "  x  " << g.path.string() << " (no prelude reached)\n";
+            continue;
+        }
+        ok &= writeDedup(g.path, r.code, seen, lib.originInfo);
     }
     return ok;
 }
@@ -432,7 +474,8 @@ struct WatchCycle {
 
 WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, const fs::path& rootArg,
                           const std::string& targetArg, const std::string& libArgIn, bool checkOnly,
-                          bool flagRouted, bool originInfo) {
+                          bool flagRouted, bool originInfo,
+                          const cli::TargetOptionsByTarget& optionFlags = {}) {
     WatchCycle c;
     const fs::path absInput = fs::absolute(input).lexically_normal();
     c.watched.push_back(absInput);
@@ -495,10 +538,16 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
     // P38/issue #69: watch mode builds its own LibConfig, so an option threaded only through buildGroup
-    // would silently not apply here. (`access` is exactly that pre-existing gap — don't widen it.)
+    // would silently not apply here. (P40 B1: target options ride on libForTarget, so they apply here too.)
     lib.originInfo = originInfo || pc.originInfo;
 
     resolveConfiguredTargets(pc); // safe per-cycle: already-registered names are skipped
+    {
+        std::vector<std::string> optErrors; // P40 B1: a bad targetOptions block refuses the cycle
+        cli::validateTargetOptions(pc, optionFlags, optErrors);
+        for (const auto& m : optErrors) emitTopLevel(m);
+        if (!optErrors.empty()) return c;
+    }
 
     // The target set mirrors runBuild's resolution; `check --watch` uses the derived reference
     // target only. No config + no --target refuses per cycle (P30 slice 4) — adding a
@@ -524,7 +573,7 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
             continue;
         }
         EmitResult result = compile(source, h, &resolver,
-                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg),
+                                    libForTarget(lib, h, pc, flagRouted, input, outDirArg, optionFlags),
                                     absInput.string()); // P38: already canonical-ish (absolute+normalized)
         if (!result.ok) {
             for (const auto& d : result.diagnostics) emitDiagAt(d, &result.sources);
@@ -565,7 +614,7 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 
 int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root,
              const std::string& target, const std::string& libArg, bool checkOnly, bool flagRouted,
-             bool originInfo = false) {
+             bool originInfo = false, const cli::TargetOptionsByTarget& optionFlags = {}) {
     cli::PollingFileWatcher watcher;
 #ifdef _WIN32
     g_watchStopTarget = &watcher;
@@ -575,7 +624,8 @@ int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root
     const char* verb = "building";
     for (;;) {
         std::cout << clockStamp() << " polyglot watch: " << verb << " " << absInput.string() << "\n";
-        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted, originInfo);
+        WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted, originInfo,
+                                      optionFlags);
         std::cout << clockStamp() << " polyglot watch: " << c.errors
                   << " error(s) - watching for changes\n";
         std::cout.flush();
@@ -629,7 +679,7 @@ std::vector<fs::path> discoverIncludeInputs(const PgConfig& pc) {
 // with outputs routed through the group's `include` rules.
 int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::string& target,
                const fs::path& outDir, bool outDirGiven, fs::path root, std::string libArg,
-               const std::string& accessArg, bool originInfoFlag) {
+               const cli::TargetOptionsByTarget& optionFlags, bool originInfoFlag) {
     for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
     if (!pc.errors.empty()) return 64;
 
@@ -642,16 +692,20 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
 
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
-    lib.access = !accessArg.empty() ? accessArg : pc.access; // --access wins over pgconfig "access"
-    if (!lib.access.empty() && lib.access != "public" && lib.access != "internal") {
-        std::cerr << "polyglot: --access must be 'public' or 'internal' (got '" << lib.access << "')\n";
-        return 64;
-    }
-    // P38/issue #69: --origin-info wins over the pgconfig key (the --access precedent).
+    // P38/issue #69: --origin-info wins over the pgconfig key (flags win).
     lib.originInfo = originInfoFlag || pc.originInfo;
     const char* originSource = originInfoFlag ? "--origin-info" : "pgconfig.json \"originInfo\"";
 
     resolveConfiguredTargets(pc); // pgconfig `dependencies` + lock-first cache + registry (P30)
+
+    // P40 B1: every targetOptions layer is validated against the plugins up front — an unknown target or
+    // option, or a value failing its pattern, refuses before anything is written.
+    {
+        std::vector<std::string> optErrors;
+        cli::validateTargetOptions(pc, optionFlags, optErrors);
+        for (const auto& m : optErrors) std::cerr << "polyglot: " << m << "\n";
+        if (!optErrors.empty()) return 64;
+    }
 
     // The target set to emit, each paired with its output extension.
     std::vector<std::pair<BackendHandle, std::string>> targets;
@@ -704,7 +758,8 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
         if (!readFile(firstInput, source)) { std::cerr << "polyglot: cannot open '" << firstInput.string() << "'\n"; return 66; }
         FileModuleResolver resolver(root, entryDir);
         for (const auto& t : targets)
-            ok &= emitOne(source, firstInput, outDir, t.first, t.second.c_str(), &resolver, lib, pc, flagRouted);
+            ok &= emitOne(source, firstInput, outDir, t.first, t.second.c_str(), &resolver, lib, pc, flagRouted,
+                          optionFlags);
         return ok ? 0 : 1;
     }
 
@@ -740,7 +795,7 @@ int buildGroup(PgConfig& pc, const std::vector<fs::path>& inputs, const std::str
             if (importedCanons.count(e.canon)) continue; // imported by another input — emitted in its closure
             fs::path edir = e.path.has_parent_path() ? e.path.parent_path() : fs::path(".");
             FileModuleResolver r(root, edir);
-            targetOk &= emitOne(e.source, e.path, outDir, t.first, t.second.c_str(), &r, lib, pc, flagRouted,
+            targetOk &= emitOne(e.source, e.path, outDir, t.first, t.second.c_str(), &r, lib, pc, flagRouted, optionFlags,
                                 &seen, &prelude);
         }
         if (targetOk) targetOk = writeSharedPrelude(prelude, t.first, lib, &seen);
@@ -755,7 +810,7 @@ int runBuild(const std::vector<std::string>& args) {
     fs::path root;      // workspace root for logical-name imports; empty => input's parent dir
     std::string target; // empty => the pgconfig `targets` set
     std::string libArg; // comma-separated `lib` prelude entries (e.g. "io,math")
-    std::string accessArg; // --access public|internal (C# emitted-type accessibility)
+    cli::TargetOptionsByTarget optionFlags; // --target-option <target>.<name>=<value> (P40 B1), repeatable
     bool originInfo = false; // --origin-info (P38/issue #69: emit origin info)
     bool watch = false;
 
@@ -769,8 +824,12 @@ int runBuild(const std::vector<std::string>& args) {
             root = args[++i];
         } else if (a == "--lib" && i + 1 < args.size()) {
             libArg = args[++i];
-        } else if (a == "--access" && i + 1 < args.size()) {
-            accessArg = args[++i];
+        } else if (a == "--target-option" && i + 1 < args.size()) {
+            std::string err;
+            if (!cli::parseTargetOptionFlag(args[++i], optionFlags, err)) {
+                std::cerr << "polyglot: " << err << "\n";
+                return 64;
+            }
         } else if (a == "--origin-info") {
             // P38/issue #69: emit origin info so generated code attributes back to the `.pg`. Named for the
             // BEHAVIOUR, not for one target's spelling of it — C# answers with `#line` pragmas and
@@ -807,7 +866,7 @@ int runBuild(const std::vector<std::string>& args) {
     if (watch) {
         if (inputs.size() > 1) { std::cerr << "polyglot: --watch takes a single input file\n"; return 64; }
         return runWatch(firstInput, outDir, root, target, libArg, /*checkOnly=*/false,
-                        !target.empty() && outDirGiven, originInfo);
+                        !target.empty() && outDirGiven, originInfo, optionFlags);
     }
 
     std::cout << "polyglot build";
@@ -830,7 +889,7 @@ int runBuild(const std::vector<std::string>& args) {
     int worst = 0;
     for (auto& [key, group] : groups) {
         const int rc = buildGroup(group.first, group.second, target, outDir, outDirGiven, root, libArg,
-                                  accessArg, originInfo);
+                                  optionFlags, originInfo);
         if (rc > worst) worst = rc;
     }
     return worst;
@@ -926,6 +985,7 @@ int runCheck(const std::vector<std::string>& args) {
 
     LibConfig lib = parseLibList(libArg);
     lib.forbiddenIdentifiers = pc.forbiddenIdentifiers;
+    lib.targetOptions = cli::targetOptionsFn(pc, {}, fs::absolute(input)); // P40 B1: same refusals as build
 
     // The reference target carries the full §3.A surface so a pure frontend gate never refuses
     // spuriously — derived from capabilities (P30 slice 4), not the name "csharp".
@@ -1181,6 +1241,7 @@ struct LspServer {
         std::string libStr;
         std::vector<std::string> targets; // the project's target set (reserved-name squiggles run per target)
         std::vector<std::pair<std::string, std::string>> forbidden; // pgconfig forbiddenIdentifiers
+        PgConfig pc; // P40 B1: the config itself, for per-file target options (preview + reserved squiggles)
     };
     DocContext contextFor(const std::string& uri) const {
         fs::path p(uriToPath(uri));
@@ -1192,7 +1253,9 @@ struct LspServer {
         // No config: reserved-name squiggles run against EVERY loaded target (a superset squiggle
         // is safe; an invented default pair is not — P30 slice 4).
         std::vector<std::string> targets = pc.targets.empty() ? backendNames() : pc.targets;
-        return { root, entryDir, pc.found ? pc.lib : lib_, std::move(targets), pc.forbiddenIdentifiers };
+        std::string libStr = pc.found ? pc.lib : lib_;
+        auto forbidden = pc.forbiddenIdentifiers;
+        return { root, entryDir, std::move(libStr), std::move(targets), std::move(forbidden), std::move(pc) };
     }
 
     void analyzeDoc(const std::string& uri) {
@@ -1205,7 +1268,15 @@ struct LspServer {
         DiagnosticBag reserved;
         for (const auto& t : ctx.targets) {
             BackendHandle h = findTarget(t);
-            if (h.ok()) checkReservedNames(a.unit, *h.backend(), ctx.forbidden, reserved);
+            if (!h.ok()) continue;
+            // P40 B1: a `reserve` option's configured value (the C# wrapper class) squiggles like a build would.
+            std::map<std::string, std::string> opts;
+            std::string oerr;
+            std::vector<std::pair<std::string, std::string>> optReserved;
+            if (resolveTargetOptions(*h.backend(), cli::fileTargetOptions(ctx.pc, {}, uriToPath(uri), t), opts, oerr))
+                for (const auto& d : h.backend()->options())
+                    if (d.reserve && !opts[d.name].empty()) optReserved.push_back({d.name, opts[d.name]});
+            checkReservedNames(a.unit, *h.backend(), ctx.forbidden, reserved, &optReserved);
         }
         for (const auto& d : reserved.items()) a.diagnostics.push_back(d);
         model_[uri] = std::move(a.model);
@@ -1243,7 +1314,11 @@ struct LspServer {
         DocContext ctx = contextFor(uri);
         FileModuleResolver disk(ctx.root, ctx.entryDir);
         BufferResolver resolver(disk, text_); // preview reflects unsaved edits in open imported modules
-        EmitResult r = compile(text_[uri], tgt, &resolver, parseLibList(ctx.libStr),
+        // P40 B1: the preview honours the same targetOptions a build would (it ignored `access` before).
+        LibConfig lib = parseLibList(ctx.libStr);
+        lib.forbiddenIdentifiers = ctx.forbidden;
+        lib.targetOptions = cli::targetOptionsFn(ctx.pc, {}, fs::path(uriToPath(uri)));
+        EmitResult r = compile(text_[uri], tgt, &resolver, lib,
                                uriToPath(uri)); // P38: the open document is the entry (fileId 1)
         return "{\"target\":" + json::quote(targetName) + ",\"code\":" + json::quote(r.code) +
                ",\"ok\":" + (r.ok ? "true" : "false") +

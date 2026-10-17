@@ -2,6 +2,24 @@
   "schema": 2,
   "name": "csharp",
   "sharedPreludeFile": true,
+  "options": {
+    "namespace": {
+      "default": "",
+      "pattern": "^([A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*)?$",
+      "scope": "closure"
+    },
+    "class": {
+      "default": "PolyglotProgram",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "scope": "closure",
+      "reserve": true
+    },
+    "access": {
+      "default": "",
+      "pattern": "^(public|internal)?$",
+      "scope": "closure"
+    }
+  },
   "originMapping": {
     "style": "directive",
     "line": "#line $n \"$f\"",
@@ -192,7 +210,6 @@
         "with": "@"
       },
       "reserved": [
-        "PolyglotProgram",
         "PolyglotExtensions",
         "Main",
         "lhs",
@@ -295,7 +312,8 @@
                 },
                 {
                   "tmpl": [
-                    "PolyglotProgram.",
+                    { "get": "option.class" },
+                    ".",
                     {
                       "fn": "ident",
                       "args": [
@@ -1127,7 +1145,7 @@
     "EnumDecl": {
       "line": {
         "tmpl": [
-          { "fn": "access" },
+          { "call": "csAccess" },
           "enum ",
           {
             "fn": "ident",
@@ -2149,7 +2167,7 @@
     },
     "csRecordHead": {
       "tmpl": [
-        { "fn": "access" },
+        { "call": "csAccess" },
         "record ",
         {
           "fn": "ident",
@@ -2578,6 +2596,16 @@
           "case": {
             "when": [
               [
+                { "not": { "eq": ["option.namespace", ""] } },
+                { "line": { "tmpl": ["namespace ", { "get": "option.namespace" }, ";"] } }
+              ]
+            ]
+          }
+        },
+        {
+          "case": {
+            "when": [
+              [
                 {
                   "not": {
                     "eq": [
@@ -2608,7 +2636,7 @@
                   }
                 },
                 {
-                  "line": "using static PolyglotProgram;"
+                  "line": { "tmpl": ["using static ", { "get": "option.class" }, ";"] }
                 }
               ]
             ]
@@ -2660,9 +2688,7 @@
                   "block": {
                     "head": {
                       "tmpl": [
-                        {
-                          "fn": "access"
-                        },
+                        { "call": "csAccess" },
                         "static ",
                         {
                           "case": {
@@ -2699,7 +2725,7 @@
           "case": {
             "when": [
               [
-                {
+                { "and": [{
                   "or": [
                     {
                       "not": {
@@ -2742,7 +2768,7 @@
                       }
                     }
                   ]
-                },
+                }, { "or": [{ "not": { "eq": ["module.globals.count", "0"] } }, { "not": { "eq": ["module.functions.count", "0"] } }] }] },
                 {
                   "line": ""
                 }
@@ -2751,12 +2777,15 @@
           }
         },
         {
+          "case": {
+            "when": [
+              [
+                { "or": [{ "not": { "eq": ["module.globals.count", "0"] } }, { "not": { "eq": ["module.functions.count", "0"] } }] },
+                {
           "block": {
             "head": {
               "tmpl": [
-                {
-                  "fn": "access"
-                },
+                { "call": "csAccess" },
                 "static ",
                 {
                   "case": {
@@ -2774,7 +2803,8 @@
                     "else": ""
                   }
                 },
-                "class PolyglotProgram"
+                "class ",
+                { "get": "option.class" }
               ]
             },
             "body": [
@@ -2871,11 +2901,30 @@
             ]
           }
         }
+              ]
+            ]
+          }
+        }
       ]
+    },
+    "csAccess": {
+      "case": {
+        "when": [
+          [
+            { "not": { "eq": ["option.access", ""] } },
+            { "tmpl": [{ "get": "option.access" }, " "] }
+          ]
+        ]
+      }
     },
     "csFnSig": {
       "tmpl": [
-        "public static ",
+        {
+          "case": {
+            "when": [[{ "eq": ["decl.isPrelude", "true"] }, "internal static "]],
+            "else": "public static "
+          }
+        },
         {
           "case": {
             "when": [
@@ -3049,7 +3098,7 @@
     },
     "csClassHead": {
       "tmpl": [
-        { "fn": "access" },
+        { "call": "csAccess" },
         "class ",
         {
           "fn": "ident",
@@ -3272,7 +3321,7 @@
       "block": {
         "head": {
           "tmpl": [
-            { "fn": "access" },
+            { "call": "csAccess" },
             "interface ",
             {
               "fn": "ident",
@@ -3399,7 +3448,7 @@
         {
           "line": {
             "tmpl": [
-              { "fn": "access" },
+              { "call": "csAccess" },
               "abstract record ",
               {
                 "fn": "ident",
@@ -3421,7 +3470,7 @@
           "each": {
             "line": {
               "tmpl": [
-                { "fn": "access" },
+                { "call": "csAccess" },
                 "sealed record ",
                 {
                   "fn": "ident",

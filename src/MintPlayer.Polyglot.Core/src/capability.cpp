@@ -420,7 +420,8 @@ bool matchesReserved(const std::string& entry, const std::string& name) {
 
 void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
                         const std::vector<std::pair<std::string, std::string>>& forbidden,
-                        DiagnosticBag& diags) {
+                        DiagnosticBag& diags,
+                        const std::vector<std::pair<std::string, std::string>>* optionReserved) {
     NameCollector nc;
     nc.run(unit);
     for (const auto& [name, pos] : nc.names) {
@@ -436,6 +437,12 @@ void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
             if ((tgt == "*" || tgt == backend.name()) && fname == name)
                 diags.error(pos, "identifier '" + name + "' is forbidden by pgconfig for target '" +
                                      backend.name() + "'");
+        if (optionReserved)
+            for (const auto& [opt, value] : *optionReserved)
+                if (value == name)
+                    diags.error(pos, "identifier '" + name + "' is reserved by target '" + backend.name() +
+                                         "' (its option '" + opt + "' names generated code '" + value +
+                                         "'); rename it or set " + backend.name() + "." + opt + " to another name");
     }
 }
 

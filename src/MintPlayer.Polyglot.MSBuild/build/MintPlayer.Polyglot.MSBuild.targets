@@ -69,10 +69,15 @@
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>
       <_PolyglotLibArg Condition="'$(PolyglotLib)' != ''"> --lib &quot;$(PolyglotLib)&quot;</_PolyglotLibArg>
-      <!-- PolyglotAccess=public emits `public` on the generated C# types (usable across assemblies with no
-           hand-written facade); unset keeps C#'s modifier-less default (internal). -->
-      <_PolyglotAccessArg></_PolyglotAccessArg>
-      <_PolyglotAccessArg Condition="'$(PolyglotAccess)' != ''"> --access &quot;$(PolyglotAccess)&quot;</_PolyglotAccessArg>
+      <!-- P40 B1: C# target options, passed as `target-option csharp.<name>=<value>` (they win over the
+           pgconfig "targetOptions.csharp" block). PolyglotNamespace puts the generated code in a file-scoped
+           namespace; PolyglotClass renames the PolyglotProgram wrapper; PolyglotAccess=public emits `public`
+           on the generated types (usable across assemblies with no hand-written facade). Unset = the
+           plugin defaults (no namespace, PolyglotProgram, C#'s modifier-less internal). -->
+      <_PolyglotTargetOptionArgs></_PolyglotTargetOptionArgs>
+      <_PolyglotTargetOptionArgs Condition="'$(PolyglotNamespace)' != ''">$(_PolyglotTargetOptionArgs) --target-option &quot;csharp.namespace=$(PolyglotNamespace)&quot;</_PolyglotTargetOptionArgs>
+      <_PolyglotTargetOptionArgs Condition="'$(PolyglotClass)' != ''">$(_PolyglotTargetOptionArgs) --target-option &quot;csharp.class=$(PolyglotClass)&quot;</_PolyglotTargetOptionArgs>
+      <_PolyglotTargetOptionArgs Condition="'$(PolyglotAccess)' != ''">$(_PolyglotTargetOptionArgs) --target-option &quot;csharp.access=$(PolyglotAccess)&quot;</_PolyglotTargetOptionArgs>
       <!-- PolyglotOriginInfo=true records where each emitted line came from (P38 / issue #69), so a
            coverage run over the generated C# in obj/ reports against the .pg file with .pg line numbers
            instead of being invisible. Roslyn writes the #line pragmas into the PDB, so nothing needs
@@ -88,7 +93,7 @@
          lands in obj/ and compiles exactly as before; other targets route through the pgconfig `include`
          rules (e.g. TypeScript twins into a web app's src) and are deliberately NOT in @(FileWrites) —
          they are committed source artifacts `dotnet clean` must never delete. -->
-    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotAccessArg)$(_PolyglotOriginInfoArg)" />
+    <Exec Command="&quot;$(PolyglotTool)&quot; build @(PolyglotFile->'&quot;%(FullPath)&quot;', ' ') --out &quot;$(PolyglotOutDir).&quot; --root &quot;$(PolyglotRoot)&quot;$(_PolyglotLibArg)$(_PolyglotTargetOptionArgs)$(_PolyglotOriginInfoArg)" />
     <Touch Files="$(_PolyglotStamp)" AlwaysCreate="true" />
   </Target>
 

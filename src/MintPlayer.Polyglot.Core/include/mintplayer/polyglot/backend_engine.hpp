@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -152,5 +153,27 @@ TraceSink* traceSink();
 // an arm that is never evaluated is reported uncovered rather than quietly missing from the total.
 void indexRule(Rule& r, int srcId, std::vector<std::size_t>& offsets);
 void indexTest(Test& t, int srcId, std::vector<std::size_t>& offsets);
+
+// --- Target options (P40 B1) ------------------------------------------------------------------------
+//
+// A rule reads a plugin-declared target option as `option.<name>` — through `{"get":…}` and the `eq`/`has`
+// tests — in EVERY rule context (module, declaration, member, expression, type). The emitter installs the
+// module's resolved option map for the duration of one emit; the interpreter answers `option.` paths from
+// it before consulting the context, so no context class needs to know options exist. Thread-local, so two
+// emits on two threads never see each other's options. Unset (no emit in progress) = every option reads "".
+using OptionMap = std::map<std::string, std::string>;
+class ActiveOptionsScope {
+public:
+    explicit ActiveOptionsScope(const OptionMap* opts);
+    ~ActiveOptionsScope();
+    ActiveOptionsScope(const ActiveOptionsScope&) = delete;
+    ActiveOptionsScope& operator=(const ActiveOptionsScope&) = delete;
+
+private:
+    const OptionMap* prev_;
+};
+
+// The `option.` prefix every option path carries (the loader validates each referenced name is declared).
+inline constexpr const char* kOptionPathPrefix = "option.";
 
 } // namespace mintplayer::polyglot::engine

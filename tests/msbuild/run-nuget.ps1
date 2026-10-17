@@ -10,7 +10,7 @@
 # one-shots. Serial chain: pack (fixture 0) -> App (fixtures 1-3: build -> incremental -> touch ->
 # clean, order-dependent) -> Downstream (fixture 4, references App.csproj, so it rebuilds App and must
 # not run concurrently with the App chain). Independent one-shots (each its own project dir + obj/bin,
-# no cross-dependency): Shared (5), MultiPg (6), Twin (7), NoCfg (8). By default the App first build
+# no cross-dependency): Shared (5), MultiPg (6), Twin (7), NoCfg (8), TwoLibs (9, P40 B1). By default the App first build
 # (the one real cross-fixture race: first-install of the freshly-packed nupkg into the global NuGet
 # cache) warms the cache, then the four one-shots run as ThreadJobs OVERLAPPING the rest of the serial
 # chain. Concurrent restores of an already-cached package are safe; per-fixture dirs never collide.
@@ -87,7 +87,8 @@ $multiFixture = {
     $multi = Join-Path $work "MultiPg"
     dotnet new console -o $multi --framework net8.0 | Out-Null
     Copy-Item (Join-Path $work "nuget.config") (Join-Path $multi "nuget.config")
-    "fn step(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $multi "phys.pg")
+    # P40 §0: the shared prelude holds only what a root REACHES — phys.pg uses Option, so one file is emitted.
+    "fn pick(): Option<i32> => Some(1)`nfn step(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $multi "phys.pg")
     "fn tick(): i32 {`n  return 2`n}`n" | Set-Content (Join-Path $multi "snake.pg")
     '{ "targets": ["csharp"] }' | Set-Content (Join-Path $multi "pgconfig.json")
 @"
@@ -173,6 +174,56 @@ $noCfgFixture = {
 
 $packResults = [System.Collections.Generic.List[object]]::new()
 $appResults  = [System.Collections.Generic.List[object]]::new()
+# 9. P40 B1 (issue #73): two class libraries, each with one .pg and public output, referenced by one app.
+# Before target options both emitted a global `PolyglotProgram` + `Option<T>`/`Some<T>`, so the app failed
+# with CS0433 (the same type in two assemblies). LibA sets its namespace through pgconfig
+# `targetOptions.csharp`; LibB through the MSBuild properties (PolyglotNamespace / PolyglotClass /
+# PolyglotAccess), so both configuration paths are exercised.
+$twoLibsFixture = {
+    param($work, $pkgVer)
+    $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $r = [System.Collections.Generic.List[object]]::new()
+    function ck([bool]$c, [string]$n) { $r.Add([pscustomobject]@{ Name = $n; Passed = [bool]$c }) }
+
+    $root = Join-Path $work "TwoLibs"
+    $libA = Join-Path $root "LibA"; $libB = Join-Path $root "LibB"; $twoApp = Join-Path $root "App"
+    dotnet new classlib -o $libA --framework net8.0 | Out-Null
+    dotnet new classlib -o $libB --framework net8.0 | Out-Null
+    dotnet new console -o $twoApp --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $root "nuget.config")
+    Remove-Item (Join-Path $libA "Class1.cs"), (Join-Path $libB "Class1.cs") -ErrorAction SilentlyContinue
+
+    "fn find(): Option<i32> => Some(20)`nfn name(): string => `"A`"`n" | Set-Content (Join-Path $libA "a.pg")
+    '{ "targets": ["csharp"], "targetOptions": { "csharp": { "namespace": "LibA", "access": "public" } } }' |
+        Set-Content (Join-Path $libA "pgconfig.json")
+    "fn find(): Option<i32> => Some(22)`nfn name(): string => `"B`"`n" | Set-Content (Join-Path $libB "b.pg")
+    '{ "targets": ["csharp"] }' | Set-Content (Join-Path $libB "pgconfig.json")
+    $csprojB = Join-Path $libB "LibB.csproj"
+    (Get-Content $csprojB -Raw).Replace("</Project>",
+        "  <PropertyGroup><PolyglotNamespace>LibB</PolyglotNamespace><PolyglotClass>BApi</PolyglotClass><PolyglotAccess>public</PolyglotAccess></PropertyGroup>`n</Project>") |
+        Set-Content $csprojB
+    dotnet add $libA package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    dotnet add $libB package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    dotnet add $twoApp reference (Join-Path $libA "LibA.csproj") (Join-Path $libB "LibB.csproj") | Out-Null
+@"
+var a = LibA.PolyglotProgram.find();
+var b = LibB.BApi.find();
+int va = a is LibA.Some<int> sa ? sa.value : 0;
+int vb = b is LibB.Some<int> sb ? sb.value : 0;
+System.Console.WriteLine(LibA.PolyglotProgram.name() + LibB.BApi.name() + (va + vb));
+"@ | Set-Content (Join-Path $twoApp "Program.cs")
+    $twoBuild = dotnet build $twoApp --nologo -v q 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0 -and $twoBuild -notmatch 'CS0433') "two .pg class libraries in distinct namespaces link into one app (no CS0433)"
+    $genA = Get-Content -Raw (Join-Path $libA "obj/Debug/net8.0/polyglot/a.cs") -ErrorAction SilentlyContinue
+    $genB = Get-Content -Raw (Join-Path $libB "obj/Debug/net8.0/polyglot/b.cs") -ErrorAction SilentlyContinue
+    ck ("$genA" -match '(?m)^namespace LibA;' -and "$genB" -match '(?m)^namespace LibB;' -and "$genB" -match 'public static class BApi') `
+        "pgconfig targetOptions and the PolyglotNamespace/PolyglotClass/PolyglotAccess properties both reach the emitter"
+    $twoRun = dotnet run --project $twoApp --no-build 2>&1
+    ck ("$twoRun".Trim() -eq "AB42") "the app uses both libraries' functions and prelude types (prints AB42)"
+    $r
+}
+
 $downResults = [System.Collections.Generic.List[object]]::new()
 
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
@@ -238,7 +289,7 @@ fck $appResults ("$run".Trim() -eq "7") "the .pg record + fn are usable from C# 
 # the rest of the strictly-serial App/Downstream chain below. Recreate each block via
 # [scriptblock]::Create so it is unaffiliated with this runspace; all args are absolute paths.
 if (-not $Sequential) {
-    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture) | ForEach-Object {
+    $jobs = @($sharedFixture, $multiFixture, $twinFixture, $noCfgFixture, $twoLibsFixture) | ForEach-Object {
         Start-ThreadJob -ScriptBlock ([scriptblock]::Create($_.ToString())) -ArgumentList $work, $pkgVer
     }
 }
@@ -299,16 +350,18 @@ if ($Sequential) {
     $multiRes  = @(& $multiFixture  $work $pkgVer)
     $twinRes   = @(& $twinFixture   $work $pkgVer)
     $noCfgRes  = @(& $noCfgFixture  $work $pkgVer)
+    $twoLibsRes = @(& $twoLibsFixture $work $pkgVer)
 } else {
     $sharedRes = @(Receive-Job -Job $jobs[0] -Wait -AutoRemoveJob)
     $multiRes  = @(Receive-Job -Job $jobs[1] -Wait -AutoRemoveJob)
     $twinRes   = @(Receive-Job -Job $jobs[2] -Wait -AutoRemoveJob)
     $noCfgRes  = @(Receive-Job -Job $jobs[3] -Wait -AutoRemoveJob)
+    $twoLibsRes = @(Receive-Job -Job $jobs[4] -Wait -AutoRemoveJob)
 }
 
 # ---- Deterministic output: fixed fixture order (identical to the serial run), never interleaved. ----
 $failures = 0
-foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes)) {
+foreach ($section in @($packResults, $appResults, $downResults, $sharedRes, $multiRes, $twinRes, $noCfgRes, $twoLibsRes)) {
     foreach ($res in $section) {
         if ($res.Passed) { Write-Host "[PASS] $($res.Name)" }
         else { Write-Host "[FAIL] $($res.Name)" -ForegroundColor Red; $failures++ }

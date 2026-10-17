@@ -2,6 +2,13 @@
   "schema": 2,
   "name": "php",
   "preludePerFile": true,
+  "options": {
+    "namespace": {
+      "default": "",
+      "pattern": "^([A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*)?$",
+      "scope": "closure"
+    }
+  },
   "originMapping": {
     "style": "sourceMapV3",
     "sidecarExtension": ".map",
@@ -3319,6 +3326,16 @@
       "seq": [
         {
           "line": "<?php"
+        },
+        {
+          "case": {
+            "when": [
+              [
+                { "not": { "eq": ["option.namespace", ""] } },
+                { "line": { "tmpl": ["namespace ", { "get": "option.namespace" }, ";"] } }
+              ]
+            ]
+          }
         },
         {
           "case": {

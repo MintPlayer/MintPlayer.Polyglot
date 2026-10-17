@@ -149,6 +149,38 @@ text embedded, so it survives bundling and relocation. How a target records orig
 own plugin manifest (`originMapping`), so a build whose targets *all* lack one refuses rather than
 silently doing nothing. Off by default: output is byte-identical without it.
 
+### Target options — namespaces, wrapper class, accessibility
+
+Each target plugin declares the options it accepts; you set them per target under `targetOptions`, at the
+project level and/or on an `include` rule (the rule's values override the project's for the files it
+matches), or with `--target-option <target>.<name>=<value>` (which wins over both):
+
+```json
+{
+  "targets": ["csharp", "php"],
+  "targetOptions": {
+    "csharp": { "namespace": "MyCompany.Strings", "class": "StringsApi", "access": "public" },
+    "php":    { "namespace": "MyCompany\\Strings" }
+  },
+  "include": [
+    { "pattern": "geometry/*.pg", "output": "gen/%(Filename)",
+      "targetOptions": { "csharp": { "namespace": "MyCompany.Geometry" } } }
+  ]
+}
+```
+
+| Option | Default | Effect |
+|---|---|---|
+| `csharp.namespace` | *(none)* | wraps each file in a file-scoped `namespace X;` — two libraries built from `.pg` no longer collide on `PolyglotProgram` / `Option<T>` (CS0433) |
+| `csharp.class` | `PolyglotProgram` | the static class holding top-level functions and globals; emitted only when it has members, and its name is reserved as an identifier |
+| `csharp.access` | *(C# default, `internal`)* | `public` exposes the generated types and wrapper across assemblies (runtime helpers such as `print` stay `internal`) |
+| `php.namespace` | *(none)* | `namespace X;` right after `<?php`, so two libraries may define the same function names |
+
+An unknown option, an unknown target, or a value that fails the option's pattern is refused up front. A
+namespace or class must agree across files that import each other (and across the roots of one C# project
+that share the runtime prelude file) — a mismatch is refused rather than emitted unlinkable. The former
+top-level `"access"` key and `--access` flag are gone: use `targetOptions.csharp.access`.
+
 ## Targets are plugins
 
 No language is compiled into the CLI: **a target is one JSON file** (`polyglot-plugin.json` — spec
@@ -211,6 +243,17 @@ dotnet add package MintPlayer.Polyglot.MSBuild
 The `.pg` sources are registered as `Watch` items, so **`dotnet watch build|run` re-transpiles on every
 `.pg` edit** — which is also the watch story inside Visual Studio for .NET hosts (opt out with
 `Watch="false"` metadata or `PolyglotWatch=false`). The end-to-end gate is `tests/msbuild/run-nuget.ps1`.
+
+The C# [target options](#target-options--namespaces-wrapper-class-accessibility) are also MSBuild
+properties, which win over the project's `pgconfig.json`:
+
+```xml
+<PropertyGroup>
+  <PolyglotNamespace>MyCompany.Strings</PolyglotNamespace> <!-- csharp.namespace -->
+  <PolyglotClass>StringsApi</PolyglotClass>                <!-- csharp.class -->
+  <PolyglotAccess>public</PolyglotAccess>                  <!-- csharp.access -->
+</PropertyGroup>
+```
 
 ## Testing & code coverage
 
