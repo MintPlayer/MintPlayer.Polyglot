@@ -1,0 +1,130 @@
+// The T?-representation boundary (SPEC §4.4, P40). A user generic's `T?` is an `Option<X>` at a concrete use
+// site; a concrete `X?` is a native nullable. The checker converts between them in every position — the
+// null IS the None, never `Some(null)` and never a leaked `{tag:"Some"}` object. Identical on all targets.
+class Slot<T> {
+  var v: T
+  var has: bool
+  constructor(v: T, has: bool) { this.v = v; this.has = has }
+  fn peek(): T? => if this.has { this.v } else { null }
+  fn describe(x: T?): string => match x { Some(_) => "some", None => "none" }
+  fn keep(x: T?): T? => x
+}
+
+fn first<T>(xs: T[]): T? => if xs.count > 0 { xs[0] } else { null }
+fn echo<T>(x: T?): T? => x
+fn present<T>(x: T?): bool => match x { Some(_) => true, None => false }
+
+fn native(s: string?): string => s ?? "<null>"
+fn nativeInt(n: i32?): string => if n == null { "<null>" } else { "int" }
+fn back(s: Slot<string>): string? => s.peek()
+fn explicitOpt(s: string?): Option<string> => s
+
+record Holder(label: string?, count: i32?)
+
+class Box {
+  var item: string?
+  constructor(s: Slot<string>) { this.item = s.peek() }
+}
+
+fn main() {
+  let full = Slot("abc", true)
+  let empty = Slot("abc", false)
+  let nums = Slot(7, true)
+  let noNum = Slot(0, false)
+
+  // 1. let with a native annotation (the slice-13 shape), reference and value element
+  let a: string? = full.peek()
+  let b: string? = empty.peek()
+  let c: i32? = nums.peek()
+  let d: i32? = noNum.peek()
+  print(a ?? "nil")
+  print(b ?? "nil")
+  print(c ?? -1)
+  print(d ?? -1)
+
+  // 2. assignment
+  var m: string? = "start"
+  m = empty.peek()
+  print(m ?? "nil")
+  m = full.peek()
+  print(m ?? "nil")
+
+  // 3. argument into a native-nullable parameter
+  print(native(full.peek()))
+  print(native(empty.peek()))
+  print(nativeInt(nums.peek()))
+  print(nativeInt(noNum.peek()))
+
+  // 4. return into a native-nullable result
+  print(back(full) ?? "nil")
+  print(back(empty) ?? "nil")
+
+  // 5. field / record initialization
+  let h = Holder(full.peek(), noNum.peek())
+  print(h.label ?? "nil")
+  print(h.count ?? -1)
+  print(Box(empty).item ?? "nil")
+
+  // 6. comparison with null (an absence test, both orders)
+  print(full.peek() == null)
+  print(empty.peek() == null)
+  print(full.peek() != null)
+  print(null == noNum.peek())
+  print(full.peek() == "abc")
+
+  // 7. `!` and `??`
+  print(full.peek()!)
+  print(empty.peek() ?? "fallback")
+
+  // 8. narrowing an Option local
+  let o = full.peek()
+  if o != null { print("narrowed " + o) }
+  let p = empty.peek()
+  if p == null { print("absent") } else { print("present " + p) }
+
+  // 9. a generic FUNCTION's T? into native locals
+  let f: i32? = first([4, 5])
+  let g: i32? = first<i32>([])
+  print(f ?? -1)
+  print(g ?? -1)
+
+  // 10. native -> Option: a native null is None, a native value is Some
+  let nul: string? = null
+  let val: string? = "v"
+  print(full.describe(nul))
+  print(full.describe(val))
+  print(full.describe("lit"))
+  print(full.describe(null))
+  let ni: i32? = null
+  let vi: i32? = 0
+  print(nums.describe(ni))
+  print(nums.describe(vi))
+
+  // 11. native into a generic function's T? (T binds to the element, not to `string?`)
+  print(present(nul))
+  print(present(val))
+  let e: string? = echo(nul)
+  let e2: string? = echo(val)
+  print(e ?? "nil")
+  print(e2 ?? "nil")
+  print(echo(vi) ?? -1)
+
+  // 12. round trip native -> Option -> native, and an explicit Option return
+  let r: string? = full.keep(nul)
+  let r2: string? = full.keep(val)
+  print(r ?? "nil")
+  print(r2 ?? "nil")
+  print(explicitOpt(nul) ?? "none")
+  print(explicitOpt("x") ?? "none")
+
+  // 13. a native-nullable value that is falsy on loose targets ("" and 0) stays present
+  let blank: string? = ""
+  print(full.describe(blank))
+  print(nums.describe(vi))
+
+  // 14. a `null` pattern is an identity test (PHP `0 == null` and `"" == null` are loosely true)
+  let zero: i32? = 0
+  print(match zero { null => "null", _ => "zero" })
+  print(match blank { null => "null", _ => "blank" })
+  print(match ni { null => "null", _ => "value" })
+}

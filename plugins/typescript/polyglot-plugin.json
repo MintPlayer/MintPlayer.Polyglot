@@ -322,6 +322,7 @@
             }
           ]
         },
+        { "call": "typeArgsSuffix" },
         "(",
         {
           "map": "node.args",

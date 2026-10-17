@@ -1367,6 +1367,54 @@ int main() {
             check(has(typeErr((shelf + "fn g<V>(s: Shelf<V>): bool => s.find(\"a\") == null\n").c_str()),
                       "'Shelf.find' yields 'V?' while 'V' is still a type parameter"),
                   "P40 s7: an extern `V?` read with V unresolved is refused (no faithful native form)");
+            // ---- P40: the T?-representation boundary (SPEC §4.4) — Option<X> <-> native X? converts in every position ----
+            {
+                const std::string slot = box + "class Slot<T> {\n  fn take(x: T?): bool => match x { Some(_) => true, None => false }\n}\n"
+                                               "fn echo<T>(x: T?): T? => x\n";
+                EmitResult letCs = compileStd(slot + "fn f(b: Box<string>): string? {\n  let n: string? = b.get()\n  return n\n}\n",
+                                              findTarget("csharp"));
+                check(letCs.ok && has(letCs.code, "string? n = b.get() switch { Some<string>(var") &&
+                          has(letCs.code, "=> (string?)(__opt") && has(letCs.code, "None<string> _ => null"),
+                      "P40 boundary: `let n: string? = box.get()` unwraps the Option (was CS0029 Option<string> -> string?)");
+                EmitResult letTs = compileStd(slot + "fn f(b: Box<string>): string? {\n  let n: string? = b.get()\n  return n\n}\n",
+                                              findTarget("typescript"));
+                check(letTs.ok && !has(letTs.code, "const n: (string | null) = b.get();") && has(letTs.code, "_m.tag === \"Some\""),
+                      "P40 boundary: TS no longer stores the {tag:\"Some\"} object in a string local ([object Object])");
+                EmitResult ret = compileStd(slot + "fn f(b: Box<i32>): i32? => b.get()\n", findTarget("csharp"));
+                check(ret.ok && has(ret.code, "=> (int?)(__opt"), "P40 boundary: a return into a native i32? converts");
+                EmitResult rev = compileStd(slot + "fn f(s: Slot<string>, n: string?): bool => s.take(n)\n", findTarget("csharp"));
+                check(rev.ok && has(rev.code, "n switch { null => (Option<string>)(new None<string>()), var __opt") &&
+                          !has(rev.code, "new Some<string>(n)"),
+                      "P40 boundary: a native string? into a T? param is None for null, never Some(null)");
+                EmitResult tinf = compileStd(slot + "fn f(n: string?): string? => echo(n)\n", findTarget("csharp"));
+                check(tinf.ok && has(tinf.code, "new Some<string>((string)(") && !has(tinf.code, "new None<T>()"),
+                      "P40 boundary: echo(n: string?) binds T = string (not string?) and converts at the call");
+                EmitResult eq = compileStd(slot + "fn f(b: Box<string>): bool => b.get() == null\n", findTarget("typescript"));
+                check(eq.ok && !has(eq.code, "b.get() === null"),
+                      "P40 boundary: `box.get() == null` is an absence test (was a constant-false reference test)");
+                EmitResult nar = compileStd(slot + "fn f(b: Box<string>): string {\n  let o = b.get()\n  if o != null { return o }\n  return \"\"\n}\n",
+                                            findTarget("csharp"));
+                check(nar.ok && has(nar.code, "return o switch { Some<string>(var"),
+                      "P40 boundary: an Option local narrowed by `!= null` reads as the unwrapped element");
+                EmitResult fld = compileStd(slot + "class K {\n  var item: string?\n  constructor(b: Box<string>) { this.item = b.get() }\n}\n",
+                                            findTarget("csharp"));
+                check(fld.ok && has(fld.code, "this.item = b.get() switch"),
+                      "P40 boundary: a field assignment converts too (member targets skipped checkConvert)");
+                EmitResult arr = compileStd("fn first<T>(xs: T[]): T? => if xs.count > 0 { xs[0] } else { null }\n"
+                                            "fn f(): i32 => first([4, 5]) ?? 0\n", findTarget("csharp"));
+                check(arr.ok && has(arr.code, "new int[] { 4, 5 }"),
+                      "P40 boundary: a generic call's args convert into the INSTANTIATED params (was `new T[]`)");
+                check(has(typeErr((slot + "fn f(b: Box<string>) { let x: string = b.get() }\n").c_str()),
+                          "cannot convert 'Option<string>' to 'string'"),
+                      "P40 boundary: an Option into a non-nullable slot is refused (it may be absent)");
+                check(has(typeErr((slot + "fn f(b: Box<string?>): string? => b.get()\n").c_str()), "its element is itself nullable"),
+                      "P40 boundary: Option<string?> -> string? is refused (Some(null) and None would merge)");
+                const std::string nullPat = "fn f(z: i32?): string => match z { null => \"n\", _ => \"v\" }\n";
+                EmitResult tphp = compileStd(nullPat, findTarget("php"));
+                check(tphp.ok && has(tphp.code, "$_m === null"), "P40 boundary: PHP spells a null pattern `=== null` (`0 == null` is true)");
+                EmitResult py = compileStd(nullPat, findTarget("python"));
+                check(py.ok && has(py.code, "_m is None"), "P40 boundary: Python spells a null pattern `is None`");
+            }
             EmitResult bd = compileStd(shelf + "fn f(s: Shelf<i32>): i32 => s.at()\n", findTarget("csharp"));
             check(bd.ok && has(bd.code, "s.ElementAt(7).Value"), "P40 s7: a bound member's omitted default fills its `$0`");
             // Class type-parameter bounds (SP-B3-S3), explicit / inferred / annotated; nominal bounds too.

@@ -259,6 +259,11 @@ std::string IrExprCtx::get(const std::string& path) const {
                         case ir::PatternKind::TypeTest: return "typeTest";
                     }
                 }
+                // A `null` literal pattern: a target whose `==` is loose (PHP `0 == null`, Python `__eq__`)
+                // spells it as an identity test instead.
+                if (rest == "pattern.isNullLiteral")
+                    return (a.pattern.kind == ir::PatternKind::Literal && a.pattern.literal &&
+                            a.pattern.literal->kind == ir::ExprKind::Null) ? "true" : "false";
                 if (rest == "pattern.binding")       return a.pattern.binding;
                 if (rest == "pattern.enumType")      return a.pattern.enumType;
                 if (rest == "pattern.enumCase")      return a.pattern.enumCase;

@@ -1009,7 +1009,8 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     local.** `class Slot<T> { fn peek(): T? … }`, `let n: string? = Slot("abc", true).peek()` type-checks, but
     TS prints `[object Object]` (the value is `{tag:"Some",…}`) and C# fails to compile (`Option<string>` →
     `string?`). `peek() ?? x` works. The barrel avoids the shape; needs a principled fix (unwrap at the
-    assignment, or type the result as `Option<string>` and refuse the annotation).
+    assignment, or type the result as `Option<string>` and refuse the annotation). → **Fixed** by the
+    T?-representation boundary entry below.
   - **Timings:** conformance (all four targets) 138.4 s with the four cultures vs 137.2 s with `-Cultures none`
     (within noise on this machine; the culture re-runs overlap the PHP/Python work in the x8 pool). Fast-tier
     synthetic smoke 6.4 s. Library gate standalone (self-emit, both tsc legs) 81 s.
@@ -1017,3 +1018,38 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     with cultures + hostile PHP + grep gates: all **130** programs agree (12 PHP refusers); library gate green
     (node leg, DOM leg 139 dirs, samples, barrel, PHP multi-library). Not run (slice 14): the full tier,
     run-nuget, the POSIX leg.
+- **2026-10-17 (night, boundary fix)** — **The T?-representation boundary** (the slice-13 "found, not fixed").
+  Root cause: slice 7 kept a user generic's `T?` as `Option<X>` at the call site (its body's representation,
+  kept), but nothing modelled the crossing into a native `X?`. `checkConvert` let `Option<string>` into
+  `string?` silently (gradual typing: neither side was a known scalar or nominal type). The same gap made
+  `slot.peek() == null` a constant-false reference test. It turned a native `string?` into a `T?` parameter
+  into `Some(null)`. It inferred nothing for `echo(s: string?)` against `Option<T>`. Design: two
+  distinct types with one meaning. The checker marks every crossing with an implicit `Cast`, and lowering
+  expands it with the existing match machinery (no new IR node, no plugin rule for it). As built:
+  - **Option → native** (`optionToNative`, sema + lower): let/assign/argument/return/field init. Lowered as
+    `match o { Some(v) => (X?)v, None => null }`; the widened Some arm gives C#'s switch a natural type for a
+    value-type X. `==`/`!=` against any native operand converts the Option side first. An Option local
+    narrowed by `!= null` reads as the unwrapped X (lowered like `o!`, the D12 fail arm proven dead).
+    Refused: `Option<X>` into a non-nullable known slot ("may be absent"), and `Option<X?>` → `X?` (Some(null)
+    and None would merge).
+  - **native → Option** (`coerceToOptional`): a native nullable is no longer wrapped in `Some`. It lowers to
+    `match n { null => (Option<X>)None, v => Some((X)v) }`; the up-cast None arm lets C# infer a generic
+    call through it, and it is a bare value elsewhere (`castSame`).
+  - **Two further gaps closed, same root cause:** (1) member/element assignment (`this.item = …`) never ran
+    `checkConvert`; it does now for `=`. (2) A free generic function's args were converted against the
+    RAW `T`-typed params (`first([4, 5])` emitted C# `new T[]`, `present(n)` `new None<T>()`). The type params
+    are now bound first (explicit `f<T>` args or inference), then args convert into the instantiated params.
+    `unifyGeneric` binds `T = string` from a `string?`/`string` argument against `Option<T>`. A binding made
+    through the boundary is recorded in `e.typeArgs`, so every target spells it (`echo<string>(…)`), just as
+    an inferred construction is. The target's own inference only sees the converted match: strict TS inferred
+    `T` from its object literals as `null | undefined` (the library gate caught it, TS2322). This also needed
+    the TS `Call` rule to spell `typeArgsSuffix`. Until now it silently dropped even an explicit `f<T>(…)`;
+    C# already spelled it.
+  - **PHP/Python null pattern:** `match z { null => … }` was `$_m == null` / `_m == None`, so PHP took the
+    null arm for `0` and `""`. A new emitter path `pattern.isNullLiteral` selects `$_m === null` / `_m is None`.
+  - Tests: conformance `optional_boundary.pg` (+ `.expected`, 46 lines: 14 shape groups incl. value and
+    reference elements, both directions, generic function returns and parameters, narrowing, falsy values);
+    13 unit checks (`P40 boundary:`). SPEC §4.4 gained the boundary table.
+  - **Verified:** build green; unit exe green (990); `-Tier fast` green; conformance with the four cultures +
+    hostile PHP: all **131** programs agree (12 PHP refusers); nullable gate green; library gate green. Not run:
+    the full tier, run-nuget, the POSIX leg (no platform-forked code).

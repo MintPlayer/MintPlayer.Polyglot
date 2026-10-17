@@ -601,9 +601,18 @@ private:
     // (false), through `&&` (true), `||` (false) and `!`. Only a bare name — a local or param.
     static void nullFacts(const Expr& c, bool sense, std::vector<std::string>& out) {
         if (c.kind == ExprKind::Binary && (c.text == "!=" || c.text == "==") && c.lhs && c.rhs) {
+            // An `Option<X>` local compared with null was converted to its native `X?` (an implicit Cast,
+            // SPEC §4.4) — the test is still about the bare name.
+            auto bare = [](const Expr* x) -> const Expr* {
+                if (x->kind == ExprKind::Cast && x->lhs && x->lhs->kind == ExprKind::Name && isOptionType(x->lhs->type))
+                    return x->lhs.get();
+                return x;
+            };
+            const Expr* l = bare(c.lhs.get());
+            const Expr* r = bare(c.rhs.get());
             const Expr* name = nullptr;
-            if (c.rhs->kind == ExprKind::NullLit && c.lhs->kind == ExprKind::Name) name = c.lhs.get();
-            else if (c.lhs->kind == ExprKind::NullLit && c.rhs->kind == ExprKind::Name) name = c.rhs.get();
+            if (r->kind == ExprKind::NullLit && l->kind == ExprKind::Name) name = l;
+            else if (l->kind == ExprKind::NullLit && r->kind == ExprKind::Name) name = r;
             if (name && (c.text == "!=") == sense) out.push_back(name->text);
         } else if (c.kind == ExprKind::Binary && c.text == "&&" && sense) {
             nullFacts(*c.lhs, true, out); nullFacts(*c.rhs, true, out);
@@ -618,7 +627,10 @@ private:
     void narrow(const std::vector<std::string>& names, std::vector<NarrowSave>& saves) {
         for (const auto& n : names) {
             Local* l = lookupMut(n);
-            if (!l || !l->type.nullable || (l->type.kind == TypeRef::Kind::Named && l->type.name.empty())) continue;
+            // A native nullable, or an `Option<X>` local (a user generic's `T?`, SPEC §4.4): its narrowed read
+            // is the unwrapped X.
+            if (!l || (!l->type.nullable && !isOptionType(l->type)) ||
+                (l->type.kind == TypeRef::Kind::Named && l->type.name.empty())) continue;
             if (l->isMutable && closureAssigned_.count(n)) continue; // a closure may reassign it at any time
             saves.push_back({l, l->nonNull, l->assigns});
             l->nonNull = true;
@@ -1395,7 +1407,39 @@ private:
         if (slot->kind == ExprKind::Match)  { for (auto& a : slot->arms) if (!a.bodyIsBlock && a.body) coerceToOptional(a.body, opt); slot->type = opt; return; }
         if (slot->kind == ExprKind::NullLit) { auto none = std::make_unique<Expr>(); none->kind = ExprKind::Name; none->text = "None"; none->pos = slot->pos; none->type = opt; slot = std::move(none); return; }
         if (slot->type.kind == TypeRef::Kind::Named && slot->type.name == "Option") { instantiateBareCases(slot, opt); return; } // already optional (or a bare None)
+        // A NATIVE nullable (`string?` — a concrete type's null-carrying form) flowing into `Option<string>`:
+        // its null is the None, not a present value, so it is not `Some(value)` (that made `Some(null)`).
+        // The representation conversion is an implicit Cast that lowering expands into
+        // `match v { null => None, x => Some(x) }` (SPEC §4.4, the T?-representation boundary). Only when the
+        // element itself is non-nullable: into `Option<string?>`, a null IS a present value (`Some(null)`).
+        if (isNativeNullable(slot->type) && !opt.args[0].nullable) { coerce(slot, opt); return; }
         wrapSome(slot, opt); // a present value of the element type
+    }
+    // `Option<X>` — the representation a user generic's `T?` has at a concrete use site (SPEC §4.4).
+    static bool isOptionType(const TypeRef& t) {
+        return t.kind == TypeRef::Kind::Named && t.name == "Option" && t.args.size() == 1 && !t.nullable;
+    }
+    // A concrete type's native nullable form (`string?`, `i32?`, `Box?`) — NOT the untyped null literal, and
+    // never an Option (whose absence is the None case, not a null).
+    static bool isNativeNullable(const TypeRef& t) {
+        return t.nullable && !(t.kind == TypeRef::Kind::Named && (t.name.empty() || t.name == "Option"));
+    }
+    // The T?-representation boundary, Option -> native (SPEC §4.4): an `Option<X>` value that meets a
+    // native-nullable context converts to `X?` (lowering expands the Cast into
+    // `match o { Some(v) => v, None => null }`). Returns false (and diagnoses) when the conversion would lose
+    // information: `Option<X?>` merges `Some(null)` and `None` into one null.
+    bool optionToNative(ExprPtr& slot, const std::string& ctx) {
+        const TypeRef& elem = slot->type.args[0];
+        if (elem.nullable) {
+            diags_.error(slot->pos, "cannot convert '" + showTy(slot->type) + "' to a native nullable (" + ctx +
+                                        "): its element is itself nullable, so 'Some(null)' and 'None' would "
+                                        "both become null; match on it instead");
+            return false;
+        }
+        TypeRef nat = elem;
+        nat.nullable = true;
+        coerce(slot, nat);
+        return true;
     }
 
     // A value flowing into a typed slot (let/assign/return/argument): widen losslessly if possible, else
@@ -1420,6 +1464,23 @@ private:
             return;
         }
         instantiateBareCases(slot, target); // a contextually-typed bare union case (`None`) takes `target`
+        // The T?-representation boundary (SPEC §4.4): a user generic's `T?` is an `Option<X>` at a concrete
+        // use site, a distinct type from the native `X?`. Into a native-nullable slot it converts (the null is
+        // the None); into a non-nullable slot it is refused, it may be absent (it used to pass silently, and
+        // the targets then held a `{tag:"Some"}` object where a string was expected).
+        if (isOptionType(slot->type) && !isOptionType(target)) {
+            if (target.nullable) {
+                if (!optionToNative(slot, ctx)) return;
+            } else if (target.kind == TypeRef::Kind::Named && !target.name.empty() &&
+                       !genericsInScope_.count(target.name) && target.name != "Iterable" &&
+                       (scalarTyOf(target) != Ty::Unknown || knownType(target))) {
+                diags_.error(slot->pos, "cannot convert '" + showTy(slot->type) + "' to '" + showTy(target) +
+                                            "' (" + ctx + "): the value may be absent; unwrap it with "
+                                            "'?? fallback', '!' or a match, or declare the slot '" +
+                                            showTy(target) + "?'");
+                return;
+            }
+        }
         // G3 (wave 2): an UNSUFFIXED integer literal flowing into an i64/u64 slot is retyped to the slot's
         // width — the literal IS a 64-bit value, so targets with a distinct 64-bit literal spelling emit it
         // exactly (TS `9007199254740993n`, C# `…L`). The widening-CAST path would instead emit a runtime
@@ -1622,6 +1683,10 @@ private:
                     if (s.op != "=" && tt.nullable) // P40 A4 (N1, S7 hole): the compound op reads a maybe-null value
                         diags_.error(s.pos, "'" + s.op + "' target of type '" + showTy(tt) +
                                                 "' may be null; read it with '??' or '!' and assign the result");
+                    // A field/element is a typed slot like a local: the value converts into it (widening,
+                    // list-literal typing, the T?-representation boundary of SPEC §4.4). It used to skip
+                    // every conversion, so `this.item = slot.peek()` stored an Option in a `string?` field.
+                    if (s.op == "=") checkConvert(s.value, tt, "assignment");
                     // P37 C7: a compound op on a user-typed Member/Index target — or through a USER
                     // indexer even with scalar elements — re-lowers the target for the read side, so the
                     // base must be pure (a name or `this`) for single evaluation; a computed receiver is
@@ -2343,6 +2408,11 @@ private:
     TypeRef checkName(Expr& e) {
         if (const Local* l = lookup(e.text)) {
             recordRef(e.pos, e.text, l->defId);
+            if (isOptionType(l->type) && narrowedHere(*l)) { // an Option local proven present: the read
+                e.narrowedNonNull = true;                    // unwraps it (lowered like `o!`, SPEC §4.4)
+                e.castType = l->type;                        // the local's own (Option) type, for lowering
+                return l->type.args[0];
+            }
             if (l->type.nullable && narrowedHere(*l)) { // P40 D14: proven non-null at this read
                 e.narrowedNonNull = true;
                 TypeRef t = l->type;
@@ -2467,6 +2537,13 @@ private:
         } else {
             rt = checkExpr(*e.rhs);
         }
+        // The T?-representation boundary (SPEC §4.4): an `Option<X>` compared with a native operand (`null`,
+        // a `string?`, a `string`) compares as its native `X?` — `slot.peek() == null` is an absence test, not
+        // a union-vs-null reference test (which was constant false). Two Options compare structurally (#57).
+        if ((op == "==" || op == "!=") && isOptionType(lt) != isOptionType(rt)) {
+            ExprPtr& side = isOptionType(lt) ? e.lhs : e.rhs;
+            if (optionToNative(side, "'" + op + "' operand")) (isOptionType(lt) ? lt : rt) = side->type;
+        }
         Ty l = scalarTyOf(lt), r = scalarTyOf(rt);
         // P40 A4 (N1): only `==`, `!=` and `??` accept a maybe-null operand — every other operator would
         // diverge per target on null (C# lifts to null, JS coerces to 0/"null", Python/PHP throw or coerce).
@@ -2558,6 +2635,15 @@ private:
         if (p.kind == TypeRef::Kind::Named && p.args.empty() && gen.count(p.name)) {
             // Bind T to the argument type (first binding wins); ignore an unknown arg so we don't bind T=unknown.
             if (!binds.count(p.name) && !(a.kind == TypeRef::Kind::Named && a.name.empty())) binds[p.name] = a;
+            return;
+        }
+        // A `T?` parameter (normalized to `Option<T>`) given a non-Option argument: a native `string?` or a
+        // bare `string` binds T to `string` — the argument converts at the call (SPEC §4.4), it is not the
+        // element type itself (`T = string?` would make the parameter an `Option<string?>` holding `Some(null)`).
+        if (isOptionType(p) && !isOptionType(a) && !(a.kind == TypeRef::Kind::Named && a.name.empty())) {
+            TypeRef bare = a;
+            bare.nullable = false;
+            unifyGeneric(gen, p.args[0], bare, binds);
             return;
         }
         for (std::size_t i = 0; i < p.args.size() && i < a.args.size(); ++i) unifyGeneric(gen, p.args[i], a.args[i], binds);
@@ -3001,23 +3087,44 @@ private:
             if (auto it = fnDefId_.find(name); it != fnDefId_.end()) recordRef(e.lhs->pos, name, it->second);
             const FnSig* chosen = resolveOverload(f->second, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
-            checkArgs(chosen->params, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
-            checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
-            checkGenericBounds(chosen->boundSpecs, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
-            e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
-            TypeRef r = inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
-            if (!e.typeArgs.empty()) { // P40 A4: explicit `f<T>(…)` binds the type params (and is emitted)
+            // Bind the type params first — from explicit `f<T>(…)` args (P40 A4, emitted) or inferred from the
+            // argument types — so each argument converts into its INSTANTIATED parameter: `present(s)` into
+            // `Option<string>` (SPEC §4.4), `first([4, 5])` into `i32[]`. Checking against the raw `T`-typed
+            // parameter typed those conversions with the type parameter (C# `new None<T>()`, `new T[]`).
+            std::unordered_set<std::string> gen(chosen->generics.begin(), chosen->generics.end());
+            std::unordered_map<std::string, TypeRef> binds;
+            bool explicitArgs = false;
+            if (!e.typeArgs.empty()) {
                 if (e.typeArgs.size() != chosen->generics.size()) {
                     diags_.error(e.pos, "'" + name + "' takes " + std::to_string(chosen->generics.size()) +
                                             " type argument(s), got " + std::to_string(e.typeArgs.size()));
                 } else {
                     for (auto& ta : e.typeArgs) { normalizeOptional(ta, genericsInScope_); resolveTypeRef(ta, e.pos); }
-                    std::unordered_set<std::string> gen(chosen->generics.begin(), chosen->generics.end());
-                    std::unordered_map<std::string, TypeRef> binds;
                     for (std::size_t i = 0; i < chosen->generics.size(); ++i) binds[chosen->generics[i]] = e.typeArgs[i];
-                    r = substGeneric(chosen->result, gen, binds);
+                    explicitArgs = true;
                 }
             }
+            if (!explicitArgs) {
+                bool viaBoundary = false;
+                for (std::size_t i = 0; i < chosen->params.size() && i < argTypes.size(); ++i) {
+                    unifyGeneric(gen, chosen->params[i], argTypes[i], binds);
+                    if (isOptionType(chosen->params[i]) && !isOptionType(argTypes[i])) viaBoundary = true;
+                }
+                // A type param bound THROUGH the T?-boundary (a `string?` argument for an `Option<T>` param) is
+                // invisible to the target's own inference, which sees only the converted match expression (TS
+                // infers `T` from its object literals as `null | undefined`). Record the binding so every
+                // target spells it, as an inferred construction does (P40 slice 7).
+                bool allBound = viaBoundary;
+                for (const auto& g : chosen->generics) if (!binds.count(g)) allBound = false;
+                if (allBound) for (const auto& g : chosen->generics) e.typeArgs.push_back(binds[g]);
+            }
+            std::vector<TypeRef> ps;
+            for (const auto& p : chosen->params) ps.push_back(gen.empty() ? p : substGeneric(p, gen, binds));
+            checkArgs(ps, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
+            checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
+            checkGenericBounds(chosen->boundSpecs, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
+            e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
+            TypeRef r = gen.empty() ? chosen->result : substGeneric(chosen->result, gen, binds);
             return chosen->isAsync ? awaitable(r) : r;
         }
         // (`Error(msg)` construction is handled by the types_ branch above — Error is a core-prelude type.)

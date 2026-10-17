@@ -586,13 +586,21 @@ private:
     // (whose None arm is the NullAssert fail form, P40 D12). The None body is lowered after the scrutinee.
     template <class NoneFn>
     ir::ExprPtr optionMatch(const Expr& e, NoneFn noneBody) {
+        ir::ExprPtr scrut = expr(*e.lhs); // scrutinee keeps its Option<X> type
+        return optionMatchOn(std::move(scrut), e.pos, e.type,
+                             [&](const std::string& v) { return std::make_unique<ir::Var>(e.pos, e.type, v); },
+                             noneBody);
+    }
+    // `match <scrut> { Some(v) => someBody(v), None => noneBody() }` typed `result`.
+    template <class SomeFn, class NoneFn>
+    ir::ExprPtr optionMatchOn(ir::ExprPtr scrut, SourcePos pos, const TypeRef& result, SomeFn someBody, NoneFn noneBody) {
         std::string v = "__opt" + std::to_string(tmpCounter_++);
-        auto m = std::make_unique<ir::Match>(e.pos, e.type, expr(*e.lhs)); // scrutinee keeps its Option<X> type
+        auto m = std::make_unique<ir::Match>(pos, result, std::move(scrut));
         ir::MatchArm some;
         some.pattern.kind = ir::PatternKind::Ctor;
         some.pattern.ctorCase = "Some";
         some.pattern.binders.push_back({"value", v}); // bind the Some payload field
-        some.body = std::make_unique<ir::Var>(e.pos, e.type, v);
+        some.body = someBody(v);
         m->arms.push_back(std::move(some));
         ir::MatchArm none;
         none.pattern.kind = ir::PatternKind::Ctor;
@@ -601,6 +609,53 @@ private:
         m->arms.push_back(std::move(none));
         setHasCatchAll(*m);
         return m;
+    }
+
+    // ---- The T?-representation boundary (SPEC §4.4) ----
+    // A user generic's `T?` is an `Option<X>` at a concrete use site; a concrete `X?` is a native nullable.
+    // Sema marks each crossing with an implicit Cast; these expand it with the existing match machinery
+    // (no new IR node, no plugin rule).
+    //
+    // Option -> native: `match o { Some(v) => (X?)v, None => null }`, typed `X?` (the Some arm widens to the
+    // nullable so C#'s switch expression has a natural type for a value-type X).
+    ir::ExprPtr optionToNative(const Expr& e) {
+        const TypeRef nat = e.castType;
+        TypeRef elem = nat;
+        elem.nullable = false;
+        return optionMatchOn(expr(*e.lhs), e.pos, nat,
+                             [&](const std::string& v) {
+                                 return std::make_unique<ir::Cast>(e.pos, nat, std::make_unique<ir::Var>(e.pos, elem, v));
+                             },
+                             [&] { return std::make_unique<ir::NullLit>(e.pos, nat); });
+    }
+    // native -> Option: `match n { null => None, v => Some((X)v) }`, typed `Option<X>`. The scrutinee is
+    // evaluated once (every target's match binds it); the bound `v` is the non-null read (C# unwraps a
+    // Nullable<T>, the other targets read it bare — the P40 D14 narrowed-read convention).
+    ir::ExprPtr nativeToOption(const Expr& e) {
+        const TypeRef& opt = e.castType;
+        const TypeRef nat = e.lhs->type;
+        std::string v = "__opt" + std::to_string(tmpCounter_++);
+        auto m = std::make_unique<ir::Match>(e.pos, opt, expr(*e.lhs));
+        ir::MatchArm none;
+        none.pattern.kind = ir::PatternKind::Literal;
+        none.pattern.literal = std::make_unique<ir::NullLit>(e.pos, nat);
+        // The None arm is up-cast to the union so the match has a natural type (`Option<X>`) where a target
+        // infers through it (a C# generic call `present(n switch {…})`); a same-type Cast is the bare value on
+        // the other targets (node.castSame).
+        none.body = std::make_unique<ir::Cast>(e.pos, opt, std::make_unique<ir::MakeCase>(e.pos, opt, "Option", "None"));
+        m->arms.push_back(std::move(none));
+        ir::MatchArm some;
+        some.pattern.kind = ir::PatternKind::Binding;
+        some.pattern.binding = v;
+        auto mc = std::make_unique<ir::MakeCase>(e.pos, opt, "Option", "Some");
+        mc->fields.push_back({"value", std::make_unique<ir::Cast>(e.pos, opt.args[0], std::make_unique<ir::Var>(e.pos, nat, v))});
+        some.body = std::move(mc);
+        m->arms.push_back(std::move(some));
+        setHasCatchAll(*m);
+        return m;
+    }
+    static bool isOptionType(const TypeRef& t) {
+        return t.kind == TypeRef::Kind::Named && t.name == "Option" && t.args.size() == 1 && !t.nullable;
     }
 
     static std::vector<ir::GenericParam> generics(const std::vector<GenericParam>& gs) {
@@ -778,6 +833,13 @@ private:
                 return in;
             }
             case ExprKind::Name:
+                if (e.narrowedNonNull && isOptionType(e.castType)) { // an Option local proven present (SPEC
+                    // §4.4): the read unwraps it, `match o { Some(v) => v, None => <unreachable fail> }` — the
+                    // `o!` form (P40 D12), whose None arm the narrowing proves dead.
+                    return optionMatchOn(std::make_unique<ir::Var>(e.pos, e.castType, e.text), e.pos, e.type,
+                                         [&](const std::string& v) { return std::make_unique<ir::Var>(e.pos, e.type, v); },
+                                         [&]() -> ir::ExprPtr { return std::make_unique<ir::NullAssert>(e.pos, e.type, nullptr); });
+                }
                 if (e.narrowedNonNull) { // P40 D14: a flow-narrowed read keeps the variable's nullable type and
                     TypeRef vt = e.type; // converts to the non-null one (C# unwraps a Nullable<T>; the other
                     vt.nullable = true;  // targets' same-type conversion is the bare read)
@@ -808,6 +870,9 @@ private:
             }
             case ExprKind::Await:     return std::make_unique<ir::Await>(e.pos, e.type, expr(*e.lhs));
             case ExprKind::Cast: {
+                // The T?-representation boundary (SPEC §4.4): Option<X> <-> native X?.
+                if (isOptionType(e.lhs->type) && !isOptionType(e.castType) && e.castType.nullable) return optionToNative(e);
+                if (isOptionType(e.castType) && !isOptionType(e.lhs->type) && e.lhs->type.nullable) return nativeToOption(e);
                 auto c = std::make_unique<ir::Cast>(e.pos, e.castType, expr(*e.lhs));
                 c->convMethod = e.overloadName; // P37 C: user explicit conversion — method targets call to<T>()
                 return c;

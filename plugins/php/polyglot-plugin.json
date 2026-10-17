@@ -2205,6 +2205,10 @@
             }
           ],
           [
+            { "eq": ["item.pattern.isNullLiteral", "true"] },
+            { "tmpl": ["$_m === null"] }
+          ],
+          [
             {
               "eq": [
                 "item.pattern.kind",

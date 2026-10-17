@@ -311,6 +311,24 @@ function's `T?` result); an **`extern class`**'s `V?` member is a *native* nulla
 (`int?` on C#), and is refused while `V` is still a type parameter (a binding's native null has no
 faithful form there, §3.C).
 
+**The `T?`-representation boundary** (P40). Those are two distinct types with one meaning: `Option<X>` (a
+user generic's `T?` at a concrete use site) and the native `X?` (a concrete type's nullable). The checker
+converts between them wherever a value crosses from one to the other, and the null is always the `None`:
+
+| Position | `Option<X>` → native `X?` | native `X?` → `Option<X>` |
+|---|---|---|
+| `let`/`var` with an annotation, assignment (local, field, element), argument, return, field / record init | `match o { Some(v) => v, None => null }` | `match n { null => None, v => Some(v) }` — never `Some(null)` |
+| `==` / `!=` against a native operand (`null`, `string?`, `string`) | compares as `X?`: `slot.peek() == null` is an absence test | — |
+| `!`, `?? d` | unwraps (`None` throws / takes `d`) | — |
+| `if o != null` on an `Option` local | the narrowed read is the unwrapped `X` | — |
+
+A generic function's `T?` parameter given a native `string?` (or a bare `string`) binds `T = string`, not
+`string?`, and the argument converts at the call. Refused, with a diagnostic: an `Option<X>` into a
+non-nullable `X` slot (it may be absent; unwrap with `??`, `!` or a match), and `Option<X?>` into `X?`
+(`Some(null)` and `None` would both become null). Untouched by the boundary: a `match` on the `Option` itself
+and `Option` to `Option`. A `null` match pattern is an identity test on every target (PHP `=== null`, Python
+`is None`), so a present `0` or `""` is never read as absent.
+
 ### 4.5 Enums vs unions
 
 `enum` is **only** for simple named constants. Data-carrying variants are a `union` (ADT):
