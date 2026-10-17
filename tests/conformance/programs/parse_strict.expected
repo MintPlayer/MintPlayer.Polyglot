@@ -1,0 +1,131 @@
+i32.parse '' threw: i32.parse: '' is not a valid i32
+toI32 '' threw: i32.parse: '' is not a valid i32
+i32.tryParse '' = absent
+i32.parse ' 1' threw: i32.parse: ' 1' is not a valid i32
+toI32 ' 1' threw: i32.parse: ' 1' is not a valid i32
+i32.tryParse ' 1' = absent
+i32.parse '1 ' threw: i32.parse: '1 ' is not a valid i32
+toI32 '1 ' threw: i32.parse: '1 ' is not a valid i32
+i32.tryParse '1 ' = absent
+i32.parse '+' threw: i32.parse: '+' is not a valid i32
+toI32 '+' threw: i32.parse: '+' is not a valid i32
+i32.tryParse '+' = absent
+i32.parse '-' threw: i32.parse: '-' is not a valid i32
+toI32 '-' threw: i32.parse: '-' is not a valid i32
+i32.tryParse '-' = absent
+i32.parse '12a' threw: i32.parse: '12a' is not a valid i32
+toI32 '12a' threw: i32.parse: '12a' is not a valid i32
+i32.tryParse '12a' = absent
+i32.parse '1e3' threw: i32.parse: '1e3' is not a valid i32
+toI32 '1e3' threw: i32.parse: '1e3' is not a valid i32
+i32.tryParse '1e3' = absent
+i32.parse '0x1F' threw: i32.parse: '0x1F' is not a valid i32
+toI32 '0x1F' threw: i32.parse: '0x1F' is not a valid i32
+i32.tryParse '0x1F' = absent
+i32.parse '1.0' threw: i32.parse: '1.0' is not a valid i32
+toI32 '1.0' threw: i32.parse: '1.0' is not a valid i32
+i32.tryParse '1.0' = absent
+i32.parse '1_000' threw: i32.parse: '1_000' is not a valid i32
+toI32 '1_000' threw: i32.parse: '1_000' is not a valid i32
+i32.tryParse '1_000' = absent
+i32.parse '--1' threw: i32.parse: '--1' is not a valid i32
+toI32 '--1' threw: i32.parse: '--1' is not a valid i32
+i32.tryParse '--1' = absent
+i32.parse '+-1' threw: i32.parse: '+-1' is not a valid i32
+toI32 '+-1' threw: i32.parse: '+-1' is not a valid i32
+i32.tryParse '+-1' = absent
+i32.parse '１' threw: i32.parse: '１' is not a valid i32
+toI32 '１' threw: i32.parse: '１' is not a valid i32
+i32.tryParse '１' = absent
+i32.parse '2147483648' threw: i32.parse: '2147483648' is not a valid i32
+toI32 '2147483648' threw: i32.parse: '2147483648' is not a valid i32
+i32.tryParse '2147483648' = absent
+i32.parse '-2147483649' threw: i32.parse: '-2147483649' is not a valid i32
+toI32 '-2147483649' threw: i32.parse: '-2147483649' is not a valid i32
+i32.tryParse '-2147483649' = absent
+i32.parse '99999999999999999999' threw: i32.parse: '99999999999999999999' is not a valid i32
+toI32 '99999999999999999999' threw: i32.parse: '99999999999999999999' is not a valid i32
+i32.tryParse '99999999999999999999' = absent
+i32.parse '0' = 0
+i32.tryParse '0' = 0
+i32.parse '-0' = 0
+i32.tryParse '-0' = 0
+i32.parse '+7' = 7
+i32.tryParse '+7' = 7
+i32.parse '007' = 7
+i32.tryParse '007' = 7
+i32.parse '-2147483648' = -2147483648
+i32.tryParse '-2147483648' = -2147483648
+i32.parse '2147483647' = 2147483647
+i32.tryParse '2147483647' = 2147483647
+i32.parse '0000000000002147483647' = 2147483647
+i32.tryParse '0000000000002147483647' = 2147483647
+i8 -128 = -128
+i8 127 = 127
+i8 128 threw: i8.parse: '128' is not a valid i8
+i8 -129 threw: i8.parse: '-129' is not a valid i8
+i16 -32768 = -32768
+i16 32768 threw: i16.parse: '32768' is not a valid i16
+u8 255 = 255
+u8 256 threw: u8.parse: '256' is not a valid u8
+u8 -0 = 0
+u8 -1 threw: u8.parse: '-1' is not a valid u8
+u16 65535 = 65535
+u16 65536 threw: u16.parse: '65536' is not a valid u16
+u32 4294967295 = 4294967295
+u32 4294967296 threw: u32.parse: '4294967296' is not a valid u32
+i64 min = -9223372036854775808
+i64 max = 9223372036854775807
+i64 max+1 threw: i64.parse: '9223372036854775808' is not a valid i64
+i64 min-1 threw: i64.parse: '-9223372036854775809' is not a valid i64
+u64 2^63-1 = 9223372036854775807
+u64 2^64 threw: u64.parse: '18446744073709551616' is not a valid u64
+u64 1e3 threw: u64.parse: '1e3' is not a valid u64
+true
+true
+false
+f64.parse '1.5' = 1.5
+f64.tryParse '1.5' = 1.5
+f64.parse '-0.25' = -0.25
+f64.tryParse '-0.25' = -0.25
+f64.parse '+.5' = 0.5
+f64.tryParse '+.5' = 0.5
+f64.parse '5.' = 5
+f64.tryParse '5.' = 5
+f64.parse '1e3' = 1000
+f64.tryParse '1e3' = 1000
+f64.parse '1E-2' = 0.01
+f64.tryParse '1E-2' = 0.01
+f64.parse '-1.5e+2' = -150
+f64.tryParse '-1.5e+2' = -150
+f64.parse '1e400' = Infinity
+f64.tryParse '1e400' = Infinity
+f64.parse '-1e400' = -Infinity
+f64.tryParse '-1e400' = -Infinity
+f64.parse '' threw: f64.parse: '' is not a valid f64
+f64.tryParse '' = absent
+f64.parse '.' threw: f64.parse: '.' is not a valid f64
+f64.tryParse '.' = absent
+f64.parse 'e5' threw: f64.parse: 'e5' is not a valid f64
+f64.tryParse 'e5' = absent
+f64.parse '1e' threw: f64.parse: '1e' is not a valid f64
+f64.tryParse '1e' = absent
+f64.parse '1e+' threw: f64.parse: '1e+' is not a valid f64
+f64.tryParse '1e+' = absent
+f64.parse 'NaN' threw: f64.parse: 'NaN' is not a valid f64
+f64.tryParse 'NaN' = absent
+f64.parse 'Infinity' threw: f64.parse: 'Infinity' is not a valid f64
+f64.tryParse 'Infinity' = absent
+f64.parse 'inf' threw: f64.parse: 'inf' is not a valid f64
+f64.tryParse 'inf' = absent
+f64.parse ' 1.5' threw: f64.parse: ' 1.5' is not a valid f64
+f64.tryParse ' 1.5' = absent
+f64.parse '0x10' threw: f64.parse: '0x10' is not a valid f64
+f64.tryParse '0x10' = absent
+f64.parse '1_0' threw: f64.parse: '1_0' is not a valid f64
+f64.tryParse '1_0' = absent
+f64.parse '1.5f' threw: f64.parse: '1.5f' is not a valid f64
+f64.tryParse '1.5f' = absent
+f32.parse '2.5' = 2.5
+f32.parse 'x' threw: f32.parse: 'x' is not a valid f32
+true

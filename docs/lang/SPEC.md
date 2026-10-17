@@ -74,8 +74,19 @@ narrowing (`(i32)big`), lossy widening (`(f64)someI64` — loses precision past 
 (`(u32)signed`). A cast never fails silently and never miscompiles; it truncates toward zero (float→int)
 and wraps (narrowing) exactly as .NET does, mirrored on the JS side (`BigInt`/`Number`/`Math.trunc`/masking).
 Converting `string`↔number is **not** a cast — text parsing can fail (and C# can't cast `string`→`int`),
-so it is a fallible **static method on the type**: `i32.parse(s)` / `f64.parse(s)` (throwing) and
-`tryParse(s): T?` (nullable). A std API (§7/P7), separate from casts.
+so it is a fallible **static method on the type**: `i32.parse(s)` / `f64.parse(s)` (throwing an `Error`) and
+`i32.tryParse(s): i32?` / `f64.tryParse(s): f64?` (absent instead), on every integer and float scalar. A std
+API (§7/P7), separate from casts. Both accept **one strict grammar on every target**, checked in std.core's
+own `.pg` before any native parser runs:
+- an integer (`i8`…`u64`): `[+-]?[0-9]+` whose value is in the type's range (`"007"`, `"+7"` and `"-0"` are
+  fine; `u8.parse("-0")` is `0`);
+- a float (`f32`, `f64`): `[+-]?(digits[.digits*] | .digits)([eE][+-]?digits)?`; a value too large reads as
+  an infinity.
+
+Nothing else is a number: no surrounding whitespace, no `_` separators, no `0x`/octal prefix, no `NaN` /
+`Infinity`, no empty string, no non-ASCII digits. `"12a"`, `"1e3"` and `"2147483648"` all make
+`i32.parse` throw `Error("i32.parse: '12a' is not a valid i32")` and `i32.tryParse` return `null`, identically
+on C#, TS, Python and PHP (std.strings' `s.toI32()` is `i32.parse(s)`). Parsing is culture-free (§8).
 
 Converting `char`→number is **not** a cast either — a char is a native char only on C# but a
 one-character string on TS/Python/PHP, so `(i32)c` cannot be honored uniformly (it printed 65 on C#, 0 on
@@ -685,7 +696,11 @@ UTF-8 bytes, so their string std counts through helpers instead (capability `utf
 "emulated"): an ASCII-only string takes a fast path (Python `str.isascii()`, a PHP byte scan); any other is
 indexed through a cached UTF-16 view (Python: astral code points expanded to surrogate pairs; PHP: an
 **iconv** UTF-16LE copy — **the PHP target requires `ext-iconv`**, and names it in the `Error` it throws
-when a non-ASCII string is indexed without it). Printing a lone surrogate writes U+FFFD on every target.
+when a non-ASCII string is indexed without it). The searches (`contains`, `startsWith`, `endsWith`,
+`replaceAll`, `split`) use the native code-point / byte operation — which gives the UTF-16 answer for any
+well-formed operands — and switch to the same UTF-16 view as `indexOf` when an operand holds a lone surrogate
+(P40 review B2), so a lone half never matches differently from one search to the next or from C#/TS.
+Printing a lone surrogate writes U+FFFD on every target.
 
 ---
 
@@ -709,7 +724,7 @@ relaxation is **opt-in and named**, never silent:
 | float `%` | C-style `fmod` (result takes the DIVIDEND's sign — the .NET/JS behavior); Python emits `math.fmod`, PHP `fmod()` | — |
 | PHP 64-bit wrap | **published caveat:** PHP has no i64/u64 wrap emulation (no GMP dependency) — i64 arithmetic is faithful only while intermediates stay inside ±2⁶³ (beyond it PHP promotes to float); u64 values above 2⁶³−1 are not representable | a GMP-backed strict mode could be offered later |
 | string index units | **faithful**: `len`/`charAt`/`codePointAt`/`substring`/`indexOf` count **UTF-16 code units** on every target — natively on C#/TS, through helpers on Python and PHP (§8; PHP requires `ext-iconv`). `"é".len()` is 1 and `"a😀b".len()` is 4 everywhere; `compareOrdinal` orders by code unit everywhere (an astral character sorts before U+E000–U+FFFF) | — |
-| lone surrogates | a `substring`/`charAt` that splits a pair holds the lone half faithfully (its `len`, `codePointAt` and printed U+FFFD agree everywhere) | **published caveat:** on Python and PHP, two lone halves joined by `+` are not re-paired for `==` (`"\u{1F600}".substring(0, 1) + "\u{1F600}".substring(1, 2) == "\u{1F600}"` is true on C#/TS, false on Python/PHP); `print` still shows the paired character |
+| lone surrogates | a `substring`/`charAt` that splits a pair holds the lone half faithfully (its `len`, `codePointAt` and printed U+FFFD agree everywhere), and every std search matches it by UTF-16 code unit on every target: `indexOf`, `contains`, `startsWith`, `endsWith`, `replaceAll` and `split` agree (`"a\u{1F600}".contains(hi)` is true and `split(hi)` gives 2 parts on all four; Python/PHP switch to the UTF-16 view only when an operand holds a lone half) | **published caveat:** on Python and PHP, two lone halves joined by `+` are not re-paired for `==` (`"\u{1F600}".substring(0, 1) + "\u{1F600}".substring(1, 2) == "\u{1F600}"` is true on C#/TS, false on Python/PHP); `print` still shows the paired character |
 | `codePoints()` | iterates code points on every target | **published caveat:** a lone surrogate is U+FFFD on C# (`EnumerateRunes`) and kept as is on TS/Python; PHP's `preg_split('//u')` fails on the ill-formed string |
 
 **Determinism honesty (PRD §3.D):** only `+ − × ÷ √` are reproducible across .NET and JS (at matched
@@ -723,8 +738,9 @@ Two integer edges are §3.D territory as well (documented, deliberately unpinned
 - **out-of-range float→int casts** — trunc-then-wrap on the wrap targets, target-defined on .NET
   (the CLR conversion is unspecified out of range). In-range casts truncate toward zero everywhere
   (pinned by `cast_float_int.pg`).
-- **scalar `parse` on out-of-range/garbage input** — target-defined (C# throws, TS wraps/NaNs,
-  Python/PHP pass through/coerce); only in-range parses are promised (pinned by `parse_widths.pg`).
+
+(Scalar `parse` on out-of-range or garbage input is **not** in this list: one strict grammar, checked in `.pg`,
+throws the same `Error` on every target — §3, pinned by `parse_strict.pg`.)
 
 ---
 

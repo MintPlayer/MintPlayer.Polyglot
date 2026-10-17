@@ -18,7 +18,7 @@ class RangeError : Error {
 
 fn parsePercent(s: string): i32 {
   if s.isEmpty() { throw ParseError("empty input", 0) }
-  let n = s.toI32()                      // assume std parse; throws ParseError on bad digits
+  let n = s.toI32()                      // std parse; throws Error unless s is [+-]digits in i32 range
   if n < 0 || n > 100 { throw RangeError("out of 0..100: ${n}") }
   return n
 }

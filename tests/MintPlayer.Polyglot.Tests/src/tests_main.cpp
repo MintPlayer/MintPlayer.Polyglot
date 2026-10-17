@@ -1553,8 +1553,10 @@ int main() {
                   "P40 s8: TS replaceAll is split/join (no `$$` replacement patterns); trimAscii is exactly TAB..CR + space");
             EmitResult rphp = compileStd(rest, findTarget("php"));
             check(rphp.ok && has(rphp.code, "function __pg_chr8($c)") && has(rphp.code, "__pg_chr8($cp)") &&
-                      has(rphp.code, "strcmp($a, $b)") && !has(rphp.code, "<=>") && has(rphp.code, "explode($separator, $self)"),
-                  "P40 s8: PHP fromCodePoint via the UTF-8 encoder helper (requires), compareOrdinal via strcmp (never <=>)");
+                      has(rphp.code, "strcmp($a, $b)") && !has(rphp.code, "<=>") && has(rphp.code, "__pg_u16_split($self, $separator)") &&
+                      has(rphp.code, "explode($sep, $s)"),
+                  "P40 s8: PHP fromCodePoint via the UTF-8 encoder helper (requires), compareOrdinal via strcmp (never <=>); "
+                  "split is explode unless a lone surrogate needs the UTF-16 view (review B2)");
             EmitResult rcs = compileStd(rest, findTarget("csharp"));
             check(rcs.ok && has(rcs.code, "internal static string _pg_string_fromCodePoint(int cp)") &&
                       has(rcs.code, "is not a Unicode scalar value") && has(rcs.code, "char.ConvertFromUtf32(cp)"),

@@ -1,0 +1,41 @@
+// P40 review B2: a lone surrogate half (a substring that splits a pair) matches by UTF-16 code unit in EVERY
+// string-std search on every target — contains/startsWith/endsWith/indexOf/replaceAll/split agree with each
+// other and with C#/TS. (Python holds code points and PHP UTF-8 bytes, so those used to give the code-point
+// answer for all but indexOf.)
+
+import "std.strings"
+
+fn main() {
+  let s = "a\u{1F600}"
+  let hi = s.substring(1, 2)
+  let lo = s.substring(2, 3)
+  print(s.indexOf(hi))
+  print(s.indexOf(lo))
+  print(s.contains(hi))
+  print(s.contains(lo))
+  print(s.startsWith("a" + hi))
+  print(s.endsWith(lo))
+  print(s.endsWith(hi))
+  print(s.split(hi).count)
+  print(s.split(lo).count)
+  print(s.split(hi)[0])
+  print(s.split(hi)[1].len())
+  print(s.replaceAll(hi, "H").len())
+  print(s.replaceAll(lo, "L").codePointAt(1))
+  print(s.replaceAll(hi, "H").codePointAt(1))
+
+  // a lone half searched in a string that holds the same half alone, and a whole pair rebuilt by replaceAll
+  let t = "x" + hi + "y"
+  print(t.contains(hi))
+  print(t.indexOf(hi))
+  print(t.split(hi).count)
+  print(t.replaceAll("y", lo).len())
+  print(t.replaceAll("y", lo).codePointAt(1))
+  print(t.replaceAll("y", lo).replaceAll("x", "") == "\u{1F600}")
+
+  // the whole character still matches whole, and no half matches inside a well-formed pair's neighbor
+  print(s.contains("\u{1F600}"))
+  print("\u{1F600}\u{1F600}".split(lo).count)
+  print("b\u{1F601}".contains(hi))
+  print("b\u{1F601}".contains(lo))
+}

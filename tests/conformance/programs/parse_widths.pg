@@ -1,6 +1,6 @@
 // Wave-2 G13: the seven never-executed scalar parse arms (i8/i16/u8/u16/u32/u64/f32)
 // on in-range values, plus the leading-zero decimal ("007" must not read as octal).
-// Out-of-range/garbage input semantics are a recorded follow-up decision (§3.D).
+// Out-of-range/garbage input is one strict grammar on every target (P40 review B3): see parse_strict.pg.
 
 fn main() {
   print(i8.parse("100"))                  // 100

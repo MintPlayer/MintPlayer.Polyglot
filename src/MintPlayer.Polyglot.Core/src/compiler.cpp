@@ -214,6 +214,7 @@ extension fn string.toLowerAscii(): string {
 extension fn string.codePoints(): Iterable<string> {
 }
 extension fn string.toI32(): i32 {
+  return i32.parse(this)
 }
 extension fn string.startsWith(prefix: string): bool {
 }
@@ -302,10 +303,11 @@ extension fn string.split(separator: string): List<string> {
 // type spelling (and, for Error, construction + the `message` property) via the binding mechanism, so the
 // emitters carry no hardcoded Error/Iterable mapping — they're data here, dogfooding the P10 plugin path.
 // The scalar `parse` classes (P19 slice 1, the P13 "std, not compiler" move): sema still types
-// `i32.parse(s)` intrinsically, but the EMISSION comes from these binding arms via the general `ir::Bound`
-// path — deleting the per-target parse special case each backend carried. Scalar names are plain
-// identifiers, so `extern class i32` parses; the classes declare no `type` block, so the scalar spelling
-// tables stay authoritative.
+// `i32.parse(s)` intrinsically, but the EMISSION comes from std.core itself — since the P40 review (B3)
+// `parse`/`tryParse` are .pg guards (one strict grammar, one Error message) over an unchecked per-target
+// `__pgParse` binding arm, so the natives' disagreements on `12a`, `1e3`, `0x1F`, `""` or an out-of-range
+// value never reach the program. Scalar names are plain identifiers, so `extern class i32` parses; the
+// classes declare no `type` block, so the scalar spelling tables stay authoritative.
 const char* STD_CORE = R"PG(
 extern class Error {
   type {
@@ -342,26 +344,264 @@ union Option<T> {
   Some(value: T)
   None
 }
-extern class i8 { static fn parse(s: string): i8 {
-     } }
-extern class i16 { static fn parse(s: string): i16 {
-     } }
-extern class i32 { static fn parse(s: string): i32 {
-     } }
-extern class i64 { static fn parse(s: string): i64 {
-     } }
-extern class u8 { static fn parse(s: string): u8 {
-     } }
-extern class u16 { static fn parse(s: string): u16 {
-     } }
-extern class u32 { static fn parse(s: string): u32 {
-     } }
-extern class u64 { static fn parse(s: string): u64 {
-     } }
-extern class f32 { static fn parse(s: string): f32 {
-     } }
-extern class f64 { static fn parse(s: string): f64 {
-     } }
+// The scalar text grammar (P40 review B3), written ONCE here over two raw primitives, so the four targets
+// cannot drift: an integer is `[+-]?[0-9]+` within the type's range, a float is
+// `[+-]?(digits[.digits*] | .digits)([eE][+-]?digits)?` (overflow reads as an infinity, on every target).
+// No whitespace, no `_`, no hex/octal prefix, no `NaN`/`Infinity`, no empty string. The primitives index the
+// target's OWN string units (UTF-16 / code points / UTF-8 bytes): the grammar is pure ASCII, so any non-ASCII
+// unit fails it whichever unit a target counts in.
+extern class __pgText {
+  static fn rawLen(s: string): i32 {
+  }
+  static fn rawCode(s: string, index: i32): i32 {
+  }
+  // The range test compares DIGIT STRINGS (sign stripped, leading zeros dropped) against the bound's
+  // magnitude — no wider number type needed, so i64/u64 bounds work on every target (PHP has no 64-bit headroom).
+  static fn isInt(s: string, minMagnitude: string, maxMagnitude: string): bool {
+    let n = __pgText.rawLen(s)
+    var i = 0
+    var neg = false
+    if n > 0 {
+      let c0 = __pgText.rawCode(s, 0)
+      if c0 == 45 {
+        neg = true
+        i = 1
+      } else if c0 == 43 {
+        i = 1
+      }
+    }
+    if i >= n {
+      return false
+    }
+    var k = i
+    while k < n {
+      let c = __pgText.rawCode(s, k)
+      if c < 48 || c > 57 {
+        return false
+      }
+      k += 1
+    }
+    while i < n - 1 && __pgText.rawCode(s, i) == 48 {
+      i += 1
+    }
+    var bound = maxMagnitude
+    if neg {
+      bound = minMagnitude
+    }
+    let digits = n - i
+    let width = __pgText.rawLen(bound)
+    if digits != width {
+      return digits < width
+    }
+    var j = 0
+    while j < digits {
+      let a = __pgText.rawCode(s, i + j)
+      let b = __pgText.rawCode(bound, j)
+      if a != b {
+        return a < b
+      }
+      j += 1
+    }
+    return true
+  }
+  static fn isFloat(s: string): bool {
+    let n = __pgText.rawLen(s)
+    var i = 0
+    if i < n && (__pgText.rawCode(s, i) == 43 || __pgText.rawCode(s, i) == 45) {
+      i += 1
+    }
+    var digits = 0
+    while i < n && __pgText.rawCode(s, i) >= 48 && __pgText.rawCode(s, i) <= 57 {
+      i += 1
+      digits += 1
+    }
+    if i < n && __pgText.rawCode(s, i) == 46 {
+      i += 1
+      while i < n && __pgText.rawCode(s, i) >= 48 && __pgText.rawCode(s, i) <= 57 {
+        i += 1
+        digits += 1
+      }
+    }
+    if digits == 0 {
+      return false
+    }
+    if i < n && (__pgText.rawCode(s, i) == 101 || __pgText.rawCode(s, i) == 69) {
+      i += 1
+      if i < n && (__pgText.rawCode(s, i) == 43 || __pgText.rawCode(s, i) == 45) {
+        i += 1
+      }
+      var expDigits = 0
+      while i < n && __pgText.rawCode(s, i) >= 48 && __pgText.rawCode(s, i) <= 57 {
+        i += 1
+        expDigits += 1
+      }
+      if expDigits == 0 {
+        return false
+      }
+    }
+    return i == n
+  }
+}
+extern class i8 {
+  static fn __pgParse(s: string): i8 {
+  }
+  static fn parse(s: string): i8 {
+    if !__pgText.isInt(s, "128", "127") {
+      throw Error("i8.parse: '${s}' is not a valid i8")
+    }
+    return i8.__pgParse(s)
+  }
+  static fn tryParse(s: string): i8? {
+    if !__pgText.isInt(s, "128", "127") {
+      return null
+    }
+    return i8.__pgParse(s)
+  }
+}
+extern class i16 {
+  static fn __pgParse(s: string): i16 {
+  }
+  static fn parse(s: string): i16 {
+    if !__pgText.isInt(s, "32768", "32767") {
+      throw Error("i16.parse: '${s}' is not a valid i16")
+    }
+    return i16.__pgParse(s)
+  }
+  static fn tryParse(s: string): i16? {
+    if !__pgText.isInt(s, "32768", "32767") {
+      return null
+    }
+    return i16.__pgParse(s)
+  }
+}
+extern class i32 {
+  static fn __pgParse(s: string): i32 {
+  }
+  static fn parse(s: string): i32 {
+    if !__pgText.isInt(s, "2147483648", "2147483647") {
+      throw Error("i32.parse: '${s}' is not a valid i32")
+    }
+    return i32.__pgParse(s)
+  }
+  static fn tryParse(s: string): i32? {
+    if !__pgText.isInt(s, "2147483648", "2147483647") {
+      return null
+    }
+    return i32.__pgParse(s)
+  }
+}
+extern class i64 {
+  static fn __pgParse(s: string): i64 {
+  }
+  static fn parse(s: string): i64 {
+    if !__pgText.isInt(s, "9223372036854775808", "9223372036854775807") {
+      throw Error("i64.parse: '${s}' is not a valid i64")
+    }
+    return i64.__pgParse(s)
+  }
+  static fn tryParse(s: string): i64? {
+    if !__pgText.isInt(s, "9223372036854775808", "9223372036854775807") {
+      return null
+    }
+    return i64.__pgParse(s)
+  }
+}
+extern class u8 {
+  static fn __pgParse(s: string): u8 {
+  }
+  static fn parse(s: string): u8 {
+    if !__pgText.isInt(s, "0", "255") {
+      throw Error("u8.parse: '${s}' is not a valid u8")
+    }
+    return u8.__pgParse(s)
+  }
+  static fn tryParse(s: string): u8? {
+    if !__pgText.isInt(s, "0", "255") {
+      return null
+    }
+    return u8.__pgParse(s)
+  }
+}
+extern class u16 {
+  static fn __pgParse(s: string): u16 {
+  }
+  static fn parse(s: string): u16 {
+    if !__pgText.isInt(s, "0", "65535") {
+      throw Error("u16.parse: '${s}' is not a valid u16")
+    }
+    return u16.__pgParse(s)
+  }
+  static fn tryParse(s: string): u16? {
+    if !__pgText.isInt(s, "0", "65535") {
+      return null
+    }
+    return u16.__pgParse(s)
+  }
+}
+extern class u32 {
+  static fn __pgParse(s: string): u32 {
+  }
+  static fn parse(s: string): u32 {
+    if !__pgText.isInt(s, "0", "4294967295") {
+      throw Error("u32.parse: '${s}' is not a valid u32")
+    }
+    return u32.__pgParse(s)
+  }
+  static fn tryParse(s: string): u32? {
+    if !__pgText.isInt(s, "0", "4294967295") {
+      return null
+    }
+    return u32.__pgParse(s)
+  }
+}
+extern class u64 {
+  static fn __pgParse(s: string): u64 {
+  }
+  static fn parse(s: string): u64 {
+    if !__pgText.isInt(s, "0", "18446744073709551615") {
+      throw Error("u64.parse: '${s}' is not a valid u64")
+    }
+    return u64.__pgParse(s)
+  }
+  static fn tryParse(s: string): u64? {
+    if !__pgText.isInt(s, "0", "18446744073709551615") {
+      return null
+    }
+    return u64.__pgParse(s)
+  }
+}
+extern class f32 {
+  static fn __pgParse(s: string): f32 {
+  }
+  static fn parse(s: string): f32 {
+    if !__pgText.isFloat(s) {
+      throw Error("f32.parse: '${s}' is not a valid f32")
+    }
+    return f32.__pgParse(s)
+  }
+  static fn tryParse(s: string): f32? {
+    if !__pgText.isFloat(s) {
+      return null
+    }
+    return f32.__pgParse(s)
+  }
+}
+extern class f64 {
+  static fn __pgParse(s: string): f64 {
+  }
+  static fn parse(s: string): f64 {
+    if !__pgText.isFloat(s) {
+      throw Error("f64.parse: '${s}' is not a valid f64")
+    }
+    return f64.__pgParse(s)
+  }
+  static fn tryParse(s: string): f64? {
+    if !__pgText.isFloat(s) {
+      return null
+    }
+    return f64.__pgParse(s)
+  }
+}
 )PG";
 
 // The first-party std module registry: module path -> embedded .pg source. Adding a std module is data,
