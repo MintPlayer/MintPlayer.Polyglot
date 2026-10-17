@@ -52,14 +52,14 @@ function Check([bool]$ok, [string]$name) {
 # Every CLI invocation goes through here, bounded. A leg that hangs burns the job's entire time budget
 # and reports nothing useful (measured: 37 minutes to a cancellation with no output); a leg that times
 # out names the command that did it.
-function Invoke-Cli([string[]]$CliArgs, [int]$TimeoutSec = 60) {
+function Invoke-Cli([string[]]$CliArgs, [int]$TimeoutSec = 60, [string]$Cwd = "") {
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = (Resolve-Path $Cli).Path
     foreach ($a in $CliArgs) { [void]$psi.ArgumentList.Add($a) }
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
-    $psi.WorkingDirectory = $repo
+    $psi.WorkingDirectory = if ($Cwd) { $Cwd } else { $repo }
     $p = [System.Diagnostics.Process]::Start($psi)
     # Drain both pipes on background tasks: a child that fills a redirected pipe blocks forever if the
     # parent only waits, which is its own classic deadlock.
@@ -204,6 +204,19 @@ try {
             # present at zero rather than missing (D7).
             Check (([regex]::Matches($csText, '<line number=')).Count -gt 1) `
                 "csharp: unreported mapped lines are completed at zero from the #line directives"
+
+            # P40 B7: #line paths are relative to the generated file now, so the remap must resolve them
+            # against the generated file's folder — never the working directory. Same remap, run from an
+            # unrelated cwd, must give the same report.
+            Check ($firstDirective.Matches[0].Groups[2].Value -notmatch '^[A-Za-z]:|^/') `
+                "csharp: #line paths are relative to the generated file (checkout-independent)"
+            $elsewhere = Join-Path $work 'elsewhere'
+            New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
+            $csProjected2 = Join-Path $work 'cs.pg.cwd.xml'
+            $r = Invoke-Cli @('coverage', 'remap', $synth, '--target', 'csharp',
+                              '--generated-dir', $csOut, '--root', $repo, '--out', $csProjected2) -Cwd $elsewhere
+            Check ($r.ExitCode -eq 0 -and ((Get-Content $csProjected2 -Raw) -eq $csText)) `
+                "csharp: remap from a different working directory resolves relative directives identically"
 
             # A report that is NOT .pg-keyed is the signature of --origin-info having been off, whose
             # only other symptom is a mysteriously lower percentage. It must refuse, not emit nothing.

@@ -692,6 +692,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         module.access = lib.access; // C# accessibility knob (empty = target default -> byte-identical)
         module.originInfo = lib.originInfo;      // P38: off => byte-identical
         module.sourceFiles = result.sources.files;
+        if (lib.originInfo && lib.originBaseDir) module.originBaseDir = lib.originBaseDir(""); // P40 B7
         if (lib.originInfo) {
             // P38: collect per-line origins alongside the code. The host turns them into a sidecar — the
             // Core never learns where a file is routed, so it cannot compute map-relative paths itself.
@@ -762,6 +763,9 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         m.access = lib.access;
         m.originInfo = lib.originInfo;      // P38: off => byte-identical
         m.sourceFiles = result.sources.files;
+        // P40 B7: the entry and the prelude file (which follows the entry's directory) route as origin "".
+        if (lib.originInfo && lib.originBaseDir)
+            m.originBaseDir = lib.originBaseDir(importOrigin == kPreludeBasename ? std::string() : importOrigin);
         m.imports = buildImports(importGraph, importOrigin, baseByCanon,
                                  target.backend()->linksWithoutImports(),
                                  target.backend()->crossDirImports(), lib.moduleOutputDir);

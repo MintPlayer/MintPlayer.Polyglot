@@ -192,9 +192,14 @@ inline bool buildIndexFromDirectives(const fs::path& genDir, const std::string& 
             int srcLine = 0;
             std::string srcFile;
             if (!matchDirective(ln, pattern, srcLine, srcFile)) continue;
+            // P40 B7: directive paths are emitted relative to the generated file's directory (Roslyn resolves
+            // them the same way), so resolve against THAT folder — never the working directory. An absolute
+            // path (older output, or a cross-drive fallback) keeps working unchanged.
+            fs::path src(srcFile);
+            if (src.is_relative()) src = f.parent_path() / src;
             std::error_code ec;
-            const fs::path abs = fs::weakly_canonical(fs::path(srcFile), ec);
-            const std::string pg = relativeToRoot(ec ? fs::path(srcFile) : abs, root);
+            const fs::path abs = fs::weakly_canonical(src, ec);
+            const std::string pg = relativeToRoot(ec ? src.lexically_normal() : abs, root);
             index.mappedLines[pg].insert(srcLine);
             index.byGenerated[pg][srcLine].emplace_back(pg, srcLine); // identity
             sawAny = true;

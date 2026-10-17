@@ -56,7 +56,7 @@ v3 sidecar** beside the emitted file.
 | Key | Applies to | What it is |
 |---|---|---|
 | `style` | both | **Closed vocabulary**: `"directive"` or `"sourceMapV3"`. An unknown value is a **load error** — never a silent default. |
-| `line` | `directive` | Per-line template. `$n` = the 1-based source line, `$f` = the source path. Required. |
+| `line` | `directive` | Per-line template. `$n` = the 1-based source line, `$f` = the source path, forward-slashed and **relative to the generated file's directory** (P40: committed output is checkout-independent; absolute only when the two are on different drives). Required. |
 | `hidden` | `directive` | Template for a line whose origin is unknown (braces, scaffolding, std helpers). Required. |
 | `column` | `directive` | Column the pragma is written at; C# wants `0`, which is *not* the emitter's current indent. |
 | `sidecarExtension` | `sourceMapV3` | Suffix **appended to the emitted file's name** to name its sidecar: `".map"` turns `solver.ts` into `solver.ts.map`. Required. |
