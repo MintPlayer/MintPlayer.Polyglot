@@ -24,7 +24,6 @@ fn detonate(): i32 {
       throw Boom()
     }
   }
-  return 0
 }
 
 fn main() {

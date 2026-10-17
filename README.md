@@ -211,6 +211,7 @@ matches), or with `--target-option <target>.<name>=<value>` (which wins over bot
 | `csharp.namespace` | *(none)* | wraps each file in a file-scoped `namespace X;` — two libraries built from `.pg` no longer collide on `PolyglotProgram` / `Option<T>` (CS0433) |
 | `csharp.class` | `PolyglotProgram` | the static class holding top-level functions and globals; emitted only when it has members, and its name is reserved as an identifier |
 | `csharp.access` | *(C# default, `internal`)* | `public` exposes the generated types and wrapper across assemblies (runtime helpers such as `print` stay `internal`) |
+| `csharp.entryPoint` | `true` | `false` drops the `static void Main()` an entry file (one declaring `fn main`) otherwise gets — for an app that owns its entry point: its own `Main` (CS0017) or top-level statements (CS7022) calls `main()` itself |
 | `php.namespace` | *(none)* | `namespace X;` right after `<?php`, so two libraries may define the same function names |
 
 An unknown option, an unknown target, or a value that fails the option's pattern is refused up front. A
@@ -291,6 +292,7 @@ properties, which win over the project's `pgconfig.json`:
   <PolyglotNamespace>MyCompany.Strings</PolyglotNamespace> <!-- csharp.namespace -->
   <PolyglotClass>StringsApi</PolyglotClass>                <!-- csharp.class -->
   <PolyglotAccess>public</PolyglotAccess>                  <!-- csharp.access -->
+  <PolyglotEntryPoint>false</PolyglotEntryPoint>           <!-- csharp.entryPoint -->
 </PropertyGroup>
 ```
 `PolyglotTargets=csharp` limits a build to a subset of the pgconfig `targets` (empty = all). Renaming or

@@ -1,4 +1,5 @@
 #include "mintplayer/polyglot/sema.hpp"
+#include "mintplayer/polyglot/flow.hpp"
 
 #include <cctype>
 #include <cerrno>
@@ -182,6 +183,15 @@ std::string operatorMethod(const std::string& op) {
     if (op == "<<") return "shl";
     if (op == ">>") return "shr";
     return "";
+}
+
+// The `operator fn` names with a meaning (SPEC §6.1). `explicit`/`implicit`/`hash` carry their own rules.
+bool isOperatorMemberName(const std::string& n) {
+    static const char* const names[] = {"plus", "minus", "times", "div", "rem", "eq", "lt", "le", "gt", "ge",
+                                        "band", "bor", "bxor", "shl", "shr", "neg", "bnot", "get", "set",
+                                        "explicit", "implicit", "hash"};
+    for (const char* k : names) if (n == k) return true;
+    return false;
 }
 
 struct MemberInfo {
@@ -369,7 +379,6 @@ public:
         for (std::size_t i = 0; i < unit.classes.size(); ++i) {
             recordModel_ = model_ && req_ && i < req_->userClasses;
             checkTypeBody(unit.classes[i].name, unit.classes[i].generics, unit.classes[i].members, nullptr);
-            checkFieldsInitialized(unit.classes[i]);
             recordModel_ = false;
         }
         for (auto& d : unit.extensions) { // `this` denotes the receiver inside an extension body
@@ -392,6 +401,8 @@ public:
             else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
                 diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
         }
+        // P40 review (A9/B11): reachability, missing returns, field definite assignment, self-comparison.
+        checkFlow(unit, diags_);
     }
 
 private:
@@ -1220,37 +1231,6 @@ private:
         for (const auto& v : u.values)     if (v.hasType) resolveTypeRef(v.type, v.pos);
     }
 
-    // G11 (wave 2): a class field with no initializer must be assigned in `init` — otherwise a read
-    // observes four DIFFERENT defaults (C# 0, TS undefined, Python AttributeError, PHP null). Defining
-    // the error out of existence: the checker demands the assignment, so no target ever reads one.
-    // Any `this.<name> = …` anywhere in the ctor (including branches) counts — the guard targets
-    // NEVER-assigned fields, not flow-sensitive definite assignment.
-    static void collectThisAssigns(const std::vector<StmtPtr>& body, std::unordered_set<std::string>& out) {
-        for (const auto& s : body) {
-            if (!s) continue;
-            if (s->kind == StmtKind::Assign && s->target && s->target->kind == ExprKind::Member &&
-                s->target->lhs && s->target->lhs->kind == ExprKind::This)
-                out.insert(s->target->text);
-            collectThisAssigns(s->thenBody, out);
-            collectThisAssigns(s->elseBody, out);
-            collectThisAssigns(s->finallyBody, out);
-            for (const auto& c : s->catches) collectThisAssigns(c.body, out);
-        }
-    }
-    void checkFieldsInitialized(const ClassDecl& d) {
-        if (d.isExtern) return;
-        std::unordered_set<std::string> assigned;
-        for (const auto& m : d.members)
-            if (m.kind == MemberKind::Constructor) collectThisAssigns(m.body, assigned);
-        for (const auto& m : d.members) {
-            if (m.kind != MemberKind::Field || m.init || m.bindings.size()) continue;
-            if (!assigned.count(m.name))
-                diags_.error(m.pos, "field '" + m.name + "' of class '" + d.name +
-                                        "' is never initialized — give it an initializer or assign it in init "
-                                        "(uninitialized reads differ per target)");
-        }
-    }
-
     // P40 slice 7: a default that is filled in AT THE CALL (an extension's — bound or not — and a binding
     // member's, whose template has no native default to fall back on) is re-evaluated in the caller's scope,
     // so it must mean the same thing there: a literal (optionally negated) or `null`. It is type-checked
@@ -1274,6 +1254,27 @@ private:
         }
     }
 
+    // P40 review A9: a custom `eq` must come with an author `hash` (and a `hash` only with an `eq`). Equal
+    // values must hash equally (C# GetHashCode, Python __hash__ — a C# Dictionary/HashSet or a Python
+    // dict/set key misbehaves otherwise), and no compiler can derive a hash from an arbitrary `eq` body: the
+    // default structural hash disagrees with a custom eq, and a constant hash is consistent but degenerate.
+    void checkEqHashPair(const std::string& typeName, const std::vector<Member>& members) {
+        const Member* eq = nullptr;
+        const Member* hash = nullptr;
+        for (const auto& m : members) {
+            if (m.kind != MemberKind::Operator) continue;
+            if (m.name == "eq") eq = &m;
+            else if (m.name == "hash") hash = &m;
+        }
+        if (eq && !hash)
+            diags_.error(eq->pos, "'" + typeName + "' declares a custom `operator fn eq` but no `operator fn hash(): i32` "
+                                  "— equal values must hash equally (C# GetHashCode, Python __hash__); hash exactly "
+                                  "the state eq compares");
+        if (hash && !eq)
+            diags_.error(hash->pos, "`operator fn hash` on '" + typeName + "' needs a custom `operator fn eq` — "
+                                    "without one, equality and its hash are the generated ones");
+    }
+
     // ---- body checking ----
     void checkTypeBody(const std::string& typeName, const std::vector<GenericParam>& generics,
                        std::vector<Member>& members, std::vector<Param>* recordFields) {
@@ -1281,6 +1282,7 @@ private:
         currentThis_ = tNamed(typeName);
         currentClass_ = typeName;
         const bool externType = externClassNames_.count(typeName) != 0;
+        checkEqHashPair(typeName, members);
         for (auto& m : members) {
             pushGenerics(m.generics);
             if ((externType || !m.bindings.empty()) &&
@@ -1301,6 +1303,15 @@ private:
                         diags_.error(m.pos, "an explicit conversion targets a numeric or user type — "
                                             "string/bool conversions stay named methods (toString/truthiness "
                                             "semantics differ per target)");
+                } else if (m.name == "hash") { // P40 review A9: the hash that agrees with a custom `eq`
+                    if (!m.params.empty() || m.returnType.kind != TypeRef::Kind::Named ||
+                        m.returnType.name != "i32" || m.returnType.nullable)
+                        diags_.error(m.pos, "`operator fn hash` takes no parameters and returns i32: "
+                                            "`operator fn hash(): i32`");
+                } else if (!isOperatorMemberName(m.name)) {
+                    diags_.error(m.pos, "'" + m.name + "' is not an operator — an `operator fn` is one of the "
+                                        "fixed names of SPEC §6.1 (plus, minus, times, div, rem, eq, hash, lt, le, "
+                                        "gt, ge, band, bor, bxor, shl, shr, neg, bnot, get, set, explicit)");
                 }
             }
             if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Constructor) {

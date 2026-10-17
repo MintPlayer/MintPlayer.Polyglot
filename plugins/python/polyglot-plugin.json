@@ -2220,6 +2220,15 @@
               ]
             },
             "__rshift__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "hash"
+              ]
+            },
+            "__hash__"
           ]
         ],
         "else": {
@@ -3908,6 +3917,7 @@
       "Math.PI": "__import__('math').pi",
       "Math.E": "__import__('math').e",
       "Math.sqrt": "__import__('math').sqrt($0)",
+      "Math.isNaN": "__import__('math').isnan($0)",
       "Math.ln": "__import__('math').log($0)",
       "Math.log": "__import__('math').log($0)",
       "Math.log2": "__import__('math').log2($0)",

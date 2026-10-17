@@ -104,6 +104,13 @@ $cases = [ordered]@{
     "extern_nullable_typeparam.pg" = @("'Shelf.find' yields 'V?' while 'V' is still a type parameter")
     "module_scope_leak.pg"      = @("'List' is declared in module 'std.collections', which this module does not import", 'import "std.collections"')
     "std_reserved_prefix.pg"    = @("'__pgCharAt' uses a prefix reserved for the Polyglot std library")
+    "unreachable_code.pg"       = @("unreachable code", "remove it")
+    "missing_return.pg"         = @("function 'sign' can reach the end of its body without returning a value")
+    "field_one_branch.pg"       = @("field 'name' of class 'Cfg' is not assigned on every path through init")
+    "field_early_return.pg"     = @("returns before field 'b' is assigned")
+    "self_compare.pg"           = @("compares a value with itself", "Math.isNaN")
+    "eq_without_hash.pg"        = @("'Money' declares a custom", "equal values must hash equally")
+    "unknown_operator.pg"       = @("'frob' is not an operator")
 }
 
 foreach ($fx in $cases.Keys) {

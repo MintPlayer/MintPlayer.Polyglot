@@ -18,6 +18,11 @@
       "default": "",
       "pattern": "^(public|internal)?$",
       "scope": "closure"
+    },
+    "entryPoint": {
+      "default": "true",
+      "pattern": "^(true|false)$",
+      "scope": "closure"
     }
   },
   "originMapping": {
@@ -1990,17 +1995,31 @@
                             "tmpl": [
                               "public virtual bool Equals(",
                               {
-                                "map": "decl.params",
-                                "sep": ", ",
-                                "item": {
-                                  "call": "csParam"
-                                }
+                                "type": "decl.params.0.type"
+                              },
+                              "? ",
+                              {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "decl.params.0.name"
+                                  }
+                                ]
                               },
                               ") => ",
                               {
+                                "fn": "ident",
+                                "args": [
+                                  {
+                                    "get": "decl.params.0.name"
+                                  }
+                                ]
+                              },
+                              " is not null && (",
+                              {
                                 "emit": "decl.exprBody"
                               },
-                              ";"
+                              ");"
                             ]
                           }
                         }
@@ -2012,16 +2031,37 @@
                           "tmpl": [
                             "public virtual bool Equals(",
                             {
-                              "map": "decl.params",
-                              "sep": ", ",
-                              "item": {
-                                "call": "csParam"
-                              }
+                              "type": "decl.params.0.type"
+                            },
+                            "? ",
+                            {
+                              "fn": "ident",
+                              "args": [
+                                {
+                                  "get": "decl.params.0.name"
+                                }
+                              ]
                             },
                             ")"
                           ]
                         },
                         "body": [
+                          {
+                            "line": {
+                              "tmpl": [
+                                "if (",
+                                {
+                                  "fn": "ident",
+                                  "args": [
+                                    {
+                                      "get": "decl.params.0.name"
+                                    }
+                                  ]
+                                },
+                                " is null) return false;"
+                              ]
+                            }
+                          },
                           {
                             "stmts": "decl.body"
                           }
@@ -2054,7 +2094,7 @@
                                       }
                                     ]
                                   },
-                                  " a, ",
+                                  "? a, ",
                                   {
                                     "fn": "ident",
                                     "args": [
@@ -2063,7 +2103,7 @@
                                       }
                                     ]
                                   },
-                                  " b) => a is null || b is null ? ReferenceEquals(a, b) : a.Equals(b);"
+                                  "? b) => a is null || b is null ? ReferenceEquals(a, b) : a.Equals(b);"
                                 ]
                               }
                             },
@@ -2079,7 +2119,7 @@
                                       }
                                     ]
                                   },
-                                  " a, ",
+                                  "? a, ",
                                   {
                                     "fn": "ident",
                                     "args": [
@@ -2088,7 +2128,7 @@
                                       }
                                     ]
                                   },
-                                  " b) => !(a == b);"
+                                  "? b) => !(a == b);"
                                 ]
                               }
                             },
@@ -2107,9 +2147,6 @@
                                   " __o && this.Equals(__o);"
                                 ]
                               }
-                            },
-                            {
-                              "line": "public override int GetHashCode() => 0;"
                             }
                           ]
                         }
@@ -2119,6 +2156,59 @@
                   }
                 }
               ]
+            }
+          ],
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "decl.kind",
+                    "operator"
+                  ]
+                },
+                {
+                  "eq": [
+                    "decl.opSymbol",
+                    "hash"
+                  ]
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [
+                  [
+                    {
+                      "eq": [
+                        "decl.exprBodied",
+                        "true"
+                      ]
+                    },
+                    {
+                      "line": {
+                        "tmpl": [
+                          "public override int GetHashCode() => ",
+                          {
+                            "emit": "decl.exprBody"
+                          },
+                          ";"
+                        ]
+                      }
+                    }
+                  ]
+                ],
+                "else": {
+                  "block": {
+                    "head": "public override int GetHashCode()",
+                    "body": [
+                      {
+                        "stmts": "decl.body"
+                      }
+                    ]
+                  }
+                }
+              }
             }
           ],
           [
@@ -3047,9 +3137,19 @@
                   "when": [
                     [
                       {
-                        "eq": [
-                          "module.hasEntry",
-                          "true"
+                        "and": [
+                          {
+                            "eq": [
+                              "module.hasEntry",
+                              "true"
+                            ]
+                          },
+                          {
+                            "eq": [
+                              "option.entryPoint",
+                              "true"
+                            ]
+                          }
                         ]
                       },
                       {
@@ -3929,6 +4029,7 @@
       "Math.PI": "global::System.Math.PI",
       "Math.E": "global::System.Math.E",
       "Math.sqrt": "global::System.Math.Sqrt($0)",
+      "Math.isNaN": "double.IsNaN($0)",
       "Math.ln": "global::System.Math.Log($0)",
       "Math.log": "global::System.Math.Log($0)",
       "Math.log2": "global::System.Math.Log2($0)",

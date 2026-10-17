@@ -2726,6 +2726,17 @@
                               [
                                 {
                                   "eq": [
+                                    "stmt.catchesDiverge",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "line": "throw __e;"
+                                }
+                              ],
+                              [
+                                {
+                                  "eq": [
                                     "stmt.hasCatchAll",
                                     "false"
                                   ]
@@ -4694,6 +4705,7 @@
       "Math.PI": "Math.PI",
       "Math.E": "Math.E",
       "Math.sqrt": "Math.sqrt($0)",
+      "Math.isNaN": "Number.isNaN($0)",
       "Math.ln": "Math.log($0)",
       "Math.log": "Math.log($0)",
       "Math.log2": "Math.log2($0)",

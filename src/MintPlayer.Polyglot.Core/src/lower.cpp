@@ -801,8 +801,9 @@ private:
         // indexer accessors are INSTANCE members (C# `this[...]{get;set;}`), so `this` stays `this` (#40).
         // `get`/`set` indexers and `eq` (C# `override Equals`, #49) are INSTANCE members, so `this` stays
         // `this`; only a genuinely static operator (C# `operator +`, taking lhs/rhs) rebinds `this` -> lhs.
+        // `hash` (P40 review A9) is an instance member everywhere (C# `override GetHashCode`, `__hash__`, `hash()`).
         const bool opBody = im.kind == ir::MethodKind::Operator && im.opSymbol != "get" &&
-                            im.opSymbol != "set" && im.opSymbol != "==";
+                            im.opSymbol != "set" && im.opSymbol != "==" && im.opSymbol != "hash";
         // P37 C5: an `eq` body is target-split — instance `override Equals` on C# (`this` stays) but the
         // static null-tolerant `T.eq(lhs, rhs)` on TS (`this` -> `lhs`). A second node-local fact carries
         // the distinction; each target's This rule picks its side.
@@ -1231,6 +1232,15 @@ private:
                     ir::Catch ic;
                     ic.type = c.type;
                     ic.binding = c.name;
+                    // P40 review A9: a binding the clause never reads (`catch (e: T)` with `e` unused, or the
+                    // `_` discard) is dropped — every target has a binding-less typed catch, and C# warns
+                    // CS0168 on an unused catch variable. Name-based, so a shadowed use keeps it (safe side).
+                    if (!c.name.empty()) {
+                        GlobalRefScan uses;
+                        uses.ex(c.guard.get());
+                        for (const auto& b : c.body) uses.st(b.get());
+                        if (!uses.usedSeen.count(c.name)) ic.binding.clear();
+                    }
                     if (c.guard) ic.guard = expr(*c.guard);
                     ic.body = block(c.body);
                     node->catches.push_back(std::move(ic));

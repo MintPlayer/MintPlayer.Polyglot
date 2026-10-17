@@ -477,6 +477,28 @@ are recognized by the backends and emitted as C-style `for` loops where the boun
   var i = (int)i__it; … }`; `Int128`/`UInt128` for 64-bit loop types) and PHP stops a 64-bit counter once
   it overflows (`\is_int($i) && $i <= $n`); TS, Python and other PHP widths cannot overflow there.
 
+**Reachability, returns and definite assignment (P40 review A9/B11).** One flow pass applies the C#/Java
+reachability rules: `return`/`throw`/`break`/`continue` never complete; an `if` completes when either branch
+does (an `if` without `else` always may); `while true` completes only through a `break` (any other loop may run
+zero times, so it always may); `use` completes when its body does; a `try` completes when its body or any
+catch does, and its `finally` does. Three errors follow, each a program the targets would otherwise treat
+differently:
+- **Unreachable code** — a statement after one that never completes (*unreachable code — … remove it*; C#
+  CS0162). A trailing `return` after a `try` whose arms all return is therefore an error, not a tsc courtesy:
+  the TS guard chain ends in an unconditional rethrow when no catch completes, so tsc proves the end too.
+- **A missing return** — a value-returning function, method, getter or extension whose end is reachable
+  (*… can reach the end of its body without returning a value*; C# CS0161, TS TS2366, while Python/PHP would
+  silently return `None`/`null`). Iterators (`yield`) are exempt; block-bodied lambdas are not checked yet.
+- **Definite assignment of class fields** — a field without an initializer must be assigned on **every**
+  path through each `init` that completes, and before every early `return` in it (*… is not assigned on every
+  path through init* / *`init` … returns before field 'x' is assigned*). Both `if` branches must assign; a
+  throwing branch needs nothing; an assignment only inside a loop body is not definite. (C# CS8618 otherwise,
+  and the field reads 0 / `undefined` / `AttributeError` / `null` per target.)
+
+**Self-comparison is refused (B11).** Comparing a side-effect-free path with itself — `x == x`, `a >= a`,
+`E.A == E.A` — is constant except for NaN (C# CS1718). The NaN test is `Math.isNaN(x)` (std.math, `f64`;
+an `f32` widens), on every target.
+
 ### 5.1 Exceptions (`try`/`catch`/`when`/`finally`, `throw`)
 
 ```pg
@@ -502,6 +524,8 @@ try {
 typed catch / TS `instanceof` dispatch with rethrow of unmatched types; `when` → C# exception filter / TS
 `if`-guard-then-rethrow; `finally` is identical on both. On PHP, `catch (e: Error)` (and an untyped
 catch) catches `\Throwable`, so engine errors (`TypeError`, …) are catchable from `.pg` as well (P40 D13).
+A catch binding the clause never reads (`catch (e: T)` with `e` unused, or `catch (_: T)`) is dropped from the
+output — C# `catch (T)`, Python `except T:` — so no target warns about an unused exception variable.
 
 ### 5.2 Deterministic disposal (`use`)
 
@@ -534,6 +558,16 @@ travels with its type and, for `eq`, tolerates a null left operand where an inst
 | `/` | `div` | | `-` (unary) | `neg` |
 | `%` | `rem` | | `&` `\|` `^` | `band` `bor` `bxor` |
 | `<<` `>>` | `shl` `shr` | | `~` (unary) | `bnot` |
+| *(hash)* | `hash` — required with `eq` | | | |
+
+Any other `operator fn` name is an error (*'x' is not an operator*).
+
+**A custom `eq` requires an author `hash`** (P40 review A9): `operator fn hash(): i32`, an instance member
+hashing exactly the state `eq` compares, so values equal under `eq` hash equally. It becomes C#
+`override GetHashCode()` (next to `Equals(T?)`, `operator ==(T?, T?)`), Python `__hash__`, and a `hash()`
+method on TS/PHP. No compiler can derive a hash from an arbitrary `eq` body — the generated structural hash
+would disagree with it (a C# `HashSet`/`Dictionary`, a Python `set`/`dict` then misbehave) and a constant one
+is consistent but degenerate — so a type declaring `eq` without `hash` (or `hash` without `eq`) is refused.
 
 ```pg
 record Money(cents: i64) {
@@ -796,7 +830,8 @@ These clarify or bound features surfaced by the wave-2 coverage sweep (issues #3
   (`interfaces:runtimeIdentity`): refused iff a configured target lacks runtime interface identity (TS
   erases interfaces); a C#/Python/PHP-only build allows it.
 - **Union `==`** (#57) — **structural** (compares tag + payload), like records; documented in §9.
-- **A user `operator fn eq`** (#49) overrides the default structural/reference equality on every target.
+- **A user `operator fn eq`** (#49) overrides the default structural/reference equality on every target;
+  it must come with a matching `operator fn hash(): i32` (§6.1, P40 review A9).
 - **Per-iteration loop-variable capture** (#46) — see §6.4.
 - **Block-bodied `match` arms** are refused (#51) — a match arm must be an expression (Python/PHP lower
   `match` to an expression fold with no statement block). Extract the block into a function.

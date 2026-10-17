@@ -150,7 +150,7 @@ private:
     // `:eq` (structural equality) and `:indexers` (get/set) while refusing `:arithmetic`/`:comparison`/
     // `:conversion`. The bare `operatorOverloading` manifest stance umbrella-covers undeclared sub-keys.
     static std::string operatorCategory(const std::string& method) {
-        if (method == "eq") return "eq";
+        if (method == "eq" || method == "hash") return "eq"; // hash is eq's companion (P40 review A9)
         if (method == "lt" || method == "le" || method == "gt" || method == "ge") return "comparison";
         if (method == "get" || method == "set") return "indexers";
         if (method == "explicit" || method == "implicit") return "conversion";

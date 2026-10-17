@@ -94,7 +94,8 @@ expect fn deleteFile(path: string)
 // surface). sqrt/ln/floor/ceil are f64; min/max/abs are generic and CALL-SITE-INLINED (a generic C#
 // Math.Min over unconstrained T wouldn't compile, so the binding substitutes the concrete-typed args at
 // each call). The TS min/max/abs use single-eval IIFE templates that work for both `number` and `bigint`
-// (the `a - a` zero is type-agnostic). PI/E are bound consts.
+// (the `a - a` zero is type-agnostic). PI/E are bound consts. `isNaN` (P40 review B11) is exact everywhere and
+// replaces the `v != v` idiom, which the checker refuses as a self-comparison.
 // Determinism (§3.D): only sqrt is correctly-rounded/reproducible across targets. The TRANSCENDENTAL tier
 // (sin/cos/tan/asin/acos/atan/atan2, sinh/cosh/tanh, exp/log/ln/log2/log10, pow) is a documented
 // BEST-EFFORT tier — available on every target, but results may differ by <=1 ULP across the .NET JIT and a
@@ -112,6 +113,8 @@ extern class Math {
   const E: f64 {
   }
   static fn sqrt(x: f64): f64 {
+  }
+  static fn isNaN(x: f64): bool {
   }
   static fn ln(x: f64): f64 {
   }

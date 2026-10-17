@@ -92,6 +92,7 @@
     <ClInclude Include="include\mintplayer\polyglot\sourcemap.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\reachability.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\unicode.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\flow.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />
@@ -114,6 +115,7 @@
     <ClCompile Include="src\coverage.cpp" />
     <ClCompile Include="src\sourcemap.cpp" />
     <ClCompile Include="src\reachability.cpp" />
+    <ClCompile Include="src\flow.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

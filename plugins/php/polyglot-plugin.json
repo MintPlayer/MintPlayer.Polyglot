@@ -320,6 +320,7 @@
       "Math.PI": "M_PI",
       "Math.E": "M_E",
       "Math.sqrt": "sqrt($0)",
+      "Math.isNaN": "is_nan($0)",
       "Math.ln": "log($0)",
       "Math.log": "log($0)",
       "Math.log2": "log($0, 2)",

@@ -1,0 +1,13 @@
+// REFUSED (P40 review A9): a field assigned on only one branch of init is unassigned on the other
+// (C# CS8618; it reads 0/undefined/AttributeError/null per target). Definite assignment is per path.
+class Cfg {
+  let name: string
+  constructor(flag: bool) {
+    if flag {
+      this.name = "on"
+    }
+  }
+}
+fn main() {
+  print(Cfg(true).name)
+}

@@ -276,7 +276,9 @@ target options in `pgconfig.json` (or the matching MSBuild properties `PolyglotN
 
 The emitted file then starts `namespace MyCompany.Strings;`, callers write `StringsApi.trim(...)`, and two
 libraries built from `.pg` can be referenced by one app without CS0433 clashes. Runtime helpers such as
-`print` stay `internal` even when `access` is `public`.
+`print` stay `internal` even when `access` is `public`. A file declaring `fn main` also gets a
+`static void Main() { main(); }`; in an app that owns its entry point (its own `Main`, or top-level
+statements) set `"entryPoint": "false"` (MSBuild `PolyglotEntryPoint`) to drop it — otherwise CS0017 / CS7022.
 
 ## False friends — where your C# intuition misleads
 

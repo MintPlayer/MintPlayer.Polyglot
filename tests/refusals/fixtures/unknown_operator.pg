@@ -1,0 +1,8 @@
+// REFUSED (P40 review A9): an operator fn with a name SPEC 6.1 does not define (it used to emit an
+// uncompilable C# `operator frob`).
+record V(x: i32) {
+  operator fn frob(o: V): V => V(this.x + o.x)
+}
+fn main() {
+  print(V(1).x)
+}

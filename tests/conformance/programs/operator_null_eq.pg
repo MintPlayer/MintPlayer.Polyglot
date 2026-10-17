@@ -8,6 +8,7 @@ class Money {
     this.cents = c
   }
   operator fn eq(o: Money): bool => this.cents == o.cents
+  operator fn hash(): i32 => this.cents
 }
 
 fn main() {

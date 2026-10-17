@@ -668,6 +668,16 @@ int main() {
                   "P40 s2: compile() refuses an invalid option with a diagnostic");
         }
 
+        // P40 review B11: csharp.entryPoint=false drops the `Main` an entry file gets (CS7022/CS0017 in an app
+        // that owns its entry point); the default keeps it.
+        {
+            EmitResult on = compile(prog, findTarget("csharp"), nullptr, optsFor("csharp", {}));
+            EmitResult off = compile(prog, findTarget("csharp"), nullptr, optsFor("csharp", {{"entryPoint", "false"}}));
+            check(on.ok && has(on.code, "static void Main()") && off.ok && !has(off.code, "static void Main()") &&
+                      has(off.code, "void main()"),
+                  "P40 B11: csharp.entryPoint=false omits Main, keeps main()");
+        }
+
         // C#: file-scoped namespace before the usings, the configured wrapper class, access, internal helpers.
         {
             EmitResult r = compile(prog, findTarget("csharp"), nullptr,
@@ -3041,6 +3051,7 @@ int main() {
         const char* vec = "class Vec {\n  var x: i32\n  constructor(x: i32) { this.x = x }\n"
                           "  operator fn plus(o: Vec): Vec => Vec(this.x + o.x)\n"
                           "  operator fn eq(o: Vec): bool => this.x == o.x\n"
+                          "  operator fn hash(): i32 => this.x\n"
                           "  operator fn neg(): Vec => Vec(0 - this.x)\n"
                           "  operator fn band(o: Vec): Vec => Vec(this.x & o.x)\n}\n";
         // C5: TS moves to static-on-type; C#/Python stay native.
@@ -3095,7 +3106,8 @@ int main() {
 
         // C6: PHP gains :eq (+:indexers) while :arithmetic stays refused.
         std::string eqOnly = "class M {\n  var c: i32\n  constructor(c: i32) { this.c = c }\n"
-                             "  operator fn eq(o: M): bool => this.c == o.c\n}\n"
+                             "  operator fn eq(o: M): bool => this.c == o.c\n"
+                             "  operator fn hash(): i32 => this.c\n}\n"
                              "fn main() { print(M(1) == M(1)) }\n";
         EmitResult phpEq = compileStd(eqOnly, findTarget("php"));
         check(phpEq.ok && has(phpEq.code, "->eq("), "P37 s3 (C6): PHP supports user eq (->eq call)");
@@ -4668,6 +4680,117 @@ int main() {
             "class C {\n  var x: i32\n  constructor(x: i32) { this.x = x }\n  fn get(): i32 => this.x\n}\nfn main() { print(C(3).get()) }\n",
             findTarget("csharp"));
         check(initOk.ok, "G11: field assigned in init passes");
+
+        // P40 review A9: definite assignment is per PATH through init, not "somewhere in init".
+        {
+            auto cls = [](const std::string& ctorBody) {
+                return "class C {\n  let x: i32\n  constructor(f: bool) {\n" + ctorBody +
+                       "  }\n}\nfn main() { print(C(true).x) }\n";
+            };
+            auto refusedWith = [&](const std::string& body, const std::string& frag) {
+                EmitResult r = compileStd(cls(body), findTarget("csharp"));
+                return !r.ok && !r.diagnostics.empty() && has(r.diagnostics[0].message, frag);
+            };
+            auto okWith = [&](const std::string& body) { return compileStd(cls(body), findTarget("csharp")).ok; };
+            check(refusedWith("    if f { this.x = 1 }\n", "not assigned on every path through init"),
+                  "P40 A9: a field assigned on one if-branch only is refused");
+            check(refusedWith("    if f { return }\n    this.x = 1\n", "returns before field 'x' is assigned"),
+                  "P40 A9: an early return before the assignment is refused (at the return)");
+            check(refusedWith("    while f { this.x = 1 }\n", "not assigned on every path through init"),
+                  "P40 A9: an assignment only inside a loop body is not definite");
+            check(okWith("    if f { this.x = 1 } else { this.x = 2 }\n"),
+                  "P40 A9: a field assigned on both branches passes");
+            check(okWith("    if f { throw Error(\"no\") }\n    this.x = 1\n"),
+                  "P40 A9: a throwing branch needs no assignment");
+            check(okWith("    this.x = 1\n    if f { return }\n"),
+                  "P40 A9: an early return after the assignment passes");
+            check(okWith("    try { this.x = 1 } finally { print(0) }\n"),
+                  "P40 A9: an assignment completing a try body passes");
+        }
+
+        // P40 review A9/B11: missing returns, unreachable code, self-comparison — one flow pass (flow.cpp).
+        {
+            auto refused = [](const std::string& src, const std::string& frag) {
+                EmitResult r = compileStd(src, findTarget("csharp"));
+                return !r.ok && !r.diagnostics.empty() && has(r.diagnostics[0].message, frag);
+            };
+            auto ok = [](const std::string& src) { return compileStd(src, findTarget("csharp")).ok; };
+            check(refused("fn f(x: i32): i32 {\n  if x > 0 { return 1 }\n}\nfn main() { print(f(1)) }\n",
+                          "can reach the end of its body without returning a value"),
+                  "P40 A9: a value-returning body with a reachable end is refused");
+            check(ok("fn f(x: i32): i32 {\n  if x > 0 { return 1 } else { return 2 }\n}\nfn main() { print(f(1)) }\n"),
+                  "P40 A9: if/else that both return needs no trailing return");
+            check(ok("fn f(x: i32): i32 {\n  while true {\n    if x > 0 { return x }\n  }\n}\nfn main() { print(f(1)) }\n"),
+                  "P40 A9: `while true` without break never completes (no trailing return)");
+            check(refused("fn f(x: i32): i32 {\n  while true {\n    if x > 0 { break }\n  }\n}\nfn main() { print(f(1)) }\n",
+                          "without returning a value"),
+                  "P40 A9: a `break` out of `while true` makes its end reachable");
+            check(ok("fn f(x: i32): string {\n  try {\n    if x > 0 { throw Error(\"a\") }\n    return \"n\"\n"
+                     "  } catch (e: Error) when (x > 5) {\n    return \"big\"\n  } catch (e: Error) {\n    return \"c\"\n  }\n}\n"
+                     "fn main() { print(f(1)) }\n"),
+                  "P40 A9: a try whose body and catches all return needs no trailing return");
+            check(refused("fn f(): i32 {\n  throw Error(\"x\")\n  return 1\n}\nfn main() { print(f()) }\n", "unreachable code"),
+                  "P40 B11: a statement after `throw` is refused as unreachable");
+            check(refused("fn f(x: i32) {\n  for i in 0..x {\n    continue\n    print(i)\n  }\n}\nfn main() { f(1) }\n",
+                          "unreachable code"),
+                  "P40 B11: a statement after `continue` is refused as unreachable");
+            check(refused("fn f(x: f64): bool => x != x\nfn main() { print(f(1.0)) }\n", "compares a value with itself"),
+                  "P40 B11: `x != x` is refused (Math.isNaN is the NaN test)");
+            check(refused("enum E { A, B }\nfn main() { print(E.A == E.A) }\n", "compares a value with itself"),
+                  "P40 B11: a constant enum self-comparison is refused");
+            check(ok("import { Math } from \"std.math\"\nfn main() { print(Math.isNaN(0.0 / 0.0)) }\n"),
+                  "P40 B11: std.math gains Math.isNaN");
+            // TS: a guarded catch chain whose arms all diverge ends in an unconditional rethrow (tsc TS2366).
+            EmitResult ts = compileStd("fn f(x: i32): string {\n  try {\n    return \"n\"\n  } catch (e: Error) when (x > 5) {\n"
+                                       "    return \"big\"\n  }\n}\nfn main() { print(f(1)) }\n", findTarget("typescript"));
+            check(ts.ok && has(ts.code, "        throw __e;\n") && !has(ts.code, "if (!__handled) { throw __e; }"),
+                  "P40 A9: TS guarded catches that all diverge end in `throw __e;`");
+        }
+
+        // P40 review A9: a custom eq comes with an author hash; C# Equals(T?) + GetHashCode, Python __hash__.
+        {
+            const char* money = "record Money(cents: i32) {\n  operator fn eq(o: Money): bool => this.cents % 100 == o.cents % 100\n"
+                                "  operator fn hash(): i32 => this.cents % 100\n}\n"
+                                "fn main() { print(Money(1) == Money(101)) }\n";
+            EmitResult cs = compileStd(money, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "public virtual bool Equals(Money? o) => o is not null && (") &&
+                      has(cs.code, "public override int GetHashCode() => this.cents % 100;"),
+                  "P40 A9: C# record eq takes Money? and the author hash is GetHashCode");
+            EmitResult py = compileStd(money, findTarget("python"));
+            check(py.ok && has(py.code, "def __hash__(self)"), "P40 A9: Python emits the author hash as __hash__");
+            EmitResult ts = compileStd(money, findTarget("typescript"));
+            check(ts.ok && has(ts.code, "hash(): number {") && has(ts.code, "this.cents"),
+                  "P40 A9: TS hash is an instance method over `this`");
+            const char* cls = "class B {\n  var v: i32\n  constructor(v: i32) { this.v = v }\n"
+                              "  operator fn eq(o: B): bool => this.v == o.v\n  operator fn hash(): i32 => this.v\n}\n"
+                              "fn main() { print(B(1) == B(1)) }\n";
+            EmitResult csc = compileStd(cls, findTarget("csharp"));
+            check(csc.ok && has(csc.code, "operator ==(B? a, B? b)") && has(csc.code, "operator !=(B? a, B? b)") &&
+                      !has(csc.code, "GetHashCode() => 0"),
+                  "P40 A9: C# class == / != take nullable operands; no constant hash");
+            EmitResult noHash = compileStd("record M(c: i32) {\n  operator fn eq(o: M): bool => this.c == o.c\n}\nfn main() { }\n",
+                                           findTarget("csharp"));
+            check(!noHash.ok && has(noHash.diagnostics[0].message, "operator fn hash(): i32"),
+                  "P40 A9: a custom eq without a hash is refused");
+            EmitResult noEq = compileStd("record M(c: i32) {\n  operator fn hash(): i32 => this.c\n}\nfn main() { }\n",
+                                         findTarget("csharp"));
+            check(!noEq.ok && has(noEq.diagnostics[0].message, "needs a custom"), "P40 A9: a hash without an eq is refused");
+            EmitResult badOp = compileStd("record M(c: i32) {\n  operator fn frob(o: M): M => M(1)\n}\nfn main() { }\n",
+                                          findTarget("csharp"));
+            check(!badOp.ok && has(badOp.diagnostics[0].message, "is not an operator"),
+                  "P40 A9: an unknown operator name is refused (it emitted `operator frob`)");
+        }
+
+        // P40 review A9: an unused catch binding (or `_`) is dropped — C# `catch (T)`, no CS0168.
+        {
+            const char* src = "class Boom : Error {\n  constructor() { super(\"b\") }\n}\n"
+                              "fn main() {\n  try { throw Boom() } catch (e: Boom) { print(1) }\n"
+                              "  try { throw Boom() } catch (_: Boom) { print(2) }\n"
+                              "  try { throw Boom() } catch (e: Boom) { print(e.message) }\n}\n";
+            EmitResult cs = compileStd(src, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "catch (Boom)\n") && !has(cs.code, "catch (Boom _)") && has(cs.code, "catch (Boom e)"),
+                  "P40 A9: unused catch bindings are dropped, a used one kept");
+        }
 
         // Slice-1 fix pins: PHP strict equality + record equals routing.
         EmitResult phpEq = compileStd("fn same(a: string, b: string): bool => a == b\nfn main() { print(same(\"a\", \"b\")) }\n", findTarget("php"));

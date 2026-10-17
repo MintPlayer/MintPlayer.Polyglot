@@ -1,0 +1,9 @@
+// REFUSED (P40 review B11): a statement after one that always leaves the block is unreachable code
+// (C# CS0162) - dead on every target, so it is an error, not a silent drop.
+fn f(x: i32): i32 {
+  throw Error("boom")
+  return x
+}
+fn main() {
+  print(f(1))
+}

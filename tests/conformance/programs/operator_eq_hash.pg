@@ -1,0 +1,47 @@
+// P40 review A9: a custom `operator fn eq` must come with an author `operator fn hash(): i32`, and every
+// target's NATIVE hashing agrees with the custom equality: values equal under eq collapse to one entry of a
+// C# HashSet (GetHashCode + Equals(T?)) and a Python set (__hash__ + __eq__). TS and PHP have no
+// user-hashable containers, so their actuals count the distinct `hash()` results instead — the same answer
+// only when the emitted hash honors the eq contract. Before the fix the record got NO GetHashCode (C#
+// CS8851: Money(1) == Money(101) yet their hashes differed) and the class a constant 0.
+
+record Money(cents: i32) {
+  operator fn eq(other: Money): bool => this.cents % 100 == other.cents % 100
+  operator fn hash(): i32 => this.cents % 100
+}
+
+class Pt {
+  var x: i32
+  var y: i32
+  constructor(x: i32, y: i32) {
+    this.x = x
+    this.y = y
+  }
+  operator fn eq(o: Pt): bool {   // block body: the C# Equals(Pt?) null guard precedes it
+    return this.x == o.x
+  }
+  operator fn hash(): i32 {
+    return this.x
+  }
+}
+
+expect fn distinctMoney(a: Money, b: Money, c: Money): i32
+actual(csharp) fn distinctMoney(a: Money, b: Money, c: Money): i32 => extern("new global::System.Collections.Generic.HashSet<Money> { a, b, c }.Count")
+actual(typescript) fn distinctMoney(a: Money, b: Money, c: Money): i32 => extern("new Set([a.hash(), b.hash(), c.hash()]).size")
+actual(python) fn distinctMoney(a: Money, b: Money, c: Money): i32 => extern("len({a, b, c})")
+actual(php) fn distinctMoney(a: Money, b: Money, c: Money): i32 => extern("count(array_unique([$a->hash(), $b->hash(), $c->hash()]))")
+
+expect fn distinctPt(a: Pt, b: Pt, c: Pt): i32
+actual(csharp) fn distinctPt(a: Pt, b: Pt, c: Pt): i32 => extern("new global::System.Collections.Generic.HashSet<Pt> { a, b, c }.Count")
+actual(typescript) fn distinctPt(a: Pt, b: Pt, c: Pt): i32 => extern("new Set([a.hash(), b.hash(), c.hash()]).size")
+actual(python) fn distinctPt(a: Pt, b: Pt, c: Pt): i32 => extern("len({a, b, c})")
+actual(php) fn distinctPt(a: Pt, b: Pt, c: Pt): i32 => extern("count(array_unique([$a->hash(), $b->hash(), $c->hash()]))")
+
+fn main() {
+  print(Money(1) == Money(101))                          // true  (custom eq: mod 100)
+  print(distinctMoney(Money(1), Money(101), Money(2)))   // 2     (1 and 101 are one key)
+  let p: Pt? = null
+  print(Pt(1, 2) == Pt(1, 9))                            // true  (eq compares x only)
+  print(p == null)                                       // true  (a null test, never the user eq)
+  print(distinctPt(Pt(1, 2), Pt(1, 9), Pt(3, 2)))        // 2
+}

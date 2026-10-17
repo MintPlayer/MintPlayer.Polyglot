@@ -1067,6 +1067,70 @@ bool splitIndexed(const std::string& path, std::size_t prefixLen, std::size_t& i
     field = dot == std::string::npos ? std::string() : sub.substr(dot + 1);
     return true;
 }
+
+// Can a lowered statement list complete normally? The same reachability rules sema's flow pass applies to
+// the source (flow.cpp) — read here so a template can tell that falling off a construct is impossible.
+bool irBreaksOut(const std::vector<ir::StmtPtr>& b); // a `break` that leaves the ENCLOSING loop
+bool irCompletes(const std::vector<ir::StmtPtr>& b) {
+    for (const auto& s : b) {
+        if (!s) continue;
+        switch (s->kind) {
+            case ir::StmtKind::Return: case ir::StmtKind::Throw:
+            case ir::StmtKind::Break:  case ir::StmtKind::Continue:
+                return false;
+            case ir::StmtKind::If: {
+                const auto& i = static_cast<const ir::If&>(*s);
+                if (!irCompletes(i.thenBody) && i.hasElse && !irCompletes(i.elseBody)) return false;
+                break;
+            }
+            case ir::StmtKind::While: {
+                const auto& w = static_cast<const ir::While&>(*s);
+                const bool infinite = w.cond && w.cond->kind == ir::ExprKind::Bool &&
+                                      static_cast<const ir::BoolLit&>(*w.cond).value;
+                if (infinite && !irBreaksOut(w.body)) return false;
+                break;
+            }
+            case ir::StmtKind::Use:
+                if (!irCompletes(static_cast<const ir::Use&>(*s).body)) return false;
+                break;
+            case ir::StmtKind::Try: {
+                const auto& t = static_cast<const ir::Try&>(*s);
+                bool any = irCompletes(t.body);
+                for (const auto& c : t.catches) any = any || irCompletes(c.body);
+                if (!any || (t.hasFinally && !irCompletes(t.finallyBody))) return false;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return true;
+}
+bool irBreaksOut(const std::vector<ir::StmtPtr>& b) {
+    for (const auto& s : b) {
+        if (!s) continue;
+        switch (s->kind) {
+            case ir::StmtKind::Break: return true;
+            case ir::StmtKind::If: {
+                const auto& i = static_cast<const ir::If&>(*s);
+                if (irBreaksOut(i.thenBody) || irBreaksOut(i.elseBody)) return true;
+                break;
+            }
+            case ir::StmtKind::Use:
+                if (irBreaksOut(static_cast<const ir::Use&>(*s).body)) return true;
+                break;
+            case ir::StmtKind::Try: {
+                const auto& t = static_cast<const ir::Try&>(*s);
+                if (irBreaksOut(t.body) || irBreaksOut(t.finallyBody)) return true;
+                for (const auto& c : t.catches) if (irBreaksOut(c.body)) return true;
+                break;
+            }
+            default: // a nested loop's `break` is its own
+                break;
+        }
+    }
+    return false;
+}
 } // namespace
 
 std::string ClassDeclCtx::get(const std::string& path) const {
@@ -1425,6 +1489,11 @@ std::string StmtCtx::get(const std::string& path) const {
             for (const auto& c : t.catches)
                 if (c.guard) return "true";
             return "false";
+        }
+        if (path == "stmt.catchesDiverge") { // P40 review A9: no catch body completes normally, so the end of
+            for (const auto& c : t.catches)     // an emulated dispatch chain is reached only when nothing matched
+                if (irCompletes(c.body)) return "false";
+            return "true";
         }
         std::size_t i = 0;
         std::string f;

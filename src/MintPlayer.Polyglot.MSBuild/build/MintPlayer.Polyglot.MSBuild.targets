@@ -13,6 +13,7 @@
          PolyglotNamespace   csharp.namespace  } C# target options, CLI `target-option` flags;
          PolyglotClass       csharp.class      } they win over the project's pgconfig.json   (P40 B1)
          PolyglotAccess      csharp.access     }
+         PolyglotEntryPoint  csharp.entryPoint } false = no `Main` for an entry file (the app owns its entry point)
          PolyglotOriginInfo  true = #line origin pragmas for coverage attribution             (P38)
          PolyglotWatch       false = don't register the .pg sources as dotnet-watch items
          PolyglotLib         the ambient std prelude list (pgconfig `lib`)
@@ -115,11 +116,14 @@
            pgconfig "targetOptions.csharp" block). PolyglotNamespace puts the generated code in a file-scoped
            namespace; PolyglotClass renames the PolyglotProgram wrapper; PolyglotAccess=public emits `public`
            on the generated types (usable across assemblies with no hand-written facade). Unset = the
-           plugin defaults (no namespace, PolyglotProgram, C#'s modifier-less internal). -->
+           plugin defaults (no namespace, PolyglotProgram, C#'s modifier-less internal). PolyglotEntryPoint=false
+           drops the `static void Main()` an entry file (one with `fn main`) otherwise gets: an app with its own
+           Main (CS0017) or top-level statements (CS7022) owns the entry point and calls `main()` itself. -->
       <_PolyglotTargetOptionArgs></_PolyglotTargetOptionArgs>
       <_PolyglotTargetOptionArgs Condition="'$(PolyglotNamespace)' != ''">$(_PolyglotTargetOptionArgs) --target-option &quot;csharp.namespace=$(PolyglotNamespace)&quot;</_PolyglotTargetOptionArgs>
       <_PolyglotTargetOptionArgs Condition="'$(PolyglotClass)' != ''">$(_PolyglotTargetOptionArgs) --target-option &quot;csharp.class=$(PolyglotClass)&quot;</_PolyglotTargetOptionArgs>
       <_PolyglotTargetOptionArgs Condition="'$(PolyglotAccess)' != ''">$(_PolyglotTargetOptionArgs) --target-option &quot;csharp.access=$(PolyglotAccess)&quot;</_PolyglotTargetOptionArgs>
+      <_PolyglotTargetOptionArgs Condition="'$(PolyglotEntryPoint)' != ''">$(_PolyglotTargetOptionArgs) --target-option &quot;csharp.entryPoint=$(PolyglotEntryPoint)&quot;</_PolyglotTargetOptionArgs>
       <!-- PolyglotOriginInfo=true records where each emitted line came from (P38 / issue #69), so a
            coverage run over the generated C# in obj/ reports against the .pg file with .pg line numbers
            instead of being invisible. Roslyn writes the #line pragmas into the PDB, so nothing needs
