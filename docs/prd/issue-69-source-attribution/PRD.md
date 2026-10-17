@@ -314,6 +314,12 @@ Populate from the AST's `pos`/`namePos` at the sites tabulated in `ANALYSIS.md` 
 
 ### 4.F Path form — per sink, absolute for the directive (D2)
 
+> **Superseded in part by P40** (issue #73, `docs/prd/issue-73-library-grade/` PRD §B7), 2026-10-17. Absolute
+> directive paths make committed output differ per checkout. Spike SP-B7a measured that Roslyn resolves a
+> relative `#line` path against the generated `.cs` file's folder, and that the PDB records the same document
+> as today. So the coverlet evidence below still holds, and P40 switches the directive to paths relative to
+> the generated file. The map sink is unchanged.
+
 There is no single correct path form, because the two sinks are resolved by different consumers.
 
 **C# directive: absolute, canonicalized, forward-slashed.**

@@ -9,7 +9,7 @@
 > claims it overturned).
 > Builds directly on **P38** (`docs/prd/issue-69-source-attribution/`, merged as `90dace1`), which
 > produced the `--origin-info` artifacts this work consumes. Read P38's PRD §6 before this one.
-> Milestone number **P39 is provisional** — renumber at merge if something else claims it first.
+> Milestone number **P39** — confirmed at merge (`a603dba`, PR #72).
 
 ## 0. Prime directive check (POLYGLOT_PRD §3)
 

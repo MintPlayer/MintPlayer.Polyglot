@@ -18,7 +18,7 @@
 >
 > **All design questions resolved (2026-09-19).** The last two — the file set's origin (D7) and the
 > `directive`-style behaviour (D8) — are in the log below. What remains is implementation-time only:
-> SP8's residue, SP9, and the provisional milestone number.
+> SP8's residue and SP9. **Merged as `a603dba` (PR #72); milestone number P39 confirmed.**
 
 **Build discipline.** Implement ALL slices first, then build + run the full gate **ONCE** at the end
 (`pwsh scripts/build-and-test.ps1`, or the `/build-and-test` skill). The mid-flight ceiling is

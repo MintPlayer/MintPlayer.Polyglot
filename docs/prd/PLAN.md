@@ -3343,7 +3343,7 @@ WASM recorded as the sole third-party escape hatch), the negotiation formula, th
 parser-version handshake, the C# fixpoint/dual-compile design, and `polyglot convert` as the honest
 first demand probe if authoring-in-C# demand ever materializes.
 
-## P34 — E2E coverage wave 2: divergence pins, harness hardening, code coverage — 🚧 built, gate pending (2026-07-19; maintainer request, PRD `docs/prd/e2e-coverage-wave2/`, 13-agent analysis)
+## P34 — E2E coverage wave 2: divergence pins, harness hardening, code coverage — ✅ merged as `a6cc7b6` (PR #58) (2026-07-19; maintainer request, PRD `docs/prd/e2e-coverage-wave2/`, 13-agent analysis)
 
 Successor to P32: a six-dimension, skeptic-verified coverage analysis (48 gaps G1–G48, full evidence
 in `docs/prd/e2e-coverage-wave2/ANALYSIS.md`) followed by the implementation in ONE PR. Highlights:
@@ -3435,7 +3435,7 @@ un-narrows of existing programs, new refusal fixtures (`finalizer`, `block_match
 and unit-test rows for each new refusal. **Gate green locally**: build, unit tests, all 106 conformance
 programs (9 PHP-refused by design), library gate (tsc strict), refusals. POSIX + release legs run on CI.
 
-## P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes — ✅ built + gated locally (2026-07-20 designed, 2026-07-23 §D revised + built; maintainer request, PRD `docs/prd/p37-feature-batch/`, 8-agent scope + 4-agent validation + 6-agent attributes follow-up)
+## P37 — Feature batch: constructor rename · `is`/`as` · operators-complete · attributes — ✅ merged as `027a878` (PR #65) (2026-07-20 designed, 2026-07-23 §D revised + built; maintainer request, PRD `docs/prd/p37-feature-batch/`, 8-agent scope + 4-agent validation + 6-agent attributes follow-up)
 
 Four maintainer-requested language features, one cohesive PR, no back-compat. Full design + slice plan +
 code-grounded validation in `docs/prd/p37-feature-batch/{PRD,PLAN,ANALYSIS}.md`. Validation verdict
@@ -3502,7 +3502,7 @@ Deferred follow-ups (recorded, not built): cross-package operator *resolution*; 
 attributes; auto-included attribute stdlib package; Tier 2 param metadata; `AllowMultiple`;
 `Meta.getInherited`/`Meta.all<T>()`; dual-tier declarations; the P30 binding-only package kind.
 
-## P38 — Origin attribution: `#line` directives (C#) + a v3 source map (TS) — ✅ built + gated locally (2026-09-17; issue #69, PRD `docs/prd/issue-69-source-attribution/`, 5-agent investigation + maintainer design review (D1–D8) + 3 slice-0 spikes)
+## P38 — Origin attribution: `#line` directives (C#) + a v3 source map (TS) — ✅ merged as `90dace1` (PR #70) (2026-09-17; issue #69, PRD `docs/prd/issue-69-source-attribution/`, 5-agent investigation + maintainer design review (D1–D8) + 3 slice-0 spikes)
 
 Generated code can now be attributed back to the `.pg` it came from, so a consumer's coverage run counts
 the transpiled sources instead of ignoring them. Motivation: in `MintPlayer.AI` the 9 `.pg` solvers
@@ -3542,7 +3542,54 @@ measured **433/433 byte-identical** comparison of flag-off output against the pr
 across every conformance program × 4 targets. Directive-laden C# compiles and runs correctly; the TS
 sidecar decodes to exactly the right `.pg` lines and Node still runs the emitted file.
 
-Deferred follow-ups (recorded, not built): Python/PHP `originMapping` data; column-level mapping;
-`ast::ExtensionDecl.namePos`; the LSP preview honouring the flag; retiring `compiler.cpp`'s
-`target.name() == "csharp"` into a `sharesPreludeFile` trait flag; and consuming the TS map downstream
-(the consumer's own spike S5).
+Deferred follow-ups (recorded, not built here): column-level mapping; `ast::ExtensionDecl.namePos`; the
+LSP preview honouring the flag; and consuming the TS map downstream (the consumer's own spike S5).
+Python/PHP `originMapping` data and retiring `compiler.cpp`'s `target.name() == "csharp"` comparisons
+(as the `sharedPreludeFile` / `preludePerFile` trait flags) were **built in P39**.
+
+## P39 — Coverage attribution: `polyglot coverage remap` overlays every target's coverage onto the `.pg` source — ✅ merged as `a603dba` (PR #72) (2026-09-19; issue #71, PRD `docs/prd/issue-71-coverage-attribution/`, 5-agent investigation + maintainer design review (D1–D8))
+
+One `.pg` source compiles to several targets, and each target's test suite covers a different part of it.
+A `.pg` line now counts as covered when **any** target reached it — measured 93.95% → 98.12% in
+`MintPlayer.AI` once the C# and TypeScript halves are overlaid. Design, decision log and slice log in
+`docs/prd/issue-71-coverage-attribution/{PRD,PLAN,ANALYSIS}.md`; user docs in `docs/coverage.md`.
+
+- **A `polyglot coverage remap` subcommand, not an npm package (D2).** The NuGet already ships the CLI at
+  `tools/<rid>/`, so it reaches .NET and PHP consumers with no Node, reuses the plugin resolver
+  in-process, and ships in lockstep by construction (D3).
+- **Four formats in, four out:** cobertura, lcov, istanbul, clover. The readers never learn the language and
+  the projector never learns the format. Line hits merge with **max**, branch arms **union**; branch data is
+  **emitted count-only** (D6), because arm keys from coverlet-over-IL and istanbul-over-JS are not comparable.
+- **The `.pg` file set comes from the origin data, not the report (D7)**, so an untouched module reports at
+  zero instead of vanishing; a `directive`-style target (C#) is therefore a validating pass-through (D8).
+- **P38 follow-ups built here:** Python and PHP declare a `sourceMapV3` `originMapping` (manifest data only,
+  zero engine change), and the two `target.name() == "csharp"` comparisons became the
+  `sharedPreludeFile` / `preludePerFile` trait flags.
+- Slice 6 (`normalize`) was **cut** by SP7: the upstream ingest already merges by filename.
+- *Gate:* the `coverage` gate leg (bounded and flushing after the CI hang recorded in the P39 log), goldens
+  byte-identical on Windows and WSL.
+
+## P40 — Library-grade output: escapes, ranges, `!`, culture-free C#, namespaces, prelude reachability, ordinal strings, `Map`, `build --check`, target filter — 🚧 designed, spikes open (2026-10-17; issue #73, PRD `docs/prd/issue-73-library-grade/`, 6-agent investigation)
+
+MintPlayer.Spark's GS1 core is the motivating consumer: one algorithm runs in a .NET 11 library and an Angular
+entry point. The logic is already faithful. What blocks library use is silent miscompiles that the
+differential suite cannot see, plus packaging gaps. Design in `docs/prd/issue-73-library-grade/PRD.md`,
+evidence in `ANALYSIS.md`, and slices, spikes and decisions D1–D13 in its `PLAN.md`.
+
+- **The investigation widened nearly every item to its class.**
+  - PHP interpolates `$` in literals.
+  - `super.f()` also reaches the poison identifier.
+  - Every nullable operand is typed `Unknown` and accepted.
+  - PHP `echo` prints `0.1+0.2` as `0.3`.
+  - Generic-class members are not typed with the receiver's type arguments, a silent miscompile that blocks
+    `Map`.
+  - It also corrected three of the issue's own proposals: `AllowLeadingSign` regresses, `--target csharp`
+    bypasses routing, and a `"csharp"` pgconfig key would put a target name into the Core.
+- **One shared foundation first** (PRD §0): binding-level `requires`, `preludePlacement`, and a reachability
+  pass, so only referenced helpers are emitted. Six items need it.
+- **Slice 0 = 20 open spikes.** S14 and S15 (reachability) are the risk spikes. Thirteen more were answered
+  during the investigation, including a 258,164-double ECMAScript `Number::toString` clone with 0 mismatches.
+- *Gate:* the full gate once, plus the POSIX leg. New legs: culture (a .NET startup hook re-running every
+  conformance dll under tr-TR/nl-BE/sv-SE/fa-IR), poison and `CurrentCulture` grep gates, two-library C#/PHP
+  consumers, a TS barrel, `--check` and `--only` smoke tests, and origin-info byte-identity across two
+  checkout roots.

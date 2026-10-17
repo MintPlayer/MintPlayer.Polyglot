@@ -1529,6 +1529,32 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   targets behind `mutableRefClasses=false` (mutable-OO is a semantic wall — possibly unlocked per-module by a
   new opt-in `pure`/immutable `.pg` marker, since the grammar is *not* frozen); **Zig refused** with a
   §3.B-style diagnostic (no closures at all). Slice plan: PLAN §P27.
+
+*From P28 on, each milestone carries its own PRD folder under `docs/prd/`; this roadmap lists them in
+brief, and PLAN.md holds the status lines and slice logs.*
+
+- **P28 — MSBuild incremental-transpile fix + `std.math` completeness.** 🚧 Slices 1–2 done; slice 3
+  cross-repo (§4.19, PLAN §P28).
+- **P29 — Explicit element types, `T[]` arrays, union-in-collection.** ✅ (issue #27,
+  `docs/prd/issue-27-explicit-typing/`).
+- **P30 — Build-time plugin auto-download from `pgconfig.json`.** ✅ (issue #30, §4.20,
+  `docs/prd/issue-30-plugin-autodownload/`).
+- **P31 — Interfaces made honest, hex lexing, char ordinal, PHP globals/list semantics.** ✅ (issues
+  #29 #33–#36, `docs/prd/issue-29-36-batch/`).
+- **P32 / P34 — E2E scenario coverage, waves 1 and 2.** ✅ (`docs/prd/e2e-scenario-coverage/`,
+  `docs/prd/e2e-coverage-wave2/`).
+- **P33 — Real-language source inputs.** 🚫 Investigated and declined (`docs/prd/source-languages/`).
+- **P35 — Gate speed-up (merged conformance runner, parallelism, NX cache).** ✅ (`docs/prd/gate-speedup/`).
+- **P36 — Open-issue sweep (#38–#57).** ✅ (`docs/prd/issue-sweep/`).
+- **P37 — Constructor rename, `is`/`as`, operators-complete, attributes.** ✅ (`docs/prd/p37-feature-batch/`).
+- **P38 — Origin attribution (`#line` for C#, v3 source map for TS).** ✅ Merged `90dace1` (issue #69,
+  `docs/prd/issue-69-source-attribution/`).
+- **P39 — Coverage attribution (`polyglot coverage remap`).** ✅ Merged `a603dba` (issue #71,
+  `docs/prd/issue-71-coverage-attribution/`).
+- **P40 — Library-grade output for a .NET library + Angular entry point.** 🚧 Designed, spikes open (issue
+  #73, `docs/prd/issue-73-library-grade/`). Covers escapes, range precedence, a throwing `!`, culture-free C#
+  and one number-to-text rule on all four targets, `targetOptions` namespaces, prelude reachability, an ordinal
+  string std, `Map<K,V>`, `build --check`, a build-time target filter, and relative `#line` paths.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 

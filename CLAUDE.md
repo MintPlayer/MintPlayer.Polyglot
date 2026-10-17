@@ -164,9 +164,11 @@ summary in PRD §6 — this file does **not** track milestones):
 In flight / gated: **P23** (bundle the CLI in the VS Code extension for zero-setup install — built, pending
 an interactive vsix install + the first marketplace publish; PR #16), **P22** tail (PHP runtime differential +
 the esbuild-pattern npm CLI sibling), **P16d** (Visual Studio LSP client — built, interactive verify pending),
-**P20** (alternative input "skins" — designed, demand-gated).
+**P20** (alternative input "skins" — designed, demand-gated), **P40** (issue #73 library-grade output —
+designed, decisions D1–D13 + slice-0 spikes open; `docs/prd/issue-73-library-grade/`).
 
-**Next step:** finish P23 verification (interactive install + publish), or pick up the P22 tail.
+**Next step:** maintainer review of P40's D1–D13, then its slice-0 spikes (S14/S15 reachability first); or
+finish P23 verification, or pick up the P22 tail.
 
 To verify a build: `pwsh scripts/build-and-test.ps1` (build → unit tests → differential C#/TS/Python
 conformance), or the **`/build-and-test`** skill.
