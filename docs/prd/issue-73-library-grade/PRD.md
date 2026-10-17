@@ -1,7 +1,8 @@
 # P40 — Library-grade output for a .NET library + Angular entry point (issue #73) — PRD
 
-> **Status:** 🚧 designed (2026-10-17). All 20 slice-0 spikes have run and are folded in below; decisions
-> D1–D17 (`PLAN.md`) await review. Not yet implemented.
+> **Status:** 🚧 designed (2026-10-17). Slice-0 spikes are done. **The maintainer accepted all of D1–D17 on
+> #73**, with changes to D3, D5, D8, D10 and D17. Three follow-up investigations folded those changes in
+> below, adding D18–D20. Implementation is in progress.
 > **Issue:** [#73](https://github.com/MintPlayer/MintPlayer.Polyglot/issues/73).
 > **Evidence:** `ANALYSIS.md` (6-agent investigation, verified against HEAD `a603dba`).
 > **Plan, spikes and decision log:** `PLAN.md`.
@@ -50,6 +51,9 @@ headline table). This PRD designs for the class.
 **Also not in this PRD:**
 - `super.m()` method calls. They are refused here; implementing them is a separate language feature (D6).
 - `Map` iteration with `for k in m`. `keys()` is a snapshot.
+- netstandard2.0, .NET Framework, Mono or Unity compilability of the C# output (see §6 floors). Reaching it
+  would mean removing records from the prelude and rebinding several std functions. It is genuinely not being
+  done, not deferred to avoid diff size.
 
 ## 3. Scope contract check (PRD §3)
 
@@ -196,10 +200,28 @@ per-file copy of only what is reached costs a few lines per file and has no fail
 
 | Target | Helper | How |
 |---|---|---|
-| C# | `__PgRt.Str(int…ulong)`, `Str(double)`, `Str(float)`, `Show(object?)` | Digits from `ToString("R", InvariantCulture)`, layout redone. `Str(float)` widens to double first (S13) |
+| C# | `__PgRt.Str(int…ulong)`, `Str(double)`, `Str(float)`, `Show(object?)` | **Exact shortest digits (Burger–Dybvig over `System.Numerics.BigInteger`, ties to even)**, then the ECMAScript layout. Never `"R"`; see below. `Str(float)` widens to double first (S13) |
 | Python | the `fstr` prelude is replaced | Digits from `repr` |
 | PHP | `__pg_str` | `var_export` with `serialize_precision=-1`, set and then restored |
 | TS | none | Native |
+
+**Why C# must not use `"R"`** (follow-up spike, 2026-10-17; source in `spikes/F64Exact/`). Over 237,124
+doubles checked against Node 24 `String(x)`:
+
+| Formulation | net48 | net8.0.32 | net10.0.13 | net11 rc2 |
+|---|---|---|---|---|
+| `"R"` + layout | 77,615 mismatches | 0 | **4** | 0 |
+| exact Burger–Dybvig | **0** | **0** | **0** | **0** |
+
+- **The .NET 10.0.13 runtime regressed** at power-of-two boundaries: `Math.Pow(2,-25).ToString("R")` is
+  `2.980232238769531E-08`, which does not round-trip. So `"R"` is unsafe even on a modern runtime, and the Core
+  cannot know the consumer's runtime or patch level.
+- E14–E17 round-trip searches fail by design: the power-of-two rounding interval is asymmetric, and
+  subnormals have fewer than 15 significant digits.
+- **Cost:** about 5–8 µs per call against 0.8 µs for `"R"`, which is acceptable for print and interpolation.
+  If speed ever matters, the principled upgrade is a Ryu port, never a runtime switch.
+- Python `repr` and PHP `serialize_precision=-1` are correctly-rounded shortest (Gay's dtoa) and passed the
+  SP-A1 corpus. They keep the platform digits.
 
 **C# rebinds:**
 - int and float interpolation holes become `{__PgRt.Str(x)}` (via the existing `typeIsInt`/`typeIsFloat`);
@@ -322,7 +344,31 @@ C# hole template.
 
 ### B2 — TS prelude
 
-This is covered by §0: per-file, reached-only and non-exported. On top of that:
+This is covered by §0: per-file, reached-only and non-exported (D10, accepted). Per-file copies of `Option`
+stay assignable across files, because the TS `UnionDecl` rule emits structural `{ tag: … }` types and matches
+test `_m.tag`; nothing relies on `instanceof`.
+
+**The library gate compiles under the Angular CLI library flag set** (accepted with D10): `strict`,
+`noImplicitOverride`, `noPropertyAccessFromIndexSignature`, `noImplicitReturns`,
+`noFallthroughCasesInSwitch`, `isolatedModules` and `declaration` (with `emitDeclarationOnly`), on an ES2022
+target and lib. The follow-up measurement:
+- Today's 116 conformance programs give **0 diagnostics** under that set; the four added flags cost nothing.
+- **Three latent defects** fire only in probe programs, so they are fixed and gated by new regression
+  programs:
+  - **Bare union-case construction widens the tag.** `MakeCase` (`typescript:577`) emits `{ tag: "Circle", … }`,
+    which widens to `string` in an unannotated `const` or array, giving TS2345. One sample already hits it.
+    Fix: emit `tag: "Circle" as const`.
+  - **`!` erasure** (TS2531/TS2322 wherever narrowing does not apply). This is fixed by §A4's
+    `(x ?? __pgNullAssert(…))`, whose `never` return narrows the result.
+  - **No `override` on a field that shadows a base member** (TS4114, e.g. `cause` on an `Error` subclass). Fix:
+    manifest data listing the base-root members, so the plugin emits `override` on such fields. No target-name
+    check enters the Core.
+- **A second gate leg** uses `lib: ["ES2022","dom"]` with **no `process` shim** for programs that do not use io.
+  Today every file fails 5× with TS2591, because the unreached std-io functions are emitted. This leg proves
+  §0's reachability instead of hiding it behind the hermetic `env.d.ts`.
+- The gate also covers `docs/lang/samples`.
+
+On top of that:
 - The library gate's barrel case is built over a **dedicated multi-module project**, not over all conformance
   programs, since 112 of 114 export `main` and would collide on user names regardless.
 - `run-library.ps1:92-97` checks export status of **user** declarations only.
@@ -410,6 +456,65 @@ extern class Map<K: IMapKey, V> {
 | Python | `dict` | |
 | PHP | `\ArrayObject`, never a bare array | String keys are prefixed (`is_int($k) ? $k : "s".$k`) and stripped on the way out, so `"10"` never becomes `10` |
 
+### B5 + D17 — the outputs record: stale-file cleanup for every invocation
+
+*(Added after the maintainer accepted D17 with "clean up for MSBuild's explicit inputs too": "previous outputs
+minus current outputs".)*
+
+**Bug reproduced** (follow-up, 2026-10-17, against the real `.props`/`.targets`):
+- After renaming `b.pg` to `c.pg`, `obj/…/polyglot/b.cs` survives and `c.cs` is never written.
+- After deleting `a.pg`, `Program.cs` calling `PolyglotProgram.alpha()` **still builds with 0 errors**,
+  compiling the stale `a.cs`.
+- Cause: `Inputs` and `Outputs` cannot see a removed item, and a rename keeps the file's mtime. The P28
+  `RemoveDir` never runs, and `_PolyglotAddGenerated` globs `*.cs` (`.targets:104`).
+
+**Two more bugs found by reading:**
+- The dedup `seen` set is per group, so two config groups routing to one path overwrite each other with no
+  error.
+- Discovery takes its patterns from the cwd config but groups files by their nearest config, so a nested
+  config's group can be incomplete.
+
+**Design:**
+- **Two files, one writer.**
+  - The **record** (JSON, for the CLI):
+    `{version:1, sections:{"<configDir>|<target>": {inputs:[…], outputs:[{path, map?}]}}}`. Paths are relative
+    to the record's directory, so a copied repo never deletes in the original. It is written via temp file and
+    rename; just before writing, the CLI re-reads it and replaces only its own sections.
+  - The **depfile** (`--depfile <path>`): one absolute path per line, listing the config, the lockfile, every
+    `.pg` in each closure, and `file:` plugin manifests. MSBuild reads it with `ReadLinesFromFile`.
+- **Only an authoritative run keeps a record (D18).**
+  - Discovery mode writes `<configDir>/.polyglot/outputs.json`, for the discovery config's group. The folder
+    has its own `.gitignore` of `*`.
+  - `--record <path>`: the caller vouches its input set is complete. MSBuild passes
+    `$(IntermediateOutputPath)polyglot.outputs.json` and `polyglot.deps`, **outside** `PolyglotOutDir`. That is
+    one record per intermediate directory, so parallel TFM builds never cross-delete.
+  - Explicit inputs without `--record`, `--target`+`--out`, and watch mode keep **no record and delete
+    nothing**, with a notice.
+- **The record is not committed (D19).** CI's `--check` catches a rename as `would create <new>`, and the owned
+  scan covers the rest. The one documented gap: a route moved outside every owned prefix, rebuilt on a machine
+  with no record.
+- **`build`:** after all groups succeed, for each section built this run:
+  - `doomed = previous − current`, then minus **every** current output of the run.
+  - A file is deleted only if it is **in the record and still carries `Generated by Polyglot.`** in its first 5
+    lines (**D20**, double-guarded). A recorded file without the line is kept, with a notice.
+  - A `.map` goes with its owner.
+  - **Any failed group means no deletion and no record rewrite.**
+- **`--only` / `PolyglotTargets`:** only the sections for the targets built are read or replaced; the others
+  carry over byte for byte. A csharp-only MSBuild run never touches the TS twins.
+- **`--check`:** reports the same `doomed` set plus owned extras as `would delete`, writes nothing, and exits 3.
+- **watch:** never deletes and never writes the record.
+- **A missing, corrupt or newer record:** warn once, treat it as empty, and rewrite it after success. Never fail.
+- **The owned scan (D5) stays alongside**, for what the record never saw: a fresh CI checkout, a lost record, a
+  manual copy. The record covers what the scan cannot reach: explicit inputs, `obj/`, and routes outside any
+  owned prefix.
+- **MSBuild:**
+  - `_PolyglotInputsCache` (`WriteLinesToFile WriteOnlyWhenDifferent` over the `.pg` set plus
+    `PolyglotTargets`/`Lib`/`Access`/`OriginInfo`) **replaces the stamp-name tag**.
+  - `Inputs = @(PolyglotFile);$(PolyglotTool);<cache>;@(_PolyglotDep)`.
+  - The record, depfile and cache go into `FileWrites`.
+- **`OutputSink` owns one produced-path set for the whole run**, which turns cross-group collisions into an
+  error. Discovery groups by the nearest config consistently.
+
 ### B5 — `build --check`, owned directories, generated header
 
 - **One `OutputSink`** (`Cli/src/outputsink.hpp`) with Write and Check modes.
@@ -422,9 +527,12 @@ extern class Map<K: IMapKey, V> {
 - **Exit-code rank** replaces numeric max: 64/66/69 > 1 > 3 > 0. `--check --watch` → 64.
 - **`"owned": true` on an include rule.** The scope is the rule's literal output-folder prefix, recursive when
   the template uses `%(RecursiveDir)`/`%(Directory)`, limited to files of the targets built in this run.
-  - An extra file **carrying the generated marker** → drift (`--check`) or deletion (`build`).
-  - An extra file **without the marker** → exit 1 and never deleted, so hand-written `.ts` in an Angular
-    `src/app/` is safe (**D5**).
+  - An extra file **carrying Polyglot's own line** (`Generated by Polyglot.`, in the target's comment syntax)
+    → drift (`--check`) or deletion (`build`).
+  - Every other extra file → exit 1 and never deleted (**D5**, as accepted on #73). That includes files
+    carrying only the bare `<auto-generated/>` marker, which Roslyn generators, NSwag, OpenAPI Generator and
+    protoc plugins all emit. Spark commits its own generated `contracts.ts` into the same Angular entry
+    points, and hand-written `.ts` in `src/app/` is equally safe.
   - This applies only when the build discovered its own inputs. With explicit inputs (as MSBuild passes them)
     it is skipped with a notice.
 - **Header**, as plugin data in each `Program` rule (Python uses `#`, PHP puts it after `<?php`):
@@ -434,8 +542,9 @@ extern class Map<K: IMapKey, V> {
   // Generated by Polyglot. Do not edit: regenerate with `polyglot build`.
   ```
 
-  There is no version and no timestamp. It is emitted via `line()`, so origin accounting stays correct. A unit
-  test asserts every in-box plugin emits the marker.
+  There is no version and no timestamp. It is emitted via `line()`, so origin accounting stays correct.
+  `<auto-generated/>` is for analyzers; **the `Generated by Polyglot.` line is the ownership key** for every
+  deletion decision (D5). A unit test asserts every in-box plugin emits both lines.
 
 ### B6 — Build-time target filter
 
@@ -444,11 +553,13 @@ extern class Map<K: IMapKey, V> {
   - Combined with `--target` → 64.
   - Include routing is unchanged.
 - **A repeated `--target` becomes a usage error** instead of last-wins.
-- **MSBuild:** `PolyglotTargets` passes ` --only "$(PolyglotTargets.Replace(';', ','))"`. The incremental
-  stamp name includes it, so switching back to all targets regenerates.
-- **Default (D3):** empty means the full pgconfig set. This keeps the P30 story and the existing NuGet fixture.
-  The documented recipe for Nx and other cached monorepos is `PolyglotTargets=csharp` plus
-  `polyglot build --check` in CI.
+- **MSBuild:** `PolyglotTargets` passes ` --only "$(PolyglotTargets.Replace(';', ','))"`. It is part of the
+  `_PolyglotInputsCache` (§B5 + D17), so switching back to all targets regenerates.
+- **Default (D3, accepted):** empty means the full pgconfig set. This keeps the P30 story and the existing
+  NuGet fixture. The documented recipe for Nx and other cached monorepos is Spark's own setup:
+  `PolyglotTargets=csharp` in the library's `.csproj`, plus **`polyglot build --check --only typescript`** in CI
+  for the TS twin. **That exact combination is CLI-tested.** It must exit 0 when clean and 3 on a modified,
+  new or stale TS twin, and must neither report nor touch the C# outputs.
 
 ### B7 — Checkout-independent origin info
 
@@ -498,12 +609,25 @@ already disagreed or the output was already wrong:
   diagnostics.
 - C# number text, PHP float text, `charAt`/`codePointAt` out of range and `!` change behaviour.
 - `access` moves under `targetOptions`.
-- `escapes` becomes `literals` in the plugin schema, which is a `requiresCore` bump.
+- `escapes` becomes `literals`, and plugins gain `options`, `preludeSlot` and binding `requires`. **The plugin
+  manifest `"schema"` goes from 1 to 2** in all four manifests (maintainer decision, 2026-10-17). The Core
+  starts **validating** the field, which it never read before: a schema-1 or unknown-schema manifest is refused
+  at load, naming the expected version. Package versions stay `0.0.0-dev` in-tree and are stamped by CI/CD
+  from the tag.
 - The header changes every generated file once.
 
-**Proposed floors (D8):**
-- C# 11 for `file` types. This is a hard floor (S11: `LangVersion 10` gives CS8936), which **rules out
-  netstandard2.0 and net6 consumers**. That is fine for the .NET 11 motivating consumer.
+**Floors (D8, accepted with corrected wording):**
+- **C# 11 and a .NET 8+ BCL.** `Map` additionally needs **.NET 9+**. netstandard2.0, .NET Framework, Mono and
+  Unity are **not supported**.
+- What rules netstandard2.0 out is the existing output and the BCL, **not** the `file` keyword. The maintainer
+  measured `file static class` compiling on netstandard2.0 with `LangVersion 11`. But the follow-up spike
+  found 0/116 conformance programs compile there today:
+  - The prelude's `record` needs `IsExternalInit`; a per-file polyfill collides, and a `file`-scoped one does
+    not satisfy the compiler.
+  - The `codePoints` and `Log2`/hyperbolic bindings need netcoreapp3.0+.
+  - Several planned P40 overloads are missing (`Contains(string, StringComparison)`, `Split(string)`,
+    `OrderedDictionary`).
+- netstandard2.0 compilability is **not** a P40 goal (§2 non-goals).
 - .NET 9 for programs that use `Map`.
 - PHP 8.2.
 
