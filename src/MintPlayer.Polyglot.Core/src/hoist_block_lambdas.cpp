@@ -91,6 +91,9 @@ private:
         case ExprKind::Unary:  hoistExpr(static_cast<Unary&>(*slot).operand, defs); break;
         case ExprKind::Await:  hoistExpr(static_cast<Await&>(*slot).operand, defs); break;
         case ExprKind::Cast:   hoistExpr(static_cast<Cast&>(*slot).operand, defs); break;
+        case ExprKind::NullAssert: hoistExpr(static_cast<NullAssert&>(*slot).operand, defs); break;
+        case ExprKind::IsTest: hoistExpr(static_cast<IsTest&>(*slot).operand, defs); break;
+        case ExprKind::AsCast: hoistExpr(static_cast<AsCast&>(*slot).operand, defs); break;
         case ExprKind::Binary: { auto& b = static_cast<Binary&>(*slot); hoistExpr(b.lhs, defs); hoistExpr(b.rhs, defs); break; }
         case ExprKind::Cond:   { auto& c = static_cast<Cond&>(*slot); hoistExpr(c.cond, defs); hoistExpr(c.then, defs); hoistExpr(c.els, defs); break; }
         case ExprKind::Call:   for (auto& a : static_cast<Call&>(*slot).args) hoistExpr(a, defs); break;

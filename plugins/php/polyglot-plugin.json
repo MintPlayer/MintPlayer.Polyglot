@@ -230,7 +230,9 @@
         ]
       }
     },
-    "preludes": {}
+    "preludes": {
+      "pgNn": "if (!function_exists(__NAMESPACE__.'\\\\__pg_nn')) {\n    function __pg_nn($v, $at) {\n        if ($v === null) {\n            throw new \\UnexpectedValueException(\"null-assert failed (\" . $at . \")\");\n        }\n        return $v;\n    }\n}\n"
+    }
   },
   "std": {
     "std.collections": {
@@ -243,7 +245,7 @@
       "List.removeAt": "$this->exchangeArray((function ($__a, $__i) { array_splice($__a, $__i, 1); return $__a; })($this->getArrayCopy(), $0))"
     },
     "std.io": {
-      "print": "echo is_bool($x) ? ($x ? \"true\" : \"false\") : $x, \"\\n\"",
+      "print": "echo is_bool($x) ? ($x ? \"true\" : \"false\") : ($x ?? \"null\"), \"\\n\"",
       "readText": "file_get_contents($path)",
       "writeText": "file_put_contents($path, $content)",
       "appendText": "file_put_contents($path, $content, FILE_APPEND)",
@@ -796,6 +798,26 @@
         " instanceof ",
         { "type": "node.testType" }
       ]
+    },
+    "NullAssert": {
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.isFail", "true"] },
+            { "tmpl": ["throw new \\UnexpectedValueException(", { "fn": "quoted", "args": ["string", { "get": "node.message" }] }, ")"] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            { "fn": "require", "args": ["pgNn"] },
+            "__pg_nn(",
+            { "emit": "node.operand" },
+            ", ",
+            { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+            ")"
+          ]
+        }
+      }
     },
     "AsCast": {
       "case": {
@@ -1510,7 +1532,10 @@
                                           "tmpl": [
                                             " && $__e instanceof ",
                                             {
-                                              "type": "item.type"
+                                              "case": {
+                                                "when": [[{ "eq": ["item.typeName", "Error"] }, "\\Throwable"]],
+                                                "else": { "type": "item.type" }
+                                              }
                                             }
                                           ]
                                         }
@@ -1636,6 +1661,15 @@
                             [
                               {
                                 "eq": [
+                                  "item.typeName",
+                                  "Error"
+                                ]
+                              },
+                              "\\Throwable"
+                            ],
+                            [
+                              {
+                                "eq": [
                                   "item.hasType",
                                   "true"
                                 ]
@@ -1644,7 +1678,8 @@
                                 "type": "item.type"
                               }
                             ]
-                          ]
+                          ],
+                          "else": "\\Throwable"
                         }
                       },
                       " $__e)"

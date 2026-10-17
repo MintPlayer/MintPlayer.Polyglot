@@ -1,0 +1,2 @@
+// REFUSED (P40 A4, N1): `<` on a nullable operand — C# lifts it to false, JS compares null as 0.
+fn small(ni: i32?): bool => ni < 1

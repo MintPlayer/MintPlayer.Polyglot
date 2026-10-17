@@ -217,7 +217,8 @@ no accidentally-floating promises.
 |---|---|
 | `let maybe: i32? = null` | `number \| null` — non-null by default |
 | `name?.length`, `maybe ?? 0` | `?.` and `??`, same as TS |
-| `maybe!` | **runtime null-assert that throws** — TS `!` is erased and can lie |
+| `maybe!` | **runtime null-assert that throws** — TS `!` is erased and can lie. Emits `(maybe ?? __pgNullAssert("m.pg:L:C"))` (a module-local `never` helper) |
+| `maybe + 1`, `"${maybe}"`, `maybe.x` | **errors** — narrow with `if maybe != null`, or use `??` / `!` |
 | no `undefined` | `null`/`undefined` are normalized to a single `null`; `undefined` never leaks |
 
 ## Extension methods

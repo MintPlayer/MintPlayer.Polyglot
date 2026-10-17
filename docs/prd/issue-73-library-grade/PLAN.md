@@ -643,3 +643,74 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     targets (12 PHP refusers, unchanged; `range_precedence` matches its golden). POSIX leg (WSL Ubuntu,
     cmake + g++ Release with `-Werror=switch`) compiles and its unit exe passes. Not run (end gate): the full
     tier — samples `run-emit`, the library gate, run-nuget.
+- **2026-10-17 (night, slice 5)** — **Slice 5 built** (A4: nullability). As built:
+  - **`ir::NullAssert { operand, operandIsSimple, tempName }`**; a null operand is the **fail form** (`node.isFail`).
+    `where` is not stored on the node: the rules read `node.where` / `node.message`, computed by the emitter from
+    the node position and the module file table (`EmitterBase::sourceSite`, basename only, so it does not depend
+    on the checkout; `<input>` when there is no file). The Core owns it, and the message is identical on all four
+    targets. `!` on a non-nullable operand lowers to the bare operand; the old Cast lowering is gone. `NullAssert`
+    is in the anti-silent-drop core table, so a plugin without the rule fails to load. Walkers updated: rename,
+    capture analysis, block-lambda hoisting, reachability and the dump. Capture analysis and hoisting also gained
+    the `IsTest` and `AsCast` operands they used to skip.
+  - **Emission:** C# `(x ?? throw new global::System.NullReferenceException("null-assert failed (m.pg:L:C)"))`.
+    `int?` yields `int` (the nullable gate checks this, and the strict compile has 0 warnings). TS:
+    `(x ?? __pgNullAssert("m.pg:L:C"))` with a non-exported `never` helper. Python: inline
+    `(x if x is not None else _pg_fail(…))`, plus a walrus `__nnN` for operands that are not names (S9). PHP:
+    `__pg_nn($x, "…")`, behind a namespaced `function_exists` guard. The helpers come from the `require` /
+    reachability mechanism, so they appear only where used. A PHP-namespaced run of `null_assert` matches too.
+  - **`opt!` (D12):** lowered through the `??`-on-Option match (`optionMatch`); its None arm is the fail form:
+    a C# switch-arm throw, a TS helper call, a Python helper call, a PHP match-arm `throw`. The sema refusal is
+    gone.
+  - **Sema.** N1 (`requireNonNullOperand`: unary operators and every binary operator except `==`, `!=`, `??`),
+    N2 (interpolation hole, `print` argument) and N3 (`string + T`). The four S7 holes are closed:
+    - compound assignment, on a name and on a member/index target;
+    - `bool?` in `requireBool`, which covers `if`, `while`, `when` and each `&&` operand of a condition;
+    - `IfExpr` with a `null` branch is now typed nullable;
+    - member access and method calls on a nullable receiver (`?.` is still legal; an extension that declares a
+      nullable receiver is exempt).
+    Explicit call-site type args `f<T>(…)` now bind the result type (arity is checked).
+  - **Narrowing (D14).** `Local.nonNull`, `assigns` and `lambdaDepth`. `scopes_` is now a `deque`, so the
+    saved `Local*` pointers stay valid. Facts come from `!=`/`==` null tests through `&&`, `||` and `!`. They
+    narrow:
+    - the then-branch and the else-branch;
+    - the rest of the enclosing statement list after a branch that ends in return/throw/break/continue
+      (each statement list has its own frame through `checkStmts`);
+    - the right operand of `&&` / `||`;
+    - the branches of an if-expression;
+    - the body of a `while` (until the first assignment).
+    Soundness rules:
+    - Narrowing ends at any assignment, and leaving a region does not undo an assignment made inside it.
+    - A loop un-narrows every name it assigns, because of the back edge.
+    - A lambda never sees an outer narrowing. This is stricter than D14 needed, but C# and older TS do not
+      carry an outer narrowing into a closure either.
+    - A `var` that any lambda in the body assigns is never narrowed.
+    A narrowed read lowers to a `Cast` to the non-null type (C# `(int)(n)`; a bare read on the other targets).
+  - **D13:** PHP `catch (e: Error)` and an untyped catch both become `\Throwable`, in the guarded form and the
+    plain form (new `item.typeName`). **C# explicit type args** go through `typeArgsSuffix` on `Call` (`failT<int>(…)`).
+  - **Runtime backstop (kept minimal, as planned):** `print` renders null as `null` on C#, Python and PHP (TS
+    already did), and Python `_pg_str(None)` returns `"null"`. **Not done here, left to slice 6 (`__PgRt.Show`):**
+    a T-typed null in an interpolation hole still renders `""` on C# and PHP.
+  - **Gate fixes found along the way:**
+    - The library gate's "unexported top-level declaration" guard was already red after slice 1 (module-local
+      prelude `type Option` / `function print`). It now holds only names declared by the program's own `.pg`
+      to the rule, and it gains an explicit `!` assertion.
+    - The nullable gate's "`#nullable enable` first" check was already red after slice 10 (header lines). It
+      now allows the two header lines.
+  - **Tests:**
+    - conformance `null_assert.pg` plus `.expected`;
+    - `nullable_positions.pg` gains `!` on a record field and on an `i32?`, with two nullable-gate assertions;
+    - 6 refusal fixtures (`nullable_concat`, `nullable_hole`, `nullable_compare`, `string_plus_typeparam`,
+      `nullable_compound`, `nullable_member`);
+    - unit block "P40 s5" (34 checks: lowering, emission on 4 targets, `opt!`, type args, `\Throwable`, N1–N3,
+      holes, 11 narrowing scopes).
+    Corpus fallout: **0**. All 137 corpus `.pg` files compile with the new rules (conformance, samples, library,
+    fidelity, MintPlayer.AI). The one failure, an old MintPlayer.AI pilot file, is a parse error that predates
+    this slice.
+  - **Verified:**
+    - unit exe green (870 checks);
+    - `-Tier fast` green;
+    - conformance: all 119 programs agree on all four targets (12 PHP refusers, unchanged);
+    - nullable gate green (8 checks);
+    - library gate (staged) green, `null_assert` included.
+    Not run (end gate): the full tier, run-nuget, the POSIX leg (no platform-forked code changed, but the new
+    `switch` arms should still go through g++ `-Werror=switch`).

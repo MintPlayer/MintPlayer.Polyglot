@@ -48,7 +48,8 @@
     "preludes": {
       "asyncEntry": "import asyncio\n",
       "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
-      "fstr": "def _pg_str(x):\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if isinstance(x, float) and x.is_integer() and abs(x) < 1e16:\n        return str(int(x))\n    return str(x)\n"
+      "pgFail": "def _pg_fail(at):\n    raise TypeError(\"null-assert failed (\" + at + \")\")\n",
+      "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if isinstance(x, float) and x.is_integer() and abs(x) < 1e16:\n        return str(int(x))\n    return str(x)\n"
     },
     "tables": {
       "localDecl": {
@@ -2509,6 +2510,45 @@
         ")"
       ]
     },
+    "NullAssert": {
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.isFail", "true"] },
+            { "tmpl": [{ "fn": "require", "args": ["pgFail"] }, "_pg_fail(", { "fn": "quoted", "args": ["string", { "get": "node.where" }] }, ")"] }
+          ],
+          [
+            { "eq": ["node.operandIsSimple", "true"] },
+            {
+              "tmpl": [
+                { "fn": "require", "args": ["pgFail"] },
+                "(",
+                { "emit": "node.operand" },
+                " if ",
+                { "emit": "node.operand" },
+                " is not None else _pg_fail(",
+                { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+                "))"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            { "fn": "require", "args": ["pgFail"] },
+            "(",
+            { "get": "node.tempName" },
+            " if (",
+            { "get": "node.tempName" },
+            " := ",
+            { "emit": "node.operand" },
+            ") is not None else _pg_fail(",
+            { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+            "))"
+          ]
+        }
+      }
+    },
     "AsCast": {
       "case": {
         "when": [
@@ -3825,7 +3865,7 @@
       "List.removeAt": "$this.pop($0)"
     },
     "std.io": {
-      "print": "__builtins__.print((\"true\" if x else \"false\") if isinstance(x, bool) else (str(int(x)) if isinstance(x, float) and x.is_integer() and abs(x) < 1e16 else x))",
+      "print": "__builtins__.print(\"null\" if x is None else (\"true\" if x else \"false\") if isinstance(x, bool) else (str(int(x)) if isinstance(x, float) and x.is_integer() and abs(x) < 1e16 else x))",
       "readText": "__import__('pathlib').Path(path).read_text()",
       "writeText": "__import__('pathlib').Path(path).write_text(content)",
       "appendText": "open(path, 'a').write(content)",

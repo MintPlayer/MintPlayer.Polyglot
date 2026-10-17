@@ -1,0 +1,8 @@
+// REFUSED (P40 A4, S7 hole): member access on a maybe-null receiver without `?.` — a TypeError-class
+// throw on C#/TS/Python, but a warning plus null on PHP.
+class Box {
+  var v: i32
+  constructor(v: i32) { this.v = v }
+}
+
+fn read(b: Box?): i32 => b.v

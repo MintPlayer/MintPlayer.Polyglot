@@ -88,6 +88,9 @@
       ]
     },
     "rethrow": "throw __e;",
+    "preludes": {
+      "nullAssert": "function __pgNullAssert(at: string): never {\n    throw new TypeError(\"null-assert failed (\" + at + \")\");\n}\n"
+    },
     "tables": {
       "opMethod": {
         "+": "plus",
@@ -650,6 +653,26 @@
         " instanceof ",
         { "type": "node.testType" }
       ]
+    },
+    "NullAssert": {
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.isFail", "true"] },
+            { "tmpl": [{ "fn": "require", "args": ["nullAssert"] }, "__pgNullAssert(", { "fn": "quoted", "args": ["string", { "get": "node.where" }] }, ")"] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            { "fn": "require", "args": ["nullAssert"] },
+            "(",
+            { "emitChild": "node.operand", "side": "recv" },
+            " ?? __pgNullAssert(",
+            { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+            "))"
+          ]
+        }
+      }
     },
     "AsCast": {
       "case": {

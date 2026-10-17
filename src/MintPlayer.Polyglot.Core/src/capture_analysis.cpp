@@ -252,6 +252,9 @@ private:
         case ExprKind::Unary: walkExpr(static_cast<Unary&>(*e).operand.get()); break;
         case ExprKind::Await: walkExpr(static_cast<Await&>(*e).operand.get()); break;
         case ExprKind::Cast:  walkExpr(static_cast<Cast&>(*e).operand.get()); break;
+        case ExprKind::NullAssert: walkExpr(static_cast<NullAssert&>(*e).operand.get()); break; // null = fail form
+        case ExprKind::IsTest: walkExpr(static_cast<IsTest&>(*e).operand.get()); break;
+        case ExprKind::AsCast: walkExpr(static_cast<AsCast&>(*e).operand.get()); break;
         case ExprKind::Binary: { auto& b = static_cast<Binary&>(*e); walkExpr(b.lhs.get()); walkExpr(b.rhs.get()); break; }
         case ExprKind::Cond:  { auto& c = static_cast<Cond&>(*e); walkExpr(c.cond.get()); walkExpr(c.then.get()); walkExpr(c.els.get()); break; }
         case ExprKind::Call:  for (auto& a : static_cast<Call&>(*e).args) walkExpr(a.get()); break;

@@ -507,6 +507,12 @@ private:
     // `opt ?? rhs` (opt: Option<X>) -> `match opt { Some(v) => v, None => rhs }`. The element type is e.type
     // (sema gave the `??` node the element type X), so the bound `v` and the match are typed X.
     ir::ExprPtr coalesceOption(const Expr& e) {
+        return optionMatch(e, [&] { return expr(*e.rhs); });
+    }
+    // `match <e.lhs> { Some(v) => v, None => noneBody() }` typed e.type — shared by `opt ?? d` and `opt!`
+    // (whose None arm is the NullAssert fail form, P40 D12). The None body is lowered after the scrutinee.
+    template <class NoneFn>
+    ir::ExprPtr optionMatch(const Expr& e, NoneFn noneBody) {
         std::string v = "__opt" + std::to_string(tmpCounter_++);
         auto m = std::make_unique<ir::Match>(e.pos, e.type, expr(*e.lhs)); // scrutinee keeps its Option<X> type
         ir::MatchArm some;
@@ -518,7 +524,7 @@ private:
         ir::MatchArm none;
         none.pattern.kind = ir::PatternKind::Ctor;
         none.pattern.ctorCase = "None";
-        none.body = expr(*e.rhs);
+        none.body = noneBody();
         m->arms.push_back(std::move(none));
         setHasCatchAll(*m);
         return m;
@@ -699,6 +705,11 @@ private:
                 return in;
             }
             case ExprKind::Name:
+                if (e.narrowedNonNull) { // P40 D14: a flow-narrowed read keeps the variable's nullable type and
+                    TypeRef vt = e.type; // converts to the non-null one (C# unwraps a Nullable<T>; the other
+                    vt.nullable = true;  // targets' same-type conversion is the bare read)
+                    return std::make_unique<ir::Cast>(e.pos, e.type, std::make_unique<ir::Var>(e.pos, vt, e.text));
+                }
                 if (auto u = caseUnion_.find(e.text); u != caseUnion_.end()) // bare payload-free union case
                     return std::make_unique<ir::MakeCase>(e.pos, e.type, u->second, e.text);
                 if (!e.staticOwner.empty()) { // bare ref to an enclosing-class static/const -> `Owner.name`
@@ -733,9 +744,21 @@ private:
                 return t;
             }
             case ExprKind::As: return makeAsCast(e);
-            // `x!` asserts the non-null type sema put on the node: a cast to it (C# unwraps a Nullable<T>
-            // value type via `(int)x`; for reference types it's an identity cast — TS strips both).
-            case ExprKind::NullAssert: return std::make_unique<ir::Cast>(e.pos, e.type, expr(*e.lhs));
+            // P40 A4: `x!` — a checked assertion on a nullable operand (ir::NullAssert, throwing at the
+            // source site); a no-op on a non-nullable one (incl. a flow-narrowed variable); and on an
+            // optional generic `Option<T>`, a match whose None arm is the fail form (D12).
+            case ExprKind::NullAssert: {
+                const TypeRef& ot = e.lhs->type;
+                if (ot.kind == TypeRef::Kind::Named && ot.name == "Option" && !ot.args.empty())
+                    return optionMatch(e, [&]() -> ir::ExprPtr {
+                        return std::make_unique<ir::NullAssert>(e.pos, e.type, nullptr);
+                    });
+                if (!ot.nullable) return expr(*e.lhs);
+                auto na = std::make_unique<ir::NullAssert>(e.pos, e.type, expr(*e.lhs));
+                na->operandIsSimple = e.lhs->kind == ExprKind::Name || e.lhs->kind == ExprKind::This;
+                if (!na->operandIsSimple) na->tempName = "__nn" + std::to_string(tmpCounter_++);
+                return na;
+            }
             case ExprKind::Extern: {
                 auto x = std::make_unique<ir::Extern>(e.pos, e.type, e.text);
                 x->preludeKeys = e.preludeKeys; // P40 §0: a synthesized std actual's helper requirements
@@ -858,6 +881,7 @@ private:
                 auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, /*isPrint=*/false); // print is now std.io.print, a normal free fn
                 call->isFree = freeFns_.count(callee) > 0; // a top-level fn (vs a function-valued local)
                 call->mangledCallee = e.overloadName.empty() ? callee : e.overloadName; // TS overload target
+                call->typeArgs = e.typeArgs; // P40 A4: explicit `f<T>(…)` survives (C# CS0411 otherwise)
                 for (const auto& a : e.args) call->args.push_back(expr(*a));
                 return call;
             }
@@ -1249,6 +1273,9 @@ struct CsScopeLegalizer {
             case K::Unary: renameExpr(*static_cast<ir::Unary&>(e).operand, o, n); break;
             case K::Await: renameExpr(*static_cast<ir::Await&>(e).operand, o, n); break;
             case K::Cast:  renameExpr(*static_cast<ir::Cast&>(e).operand, o, n); break;
+            case K::NullAssert: { auto& na = static_cast<ir::NullAssert&>(e); if (na.operand) renameExpr(*na.operand, o, n); break; }
+            case K::IsTest: renameExpr(*static_cast<ir::IsTest&>(e).operand, o, n); break;
+            case K::AsCast: renameExpr(*static_cast<ir::AsCast&>(e).operand, o, n); break;
             case K::Binary: { auto& b = static_cast<ir::Binary&>(e); renameExpr(*b.lhs, o, n); renameExpr(*b.rhs, o, n); break; }
             case K::Cond: { auto& c = static_cast<ir::Cond&>(e); renameExpr(*c.cond, o, n); renameExpr(*c.then, o, n); renameExpr(*c.els, o, n); break; }
             case K::Call: { auto& c = static_cast<ir::Call&>(e); for (auto& a : c.args) renameExpr(*a, o, n); break; }

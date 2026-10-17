@@ -87,6 +87,12 @@ $cases = [ordered]@{
     "super_method.pg"           = @("'super' is only supported as a base-constructor call", "'super.m()'")
     "super_value.pg"            = @("'super' is only supported as a base-constructor call")
     "throw_match_arm.pg"        = @("'throw' is a statement, not an expression")
+    "nullable_concat.pg"        = @("'+' operand of type 'string?' may be null", "supply a fallback with '??' or assert with '!'")
+    "nullable_hole.pg"          = @("interpolation hole of type 'i32?' may be null")
+    "nullable_compare.pg"       = @("'<' operand of type 'i32?' may be null")
+    "string_plus_typeparam.pg"  = @("'string + T' concatenates a type parameter", "interpolate instead")
+    "nullable_compound.pg"      = @("'+=' target 'n' of type 'i32?' may be null")
+    "nullable_member.pg"        = @("'.v' on a receiver of type 'Box?', which may be null", "use '?.v'")
 }
 
 foreach ($fx in $cases.Keys) {

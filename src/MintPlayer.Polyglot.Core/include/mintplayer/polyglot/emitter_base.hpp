@@ -500,6 +500,10 @@ protected:
 
 public:
     virtual ~EmitterBase() = default;
+    // P40 A4: a source site `<file basename>:<line>:<col>` for runtime messages (the null-assert). The
+    // basename only — never a path — so emitted text is checkout-independent; `<input>` when the
+    // position has no file (synthesized code, an in-memory compile without a file table).
+    std::string sourceSite(const SourcePos& p) const;
 };
 
 // THE emitter (P19 slice 7d): every backend is this one class parameterized by pure data — its spec

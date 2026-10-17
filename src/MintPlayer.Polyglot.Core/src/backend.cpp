@@ -297,6 +297,7 @@ constexpr Coverage kCoverage[] = {
     {"Cond", nullptr},     {"ListLit", nullptr},  {"Tuple", nullptr},  {"New", nullptr},
     {"Unary", nullptr},    {"Cast", nullptr},     {"Interp", nullptr},
     {"IsTest", nullptr},   {"AsCast", nullptr},   // P37 B: `is` / `as` (instanceof/isinstance everywhere)
+    {"NullAssert", nullptr}, // P40 A4: `x!` on a nullable operand (and the `opt!` fail arm) — no stance excuses it
     {"MethodCall", nullptr}, {"Binary", nullptr},
     {"MakeCase", "patternMatching"}, // a union-constructor node — only reachable when unions/match are
     {"Match", "patternMatching"}, {"With", "withExpressions"}, {"Await", "async"}, {"Lambda", "closures"},

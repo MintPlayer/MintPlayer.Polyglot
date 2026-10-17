@@ -25,5 +25,11 @@ fn main() {
   let chosen: Box = pick(h.get(), Box(2))
   let p = Pair(Box(3), null)
   let other: Box = pick(p.b, p.a)
-  print(chosen.v + other.v)
+  // P40 A4: `!` on a nullable record field (reference) and on an `i32?` (Nullable<int> value) — both
+  // must yield the non-nullable type with no NRT warning.
+  let q = Pair(Box(4), Box(5))
+  let forced: Box = q.b!
+  let maybeN: i32? = 6
+  let n: i32 = maybeN!
+  print(chosen.v + other.v + forced.v + n)
 }

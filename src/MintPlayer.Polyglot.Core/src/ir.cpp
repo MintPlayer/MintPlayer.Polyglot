@@ -236,6 +236,7 @@ private:
             case ExprKind::Cast: { const auto& c = static_cast<const Cast&>(e); repr = "(" + typeName(e.type) + ")" + expr(*c.operand); break; }
             case ExprKind::IsTest: { const auto& t = static_cast<const IsTest&>(e); repr = expr(*t.operand) + " is " + typeName(t.testType); break; }
             case ExprKind::AsCast: { const auto& a = static_cast<const AsCast&>(e); repr = expr(*a.operand) + " as " + typeName(a.castType); break; }
+            case ExprKind::NullAssert: { const auto& n = static_cast<const NullAssert&>(e); repr = n.operand ? expr(*n.operand) + "!" : std::string("<null-assert fail>"); break; }
             case ExprKind::Extern: { repr = "extern(\"" + static_cast<const Extern&>(e).code + "\")"; break; }
             case ExprKind::Binary: {
                 const auto& b = static_cast<const Binary&>(e);

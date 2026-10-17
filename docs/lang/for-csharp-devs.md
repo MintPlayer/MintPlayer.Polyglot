@@ -219,7 +219,10 @@ You write the **unwrapped** return type (`: i32`, not `Task<i32>`); the C# backe
 |---|---|
 | `let maybe: i32? = null` | `int? maybe = null;` — non-null by default |
 | `name?.length`, `maybe ?? 0` | `?.` and `??`, as in C# |
-| `maybe!` | **throws if null at runtime** — unlike C# `!`, which is compile-time-only |
+| `maybe!` | **throws if null at runtime** — unlike C# `!`, which is compile-time-only. Emits `(maybe ?? throw new NullReferenceException("null-assert failed (m.pg:L:C)"))`, so `int?` yields `int` |
+| `maybe + 1`, `"${maybe}"`, `print(maybe)`, `maybe.x` | **errors** — C# would null-lift / print `""`; narrow, `??` or `!` first |
+| `if x != null { x + 1 }` | flow-narrowing like C# NRT, but for locals and parameters only, and it ends at any assignment to `x` |
+| `if c { 1 } else { null }` | typed `i32?` |
 
 ## Extension methods
 

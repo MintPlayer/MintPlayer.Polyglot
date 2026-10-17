@@ -192,6 +192,43 @@ let forced = maybe!         // ! null-assert: T? -> T (throws if null)
 The compiler normalizes `null`/`undefined` to a single notion of "absent" (PRD §3.C): the TS backend
 emits and tests against `null` consistently and never lets `undefined` leak into Polyglot semantics.
 
+**`x!` is a checked assertion on every target** (P40 A4). On a nullable operand it yields the value, or
+throws an `Error` whose message names the source site — `null-assert failed (m.pg:L:C)`, identical on
+all four targets (C# `NullReferenceException`, TS/Python `TypeError`, PHP `UnexpectedValueException`; a
+`catch (e: Error)` catches all of them). The operand is evaluated once and the form is valid as an
+assignment target (`box.next!.v += 1`). On a non-nullable operand `!` is a no-op. On an optional generic
+(`T?` where `T` is a type parameter, i.e. `Option<T>`), `opt!` unwraps `Some` and throws the same error
+on `None`.
+
+**Nullable operands.** Every target treats null differently in arithmetic, comparison, concatenation and
+stringification, so a maybe-null value must be handled before it is used:
+
+- A nullable operand to any operator except `==`, `!=` and `??` is an error (*'+' operand of type
+  'string?' may be null; supply a fallback with '??' or assert with '!'*). That includes unary operators,
+  `&&`/`||`, a `bool?` condition (`if`, `while`, `when`) and a compound assignment (`n += 1` on `i32?`).
+- A nullable value in an interpolation hole (`"${n}"`) or passed to `print` is an error.
+- `string + T` with a type parameter `T` is an error — interpolate instead (like `string + i32`).
+- `.member` / `.method()` on a nullable receiver is an error — use `?.`, narrow it, or assert with `!`.
+- An if-expression with a `null` branch is nullable: `if c { 1 } else { null }` is `i32?`.
+
+**Null flow-narrowing.** A nullable **local or parameter** is non-null where a test proves it:
+
+```pg
+fn len(s: string?, t: string?): i32 {
+  if s == null { return 0 }           // early exit: `s` is string for the rest of the block
+  if t != null && t.len() > 3 { … }   // `&&`: the right operand sees `t` as string
+  return if t != null { s.len() + t.len() } else { s.len() }
+}
+```
+
+Narrowing applies after `if x != null` (the then-branch), `if x == null` (the else-branch), an `if`
+whose branch always exits (`return`/`throw`/`break`/`continue` — the rest of the enclosing block),
+`x != null && …`, `x == null || …`, and `while x != null` (the loop body). It ends at the end of that
+region and at any assignment to the variable; a loop that assigns the variable is never narrowed inside
+it, a lambda body never sees an outer narrowing, and a `var` that some lambda assigns is never narrowed.
+Fields and other expressions are not narrowed — read them into a local, or use `!`. `!` on a narrowed
+variable is allowed and is a no-op.
+
 ### 4.4 Interfaces, inheritance, generics
 
 ```pg
@@ -383,7 +420,8 @@ try {
 
 `Error` is the root exception type (→ C# `System.Exception`, TS `Error`). Typed `catch` lowers to C#
 typed catch / TS `instanceof` dispatch with rethrow of unmatched types; `when` → C# exception filter / TS
-`if`-guard-then-rethrow; `finally` is identical on both.
+`if`-guard-then-rethrow; `finally` is identical on both. On PHP, `catch (e: Error)` (and an untyped
+catch) catches `\Throwable`, so engine errors (`TypeError`, …) are catchable from `.pg` as well (P40 D13).
 
 ### 5.2 Deterministic disposal (`use`)
 

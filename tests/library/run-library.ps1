@@ -104,9 +104,22 @@ function Assert-Consumable($name, $stem, $dir) {
         return
     }
 
-    # Regression guard: any top-level declaration (column 0) that is NOT `export`ed is a dropped export.
-    $unexported = Select-String -Path $ts -Pattern '^(abstract class|class|function|async function|function\*|interface|type|const|let|enum|namespace) '
-    if ($unexported) {
+    # Regression guard: a USER top-level declaration (column 0) that is NOT `export`ed is a dropped export.
+    # P40 §0/D10: prelude declarations (Option, print, the `__pgNullAssert` helper, …) are deliberately
+    # module-local, so only names the program's own .pg sources declare are held to the rule.
+    $pgSources = @()
+    $single = Join-Path $progDir "$name.pg"
+    if (Test-Path $single) { $pgSources = @($single) }
+    elseif (Test-Path (Join-Path $progDir $name)) { $pgSources = @(Get-ChildItem (Join-Path $progDir $name) -Filter *.pg -Recurse | ForEach-Object FullName) }
+    $userNames = @{}
+    foreach ($src in $pgSources) {
+        foreach ($m in Select-String -Path $src -Pattern '^(?:export\s+)?(?:(?:open|abstract|sealed|async|extern)\s+)*(?:fn|class|record|enum|union|interface|let|const|var)\s+([A-Za-z_]\w*)') {
+            $userNames[$m.Matches[0].Groups[1].Value] = $true
+        }
+    }
+    $unexported = @(Select-String -Path $ts -Pattern '^(?:abstract class|class|function\*?|async function|interface|type|const|let|enum|namespace)\s+([A-Za-z_$][\w$]*)' |
+        Where-Object { $userNames.ContainsKey($_.Matches[0].Groups[1].Value) })
+    if ($unexported.Count -gt 0) {
         Fail "$name : top-level declaration(s) not exported: $($unexported[0].Line.Trim())"
         return
     }
@@ -211,6 +224,21 @@ if ($Staged) {
         if (-not (Test-Path $entry)) { continue }
         Stage-Program $d.Name "entry" @("build", $entry, "--root", $d.FullName)
     }
+}
+
+# P40 A4: the `!` case — null_assert.pg emits the checked `x ?? __pgNullAssert("m.pg:L:C")` form plus a
+# module-local (non-exported) `never` helper; the strict tsc pass below must accept both.
+$naTs = Join-Path (Join-Path $work "null_assert") "null_assert.ts"
+if (Test-Path $naTs) {
+    $naText = Get-Content $naTs -Raw
+    if (($naText -match '\?\? __pgNullAssert\("null_assert\.pg:\d+:\d+"\)') -and
+        ($naText -match '(?m)^function __pgNullAssert\(at: string\): never')) {
+        Write-Host "[PASS] null_assert : '!' emits the checked form with a module-local never-helper"
+    } else {
+        Fail "null_assert : '!' did not emit '?? __pgNullAssert(`"m.pg:L:C`")' with a non-exported helper"
+    }
+} else {
+    Fail "null_assert : not staged (expected $naTs)"
 }
 
 Write-Host ""

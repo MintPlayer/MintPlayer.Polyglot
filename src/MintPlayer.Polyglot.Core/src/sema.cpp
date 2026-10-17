@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cerrno>
+#include <deque>
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
@@ -305,6 +306,13 @@ struct Local {
     TypeRef type;
     bool isMutable;
     int defId = -1;  // index into the SemanticModel's defs when indexing is on (§4.8); -1 otherwise
+    // P40 D14 null flow-narrowing: `nonNull` = proven non-null at the current point (a nullable local or
+    // param after `if x != null`, an early exit, `x != null && …`). `assigns` counts assignments, so a
+    // region's exit can tell whether the variable was reassigned inside it; `lambdaDepth` is where it was
+    // declared — a MUTABLE local's narrowing does not reach into a lambda (it may run after a reassignment).
+    bool nonNull = false;
+    int assigns = 0;
+    int lambdaDepth = 0;
 };
 
 class Checker {
@@ -396,7 +404,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> enumAllCases_;  // enum  -> all case names
     std::unordered_map<std::string, FnSig> extensions_;        // "RecvType.method" -> extension sig
     std::unordered_set<std::string> genericsInScope_;
-    std::vector<std::unordered_map<std::string, Local>> scopes_;
+    std::deque<std::unordered_map<std::string, Local>> scopes_; // deque: a Local* (narrowing saves) survives a push
     TypeRef currentReturn_ = namedType("unit");
     TypeRef currentThis_ = tUnknown();
     std::string currentClass_;  // enclosing type name while checking a member body; survives into static
@@ -411,6 +419,14 @@ private:
     // branch on every target (it's hoisted before the `if`), so redeclaring the name later in the same
     // block would collide in the OUTPUT even though the language scope ended — refused here instead.
     std::vector<std::unordered_set<std::string>> blockIsBindings_;
+    // P40 D14: narrowing state. One saved-state frame per statement list (an early-exit narrowing lasts to
+    // the end of its list); `closureAssigned_` = names a lambda assigns somewhere in the current top-level
+    // body (a mutable local a closure can reassign is never narrowed — the closure may run at any point).
+    struct NarrowSave { Local* local; bool prev; int assignsAtEntry; };
+    std::vector<std::vector<NarrowSave>> narrowFrames_;
+    std::unordered_set<std::string> closureAssigned_;
+    int lambdaDepth_ = 0;
+    int bodyDepth_ = 0;
 
     // ---- semantic model (LSP; §4.8). Populated only when model_ != nullptr, and only for file-local symbols.
     SemanticModel* model_ = nullptr;
@@ -487,7 +503,9 @@ private:
         auto& top = scopes_.back();
         if (top.count(name)) diags_.error(pos, "'" + name + "' is already declared in this scope");
         int defId = recordModel_ ? recordDef(SymbolKind::Local, name, pos, type) : -1;
-        top[name] = {std::move(type), isMutable, defId};
+        Local l{std::move(type), isMutable, defId};
+        l.lambdaDepth = lambdaDepth_;
+        top[name] = std::move(l);
     }
     const Local* lookup(const std::string& name) const {
         for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
@@ -495,6 +513,136 @@ private:
             if (found != it->end()) return &found->second;
         }
         return nullptr;
+    }
+    Local* lookupMut(const std::string& name) { return const_cast<Local*>(lookup(name)); }
+
+    // A `.pg` spelling of a type for diagnostics (`string?`, `List<i32>`, `(i32) => bool`).
+    static std::string showTy(const TypeRef& t) {
+        std::string s;
+        if (t.kind == TypeRef::Kind::Tuple || t.kind == TypeRef::Kind::Function) {
+            s = "(";
+            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += showTy(t.args[i]); }
+            s += ")";
+            if (t.kind == TypeRef::Kind::Function) s += " => " + (t.ret.empty() ? std::string("unit") : showTy(t.ret[0]));
+            return t.nullable ? "(" + s + ")?" : s;
+        }
+        s = t.name.empty() ? std::string("null") : t.name;
+        if (!t.args.empty()) {
+            s += "<";
+            for (std::size_t i = 0; i < t.args.size(); ++i) { if (i) s += ", "; s += showTy(t.args[i]); }
+            s += ">";
+        }
+        return s + (t.nullable && !t.name.empty() ? "?" : "");
+    }
+    // A local's narrowing applies at this point. It never reaches into a lambda declared inside the
+    // narrowed region: a mutable local may be reassigned before the lambda runs, and neither C# nor older
+    // TypeScript carries an outer narrowing into a closure (the emitted code would warn / not type-check).
+    bool narrowedHere(const Local& l) const {
+        return l.nonNull && l.lambdaDepth == lambdaDepth_;
+    }
+    // Member access / method call on a maybe-null receiver without `?.` (C#/TS throw a TypeError-class
+    // error, Python an AttributeError, PHP a warning + null — a cross-target divergence, refused).
+    void requireNonNullReceiver(const TypeRef& recv, const std::string& member, bool nullSafe, SourcePos pos) {
+        if (recv.nullable && !nullSafe && !(recv.kind == TypeRef::Kind::Named && recv.name.empty()))
+            diags_.error(pos, "'." + member + "' on a receiver of type '" + showTy(recv) +
+                                  "', which may be null; use '?." + member + "', narrow it ('if x != null'), or assert with '!'");
+    }
+    // N1: a nullable operand to an operator other than `==`, `!=`, `??`.
+    void requireNonNullOperand(const TypeRef& t, const std::string& op, SourcePos pos) {
+        if (t.nullable)
+            diags_.error(pos, "'" + op + "' operand of type '" + showTy(t) +
+                                  "' may be null; supply a fallback with '??' or assert with '!'");
+    }
+
+    // ---- P40 D14: null flow-narrowing ----
+    // The names a condition proves non-null when it evaluates to `sense`: `x != null` (true), `x == null`
+    // (false), through `&&` (true), `||` (false) and `!`. Only a bare name — a local or param.
+    static void nullFacts(const Expr& c, bool sense, std::vector<std::string>& out) {
+        if (c.kind == ExprKind::Binary && (c.text == "!=" || c.text == "==") && c.lhs && c.rhs) {
+            const Expr* name = nullptr;
+            if (c.rhs->kind == ExprKind::NullLit && c.lhs->kind == ExprKind::Name) name = c.lhs.get();
+            else if (c.lhs->kind == ExprKind::NullLit && c.rhs->kind == ExprKind::Name) name = c.rhs.get();
+            if (name && (c.text == "!=") == sense) out.push_back(name->text);
+        } else if (c.kind == ExprKind::Binary && c.text == "&&" && sense) {
+            nullFacts(*c.lhs, true, out); nullFacts(*c.rhs, true, out);
+        } else if (c.kind == ExprKind::Binary && c.text == "||" && !sense) {
+            nullFacts(*c.lhs, false, out); nullFacts(*c.rhs, false, out);
+        } else if (c.kind == ExprKind::Unary && c.text == "!" && c.lhs) {
+            nullFacts(*c.lhs, !sense, out);
+        }
+    }
+    // Narrow `names` (when they are nullable locals that may be narrowed), recording the prior state into
+    // `saves` so the region's exit restores it.
+    void narrow(const std::vector<std::string>& names, std::vector<NarrowSave>& saves) {
+        for (const auto& n : names) {
+            Local* l = lookupMut(n);
+            if (!l || !l->type.nullable || (l->type.kind == TypeRef::Kind::Named && l->type.name.empty())) continue;
+            if (l->isMutable && closureAssigned_.count(n)) continue; // a closure may reassign it at any time
+            saves.push_back({l, l->nonNull, l->assigns});
+            l->nonNull = true;
+        }
+    }
+    // Un-narrow (for a loop body that assigns them: the back edge re-enters with the reassigned value).
+    void unnarrow(const std::vector<std::string>& names, std::vector<NarrowSave>& saves) {
+        for (const auto& n : names) {
+            Local* l = lookupMut(n);
+            if (!l || !l->nonNull) continue;
+            saves.push_back({l, l->nonNull, l->assigns});
+            l->nonNull = false;
+        }
+    }
+    // Leave a region: the prior state comes back unless the variable was assigned inside the region.
+    static void restoreNarrow(std::vector<NarrowSave>& saves) {
+        for (auto it = saves.rbegin(); it != saves.rend(); ++it)
+            it->local->nonNull = it->prev && it->local->assigns == it->assignsAtEntry;
+        saves.clear();
+    }
+    // A statement list: one narrowing frame, so an early exit's narrowing ends with the list.
+    void checkStmts(std::vector<StmtPtr>& body) {
+        narrowFrames_.emplace_back();
+        for (auto& st : body) checkStmt(*st);
+        restoreNarrow(narrowFrames_.back());
+        narrowFrames_.pop_back();
+    }
+    // An unconditional exit as a list's last statement (`return`, `throw`, `break`, `continue`).
+    static bool endsInExit(const std::vector<StmtPtr>& body) {
+        if (body.empty()) return false;
+        const StmtKind k = body.back()->kind;
+        return k == StmtKind::Return || k == StmtKind::Throw || k == StmtKind::Break || k == StmtKind::Continue;
+    }
+    // Names assigned (`name = …` / `name op= …`) anywhere in a statement list; `lambdaOnly` keeps only the
+    // assignments inside a lambda body. Name-based and conservative (shadowing is ignored).
+    static void collectAssigned(const std::vector<StmtPtr>& body, bool inLambda, bool lambdaOnly,
+                                std::unordered_set<std::string>& out) {
+        for (const auto& s : body) if (s) collectAssigned(*s, inLambda, lambdaOnly, out);
+    }
+    static void collectAssigned(const Stmt& s, bool inLambda, bool lambdaOnly, std::unordered_set<std::string>& out) {
+        if (s.kind == StmtKind::Assign && s.target && s.target->kind == ExprKind::Name && (inLambda || !lambdaOnly))
+            out.insert(s.target->text);
+        if (s.target) collectAssigned(s.target.get(), inLambda, lambdaOnly, out);
+        if (s.value) collectAssigned(s.value.get(), inLambda, lambdaOnly, out);
+        collectAssigned(s.thenBody, inLambda, lambdaOnly, out);
+        collectAssigned(s.elseBody, inLambda, lambdaOnly, out);
+        for (const auto& c : s.catches) {
+            if (c.guard) collectAssigned(c.guard.get(), inLambda, lambdaOnly, out);
+            collectAssigned(c.body, inLambda, lambdaOnly, out);
+        }
+        collectAssigned(s.finallyBody, inLambda, lambdaOnly, out);
+    }
+    static void collectAssigned(const Expr* e, bool inLambda, bool lambdaOnly, std::unordered_set<std::string>& out) {
+        if (!e) return;
+        const bool lam = inLambda || e->kind == ExprKind::Lambda;
+        collectAssigned(e->lhs.get(), lam, lambdaOnly, out);
+        collectAssigned(e->rhs.get(), inLambda, lambdaOnly, out);
+        collectAssigned(e->extra.get(), inLambda, lambdaOnly, out);
+        for (const auto& a : e->args) collectAssigned(a.get(), inLambda, lambdaOnly, out);
+        collectAssigned(e->block, lam, lambdaOnly, out);
+        for (const auto& f : e->fields) collectAssigned(f.value.get(), inLambda, lambdaOnly, out);
+        for (const auto& arm : e->arms) {
+            collectAssigned(arm.guard.get(), inLambda, lambdaOnly, out);
+            collectAssigned(arm.body.get(), inLambda, lambdaOnly, out);
+            collectAssigned(arm.block, inLambda, lambdaOnly, out);
+        }
     }
 
     // ---- declaration tables ----
@@ -1014,11 +1162,22 @@ private:
     }
 
     void checkBlock(std::vector<StmtPtr>& body) {
+        // A top-level body (fn/method/ctor/accessor/extension): collect the names its lambdas assign, so a
+        // closure-reassignable mutable local is never narrowed (P40 D14).
+        std::unordered_set<std::string> savedClosureAssigned;
+        if (bodyDepth_ == 0) {
+            savedClosureAssigned = std::move(closureAssigned_);
+            closureAssigned_.clear();
+            collectAssigned(body, false, /*lambdaOnly=*/true, closureAssigned_);
+        }
+        ++bodyDepth_;
         pushScope();
         blockIsBindings_.emplace_back();
-        for (auto& s : body) checkStmt(*s);
+        checkStmts(body);
         blockIsBindings_.pop_back();
         popScope();
+        --bodyDepth_;
+        if (bodyDepth_ == 0) closureAssigned_ = std::move(savedClosureAssigned);
     }
 
     // Wrap an expression in an implicit widening cast (mutates the AST so lowering/emit convert it).
@@ -1280,6 +1439,14 @@ private:
                     else {
                         s.target->type = local->type; // stamp: the C7 compound rewrite keys on this
                         if (!local->isMutable) diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
+                        // P40 A4 (N1, S7 hole): a compound op reads the target — a nullable one must be
+                        // narrowed first. Then any assignment ends the narrowing (D14).
+                        if (s.op != "=" && local->type.nullable && !narrowedHere(*local))
+                            diags_.error(s.pos, "'" + s.op + "' target '" + nm + "' of type '" + showTy(local->type) +
+                                                    "' may be null; narrow it first ('if " + nm + " != null') or assign a non-null value");
+                        Local* ml = lookupMut(nm);
+                        ml->assigns++;
+                        ml->nonNull = false;
                         // P37 C7: a compound op on a USER type converts against the operator member's own
                         // signature (lenient, like binary resolution) — the rhs is the operator's operand,
                         // not a value of the target's type (`v *= 2.0` with `times(s: f64)`).
@@ -1289,7 +1456,10 @@ private:
                         if (!userCompound) checkConvert(s.value, local->type, "assignment to '" + nm + "'");
                     }
                 } else if (s.target) {
-                    checkExpr(*s.target);
+                    const TypeRef tt = checkExpr(*s.target);
+                    if (s.op != "=" && tt.nullable) // P40 A4 (N1, S7 hole): the compound op reads a maybe-null value
+                        diags_.error(s.pos, "'" + s.op + "' target of type '" + showTy(tt) +
+                                                "' may be null; read it with '??' or '!' and assign the result");
                     // P37 C7: a compound op on a user-typed Member/Index target — or through a USER
                     // indexer even with scalar elements — re-lowers the target for the read side, so the
                     // base must be pure (a name or `this`) for single evaluation; a computed receiver is
@@ -1323,20 +1493,52 @@ private:
             case StmtKind::If: {
                 // P37 B3: `is` bindings on the condition's `&&` spine narrow into the rest of the
                 // condition AND the then-body (one scope) — never the else-branch or past the `if`.
+                // P40 D14: the condition's null facts narrow the then-body (true) and the else-body (false);
+                // a branch that always exits narrows the REST of the enclosing list by the other sense.
+                std::vector<std::string> whenTrue, whenFalse;
+                nullFacts(*s.value, true, whenTrue);
+                nullFacts(*s.value, false, whenFalse);
                 pushScope();
                 requireBool(checkIfCond(*s.value), s.pos, "'if' condition");
                 blockIsBindings_.emplace_back(); // then-body is its own block for later-redecl purposes
-                for (auto& st : s.thenBody) checkStmt(*st);
+                {
+                    std::vector<NarrowSave> saves;
+                    narrow(whenTrue, saves);
+                    checkStmts(s.thenBody);
+                    restoreNarrow(saves);
+                }
                 blockIsBindings_.pop_back();
                 popScope();
-                if (s.hasElse) checkBlock(s.elseBody);
+                if (s.hasElse) {
+                    std::vector<NarrowSave> saves;
+                    narrow(whenFalse, saves);
+                    checkBlock(s.elseBody);
+                    restoreNarrow(saves);
+                }
                 if (!blockIsBindings_.empty()) collectIsBindingNames(*s.value, blockIsBindings_.back());
+                if (!narrowFrames_.empty()) { // early exit: lasts to the end of the enclosing statement list
+                    if (endsInExit(s.thenBody)) narrow(whenFalse, narrowFrames_.back());
+                    if (s.hasElse && endsInExit(s.elseBody)) narrow(whenTrue, narrowFrames_.back());
+                }
                 break;
             }
-            case StmtKind::While:
+            case StmtKind::While: {
+                // P40 D14: a name the loop assigns is not narrowed anywhere in it (the back edge re-enters
+                // with the reassigned value); the condition's facts then narrow the body up to an assignment.
+                std::unordered_set<std::string> assigned;
+                collectAssigned(s.thenBody, false, false, assigned);
+                std::vector<NarrowSave> saves;
+                unnarrow(std::vector<std::string>(assigned.begin(), assigned.end()), saves);
                 requireBool(checkExpr(*s.value), s.pos, "'while' condition");
+                if (!s.isDoWhile) {
+                    std::vector<std::string> whenTrue;
+                    nullFacts(*s.value, true, whenTrue);
+                    narrow(whenTrue, saves);
+                }
                 checkBlock(s.thenBody);
+                restoreNarrow(saves);
                 break;
+            }
             case StmtKind::For: {
                 // A range yields its widened integer bound type (P40 A2); a collection its element type. The
                 // range is checked HERE, never through checkExpr — that path is the "range outside a `for`
@@ -1349,10 +1551,15 @@ private:
                     TypeRef iter = s.value ? checkExpr(*s.value) : tUnknown();
                     elem = elementType(iter);
                 }
+                std::unordered_set<std::string> assigned; // P40 D14: see While
+                collectAssigned(s.thenBody, false, false, assigned);
+                std::vector<NarrowSave> saves;
+                unnarrow(std::vector<std::string>(assigned.begin(), assigned.end()), saves);
                 pushScope();
                 declareForBinding(s.forBinding, elem);
-                for (auto& st : s.thenBody) checkStmt(*st);
+                checkStmts(s.thenBody);
                 popScope();
+                restoreNarrow(saves);
                 break;
             }
             case StmtKind::Use:
@@ -1360,7 +1567,7 @@ private:
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); }
                 pushScope();
                 declare(s.name, s.hasDeclType ? s.declType : tUnknown(), false, s.namePos);
-                for (auto& st : s.thenBody) checkStmt(*st);
+                checkStmts(s.thenBody);
                 popScope();
                 break;
             case StmtKind::Try:
@@ -1370,7 +1577,7 @@ private:
                     if (!c.type.absent()) resolveTypeRef(c.type, c.pos);
                     declare(c.name, c.type, false, c.pos);
                     if (c.guard) requireBool(checkExpr(*c.guard), c.pos, "'when' guard");
-                    for (auto& st : c.body) checkStmt(*st);
+                    checkStmts(c.body);
                     popScope();
                 }
                 if (s.hasFinally) checkBlock(s.finallyBody);
@@ -1674,7 +1881,12 @@ private:
     TypeRef checkIfCond(Expr& e) {
         if (e.kind == ExprKind::Binary && e.text == "&&") {
             requireBool(checkIfCond(*e.lhs), e.lhs->pos, "'&&' operand");
+            std::vector<std::string> facts; // P40 D14: `x != null && …` narrows the right operand
+            nullFacts(*e.lhs, true, facts);
+            std::vector<NarrowSave> saves;
+            narrow(facts, saves);
             requireBool(checkIfCond(*e.rhs), e.rhs->pos, "'&&' operand");
+            restoreNarrow(saves);
             e.type = tNamed("bool");
             return e.type;
         }
@@ -1778,6 +1990,11 @@ private:
     }
 
     void requireBool(const TypeRef& t, SourcePos pos, const char* what) {
+        if (t.nullable) { // P40 A4 (S7 hole): a `bool?` condition — null is neither branch on every target
+            diags_.error(pos, std::string(what) + " of type '" + showTy(t) +
+                                  "' may be null; supply a fallback with '??' or assert with '!'");
+            return;
+        }
         Ty s = scalarTyOf(t);
         if (s != Ty::Unknown && s != Ty::Bool) diags_.error(pos, std::string(what) + " must be bool, found " + tyName(s));
     }
@@ -1838,7 +2055,14 @@ private:
             case ExprKind::FloatLit:  return tNamed(floatLitType(e.text));
             case ExprKind::CharLit:   return tNamed("char");
             case ExprKind::StringLit: return tNamed("string");
-            case ExprKind::InterpString: for (auto& a : e.args) checkExpr(*a); return tNamed("string");
+            case ExprKind::InterpString:
+                for (auto& a : e.args) {
+                    const TypeRef ht = checkExpr(*a);
+                    if (ht.nullable) // P40 A4 (N2): the targets render a null hole differently ("" / "null" / "None")
+                        diags_.error(a->pos, "interpolation hole of type '" + showTy(ht) +
+                                                 "' may be null; supply a fallback with '??' or assert with '!'");
+                }
+                return tNamed("string");
             case ExprKind::BoolLit:   return tNamed("bool");
             case ExprKind::NullLit:   return tNullableUnknown();
             case ExprKind::This:      return currentThis_;
@@ -1882,10 +2106,8 @@ private:
             case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); return elementType(recv); }
             case ExprKind::NullAssert:{
                 TypeRef t = checkExpr(*e.lhs);
-                if (t.kind == TypeRef::Kind::Named && t.name == "Option") { // `x!` on an optional generic: not yet lowered
-                    diags_.error(e.pos, "Polyglot doesn't support '!' on an optional generic yet — use '??' or 'match'");
+                if (t.kind == TypeRef::Kind::Named && t.name == "Option") // `opt!` (P40 D12): the element type
                     return t.args.empty() ? tUnknown() : t.args[0];
-                }
                 t.nullable = false; return t;
             }
             case ExprKind::Lambda:    return checkLambda(e);
@@ -1897,7 +2119,24 @@ private:
             }
             case ExprKind::TupleLit:  { TypeRef t; t.kind = TypeRef::Kind::Tuple; for (auto& a : e.args) t.args.push_back(checkExpr(*a)); return t; }
             case ExprKind::With:      { TypeRef base = checkExpr(*e.lhs); for (auto& f : e.fields) checkExpr(*f.value); return base; }
-            case ExprKind::IfExpr:    { requireBool(checkExpr(*e.lhs), e.pos, "'if' condition"); TypeRef t = checkExpr(*e.rhs); checkExpr(*e.extra); return t; }
+            case ExprKind::IfExpr:    {
+                requireBool(checkExpr(*e.lhs), e.pos, "'if' condition");
+                std::vector<std::string> whenTrue, whenFalse; // P40 D14: each branch sees its sense's facts
+                nullFacts(*e.lhs, true, whenTrue);
+                nullFacts(*e.lhs, false, whenFalse);
+                std::vector<NarrowSave> saves;
+                narrow(whenTrue, saves);
+                TypeRef t = checkExpr(*e.rhs);
+                restoreNarrow(saves);
+                narrow(whenFalse, saves);
+                TypeRef f = checkExpr(*e.extra);
+                restoreNarrow(saves);
+                // P40 A4 (S7 hole): a `null` branch makes the expression nullable — `if c { 1 } else { null }`
+                // is `i32?`, not `i32` (the type comes from the non-null branch).
+                if (t.kind == TypeRef::Kind::Named && t.name.empty() && t.nullable) { t = f; t.nullable = true; }
+                else if (f.nullable) t.nullable = true;
+                return t;
+            }
             case ExprKind::Match:     return checkMatch(e);
         }
         return tUnknown();
@@ -1915,7 +2154,17 @@ private:
     }
 
     TypeRef checkName(Expr& e) {
-        if (const Local* l = lookup(e.text)) { recordRef(e.pos, e.text, l->defId); return l->type; }
+        if (const Local* l = lookup(e.text)) {
+            recordRef(e.pos, e.text, l->defId);
+            if (l->type.nullable && narrowedHere(*l)) { // P40 D14: proven non-null at this read
+                e.narrowedNonNull = true;
+                TypeRef t = l->type;
+                t.nullable = false;
+                return t;
+            }
+            e.narrowedNonNull = false;
+            return l->type;
+        }
         auto v = values_.find(e.text);
         if (v != values_.end()) {
             if (auto it = valueDefId_.find(e.text); it != valueDefId_.end()) recordRef(e.pos, e.text, it->second);
@@ -1929,14 +2178,25 @@ private:
     }
 
     TypeRef checkLambda(Expr& e) {
+        ++lambdaDepth_; // P40 D14: outer narrowings stop here; the lambda's own params/locals narrow inside it
+        std::unordered_set<std::string> savedClosureAssigned;
+        const bool topLevel = bodyDepth_ == 0 && e.flag; // a lambda outside any body (a module initializer)
+        if (topLevel) {
+            savedClosureAssigned = std::move(closureAssigned_);
+            closureAssigned_.clear();
+            collectAssigned(e.block, false, /*lambdaOnly=*/true, closureAssigned_);
+            ++bodyDepth_;
+        }
         pushScope();
         for (const auto& p : e.params) {
             if (!p.type.absent()) resolveTypeRef(p.type, p.pos);
             declare(p.name, p.type, false, p.pos);
         }
-        if (e.flag) for (auto& st : e.block) checkStmt(*st);
+        if (e.flag) checkStmts(e.block);
         else if (e.lhs) checkExpr(*e.lhs);
         popScope();
+        if (topLevel) { --bodyDepth_; closureAssigned_ = std::move(savedClosureAssigned); }
+        --lambdaDepth_;
         return tUnknown();
     }
 
@@ -1983,6 +2243,7 @@ private:
 
     TypeRef checkUnary(Expr& e) {
         TypeRef ot = checkExpr(*e.lhs);
+        requireNonNullOperand(ot, "unary " + e.text, e.pos); // P40 A4 (N1)
         Ty o = scalarTyOf(ot);
         if (e.text == "!") {
             if (o != Ty::Unknown && o != Ty::Bool) diags_.error(e.pos, std::string("'!' expects bool, found ") + tyName(o));
@@ -2006,9 +2267,37 @@ private:
     }
 
     TypeRef checkBinary(Expr& e) {
-        TypeRef lt = checkExpr(*e.lhs), rt = checkExpr(*e.rhs);
-        Ty l = scalarTyOf(lt), r = scalarTyOf(rt);
         const std::string& op = e.text;
+        TypeRef lt = checkExpr(*e.lhs);
+        TypeRef rt;
+        if (op == "&&" || op == "||") { // P40 D14: `x != null && …` / `x == null || …` narrow the right side
+            std::vector<std::string> facts;
+            nullFacts(*e.lhs, op == "&&", facts);
+            std::vector<NarrowSave> saves;
+            narrow(facts, saves);
+            rt = checkExpr(*e.rhs);
+            restoreNarrow(saves);
+        } else {
+            rt = checkExpr(*e.rhs);
+        }
+        Ty l = scalarTyOf(lt), r = scalarTyOf(rt);
+        // P40 A4 (N1): only `==`, `!=` and `??` accept a maybe-null operand — every other operator would
+        // diverge per target on null (C# lifts to null, JS coerces to 0/"null", Python/PHP throw or coerce).
+        if (op != "==" && op != "!=" && op != "??") {
+            requireNonNullOperand(lt, op, e.pos);
+            requireNonNullOperand(rt, op, e.pos);
+        }
+        // P40 A4 (N3): `string + T` — a type parameter may be anything, incl. null and a non-scalar (the
+        // targets stringify those differently, like `string + i32`, which is already refused).
+        if (op == "+") {
+            auto isTP = [&](const TypeRef& t) {
+                return t.kind == TypeRef::Kind::Named && !t.nullable && genericsInScope_.count(t.name) > 0;
+            };
+            if ((l == Ty::String && isTP(rt)) || (r == Ty::String && isTP(lt)))
+                diags_.error(e.pos, "'string + " + (isTP(rt) ? rt.name : lt.name) +
+                                        "' concatenates a type parameter, which may be null or a non-scalar; "
+                                        "interpolate instead (\"${…}\")");
+        }
 
         if (op == "&&" || op == "||") {
             if ((l != Ty::Unknown && l != Ty::Bool) || (r != Ty::Unknown && r != Ty::Bool)) diags_.error(e.pos, "'" + op + "' expects bool operands");
@@ -2158,6 +2447,7 @@ private:
         }
 
         TypeRef recv = checkExpr(*e.lhs);
+        requireNonNullReceiver(recv, e.text, e.flag, e.pos); // P40 A4 (S7 hole)
         TypeRef result = tUnknown();
         if (knownType(recv)) {
             if (const MemberInfo* m = findMember(recv.name, e.text)) {
@@ -2240,6 +2530,13 @@ private:
                 }
             }
             TypeRef recv = checkExpr(*e.lhs->lhs);
+            { // P40 A4 (S7 hole): a maybe-null receiver — unless an extension declares a nullable receiver
+                bool extTakesNull = false;
+                if (recv.kind == TypeRef::Kind::Named)
+                    if (auto it = extensions_.find(recv.name + "." + method); it != extensions_.end())
+                        extTakesNull = it->second.receiver.nullable;
+                if (!extTakesNull) requireNonNullReceiver(recv, method, e.lhs->flag, e.lhs->pos);
+            }
             // An extension method augments any receiver type (scalar or nominal); check it first so a
             // `type 'T' has no method` error doesn't fire for a method an extension actually supplies.
             if (recv.kind == TypeRef::Kind::Named) {
@@ -2319,6 +2616,9 @@ private:
         if (name == "print" && argTypes.size() == 1) {
             if (isAwaitable(argTypes[0])) // an un-awaited async result would print a Task/Promise — a §3 divergence
                 diags_.error(e.pos, "cannot print the result of an async call directly — did you forget 'await'? (PRD §4.7)");
+            if (argTypes[0].nullable) // P40 A4 (N2)
+                diags_.error(e.pos, "print argument of type '" + showTy(argTypes[0]) +
+                                        "' may be null; supply a fallback with '??' or assert with '!'");
             Ty a = scalarTyOf(argTypes[0]);
             if (a != Ty::Unknown && !(isNumeric(a) || a == Ty::Bool || a == Ty::String))
                 diags_.error(e.pos, std::string("print cannot print a value of type ") + tyName(a));
@@ -2345,6 +2645,18 @@ private:
             checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
             TypeRef r = inferResult(chosen->generics, chosen->params, argTypes, chosen->result);
+            if (!e.typeArgs.empty()) { // P40 A4: explicit `f<T>(…)` binds the type params (and is emitted)
+                if (e.typeArgs.size() != chosen->generics.size()) {
+                    diags_.error(e.pos, "'" + name + "' takes " + std::to_string(chosen->generics.size()) +
+                                            " type argument(s), got " + std::to_string(e.typeArgs.size()));
+                } else {
+                    for (auto& ta : e.typeArgs) { normalizeOptional(ta, genericsInScope_); resolveTypeRef(ta, e.pos); }
+                    std::unordered_set<std::string> gen(chosen->generics.begin(), chosen->generics.end());
+                    std::unordered_map<std::string, TypeRef> binds;
+                    for (std::size_t i = 0; i < chosen->generics.size(); ++i) binds[chosen->generics[i]] = e.typeArgs[i];
+                    r = substGeneric(chosen->result, gen, binds);
+                }
+            }
             return chosen->isAsync ? awaitable(r) : r;
         }
         // (`Error(msg)` construction is handled by the types_ branch above — Error is a core-prelude type.)
@@ -2392,7 +2704,7 @@ private:
                 diags_.error(arm.pattern.pos,
                              "Polyglot refuses a block-bodied match arm — a match arm must be an expression "
                              "(extract the block into a function and call it from the arm) (PRD §3.B)");
-                for (auto& s : arm.block) checkStmt(*s); // still check the body so nested errors surface too
+                checkStmts(arm.block); // still check the body so nested errors surface too
             }
             else if (arm.body) result = checkExpr(*arm.body);
             popScope();

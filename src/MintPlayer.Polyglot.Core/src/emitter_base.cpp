@@ -93,6 +93,12 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& b = static_cast<const ir::Binary&>(e_);
         return b.lhsIsUserType && !specTable(spec_, "opMethod", b.op).empty() ? "true" : "false";
     }
+    if (e_.kind == ir::ExprKind::NullAssert) { // P40 A4 (node.where / node.message: the emitter's targetGet)
+        const auto& n = static_cast<const ir::NullAssert&>(e_);
+        if (path == "node.isFail")          return n.operand ? "false" : "true";
+        if (path == "node.operandIsSimple") return n.operandIsSimple ? "true" : "false";
+        if (path == "node.tempName")        return n.tempName;
+    }
     if (e_.kind == ir::ExprKind::AsCast) { // P37 B: guard-shape choice + inline temp (the With pattern)
         const auto& a = static_cast<const ir::AsCast&>(e_);
         if (path == "node.operandIsSimple") return a.operandIsSimple ? "true" : "false";
@@ -361,6 +367,7 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::IsTest) return static_cast<const ir::IsTest&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::AsCast) return static_cast<const ir::AsCast&>(e_).operand.get();
+        if (e_.kind == ir::ExprKind::NullAssert) return static_cast<const ir::NullAssert&>(e_).operand.get();
     }
     if (e_.kind == ir::ExprKind::Lambda && path == "node.body")
         return static_cast<const ir::Lambda&>(e_).body.get();
@@ -535,6 +542,7 @@ const std::vector<TypeRef>* IrExprCtx::nodeTypeArgs() const {
     if (e_.kind == ir::ExprKind::New)      return &static_cast<const ir::New&>(e_).typeArgs;
     if (e_.kind == ir::ExprKind::MakeCase) return &e_.type.args;
     if (e_.kind == ir::ExprKind::Match)    return &static_cast<const ir::Match&>(e_).scrutinee->type.args;
+    if (e_.kind == ir::ExprKind::Call)     return &static_cast<const ir::Call&>(e_).typeArgs; // P40 A4
     return nullptr;
 }
 
@@ -1315,6 +1323,7 @@ std::string StmtCtx::get(const std::string& path) const {
         if (path.rfind("stmt.catches.", 0) == 0 && splitIndexed(path, 13, i, f) && i < t.catches.size()) {
             const auto& c = t.catches[i];
             if (f == "hasType")    return c.type.name.empty() ? "false" : "true";
+            if (f == "typeName")   return c.type.name; // P40 D13: PHP widens a caught `Error` to \Throwable
             if (f == "hasBinding") return c.binding.empty() ? "false" : "true";
             if (f == "binding")    return c.binding;
             if (f == "hasGuard")   return c.guard ? "true" : "false";
@@ -1518,6 +1527,7 @@ const char* exprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::IsTest:   return "IsTest";
         case ir::ExprKind::AsCast:   return "AsCast";
+        case ir::ExprKind::NullAssert: return "NullAssert";
         case ir::ExprKind::With:       return "With";
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";
@@ -1537,6 +1547,15 @@ public:
 
 protected:
     std::string renderTypeRef(const TypeRef& t) const override { return owner_.renderType(t); }
+    // P40 A4: the null-assert site is Core-owned (`m.pg:L:C`, from the module's file table), so the
+    // message is identical on every target.
+    std::string targetGet(const std::string& path) const override {
+        if (e_.kind == ir::ExprKind::NullAssert) {
+            if (path == "node.where")   return owner_.sourceSite(e_.pos);
+            if (path == "node.message") return "null-assert failed (" + owner_.sourceSite(e_.pos) + ")";
+        }
+        return "";
+    }
 
 private:
     InterpretedEmitter& owner_;
@@ -1709,6 +1728,17 @@ static void substHole(std::string& s, std::string_view hole, const std::string& 
         s.replace(at, hole.size(), value);
         at += value.size();
     }
+}
+
+std::string EmitterBase::sourceSite(const SourcePos& p) const {
+    std::string file = "<input>";
+    if (sourceFiles_ && p.fileId > 0 && static_cast<std::size_t>(p.fileId) < sourceFiles_->size() &&
+        !(*sourceFiles_)[static_cast<std::size_t>(p.fileId)].empty()) {
+        file = (*sourceFiles_)[static_cast<std::size_t>(p.fileId)];
+        const std::size_t cut = file.find_last_of("/\\");
+        if (cut != std::string::npos) file = file.substr(cut + 1);
+    }
+    return file + ":" + std::to_string(p.line) + ":" + std::to_string(p.col);
 }
 
 // P38/issue #69 — resolve a position to an on-disk path. Empty means "no resolvable origin": an unstamped

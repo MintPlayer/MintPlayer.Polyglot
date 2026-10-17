@@ -218,6 +218,11 @@ private:
                 break;
             }
             case K::Cast: expr(*static_cast<const ir::Cast&>(e).operand); break;
+            case K::NullAssert: { // the helper it needs is recorded by its rule's `require` at emit
+                const auto& na = static_cast<const ir::NullAssert&>(e);
+                if (na.operand) expr(*na.operand);
+                break;
+            }
             case K::IsTest: {
                 const auto& t = static_cast<const ir::IsTest&>(e);
                 expr(*t.operand);
@@ -235,6 +240,7 @@ private:
                 mark(c.callee);
                 mark(c.mangledCallee);
                 for (const auto& a : c.args) expr(*a);
+                for (const auto& t : c.typeArgs) type(t);
                 break;
             }
             case K::MethodCall: {

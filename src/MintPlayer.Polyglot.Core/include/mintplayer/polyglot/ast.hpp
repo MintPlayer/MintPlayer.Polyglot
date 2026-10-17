@@ -135,6 +135,10 @@ struct Expr {
     // iteration (a literal, a module value, or an immutable local/param), so it may be re-read in the loop
     // condition; otherwise lowering hoists it into a temp so it is evaluated exactly once.
     bool rangeEndSimple = false;
+    // Name (set by sema — P40 D14): a read of a nullable local/param that null flow-narrowing proved
+    // non-null here (`if x != null { … x … }`). `type` is the non-nullable type; lowering keeps the
+    // variable's nullable type on the read and converts it (a value-type Nullable<T> needs the unwrap on C#).
+    bool narrowedNonNull = false;
 
     ExprPtr lhs;                // operand/object/left/callee/base/cond/scrutinee
     ExprPtr rhs;                // Binary/Range right | IfExpr then

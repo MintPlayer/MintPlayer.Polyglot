@@ -185,7 +185,7 @@ construct the compiler can produce must have a rule, *or* the plugin must declar
 paired capability. Core constructs (no capability can excuse them — a rule is mandatory):
 
 > `Int`, `Float`, `Bool`, `Null`, `Str`, `Char`, `Var`, `This`, `Extern`, `Call`, `Member`,
-> `MethodCall`, `Index`, `Cond`, `ListLit`, `Tuple`, `New`, `Unary`, `Cast`, `Interp`, `Binary`,
+> `MethodCall`, `Index`, `Cond`, `ListLit`, `Tuple`, `New`, `Unary`, `Cast`, `Interp`, `Binary`, `IsTest`, `AsCast`, `NullAssert`,
 > `ForStmt`, `Program`, `Type`, `EnumDecl`, `RecordDecl`, `ClassDecl`, `MethodDecl`, `FunctionDecl`
 
 Capability-paired constructs (rule **or** a declared `"false"`/`"emulated"` stance):
@@ -379,10 +379,13 @@ That's the whole catalog — 17 names. Any other `{"fn": …}` fails the load.
 
 - **Expression rules** (string flavor): `Int` `Float` `Bool` `Null` `Str` `Char` `Var` `This`
   `Extern` `Call` `Member` `MethodCall` `Index` `Cond` `ListLit` `Tuple` `New` `Unary` `Cast`
-  `Interp` `Binary` `MakeCase` `Match` `With` `Await` `Lambda`. Paths read `node.…` — literals
+  `Interp` `Binary` `IsTest` `AsCast` `NullAssert` `MakeCase` `Match` `With` `Await` `Lambda`. Paths read `node.…` — literals
   (`node.text`, `node.value`), structure (`node.args`, `node.op`, `node.field`), and precomputed
   facts (`node.typeIsInt`, `node.typeIsFloat`, `node.typeIsInt64`, `node.castSame`,
-  `node.lhsIsRecord`, `node.receiverHasIndexer`, `node.hasOpMethod`, …).
+  `node.lhsIsRecord`, `node.receiverHasIndexer`, `node.hasOpMethod`, …). `NullAssert` (P40 A4) reads `node.where` / `node.message` (the Core-owned
+  `m.pg:L:C` site and full text, identical on every target), `node.isFail` (no operand: the `None` arm of
+  `opt!`, a throw in expression position) and `node.operandIsSimple` / `node.tempName` (single evaluation
+  for a target whose check re-reads the operand). It must evaluate the operand once and stay assignable.
 - **Statement rules** (decl flavor): only `ForStmt` and `TryStmt` — paths read `stmt.…`
   (`stmt.isRange`, `stmt.binding`, `stmt.iterable`, `stmt.body`, …). A range evaluates its bounds once
   (P40 D7): when `stmt.rangeEndSimple` is `false`, declare `stmt.rangeEndTemp` alongside the loop variable

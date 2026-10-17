@@ -558,8 +558,8 @@ int main() {
         std::string php = renamed("php", "p40php");
         php = replaceOnce(php, "\"Math.sqrt\": \"sqrt($0)\"",
                           "\"Math.sqrt\": { \"template\": \"__pg_sq($0)\", \"requires\": [\"sq\"] }", f);
-        php = replaceOnce(php, "\"preludes\": {}",
-                          "\"preludes\": { \"sq\": \"function __pg_sq($x) { return sqrt($x); }\\n\" }", f);
+        php = replaceOnce(php, "\"preludes\": {",
+                          "\"preludes\": { \"sq\": \"function __pg_sq($x) { return sqrt($x); }\\n\",", f);
         err.clear();
         check(f && loadBackend(php, err), "P40 s1: a PHP manifest with a declared prelude loads");
         EmitResult psq = compile("import { Math } from \"std.math\"\nfn root(): f64 => Math.sqrt(4.0)\n",
@@ -1134,6 +1134,102 @@ int main() {
             ir::Module ok = lower(parseSrc("fn f(n: i32) {\n  for i in 0..n { }\n}\n", d2), "csharp");
             check(ok.loweringFailures.empty(), "P40 s4: a for-iterable range lowers without a failure");
         }
+    }
+
+    // P40 slice 5 (A4) — the checked null-assert, the nullable operand rules (N1–N3 + the S7 holes), null
+    // flow-narrowing (D14), `opt!` (D12), PHP `\Throwable` (D13) and explicit call type args.
+    {
+        auto firstErr = [](const EmitResult& r) { return r.diagnostics.empty() ? std::string() : r.diagnostics[0].message; };
+        auto irOf = [](const char* src, bool& ok) {
+            DiagnosticBag d;
+            auto unit = parse(lex(src, d), d);
+            mintplayer::polyglot::check(unit, d);
+            ok = !d.hasErrors();
+            return ir::dump(lower(unit, "csharp"));
+        };
+        auto typeErr = [&](const char* src) { // the first diagnostic of a csharp compile ("" = it compiled)
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            return r.ok ? std::string() : firstErr(r);
+        };
+        bool ok = false;
+        std::string i1 = irOf("fn f(n: i32?): i32 => n!\n", ok);
+        check(ok && has(i1, "n:i32?!"), "P40 s5: `!` on a nullable operand lowers to ir::NullAssert");
+        std::string i2 = irOf("fn f(n: i32): i32 => n!\n", ok);
+        check(ok && !has(i2, "!") && !has(i2, "(i32)"), "P40 s5: `!` on a non-nullable operand is the bare operand");
+        std::string i3 = irOf("fn f(n: i32?): i32 {\n  if n != null { return n + 1 }\n  return 0\n}\n", ok);
+        check(ok && has(i3, "(i32)n:i32?"), "P40 s5: a narrowed read converts the nullable variable (no NullAssert)");
+        std::string i4 = irOf("fn f(n: i32?): i32 {\n  if n != null { return n! }\n  return 0\n}\n", ok);
+        check(ok && !has(i4, "!:"), "P40 s5: `!` on a narrowed variable lowers to the bare (converted) operand");
+
+        // Emission: every target, the Core-owned site, helpers only when reached.
+        EmitResult ecs = compileStd("fn f(n: i32?): i32 => n!\n", findTarget("csharp"));
+        check(ecs.ok && has(ecs.code, "(n ?? throw new global::System.NullReferenceException(\"null-assert failed (<entry>:1:24)\"))"),
+              "P40 s5: C# emits `(x ?? throw new NullReferenceException(\"null-assert failed (m.pg:L:C)\"))`");
+        EmitResult ets = compileStd("fn f(n: i32?): i32 => n!\n", findTarget("typescript"));
+        check(ets.ok && has(ets.code, "(n ?? __pgNullAssert(\"") && has(ets.code, "\nfunction __pgNullAssert(at: string): never {") &&
+                  !has(ets.code, "export function __pgNullAssert"),
+              "P40 s5: TS emits `x ?? __pgNullAssert(site)` with a module-local never-helper");
+        EmitResult ets0 = compileStd("fn f(n: i32): i32 => n + 1\n", findTarget("typescript"));
+        check(ets0.ok && !has(ets0.code, "__pgNullAssert"), "P40 s5: the TS helper is emitted only when a `!` reaches it");
+        EmitResult epy = compileStd("fn f(n: i32?): i32 => n!\nfn g(xs: List<i32?>): i32 => xs[0]!\n", findTarget("python"));
+        check(epy.ok && has(epy.code, "(n if n is not None else _pg_fail(\"") && has(epy.code, ":= xs[0]) is not None else _pg_fail(") &&
+                  has(epy.code, "def _pg_fail(at):"),
+              "P40 s5: Python inlines the check — a name directly, any other operand through a walrus (S9)");
+        EmitResult ephp = compileStd("fn f(n: i32?): i32 => n!\n", findTarget("php"));
+        check(ephp.ok && has(ephp.code, "__pg_nn($n, \"") && has(ephp.code, "function_exists(__NAMESPACE__.'\\\\__pg_nn')") &&
+                  has(ephp.code, "throw new \\UnexpectedValueException("),
+              "P40 s5: PHP calls the namespace-guarded `__pg_nn` helper");
+        EmitResult eopt = compileStd("fn pick<T>(c: bool, v: T): T? => if c { v } else { null }\nfn f(): i32 => pick(true, 1)!\n",
+                                     findTarget("csharp"));
+        check(eopt.ok && has(eopt.code, "None<int> _ => throw new global::System.NullReferenceException(\"null-assert failed ("),
+              "P40 s5: `opt!` on Option<T> lowers to a match whose None arm throws (D12)");
+        EmitResult eta = compileStd("fn failT<T>(m: string): T {\n  throw Error(m)\n}\nfn g(): i32 => failT<i32>(\"x\")\n",
+                                    findTarget("csharp"));
+        check(eta.ok && has(eta.code, "failT<int>(\"x\")"), "P40 s5: C# keeps explicit call-site type arguments (no CS0411)");
+        EmitResult ecatch = compileStd("fn g() {}\nfn f() {\n  try {\n    g()\n  } catch (e: Error) {\n    g()\n  }\n}\n", findTarget("php"));
+        check(ecatch.ok && has(ecatch.code, "catch (\\Throwable $__e)"), "P40 s5: PHP `catch (e: Error)` widens to \\Throwable (D13)");
+
+        // N1–N3 and the S7 holes.
+        check(has(typeErr("fn f(n: string?): string => \"a\" + n\n"), "'+' operand of type 'string?' may be null; supply a fallback with '??' or assert with '!'"),
+              "P40 s5: N1 refuses a nullable '+' operand with the PRD wording");
+        check(typeErr("fn f(n: i32?): bool => n == null || n != 3\n").empty(), "P40 s5: N1 exempts ==, != (and narrows `||`'s right side)");
+        check(has(typeErr("fn f(n: i32?): string => \"${n}\"\n"), "interpolation hole of type 'i32?' may be null"), "P40 s5: N2 refuses a nullable interpolation hole");
+        check(has(typeErr("fn f(n: i32?) { print(n) }\n"), "print argument of type 'i32?' may be null"), "P40 s5: N2 refuses a nullable print argument");
+        check(has(typeErr("fn f<T>(x: T): string => \"v\" + x\n"), "'string + T' concatenates a type parameter"), "P40 s5: N3 refuses string + T");
+        check(has(typeErr("fn f(): i32 {\n  var n: i32? = 1\n  n += 1\n  return 0\n}\n"), "'+=' target 'n' of type 'i32?' may be null"),
+              "P40 s5: a compound assignment on a nullable target is refused");
+        check(has(typeErr("fn f(b: bool?): bool {\n  if b && true { return true }\n  return false\n}\n"), "of type 'bool?' may be null"),
+              "P40 s5: a bool? operand of && in a condition is refused");
+        check(has(typeErr("fn f(b: bool?): i32 {\n  while b { }\n  return 0\n}\n"), "'while' condition of type 'bool?' may be null"),
+              "P40 s5: requireBool refuses a bool? condition");
+        check(has(typeErr("fn f(c: bool): i32 => (if c { 1 } else { null }) + 1\n"), "'+' operand of type 'i32?'"),
+              "P40 s5: an if-expression with a null branch is typed nullable");
+        check(has(typeErr("class B {\n  var v: i32\n  constructor(v: i32) { this.v = v }\n  fn get(): i32 => this.v\n}\nfn f(b: B?): i32 => b.get()\n"),
+                  "'.get' on a receiver of type 'B?', which may be null"),
+              "P40 s5: a method call on a nullable receiver is refused");
+        check(typeErr("class B {\n  var v: i32\n  constructor(v: i32) { this.v = v }\n}\nfn f(b: B?): i32 => b?.v ?? 0\n").empty(),
+              "P40 s5: '?.' on a nullable receiver stays legal");
+
+        // Narrowing scopes (D14).
+        check(typeErr("fn f(n: i32?): i32 {\n  if n == null { return 0 }\n  return n + 1\n}\n").empty(), "P40 s5: an early exit narrows the rest of the block");
+        check(typeErr("fn f(n: i32?): i32 {\n  if n == null { return 1 } else { return n + 1 }\n}\n").empty(), "P40 s5: `== null` narrows the else-branch");
+        check(typeErr("fn f(n: i32?): bool => n != null && n > 0\n").empty(), "P40 s5: `x != null && …` narrows the right operand");
+        check(typeErr("fn f(n: i32?): i32 => if n != null { n * 2 } else { 0 }\n").empty(), "P40 s5: an if-expression narrows its branch");
+        check(!typeErr("fn f(n: i32?, c: bool): i32 {\n  if c {\n    if n == null { return 0 }\n  }\n  return n + 1\n}\n").empty(),
+              "P40 s5: an early exit's narrowing ends with its own block");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  if n != null {\n    n = null\n    return n + 1\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: narrowing ends at an assignment");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  if n != null {\n    if n != null { n = null }\n    return n + 1\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: an assignment inside a nested narrowed region is not undone at its exit");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  if n != null {\n    while true {\n      let k = n + 1\n      n = null\n    }\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: a loop that assigns the variable is not narrowed anywhere in it (back edge)");
+        check(typeErr("class Nd {\n  var v: i32\n  var next: Nd?\n  constructor(v: i32) {\n    this.v = v\n    this.next = null\n  }\n}\n"
+                      "fn sum(h: Nd?): i32 {\n  var s = 0\n  var c: Nd? = h\n  while c != null {\n    s += c.v\n    c = c.next\n  }\n  return s\n}\n").empty(),
+              "P40 s5: a while condition narrows the body up to the assignment");
+        check(!typeErr("fn f(n: i32?): i32 {\n  if n != null {\n    let g = () => n + 1\n    return g()\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: narrowing does not reach into a lambda");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  let clear = () => { n = null }\n  if n != null {\n    clear()\n    return n + 1\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: a mutable local a closure assigns is never narrowed");
     }
 
     // P4 — name / type resolution across the declaration surface.

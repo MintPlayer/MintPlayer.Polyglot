@@ -29,7 +29,7 @@ inline constexpr const char kPreludeOrigin[] = "<prelude>";
 inline bool isPreludeOrigin(const std::string& origin) { return origin == kPreludeOrigin; }
 
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With, IsTest, AsCast };
+enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With, IsTest, AsCast, NullAssert };
 
 struct Expr {
     ExprKind kind;
@@ -148,6 +148,21 @@ struct AsCast : Expr {
     AsCast(SourcePos p, Type t, ExprPtr o, Type ct)
         : Expr(ExprKind::AsCast, p, std::move(t)), operand(std::move(o)), castType(std::move(ct)) {}
 };
+// P40 A4: `x!` on a NULLABLE operand — the value when it is non-null, else a throw carrying the source site.
+// `type` is the operand's type made non-nullable. Every target evaluates `operand` once and the form is
+// valid as an assignment target (`box.next!.v += 1`). The site (`m.pg:L:C`) is Core-owned — rules read it
+// as `node.where` and the full text as `node.message`, so the message is identical on every target.
+// A null `operand` is the bare FAIL form (`isFail`): the None arm of a lowered `opt!` on `Option<T>` (D12)
+// — a throw in expression position, which every target spells natively (C# switch-arm throw, TS helper
+// call returning never, Python helper call, PHP throw expression). `!` on a NON-nullable operand never
+// reaches the IR (it lowers to the bare operand). Targets whose check re-reads the operand bind
+// `tempName` inline when it is not a simple variable (Python's walrus — the AsCast pattern).
+struct NullAssert : Expr {
+    ExprPtr operand; // null = the fail form
+    bool operandIsSimple = true;
+    std::string tempName; // set iff !operandIsSimple
+    NullAssert(SourcePos p, Type t, ExprPtr o) : Expr(ExprKind::NullAssert, p, std::move(t)), operand(std::move(o)) {}
+};
 struct Extern : Expr { // `extern("…")`: raw target code emitted verbatim (the FFI hatch)
     std::string code;
     // P40 §0: manifest prelude keys this text needs (a std binding's `requires`); emitting it records them,
@@ -161,6 +176,7 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     bool isPrint = false;
     bool isFree = false;       // a top-level free function (C# qualifies as `Program.callee`); not a local value
     std::vector<ExprPtr> args;
+    std::vector<Type> typeArgs; // P40 A4: explicit call-site type args `f<T>(…)` (empty = inferred); `node.typeArgs`
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
 };
 struct MethodCall : Expr { // `object.method(args)` — or a static call `Type.method(args)` when staticType set

@@ -358,6 +358,7 @@
             }
           }
         },
+        { "call": "typeArgsSuffix" },
         "(",
         {
           "map": "node.args",
@@ -686,6 +687,25 @@
         " as ",
         { "type": "node.castType" }
       ]
+    },
+    "NullAssert": {
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.isFail", "true"] },
+            { "tmpl": ["throw new global::System.NullReferenceException(", { "fn": "quoted", "args": ["string", { "get": "node.message" }] }, ")"] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "(",
+            { "emitChild": "node.operand", "side": "recv" },
+            " ?? throw new global::System.NullReferenceException(",
+            { "fn": "quoted", "args": ["string", { "get": "node.message" }] },
+            "))"
+          ]
+        }
+      }
     },
     "Unary": {
       "tmpl": [
@@ -3767,7 +3787,7 @@
       "List.removeAt": "$this.RemoveAt($0)"
     },
     "std.io": {
-      "print": "global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object?)x)",
+      "print": "global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object?)x ?? \"null\")",
       "readText": "global::System.IO.File.ReadAllText(path)",
       "writeText": "global::System.IO.File.WriteAllText(path, content)",
       "appendText": "global::System.IO.File.AppendAllText(path, content)",
