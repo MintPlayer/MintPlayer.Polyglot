@@ -1,0 +1,39 @@
+// P40 B2 barrel case (issue #73): one module of a dedicated multi-module library. It reaches the same
+// prelude items as stats.pg (Option through a nullable type parameter, print, the null-assert helper), so a
+// prelude declaration that leaked out as an `export` would make the barrel's two `export *` collide (TS2308).
+import { print } from "std.io"
+import { List } from "std.collections"
+
+union Shape {
+  Circle(r: f64)
+  Rect(w: f64, h: f64)
+}
+
+class Slot<T> {
+  var item: T
+  var full: bool
+  constructor(item: T, full: bool) {
+    this.item = item
+    this.full = full
+  }
+  fn peek(): T? => if this.full { this.item } else { null }
+}
+
+fn area(s: Shape): f64 => match s {
+  Circle(r) => 3.0 * r * r,
+  Rect(w, h) => w * h,
+}
+
+fn shapes(): List<Shape> => [Circle(1.0), Rect(2.0, 3.0)]
+
+fn firstName(names: List<string>): string {
+  let s = Slot(names[0], names.count > 0)
+  let first: string? = if names.count > 0 { names[0] } else { null }
+  return (s.peek() ?? "") + first!
+}
+
+fn describeShapes() {
+  for s in shapes() {
+    print(area(s))
+  }
+}

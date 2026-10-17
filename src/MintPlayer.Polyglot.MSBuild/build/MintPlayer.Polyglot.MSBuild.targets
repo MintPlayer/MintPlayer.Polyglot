@@ -4,7 +4,19 @@
        in obj/ before CoreCompile (so generated types exist for IntelliSense too — design-time builds are
        NOT skipped, Grpc.Tools' hard-won lesson), incrementally via Inputs/Outputs (the tool path is an
        input, so a CLI upgrade forces regen). A companion always-run target re-adds the generated files
-       when the transpile is skipped, and registers them as FileWrites so `dotnet clean` removes them. -->
+       when the transpile is skipped, and registers them as FileWrites so `dotnet clean` removes them.
+
+       Consumer-settable properties (each documented where it is used below; README ".NET build integration"):
+         PolyglotTargets     subset of the pgconfig `targets` for THIS build ("csharp", "csharp;typescript";
+                             empty = all) - the CLI `only` flag                                   (P40 B6)
+         PolyglotNamespace   csharp.namespace  } C# target options, CLI `target-option` flags;
+         PolyglotClass       csharp.class      } they win over the project's pgconfig.json   (P40 B1)
+         PolyglotAccess      csharp.access     }
+         PolyglotOriginInfo  true = #line origin pragmas for coverage attribution             (P38)
+         PolyglotWatch       false = don't register the .pg sources as dotnet-watch items
+         PolyglotLib         the ambient std prelude list (pgconfig `lib`)
+       Floors of the emitted C#: C# 11 + a .NET 8 BCL; std.collections Map<K, V> needs .NET 9. -->
+
 
   <PropertyGroup>
     <PolyglotOutDir>$(IntermediateOutputPath)polyglot\</PolyglotOutDir>

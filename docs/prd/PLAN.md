@@ -3569,7 +3569,7 @@ A `.pg` line now counts as covered when **any** target reached it — measured 9
 - *Gate:* the `coverage` gate leg (bounded and flushing after the CI hang recorded in the P39 log), goldens
   byte-identical on Windows and WSL.
 
-## P40 — Library-grade output: escapes, ranges, `!`, culture-free C#, namespaces, prelude reachability, ordinal strings, `Map`, `build --check`, target filter — 🚧 designed, slice-0 spikes done (2026-10-17; issue #73, PRD `docs/prd/issue-73-library-grade/`, 6-agent investigation)
+## P40 — Library-grade output: escapes, ranges, `!`, culture-free C#, namespaces, prelude reachability, ordinal strings, `Map`, `build --check`, target filter — ✅ built, slices 1–13 (2026-10-17; end gate + POSIX leg pending, slice 14; issue #73, PRD `docs/prd/issue-73-library-grade/`, 6-agent investigation)
 
 MintPlayer.Spark's GS1 core is the motivating consumer: one algorithm runs in a .NET 11 library and an Angular
 entry point. The logic is already faithful. What blocks library use is silent miscompiles that the

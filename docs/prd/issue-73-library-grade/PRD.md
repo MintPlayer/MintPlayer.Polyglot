@@ -1,8 +1,8 @@
 # P40 — Library-grade output for a .NET library + Angular entry point (issue #73) — PRD
 
-> **Status:** 🚧 designed (2026-10-17). Slice-0 spikes are done. **The maintainer accepted all of D1–D17 on
-> #73**, with changes to D3, D5, D8, D10 and D17. Three follow-up investigations folded those changes in
-> below, adding D18–D20. Implementation is in progress.
+> **Status:** ✅ built (2026-10-17), slices 1–13; the end gate (slice 14) is pending. **The maintainer accepted
+> all of D1–D17 on #73**, with changes to D3, D5, D8, D10 and D17. Three follow-up investigations folded those
+> changes in below, adding D18–D20.
 > **Issue:** [#73](https://github.com/MintPlayer/MintPlayer.Polyglot/issues/73).
 > **Evidence:** `ANALYSIS.md` (6-agent investigation, verified against HEAD `a603dba`).
 > **Plan, spikes and decision log:** `PLAN.md`.

@@ -81,18 +81,21 @@ function Invoke-OracleCompile {
         [Parameter(Mandatory)] [string[]]$Sources,
         [Parameter(Mandatory)] [string]$OutDll,
         [switch]$NullableEnable,
-        [switch]$WarnAsError
+        [switch]$WarnAsError,
+        # A class library (no runtimeconfig) — e.g. the P40 culture leg's startup-hook dll.
+        [switch]$Library
     )
 
     $outDir = Split-Path $OutDll -Parent
     if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Force $outDir | Out-Null }
 
     if ($env:POLYGLOT_ORACLE -eq "msbuild") {
-        return Invoke-OracleCompileMsbuild -Sources $Sources -OutDll $OutDll -NullableEnable:$NullableEnable -WarnAsError:$WarnAsError
+        return Invoke-OracleCompileMsbuild -Sources $Sources -OutDll $OutDll -NullableEnable:$NullableEnable -WarnAsError:$WarnAsError -Library:$Library
     }
 
     $ctx = Get-OracleContext
-    $args = @("$($ctx.CscDll)", "/shared", "/nologo", "/target:exe", "/langversion:default",
+    $target = if ($Library) { "/target:library" } else { "/target:exe" }
+    $args = @("$($ctx.CscDll)", "/shared", "/nologo", $target, "/langversion:default",
               "/out:$OutDll", "@$($ctx.Rsp)")
     $args += if ($NullableEnable) { "/nullable:enable" } else { "/nullable:disable" }
     if ($WarnAsError) { $args += "/warnaserror" }
@@ -100,8 +103,8 @@ function Invoke-OracleCompile {
 
     $output = & $ctx.Dotnet @args 2>&1
     $code = $LASTEXITCODE
-    if ($code -eq 0) {
-        $rc = [System.IO.Path]::ChangeExtension($OutDll, ".runtimeconfig.json")
+    if ($code -eq 0 -and -not $Library) {
+        $rc =[System.IO.Path]::ChangeExtension($OutDll, ".runtimeconfig.json")
         @"
 { "runtimeOptions": { "tfm": "$($ctx.Tfm)", "framework": { "name": "Microsoft.NETCore.App", "version": "$($ctx.RuntimeVersion)" }, "rollForward": "latestMinor" } }
 "@ | Set-Content -Path $rc -Encoding UTF8
@@ -115,10 +118,12 @@ function Invoke-OracleCompileMsbuild {
         [Parameter(Mandatory)] [string[]]$Sources,
         [Parameter(Mandatory)] [string]$OutDll,
         [switch]$NullableEnable,
-        [switch]$WarnAsError
+        [switch]$WarnAsError,
+        [switch]$Library
     )
     $ctx = Get-OracleContext
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($OutDll)
+    $outputType = if ($Library) { "Library" } else { "Exe" }
     $work = Join-Path ([System.IO.Path]::GetTempPath()) ("polyglot-oracle-msbuild-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Force $work | Out-Null
     try {
@@ -128,7 +133,7 @@ function Invoke-OracleCompileMsbuild {
         @"
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>$outputType</OutputType>
     <TargetFramework>$($ctx.Tfm)</TargetFramework>
     <Nullable>$nullable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -142,7 +147,9 @@ function Invoke-OracleCompileMsbuild {
         $built = Join-Path $work "bin\Release\$($ctx.Tfm)\$stem.dll"
         if ($code -eq 0 -and (Test-Path $built)) {
             Copy-Item $built $OutDll -Force
-            Copy-Item ([System.IO.Path]::ChangeExtension($built, ".runtimeconfig.json")) ([System.IO.Path]::ChangeExtension($OutDll, ".runtimeconfig.json")) -Force
+            if (-not $Library) {
+                Copy-Item ([System.IO.Path]::ChangeExtension($built, ".runtimeconfig.json")) ([System.IO.Path]::ChangeExtension($OutDll, ".runtimeconfig.json")) -Force
+            }
             return @{ Ok = $true; ExitCode = 0; Output = ($output | Out-String); Dll = $OutDll }
         }
         return @{ Ok = $false; ExitCode = $code; Output = ($output | Out-String); Dll = $OutDll }

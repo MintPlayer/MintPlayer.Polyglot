@@ -57,7 +57,7 @@ namespace {
 
 void printUsage() {
     std::cout
-        << "polyglot " << Compiler::version() << " - cross-SDK transpiler (P2 walking skeleton)\n"
+        << "polyglot " << Compiler::version() << " - cross-SDK transpiler\n"
         << "\n"
         << "Usage:\n"
         << "  polyglot --version\n"
@@ -68,7 +68,7 @@ void printUsage() {
         << "  polyglot fmt <input.pg>\n"
         << "  polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>] [--watch]\n"
         << "  polyglot lsp\n"
-        << "  polyglot install <plugin-dir | npm-package>\n"
+        << "  polyglot install <plugin-dir | npm-package> [--update]\n"
         << "  polyglot coverage remap <report> --target <name> --out <path>\n"
         << "\n"
         << "  build  Transpiles <input.pg> for every language in pgconfig.json `targets` (--target\n"
@@ -103,6 +103,8 @@ void printUsage() {
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
         << "  check  Reports parse/type diagnostics without emitting. --json prints a machine-readable\n"
         << "         array (line/col/severity/message) for editor tooling.\n"
+        << "  install  Pre-warms the plugin cache (optional: build auto-resolves); inside a project it\n"
+        << "         also pins pgconfig.lock.json. --update re-resolves a range past a satisfied lock.\n"
         << "  lsp    Runs the Language Server over stdio (JSON-RPC): diagnostics, go-to-definition,\n"
         << "         document symbols, hover. Spawned by the editor extensions; not for interactive use.\n"
         << "  coverage  Projects a coverage report over generated code back onto the .pg source, so\n"
