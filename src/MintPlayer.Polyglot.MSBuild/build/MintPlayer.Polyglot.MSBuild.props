@@ -15,6 +15,9 @@
          hits back to the .pg (path AND line numbers) instead of reporting nothing for code in obj/.
          Off by default — the generated code is byte-identical without it. -->
     <PolyglotOriginInfo Condition="'$(PolyglotOriginInfo)' == ''">false</PolyglotOriginInfo>
+    <!-- P40 B6: a subset of the pgconfig.json `targets` to build here, ';'- or ','-separated (e.g. csharp).
+         Empty = every pgconfig target (D3: the consumer's pgconfig decides). -->
+    <PolyglotTargets Condition="'$(PolyglotTargets)' == ''"></PolyglotTargets>
   </PropertyGroup>
 
   <ItemGroup>
