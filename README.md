@@ -98,7 +98,7 @@ the code emitted for that target** (and to run that target's leg of the differen
 | For | Toolchain / SDK | Official download |
 |---|---|---|
 | **Building the CLI from source** | Visual Studio 2026 — *Desktop development with C++* workload (platform toolset v145) | <https://visualstudio.microsoft.com/> |
-| **C# / .NET** output | .NET SDK 10+ | <https://dotnet.microsoft.com/download> |
+| **C# / .NET** output | .NET SDK 10+ (a consumer that uses `std.collections`' `Map<K, V>` needs **.NET 9+**: it binds `OrderedDictionary<K, V>`) | <https://dotnet.microsoft.com/download> |
 | **TypeScript / JS** output | Node.js (LTS) | <https://nodejs.org/en/download> |
 | **Python** output | Python 3 | <https://www.python.org/downloads/> |
 | **PHP** output | PHP 8 with the **iconv** extension (`ext-iconv`, on by default; the string std indexes non-ASCII text in UTF-16 units through it) (Windows builds: the NTS x64 zip) | <https://www.php.net/downloads> · Windows: <https://windows.php.net/download/> |

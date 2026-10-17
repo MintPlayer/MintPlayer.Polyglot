@@ -53,6 +53,7 @@
       "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
       "pgFail": "def _pg_fail(at):\n    raise TypeError(\"null-assert failed (\" + at + \")\")\n",
       "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if not isinstance(x, float):\n        return str(x)\n    if x != x:\n        return \"NaN\"\n    if x in (float(\"inf\"), float(\"-inf\")):\n        return \"Infinity\" if x > 0 else \"-Infinity\"\n    if x == 0:\n        return \"0\"\n    s = repr(x)\n    neg = s[0] == \"-\"\n    if neg:\n        s = s[1:]\n    m, _, e = s.partition(\"e\")\n    i, _, f = m.partition(\".\")\n    d = (i + f).lstrip(\"0\")\n    n = len(i) + (int(e) if e else 0) - (len(i) + len(f) - len(d))\n    d = d.rstrip(\"0\")\n    k = len(d)\n    if k <= n <= 21:\n        r = d + \"0\" * (n - k)\n    elif 0 < n <= 21:\n        r = d[:n] + \".\" + d[n:]\n    elif -6 < n <= 0:\n        r = \"0.\" + \"0\" * -n + d\n    else:\n        r = d[0] + (\".\" + d[1:] if k > 1 else \"\") + \"e\" + (\"+\" if n >= 1 else \"-\") + str(abs(n - 1))\n    return \"-\" + r if neg else r\n",
+      "pgAbsent": "_PG_ABSENT = object()  # Map.remove's pop sentinel: never a stored value\n",
       "pgAscii": "_PG_UPPER = str.maketrans(\"abcdefghijklmnopqrstuvwxyz\", \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\")\n_PG_LOWER = str.maketrans(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\")\n"
     },
     "tables": {
@@ -784,7 +785,7 @@
                                   [
                                     {
                                       "eq": [
-                                        "item.typeIsList",
+                                        "item.typeIsRefCollection",
                                         "true"
                                       ]
                                     },
@@ -3871,7 +3872,16 @@
       "List.add": "$this.append($0)",
       "List.clear": "$this.clear()",
       "List.removeAll": "$this[:] = [__e for __e in $this if not (($0)(__e))]",
-      "List.removeAt": "$this.pop($0)"
+      "List.removeAt": "$this.pop($0)",
+      "Map.type": "dict",
+      "Map.constructor": "{}",
+      "Map.count": "len($this)",
+      "Map.get": "$this.get($0)",
+      "Map.set": "$this.__setitem__($0, $1)",
+      "Map.has": "($0 in $this)",
+      "Map.remove": { "template": "($this.pop($0, _PG_ABSENT) is not _PG_ABSENT)", "requires": ["pgAbsent"] },
+      "Map.keys": "list($this.keys())",
+      "Map.values": "list($this.values())"
     },
     "std.io": {
       "print": { "template": "__import__('builtins').print(_pg_out16(_pg_str(x)))", "requires": ["fstr", "pgOut16"] },

@@ -1,0 +1,9 @@
+// REFUSED (P40 B4): Map's V must not be nullable — get returns V?, so an absent key and a stored null
+// would be indistinguishable. The diagnostic points at Map.has.
+import "std.io"
+import "std.collections"
+
+fn main() {
+  let m = Map<string, i32?>()
+  print(m.count)
+}

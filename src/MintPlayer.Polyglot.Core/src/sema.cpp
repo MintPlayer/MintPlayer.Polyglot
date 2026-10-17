@@ -402,6 +402,7 @@ private:
     std::unordered_set<std::string> interfaceNames_;                       // declared `interface` names
     std::unordered_map<std::string, const InterfaceDecl*> interfaceDecls_; // for base type-args (conformance)
     std::unordered_set<std::string> enumNames_;
+    std::unordered_set<std::string> recordNames_;                          // declared `record` names (P40 B4 key refusal)
     std::unordered_map<std::string, TypeRef> values_;          // top-level const/let
     std::unordered_map<std::string, FnSig> unionCtors_;        // union case name -> ctor sig
     std::unordered_map<std::string, std::string> unionCaseOwner_; // case name -> union type
@@ -698,7 +699,7 @@ private:
         if (!typeNames_.insert(name).second) diags_.error(pos, "duplicate type '" + name + "'");
     }
     void collectTypeNames(const CompilationUnit& u) {
-        for (const auto& d : u.records)    declareType(d.name, d.pos);
+        for (const auto& d : u.records)    { declareType(d.name, d.pos); recordNames_.insert(d.name); }
         for (const auto& d : u.classes)    { declareType(d.name, d.pos, d.isExtern); if (d.isExtern) externClassNames_.insert(d.name); }
         for (const auto& d : u.interfaces) declareType(d.name, d.pos);
         for (const auto& d : u.enums)      { declareType(d.name, d.pos); enumNames_.insert(d.name); }
@@ -1711,6 +1712,7 @@ private:
                 } else {
                     TypeRef iter = s.value ? checkExpr(*s.value) : tUnknown();
                     elem = elementType(iter);
+                    refuseNonIterableExtern(iter, s.value ? s.value->pos : s.pos);
                 }
                 std::unordered_set<std::string> assigned; // P40 D14: see While
                 collectAssigned(s.thenBody, false, false, assigned);
@@ -1755,6 +1757,29 @@ private:
             }
             case StmtKind::Break: case StmtKind::Continue: break;
         }
+    }
+    // P40 B4: an extern (native-bound) class is `for`-iterable only as List/Array/Iterable or through an
+    // indexer; anything else (a `Map`) would iterate whatever the native type happens to yield — keys on
+    // TS/Python, pairs on C#, values on PHP — so it is refused, pointing at a snapshot member when one exists.
+    void refuseNonIterableExtern(const TypeRef& t, SourcePos pos) {
+        if (t.kind != TypeRef::Kind::Named || t.nullable || isBuiltinType(t.name) || !externClassNames_.count(t.name))
+            return;
+        if (t.name == "List" || t.name == "Array" || t.name == "Iterable") return;
+        auto it = types_.find(t.name);
+        if (it == types_.end()) return;
+        std::vector<std::string> snaps;
+        for (const auto& m : it->second.members) {
+            if (m.kind == MemberKind::Operator && m.name == "get") return;
+            if (m.kind == MemberKind::Method && !m.isStatic && m.params.empty() && m.type.kind == TypeRef::Kind::Named &&
+                m.type.name == "List")
+                snaps.push_back(m.name);
+        }
+        std::string hint;
+        for (std::size_t i = 0; i < snaps.size(); ++i)
+            hint += (i == 0 ? "" : i + 1 == snaps.size() ? " or " : ", ") + std::string("'.") + snaps[i] + "()'";
+        diags_.error(pos, "'" + showTy(t) + "' is not iterable" +
+                              (hint.empty() ? std::string()
+                                            : "; iterate a snapshot instead: " + hint));
     }
     static bool isUnitT(const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name == "unit" && !t.nullable; }
     // ---- P37 D: attributes (both tiers) + the Meta intrinsics -----------------------------------------
@@ -2625,10 +2650,74 @@ private:
         if (arg.kind != TypeRef::Kind::Named || arg.name.empty() || genericsInScope_.count(arg.name)) return true;
         if (bound.kind != TypeRef::Kind::Named) return true;
         if (bound.name == "INumber") return !arg.nullable && isNumericTypeName(arg);
+        if (bound.name == "IMapKey") return mapKeyRefusal(arg).empty();
         if (!types_.count(bound.name)) return true;
         return arg.name == bound.name || inheritsFrom(arg.name, bound.name);
     }
-    static std::string describeBound(const TypeRef& b) { return b.name == "INumber" ? "INumber" : sigTypeName(b); }
+    // P40 B4: why a type cannot key a Map ("" = it can). Only `string` and the integer scalars hash and compare
+    // by value, identically, in every target's native dictionary (OrderedDictionary / Map / dict / a PHP array
+    // behind \ArrayObject). Each refusal names the divergence it avoids.
+    std::string mapKeyRefusal(const TypeRef& arg) const {
+        if (arg.kind == TypeRef::Kind::Named && arg.name.empty()) return "";
+        if (arg.kind == TypeRef::Kind::Named && genericsInScope_.count(arg.name)) return "";
+        if (arg.kind == TypeRef::Kind::Named && arg.nullable)
+            return "a nullable key is refused: null is not a dictionary key on every target";
+        if (arg.kind != TypeRef::Kind::Named || !arg.args.empty())
+            return "only 'string' and the integer scalars can key a Map";
+        const std::string& n = arg.name;
+        if (n == "string" || (isNumericTypeName(arg) && n != "f32" && n != "f64")) return "";
+        if (n == "f32" || n == "f64")
+            return "floating-point keys are refused: NaN never equals itself and -0.0/0.0 collide on some targets "
+                   "but not others (key by an integer instead)";
+        if (n == "bool")
+            return "bool keys are refused: Python's dict treats True as the key 1 and PHP array keys coerce a bool "
+                   "to 0/1, so they would collide with integer keys";
+        if (n == "char")
+            return "char keys are refused: a char is a one-unit string on TS/Python/PHP but a distinct integral "
+                   "type on C#, so a char key and a string key would compare differently across targets";
+        if (recordNames_.count(n))
+            return "record keys are refused: a record compares structurally, but TS's Map and PHP arrays cannot "
+                   "hash it structurally (key by a string or integer derived from its fields)";
+        if (types_.count(n) && !enumNames_.count(n))
+            return "class and interface keys are refused: object identity is not a PHP array key, and TS/Python "
+                   "would key by identity where C# may use an overridden Equals";
+        return "only 'string' and the integer scalars can key a Map";
+    }
+    static std::string describeBound(const TypeRef& b) {
+        return b.name == "INumber" || b.name == "IMapKey" ? b.name : sigTypeName(b);
+    }
+    // The reason suffix a failed marker bound adds to its diagnostic.
+    std::string boundReason(const TypeRef& arg, const TypeRef& b) const {
+        if (b.name == "INumber") return " (a numeric type is required)";
+        if (b.name == "IMapKey") return "; " + mapKeyRefusal(arg);
+        return "";
+    }
+    // P40 B4: a nullable type argument for a type parameter `T` of an EXTERN class that has a member typed
+    // `T?` is refused: the native binding's null would then mean both "absent" and "a stored null" (`Map.get`
+    // with `V = i32?`). A user class is exempt — there `T?` with a nullable T is an Option of the argument.
+    void checkNullableExternArgs(const std::string& typeName, const std::vector<TypeRef>& args, SourcePos pos) {
+        if (!externClassNames_.count(typeName)) return;
+        auto it = types_.find(typeName);
+        if (it == types_.end()) return;
+        const auto& gs = it->second.generics;
+        for (std::size_t i = 0; i < gs.size() && i < args.size(); ++i) {
+            if (!args[i].nullable) continue;
+            for (const auto& m : it->second.members) {
+                if (m.isStatic || m.type.kind != TypeRef::Kind::Named || !m.type.nullable || m.type.name != gs[i].name)
+                    continue;
+                bool hasHas = false;
+                for (const auto& h : it->second.members) if (h.name == "has" && !h.isStatic) hasHas = true;
+                diags_.error(pos, "type argument '" + showTy(args[i]) + "' for '" + gs[i].name + "' of '" + typeName +
+                                      "' must not be nullable: '" + typeName + "." + m.name + "' returns '" +
+                                      gs[i].name + "?', so an absent entry and a stored null would be "
+                                      "indistinguishable" +
+                                      (hasHas ? "; store a non-nullable value and test presence with '" + typeName +
+                                                    ".has'"
+                                              : std::string()));
+                break;
+            }
+        }
+    }
     // Nominal (non-INumber) bounds of a generic function or method, checked on the inferred arguments.
     // (INumber keeps its own historical message in checkNumericBounds.)
     void checkGenericBounds(const std::vector<GenericParam>& specs, const std::vector<std::string>& generics,
@@ -2646,7 +2735,7 @@ private:
             for (const auto& b : g.bounds)
                 if (b.name != "INumber" && !satisfiesBound(it->second, b))
                     diags_.error(pos, what + ": type argument '" + showTy(it->second) + "' does not satisfy the bound '" +
-                                          g.name + ": " + describeBound(b) + "'");
+                                          g.name + ": " + describeBound(b) + "'" + boundReason(it->second, b));
         }
     }
     // A generic TYPE's arguments against its params' bounds (`class Box<T: INumber>` refuses `Box<string>`),
@@ -2660,7 +2749,8 @@ private:
                 if (!satisfiesBound(args[i], b))
                     diags_.error(pos, "type argument '" + showTy(args[i]) + "' of '" + typeName +
                                           "' does not satisfy the bound '" + gs[i].name + ": " + describeBound(b) +
-                                          "'" + (b.name == "INumber" ? " (a numeric type is required)" : ""));
+                                          "'" + boundReason(args[i], b));
+        checkNullableExternArgs(typeName, args, pos);
     }
 
     TypeRef checkMember(Expr& e) {

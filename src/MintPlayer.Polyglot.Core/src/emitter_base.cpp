@@ -950,12 +950,12 @@ std::string RecordDeclCtx::get(const std::string& path) const {
             if (rest == "name") return r_.fields[i].name;
             if (rest == "typeIsRecord")
                 return isRecord_ && isRecord_(r_.fields[i].type) ? "true" : "false";
-            if (rest == "typeIsList") { // List<T>/T[] fields compare by REFERENCE in record equality
+            if (rest == "typeIsRefCollection") { // List<T>/T[]/Map<K,V> fields compare by REFERENCE in record equality
                                         // (the C# oracle's default field comparer) — targets whose
                                         // native == is value-based (Python list) consult this to emit
                                         // an identity comparison instead.
                 const TypeRef& t = r_.fields[i].type;
-                return t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Array")
+                return t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Array" || t.name == "Map")
                            ? "true" : "false";
             }
         }

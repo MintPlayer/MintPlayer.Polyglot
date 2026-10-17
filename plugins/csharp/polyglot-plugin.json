@@ -3847,7 +3847,17 @@
       "List.add": "$this.Add($0)",
       "List.clear": "$this.Clear()",
       "List.removeAll": "$this.RemoveAll($0)",
-      "List.removeAt": "$this.RemoveAt($0)"
+      "List.removeAt": "$this.RemoveAt($0)",
+      "IMapKey.type": "notnull",
+      "Map.type": "global::System.Collections.Generic.OrderedDictionary<$0, $1>",
+      "Map.constructor": "new $T()",
+      "Map.count": "$this.Count",
+      "Map.get": "($this.TryGetValue($0, out var $tmp) ? $tmp : ($T)null)",
+      "Map.set": "$this[$0] = $1",
+      "Map.has": "$this.ContainsKey($0)",
+      "Map.remove": "$this.Remove($0)",
+      "Map.keys": "new $T($this.Keys)",
+      "Map.values": "new $T($this.Values)"
     },
     "std.io": {
       "print": { "template": "global::System.Console.WriteLine(__PgRt.Show(x))", "requires": ["pgShow", "pgStrInt", "pgStrFloat"] },

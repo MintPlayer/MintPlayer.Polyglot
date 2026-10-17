@@ -185,6 +185,12 @@ for (a, b) in pairs { ... }        // tuple destructuring
 `Iterable<T>` + `yield` → C# `IEnumerable<T>` + `yield return`; `for x in seq` → `foreach`;
 integer ranges emit a plain C-style `for` loop.
 
+`Map<K, V>` (`import "std.collections"`) is `OrderedDictionary<K, V>` — so **your consumer needs .NET 9+** —
+and differs from a C# dictionary in three ways: keys are only `string` or an integer type; `V` cannot be
+nullable (`get` returns `V?`, null meaning absent — use `has`); and you cannot `foreach` the map itself.
+`for k in m.keys()` iterates a snapshot copy, so mutating the map inside the loop is fine. `remove` is O(n)
+on `OrderedDictionary`.
+
 ## Exceptions
 
 ```pg

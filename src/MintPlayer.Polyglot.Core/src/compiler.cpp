@@ -41,6 +41,34 @@ extern class List<T> {
   fn removeAt(index: i32) {
   }
 }
+// P40 B4: the Map key marker. Satisfied only by `string` and the integer scalars (sema's satisfiesBound) —
+// the key types every target's native dictionary hashes by value, identically. Compile-time-only: erased
+// from every target's generics spelling, like INumber.
+extern class IMapKey { }
+// An insertion-ordered dictionary. `V` must not be nullable (`get` returns `V?`, so a stored null would be
+// indistinguishable from an absent key — `has` is the escape hatch). `keys()`/`values()` are SNAPSHOTS in
+// insertion order: mutating a map while iterating it differs on every target, so a Map is not directly
+// `for`-iterable. Re-setting an existing key keeps its position; remove + set moves it to the end.
+extern class Map<K: IMapKey, V> {
+  type {
+  }
+  constructor() {
+  }
+  let count: i32 {
+  }
+  fn get(key: K): V? {
+  }
+  fn set(key: K, value: V) {
+  }
+  fn has(key: K): bool {
+  }
+  fn remove(key: K): bool {
+  }
+  fn keys(): List<K> {
+  }
+  fn values(): List<V> {
+  }
+}
 )PG";
 
 // std.io — filesystem access bound per target via the capability mechanism (expect + per-target actual).

@@ -1547,6 +1547,83 @@ int main() {
                 check(pyOk, "P40 s8: a bare import of an extension-only module star-imports on Python (was NameError)");
             }
         }
+
+        // ---- P40 slice 9: Map<K, V> (B4) — the IMapKey bound, non-nullable V, snapshots, the four bindings ----
+        {
+            // Keys: string and the integer scalars only; every refusal names its reason.
+            for (const char* k : {"string", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"})
+                check(typeErr((std::string("fn f(m: Map<") + k + ", i32>): i32 => m.count\n").c_str()).empty(),
+                      std::string("P40 s9: '") + k + "' satisfies IMapKey");
+            const struct { const char* key; const char* why; } refused[] = {
+                {"f64", "floating-point keys are refused"}, {"f32", "floating-point keys are refused"},
+                {"bool", "bool keys are refused"},          {"char", "char keys are refused"},
+                {"P", "record keys are refused"},           {"C", "class and interface keys are refused"},
+                {"string?", "a nullable key is refused"},   {"List<i32>", "only 'string' and the integer scalars"},
+                {"E", "only 'string' and the integer scalars"},
+            };
+            for (const auto& r : refused) {
+                const std::string src = std::string("record P(x: i32)\nclass C {\n  var x: i32 = 0\n}\nenum E { A }\n"
+                                                    "fn f() { let m = Map<") + r.key + ", i32>() }\n";
+                const std::string e = typeErr(src.c_str());
+                check(has(e, "does not satisfy the bound 'K: IMapKey'") && has(e, r.why),
+                      std::string("P40 s9: Map<") + r.key + ", _> is refused with its reason");
+            }
+            check(has(typeErr("record P(x: i32)\nfn f(m: Map<P, i32>) {}\n"), "record keys are refused"),
+                  "P40 s9: the key bound is checked on an annotation too");
+            check(typeErr("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\nfn g(m: Map<u8, bool>): i32 => f(m)\n").empty(),
+                  "P40 s9: a generic forwarding its own IMapKey-bounded K is accepted");
+            // V must not be nullable — pointing at `has`.
+            const std::string nv = typeErr("fn f() { let m = Map<string, i32?>() }\n");
+            check(has(nv, "type argument 'i32?' for 'V' of 'Map' must not be nullable") && has(nv, "'Map.has'"),
+                  "P40 s9: a nullable V is refused, pointing at Map.has");
+            // Not directly for-iterable — pointing at the snapshots.
+            const std::string it = typeErr("fn f(m: Map<string, i32>) {\n  for k in m {\n  }\n}\n");
+            check(has(it, "'Map<string, i32>' is not iterable") && has(it, "'.keys()' or '.values()'"),
+                  "P40 s9: `for k in m` is refused, pointing at keys()/values()");
+            check(typeErr("fn f(m: Map<string, i32>): i32 {\n  var n = 0\n  for k in m.keys() {\n    n = n + 1\n  }\n"
+                          "  for v in m.values() {\n    n = n + v\n  }\n  return n\n}\n").empty(),
+                  "P40 s9: the snapshots iterate (keys() is List<K>, values() is List<V>)");
+
+            // The bindings.
+            const std::string use = "fn f(m: Map<string, i32>): i32 => (m.get(\"a\") ?? 0) + (m.get(\"b\") ?? 0)\n"
+                                    "fn g(m: Map<string, i32>): bool => m.remove(\"a\")\n"
+                                    "fn h(m: Map<string, i32>): List<string> => m.keys()\n"
+                                    "fn mk(): Map<string, i32> => Map<string, i32>()\n"
+                                    "fn s(m: Map<string, i32>) { m.set(\"k\", 1) }\n";
+            EmitResult cs = compileStd(use, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "global::System.Collections.Generic.OrderedDictionary<string, int>") &&
+                      has(cs.code, "(m.TryGetValue(\"a\", out var __pg_t1) ? __pg_t1 : (int?)null)") &&
+                      has(cs.code, "(m.TryGetValue(\"b\", out var __pg_t2) ? __pg_t2 : (int?)null)") &&
+                      has(cs.code, "new global::System.Collections.Generic.List<string>(m.Keys)") &&
+                      has(cs.code, "m.Remove(\"a\")"),
+                  "P40 s9: C# OrderedDictionary, typed else-arm, unique temps, List snapshot");
+            EmitResult csg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("csharp"));
+            check(csg.ok && has(csg.code, "where K : notnull"), "P40 s9: C# spells the IMapKey bound `where K : notnull`");
+            EmitResult ts = compileStd(use, findTarget("typescript"));
+            check(ts.ok && has(ts.code, "(m.get(\"a\") ?? null)") && has(ts.code, "[...m.keys()]") &&
+                      has(ts.code, "new Map<string, number>()") && has(ts.code, "m.delete(\"a\")"),
+                  "P40 s9: TS Map, `?? null`, spread snapshot");
+            EmitResult tsg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("typescript"));
+            check(tsg.ok && !has(tsg.code, "IMapKey"), "P40 s9: TS erases the IMapKey bound");
+            EmitResult py = compileStd(use, findTarget("python"));
+            check(py.ok && has(py.code, "(m.pop(\"a\", _PG_ABSENT) is not _PG_ABSENT)") && has(py.code, "_PG_ABSENT = object()") &&
+                      has(py.code, "list(m.keys())"),
+                  "P40 s9: Python dict, remove via a dedicated pop sentinel, list snapshot");
+            EmitResult pyNo = compileStd("fn f(m: Map<string, i32>): i32 => m.count\n", findTarget("python"));
+            check(pyNo.ok && !has(pyNo.code, "_PG_ABSENT"), "P40 s9: the Python sentinel is emitted only when remove is used");
+            EmitResult php = compileStd(use, findTarget("php"));
+            check(php.ok && has(php.code, "new \\ArrayObject([])") && has(php.code, "__pg_mget($m, \"a\")") &&
+                      has(php.code, "__pg_mkeys($m)") && has(php.code, "$m[__pg_mk(\"k\")] = 1") &&
+                      has(php.code, "is_int($k) ? $k : \"s\" . $k") && has(php.code, "substr($k, 1)"),
+                  "P40 s9: PHP \\ArrayObject with prefixed string keys, decoded by keys()");
+            EmitResult phpEq = compileStd("fn f(a: string, b: string): bool => a == b && a != \"01\"\n", findTarget("php"));
+            check(phpEq.ok && has(phpEq.code, "$a === $b") && has(phpEq.code, "$a !== \"01\""),
+                  "P40 s9: PHP string equality is strict (`\"01\" == \"1\"` is true under ==)");
+            // Records holding a Map compare by reference (Python would otherwise compare dicts by value).
+            EmitResult rec = compileStd("record H(m: Map<string, i32>, n: i32)\n", findTarget("python"));
+            check(rec.ok && has(rec.code, "self.m is other.m") && has(rec.code, "self.n == other.n"),
+                  "P40 s9: a record's Map field compares by reference on Python, like List");
+        }
     }
 
     // P4 — name / type resolution across the declaration surface.

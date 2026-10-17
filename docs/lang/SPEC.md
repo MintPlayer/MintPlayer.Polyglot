@@ -136,6 +136,39 @@ sugar for the core `Array<T>` type (no import); the fixed-size contract is enfor
 **union** element composes safely on every target — e.g. `Node?[]` is C# `Node?[]` and TS `(Node | null)[]`
 (the union is parenthesized so the postfix `[]` binds correctly).
 
+**Maps.** `std.collections` also declares an insertion-ordered dictionary (P40 B4):
+
+```pg
+extern class Map<K: IMapKey, V> {
+  constructor()
+  let count: i32
+  fn get(key: K): V?       // null when absent
+  fn set(key: K, value: V) // re-setting a key keeps its position; remove + set moves it to the end
+  fn has(key: K): bool
+  fn remove(key: K): bool  // true when the key was present
+  fn keys(): List<K>       // a SNAPSHOT, in insertion order
+  fn values(): List<V>     // a SNAPSHOT, in insertion order
+}
+```
+
+| | C# | TypeScript | Python | PHP |
+|---|---|---|---|---|
+| `Map<K, V>` | `OrderedDictionary<K, V>` (**.NET 9+**) | `Map<K, V>` | `dict` | `\ArrayObject` (string keys stored as `"s".$k`) |
+
+- **Keys** are `string` or an integer scalar (`i8`..`u64`) — the `IMapKey` marker bound, which C# spells
+  `where K : notnull` and the other targets erase. Refused, each with its reason: floats (NaN, `-0.0`),
+  `bool` (Python's `True == 1`, PHP's 0/1 coercion), `char` (a string on three targets, an integral type on
+  C#), records (no target hashes them structurally), classes/interfaces (identity is not a PHP array key),
+  nullable keys, and anything else (enums, collections).
+- **`V` must not be nullable**: `get` returns `V?`, so a stored null would read as an absent key. Test presence
+  with `has`. (The rule is general: an extern class with a member typed `T?` refuses a nullable `T`.)
+- **A `Map` is not directly `for`-iterable** — the natives yield keys, pairs or values, and mutation while
+  iterating differs on every target. Iterate `m.keys()` or `m.values()`; they are copies, so mutating the map
+  inside the loop is safe and not observed by it.
+- **Costs:** `remove` is O(n) on C# (`OrderedDictionary` shifts its entry array) and O(1) elsewhere;
+  `keys()`/`values()` copy, O(n). The PHP target keeps string keys prefixed so `"10"` never becomes the
+  integer `10` (a bare PHP array coerces numeric strings), and decodes them in `keys()`.
+
 ### 4.2 The two aggregate kinds — `class` and `record`
 
 v0.1 deliberately offers exactly two ways to group data, split by **mutability**, because that split is
@@ -652,7 +685,7 @@ relaxation is **opt-in and named**, never silent:
 | `toUpper`/`toLower` | **published best-effort tier:** JS and Python map full Unicode (`ß`→`SS`, final sigma), C# uses the invariant simple mapping, PHP is ASCII-only. ASCII text is identical everywhere | use the faithful `toUpperAscii`/`toLowerAscii` when identical output matters |
 | nullability | `null`/`undefined` normalized to one "absent" | — |
 | equality / hashing | `record` gets structural `==`/hash; `class` is identity; identity hash via side `WeakMap` in TS | — |
-| record fields in `==` | leaves compare strictly per their own `==`: value types and strings by value, `List<T>`/`T[]`/class fields by REFERENCE (the .NET default field comparer); nested records recurse structurally | — |
+| record fields in `==` | leaves compare strictly per their own `==`: value types and strings by value, `List<T>`/`T[]`/`Map<K, V>`/class fields by REFERENCE (the .NET default field comparer); nested records recurse structurally | — |
 | `Math.round` half values | **half-to-even** (banker's — the .NET default) on every target; TS and PHP carry shims (their natives are half-up / half-away) | — |
 | shifts | count masked (`& 31` / `& 63`, the .NET rule) and result wrapped to the operand width on every target | — |
 | float `%` | C-style `fmod` (result takes the DIVIDEND's sign — the .NET/JS behavior); Python emits `math.fmod`, PHP `fmod()` | — |

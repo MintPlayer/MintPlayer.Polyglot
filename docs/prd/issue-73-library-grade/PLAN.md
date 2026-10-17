@@ -922,3 +922,45 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     library gate (staged) green. Multi-file C# (modular + a 2-root shared prelude) compiles under nullable +
     warnaserror. Not run (end gate): the full tier, run-nuget, the POSIX leg (no platform-forked code; the new
     Core code is plain std C++).
+- **2026-10-17 (night, slice 9)** — **Slice 9 built** (B4: `Map<K, V>`). As built:
+  - **Std.** `std.collections` declares `extern class IMapKey { }` (marker) and `extern class Map<K: IMapKey, V>`
+    with exactly the PRD API (`constructor`, `count`, `get: V?`, `set`, `has`, `remove: bool`, snapshot
+    `keys(): List<K>` / `values(): List<V>`).
+  - **Key bound.** `satisfiesBound` gives `IMapKey` its own rule, `mapKeyRefusal`: `string` and `i8`..`u64`
+    pass; a forwarded in-scope type param is not judged; floats, `bool`, `char`, records (new `recordNames_`),
+    classes/interfaces, nullable keys and anything else (enums, collections) are refused, each with its reason
+    appended to the bound diagnostic (`boundReason`, which INumber's old suffix now goes through as well).
+  - **Non-nullable V — a general rule, not a `Map` special case.** `checkNullableExternArgs` (called from
+    `checkTypeArgBounds`, so on annotations and construction alike): an EXTERN class with an instance member
+    typed `T?` refuses a nullable `T` argument ("an absent entry and a stored null would be
+    indistinguishable"); when the type has a `has` member the message points at it. User classes are exempt
+    (there `T?` of a nullable T is an Option, slice 7).
+  - **Not for-iterable.** `refuseNonIterableExtern`: `for x in e` over an extern class that is not
+    List/Array/Iterable and has no `get` indexer is refused, naming its zero-arg `List`-returning members
+    (`'.keys()' or '.values()'`). Builtins (string) are exempt.
+  - **Bindings.** C# `OrderedDictionary<$0, $1>`, `get` = `($this.TryGetValue($0, out var $tmp) ? $tmp :
+    ($T)null)`, snapshots `new $T($this.Keys)`; TS `Map`, `new $T()`, `(… ?? null)`, `[...m.keys()]`; Python
+    `dict`, `__setitem__`, `($0 in $this)`, remove = `pop($0, _PG_ABSENT) is not _PG_ABSENT` with a dedicated
+    `pgAbsent` helper (`_PG_ABSENT = object()`, emitted only when remove is used); PHP `new \ArrayObject([])`
+    and a `pgMap` helper (`__pg_mk` = `is_int($k) ? $k : "s" . $k`, `__pg_mget`, `__pg_mdel` returning bool,
+    `__pg_mkeys` decoding with `substr($k, 1)`). PHP `==`/`!=` on strings was already `===`/`!==`
+    (`binaryOp`), now pinned by a unit test.
+  - **Deviation: C# does not erase `IMapKey`.** `OrderedDictionary<TKey, …>` has `TKey : notnull`, so a user
+    generic `fn f<K: IMapKey, V>(m: Map<K, V>)` was CS8714 under Nullable. C# binds `"IMapKey.type": "notnull"`
+    instead of listing it in `generics.erase`, so the bound renders `where K : notnull`; TS and PHP erase it,
+    Python has no bound syntax. Documented in plugin-authoring.
+  - **Record equality.** The emitter path `decl.fields.<i>.typeIsList` is renamed `typeIsRefCollection` and
+    covers `Map` as well (Python's dict `==` is by value; the C# oracle compares by reference). SPEC §9's table
+    lists `Map<K, V>`.
+  - **Docs.** SPEC §4.1 "Maps" (API, binding table, key refusals, non-nullable V, snapshots, O(n) C# remove,
+    PHP key prefixing); README's toolchain table and for-csharp-devs state the .NET 9 floor for Map.
+  - **Tests:** conformance `map.pg` + `.expected` (order `b,c,a`, values, `get ?? default`, the string keys
+    `"1","01","10","1e1","-1","-0"," 1",""` round-tripped through `keys()` and compared with `==`, i64 keys
+    `5000000000`/`-4294967301`, i32 and u8 keys, count, remove's bool, mutation inside `for k in m.keys()`, two
+    `get`s in one expression, a generic forwarding `K: IMapKey`, records holding a Map, a `List` value); 5
+    refusal fixtures (`map_key_float`, `map_key_bool`, `map_key_record`, `map_nullable_value`,
+    `map_for_iterate`); unit block "P40 s9" (32 checks).
+  - **Verified:** unit exe green (977 checks); `-Tier fast` green (incl. the refusal gate); conformance: all
+    **130** programs agree on all four targets (12 PHP refusers, unchanged; `map` runs on PHP); library gate
+    (staged) and nullable gate green. Not run (end gate): the full tier, run-nuget, the POSIX leg (no
+    platform-forked code; plain std C++ in sema).
