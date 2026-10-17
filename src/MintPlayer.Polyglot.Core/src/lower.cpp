@@ -392,6 +392,20 @@ public:
                 return chains;
             };
             for (auto& c : m.classes) c.baseHasInit = classChains(c);
+            // P40 B2: the native root of each base chain (same walk, same cycle guard).
+            std::unordered_set<std::string> visiting;
+            std::function<std::string(const ir::Class&)> rootOf = [&](const ir::Class& c) -> std::string {
+                if (!visiting.insert(c.name).second) return "";
+                std::string root;
+                for (const auto& b : c.bases) {
+                    auto cit = byName.find(b.name);
+                    if (cit != byName.end()) { root = rootOf(*cit->second); break; }
+                    if (ifaceNames.count(b.name) == 0) { root = b.name; break; }
+                }
+                visiting.erase(c.name);
+                return root;
+            };
+            for (auto& c : m.classes) c.baseRoot = rootOf(c);
         }
         m.loweringFailures = std::move(failures_); // P40 A2 backstop: compile() turns these into an ICE
         return m;

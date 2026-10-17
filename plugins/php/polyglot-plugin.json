@@ -231,7 +231,8 @@
       }
     },
     "preludes": {
-      "pgNn": "if (!function_exists(__NAMESPACE__.'\\\\__pg_nn')) {\n    function __pg_nn($v, $at) {\n        if ($v === null) {\n            throw new \\UnexpectedValueException(\"null-assert failed (\" . $at . \")\");\n        }\n        return $v;\n    }\n}\n"
+      "pgNn": "if (!function_exists(__NAMESPACE__.'\\\\__pg_nn')) {\n    function __pg_nn($v, $at) {\n        if ($v === null) {\n            throw new \\UnexpectedValueException(\"null-assert failed (\" . $at . \")\");\n        }\n        return $v;\n    }\n}\n",
+      "pgStr": "if (!function_exists(__NAMESPACE__.'\\\\__pg_str')) {\n    function __pg_str($x) {\n        if ($x === null) {\n            return \"null\";\n        }\n        if (is_bool($x)) {\n            return $x ? \"true\" : \"false\";\n        }\n        if (!is_float($x)) {\n            return (string)$x;\n        }\n        if (is_nan($x)) {\n            return \"NaN\";\n        }\n        if (is_infinite($x)) {\n            return $x > 0 ? \"Infinity\" : \"-Infinity\";\n        }\n        if ($x == 0.0) {\n            return \"0\";\n        }\n        $old = ini_set('serialize_precision', '-1');\n        $s = var_export($x, true);\n        if ($old !== false) {\n            ini_set('serialize_precision', $old);\n        }\n        $neg = $s[0] === '-';\n        if ($neg) {\n            $s = substr($s, 1);\n        }\n        $p = strpos($s, 'E');\n        $m = $p === false ? $s : substr($s, 0, $p);\n        $e = $p === false ? 0 : (int)substr($s, $p + 1);\n        $dot = strpos($m, '.');\n        $i = $dot === false ? $m : substr($m, 0, $dot);\n        $f = $dot === false ? '' : substr($m, $dot + 1);\n        $d = ltrim($i . $f, '0');\n        $n = strlen($i) + $e - (strlen($i) + strlen($f) - strlen($d));\n        $d = rtrim($d, '0');\n        $k = strlen($d);\n        if ($k <= $n && $n <= 21) {\n            $r = $d . str_repeat('0', $n - $k);\n        } elseif (0 < $n && $n <= 21) {\n            $r = substr($d, 0, $n) . '.' . substr($d, $n);\n        } elseif (-6 < $n && $n <= 0) {\n            $r = '0.' . str_repeat('0', -$n) . $d;\n        } else {\n            $r = $d[0] . ($k > 1 ? '.' . substr($d, 1) : '') . 'e' . ($n >= 1 ? '+' : '-') . abs($n - 1);\n        }\n        return $neg ? '-' . $r : $r;\n    }\n}\n"
     }
   },
   "std": {
@@ -245,7 +246,7 @@
       "List.removeAt": "$this->exchangeArray((function ($__a, $__i) { array_splice($__a, $__i, 1); return $__a; })($this->getArrayCopy(), $0))"
     },
     "std.io": {
-      "print": "echo is_bool($x) ? ($x ? \"true\" : \"false\") : ($x ?? \"null\"), \"\\n\"",
+      "print": { "template": "echo __pg_str($x), \"\\n\"", "requires": ["pgStr"] },
       "readText": "file_get_contents($path)",
       "writeText": "file_put_contents($path, $content)",
       "appendText": "file_put_contents($path, $content, FILE_APPEND)",
@@ -257,6 +258,8 @@
       "string.len": "strlen($this)",
       "string.toUpper": "strtoupper($this)",
       "string.toLower": "strtolower($this)",
+      "string.toUpperAscii": "strtr($this, 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')",
+      "string.toLowerAscii": "strtr($this, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')",
       "string.charAt": "substr($this, $0, 1)",
       "string.codePointAt": "ord(substr($this, $0, 1))",
       "string.codePoints": "str_split($this)",
@@ -320,7 +323,7 @@
       "get": "node.text"
     },
     "Float": {
-      "get": "node.text"
+      "get": "node.widenedText"
     },
     "Bool": {
       "case": {
@@ -1050,11 +1053,30 @@
                         ") ? \"true\" : \"false\") . "
                       ]
                     }
+                  ],
+                  [
+                    {
+                      "or": [
+                        { "eq": ["item.typeIsInt", "true"] },
+                        { "eq": ["item.typeIsString", "true"] },
+                        { "eq": ["item.typeIsChar", "true"] }
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        " . (",
+                        {
+                          "emit": "item"
+                        },
+                        ") . "
+                      ]
+                    }
                   ]
                 ],
                 "else": {
                   "tmpl": [
-                    " . (",
+                    { "fn": "require", "args": ["pgStr"] },
+                    " . __pg_str(",
                     {
                       "emit": "item"
                     },

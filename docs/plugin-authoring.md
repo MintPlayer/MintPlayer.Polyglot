@@ -349,7 +349,10 @@ name per `identifiers.escape`) · **`mangleName`** (forbidden-character repair p
 **`wrap`** (`[width, expr]` — the `spec.wrapInt` template) · **`table`** (`[table, key]` — a
 `spec.tables` lookup, `""` if absent) · **`subst`** (`[table, key, x]` — look up a template and
 substitute `$x`; identity if absent) · **`require`** (`[key]` — record a prelude key, emit nothing) ·
-**`inlineBlock`** (a block lambda's body flattened onto one line).
+**`inlineBlock`** (a block lambda's body flattened onto one line) · **`parenIfContains`** (P40 A6,
+`[chars, text]` — parenthesize `text` when it contains any of `chars`; C# wraps a string-typed
+interpolation hole with `[":", …]`, since a top-level `:` starts a format specifier — a `:` nested in a call
+or a string only costs harmless parentheses).
 
 Also in expression context: **`identFn`** (as `ident`, for a function name, honouring
 `identifiers.functionBuiltins`).
@@ -373,7 +376,7 @@ emitted, not even the wrapper.
 Type context adds: **`substExtern`** (substitute rendered type args into an extern class's
 `…$0…` spelling — how `Type` rules handle `List`/`Error`/`Iterable`); `ident` also works here.
 
-That's the whole catalog — 17 names. Any other `{"fn": …}` fails the load.
+That's the whole catalog — 18 names. Any other `{"fn": …}` fails the load.
 
 ### 4.4 Which construct is which flavor
 
@@ -382,7 +385,15 @@ That's the whole catalog — 17 names. Any other `{"fn": …}` fails the load.
   `Interp` `Binary` `IsTest` `AsCast` `NullAssert` `MakeCase` `Match` `With` `Await` `Lambda`. Paths read `node.…` — literals
   (`node.text`, `node.value`), structure (`node.args`, `node.op`, `node.field`), and precomputed
   facts (`node.typeIsInt`, `node.typeIsFloat`, `node.typeIsInt64`, `node.castSame`,
-  `node.lhsIsRecord`, `node.receiverHasIndexer`, `node.hasOpMethod`, …). `NullAssert` (P40 A4) reads `node.where` / `node.message` (the Core-owned
+  `node.lhsIsRecord`, `node.receiverHasIndexer`, `node.hasOpMethod`, …). Any child path answers
+  `.typeIsBool` / `.typeIsInt` / `.typeIsFloat` / `.typeIsInt64` / `.typeIsString` / `.typeIsChar` — an
+  `Interp` hole picks its stringification with them (P40 A3: integers and floats go through the target's
+  one-rule helper, a type parameter through its runtime `Show`). `Float` reads `node.text` (the source
+  digits, suffix stripped) or `node.widenedText` — for an `f32` literal, the nearest-f32 value widened to
+  f64 in shortest round-trip digits, which a target holding `f32` in a double must use (C# keeps
+  `node.text` plus its `f` suffix). A class field answers `item.shadowsBaseRoot` when the class's native base
+  root (e.g. `Error`) has a member of that name in the plugin's `tables.baseRootMembers`
+  (`"Error.cause": "true"`) — TS emits `override` from it. `NullAssert` (P40 A4) reads `node.where` / `node.message` (the Core-owned
   `m.pg:L:C` site and full text, identical on every target), `node.isFail` (no operand: the `None` arm of
   `opt!`, a throw in expression position) and `node.operandIsSimple` / `node.tempName` (single evaluation
   for a target whose check re-reads the operand). It must evaluate the operand once and stay assignable.

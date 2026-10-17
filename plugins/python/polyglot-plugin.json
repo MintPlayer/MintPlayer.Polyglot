@@ -49,7 +49,8 @@
       "asyncEntry": "import asyncio\n",
       "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
       "pgFail": "def _pg_fail(at):\n    raise TypeError(\"null-assert failed (\" + at + \")\")\n",
-      "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if isinstance(x, float) and x.is_integer() and abs(x) < 1e16:\n        return str(int(x))\n    return str(x)\n"
+      "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if not isinstance(x, float):\n        return str(x)\n    if x != x:\n        return \"NaN\"\n    if x in (float(\"inf\"), float(\"-inf\")):\n        return \"Infinity\" if x > 0 else \"-Infinity\"\n    if x == 0:\n        return \"0\"\n    s = repr(x)\n    neg = s[0] == \"-\"\n    if neg:\n        s = s[1:]\n    m, _, e = s.partition(\"e\")\n    i, _, f = m.partition(\".\")\n    d = (i + f).lstrip(\"0\")\n    n = len(i) + (int(e) if e else 0) - (len(i) + len(f) - len(d))\n    d = d.rstrip(\"0\")\n    k = len(d)\n    if k <= n <= 21:\n        r = d + \"0\" * (n - k)\n    elif 0 < n <= 21:\n        r = d[:n] + \".\" + d[n:]\n    elif -6 < n <= 0:\n        r = \"0.\" + \"0\" * -n + d\n    else:\n        r = d[0] + (\".\" + d[1:] if k > 1 else \"\") + \"e\" + (\"+\" if n >= 1 else \"-\") + str(abs(n - 1))\n    return \"-\" + r if neg else r\n",
+      "pgAscii": "_PG_UPPER = str.maketrans(\"abcdefghijklmnopqrstuvwxyz\", \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\")\n_PG_LOWER = str.maketrans(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\")\n"
     },
     "tables": {
       "localDecl": {
@@ -191,7 +192,7 @@
       ]
     },
     "Float": {
-      "get": "node.text"
+      "get": "node.widenedText"
     },
     "Bool": {
       "case": {
@@ -3865,7 +3866,7 @@
       "List.removeAt": "$this.pop($0)"
     },
     "std.io": {
-      "print": "__builtins__.print(\"null\" if x is None else (\"true\" if x else \"false\") if isinstance(x, bool) else (str(int(x)) if isinstance(x, float) and x.is_integer() and abs(x) < 1e16 else x))",
+      "print": { "template": "__import__('builtins').print(_pg_str(x))", "requires": ["fstr"] },
       "readText": "__import__('pathlib').Path(path).read_text()",
       "writeText": "__import__('pathlib').Path(path).write_text(content)",
       "appendText": "open(path, 'a').write(content)",
@@ -3910,6 +3911,8 @@
       "string.len": "len($this)",
       "string.toUpper": "$this.upper()",
       "string.toLower": "$this.lower()",
+      "string.toUpperAscii": { "template": "$this.translate(_PG_UPPER)", "requires": ["pgAscii"] },
+      "string.toLowerAscii": { "template": "$this.translate(_PG_LOWER)", "requires": ["pgAscii"] },
       "string.charAt": "$this[$0]",
       "string.codePointAt": "ord($this[$0])",
       "string.codePoints": "list($this)",

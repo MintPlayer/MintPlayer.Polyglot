@@ -106,7 +106,15 @@ a queryable tree); **bit-exact cross-target floating point** (see §3.D).
   hazard above, but with **no `BigInt` default** (the P26 Dart decision). The web 53-bit limit is the
   published relaxation; sub-64/unsigned widths mask via `& mask` on both legs (`fixedWidthIntegers = emulated`).
 - **float (32-bit) vs double:** default lets `float` ride a JS `double`; `Math.fround`-per-op strictness is
-  **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity.
+  **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity. This
+  relaxation covers f32 **arithmetic** only (P40 A3): an f32 *literal* denotes the nearest f32 on every target
+  (the Core hands double-holding targets its widened value), and f32 *text* is faithful — the exact value
+  widened to f64, printed under the f64 rule (`0.1f` prints `0.10000000149011612`).
+- **number text (P40 A3) is faithful, not relaxed:** integers print as invariant decimal and f64 as ECMAScript
+  `Number::toString` on all four targets (C# `__PgRt.Str`, exact Burger–Dybvig — never `"R"`; Python `repr`
+  digits; PHP `var_export` at `serialize_precision=-1`). `toUpper`/`toLower` are the published **best-effort**
+  tier (full Unicode on JS/Python, invariant simple mapping on C#, ASCII-only on PHP); `toUpperAscii`/
+  `toLowerAscii` are faithful.
 - **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics use a real
   `Option<T>` (✅ done 2026-06-30 — see PLAN P14c):** `T?` over an *unconstrained* type
   parameter has no faithful native emission — C# `null` is CS0403, `T?`+`default(T)` returns `0` for value
@@ -462,7 +470,7 @@ Two options were weighed (design-it-twice):
   byte-identical. *(The v0 plan shipped identity typing as a stopgap; this replaced it the same day.)*
 - **Backends (shared engine needs ZERO changes — async is signature-level, `await` is an expression).**
   - **C#**: signature gets an `async ` prefix and the return wraps to `Task<T>` (bare `Task` for `unit`);
-    `await e` → `await <atom(e)>`; entry — keep the InvariantCulture pin first (load-bearing §3.D), then
+    `await e` → `await <atom(e)>`; entry — (the InvariantCulture pin was removed by P40 A3: number text is culture-free by construction)
     `main().GetAwaiter().GetResult();` (**never `async void Main`**).
   - **TypeScript**: extend the `function*`/`function` signature choice to `async function`; return wraps to
     `Promise<T>` (`Promise<void>` for `unit`); `await e`; entry keeps a **floating `main();`** — NOT top-level

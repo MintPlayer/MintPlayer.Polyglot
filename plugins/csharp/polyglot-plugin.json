@@ -68,7 +68,16 @@
       ]
     },
     "rethrow": "throw;",
+    "preludes": {
+      "pgStrInt": "    internal static string Str(sbyte x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n    internal static string Str(byte x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n    internal static string Str(short x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n    internal static string Str(ushort x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n    internal static string Str(int x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n    internal static string Str(uint x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n    internal static string Str(long x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n    internal static string Str(ulong x) => x.ToString(global::System.Globalization.CultureInfo.InvariantCulture);\n",
+      "pgStrFloat": "    // f32 text is the f32's exact value widened to f64, printed under the f64 rule.\n    internal static string Str(float x) => Str((double)x);\n    // ECMAScript Number::toString: exact shortest digits (Burger-Dybvig over BigInteger, ties to even), then\n    // the ECMAScript layout. Never \"R\": its digits are wrong on .NET Framework and on some .NET 10 patches.\n    internal static string Str(double x)\n    {\n        if (double.IsNaN(x)) return \"NaN\";\n        if (double.IsPositiveInfinity(x)) return \"Infinity\";\n        if (double.IsNegativeInfinity(x)) return \"-Infinity\";\n        if (x == 0) return \"0\";\n        bool neg = x < 0;\n        if (neg) x = -x;\n        long bits = global::System.BitConverter.DoubleToInt64Bits(x);\n        int be = (int)((bits >> 52) & 0x7FF);\n        long f = bits & 0xFFFFFFFFFFFFFL;\n        int e;\n        if (be == 0) e = -1074; else { f |= 1L << 52; e = be - 1075; }\n        bool even = (f & 1) == 0;\n        bool asym = f == (1L << 52) && be > 1;\n        global::System.Numerics.BigInteger r, s, mp, mm;\n        if (e >= 0)\n        {\n            global::System.Numerics.BigInteger b = global::System.Numerics.BigInteger.One << e;\n            if (!asym) { r = f * b * 2; s = 2; mp = b; mm = b; }\n            else { r = f * b * 4; s = 4; mp = b * 2; mm = b; }\n        }\n        else\n        {\n            if (!asym) { r = (global::System.Numerics.BigInteger)f * 2; s = global::System.Numerics.BigInteger.One << (1 - e); mp = 1; mm = 1; }\n            else { r = (global::System.Numerics.BigInteger)f * 4; s = global::System.Numerics.BigInteger.One << (2 - e); mp = 2; mm = 1; }\n        }\n        int k = (int)global::System.Math.Ceiling(global::System.Math.Log10(x) - 1e-10);\n        if (k >= 0) s *= global::System.Numerics.BigInteger.Pow(10, k);\n        else { global::System.Numerics.BigInteger p = global::System.Numerics.BigInteger.Pow(10, -k); r *= p; mp *= p; mm *= p; }\n        while (even ? r + mp >= s : r + mp > s) { s *= 10; k++; }\n        while (even ? (r + mp) * 10 < s : (r + mp) * 10 <= s) { r *= 10; mp *= 10; mm *= 10; k--; }\n        global::System.Text.StringBuilder dg = new global::System.Text.StringBuilder(20);\n        while (true)\n        {\n            r *= 10; mp *= 10; mm *= 10;\n            int d = (int)global::System.Numerics.BigInteger.DivRem(r, s, out r);\n            bool low = even ? r <= mm : r < mm;\n            bool high = even ? r + mp >= s : r + mp > s;\n            if (!low && !high) { dg.Append((char)('0' + d)); continue; }\n            if (low && high) { int c = (r * 2).CompareTo(s); if (c > 0 || (c == 0 && (d & 1) == 1)) d++; }\n            else if (high) d++;\n            dg.Append((char)('0' + d));\n            break;\n        }\n        string digits = dg.ToString();\n        int n = k, len = digits.Length;\n        global::System.Text.StringBuilder sb = new global::System.Text.StringBuilder(32);\n        if (neg) sb.Append('-');\n        if (len <= n && n <= 21) { sb.Append(digits); sb.Append('0', n - len); }\n        else if (0 < n && n <= 21) { sb.Append(digits, 0, n); sb.Append('.'); sb.Append(digits, n, len - n); }\n        else if (-6 < n && n <= 0) { sb.Append(\"0.\"); sb.Append('0', -n); sb.Append(digits); }\n        else\n        {\n            sb.Append(digits[0]);\n            if (len > 1) { sb.Append('.'); sb.Append(digits, 1, len - 1); }\n            sb.Append('e'); sb.Append(n - 1 >= 0 ? '+' : '-');\n            sb.Append(global::System.Math.Abs(n - 1).ToString(global::System.Globalization.CultureInfo.InvariantCulture));\n        }\n        return sb.ToString();\n    }\n",
+      "pgShow": "    // The one stringification rule for a value whose static type is not known here (print, a T-typed hole).\n    internal static string Show(object? x) => x switch\n    {\n        null => \"null\",\n        bool b => b ? \"true\" : \"false\",\n        string s => s,\n        double d => Str(d),\n        float f => Str(f),\n        int i => Str(i),\n        long l => Str(l),\n        sbyte i8 => Str(i8),\n        byte u8 => Str(u8),\n        short i16 => Str(i16),\n        ushort u16 => Str(u16),\n        uint u32 => Str(u32),\n        ulong u64 => Str(u64),\n        global::System.IFormattable fm => fm.ToString(null, global::System.Globalization.CultureInfo.InvariantCulture),\n        _ => x.ToString() ?? \"\",\n    };\n",
+      "pgAscii": "    // ASCII-only case mapping: every other character is kept as is (System.Text.Ascii stops at the first one).\n    internal static string UpperAscii(string s)\n    {\n        char[]? buf = null;\n        for (int i = 0; i < s.Length; i++)\n            if (s[i] >= 'a' && s[i] <= 'z') { buf ??= s.ToCharArray(); buf[i] = (char)(s[i] - 32); }\n        return buf == null ? s : new string(buf);\n    }\n    internal static string LowerAscii(string s)\n    {\n        char[]? buf = null;\n        for (int i = 0; i < s.Length; i++)\n            if (s[i] >= 'A' && s[i] <= 'Z') { buf ??= s.ToCharArray(); buf[i] = (char)(s[i] + 32); }\n        return buf == null ? s : new string(buf);\n    }\n"
+    },
     "tables": {
+      "floatSuffix": {
+        "f32": "f"
+      },
       "localDecl": {
         "mutable": "var $x",
         "const": "var $x"
@@ -232,6 +241,7 @@
       },
       "reserved": [
         "PolyglotExtensions",
+        "__PgRt",
         "Main",
         "lhs",
         "__opt*",
@@ -256,7 +266,20 @@
       ]
     },
     "Float": {
-      "get": "node.text"
+      "tmpl": [
+        {
+          "get": "node.text"
+        },
+        {
+          "fn": "table",
+          "args": [
+            "floatSuffix",
+            {
+              "get": "node.type"
+            }
+          ]
+        }
+      ]
     },
     "Bool": {
       "case": {
@@ -753,15 +776,50 @@
                         " ? \"true\" : \"false\")}"
                       ]
                     }
+                  ],
+                  [
+                    { "eq": ["item.typeIsInt", "true"] },
+                    {
+                      "tmpl": [
+                        { "fn": "require", "args": ["pgStrInt"] },
+                        "{__PgRt.Str(",
+                        { "emit": "item" },
+                        ")}"
+                      ]
+                    }
+                  ],
+                  [
+                    { "eq": ["item.typeIsFloat", "true"] },
+                    {
+                      "tmpl": [
+                        { "fn": "require", "args": ["pgStrFloat"] },
+                        "{__PgRt.Str(",
+                        { "emit": "item" },
+                        ")}"
+                      ]
+                    }
+                  ],
+                  [
+                    { "or": [{ "eq": ["item.typeIsString", "true"] }, { "eq": ["item.typeIsChar", "true"] }] },
+                    {
+                      "tmpl": [
+                        "{",
+                        { "fn": "parenIfContains", "args": [":", { "emit": "item" }] },
+                        "}"
+                      ]
+                    }
                   ]
                 ],
                 "else": {
                   "tmpl": [
-                    "{",
+                    { "fn": "require", "args": ["pgShow"] },
+                    { "fn": "require", "args": ["pgStrInt"] },
+                    { "fn": "require", "args": ["pgStrFloat"] },
+                    "{__PgRt.Show(",
                     {
                       "emit": "item"
                     },
-                    "}"
+                    ")}"
                   ]
                 }
               }
@@ -2952,12 +3010,12 @@
                                     ]
                                   },
                                   {
-                                    "line": "static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main().GetAwaiter().GetResult(); }"
+                                    "line": "static void Main() { main().GetAwaiter().GetResult(); }"
                                   }
                                 ]
                               ],
                               "else": {
-                                "line": "static void Main() { global::System.Globalization.CultureInfo.CurrentCulture = global::System.Globalization.CultureInfo.InvariantCulture; main(); }"
+                                "line": "static void Main() { main(); }"
                               }
                             }
                           }
@@ -3787,7 +3845,7 @@
       "List.removeAt": "$this.RemoveAt($0)"
     },
     "std.io": {
-      "print": "global::System.Console.WriteLine(x is bool __pb ? (__pb ? \"true\" : \"false\") : (object?)x ?? \"null\")",
+      "print": { "template": "global::System.Console.WriteLine(__PgRt.Show(x))", "requires": ["pgShow", "pgStrInt", "pgStrFloat"] },
       "readText": "global::System.IO.File.ReadAllText(path)",
       "writeText": "global::System.IO.File.WriteAllText(path, content)",
       "appendText": "global::System.IO.File.AppendAllText(path, content)",
@@ -3830,12 +3888,14 @@
     "std.strings": {
       "string.isEmpty": "($this.Length == 0)",
       "string.len": "$this.Length",
-      "string.toUpper": "$this.ToUpper()",
-      "string.toLower": "$this.ToLower()",
+      "string.toUpper": "$this.ToUpperInvariant()",
+      "string.toLower": "$this.ToLowerInvariant()",
+      "string.toUpperAscii": { "template": "__PgRt.UpperAscii($this)", "requires": ["pgAscii"] },
+      "string.toLowerAscii": { "template": "__PgRt.LowerAscii($this)", "requires": ["pgAscii"] },
       "string.charAt": "$this[$0].ToString()",
       "string.codePointAt": "char.ConvertToUtf32($this, $0)",
       "string.codePoints": "global::System.Linq.Enumerable.Select($this.EnumerateRunes(), __r => __r.ToString())",
-      "string.toI32": "global::System.Int32.Parse($this)"
+      "string.toI32": "int.Parse($this, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)"
     },
     "std.core": {
       "Error.type": "global::System.Exception",
@@ -3845,16 +3905,16 @@
       "Array.type": "$0[]",
       "Array.constructor": "global::System.Array.Empty<$0>()",
       "Array.count": "$this.Length",
-      "i8.parse": "sbyte.Parse($0)",
-      "i16.parse": "short.Parse($0)",
-      "i32.parse": "int.Parse($0)",
-      "i64.parse": "long.Parse($0)",
-      "u8.parse": "byte.Parse($0)",
-      "u16.parse": "ushort.Parse($0)",
-      "u32.parse": "uint.Parse($0)",
-      "u64.parse": "ulong.Parse($0)",
-      "f32.parse": "float.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)",
-      "f64.parse": "double.Parse($0, global::System.Globalization.CultureInfo.InvariantCulture)"
+      "i8.parse": "sbyte.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "i16.parse": "short.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "i32.parse": "int.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "i64.parse": "long.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "u8.parse": "byte.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "u16.parse": "ushort.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "u32.parse": "uint.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "u64.parse": "ulong.Parse($0, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "f32.parse": "float.Parse($0, global::System.Globalization.NumberStyles.Float, global::System.Globalization.CultureInfo.InvariantCulture)",
+      "f64.parse": "double.Parse($0, global::System.Globalization.NumberStyles.Float, global::System.Globalization.CultureInfo.InvariantCulture)"
     }
   },
   "fileExtension": ".cs"

@@ -155,7 +155,9 @@ extern class Math {
 )PG";
 
 // std.strings — string methods as bound extension methods (a method on the builtin `string`). Each arm maps
-// `s.method(args)` to the target's idiom (C# `.ToUpper()` / JS `.toUpperCase()`). Both targets are UTF-16
+// `s.method(args)` to the target's idiom (C# `.ToUpperInvariant()` / JS `.toUpperCase()`). P40 A3: toUpper /
+// toLower are the published BEST-EFFORT tier (full Unicode on JS/Python, simple invariant mapping on C#,
+// ASCII-only on PHP); toUpperAscii / toLowerAscii map a-z / A-Z only and are identical on every target. Both targets are UTF-16
 // (SPEC §8) so `len`/`charAt` are code-unit operations; `codePoints` iterates code points (surrogate-aware).
 // `codePointAt` yields the code point starting at the index — the portable char→ordinal path. Surrogate-aware
 // on C#/TS; Python indexes by code point (charAt's existing caveat); PHP stays byte-oriented like its charAt
@@ -168,6 +170,10 @@ extension fn string.len(): i32 {
 extension fn string.toUpper(): string {
 }
 extension fn string.toLower(): string {
+}
+extension fn string.toUpperAscii(): string {
+}
+extension fn string.toLowerAscii(): string {
 }
 extension fn string.charAt(index: i32): string {
 }

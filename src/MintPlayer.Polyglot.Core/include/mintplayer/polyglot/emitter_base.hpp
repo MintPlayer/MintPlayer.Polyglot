@@ -134,6 +134,8 @@ public:
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
     // Free-function-position collision repair (PHP builtins); no-op where the spec declares no `fnBuiltins`.
     std::string identFn(const std::string& n) const { return specIdentFn(specFn_(), n); }
+    // A named `tables` row (P40 B2: `baseRootMembers`); "" when absent.
+    std::string table(const std::string& t, const std::string& k) const { return specTable(specFn_(), t, k); }
     // Generic-parameter spelling, driven by the spec's `generics` strategy (inline bounds / trailing
     // where-clauses / none) with marker-bound erasure (INumber). Bound types render through renderTypeRef.
     std::string generics(const std::vector<ir::GenericParam>& gs) const;

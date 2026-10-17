@@ -714,3 +714,64 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     - library gate (staged) green, `null_assert` included.
     Not run (end gate): the full tier, run-nuget, the POSIX leg (no platform-forked code changed, but the new
     `switch` arms should still go through g++ `-Werror=switch`).
+- **2026-10-17 (night, slice 6)** — **Slice 6 built** (A3 + A6: one stringification rule, culture-free C#). As built:
+  - **C# `__PgRt`** — the first real C# preludes, spliced into slice 1's `file static class __PgRt` slot:
+    `pgStrInt` (`Str(sbyte…ulong)`, `ToString(InvariantCulture)`), `pgStrFloat` (`Str(double)` = the spike's
+    exact Burger–Dybvig over `BigInteger`, ties to even, then the ECMAScript layout — never `"R"`; `BigInteger.Pow`
+    instead of a 400-entry table, and both estimate fix-ups are loops; `Str(float)` widens), `pgShow`
+    (`Show(object?)`: null → `null`, bool, string, every numeric box, `IFormattable` invariant, else `ToString()`),
+    `pgAscii` (`UpperAscii`/`LowerAscii` loops). Each is reached only through `requires`/`require`, so an int-only
+    hole emits only the integer overloads. `__PgRt` joined `identifiers.reserved`.
+  - **C# rebinds:** hole by type — bool unchanged, int → `{__PgRt.Str(x)}` (requires pgStrInt), float → same
+    (pgStrFloat), string/char → `{parenIfContains(":", x)}`, anything else (a type parameter) →
+    `{__PgRt.Show(x)}`; so a T-typed null now renders `null` (slice 5's leftover). `print` →
+    `Console.WriteLine(__PgRt.Show(x))`; every integer parse and `toI32` → `NumberStyles.Integer, InvariantCulture`,
+    f32/f64 → `NumberStyles.Float`; `toUpper`/`toLower` → `ToUpperInvariant`/`ToLowerInvariant`; **both `Main`
+    forms lost the culture guard**. Manifest grep: no other culture-sensitive call (`char`/`Rune` `ToString()` are
+    invariant; string `<` is refused by sema).
+  - **f32 (S13):** C# `Float` = `node.text` + `tables.floatSuffix` (`f32` → `f`), so `0.1f` stays `0.1f` (was
+    CS0664). The other three read the new `node.widenedText`: for an f32 literal, the nearest f32 (`strtof`, the
+    CLI never sets a locale) widened to f64 in shortest round-trip `%.*g` digits (`.0` appended when integral),
+    the source text when exact. **Deviation/addition:** the PRD's "f32 text is faithful" needs this — without it
+    TS/Python/PHP held the literal `0.1` while C# held `0.1f`, so `print(0.1f)` diverged. f32 *arithmetic* stays
+    §3.C (SPEC §9, POLYGLOT_PRD §3.C reworded).
+  - **Python:** `fstr` is the rule (repr digits + ECMAScript layout); `print` is
+    `__import__('builtins').print(_pg_str(x))` (the manifest's own `__import__` idiom — no `__builtins__`, which
+    is a dict in an imported module). Surrogate→U+FFFD stdout handling left to slice 8 (only needed once Python
+    strings are UTF-16-faithful). **PHP:** `pgStr` = namespace-guarded `__pg_str` (`var_export` with
+    `serialize_precision=-1`, restored; int/string pass through `(string)`), used by `print` and by float /
+    type-parameter holes (int/string/char holes concatenate directly). **TS:** `toI32` =
+    `(Number.parseInt(s, 10) | 0)`, same as `i32.parse`.
+  - **Case:** `string.toUpperAscii`/`toLowerAscii` in `STD_STRINGS` + all four manifests (C# `__PgRt` loop, TS
+    regex replace, Python `translate` over a `pgAscii` table prelude, PHP `strtr`). `toUpper`/`toLower` documented
+    best-effort (SPEC §8/§9).
+  - **Printable guard (sema `requirePrintable`)**, shared by `print` and every hole: integer/float scalars, bool,
+    char, string, a type parameter in scope. Enums (D1, message points at an explicit mapping), records, classes,
+    unions, interfaces, extern classes (List/Array/Option/Error…), tuples, functions and `unit` are refused. The old
+    print guard only ever caught `unit` (records were `Ty::Unknown` and slipped through). A name that resolves to no
+    declaration is not judged: generic member reads still yield an unsubstituted `T` (`Box<i32>(7).value` types as
+    `T` — the slice-7 member-typing gap; `generics.pg` hit it).
+  - **A6:** catalog builtin `parenIfContains` (18 names now; plugin-authoring updated) in `IrExprCtx::builtin`.
+    Child type facts gained `.typeIsString` / `.typeIsChar`.
+  - **TS D10 follow-ups:** `MakeCase` emits `tag: "…" as const`. `ir::Class::baseRoot` (lowering, the
+    `baseHasInit` walk: the native class at the end of the user-base chain) + `decl.fields.<i>.shadowsBaseRoot`,
+    answered from the plugin's `tables.baseRootMembers` (`"Error.cause"`, `message`, `name`, `stack`) through a new
+    `DeclHooks::table` — no target name in the Core. TS's class-field rule emits `override` from it.
+  - **Corpus gate (new leg `tests/numfmt/run-numfmt.ps1`, full tier + `nx run polyglot:numfmt`):** a seeded port of
+    the spike generator (`gen-corpus.js`, 247,124 doubles incl. 10k widened f32 literals) checked against Node's
+    `String(x)` by the SHIPPED helper text read out of each manifest — C# (runner + `pgStrFloat` in one file, csc
+    `/shared`, Nullable + warnaserror, current culture fa-IR), Python (`exec` of `fstr`, `-I`), PHP (`eval` of
+    `pgStr` under `-d precision=17 -d serialize_precision=17`, and the ini is checked restored). ~7 s. Chosen over a
+    committed corpus (7 MB) and over a smaller conformance-leg sample: it tests exactly what ships, at full size.
+  - **Tests:** conformance `numbers_text`, `ascii_case`, `interp_qualified`, `union_case_array`,
+    `error_field_override` (+ `.expected`); refusal fixtures `record_in_hole`, `list_in_hole`, `enum_in_hole`,
+    `enum_in_print`; unit block "P40 s6" (23 checks). Outdated goldens updated: print body, `Main` (now asserts no
+    `CurrentCulture`), the s1 prelude test (merges into the existing `preludes` block), the s2 program (printed an
+    `Option`, now `find() ?? 0`), the s3 interp golden, three `as const` TS goldens, `ToUpperInvariant`.
+  - **Verified:** unit exe green (893 checks); `-Tier fast` green (refusals incl. the 4 new fixtures); conformance:
+    all **124** programs agree on all four targets (12 PHP refusers, unchanged); numfmt corpus **0 mismatches** on
+    C#, Python and PHP; nullable gate green; library gate (staged) green — and with `as const` / `override` stripped
+    from the two staged regression files, tsc reports TS2345 ×2 + TS4114, so the gate does catch them. Corpus
+    fallout of the new guard: 0 (147 corpus `.pg` incl. MintPlayer.AI; the 3 failures predate this slice).
+    Not run (end gate): the full tier, run-nuget, samples, the POSIX leg (no platform-forked code; `strtof`/
+    `snprintf` are portable).

@@ -1,0 +1,19 @@
+// P40 A3 — toUpperAscii / toLowerAscii are FAITHFUL: only a-z / A-Z change, every other character is kept,
+// identically on all four targets. (toUpper / toLower are the published best-effort tier — full Unicode on
+// TS/Python, simple invariant mapping on C#, ASCII-only on PHP — so they are exercised on ASCII text only.)
+// Non-ASCII results are compared, not printed, so the check does not depend on a console encoding.
+
+import "std.strings"
+
+fn main() {
+  print("Hello, World! 123 [_]".toUpperAscii())   // HELLO, WORLD! 123 [_]
+  print("Hello, World! 123 [_]".toLowerAscii())   // hello, world! 123 [_]
+  print("".toUpperAscii().len())                  // 0
+  let u = "a\u{E9}b\u{130}z\u{DF}".toUpperAscii()
+  print(u == "A\u{E9}B\u{130}Z\u{DF}")            // true  (é, İ and ß are untouched)
+  let l = "A\u{C9}B\u{130}Z".toLowerAscii()
+  print(l == "a\u{C9}b\u{130}z")                  // true  (no dotless i, no Unicode lowering)
+  print("istanbul".toUpperAscii())                // ISTANBUL  (never the Turkish dotted capital)
+  print("abc".toUpper())                          // ABC  (best-effort tier, ASCII input)
+  print("ABC".toLower())                          // abc
+}

@@ -1,0 +1,5 @@
+// REFUSED (P40 A3, D1): an enum in an interpolation hole — C# prints the case name (`Green`), the other
+// targets its number (`1`). Map it to a string explicitly.
+enum Color { Red, Green }
+
+fn show(c: Color): string => "c=${c}"

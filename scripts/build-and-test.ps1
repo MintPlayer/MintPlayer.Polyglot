@@ -103,6 +103,10 @@ Write-Host "`n==> Nullable / NRT gate (annotations preserved + clean under <Null
 & pwsh -NoProfile -File (Join-Path $repo "tests\nullable\run-nullable.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nNULLABLE GATE FAILED."; exit 1 }
 
+Write-Host "`n==> Number-text corpus (shipped C#/Python/PHP helpers vs ECMAScript String(x), ~247k doubles)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\numfmt\run-numfmt.ps1")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nNUMBER-TEXT CORPUS FAILED."; exit 1 }
+
 Write-Host "`n==> Coverage-attribution gate (origin sinks land; a real report projects onto the .pg)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\coverage\run-coverage.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nCOVERAGE GATE FAILED."; exit 1 }

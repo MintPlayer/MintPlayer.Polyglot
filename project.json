@@ -116,6 +116,13 @@
       "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
       "outputs": []
     },
+    "numfmt": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 numfmt", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/numfmt/**/*", "{workspaceRoot}/plugins/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "sharedGlobals"],
+      "outputs": []
+    },
     "coverage": {
       "executor": "nx:run-commands",
       "cache": true,

@@ -554,6 +554,35 @@ private:
                                   "' may be null; supply a fallback with '??' or assert with '!'");
     }
 
+    // P40 A3 + D1: the printable guard, shared by `print` and every interpolation hole so the two accept
+    // exactly the same set — the types whose text is one rule on every target: the integer and float scalars,
+    // bool, char, string, and a type parameter (rendered at run time by the same rule, `null` included).
+    // An enum is refused (D1: C# prints the case name, the others its number); records, classes, unions,
+    // collections, tuples and functions are refused (C# ToString vs JS `[object Object]` vs Python repr).
+    // A nullable value is N2's error, and an unknown type is an earlier error, so neither is re-reported.
+    void requirePrintable(const TypeRef& t, SourcePos pos, bool hole) {
+        if (t.nullable || (t.kind == TypeRef::Kind::Named && t.name.empty())) return;
+        static const std::unordered_set<std::string> kPrintable = {
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "bool", "char", "string"};
+        if (t.kind == TypeRef::Kind::Named && t.args.empty() &&
+            (kPrintable.count(t.name) || genericsInScope_.count(t.name)))
+            return;
+        // Refuse only what is KNOWN to have no portable text. A name that resolves to no declaration (a
+        // generic member read whose `T` was not substituted — the slice-7 member-typing gap) is not judged.
+        const bool known = t.kind != TypeRef::Kind::Named || t.name == "unit" || enumNames_.count(t.name) ||
+                           types_.count(t.name) || interfaceNames_.count(t.name) ||
+                           externClassNames_.count(t.name) || unionAllCases_.count(t.name);
+        if (!known) return;
+        const std::string what = hole ? "cannot interpolate a value of type '" + showTy(t) + "'"
+                                      : "print cannot print a value of type '" + showTy(t) + "'";
+        if (t.kind == TypeRef::Kind::Named && enumNames_.count(t.name))
+            diags_.error(pos, what + " — an enum has no portable text (C# prints the case name, the other "
+                                     "targets its number); map it to a string explicitly, e.g. with a match");
+        else
+            diags_.error(pos, what + " — only numbers, bool, char and string have one text on every target; "
+                                     "format the value explicitly");
+    }
+
     // ---- P40 D14: null flow-narrowing ----
     // The names a condition proves non-null when it evaluates to `sense`: `x != null` (true), `x == null`
     // (false), through `&&` (true), `||` (false) and `!`. Only a bare name — a local or param.
@@ -2061,6 +2090,7 @@ private:
                     if (ht.nullable) // P40 A4 (N2): the targets render a null hole differently ("" / "null" / "None")
                         diags_.error(a->pos, "interpolation hole of type '" + showTy(ht) +
                                                  "' may be null; supply a fallback with '??' or assert with '!'");
+                    requirePrintable(ht, a->pos, true); // P40 A3: a hole accepts exactly what print accepts
                 }
                 return tNamed("string");
             case ExprKind::BoolLit:   return tNamed("bool");
@@ -2619,9 +2649,7 @@ private:
             if (argTypes[0].nullable) // P40 A4 (N2)
                 diags_.error(e.pos, "print argument of type '" + showTy(argTypes[0]) +
                                         "' may be null; supply a fallback with '??' or assert with '!'");
-            Ty a = scalarTyOf(argTypes[0]);
-            if (a != Ty::Unknown && !(isNumeric(a) || a == Ty::Bool || a == Ty::String))
-                diags_.error(e.pos, std::string("print cannot print a value of type ") + tyName(a));
+            if (!isAwaitable(argTypes[0])) requirePrintable(argTypes[0], e.pos, false); // P40 A3 + D1
         }
         if (const Local* l = lookup(name)) { // calling a function-valued local (lambda/delegate); lenient on args
             recordRef(e.lhs->pos, name, l->defId);

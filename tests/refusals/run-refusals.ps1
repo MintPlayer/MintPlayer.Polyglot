@@ -93,6 +93,10 @@ $cases = [ordered]@{
     "string_plus_typeparam.pg"  = @("'string + T' concatenates a type parameter", "interpolate instead")
     "nullable_compound.pg"      = @("'+=' target 'n' of type 'i32?' may be null")
     "nullable_member.pg"        = @("'.v' on a receiver of type 'Box?', which may be null", "use '?.v'")
+    "record_in_hole.pg"         = @("cannot interpolate a value of type 'P'", "format the value explicitly")
+    "list_in_hole.pg"           = @("cannot interpolate a value of type 'List<i32>'")
+    "enum_in_hole.pg"           = @("cannot interpolate a value of type 'Color'", "an enum has no portable text")
+    "enum_in_print.pg"          = @("print cannot print a value of type 'Color'", "map it to a string explicitly")
 }
 
 foreach ($fx in $cases.Keys) {

@@ -92,6 +92,12 @@
       "nullAssert": "function __pgNullAssert(at: string): never {\n    throw new TypeError(\"null-assert failed (\" + at + \")\");\n}\n"
     },
     "tables": {
+      "baseRootMembers": {
+        "Error.cause": "true",
+        "Error.message": "true",
+        "Error.name": "true",
+        "Error.stack": "true"
+      },
       "opMethod": {
         "+": "plus",
         "-": "minus",
@@ -216,7 +222,7 @@
       ]
     },
     "Float": {
-      "get": "node.text"
+      "get": "node.widenedText"
     },
     "Bool": {
       "case": {
@@ -623,6 +629,7 @@
             }
           ]
         },
+        " as const",
         {
           "map": "node.fields",
           "sep": "",
@@ -3539,6 +3546,21 @@
                     }
                   },
                   {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.shadowsBaseRoot",
+                              "true"
+                            ]
+                          },
+                          "override "
+                        ]
+                      ]
+                    }
+                  },
+                  {
                     "fn": "ident",
                     "args": [
                       {
@@ -4678,10 +4700,12 @@
       "string.len": "$this.length",
       "string.toUpper": "$this.toUpperCase()",
       "string.toLower": "$this.toLowerCase()",
+      "string.toUpperAscii": "$this.replace(/[a-z]+/g, (__m) => __m.toUpperCase())",
+      "string.toLowerAscii": "$this.replace(/[A-Z]+/g, (__m) => __m.toLowerCase())",
       "string.charAt": "$this.charAt($0)",
       "string.codePointAt": "$this.codePointAt($0)!",
       "string.codePoints": "Array.from($this)",
-      "string.toI32": "parseInt($this, 10)"
+      "string.toI32": "(Number.parseInt($this, 10) | 0)"
     },
     "std.core": {
       "Error.type": "Error",

@@ -563,6 +563,30 @@ surrogate pairs; the std string API exposes code-point iteration for correct han
 `"hi ${name}"` lowers to C# `$"hi {name}"` and TS template literals — both first-class on each target.
 String `==` is value equality on both targets (C# `string ==`, TS `===`).
 
+**Number text — one rule on every target (P40 A3).** `print`, an interpolation hole and anything else that
+turns a number into text follow one rule:
+- integers render as **invariant decimal** (`-5`, never a culture's minus sign or digit grouping);
+- `f64` renders as **ECMAScript `Number::toString`**: the shortest digits that round-trip, plain notation for
+  `1e-7 <= |x| < 1e21` and `e±N` otherwise (`1e+21`, `1e-7`), `-0` as `0`, and `NaN`, `Infinity`,
+  `-Infinity`;
+- `f32` renders as its **exact value widened to `f64`**, under the `f64` rule: `0.1f` prints
+  `0.10000000149011612` everywhere (an `f32` literal denotes the nearest `f32` on every target);
+- a `null` reaching a type-parameter hole renders `null`.
+
+So `0.1 + 0.2` prints `0.30000000000000004` and `1e20` prints `100000000000000000000` on C#, TS, Python and
+PHP alike, independent of the machine's culture (C# number text goes through a culture-free, file-local
+`__PgRt` helper; the generated `Main` no longer pins a culture) and of PHP's `precision` settings. Parsing is
+culture-free too (`i32.parse("-5")`, `f64.parse("1e21")`).
+
+**What can be printed.** `print` and an interpolation hole accept exactly the same types: the integer and
+float scalars, `bool`, `char`, `string`, and a type parameter. Everything else is a compile error with no
+portable text — a record, class, union, list or other collection prints differently on every target. An
+**enum** is refused too: C# prints the case name and the other targets its number, so map it to a string
+explicitly (a `match` returning the text you want).
+
+**Case mapping.** `toUpperAscii()`/`toLowerAscii()` change only `a`–`z`/`A`–`Z` and keep every other
+character — identical on every target. `toUpper()`/`toLower()` are the published **best-effort** tier (§9).
+
 ---
 
 ## 9. Faithful-by-default & the published relaxation list (PRD §3.C)
@@ -574,7 +598,9 @@ relaxation is **opt-in and named**, never silent:
 |---|---|---|
 | `i32`/`u32`/sub-32 overflow | masked at op boundaries in TS (`\| 0`, `>>> 0`, `Math.imul`) so JS wraps like .NET | intermediate values below 2⁵³ that .NET would wrap are *not* re-masked unless typed `i32` — made explicit, not silent |
 | `i64`/`u64` | TS `bigint` (correct, slower) | a two-word `Long` class may be offered later if `bigint` is too slow |
-| `f32` vs `f64` | `f32` rides a JS `number` (double) | per-op `Math.fround` strict-float mode is opt-in (the Scala.js strict-floats tax) |
+| `f32` vs `f64` | `f32` rides a JS `number` (double); an `f32` literal is the nearest `f32` on every target, and `f32` **text** is faithful (the exact value widened to `f64`, §8) | `f32` **arithmetic** is relaxed: TS, Python and PHP compute it in double precision. Per-op `Math.fround` strict-float mode is opt-in (the Scala.js strict-floats tax) |
+| number text | **faithful**: integers invariant decimal, `f64` as ECMAScript `Number::toString`, culture- and ini-independent (§8) | — |
+| `toUpper`/`toLower` | **published best-effort tier:** JS and Python map full Unicode (`ß`→`SS`, final sigma), C# uses the invariant simple mapping, PHP is ASCII-only. ASCII text is identical everywhere | use the faithful `toUpperAscii`/`toLowerAscii` when identical output matters |
 | nullability | `null`/`undefined` normalized to one "absent" | — |
 | equality / hashing | `record` gets structural `==`/hash; `class` is identity; identity hash via side `WeakMap` in TS | — |
 | record fields in `==` | leaves compare strictly per their own `==`: value types and strings by value, `List<T>`/`T[]`/class fields by REFERENCE (the .NET default field comparer); nested records recurse structurally | — |

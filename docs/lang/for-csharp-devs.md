@@ -68,6 +68,16 @@ The escapes are `\n \t \r \0 \\ \" \' \$ \u{…}` — nothing else. C#'s `\uXXXX
 `'\u{1F600}'` is an error: use a string. Indexing/length count UTF-16 code units on C# and TS; on Python and
 PHP they count in those targets' native units for non-ASCII text (SPEC §9 — the compiler warns).
 
+**Number text is not `ToString()`.** A number in a hole or in `print` follows one rule on every target
+(SPEC §8): integers as invariant decimal, `f64` as JavaScript prints it (`0.1 + 0.2` →
+`0.30000000000000004`, `1e21` → `1e+21`, `1e-7` → `1e-7`, `-0.0` → `0`), `f32` as its exact value widened to
+`f64` (`0.1f` → `0.10000000149011612`). The generated C# routes those holes through a file-local
+`__PgRt.Str(…)`, so the current culture never matters and `Main` sets none. A record, list, map or **enum** in
+a hole (or in `print`) is a compile error — C# would print `Point { X = 1 }` or the enum's case name, the
+other targets something else — so format it explicitly. `toUpper()`/`toLower()` emit
+`ToUpperInvariant()`/`ToLowerInvariant()` and are best-effort across targets; use `toUpperAscii()`/
+`toLowerAscii()` when the result must be identical everywhere.
+
 ## Records (structural equality, `with`)
 
 ```pg
@@ -275,6 +285,8 @@ libraries built from `.pg` can be referenced by one app without CS0433 clashes. 
   the real symbol operators for you.
 - **No mutable value types.** There is no `struct`; immutable data is a `record`, mutable data is a
   `class` (reference identity).
+- **`"${x}"` is not `x.ToString()`.** A double prints the JavaScript way (`1e+21`, never `1E+21`), an
+  enum cannot be interpolated at all, and the result never depends on `CultureInfo.CurrentCulture`.
 
 ## Scope by design (what Polyglot refuses)
 

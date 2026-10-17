@@ -1,0 +1,5 @@
+// REFUSED (P40 A3): a list in an interpolation hole — C# prints the type name (List`1[…]), TS `1,2`,
+// Python `[1, 2]`, PHP fails.
+import "std.collections"
+
+fn show(xs: List<i32>): string => "xs=${xs}"

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <stdexcept>
@@ -29,6 +31,33 @@ bool isInt64Name(const TypeRef& t) {
 }
 bool isBoolTypeName(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && t.name == "bool";
+}
+bool isStringTypeName(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && t.name == "string";
+}
+bool isCharTypeName(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && t.name == "char";
+}
+
+// P40 A3 (S13): an f32 literal denotes the NEAREST f32, so a target that holds f32 in a double must be handed
+// that value, not the source text (`0.1f` is 0.10000000149011612 on .NET, and must print that everywhere).
+// Returns the source text when the literal is exactly representable (or not an f32), else the shortest
+// round-trip spelling of the widened value. The CLI never calls setlocale, so the C conversions use '.'.
+std::string widenedF32Text(const std::string& text) {
+    std::string t;
+    for (char c : text) if (c != '_') t += c;
+    const float f = std::strtof(t.c_str(), nullptr);
+    const double d = std::strtod(t.c_str(), nullptr);
+    const double w = static_cast<double>(f);
+    if (w == d || w != w || w - w != 0) return text; // exact, NaN, or overflowed to infinity: keep the source
+    char buf[40];
+    for (int p = 1; p <= 17; ++p) {
+        std::snprintf(buf, sizeof buf, "%.*g", p, w);
+        if (std::strtod(buf, nullptr) == w) break;
+    }
+    std::string s = buf;
+    if (s.find_first_of(".eE") == std::string::npos) s += ".0"; // stay a float literal on every target
+    return s;
 }
 } // namespace
 
@@ -281,6 +310,11 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Int)   return static_cast<const ir::IntLit&>(e_).text;
         if (e_.kind == ir::ExprKind::Float) return static_cast<const ir::FloatLit&>(e_).text;
     }
+    // P40 A3 (S13): the literal's VALUE for a target that holds f32 in a double — see widenedF32Text.
+    if (path == "node.widenedText" && e_.kind == ir::ExprKind::Float) {
+        const std::string& text = static_cast<const ir::FloatLit&>(e_).text;
+        return e_.type.kind == TypeRef::Kind::Named && e_.type.name == "f32" ? widenedF32Text(text) : text;
+    }
     if (path == "node.value") {
         if (e_.kind == ir::ExprKind::Bool) return static_cast<const ir::BoolLit&>(e_).value ? "true" : "false";
         if (e_.kind == ir::ExprKind::Str)  return static_cast<const ir::StrLit&>(e_).value;
@@ -293,6 +327,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         static const std::pair<const char*, bool (*)(const TypeRef&)> kChildTypeFacts[] = {
             {".typeIsBool", isBoolTypeName},   {".typeIsFloat", isFloatTypeName},
             {".typeIsInt", isIntTypeName},     {".typeIsInt64", isInt64Name},
+            {".typeIsString", isStringTypeName}, {".typeIsChar", isCharTypeName}, // P40 A3/A6: hole forms
         };
         for (const auto& [suffix, pred] : kChildTypeFacts) {
             const std::size_t n = std::string(suffix).size();
@@ -476,6 +511,11 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
         if (requires_ && !args.empty()) requires_->insert(args[0]);
         return "";
     }
+    // P40 A6 — {"fn":"parenIfContains","args":[<chars>, <text>]}: parenthesize <text> when it contains any of
+    // <chars> (manifest data). C# uses it for an interpolation hole, where a top-level ':' starts a format
+    // specifier; a false positive (a ':' nested in a call or a string) costs only harmless parentheses.
+    if (name == "parenIfContains" && args.size() >= 2)
+        return args[1].find_first_of(args[0]) == std::string::npos ? args[1] : "(" + args[1] + ")";
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);
@@ -1007,6 +1047,10 @@ std::string ClassDeclCtx::get(const std::string& path) const {
         if (f == "isStatic")  return fld.isStatic ? "true" : "false";
         if (f == "isMutable") return fld.isMutable ? "true" : "false";
         if (f == "hasInit")   return fld.init ? "true" : "false";
+        if (f == "shadowsBaseRoot") // P40 B2: the plugin's `baseRootMembers` table lists `<root>.<member>`
+            return !c_.baseRoot.empty() && !fld.isStatic &&
+                           !hooks_.table("baseRootMembers", c_.baseRoot + "." + fld.name).empty()
+                       ? "true" : "false";
     }
     if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size()) {
         if (f == "attrInline") return c_.initParams[i].attrInline; // P37 D Tier 1

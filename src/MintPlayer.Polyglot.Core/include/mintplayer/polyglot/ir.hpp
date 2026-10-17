@@ -617,6 +617,10 @@ struct Class { // a mutable reference type
     // `parent::__construct(...)` on this: unlike C#/TS/Python, PHP has no implicit default base ctor, so a
     // `super()` to an initless base is a fatal `Cannot call constructor` (issue #48).
     bool baseHasInit = false;
+    // P40 B2 (D10): the `.pg` name of the native/extern class at the root of the base chain (`Error` for
+    // `class B : A` with `class A : Error`), "" when the chain ends in user classes or interfaces only. A
+    // plugin's `baseRootMembers` table names that root's members, so a field shadowing one gets `override`.
+    std::string baseRoot;
     std::vector<ExprPtr> superArgs;    // the base-constructor arguments (hoisted out of initBody)
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;
