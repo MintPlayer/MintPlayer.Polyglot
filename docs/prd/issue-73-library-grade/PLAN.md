@@ -1,8 +1,8 @@
 # P40 — Library-grade output (issue #73) — implementation plan (dependency-ordered slices)
 
 > Design contract: `PRD.md`. Investigation evidence: `ANALYSIS.md`. Issue: #73.
-> **Status (2026-10-17):** **built — slices 1–13 done** (D1–D17 accepted on #73, D18–D20 derived). Slice 14
-> (the full gate once + the POSIX leg) is pending.
+> **Status (2026-10-17):** **built + gated — slices 1–14 done** (D1–D17 accepted on #73, D18–D20 derived). Slice 14
+> (the full gate once + the POSIX leg) is green; PR #75.
 
 **Build discipline.** Implement ALL slices first, then build and run the full gate **ONCE** at the end
 (`pwsh scripts/build-and-test.ps1` or `/build-and-test`). The mid-flight ceiling is `-Tier fast` or a bare
@@ -1053,3 +1053,11 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Verified:** build green; unit exe green (990); `-Tier fast` green; conformance with the four cultures +
     hostile PHP: all **131** programs agree (12 PHP refusers); nullable gate green; library gate green. Not run:
     the full tier, run-nuget, the POSIX leg (no platform-forked code).
+- **2026-10-17 — Slice 14, the end gate: GREEN.**
+  - Full gate (`pwsh scripts/build-and-test.ps1`, full tier) exited 0. It covers build, unit tests, every gate leg (incl.
+    culture, numfmt, hostile PHP, the grep gates, the Angular-flag library gate with the DOM leg, refusals,
+    nullable, cli-smoke incl. `spark-ci-flow`, coverage, and the NuGet P11 gate incl. every P40 stale-obj,
+    rename, re-route and multi-TFM case) and the differential conformance suite over all four targets.
+  - POSIX leg (WSL Ubuntu, CMake + g++ Release): builds, and `polyglot-tests` prints "All tests passed"
+    (989 PASS / 0 FAIL).
+  - PR #75 leaves draft for the Spark session's review.
