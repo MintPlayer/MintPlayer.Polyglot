@@ -118,6 +118,25 @@ try {
     Assert (-not (Test-Path (Join-Path $proj2 "pgconfig.lock.json"))) `
         "no lock entry is written for a refused dependency"
 
+    # --- 5b. review r6 (Spark i3\integ.sh): an include rule's target whose dependency the registry ANSWERS for —
+    # a 404, or a tarball failing its integrity — is an error (64, "unknown target"), never degraded to "not
+    # verified" (exit 0); only a missing network degrades. Each problem is printed once per build.
+    foreach ($dep in @("pyfixture2", "nosuchpkg")) {
+        $projR = Join-Path $work "proj-rule-$dep"
+        New-Item -ItemType Directory -Force $projR | Out-Null
+        Set-Content (Join-Path $projR "a.pg") "fn a(): i32 => 1`n" -NoNewline
+        Set-Content (Join-Path $projR "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"dependencies`": { `"$dep`": `"^1.2.3`" }, " +
+            "`"include`": [ { `"pattern`": `"*.pg`", `"target`": `"$dep`", `"output`": `"gen/%(Filename)`" } ] }") -NoNewline
+        Push-Location $projR
+        $outR = & $Cli build 2>&1 | Out-String
+        $rcR = $LASTEXITCODE
+        Pop-Location
+        $depErr = if ($dep -eq "pyfixture2") { 'integrity mismatch' } else { 'status 404' }
+        Assert ($rcR -eq 64 -and $outR -match "unknown target '$dep'" -and $outR -notmatch 'not verified' -and
+                ([regex]::Matches($outR, $depErr)).Count -eq 1 -and -not (Test-Path (Join-Path $projR "a.cs"))) `
+            "review r6: a rule target whose dependency the registry refuses ($depErr) exits 64 'unknown target', the error printed once (exit $rcR; was 0, 'not verified' twice)"
+    }
+
     # --- 6/7. --target override + the config-sourced refusal ---------------------------------------
     & $Cli build (Join-Path $proj "main.pg") --target csharp --out $proj *> $null
     Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $proj "main.cs"))) `

@@ -551,21 +551,28 @@ private:
     Put alignDirectoryCase(const std::filesystem::path& out, const Claim& claim) {
         namespace fs = std::filesystem;
         const fs::path abs = absoluteDir(out.has_parent_path() ? out.parent_path() : fs::path("."));
-        // The deepest root `abs` lies in (case-insensitively on Windows: a root and an output spelled from it).
+        // The deepest root `abs` lies in, as SPELLED. P40 review r6 (gating 1): only when no root contains `abs`
+        // under its own spelling does a root match up to case (Windows) — a route that climbs out with `..` and
+        // re-enters the config folder under another case (`repo/Proj`, `../proj/gen/…`) starts at its climbed
+        // root (`repo`), so `proj` is compared with the disk exactly as a case-sensitive clone resolves it; the
+        // config folder `Proj`, matched only up to case, must not swallow the components the route spells.
         fs::path base;
         for (const auto& r : roots_) {
             const fs::path rel = abs.lexically_relative(r);
-            bool inside = !rel.empty() && *rel.begin() != "..";
-#ifdef _WIN32
-            if (!inside) { // the same prefix up to case
-                const auto& a = abs.native();
-                const auto& rn = r.native();
-                inside = a.size() >= rn.size() && (a.size() == rn.size() || a[rn.size()] == L'\\' || rn.back() == L'\\') &&
-                         sameNameIgnoringCase(fs::path(a.substr(0, rn.size())), r);
-            }
-#endif
+            const bool inside = !rel.empty() && *rel.begin() != "..";
             if (inside && r.native().size() > base.native().size()) base = r;
         }
+#ifdef _WIN32
+        if (base.empty())
+            for (const auto& r : roots_) { // the same prefix up to case
+                const auto& a = abs.native();
+                const auto& rn = r.native();
+                const bool inside = a.size() >= rn.size() &&
+                                    (a.size() == rn.size() || a[rn.size()] == L'\\' || rn.back() == L'\\') &&
+                                    sameNameIgnoringCase(fs::path(a.substr(0, rn.size())), r);
+                if (inside && r.native().size() > base.native().size()) base = r;
+            }
+#endif
         if (base.empty()) return Put::Written;
         const fs::path rel = fs::path(abs.native().substr(std::min(abs.native().size(), base.native().size()))).relative_path();
         fs::path cur = base;

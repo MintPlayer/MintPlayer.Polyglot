@@ -41,6 +41,7 @@
 #pragma comment(lib, "winhttp.lib")
 #else
 #include <dlfcn.h>
+#include <sys/wait.h> // WIFEXITED / WEXITSTATUS (curl's exit status from pclose)
 #endif
 
 #include "mintplayer/polyglot/json.hpp"
@@ -49,11 +50,24 @@
 
 namespace mintplayer::polyglot::cli {
 
+// The outcome of one GET. P40 review r6: a failure says WHETHER THE SERVER ANSWERED — `Transport` (no
+// connection, DNS, timeout, no HTTP client: the network is missing, so a registry dependency may degrade to
+// "not verified") vs `Response` (the registry answered with a non-200 status: a 404 is an error, never a
+// network miss). A plain bool converts (true = Ok, false = Transport), so a fake that only knows "served or
+// not" stays a one-liner.
+struct HttpOutcome {
+    enum class Kind { Ok, Transport, Response };
+    Kind kind;
+    HttpOutcome(bool ok) : kind(ok ? Kind::Ok : Kind::Transport) {}
+    HttpOutcome(Kind k) : kind(k) {}
+    explicit operator bool() const { return kind == Kind::Ok; }
+};
+
 // GET `url` with extra request `headers` ("Name: value"), filling `body` (binary-safe).
-// Implementations return false with a human diagnostic in `err`; a non-200 final status is an
-// error (redirects are followed internally).
-using HttpGet = std::function<bool(const std::string& url, const std::vector<std::string>& headers,
-                                   std::string& body, std::string& err)>;
+// Implementations fail with a human diagnostic in `err`; a non-200 final status is a `Response`
+// failure (redirects are followed internally).
+using HttpGet = std::function<HttpOutcome(const std::string& url, const std::vector<std::string>& headers,
+                                          std::string& body, std::string& err)>;
 
 inline std::string envVar(const char* name) {
 #ifdef _WIN32
@@ -80,12 +94,12 @@ inline std::wstring widen(const std::string& s) {
 }
 } // namespace detail
 
-inline bool httpGetWinHttp(const std::string& url, const std::vector<std::string>& headers,
-                           std::string& body, std::string& err) {
+inline HttpOutcome httpGetWinHttp(const std::string& url, const std::vector<std::string>& headers,
+                                  std::string& body, std::string& err) {
     using detail::widen;
     auto fail = [&](const std::string& what) {
         err = "http: " + what + " (" + std::to_string(GetLastError()) + ") for " + url;
-        return false;
+        return HttpOutcome(HttpOutcome::Kind::Transport);
     };
 
     const std::wstring wurl = widen(url);
@@ -105,11 +119,11 @@ inline bool httpGetWinHttp(const std::string& url, const std::vector<std::string
     if (!con) { WinHttpCloseHandle(ses); return fail("connect failed"); }
     HINTERNET req = WinHttpOpenRequest(con, L"GET", path, nullptr, WINHTTP_NO_REFERER,
                                        WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
-    auto done = [&](bool ok) {
+    auto done = [&](HttpOutcome r) {
         if (req) WinHttpCloseHandle(req);
         WinHttpCloseHandle(con);
         WinHttpCloseHandle(ses);
-        return ok;
+        return r;
     };
     if (!req) return done(fail("open request failed"));
 
@@ -128,7 +142,7 @@ inline bool httpGetWinHttp(const std::string& url, const std::vector<std::string
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusLen, WINHTTP_NO_HEADER_INDEX);
     if (status != 200) {
         err = "http: status " + std::to_string(status) + " for " + url;
-        return done(false);
+        return done(HttpOutcome::Kind::Response);
     }
 
     for (;;) {
@@ -207,8 +221,8 @@ inline std::size_t curlWrite(const char* ptr, std::size_t size, std::size_t nmem
 
 } // namespace detail
 
-inline bool httpGetLibcurl(const std::string& url, const std::vector<std::string>& headers,
-                           std::string& body, std::string& err) {
+inline HttpOutcome httpGetLibcurl(const std::string& url, const std::vector<std::string>& headers,
+                                  std::string& body, std::string& err) {
     const auto& c = detail::Curl::get();
     if (!c.lib) { err = "http: libcurl not found"; return false; }
     void* h = c.init();
@@ -237,13 +251,13 @@ inline bool httpGetLibcurl(const std::string& url, const std::vector<std::string
     if (status != 200) {
         err = "http: status " + std::to_string(status) + " for " + url;
         body.clear();
-        return false;
+        return HttpOutcome::Kind::Response;
     }
     return true;
 }
 
-inline bool httpGetCurlSubprocess(const std::string& url, const std::vector<std::string>& headers,
-                                  std::string& body, std::string& err) {
+inline HttpOutcome httpGetCurlSubprocess(const std::string& url, const std::vector<std::string>& headers,
+                                         std::string& body, std::string& err) {
     // Refuse anything that could escape single quotes — registry URLs/headers never contain them.
     for (const std::string& s : headers)
         if (s.find('\'') != std::string::npos) { err = "http: unsafe header"; return false; }
@@ -260,17 +274,22 @@ inline bool httpGetCurlSubprocess(const std::string& url, const std::vector<std:
     if (rc != 0) {
         err = "http: curl exited with status " + std::to_string(rc) + " for " + url;
         body.clear();
-        return false;
+        // `--fail` makes curl exit 22 for an HTTP status >= 400: the server answered.
+        return WIFEXITED(rc) && WEXITSTATUS(rc) == 22 ? HttpOutcome(HttpOutcome::Kind::Response) : HttpOutcome(false);
     }
     return true;
 }
 
 inline HttpGet defaultHttpGet() {
-    return [](const std::string& url, const std::vector<std::string>& headers,
-              std::string& body, std::string& err) {
+    return [](const std::string& url, const std::vector<std::string>& headers, std::string& body,
+              std::string& err) -> HttpOutcome {
         if (detail::Curl::get().lib) return httpGetLibcurl(url, headers, body, err);
         std::string subErr;
-        if (httpGetCurlSubprocess(url, headers, body, subErr)) return true;
+        const HttpOutcome sub = httpGetCurlSubprocess(url, headers, body, subErr);
+        if (sub || sub.kind == HttpOutcome::Kind::Response) {
+            err = subErr;
+            return sub;
+        }
         err = subErr + "\n  (no libcurl and no curl binary — install one, use a `file:` dependency, "
                        "or pre-warm the plugin cache on a connected machine)";
         return false;

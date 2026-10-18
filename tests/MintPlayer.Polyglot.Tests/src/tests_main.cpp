@@ -4634,6 +4634,8 @@ int main() {
             const cli::ResolveResult r = cli::resolvePluginDependencies(pc3, fake, false, &st);
             check(!r.ok && r.messages.size() == 1 && has(r.messages[0], "integrity mismatch"),
                   "P30 s3: a tarball failing its SRI check is refused with the mismatch named");
+            check(r.networkMisses.empty(),
+                  "P40 review r6: a tarball failing its SRI check is an error, never a network miss (it was 'not verified')");
             std::string m, err;
             check(!cli::cacheLoad(pkg3, "3.0.0", "", m, err) && findBackend("pydemo3") == nullptr,
                   "P30 s3: nothing is cached or registered from a refused tarball");
@@ -4665,6 +4667,26 @@ int main() {
             const cli::ResolveResult r = cli::resolvePluginDependencies(pc5, fake, false, &st);
             check(!r.ok && has(r.messages[0], "offline (test)"),
                   "P30 s3: offline-with-no-lock surfaces the transport diagnostic");
+            check(r.networkMisses.size() == 1,
+                  "P40 review r6: a GET that got no answer (transport failure) is a network miss");
+        }
+
+        // P40 review r6: the registry ANSWERING with a non-200 status (a 404 for an unpublished package) is an
+        // answer, not a missing network — an error, never degraded to "not verified".
+        {
+            cli::PgConfig pc404 = pc;
+            pc404.dependencies = {{"pydemo404", "^1.0.0"}};
+            const cli::HttpGet answers404 = [&](const std::string& url, const std::vector<std::string>&, std::string&,
+                                                std::string& err) -> cli::HttpOutcome {
+                err = "http: status 404 for " + url;
+                return cli::HttpOutcome::Kind::Response;
+            };
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc404, answers404, false, &st);
+            check(!r.ok && has(r.messages[0], "status 404") && r.networkMisses.empty(),
+                  "P40 review r6: a registry 404 is a dependency error, not a network miss");
+            const cli::ResolveResult again = cli::resolvePluginDependencies(pc404, answers404, false, &st);
+            check(!again.ok && again.networkMisses.empty(), "P40 review r6: ... also when replayed from the memo");
         }
 
         // G37 (wave 2): a lock pin OUTSIDE an edited range re-resolves (online), and REFUSES offline —
