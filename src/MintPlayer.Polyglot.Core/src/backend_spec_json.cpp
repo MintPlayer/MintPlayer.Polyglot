@@ -130,6 +130,24 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
             }
         } else if (es.kind != json::Value::Kind::Null) r.errors.push_back("exprStmt must be an object");
     }
+    // P40 review r7: declaration kinds with no runtime binding on this target (validated: a typo would re-break imports)
+    auto importKinds = [&](const char* key, std::initializer_list<const char*> allowed, std::vector<std::string>& out) {
+        const json::Value& ti = doc[key];
+        if (ti.kind == json::Value::Kind::Array) {
+            for (const json::Value& k : ti.items()) {
+                const std::string s = k.asString();
+                bool ok = false;
+                std::string list;
+                for (const char* a : allowed) { ok = ok || s == a; list += (list.empty() ? "" : ", ") + std::string(a); }
+                if (!ok) r.errors.push_back(std::string(key) + ": unknown declaration kind '" + s + "' (" + list + ")");
+                else out.push_back(s);
+            }
+        } else if (ti.kind != json::Value::Kind::Null) r.errors.push_back(std::string(key) + " must be an array");
+    };
+    const std::size_t errorsBefore = r.errors.size();
+    importKinds("typeOnlyImports", {"union", "interface"}, r.spec.typeOnlyImports);
+    importKinds("unboundImports", {"union", "unionCase", "interface"}, r.spec.unboundImports);
+    if (r.errors.size() != errorsBefore) return r; // a load error (r.ok stays false)
 
     // P40 A1: per-context literal spelling. Shape-checked here so a broken context never emits a literal the
     // target misreads: every context names its quote, maps the backslash and that quote, and carries a
@@ -469,6 +487,17 @@ std::string backendSpecToJson(const BackendSpec& spec) {
                std::string o = ",\"exprStmt\":{\"discardPrefix\":" + json::quote(spec.exprStmtDiscardPrefix) + ",\"parenIfStarts\":[";
                for (std::size_t i = 0; i < spec.exprStmtParenIfStarts.size(); ++i) { if (i) o += ","; o += json::quote(spec.exprStmtParenIfStarts[i]); }
                return o + "]}";
+           }() +
+           [&] { // review r7 (each omitted when empty)
+               std::string o;
+               for (const auto& [key, v] : {std::pair<const char*, const std::vector<std::string>*>{"typeOnlyImports", &spec.typeOnlyImports},
+                                            {"unboundImports", &spec.unboundImports}}) {
+                   if (v->empty()) continue;
+                   o += ",\"" + std::string(key) + "\":[";
+                   for (std::size_t i = 0; i < v->size(); ++i) o += (i ? "," : "") + json::quote((*v)[i]);
+                   o += "]";
+               }
+               return o;
            }() + gen + wa + an + tbls + escs + ids + "}";
 }
 

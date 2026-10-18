@@ -719,6 +719,9 @@ struct ModuleImport {
     std::string path;
     std::string names;
     std::string allNames; // P40 B3: a bare `import "./mod"` — every name the module emits, joined (else empty)
+    // Review r7: the names of `names`/`allNames` that are TYPES ONLY on this target (manifest `typeOnlyImports`),
+    // split out of them — TS imports them with `import type`. (`unboundImports` names are dropped outright.)
+    std::string typeNames;
     bool isNamespace = false;
     std::string ns;
 };
@@ -749,6 +752,9 @@ struct Module {
     std::vector<ExternType> externTypes; // native-backed `extern class` type/ctor spellings (see ExternType)
     std::vector<ModuleImport> imports;   // §4.5: this file's cross-module imports (empty for single-file builds)
     bool linked = false;                 // §4.5: this is one file of a multi-module build (drives C# `partial`)
+    // Review r7: every interface name of the whole closure — a file keeps only its own declarations, but a class
+    // implementing an IMPORTED interface still needs TS/PHP `implements` (it emitted `extends`).
+    std::vector<std::string> linkedInterfaceNames;
     // P40 B1: this file's RESOLVED target options (every option the plugin manifest declares, defaults filled
     // in, validated against its `pattern`). Rules read them as `option.<name>`; the Core never interprets them.
     std::map<std::string, std::string> options;

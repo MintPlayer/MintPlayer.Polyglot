@@ -1,0 +1,5 @@
+// A module whose only declaration is a union: an import of it names nothing with a runtime binding.
+union Kind {
+  Small
+  Big(size: i32)
+}

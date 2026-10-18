@@ -141,6 +141,9 @@ public:
     // statements); nested-scope locals may not shadow outer ones (scope legalization); lambdas are
     // expression-only (block lambdas hoist to local functions).
     virtual bool linksWithoutImports() const { return false; }
+    // Review r7: declaration kinds with no runtime binding — imported as `typeNames` / dropped (BackendSpec).
+    virtual std::vector<std::string> typeOnlyImports() const { return {}; }
+    virtual std::vector<std::string> unboundImports() const { return {}; }
     virtual bool forbidsShadowedLocals() const { return false; }
     virtual bool expressionOnlyLambdas() const { return false; }
     // A native compound assignment on a built-in scalar slot is faithful to the Binary rule (see

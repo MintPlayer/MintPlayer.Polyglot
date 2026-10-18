@@ -125,6 +125,12 @@ struct BackendSpec {
     // Target trait flags the Core's lowering/linking consult — DATA, never target-name comparisons
     // (the Core cannot know what languages exist):
     bool linksWithoutImports = false;  // modules link by compilation into one unit (no import statements)
+    // Review r7: how a named import treats a declaration with NO runtime binding on this target. `typeOnlyImports`
+    // ("union", "interface"): exported as a type only — moved to the import's `typeNames` (TS `import type`).
+    // `unboundImports` ("union", "unionCase", "interface"): not exported under that name at all — dropped from the
+    // import (TS/Python union cases, constructed inline; a Python union, which is tagged dicts).
+    std::vector<std::string> typeOnlyImports;
+    std::vector<std::string> unboundImports;
     bool forbidsShadowedLocals = false; // a nested-scope local may not reuse an outer local's name (CS0136)
     bool expressionOnlyLambdas = false; // lambdas are expression-only; block lambdas hoist to local fns
     // A native `a op= b` on a built-in scalar slot means exactly `a = a op b` as the Binary rule renders it

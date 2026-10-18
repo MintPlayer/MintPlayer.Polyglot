@@ -1,0 +1,3 @@
+// An extension and a module value sharing a name.
+extension fn i32.scale(): i32 => this * 10
+let scale = 3
