@@ -1,0 +1,76 @@
+import "std.io"
+import "std.collections"
+import "std.strings"
+
+// P40 review r5 item 20: `recv?.m(args)` on a maybe-null receiver — a method, a function-typed field, a bound std
+// member (`len`, Map `get`), chained — runs the call only when the receiver is present, yields `T?`, and evaluates
+// the receiver exactly once. As a statement (`r?.run()`) it is an `if`. A `?.` field read is `null`, never JS
+// `undefined`, so `== null` agrees on every target.
+
+class H {
+  var f: (i32) => i32 = (x: i32) => x * 2
+  var g: () => unit = () => print("g")
+  var n: i32 = 4
+  fn val(): i32 => this.n + 1
+  fn me(): H => this
+  fn self2(): H? => this
+}
+
+class Box {
+  var n: i32 = 3
+  var s: string = "x"
+}
+
+fn mk(b: bool): H? => if b { H() } else { null }
+fn noStr(): string? => null
+fn mkBox(f: bool): Box? => if f { Box() } else { null }
+fn getN(b: Box?): i32? => b?.n
+
+class Ctr {
+  static var calls: i32 = 0
+}
+fn counted(b: bool): H? {
+  Ctr.calls += 1
+  return mk(b)
+}
+
+fn main() {
+  let h = mk(true)
+  let z = mk(false)
+  print(h?.f(5) ?? -1)
+  print(z?.f(5) ?? -1)
+  h?.g()
+  z?.g()
+  let v: i32? = h?.val()
+  print(v ?? 0)
+  print(z?.val() ?? -2)
+  print(h?.me()?.n ?? -3)
+  print(h?.self2()?.n ?? -4)
+  print(z?.self2()?.n ?? -5)
+  print(counted(true)?.val() ?? -6)
+  counted(false)?.g()
+  print(Ctr.calls)
+  let s: string? = "abc"
+  let t: string? = noStr()
+  print(s?.len() ?? -7)
+  print(t?.len() ?? -8)
+  let m = Map<string, Map<string, i32>>()
+  let inner = Map<string, i32>()
+  inner.set("b", 3)
+  m.set("a", inner)
+  print(m.get("a")?.get("b") ?? 0)
+  print(m.get("q")?.get("b") ?? 9)
+  let r = m.get("a")?.get("b")
+  print(r == null)
+  let r2 = m.get("x")?.get("b")
+  print(r2 == null)
+  let cb = () => h?.g()
+  cb()
+  let b = mkBox(false)
+  let f: i32? = b?.n
+  print(f == null)
+  print(getN(b) == null)
+  let bs: string? = b?.s
+  print(bs ?? "none")
+  print(getN(mkBox(true)) ?? -9)
+}

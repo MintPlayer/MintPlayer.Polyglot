@@ -1,0 +1,14 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): a tuple element that may be null, into a `(i32, i32)` slot (C# CS0029, TS2322).
+fn maybe(): i32? => null
+
+fn pair(): (i32, i32) {
+  let t: (i32, i32) = (maybe(), 1)
+  return t
+}
+
+fn main() {
+  let (a, b) = pair()
+  print(a + b)
+}

@@ -1,0 +1,22 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 20): `r?.val()` is `i32?` — the call is skipped when `r` is null — so it cannot go
+// into an `i32` slot (it was typed `i32` and lost its `?.` on every target: C# CS8602, a TS TypeError).
+class Runner {
+  fn val(): i32 {
+    return 3
+  }
+}
+
+fn maybeRunner(flag: bool): Runner? {
+  if flag {
+    return Runner()
+  }
+  return null
+}
+
+fn main() {
+  let r = maybeRunner(false)
+  let w: i32 = r?.val()
+  print(w)
+}

@@ -266,7 +266,26 @@ stringification, so a maybe-null value must be handled before it is used:
 - An if-expression with a `null` branch is nullable: `if c { 1 } else { null }` is `i32?`.
 - A maybe-null value flowing into a non-null slot — a return, an initializer, an argument, an assignment,
   a field — is an error (*cannot convert 'i32?' to 'i32' … the value may be null*), including `null` itself
-  and `a ?? b` whose fallback `b` is nullable (P40 review r4). A narrowed local converts.
+  and `a ?? b` whose fallback `b` is nullable (P40 review r4). A narrowed local converts. Every slot is held
+  to the same rule (P40 review r5): each **arm** of a `match`/`if` value converts on its own (a match's type
+  joins its arms — nullable if any arm is, numeric arms widen), a `yield`ed value converts into the
+  iterator's element type, a record `with` override into its field, an index into `i32` (a user indexer:
+  its `get` parameters), and a tuple literal element by element.
+- **Type arguments must match exactly** (generic types are invariant): a `List<i32?>` is not a `List<i32>`
+  (C# CS0029), nor a `Box<string?>` a `Box<string>`. An `Iterable<T>` target reads only, so it judges just the
+  element's nullability (`List<i32?>` into `Iterable<i32>` is refused). A tuple value's elements follow the
+  slot rule.
+- A **type-parameter slot** `T` may be instantiated with a non-null type, so `null`, a maybe-null value or a
+  `T?` (an `Option<T>` there, §4.4) cannot go into it (`x: T = null`, `fn f<T>(): T => null`) — declare it `T?`.
+- A **lambda** flowing into a function type must take exactly its parameters: the same arity, and each
+  annotated parameter exactly the slot's type (`(x: i32) => …` where `(i32?) => i32` is expected is refused —
+  C# CS1661). An unannotated parameter takes the slot's type.
+- `recv?.m(args)` on a maybe-null receiver — a method, a std member (`s?.len()`, `m.get(a)?.get(b)`), an
+  extension, a function-typed field (`h?.f(5)`) — calls only when `recv` is present and yields `T?` (so
+  `let w: i32 = r?.val()` is refused); the receiver is evaluated once. As a statement (`r?.run()`) it is an
+  `if`. On a receiver that cannot be null `?.` is a plain call. A `?.` read is `null` when absent on every
+  target (TS's `undefined` is normalized), so `b?.n == null` agrees. Chaining is explicit: `a?.b()?.c` (a
+  `.c` on the nullable `a?.b()` is the nullable-receiver error, unlike C#'s whole-chain short-circuit).
 - `t ??= v` assigns `v` only when `t` is null; `t` must be able to be null (a non-null or narrowed target is
   refused, like `??`), `v` converts into `t`'s type, and a target without a native `??=` (Python) evaluates
   it as `if t == null { t = v }` with `t`'s receiver evaluated once.
@@ -288,8 +307,12 @@ whose branch always exits (`return`/`throw`/`break`/`continue` — the rest of t
 `x != null && …`, `x == null || …`, and `while x != null` (the loop body). It ends at the end of that
 region and at any assignment to the variable; a loop that assigns the variable is never narrowed inside
 it, a lambda body never sees an outer narrowing, and a `var` that some lambda assigns is never narrowed.
-Fields and other expressions are not narrowed — read them into a local, or use `!`. `!` on a narrowed
-variable is allowed and is a no-op.
+A test **inside** a lambda narrows a captured parameter, `let` or (lambda-unassigned) `var` for the rest of
+that lambda body, exactly as in a function body (P40 review r5) — a lambda runs synchronously, so nothing
+outside it can reassign the variable between the test and the read.
+**Fields and other expressions are not narrowed** — any call between the test and the read may reassign a
+field — so `if this.name != null { shout(this.name) }` is refused with that rule named: read it into a local
+(`let v = this.name`, then test `v`), or use `!`. `!` on a narrowed variable is allowed and is a no-op.
 
 ### 4.4 Interfaces, inheritance, generics
 
@@ -582,8 +605,15 @@ differently:
   passes the first-class callable `five(...)`) when it is a single, non-generic user function without default
   parameters — an overloaded, generic or std function is refused there: pass a lambda that calls it. A function
   value has no members and no methods (`g.toString()` is refused). A function value flowing into a function slot
-  must have exactly that type — in particular a value-returning function into `(…) => unit` is refused (C#
-  CS0407): wrap it, `() => five()`. A lambda flowing into a `(…) => unit` slot must not produce a value (a
+  must have that type, with one relaxation (P40 review r5): **class/interface variance** — a parameter may be a
+  SUPERtype of the slot's and the result a SUBtype (`(Animal) => string` where `(Dog) => string` is expected,
+  `() => Dog` where `() => Animal` is). C# delegate variance (`Func<in T, out R>`; user classes and interfaces
+  are reference types) and TS's function types accept exactly that; Python/PHP are untyped. Scalars (no variance
+  for value types), records, nullability and type arguments must match exactly, and a value-returning function
+  into `(…) => unit` is refused (C# CS0407): wrap it, `() => five()`. A generic call may not infer a type
+  parameter as `unit` from a lambda that returns nothing (`apply<T>(f: () => T)` with `() => print("x")` — C#
+  CS0411: there is no `Func<void>`); give the parameter a `(…) => unit` type, or return a value. A lambda as a
+  binary operand is parenthesized on every target (`cb ?? (() => 9)`). A lambda flowing into a `(…) => unit` slot must not produce a value (a
   block's `return v`, or an expression body that is not a call); a call body's result is discarded on every
   target, also when the call is a bound property read or lookup (`() => s.len()` — C# `() => { _ = s.Length; }`).
   An expression statement whose value is dropped is spelled the same way. An `operator fn` is reached only
@@ -762,6 +792,17 @@ whose native `for` differs get a capture shim: C# copies the range binding into 
 (`for (var i__it = …) { var i = i__it; … }`), and Python snapshots it as a default argument
 (`lambda …, i=i: …`). So `for i in 0..3 { fns.add(() => i) }` yields closures returning 0, 1, 2 on every
 target.
+
+**A lambda reads a module value when it runs** (P40 review r5), not when it is created — the exemption §5
+grants stored lambdas from the initialization-order rule depends on it. PHP arrow functions capture by value
+at creation, so a module value read inside any lambda is emitted as a live global read there
+(`$GLOBALS['later']`); the other targets' closures already read the binding.
+
+**Assignment order.** A plain `t = v` names its slot before `v` runs, on every target: `xs[j] = incJ()` writes
+`xs` at the old `j`, `d.v = swapD()` the object `d` held before. Python and PHP evaluate the right side first
+(manifest `assignmentOrder: "valueFirst"`), so when `v` may have side effects, the target's receiver and indices
+that a call could change — a `var` some lambda assigns, a field read, a call — are evaluated into temps ahead
+of it there (P40 review r5).
 
 ---
 

@@ -1,0 +1,15 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): a record `with` override that may be null, into an `i32` field (TS2345).
+record P(x: i32, y: i32)
+
+fn maybe(): i32? => null
+
+fn bump(p: P): P {
+  let m = maybe()
+  return p with { x = m }
+}
+
+fn main() {
+  print(bump(P(1, 2)).y)
+}

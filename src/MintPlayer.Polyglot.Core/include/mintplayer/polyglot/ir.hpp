@@ -80,6 +80,10 @@ struct Var : Expr { // reference to a local or parameter
     // is `needsCell`). A value-capture target (Python cell object) reads/writes through the cell; a
     // native-by-reference target (C#/TS) ignores it and emits the plain name. Node-local, like `lhsIsRecord`.
     bool throughCell = false;
+    // P40 review r5 (part 2): a read of a MODULE value inside a lambda. A lambda runs when it is called, so it
+    // must see the value as it is then; a target whose closures capture by value at creation (PHP arrow fns)
+    // reads it live through `node.liveModuleRead` (PHP `$GLOBALS['x']`). Elsewhere a plain name already is.
+    bool liveModuleRead = false;
     Var(SourcePos p, Type t, std::string n) : Expr(ExprKind::Var, p, std::move(t)), name(std::move(n)) {}
 };
 struct This : Expr {
@@ -205,6 +209,10 @@ struct Member : Expr { // field / property access `object.field` — or a static
     std::string field;
     std::string staticType;    // non-empty = static access `staticType.field` (object is null)
     bool nullSafe = false;
+    // P40 review r5 item 20: a `?.` read yields the target's second absent form where it has one (JS
+    // `undefined`); the emitter wraps it in the spec's absentNormalize unless this consumer (see ir::Bound) folds
+    // every absent form on the target.
+    std::string absentConsumer;
     // The accessed member is a computed property (a getter). Native-property targets (C#/TS/Python) ignore
     // this and emit a plain field access; a target that emulates properties as methods (PHP) emits a call
     // `recv->field()`. A target-neutral fact stamped at lowering from the receiver type's members.

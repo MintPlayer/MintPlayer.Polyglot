@@ -70,6 +70,8 @@ std::string IrExprCtx::get(const std::string& path) const {
         return targetGet(path);
     }
     if (path == "node.name" && e_.kind == ir::ExprKind::Var)    return static_cast<const ir::Var&>(e_).name;
+    if (path == "node.liveModuleRead" && e_.kind == ir::ExprKind::Var) // r5 (part 2)
+        return static_cast<const ir::Var&>(e_).liveModuleRead ? "true" : "false";
     if (path == "node.code" && e_.kind == ir::ExprKind::Extern) return static_cast<const ir::Extern&>(e_).code;
     if (e_.kind == ir::ExprKind::Binary) { // module facts precomputed in lowering (P19)
         const auto& b = static_cast<const ir::Binary&>(e_);
@@ -512,6 +514,10 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
         const ir::Expr* eff = c;
         while (eff->kind == ir::ExprKind::Cast && static_cast<const ir::Cast&>(*eff).operand)
             eff = static_cast<const ir::Cast&>(*eff).operand.get();
+        // P40 review r5 item 21: a lambda binds looser than every binary operator on every target (its body
+        // extends as far right as it can), so as either operand it is always parenthesized — `cb ?? (() => 9)`
+        // printed `cb ?? () => 9` (C# CS1525, TS1005).
+        if (eff->kind == ir::ExprKind::Lambda) return "(" + inner + ")";
         if (e_.kind == ir::ExprKind::Binary && eff->kind == ir::ExprKind::Binary) {
             const std::string& po = static_cast<const ir::Binary&>(e_).op;
             const std::string& co = static_cast<const ir::Binary&>(*eff).op;
@@ -1912,7 +1918,16 @@ std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
             GenericExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
                                [this](const std::vector<ir::StmtPtr>& b) { return inlineBlock(b); },
                                &tmp_, &requires_, *this);
-            return engine::evalRule(it->second, ctx, &rules_);
+            std::string s = engine::evalRule(it->second, ctx, &rules_);
+            // P40 review r5 item 20: a `?.` read's second absent form (JS `undefined`) is folded into the one
+            // `T?` absence by the spec's absentNormalize — unless its consumer folds every absent form itself.
+            if (e.kind == ir::ExprKind::Member && !spec().absentNormalizeSuffix.empty()) {
+                const auto& m = static_cast<const ir::Member&>(e);
+                const auto& folds = spec().absentFoldedBy;
+                if (m.nullSafe && std::find(folds.begin(), folds.end(), m.absentConsumer) == folds.end())
+                    s = spec().absentNormalizePrefix + s + spec().absentNormalizeSuffix;
+            }
+            return s;
         }
     }
     if (e.kind == ir::ExprKind::Bound) // the FFI template substitution — fixed machinery over plugin data

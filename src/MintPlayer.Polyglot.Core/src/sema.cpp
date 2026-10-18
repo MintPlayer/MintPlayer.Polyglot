@@ -55,11 +55,27 @@ bool uninferableInit(const Expr& value, const TypeRef& inferred) {
 }
 
 // The fix-it example for the "add an explicit type" diagnostic, tailored to which un-inferable form it is.
+// A lambda anywhere in a value's result position (an `if`/`match` arm, a `??` operand).
+static bool yieldsLambda(const Expr& v) {
+    switch (v.kind) {
+        case ExprKind::Lambda: return true;
+        case ExprKind::IfExpr: return (v.rhs && yieldsLambda(*v.rhs)) || (v.extra && yieldsLambda(*v.extra));
+        case ExprKind::Match:
+            for (const auto& a : v.arms) if (a.body && yieldsLambda(*a.body)) return true;
+            return false;
+        case ExprKind::Binary: return v.text == "??" && ((v.lhs && yieldsLambda(*v.lhs)) || (v.rhs && yieldsLambda(*v.rhs)));
+        default: return false;
+    }
+}
+
 std::string annotationHint(const std::string& name, const Expr& value) {
     if (value.kind == ExprKind::Lambda)
         return "annotate the lambda's parameter types, e.g. '(x: i32) => …'";
     if (value.kind == ExprKind::NullLit)
         return "add an explicit type annotation, e.g. 'var " + name + ": T? = null'";
+    // P40 review r5 (part 2): a function-valued initializer gets a function-typed example, not a list's.
+    if (yieldsLambda(value))
+        return "add an explicit function type annotation, e.g. 'let " + name + ": ((i32) => i32)? = …'";
     return "add an explicit type annotation, e.g. 'var " + name + ": List<i32> = []'";
 }
 
@@ -356,6 +372,10 @@ struct Local {
     bool nonNull = false;
     int assigns = 0;
     int lambdaDepth = 0;
+    // P40 review r5 item 19: the lambda depth at which the CURRENT narrowing was established — a narrowing
+    // reaches exactly the lambda body that tested it (an outer test never reaches into a lambda, but a test
+    // inside the lambda narrows a captured param or `let` for the rest of that body).
+    int narrowDepth = 0;
     // P40 review r3 (part 2): a local initialized with a constant and never read is C# CS0219 (a warning a
     // warnings-as-errors consumer cannot build) — refused when its scope closes.
     int reads = 0;
@@ -688,7 +708,7 @@ private:
     // P40 D14: narrowing state. One saved-state frame per statement list (an early-exit narrowing lasts to
     // the end of its list); `closureAssigned_` = names a lambda assigns somewhere in the current top-level
     // body (a mutable local a closure can reassign is never narrowed — the closure may run at any point).
-    struct NarrowSave { Local* local; bool prev; int assignsAtEntry; };
+    struct NarrowSave { Local* local; bool prev; int assignsAtEntry; int prevDepth = 0; };
     std::vector<std::vector<NarrowSave>> narrowFrames_;
     std::unordered_set<std::string> closureAssigned_;
     int lambdaDepth_ = 0;
@@ -835,11 +855,19 @@ private:
         }
         return s + (t.nullable && !t.name.empty() ? "?" : "");
     }
+    // The nullable spelling of a type for a hint — `i32?`, but `(() => unit)?` for a function type (P40 review r5:
+    // the hint read "declare the slot '() => unit?'", which is a function returning `unit?`).
+    static std::string showNullable(TypeRef t) {
+        t.nullable = true;
+        return showTy(t);
+    }
     // A local's narrowing applies at this point. It never reaches into a lambda declared inside the
     // narrowed region: a mutable local may be reassigned before the lambda runs, and neither C# nor older
     // TypeScript carries an outer narrowing into a closure (the emitted code would warn / not type-check).
+    // P40 review r5 item 19: the test itself may sit inside the lambda (SPEC §4.3) — what matters is where the
+    // narrowing was established, not where the variable was declared.
     bool narrowedHere(const Local& l) const {
-        return l.nonNull && l.lambdaDepth == lambdaDepth_;
+        return l.nonNull && l.narrowDepth == lambdaDepth_;
     }
     // Member access / method call on a maybe-null receiver without `?.` (C#/TS throw a TypeError-class
     // error, Python an AttributeError, PHP a warning + null — a cross-target divergence, refused).
@@ -926,8 +954,9 @@ private:
             if (!l || (!l->type.nullable && !isOptionType(l->type)) ||
                 (l->type.kind == TypeRef::Kind::Named && l->type.name.empty())) continue;
             if (l->isMutable && closureAssigned_.count(n)) continue; // a closure may reassign it at any time
-            saves.push_back({l, l->nonNull, l->assigns});
+            saves.push_back({l, l->nonNull, l->assigns, l->narrowDepth});
             l->nonNull = true;
+            l->narrowDepth = lambdaDepth_;
         }
     }
     // Un-narrow (for a loop body that assigns them: the back edge re-enters with the reassigned value).
@@ -935,14 +964,16 @@ private:
         for (const auto& n : names) {
             Local* l = lookupMut(n);
             if (!l || !l->nonNull) continue;
-            saves.push_back({l, l->nonNull, l->assigns});
+            saves.push_back({l, l->nonNull, l->assigns, l->narrowDepth});
             l->nonNull = false;
         }
     }
     // Leave a region: the prior state comes back unless the variable was assigned inside the region.
     static void restoreNarrow(std::vector<NarrowSave>& saves) {
-        for (auto it = saves.rbegin(); it != saves.rend(); ++it)
+        for (auto it = saves.rbegin(); it != saves.rend(); ++it) {
             it->local->nonNull = it->prev && it->local->assigns == it->assignsAtEntry;
+            it->local->narrowDepth = it->prevDepth;
+        }
         saves.clear();
     }
     // A statement list: one narrowing frame, so an early exit's narrowing ends with the list.
@@ -2075,6 +2106,95 @@ private:
         walk(lam.block);
     }
 
+    // P40 review r5 (part 2): a function VALUE converts to a function type whose parameters are SUBtypes of its own
+    // (contravariance) and whose result is a SUPERtype of its own (covariance), for user classes and interfaces —
+    // `(Animal) => string` where `(Dog) => string` is expected, `() => Dog` where `() => Animal` is. Every target
+    // accepts it: C# delegate variance (`Func<in T, out R>`, `Action<in T>`; class/interface types are reference
+    // types), TS function-type variance under strictFunctionTypes, and Python/PHP are untyped. Anything else —
+    // scalars (no variance for value types), nullability, generics — must still match exactly.
+    bool functionVariant(const TypeRef& from, const TypeRef& to) const {
+        if (from.args.size() != to.args.size() || from.ret.size() != to.ret.size()) return false;
+        auto sub = [&](const TypeRef& a, const TypeRef& b) { // a is b, or a nominal class/interface subtype of b
+            if (showTy(a) == showTy(b)) return true;
+            return a.args.empty() && b.args.empty() && a.nullable == b.nullable && nominalKnown(a) &&
+                   nominalKnown(b) && !recordNames_.count(a.name) && !recordNames_.count(b.name) &&
+                   inheritsFrom(a.name, b.name);
+        };
+        for (std::size_t i = 0; i < from.args.size(); ++i)
+            if (!sub(to.args[i], from.args[i])) return false;
+        for (std::size_t i = 0; i < from.ret.size(); ++i)
+            if (!sub(from.ret[i], to.ret[i])) return false;
+        return true;
+    }
+
+    // A `.pg` spelling of a name/`this`/member path for a hint (anything else is elided).
+    static std::string exprText(const Expr& e) {
+        switch (e.kind) {
+            case ExprKind::Name: return e.text;
+            case ExprKind::This: return "this";
+            case ExprKind::Member: return (e.lhs ? exprText(*e.lhs) : std::string("…")) + (e.flag ? "?." : ".") + e.text;
+            default: return "…";
+        }
+    }
+
+    // P40 review r5 item 18: a lambda flowing into a function slot must take exactly the slot's parameters — its
+    // arity, and each ANNOTATED parameter's type (an unannotated one takes the slot's). Only the result used to be
+    // checked, so `(x: i32) => …` where `(i32?) => i32` is expected passed (C# CS1661, TS2345, a Python TypeError
+    // on `null + 1`), as did a one-parameter lambda for a two-parameter slot (CS1593).
+    bool lambdaParamsMatch(const Expr& lam, const TypeRef& target) {
+        TypeRef shown = target;
+        shown.nullable = false;
+        if (lam.params.size() != target.args.size()) {
+            diags_.error(lam.pos, "this lambda takes " + std::to_string(lam.params.size()) + " parameter(s), but the "
+                                  "function type '" + showTy(shown) + "' it flows into passes " +
+                                  std::to_string(target.args.size()));
+            return false;
+        }
+        bool ok = true;
+        for (std::size_t i = 0; i < lam.params.size(); ++i) {
+            const auto& p = lam.params[i];
+            if (p.type.absent() || !concreteType(p.type) || !concreteType(target.args[i])) continue;
+            if (showTy(p.type) == showTy(target.args[i])) continue;
+            diags_.error(p.pos, "lambda parameter '" + p.name + "' is declared '" + showTy(p.type) + "', but the "
+                                "function type '" + showTy(shown) + "' passes '" + showTy(target.args[i]) +
+                                "' — a lambda's parameter types must match exactly (or leave it unannotated)");
+            ok = false;
+        }
+        return ok;
+    }
+
+    // P40 review r5 item 18: the type ARGUMENTS of a non-literal value must agree with the slot's. A generic
+    // collection or user generic is invariant on C# (`List<int?>` is not a `List<int>`, CS0029; a `string?`/
+    // `string` argument mismatch is CS8619 under the floor), and a tuple element that may be null cannot go where
+    // one may not (CS8629/TS2322). `Iterable` reads only, so only its element's nullability is judged. Returns the
+    // reason when they disagree, "" when they agree (or a side is still open).
+    std::string typeArgsDisagree(const TypeRef& from, const TypeRef& to) const {
+        auto nullIntoNonNull = [&](const TypeRef& f, const TypeRef& t) {
+            return f.nullable && !t.nullable && nullRefusingSlot(t);
+        };
+        if (from.kind == TypeRef::Kind::Tuple && to.kind == TypeRef::Kind::Tuple && from.args.size() == to.args.size()) {
+            for (std::size_t i = 0; i < from.args.size(); ++i) {
+                if (nullIntoNonNull(from.args[i], to.args[i]))
+                    return "element " + std::to_string(i + 1) + " may be null";
+                if (std::string r = typeArgsDisagree(from.args[i], to.args[i]); !r.empty()) return r;
+            }
+            return "";
+        }
+        if (from.kind != TypeRef::Kind::Named || to.kind != TypeRef::Kind::Named || to.args.empty()) return "";
+        if (to.name == "Iterable" && to.args.size() == 1 && from.args.size() == 1 &&
+            (from.name == "List" || from.name == "Array" || from.name == "Iterable")) {
+            if (nullIntoNonNull(from.args[0], to.args[0])) return "its elements may be null";
+            return "";
+        }
+        if (from.name != to.name || from.args.size() != to.args.size() || to.name == "Option" || to.name == "Iterable")
+            return "";
+        for (std::size_t i = 0; i < from.args.size(); ++i)
+            if (concreteType(from.args[i]) && concreteType(to.args[i]) && showTy(from.args[i]) != showTy(to.args[i]))
+                return "type arguments must match exactly ('" + showTy(from.args[i]) + "' is not '" +
+                       showTy(to.args[i]) + "'; a generic type is invariant)";
+        return "";
+    }
+
     // The value of a built-in compound assignment `t op= v` types exactly as the binary `t op v` would
     // (P40 review r3): for most operators it converts into the slot, but a shift's COUNT is always an i32
     // (the binary rule, G4) — converting it into an i64 slot emitted C# `h <<= 3L`, CS0019.
@@ -2121,6 +2241,7 @@ private:
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
         if (!slot) return;
         if (slot->kind == ExprKind::Lambda && target.kind == TypeRef::Kind::Function && !target.ret.empty()) {
+            if (!lambdaParamsMatch(*slot, target)) return;
             convertLambdaResult(*slot, target.ret[0]);
             return;
         }
@@ -2141,6 +2262,28 @@ private:
             slot->type = target;
             return;
         }
+        // P40 review r5 item 18: a tuple literal into a tuple slot converts element by element (`(maybe(), 1)` into
+        // `(i32, i32)` was accepted: C# CS0029, TS2322).
+        if (target.kind == TypeRef::Kind::Tuple && slot->kind == ExprKind::TupleLit && !target.nullable &&
+            slot->args.size() == target.args.size()) {
+            for (std::size_t i = 0; i < slot->args.size(); ++i) checkConvert(slot->args[i], target.args[i], ctx);
+            for (std::size_t i = 0; i < slot->args.size(); ++i) slot->type.args[i] = slot->args[i]->type;
+            return;
+        }
+        // P40 review r5 item 18: a `match` / `if` value flows into the slot ARM BY ARM — each arm is converted
+        // (widened, null-checked, type-checked) on its own, as a `return` in each branch would be. Judging only
+        // the joined type let a mismatched or nullable arm through (`match k { 1 => "one", _ => 2 }` into i32).
+        if (slot->kind == ExprKind::Match) {
+            bool any = false;
+            for (auto& arm : slot->arms)
+                if (!arm.bodyIsBlock && arm.body) { checkConvert(arm.body, target, ctx); any = true; }
+            if (any) return;
+        }
+        if (slot->kind == ExprKind::IfExpr && slot->rhs && slot->extra) {
+            checkConvert(slot->rhs, target, ctx);
+            checkConvert(slot->extra, target, ctx);
+            return;
+        }
         instantiateBareCases(slot, target); // a contextually-typed bare union case (`None`) takes `target`
         // The T?-representation boundary (SPEC §4.4): a user generic's `T?` is an `Option<X>` at a concrete
         // use site, a distinct type from the native `X?`. Into a native-nullable slot it converts (the null is
@@ -2155,7 +2298,7 @@ private:
                 diags_.error(slot->pos, "cannot convert '" + showTy(slot->type) + "' to '" + showTy(target) +
                                             "' (" + ctx + "): the value may be absent; unwrap it with "
                                             "'?? fallback', '!' or a match, or declare the slot '" +
-                                            showTy(target) + "?'");
+                                            showNullable(target) + "'");
                 return;
             }
         }
@@ -2189,9 +2332,37 @@ private:
         if (from.nullable && !target.nullable && nullRefusingSlot(target)) {
             const std::string shown = (from.kind == TypeRef::Kind::Named && from.name.empty()) ? std::string("null")
                                                                                                  : "'" + showTy(from) + "'";
+            // P40 review r5 (part 2): a FIELD read is never narrowed (SPEC §4.3 — any call may reassign it between
+            // the test and the read), so `if this.name != null { shout(this.name) }` needs the rule named.
+            if (slot->kind == ExprKind::Member && !slot->flag && slot->lhs) {
+                diags_.error(slot->pos, "cannot convert " + shown + " to '" + showTy(target) + "' (" + ctx +
+                                            "): fields are not narrowed by a null test (SPEC §4.3); read it into a "
+                                            "local first ('let v = " + exprText(*slot) + "', then test 'v') or assert "
+                                            "it with '!'");
+                return;
+            }
             diags_.error(slot->pos, "cannot convert " + shown + " to '" + showTy(target) + "' (" + ctx +
                                         "): the value may be null; supply a fallback with '??', assert with '!', "
-                                        "narrow it first ('if x != null'), or declare the slot '" + showTy(target) + "?'");
+                                        "narrow it first ('if x != null'), or declare the slot '" + showNullable(target) + "'");
+            return;
+        }
+        // P40 review r5 item 18: a bare type-parameter slot `T` of the scope being checked may be instantiated
+        // with a non-null type, so `null`, a maybe-null value or a `T?` (an Option here, SPEC §4.4) cannot go
+        // there — `x: T = null`, `fn f<T>(): T => null` (C# CS0403 / a `null` that a caller's `i32` then reads).
+        if (target.kind == TypeRef::Kind::Named && !target.nullable && target.args.empty() &&
+            genericsInScope_.count(target.name) &&
+            (from.nullable || (isOptionType(from) && from.args[0].kind == TypeRef::Kind::Named &&
+                               from.args[0].name == target.name && !from.args[0].nullable))) {
+            const std::string shown = (from.kind == TypeRef::Kind::Named && from.name.empty()) ? std::string("null")
+                                                                                                 : "'" + showTy(from) + "'";
+            diags_.error(slot->pos, "cannot convert " + shown + " to '" + target.name + "' (" + ctx + "): the type "
+                                    "parameter '" + target.name + "' may be a non-null type, so the value may not be "
+                                    "absent — declare the slot '" + target.name + "?', or unwrap it with '??' or '!'");
+            return;
+        }
+        if (std::string why = typeArgsDisagree(from, target); !why.empty()) {
+            diags_.error(slot->pos, "cannot convert '" + showTy(from) + "' to '" + showTy(target) + "' (" + ctx +
+                                        "): " + why);
             return;
         }
         // P40 review r4 item 18: a function VALUE (a named function, a function-typed local) flowing into a function
@@ -2201,7 +2372,7 @@ private:
             concreteType(from) && concreteType(target)) {
             TypeRef f = from, t = target;
             f.nullable = t.nullable = false;
-            if (showTy(f) != showTy(t)) {
+            if (showTy(f) != showTy(t) && !functionVariant(f, t)) {
                 const bool toUnit = !target.ret.empty() && isUnitT(target.ret[0]) &&
                                     !(from.ret.empty() || isUnitT(from.ret[0]));
                 diags_.error(slot->pos, "cannot convert a function of type '" + showTy(f) + "' to '" + showTy(t) +
@@ -2536,7 +2707,14 @@ private:
                 if (inAsync_)
                     diags_.error(s.pos, "Polyglot refuses async iterators — a function cannot be both 'async' "
                                         "and use 'yield' (PRD §4.7)");
-                if (s.value) checkExpr(*s.value);
+                if (s.value) {
+                    checkExpr(*s.value);
+                    // P40 review r5 item 18: a yielded value flows into the iterator's element type, like a
+                    // `return` value into the return type (`yield null` from an `Iterable<i32>` was accepted).
+                    if (currentReturn_.kind == TypeRef::Kind::Named && currentReturn_.name == "Iterable" &&
+                        currentReturn_.args.size() == 1 && !currentReturn_.nullable)
+                        checkConvert(s.value, currentReturn_.args[0], "yielded value");
+                }
                 break;
             case StmtKind::If: {
                 // P37 B3: `is` bindings on the condition's `&&` spine narrow into the rest of the
@@ -3119,6 +3297,23 @@ private:
                 }
     }
 
+    // P40 review r5 item 18: an index flows into its slot like an argument — a native collection's index is an
+    // `i32` (`xs[m]` with an `i32?` or a string index was accepted: TS2538, a PHP null offset), a user indexer's
+    // are its `get` parameters (instantiated from the receiver). Runs after the arity check; a mismatched count
+    // was already reported there.
+    void convertIndexArgs(Expr& e, const TypeRef& recv) {
+        if (recv.kind != TypeRef::Kind::Named || recv.nullable) return;
+        if (recv.name == "List" || recv.name == "Array") {
+            if (e.args.size() == 1) checkConvert(e.args[0], tNamed("i32"), "index");
+            return;
+        }
+        MemberHit hit = findMemberOn(recv, "get");
+        if (!hit.m || hit.m->kind != MemberKind::Operator || hit.m->params.size() != e.args.size()) return;
+        std::vector<TypeRef> ps = memberParamsOf(hit, e.pos);
+        for (std::size_t i = 0; i < ps.size(); ++i)
+            checkConvert(e.args[i], ps[i], "index " + std::to_string(i + 1) + " of '" + recv.name + "'");
+    }
+
     // ---- expression typing ----
     // checkExpr annotates each node with its resolved type (read later by IR lowering), then returns it.
     TypeRef checkExpr(Expr& e) {
@@ -3179,9 +3374,9 @@ private:
                                     "level of a constructor — 'super.m()' and bare 'super' are refused (Polyglot "
                                     "has no portable base-member access; PHP's parent:: differs)");
                 return tUnknown();
-            case ExprKind::Call:      return checkCall(e);
+            case ExprKind::Call:      return nullSafeCallResult(e, checkCall(e));
             case ExprKind::Member:    return checkMember(e);
-            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); return elementType(recv); }
+            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); convertIndexArgs(e, recv); return elementType(recv); }
             case ExprKind::NullAssert:{
                 TypeRef t = checkExpr(*e.lhs);
                 if (t.kind == TypeRef::Kind::Named && t.name == "Option") // `opt!` (P40 D12): the element type
@@ -3196,7 +3391,19 @@ private:
                 return list;
             }
             case ExprKind::TupleLit:  { TypeRef t; t.kind = TypeRef::Kind::Tuple; for (auto& a : e.args) t.args.push_back(checkExpr(*a)); return t; }
-            case ExprKind::With:      { TypeRef base = checkExpr(*e.lhs); for (auto& f : e.fields) checkExpr(*f.value); return base; }
+            case ExprKind::With: {
+                TypeRef base = checkExpr(*e.lhs);
+                for (auto& f : e.fields) {
+                    checkExpr(*f.value);
+                    // P40 review r5 item 18: each override flows into its record field's (instantiated) type —
+                    // `p with { x = null }` on an `i32` field was accepted unchecked.
+                    if (!knownType(base)) continue;
+                    MemberHit hit = findMemberOn(base, f.name);
+                    if (hit.m && hit.m->isRecordField)
+                        checkConvert(f.value, memberTypeOf(hit, hit.m->type, f.value->pos), "field '" + f.name + "' of 'with'");
+                }
+                return base;
+            }
             case ExprKind::IfExpr:    {
                 requireBool(checkExpr(*e.lhs), e.pos, "'if' condition");
                 std::vector<std::string> whenTrue, whenFalse; // P40 D14: each branch sees its sense's facts
@@ -3263,6 +3470,7 @@ private:
         if (const Local* l = lookup(e.text)) {
             recordRef(e.pos, e.text, l->defId);
             lookupMut(e.text)->reads++; // P40 review r3: CS0219 tracking
+            e.callStable = !l->isMutable || !closureAssigned_.count(e.text); // r5 item 23
             if (isOptionType(l->type) && narrowedHere(*l)) { // an Option local proven present: the read
                 e.narrowedNonNull = true;                    // unwraps it (lowered like `o!`, SPEC §4.4)
                 e.castType = l->type;                        // the local's own (Option) type, for lowering
@@ -3281,6 +3489,7 @@ private:
         if (v != values_.end()) {
             if (auto it = valueDefId_.find(e.text); it != valueDefId_.end()) recordRef(e.pos, e.text, it->second);
             if (auto dp = valueDeclPos_.find(e.text); dp != valueDeclPos_.end()) checkInitOrder(dp->second, e.text, e.pos);
+            e.liveModuleRead = lambdaDepth_ > 0; // r5 (part 2): read when the lambda runs, not when it is made
             return v->second;
         }
         auto uc = unionCtors_.find(e.text);
@@ -3834,6 +4043,26 @@ private:
             checkConvert(args[i], params[i], "argument " + std::to_string(i + 1) + " of " + what);
     }
 
+    // P40 review r5 item 20: `recv?.m(args)` on a maybe-null receiver yields `T?` — the call is skipped when the
+    // receiver is null. It used to keep the call's plain type and lose the `?.` in every emitter (`let w: i32 =
+    // r?.val()` was accepted; C# CS8602, a TS TypeError at run time). On a receiver that cannot be null the `?.`
+    // changes nothing and the call keeps its type. A unit call stays unit (it is only ever a statement).
+    TypeRef nullSafeCallResult(Expr& e, TypeRef t) {
+        if (!e.lhs || e.lhs->kind != ExprKind::Member || !e.lhs->flag || !e.lhs->lhs) return t;
+        const TypeRef& recv = e.lhs->lhs->type;
+        if (!recv.nullable || (recv.kind == TypeRef::Kind::Named && recv.name.empty())) return t;
+        if (e.lhs->lhs->kind == ExprKind::Name && types_.count(e.lhs->lhs->text) && !lookup(e.lhs->lhs->text)) return t;
+        if (isOptionType(t)) {
+            diags_.error(e.pos, "'?." + e.lhs->text + "(…)' returns '" + showTy(t) + "' (a generic 'T?'), which has no "
+                                "null-safe form — test the receiver first ('if x != null { … }')");
+            return t;
+        }
+        e.nullSafeCall = true;
+        if (isUnitT(t) || (t.kind == TypeRef::Kind::Named && t.name.empty())) return t;
+        t.nullable = true;
+        return t;
+    }
+
     TypeRef checkCall(Expr& e) {
         // P37 D: the Meta intrinsics — resolved before ordinary checking (`Meta` is a compiler name
         // unless the user shadows it with a type or local of their own).
@@ -3951,8 +4180,9 @@ private:
                     // — it was checked as a method and refused as "method 'f' expects 0 argument(s)".
                     if (isValueMember(*m) && m->type.kind == TypeRef::Kind::Function) {
                         if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
+                        // `h?.f(4)` (r5): the call runs only when `h` is present — nullSafeCallResult makes the
+                        // result nullable; the field's own value is the declared (non-null) function.
                         TypeRef ft = memberTypeOf(hit, m->type, e.pos);
-                        if (e.lhs->flag) ft.nullable = true; // `h?.f(4)`: the value may be absent
                         e.lhs->type = ft;
                         e.calleeIsField = true;
                         return callFunctionValue(ft, argTypes, e, "field '" + hit.owner + "." + method + "'");
@@ -4175,6 +4405,7 @@ private:
                 bool allBound = viaBoundary;
                 for (const auto& g : chosen->generics) if (!binds.count(g)) allBound = false;
                 if (allBound) for (const auto& g : chosen->generics) e.typeArgs.push_back(binds[g]);
+                refuseUnitInference(*chosen, binds, e, name);
             }
             std::vector<TypeRef> ps;
             for (const auto& p : chosen->params) ps.push_back(gen.empty() ? p : substGeneric(p, gen, binds));
@@ -4204,9 +4435,62 @@ private:
         return tUnknown();
     }
 
+    // P40 review r5 item 22: `apply<T>(f: () => T)` called with a lambda that returns nothing would bind `T` to
+    // unit — which no target can spell as a type argument (C# has no `Func<void>`: CS0411). TS/Python/PHP ran it,
+    // C# did not compile. Refused when a type parameter is left unbound by every other argument and only such a
+    // lambda's result could bind it.
+    void refuseUnitInference(const FnSig& sig, const std::unordered_map<std::string, TypeRef>& binds, const Expr& e,
+                             const std::string& name) {
+        auto returnsNothing = [](const Expr& lam) {
+            if (!lam.flag) return lam.lhs && lam.lhs->type.kind == TypeRef::Kind::Named && lam.lhs->type.name == "unit";
+            std::function<bool(const std::vector<StmtPtr>&)> anyValue = [&](const std::vector<StmtPtr>& body) {
+                for (const auto& s : body) {
+                    if (!s) continue;
+                    if (s->kind == StmtKind::Return && s->value) return true;
+                    if (anyValue(s->thenBody) || anyValue(s->elseBody) || anyValue(s->finallyBody)) return true;
+                    for (const auto& c : s->catches) if (anyValue(c.body)) return true;
+                }
+                return false;
+            };
+            return !anyValue(lam.block);
+        };
+        for (std::size_t i = 0; i < sig.params.size() && i < e.args.size(); ++i) {
+            const TypeRef& p = sig.params[i];
+            if (p.kind != TypeRef::Kind::Function || p.ret.size() != 1 || p.ret[0].kind != TypeRef::Kind::Named ||
+                !p.ret[0].args.empty())
+                continue;
+            const std::string& g = p.ret[0].name;
+            if (std::find(sig.generics.begin(), sig.generics.end(), g) == sig.generics.end()) continue;
+            if (auto b = binds.find(g); b != binds.end() && !isUnitT(b->second)) continue;
+            if (!e.args[i] || e.args[i]->kind != ExprKind::Lambda || !returnsNothing(*e.args[i])) continue;
+            diags_.error(e.args[i]->pos, "cannot infer '" + g + "' of '" + name + "' from a lambda that returns no "
+                                         "value — a type parameter cannot stand for 'unit' (C# has no Func<void>); "
+                                         "return a value from the lambda, or give '" + name + "' a parameter of "
+                                         "a '(…) => unit' function type");
+            return;
+        }
+    }
+
     bool isCaseOf(const std::vector<std::string>& cases, const std::string& name) const {
         for (const auto& c : cases) if (c == name) return true;
         return false;
+    }
+
+    // P40 review r5 item 18: a match's value type joins its arms — it used to be the LAST arm's type, so
+    // `match k { 1 => maybe(), _ => 0 }` was a non-null `i32` and flowed into an `i32` slot unchecked. Any
+    // nullable arm (or a `null` arm) makes the match nullable; numeric arms widen to the wider one; otherwise
+    // the later arm's type is kept as before (a slot converts each arm on its own — checkConvert).
+    TypeRef joinArmType(const TypeRef& acc, const TypeRef& arm) const {
+        auto isNullLit = [](const TypeRef& t) { return t.kind == TypeRef::Kind::Named && t.name.empty() && t.nullable; };
+        if (acc.kind == TypeRef::Kind::Named && acc.name.empty() && !acc.nullable) return arm; // the first arm
+        if (isNullLit(arm)) { TypeRef r = acc; r.nullable = true; return r; }
+        if (isNullLit(acc)) { TypeRef r = arm; r.nullable = true; return r; }
+        const bool nullable = acc.nullable || arm.nullable;
+        TypeRef a = acc, b = arm;
+        a.nullable = b.nullable = false;
+        TypeRef r = (isNumericTypeName(a) && isNumericTypeName(b) && isLosslessWiden(b, a)) ? acc : arm;
+        if (nullable && !isOptionType(r)) r.nullable = true;
+        return r;
     }
 
     TypeRef checkMatch(Expr& e) {
@@ -4236,7 +4520,7 @@ private:
                              "(extract the block into a function and call it from the arm) (PRD §3.B)");
                 checkStmts(arm.block); // still check the body so nested errors surface too
             }
-            else if (arm.body) result = checkExpr(*arm.body);
+            else if (arm.body) result = joinArmType(result, checkExpr(*arm.body));
             popScope();
 
             // Only unguarded arms contribute to exhaustiveness (a guard may fail at run time).
