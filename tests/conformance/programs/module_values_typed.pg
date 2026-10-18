@@ -1,0 +1,46 @@
+// P40 review r5 (part 2):
+//  * a module value of function type is callable by name (`twice(4)`) or parenthesized (`(twice)(4)`), from a
+//    function, a static initializer and another module value — it was "call to undeclared function";
+//  * module values are checked before the bodies and an un-annotated one takes its initializer's type, so
+//    `d.hello() + " " + d.who()` on `let d = Derived()` is a string concatenation (PHP added the strings: TypeError);
+//  * all-lowercase type names compile under warnings-as-errors (C# CS8981 is disabled in that file).
+import "std.io"
+
+let twice: (i32) => i32 = (x: i32) => x * 2
+let mk: () => K = () => K()
+
+class K {
+  var v: i32 = 5
+  static let T: i32 = twice(3)
+}
+
+let fromLambda: i32 = (twice)(10)
+
+fn useTwice(n: i32): i32 => twice(n) + 1
+
+open class Base {
+  fn hello(): string => "hello"
+}
+class Derived : Base {
+  fn who(): string => "derived"
+}
+let d = Derived()
+let n = 41
+
+class point {
+  var x: i32 = 3
+}
+record pair(a: i32)
+
+fn main() {
+  print(twice(4))
+  print((twice)(4))
+  print(useTwice(2))
+  print(mk().v)
+  print(K.T)
+  print(fromLambda)
+  print(d.hello() + " " + d.who())
+  print(n + 1)
+  print(point().x)
+  print(pair(4).a)
+}

@@ -1,0 +1,13 @@
+// REFUSED (P40 review r5 #10): `override static` skipped the hiding check (C# CS0108 + CS0112).
+import "std.io"
+
+class A {
+  static fn make(): string => "A"
+}
+class C : A {
+  override static fn make(): string => "C"
+}
+
+fn main() {
+  print(C.make())
+}

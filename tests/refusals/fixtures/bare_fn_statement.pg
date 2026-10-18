@@ -1,0 +1,10 @@
+// REFUSED (P40 review r5, part 2): a function name alone is a value, not a call — C# emitted `PolyglotProgram.five;`
+// (CS0201).
+import "std.io"
+
+fn five(): i32 => 5
+
+fn main() {
+  five
+  print(five())
+}

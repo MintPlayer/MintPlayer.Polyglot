@@ -1,0 +1,19 @@
+import "std.io"
+import { helperA, useFive } from "./moda"
+import { helperB } from "./modb"
+
+// P40 review r5 #13/#14: C# link names follow the DECLARATIONS, not only the calls.
+//  * `moda` and `modb` each declare a `describe` (string / string?) and a generic `same` (T / U). Nothing calls
+//    them, yet C# sees one signature twice (reference nullability and type-parameter names are erased: CS0111),
+//    so both get signature link names; `string?` names its parameter `stringOrNull`, so they also stay distinct
+//    for PHP's single function namespace.
+//  * `moda` passes its `five` as a VALUE while this module declares a `five(n = 1)` a zero-argument call could
+//    also bind (a real C# clash): the value names the final link name (it kept the provisional one: CS0117) and
+//    PHP's unique name (an undefined function).
+fn five(n: i32 = 1): i32 => n * 50
+
+fn main() {
+  print(helperA() + helperB())
+  print(useFive())
+  print(five())
+}

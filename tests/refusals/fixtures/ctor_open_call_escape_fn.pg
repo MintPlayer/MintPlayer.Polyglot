@@ -1,0 +1,26 @@
+// REFUSED (P40 review r5 #5): `this` passed to a free function that calls the open method on it.
+import "std.io"
+
+fn show(w: Widget) {
+  print(w.describe())
+}
+open class Widget {
+  var label: string
+  constructor() {
+    this.label = "w"
+    show(this)
+  }
+  open fn describe(): string => "widget"
+}
+class Button : Widget {
+  let caption: string
+  constructor() {
+    super()
+    this.caption = "ok"
+  }
+  override fn describe(): string => "button:" + this.caption
+}
+
+fn main() {
+  print(Button().describe())
+}

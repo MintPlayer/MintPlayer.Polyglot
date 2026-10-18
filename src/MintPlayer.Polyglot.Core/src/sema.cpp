@@ -632,7 +632,7 @@ private:
                 for (const auto& m : k->members) {
                     if (m.kind != MemberKind::Method || has(m.modifiers, "static")) continue;
                     if (!has(m.modifiers, "abstract")) implemented.insert(m.name);
-                    else if (!implemented.count(m.name)) {
+                    else if (k != &c && !implemented.count(m.name)) { // its own: reported above
                         diags_.error(c.namePos.line ? c.namePos : c.pos,
                                      "class '" + c.name + "' does not implement the abstract method '" + k->name + "." +
                                          m.name + "' — override it, or declare `abstract class " + c.name + "`");

@@ -1,0 +1,13 @@
+// REFUSED (P40 review r5 #9): an abstract method declares a signature only.
+import "std.io"
+
+abstract class S {
+  abstract fn a(): i32 => 3
+}
+class T : S {
+  override fn a(): i32 => 4
+}
+
+fn main() {
+  print(T().a())
+}

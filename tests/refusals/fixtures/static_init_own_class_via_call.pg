@@ -1,0 +1,14 @@
+// REFUSED (P40 review r5 #12): `join` (outside the class) reads `Config` while `Config`'s static initializers run —
+// TS binds the class name only after they finish (a ReferenceError); C#, Python and PHP printed /api/users.
+import "std.io"
+
+class Config {
+  static let base: string = "/api"
+  static let users: string = join("users")
+}
+
+fn join(p: string): string => Config.base + "/" + p
+
+fn main() {
+  print(Config.users)
+}

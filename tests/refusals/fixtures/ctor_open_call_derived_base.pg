@@ -1,0 +1,23 @@
+// REFUSED (P40 review r5 #6): `Mid` is not `open`, but `Leaf` derives from it, so `Mid` can be subclassed — its
+// constructor calling its own `override` would run `Leaf`'s before `Leaf`'s fields are set.
+import "std.io"
+
+open class A {
+  open fn r(): string => "a"
+}
+class Mid : A {
+  var s: string = ""
+  constructor() {
+    super()
+    this.s = this.r()
+  }
+  override fn r(): string => "mid"
+}
+class Leaf : Mid {
+  var t: string = "T"
+  override fn r(): string => "leaf" + this.t
+}
+
+fn main() {
+  print(Leaf().s)
+}

@@ -1,0 +1,8 @@
+// REFUSED (P40 review r5, part 2): an f32 default that overflows single precision — it was reported as "f64 to f32".
+import "std.io"
+
+fn r13(x: f32 = 3.0e38f * 10.0f): f32 => x
+
+fn main() {
+  print(r13())
+}

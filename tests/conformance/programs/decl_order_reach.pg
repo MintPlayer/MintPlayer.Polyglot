@@ -1,0 +1,132 @@
+// P40 review r5 #4/#12: a module value may reach a class declared AFTER it — through a constructor, an instance
+// method (or its override), a computed property, an extension, a free function or a static method. The emission
+// order defines every class a value reaches (with its bases and what its own statics reach) before the value, so
+// TS and Python no longer throw at import (round 4 interleaved classes and values and they did). A class's own
+// static initializer may call one of its `static fn`s that reads its statics.
+import "std.io"
+
+// o1: a constructor that builds a later class
+class Shop {
+  var stock: Item
+  constructor() {
+    this.stock = Item("apple")
+  }
+}
+let shop: Shop = Shop()
+class Item {
+  var name: string
+  constructor(name: string) {
+    this.name = name
+  }
+}
+
+// o2: an instance method that builds a later class
+class Registry {
+  var count: i32 = 0
+  fn add(name: string): Entry {
+    this.count = this.count + 1
+    return Entry(name)
+  }
+}
+let first: Entry = Registry().add("a")
+class Entry {
+  var name: string
+  constructor(name: string) {
+    this.name = name
+  }
+}
+
+// o13: an instance method that reads a later class's static
+class Reader {
+  fn read(): i32 => Settings.level
+}
+let lvl: i32 = Reader().read()
+class Settings {
+  static let level: i32 = 4
+}
+
+// o15: an extension that constructs a later class
+extension fn i32.boxed(): Box => Box(this)
+let bx: Box = 5.boxed()
+class Box {
+  var v: i32
+  constructor(v: i32) {
+    this.v = v
+  }
+}
+
+// o3 / o12: a free function and a static method that construct a later class
+let config: Config = makeConfig()
+fn makeConfig(): Config => Config()
+class Config {
+  var name: string = "prod"
+}
+class Factory {
+  static fn build(): Widget => Widget()
+}
+let widget: Widget = Factory.build()
+class Widget {
+  var id: i32 = 9
+}
+
+// a direct construction of a later class, and a subclass whose bases come later still
+let k: K = K(3)
+class K {
+  var v: i32
+  constructor(v: i32) {
+    this.v = v
+  }
+}
+let made: Leaf = Leaf()
+open class Mid : Root {
+  fn mid(): string => "mid"
+}
+class Leaf : Mid {
+  var label: Label = Label()
+}
+open class Root {
+  static let count: i32 = 2
+  fn hello(): string => "hello"
+}
+class Label {
+  var t: string = "t"
+}
+
+// an override reached through virtual dispatch, and a computed property
+open class Maker {
+  open fn make(): string => "maker"
+}
+class LateMaker : Maker {
+  override fn make(): string => Later().name
+}
+fn pickMaker(): Maker => LateMaker()
+let made2: string = pickMaker().make()
+class Holder {
+  let item: string => Later().name + "!"
+}
+let held: string = Holder().item
+class Later {
+  var name: string = "later"
+}
+
+// r5 #12: a static initializer calling a `static fn` of its own class (TS: the class name is bound inside it)
+class Api {
+  static let base: string = "/api"
+  static let users: string = Api.join("users")
+  static fn join(p: string): string => Api.base + "/" + p
+}
+
+fn main() {
+  print(shop.stock.name)
+  print(first.name)
+  print(lvl)
+  print(bx.v)
+  print(config.name)
+  print(widget.id)
+  print(k.v)
+  print(made.hello() + made.mid() + made.label.t)
+  print(Root.count)
+  print(made2)
+  print(held)
+  print(Api.users)
+}

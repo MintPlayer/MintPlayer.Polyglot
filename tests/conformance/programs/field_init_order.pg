@@ -1,0 +1,51 @@
+// P40 review r5 #7: a subclass's field initializers run AFTER the base constructor on every target. C# natively runs
+// them before it, so the C# plugin assigns a subclass's non-literal initializers in its constructor, right after the
+// base call (manifest data: `decl.deferredInitFields`). C# printed `2|1` and `cBC` here.
+import "std.io"
+
+class Ids {
+  static var next: i32 = 0
+}
+fn nextId(): i32 {
+  Ids.next = Ids.next + 1
+  return Ids.next
+}
+open class Entity {
+  var id: i32 = nextId()
+}
+class User : Entity {
+  var serial: i32 = nextId()
+  var level: i32 = 3
+}
+
+class Log {
+  static var text: string = ""
+}
+fn note(s: string): i32 {
+  Log.text = Log.text + s
+  return 1
+}
+open class Base {
+  constructor() {
+    note("B")
+  }
+}
+class Child : Base {
+  var k: i32 = note("c")
+  let name: string = "n" + "m"
+  constructor() {
+    super()
+    note("C")
+  }
+}
+
+fn main() {
+  let u = User()
+  print(u.id)
+  print(u.serial)
+  print(u.level)
+  let c = Child()
+  print(Log.text)
+  print(c.k)
+  print(c.name)
+}

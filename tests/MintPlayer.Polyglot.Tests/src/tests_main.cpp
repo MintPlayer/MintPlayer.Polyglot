@@ -1900,6 +1900,188 @@ int main() {
                 refusesR4("fn f(): i32 {\n  let v = 2147483648\n  return 0\n}\n", "does not fit 'i32'",
                           "an inferred i32 local refuses an out-of-range literal");
             }
+            // P40 review r5 — classes / construction / names / overloads half: each refusal by message, each fix by
+            // emission. (The four-target behaviour is pinned by the conformance programs and refusal fixtures.)
+            {
+                auto refusesR5 = [&](const std::string& src, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget("csharp"));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r5: " + label);
+                };
+                auto emitsR5 = [&](const std::string& src, const char* target, std::initializer_list<const char*> frags,
+                                   std::initializer_list<const char*> absent, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool ok = r.ok;
+                    for (const char* f : frags) ok = ok && has(r.code, f);
+                    for (const char* f : absent) ok = ok && !has(r.code, f);
+                    check(ok, "r5: " + label);
+                };
+                // #4: a class a module value reaches is defined before the value.
+                {
+                    const std::string o1 = "class Shop {\n  var stock: Item\n  constructor() {\n    this.stock = Item()\n  }\n}\n"
+                                           "let shop: Shop = Shop()\nclass Item {\n  var n: i32 = 1\n}\n";
+                    EmitResult r = compileStd(o1, findTarget("typescript"));
+                    const auto item = r.code.find("class Item"), val = r.code.find("let shop");
+                    check(r.ok && item != std::string::npos && val != std::string::npos && item < val,
+                          "r5: TS defines a class a module value reaches through a constructor before the value (#4)");
+                }
+                refusesR5("class Shop {\n  var n: i32\n  constructor() {\n    this.n = later\n  }\n}\n"
+                          "let shop: Shop = Shop()\nlet later: i32 = 4\n",
+                          "calls 'Shop', which reads 'later', declared later", "a later value read through a constructor (#4)");
+                refusesR5("class Config {\n  static let base: string = \"/api\"\n  static let users: string = join(\"u\")\n}\n"
+                          "fn join(p: string): string => Config.base + p\n",
+                          "while class 'Config' is still being defined", "a static initializer reaching its class from outside (#12)");
+                // #5/#6: lambdas and escapes are followed; a class nothing derives from is not checked.
+                refusesR5("open class B {\n  var l: string = \"\"\n  constructor() {\n    this.l = (() => this.d())()\n  }\n"
+                          "  open fn d(): string => \"b\"\n}\n",
+                          "(through a lambda)", "an open call through an in-place lambda in a constructor (#5)");
+                refusesR5("fn show(w: W): string => w.d()\nopen class W {\n  var l: string = \"\"\n  constructor() {\n"
+                          "    this.l = show(this)\n  }\n  open fn d(): string => \"w\"\n}\n",
+                          "(through 'show')", "'this' passed to a function that calls an open method (#5)");
+                check(compileStd("open class W {\n  open fn r(): string => \"w\"\n}\nclass B : W {\n  var l: string\n"
+                                 "  constructor() {\n    super()\n    this.l = \"\"\n    this.l = this.r()\n  }\n"
+                                 "  override fn r(): string => \"b\"\n}\n", findTarget("csharp")).ok,
+                      "r5: a class nothing derives from may call its own override in its constructor (#6)");
+                // #7: C# assigns a subclass's non-literal field initializers after the base call.
+                emitsR5("fn n(): i32 => 1\nopen class A {\n  var a: i32 = n()\n}\nclass B : A {\n  var b: i32 = n()\n  var c: i32 = 3\n}\n",
+                        "csharp", {"public int b;", "public int c = 3;", "this.b = PolyglotProgram.n();"}, {},
+                        "C# defers a subclass's non-literal field initializer into its constructor (#7)");
+                // #8, #10
+                refusesR5("open class A {\n  constructor(v: i32) {\n  }\n}\nclass B : A {\n  constructor(n: i32) {\n"
+                          "    let d = n * 2\n    super(d)\n  }\n}\n", "a statement before", "a statement before super(...) (#8)");
+                refusesR5("open class A {\n  open static fn m(): i32 => 1\n}\n", "cannot be 'open'", "open on a static (#10)");
+                // #9: real abstract members.
+                {
+                    const std::string ab = "abstract class S {\n  abstract fn a(): i32\n}\nclass T : S {\n  override fn a(): i32 => 4\n}\n";
+                    emitsR5(ab, "csharp", {"abstract class S", "public abstract int a();", "public override int a()"}, {},
+                            "C# emits an abstract class and method (#9)");
+                    emitsR5(ab, "typescript", {"abstract class S", "abstract a(): number;"}, {}, "TS emits abstract members (#9)");
+                    emitsR5(ab, "python", {"class S(abc.ABC):", "@abc.abstractmethod", "import abc"}, {},
+                            "Python emits an abc.ABC class with @abc.abstractmethod (#9)");
+                    emitsR5(ab, "php", {"abstract class S", "abstract public function a();"}, {}, "PHP emits abstract members (#9)");
+                    refusesR5("abstract class S {\n  abstract fn a(): i32\n}\nfn f(): i32 => S().a()\n",
+                              "cannot construct abstract class 'S'", "constructing an abstract class (#9)");
+                }
+                // #11: omitted record defaults are filled at the construction.
+                emitsR5("record P(x: i32, y: i32 = 5)\nfn f(): i32 => P(1).y\n", "csharp", {"new P(1, 5)"}, {},
+                        "an omitted record default is filled at the construction (#11)");
+                // #13/#14 (one module): declarations alone decide a clash; a lone declaration keeps its name.
+                emitsR5("fn same<T>(x: T): T => x\nfn same<U>(x: U, y: i32): U => x\nfn f(): i32 => 1\n", "csharp", {"same<T>(", "same<U>("},
+                        {"same__"}, "two declarations with different C# signatures keep plain names (#13)");
+                emitsR5("fn d(s: string): string => s\nfn d(s: string?): string => \"n\"\nfn f(): string => d(\"a\")\n", "csharp",
+                        {"d__string(string s)", "d__stringOrNull(string? s)"}, {}, "string / string? declarations get distinct link names (#13)");
+                // #15
+                refusesR5("union Shape {\n  Circle(r: i32)\n  Square(s: i32)\n}\nfn kind(s: Shape): i32 => 1\nfn f(): i32 => kind(5)\n",
+                          "cannot convert 'i32' to 'Shape'", "an i32 into a union parameter (#15)");
+                // #16
+                emitsR5("fn id(n: i32): i32 => n\nfn f(): i32 => id(1)\n", "python", {"def id_("}, {}, "Python escapes a user fn 'id' (#16)");
+                emitsR5("fn intdiv(a: i32, b: i32): i32 => a\nfn f(): i32 => intdiv(1, 2)\n", "php", {"function intdiv_pg("}, {},
+                        "PHP suffixes a user fn named like a builtin its templates call (#16)");
+                emitsR5("class Symbol {\n  var n: i32 = 1\n}\nfn f(): i32 => Symbol().n\n", "typescript", {"class Symbol"}, {},
+                        "TS accepts a class named Symbol (no template uses the global) (#16)");
+                refusesR5("class Error {\n  var v: i32 = 1\n}\n", "redeclares the std core type 'Error'", "a user class Error (#16)");
+                // #17, #24
+                check(compileStd("fn c(): i32 => 4\nfn f() {\n  var _last = 0\n  _last = c()\n}\n", findTarget("csharp")).ok,
+                      "r5: a '_' local later assigned a call result is accepted (#17)");
+                emitsR5("fn f() {\n  let g = () => {\n    let _w = 4\n  }\n  g()\n}\n", "python", {"pass"}, {},
+                        "Python gives an elided-only local def a 'pass' (#17)");
+                emitsR5("import \"std.strings\"\nfn f(_: bool, s: string): bool {\n  s.len()\n  return _\n}\n", "csharp",
+                        {"bool __u", "_ = s.Length;", "return __u;"}, {}, "C# respells a user '_' so the discard cannot bind it (#24)");
+                // Part 2.
+                refusesR5("fn five(): i32 => 5\nfn f() {\n  five\n}\n", "names a function but does not call it",
+                          "a bare function name as a statement");
+                emitsR5("class point {\n  var x: i32 = 1\n}\n", "csharp", {"#pragma warning disable CS8981"}, {},
+                        "C# disables CS8981 for an all-lowercase type name");
+                emitsR5("class Point {\n  var x: i32 = 1\n}\n", "csharp", {}, {"CS8981"},
+                        "C# emits no CS8981 pragma without an all-lowercase type name");
+                check(compileStd("let twice: (i32) => i32 = (x: i32) => x * 2\nfn f(): i32 => twice(4)\n", findTarget("csharp")).ok,
+                      "r5: a module value of function type is callable by name");
+            }
+            // P40 review r5 #16: each target's runtime-name lists cover every identifier its templates and prelude
+            // reference unqualified (a call `x(`, `new X`, or the head of `X.` / `X::`) — so a user name can never shadow
+            // what the generated code calls, and the lists cannot drift again. Comments and string literals are skipped;
+            // the allowlist holds names the templates DECLARE themselves (helper locals, the runtime class's own helpers,
+            // a record's `equals`), contextual keywords, and `main` (the user's own entry function).
+            {
+                const std::map<std::string, std::set<std::string>> allow = {
+                    {"csharp", {"Equals", "GetHashCode", "ReferenceEquals", "LowerAscii", "UpperAscii", "Show", "Str",
+                                "a", "dg", "digits", "fm", "s", "sb", "x", "global", "var", "when", "main"}},
+                    {"typescript", {"as", "catch", "for", "if", "super", "constructor"}},
+                    {"python", {"a", "b", "d", "m", "n", "r", "s", "x", "cache", "ctypes"}},
+                    {"php", {"equals"}},
+                };
+                for (const char* t : {"csharp", "typescript", "python", "php"}) {
+                    std::string text;
+                    cli::readFile(cli::executablePath().parent_path() / "plugins" / t / "polyglot-plugin.json", text);
+                    std::string err;
+                    const json::Value doc = json::parse(text, err);
+                    const json::Value& ids = doc["spec"]["identifiers"].isNull() ? doc["identifiers"] : doc["spec"]["identifiers"];
+                    const bool ci = ids["caseInsensitive"].asBool();
+                    auto key = [&](std::string n) {
+                        if (ci) for (char& c : n) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                        return n;
+                    };
+                    std::set<std::string> covered;
+                    for (const char* list : {"keywords", "reserved", "runtimeNames", "globals"})
+                        for (const auto& v : ids[list].items()) covered.insert(key(v.asString()));
+                    for (const auto& v : ids["functionBuiltins"]["names"].items()) covered.insert(key(v.asString()));
+                    std::vector<std::string> strings;
+                    std::function<void(const json::Value&)> walk = [&](const json::Value& v) {
+                        if (v.kind == json::Value::Kind::String) strings.push_back(v.asString());
+                        for (const auto& a : v.items()) walk(a);
+                        for (const auto& [k, m] : v.members) if (k != "identifiers") walk(m);
+                    };
+                    walk(doc);
+                    auto idc = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+                    std::set<std::string> missing;
+                    for (std::string s : strings) {
+                        bool path = !s.empty();
+                        for (char c : s) if (!(idc(c) || c == '.' || c == '#')) path = false;
+                        if (path) continue; // a template path (`decl.name`), not code
+                        std::string code; // comments and string literals removed
+                        for (std::size_t i = 0; i < s.size(); ++i) {
+                            const bool lineStart = i == 0 || s[i - 1] == '\n' || s[i - 1] == ' ';
+                            if (lineStart && (s.compare(i, 3, "// ") == 0 || s.compare(i, 2, "# ") == 0)) {
+                                while (i < s.size() && s[i] != '\n') ++i;
+                                code += '\n';
+                                continue;
+                            }
+                            if (s[i] == '"' || s[i] == '\'') {
+                                const char q = s[i];
+                                for (++i; i < s.size() && s[i] != q; ++i) if (s[i] == '\\') ++i;
+                                code += " \"\" ";
+                                continue;
+                            }
+                            code += s[i];
+                        }
+                        for (std::size_t i = 0; i < code.size(); ++i) {
+                            if (!(std::isalpha(static_cast<unsigned char>(code[i])) || code[i] == '_')) continue;
+                            if (i > 0 && (idc(code[i - 1]) || code[i - 1] == '$' || code[i - 1] == '.' || code[i - 1] == '>' ||
+                                          code[i - 1] == ':' || code[i - 1] == '\\')) {
+                                while (i < code.size() && idc(code[i])) ++i;
+                                continue;
+                            }
+                            std::size_t j = i;
+                            while (j < code.size() && idc(code[j])) ++j;
+                            const std::string name = code.substr(i, j - i);
+                            std::size_t k = j;
+                            while (k < code.size() && code[k] == ' ') ++k;
+                            const bool use = k < code.size() &&
+                                             (code[k] == '(' || code.compare(k, 2, "::") == 0 ||
+                                              (code[k] == '.' && k + 1 < code.size() && std::isalpha(static_cast<unsigned char>(code[k + 1]))));
+                            if (use && name[0] != '_' && name != "new" && !covered.count(key(name)) && !allow.at(t).count(name))
+                                missing.insert(name);
+                            i = j;
+                        }
+                    }
+                    std::string list;
+                    for (const auto& m : missing) list += " " + m;
+                    check(err.empty() && missing.empty(),
+                          std::string("r5: every unqualified runtime reference in the ") + t +
+                              " manifest is in its identifier lists (uncovered:" + list + ")");
+                }
+            }
             // A bare import of an extension-only module names its functions on TS and Python.
             {
                 MapModuleResolver res{{"./ext", "extension fn i32.twice(): i32 => this * 2\n"}};

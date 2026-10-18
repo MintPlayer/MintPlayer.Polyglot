@@ -1,0 +1,10 @@
+// REFUSED (P40 review r5 #9): an abstract method needs an abstract class (C# CS0513, TS1244).
+import "std.io"
+
+class S {
+  abstract fn a(): i32
+}
+
+fn main() {
+  print(1)
+}

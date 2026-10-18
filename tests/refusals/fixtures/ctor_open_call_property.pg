@@ -1,0 +1,19 @@
+// REFUSED (P40 review r5 #5): a computed property read in the constructor calls the open method.
+import "std.io"
+
+open class W {
+  var label: string = ""
+  constructor() {
+    this.label = this.shown
+  }
+  open fn describe(): string => "w"
+  let shown: string => this.describe()
+}
+class B : W {
+  var extra: string = "X"
+  override fn describe(): string => "b" + this.extra
+}
+
+fn main() {
+  print(B().label)
+}
