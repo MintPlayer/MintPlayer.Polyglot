@@ -1902,6 +1902,29 @@ int main() {
                 refusesR4("fn f(): i32 {\n  let v = 2147483648\n  return 0\n}\n", "does not fit 'i32'",
                           "an inferred i32 local refuses an out-of-range literal");
             }
+            // Review round 6 — init-order/constructors half: a static computed property keeps `static` on every target
+            // (its four-target behaviour is pinned by conformance static_computed_property), and a static property
+            // SETTER refuses on Python by its capability key (a class-level assignment bypasses any descriptor).
+            {
+                const std::string sp = "class Cfg {\n  static var raw: i32 = 1\n  static var level: i32 {\n"
+                                       "    get => Cfg.raw * 2\n    set(v) { Cfg.raw = v }\n  }\n}\n"
+                                       "fn f(): i32 {\n  Cfg.level = 4\n  return Cfg.level\n}\n";
+                EmitResult py = compileStd(sp, findTarget("python"));
+                bool named = false;
+                for (const auto& d : py.diagnostics) if (has(d.message, "does not support propertySetters:static")) named = true;
+                check(!py.ok && named, "r6: a static property setter refuses on Python (propertySetters:static)");
+                EmitResult cs = compileStd(sp, findTarget("csharp"));
+                check(cs.ok && has(cs.code, "public static int level {"), "r6: C# emits a static property with its setter");
+                EmitResult ts = compileStd(sp, findTarget("typescript"));
+                check(ts.ok && has(ts.code, "static get level()") && has(ts.code, "static set level("),
+                      "r6: TS emits a static getter and setter");
+                const std::string gp = "class Cfg {\n  static let level: i32 => 3\n}\nfn f(): i32 => Cfg.level\n";
+                EmitResult pyg = compileStd(gp, findTarget("python"));
+                check(pyg.ok && has(pyg.code, "Cfg.level()") && !has(pyg.code, "@builtins.property"),
+                      "r6: Python emits a static property as a static method and calls it");
+                EmitResult phg = compileStd(gp, findTarget("php"));
+                check(phg.ok && has(phg.code, "Cfg::level()"), "r6: PHP calls a static property's getter");
+            }
             // P40 review r5 — nullability / functions half: each refusal by message, each fix by emission; the accepted
             // neighbours compile.
             // P40 review r5 — classes / construction / names / overloads half: each refusal by message, each fix by

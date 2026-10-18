@@ -13,7 +13,8 @@
     "interfaces": "emulated",
     "interfaces:runtimeIdentity": "native",
     "attributes:target.field": false,
-    "attributes:target.param": false
+    "attributes:target.param": false,
+    "propertySetters:static": false
   },
   "spec": {
     "name": "python",
@@ -388,7 +389,8 @@
                   "get": "node.field"
                 }
               ]
-            }
+            },
+            { "case": { "when": [ [ { "and": [ { "eq": [ "node.isProperty", "true" ] }, { "has": "node.staticType" } ] }, "()" ] ] } }
           ]
         }
       }
@@ -2394,12 +2396,15 @@
           "case": {
             "when": [
               [
-                {
-                  "eq": [
-                    "decl.kind",
-                    "property"
-                  ]
-                },
+                { "and": [
+                  {
+                    "eq": [
+                      "decl.kind",
+                      "property"
+                    ]
+                  },
+                  { "eq": [ "decl.isStatic", "false" ] }
+                ] },
                 { "line": { "tmpl": [ { "fn": "require", "args": ["pyBuiltins"] }, "@builtins.property" ] } }
               ]
             ]

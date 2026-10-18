@@ -1605,6 +1605,7 @@
                           "line": {
                             "tmpl": [
                               "public ",
+                              { "case": { "when": [ [ { "eq": [ "decl.isStatic", "true" ] }, "static " ] ] } },
                               {
                                 "type": "decl.returnType"
                               },
@@ -1728,6 +1729,7 @@
                       "line": {
                         "tmpl": [
                           "public ",
+                          { "case": { "when": [ [ { "eq": [ "decl.isStatic", "true" ] }, "static " ] ] } },
                           {
                             "type": "decl.returnType"
                           },
@@ -1756,6 +1758,7 @@
                       "line": {
                         "tmpl": [
                           "public ",
+                          { "case": { "when": [ [ { "eq": [ "decl.isStatic", "true" ] }, "static " ] ] } },
                           {
                             "type": "decl.returnType"
                           },

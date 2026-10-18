@@ -1982,6 +1982,7 @@
                   "block": {
                     "head": {
                       "tmpl": [
+                        { "case": { "when": [ [ { "eq": [ "decl.isStatic", "true" ] }, "static " ] ] } },
                         "get ",
                         {
                           "fn": "ident",
@@ -2043,6 +2044,7 @@
                           "block": {
                             "head": {
                               "tmpl": [
+                                { "case": { "when": [ [ { "eq": [ "decl.isStatic", "true" ] }, "static " ] ] } },
                                 "set ",
                                 {
                                   "fn": "ident",
