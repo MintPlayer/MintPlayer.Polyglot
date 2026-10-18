@@ -146,6 +146,8 @@ public:
     // A native compound assignment on a built-in scalar slot is faithful to the Binary rule (see
     // BackendSpec::nativeCompoundAssign); otherwise lowering expands it with single evaluation.
     virtual bool nativeCompoundAssign() const { return false; }
+    // A variable operand is read late (BackendSpec::operandSnapshot non-empty, review r4 #9).
+    virtual bool lateOperandReads() const { return false; }
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }

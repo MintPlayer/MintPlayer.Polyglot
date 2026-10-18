@@ -1258,15 +1258,30 @@ private:
                     // P40 review r3 2(f): redeclaring an inherited INSTANCE member without `override` is member
                     // hiding — C# binds it non-virtually (CS0108 is only a warning: `Base`-typed access sees the
                     // base member), while TS/Python/PHP override it. Refused, whatever the member kind.
-                    bool isStatic = false;
+                    bool isStatic = m.kind == MemberKind::Const;
                     for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
-                    if (isStatic || m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator) continue;
+                    if (m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator) continue;
                     for (const auto& b : bases) {
                         if (b.kind != TypeRef::Kind::Named || b.name.empty() || interfaceNames_.count(b.name)) continue;
                         MemberHit hit = findMemberOn(b, m.name);
-                        if (!hit.m || hit.m->isStatic || hit.m->kind == MemberKind::Constructor ||
-                            interfaceNames_.count(hit.owner))
+                        if (!hit.m || hit.m->kind == MemberKind::Constructor || interfaceNames_.count(hit.owner))
                             continue;
+                        // P40 review r4 #6: statics hide too. A static over an instance member (or the reverse) is
+                        // a PHP fatal ("Cannot make static method … non static"); a static over a static is C#
+                        // CS0108 (an error under warnings-as-errors) and TS4114 under noImplicitOverride.
+                        const bool hitStatic = hit.m->isStatic || hit.m->kind == MemberKind::Const;
+                        if (isStatic || hitStatic) {
+                            diags_.error(m.namePos, "'" + m.name + "' redeclares " +
+                                                        std::string(hitStatic ? "the static" : "the instance") +
+                                                        " member '" + hit.owner + "." + m.name + "' as " +
+                                                        (isStatic ? "a static" : "an instance") + " member — rename "
+                                                        "it; Polyglot has no member hiding (" +
+                                                        (isStatic && hitStatic
+                                                             ? "C# hides a static non-virtually, CS0108; TS requires "
+                                                               "'override', TS4114"
+                                                             : "PHP refuses a static/instance clash") + ")");
+                            break;
+                        }
                         const bool bothMethods = m.kind == MemberKind::Method && hit.m->kind == MemberKind::Method;
                         diags_.error(m.namePos, "'" + m.name + "' redeclares a member inherited from '" + hit.owner + "' — " +
                                                     (bothMethods && hit.m->isOpen
@@ -1365,30 +1380,78 @@ private:
     // A float constant expression (`1.0 / 60.0`, `-2.5 * 4.0`): folded at compile time so a default stays a plain
     // literal on every target (a PHP default may not call a helper; Python would evaluate it once). Only `+ - * /`
     // over float literals (and int literals inside them) fold; an infinity or NaN result does not.
-    static bool foldFloat(const Expr* e, double& v, bool& sawFloat) {
-        if (!e) return false;
-        if (e->kind == ExprKind::FloatLit) { sawFloat = true; v = std::strtod(e->text.c_str(), nullptr); return true; }
+    // P40 review r4 #11: the fold follows the expression's real typed semantics — an int-only subexpression is
+    // i32 arithmetic (`1 / 2` is 0, as `print(1 / 2 + 0.5)` prints 0.5), widened to f64 only where it meets a
+    // float. An i32 result out of range, or an integer division by zero, is not folded (the default is then
+    // refused as non-constant). A non-finite result — at a literal (`1e400`), a negation or an operator — is
+    // reported as NonFinite: no target can spell it as a constant default.
+    enum class Fold { No, Ok, NonFinite };
+    struct FoldVal { bool isInt = false; long long i = 0; double d = 0; double asDouble() const { return isInt ? static_cast<double>(i) : d; } };
+    static bool finite(double d) { return d == d && d - d == 0; }
+    static bool inI32(long long x) { return x >= -2147483648LL && x <= 2147483647LL; }
+    static Fold foldConst(const Expr* e, FoldVal& v, bool& sawFloat) {
+        if (!e) return Fold::No;
+        if (e->kind == ExprKind::FloatLit) {
+            sawFloat = true; v.isInt = false; v.d = std::strtod(e->text.c_str(), nullptr);
+            return finite(v.d) ? Fold::Ok : Fold::NonFinite;
+        }
         if (e->kind == ExprKind::IntLit) {
-            for (char c : e->text) if (!std::isdigit(static_cast<unsigned char>(c))) return false;
-            v = std::strtod(e->text.c_str(), nullptr);
-            return true;
+            if (e->text.empty() || e->text.size() > 10) return Fold::No;
+            for (char c : e->text) if (!std::isdigit(static_cast<unsigned char>(c))) return Fold::No;
+            v.isInt = true; v.i = std::strtoll(e->text.c_str(), nullptr, 10);
+            return inI32(v.i) ? Fold::Ok : Fold::No;
         }
-        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldFloat(e->lhs.get(), v, sawFloat)) return false; v = -v; return true; }
+        if (e->kind == ExprKind::Unary && e->text == "-") {
+            Fold f = foldConst(e->lhs.get(), v, sawFloat);
+            if (f != Fold::Ok) return f;
+            if (v.isInt) { v.i = -v.i; return inI32(v.i) ? Fold::Ok : Fold::No; }
+            v.d = -v.d;
+            return Fold::Ok;
+        }
         if (e->kind == ExprKind::Binary && (e->text == "+" || e->text == "-" || e->text == "*" || e->text == "/")) {
-            double a, b;
-            if (!foldFloat(e->lhs.get(), a, sawFloat) || !foldFloat(e->rhs.get(), b, sawFloat)) return false;
-            v = e->text == "+" ? a + b : e->text == "-" ? a - b : e->text == "*" ? a * b : a / b;
-            return v == v && v - v == 0; // finite
+            FoldVal a, b;
+            Fold fa = foldConst(e->lhs.get(), a, sawFloat);
+            if (fa != Fold::Ok) return fa;
+            Fold fb = foldConst(e->rhs.get(), b, sawFloat);
+            if (fb != Fold::Ok) return fb;
+            const char op = e->text[0];
+            if (a.isInt && b.isInt) {
+                v.isInt = true;
+                if (op == '/') { if (b.i == 0) return Fold::No; v.i = a.i / b.i; } // C-style truncation, as i32 `/`
+                else v.i = op == '+' ? a.i + b.i : op == '-' ? a.i - b.i : a.i * b.i;
+                return inI32(v.i) ? Fold::Ok : Fold::No;
+            }
+            const double x = a.asDouble(), y = b.asDouble();
+            v.isInt = false;
+            v.d = op == '+' ? x + y : op == '-' ? x - y : op == '*' ? x * y : x / y;
+            return finite(v.d) ? Fold::Ok : Fold::NonFinite;
         }
-        return false;
+        return Fold::No;
     }
 
     void checkCallSiteDefaults(std::vector<Param>& ps, const std::string& what) {
         for (auto& p : ps) {
             if (!p.hasDefault || !p.defaultValue) continue;
+            if (p.defaultValue->kind == ExprKind::FloatLit) { // a bare literal is kept as written, if finite
+                FoldVal lv; bool sf = false;
+                if (foldConst(p.defaultValue.get(), lv, sf) == Fold::NonFinite) {
+                    diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
+                                 "the default of '" + p.name + "' in " + what + " is not a finite number — no "
+                                 "target can spell an infinity or NaN as a constant default");
+                    continue;
+                }
+            }
             if (p.defaultValue->kind == ExprKind::Binary || p.defaultValue->kind == ExprKind::Unary) {
-                double fv = 0; bool sawFloat = false;
-                if (foldFloat(p.defaultValue.get(), fv, sawFloat) && sawFloat) {
+                FoldVal fold; bool sawFloat = false;
+                const Fold folded = foldConst(p.defaultValue.get(), fold, sawFloat);
+                if (folded == Fold::NonFinite) {
+                    diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
+                                 "the default of '" + p.name + "' in " + what + " is not a finite number — no "
+                                 "target can spell an infinity or NaN as a constant default");
+                    continue;
+                }
+                const double fv = fold.asDouble();
+                if (folded == Fold::Ok && sawFloat) {
                     std::string txt;
                     for (int prec = 15; prec <= 17; ++prec) { // the shortest text that round-trips the double
                         char buf[64];

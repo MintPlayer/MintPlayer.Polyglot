@@ -133,6 +133,13 @@ struct BackendSpec {
     // evaluated once, so the Binary rule's masking applies; the emitter folds the result back to `a op= b`
     // only where that rule rendered the plain infix form.
     bool nativeCompoundAssign = false;
+    // P40 review r4 #9: non-empty = this target reads a VARIABLE operand of a native binary operator (and the
+    // target of a native compound assignment) only when the operator executes — after its right operand ran.
+    // PHP does (a CV operand: `$n + bump()` sees bump()'s write to `$n`, so did `$n += bump()`). C#, JS and
+    // Python read left to right. When a right operand may have side effects, lowering marks such a left
+    // operand and the emitter snapshots it through this template — `{tmp}` is a fresh temp name, `{0}` the
+    // operand's text (PHP: `(${tmp} = {0})`) — and an expanded compound is never folded back to `op=`.
+    std::string operandSnapshot;
 
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming

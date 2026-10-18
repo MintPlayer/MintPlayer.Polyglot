@@ -1922,7 +1922,7 @@
                               [
                                 {
                                   "eq": [
-                                    "decl.hasSuper",
+                                    "decl.baseHasInit",
                                     "true"
                                   ]
                                 },
@@ -1978,7 +1978,7 @@
                                   "and": [
                                     {
                                       "eq": [
-                                        "decl.hasSuper",
+                                        "decl.baseHasInit",
                                         "false"
                                       ]
                                     },

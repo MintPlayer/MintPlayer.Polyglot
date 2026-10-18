@@ -1,0 +1,7 @@
+// REFUSED (P40 review r4 #11): a default that folds to an infinity (here a negated overflowing literal) has
+// no constant spelling on any target — it emitted `-inf.0`, which none of them compiles.
+fn huge(x: f64 = -1e400): f64 => x
+
+fn main() {
+  print(huge())
+}

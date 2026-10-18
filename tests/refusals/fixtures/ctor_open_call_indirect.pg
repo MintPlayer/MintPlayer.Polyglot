@@ -1,0 +1,19 @@
+// REFUSED (P40 review r4 #5): the overridable call is reached through a non-open helper the constructor
+// calls on `this` — the subclass override still runs before the subclass's field initializer.
+open class Base {
+  constructor() {
+    this.announce()
+  }
+  fn announce() {
+    print(this.describe())
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var label: string = "derived-label"
+  override fn describe(): string => "d:" + this.label
+}
+
+fn main() {
+  print(Derived().describe())
+}

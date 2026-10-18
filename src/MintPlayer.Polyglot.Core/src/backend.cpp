@@ -98,6 +98,7 @@ public:
     bool forbidsShadowedLocals() const override { return spec_.forbidsShadowedLocals; }
     bool expressionOnlyLambdas() const override { return spec_.expressionOnlyLambdas; }
     bool nativeCompoundAssign() const override { return spec_.nativeCompoundAssign; }
+    bool lateOperandReads() const override { return !spec_.operandSnapshot.empty(); }
     const std::unordered_map<std::string, StdBinding>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }

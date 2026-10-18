@@ -1,0 +1,81 @@
+import "std.io"
+
+// P40 review r4 #3/#4: every target runs the base constructor and the base's field initializers — with a
+// written `super()`, without one, and for a subclass that has no constructor at all — and an inherited field
+// may be read once the base constructor ran.
+
+// A base whose only constructor work is a field initializer; the subclass writes `super()`.
+open class Base {
+  var x: i32 = 1
+}
+class Child : Base {
+  var y: i32
+  constructor() {
+    super()
+    this.y = this.x + 10
+  }
+}
+
+// A base with a constructor; the subclass has a field initializer and no constructor.
+open class Widget {
+  var label: string
+  constructor() {
+    this.label = "w"
+    print("widget ctor")
+  }
+}
+class Button : Widget {
+  let caption: string = "ok"
+}
+
+// A subclass constructor without `super()` still chains (TS threw "Must call super constructor").
+open class Plain {
+  var n: i32 = 3
+  fn helper(): string => "helper"
+}
+class Implicit : Plain {
+  var m: i32
+  constructor() {
+    this.m = this.n * 2
+    print(this.helper())
+  }
+}
+
+// A three-level chain: the grandparent's initializer runs through an initless middle class.
+open class Root {
+  var origin: string = "root"
+}
+open class Middle : Root {
+}
+class Leaf : Middle {
+  var depth: i32
+  constructor() {
+    super()
+    this.depth = 3
+  }
+}
+
+// A field read in a constructor of the declaring class, after its own initializer.
+class K {
+  var v: i32
+  var w: i32 = 7
+  constructor() {
+    this.v = this.w + 1
+  }
+}
+
+fn main() {
+  let c = Child()
+  print(c.x)
+  print(c.y)
+  let b = Button()
+  print(b.label)
+  print(b.caption)
+  let i = Implicit()
+  print(i.n)
+  print(i.m)
+  let l = Leaf()
+  print(l.origin)
+  print(l.depth)
+  print(K().v)
+}

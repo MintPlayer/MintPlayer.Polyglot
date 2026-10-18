@@ -27,6 +27,8 @@ namespace mintplayer::polyglot {
 const char* exprKindName(ir::ExprKind k);
 bool boundTemplateIsAtomic(const BackendSpec& spec, const ir::Bound& b);
 bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c);
+// Lexically a primary expression (identifier chars, brackets, member/scope punctuation only) — see .cpp.
+bool textIsPrimary(const std::string& t);
 
 // The shared EvalContext over an ir::Expr + a BackendSpec — the seam that plugs the P18 rule interpreter
 // into the real IR. Everything target-INDEPENDENT lives here: the path->IR mapping (`node.lhs`,

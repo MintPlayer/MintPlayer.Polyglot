@@ -1,0 +1,23 @@
+// REFUSED (P40 review r4 #5): a base constructor calling an overridable method runs the subclass override
+// before the subclass's fields are initialized (C# `button:`, TS `button:undefined`, Python AttributeError).
+open class Widget {
+  var label: string
+  constructor() {
+    this.label = "w"
+    print(this.describe())
+  }
+  open fn describe(): string => "widget"
+}
+
+class Button : Widget {
+  let caption: string
+  constructor() {
+    super()
+    this.caption = "ok"
+  }
+  override fn describe(): string => "button:" + this.caption
+}
+
+fn main() {
+  print(Button().describe())
+}
