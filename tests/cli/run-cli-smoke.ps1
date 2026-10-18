@@ -1197,6 +1197,42 @@ try {
             Check ($r.Rc -eq 0 -and $rc.Rc -eq 0 -and $rb.Rc -eq 0 -and $rb.Out -notmatch '~>' -and $dirs -ceq 'gen/sub') `
                 "review r8: --out GEN/SUB over an existing gen/sub renames nothing (check $($rc.Rc), build $($rb.Rc); was 3, 0 with gen->GEN, sub->SUB; dirs: $dirs)"
 
+            # review r9 (gating, Spark pg22b_c\h4x h4x.sh + h4b.sh): r8 exempted every ANCESTOR of a caller root, so a
+            # caller root typed through the config folder in H4's case (`proj/out` over the disk's `Proj`) exempted
+            # `proj` for H4's route `../proj/gen/a.ts` too — which LEAVES that root: --check 3, build 0 writing Proj/gen.
+            # Only a route INTO a root skips the root's components now; each shape is refused like H4, nothing written.
+            # (c) needs a child cwd typed `...\proj`: Push-Location respells it as on disk, ProcessStartInfo does not.
+            function PgTypedCwd([string]$Dir, [string[]]$PgArgs) {
+                $psi = [System.Diagnostics.ProcessStartInfo]::new((Resolve-Path $Cli).Path)
+                foreach ($a in $PgArgs) { $psi.ArgumentList.Add($a) }
+                $psi.WorkingDirectory = $Dir
+                $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+                $p = [System.Diagnostics.Process]::Start($psi)
+                $so = $p.StandardOutput.ReadToEndAsync(); $se = $p.StandardError.ReadToEndAsync()
+                $p.WaitForExit()
+                return [pscustomobject]@{ Rc = $p.ExitCode; Out = $so.Result + $se.Result }
+            }
+            foreach ($shape in @("out", "owned", "msbuild")) {
+                $parent = Join-Path $work "rv9-h4-$shape"
+                $x = New-Proj (Join-Path $parent "Proj") $h4cfg @{ "a.pg" = $fnA }
+                if ($shape -eq "msbuild") {
+                    $typed = Join-Path $parent "proj"
+                    $flags = @("build", (Join-Path $typed "a.pg"), "--out", "obj/Debug/net10.0/polyglot/.", "--root", $typed,
+                               "--record", "obj/Debug/net10.0/polyglot.outputs.json", "--build-owned", "obj/Debug/net10.0/polyglot/.")
+                    $rc = PgTypedCwd $typed ($flags + @("--check"))
+                    $rb = PgTypedCwd $typed $flags
+                } else {
+                    $flags = if ($shape -eq "out") { @("build", "proj/a.pg", "--out", "proj/out") } else { @("build", "proj/a.pg", "--build-owned", "proj/obj") }
+                    $rc = Pg $parent ($flags + @("--check"))
+                    $rb = Pg $parent $flags
+                }
+                $pat = "the directory '[^']*rv9-h4-$shape[\\/]Proj' differs from 'proj'"
+                $inProj = @(Get-ChildItem -LiteralPath $x -Force -Name | Sort-Object) -join ','
+                Check ($rc.Rc -eq 1 -and $rb.Rc -eq 1 -and $rc.Out -cmatch $pat -and $rb.Out -cmatch $pat -and $rb.Out -match 'not renamed' -and
+                       $inProj -ceq 'a.pg,pgconfig.json' -and (@(Get-ChildItem $parent -Name) -join ',') -ceq 'Proj') `
+                    "review r9 (gating): H4 beside a caller root typed through 'proj' ($shape) is refused like H4 (check $($rc.Rc), build $($rb.Rc); was 3, 0), nothing written (Proj: $inProj)"
+            }
+
 
             # Gating 1 (Spark h1\a3x.sh, a3x2.sh): a route that LEAVES the config folder compares its directories too.
             $x = New-Proj (Join-Path $work "rv5-a3x/proj") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"../web/gen/%(RecursiveDir)%(Filename)"}]}' @{ "src/Foo/a.pg" = $fnA; "src/Foo/b.pg" = $fnB }

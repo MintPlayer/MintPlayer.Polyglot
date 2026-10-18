@@ -870,6 +870,8 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
     sink.trust({}, {}, adopt);
     {
         // P40 review r8: an explicit --out is the caller's folder, matched as typed too (see OutputSink::routeRoots).
+        // P40 review r9: the same sink rule as a build — exempt only on a route INTO that root; a route leaving it
+        // (H4's `../proj/gen/…` beside `--out proj/out`) is compared.
         std::vector<fs::path> roots{entryDir, pc.found ? pc.dir : entryDir};
         std::vector<fs::path> callerRoots;
         (outDirGiven ? callerRoots : roots).push_back(outDirArg);

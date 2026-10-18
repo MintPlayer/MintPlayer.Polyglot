@@ -6348,7 +6348,10 @@ int main() {
 #ifdef _WIN32
             // Review round 8 (gating): a caller root (--out / --build-owned) typed in another case than the disk
             // (`obj/debug/…` over `obj/Debug/…`, MSBuild's `-c debug`) is never compared, refused or renamed — nor is
-            // an ancestor of it — while the project folder root alone would have compared `obj/Debug` and refused it.
+            // an ancestor of it on a route INTO it — while the project folder root alone would have compared `obj/Debug`
+            // and refused it. Review round 9 adjusted the r8 check "a route through its ancestor is never compared": a
+            // route that passes the typed ancestor `obj/debug` and then LEAVES the root's subtree (`obj/debug/other`)
+            // is no route into the root, so it is compared and refused like any other (that exemption was the H4 bug).
             {
                 const fs::path rc = tmp / "rootcase";
                 fs::create_directories(rc / "obj" / "Debug" / "net" / "polyglot");
@@ -6358,14 +6361,33 @@ int main() {
                     cli::OutputSink s(mode);
                     s.trust({}, {typed}, false);
                     s.routeRoots({rc}, {typed});
+                    const auto leaving = s.put(rc / "obj" / "debug" / "other" / "b.cs", "y");
+                    const bool leavingRefused = leaving == cli::OutputSink::Put::Refused && has(s.refusal(), "Debug' differs from 'debug'");
                     const auto inRoot = s.put(typed / "a.cs", "x");
-                    const auto viaAncestor = s.put(rc / "obj" / "debug" / "other" / "b.cs", "y");
                     std::set<std::string> names;
                     for (const auto& e : fs::directory_iterator(rc / "obj")) names.insert(e.path().filename().string());
-                    check(inRoot == cli::OutputSink::Put::Written && viaAncestor == cli::OutputSink::Put::Written &&
-                              names == std::set<std::string>{"Debug"} && s.refusal().empty(),
-                          "review r8: a caller root typed 'obj/debug' over the disk's 'obj/Debug', and a route through its "
-                          "ancestor, are never compared or renamed");
+                    check(inRoot == cli::OutputSink::Put::Written && leavingRefused &&
+                              names == std::set<std::string>{"Debug"} && s.refusal().empty() &&
+                              !fs::exists(rc / "obj" / "Debug" / "other"),
+                          "review r8/r9: a caller root typed 'obj/debug' over the disk's 'obj/Debug' is never compared or "
+                          "renamed on a route into it; a route via its ancestor that leaves its subtree is compared");
+                }
+                // Review round 9 (gating, H4): the prefix rule. A caller root typed `proj/out` beside the disk's `Proj`
+                // does not exempt a route that leaves it (`proj/gen`, H4's `../proj/gen/…`): refused, nothing written —
+                // while a route into the typed root itself is accepted.
+                const fs::path h4 = tmp / "h4prefix";
+                fs::create_directories(h4 / "Proj");
+                std::ofstream(h4 / "Proj" / "a.pg") << "// source\n";
+                for (auto mode : {cli::OutputSink::Mode::Check, cli::OutputSink::Mode::Write}) {
+                    cli::OutputSink s(mode);
+                    s.routeRoots({h4, h4 / "Proj"}, {h4 / "proj" / "out"});
+                    const bool refused = s.put(h4 / "proj" / "gen" / "a.ts", "t") == cli::OutputSink::Put::Refused &&
+                                         has(s.refusal(), "Proj' differs from 'proj'") && has(s.refusal(), "not Polyglot output");
+                    const bool intoRoot = s.put(h4 / "proj" / "out" / "a.ts", "t") == cli::OutputSink::Put::Written;
+                    std::set<std::string> names;
+                    for (const auto& e : fs::directory_iterator(h4)) names.insert(e.path().filename().string());
+                    check(refused && intoRoot && names == std::set<std::string>{"Proj"} && !fs::exists(h4 / "Proj" / "gen"),
+                          "review r9: a typed caller root exempts only routes INTO it; H4's route leaving it is refused");
                 }
                 cli::OutputSink bare(cli::OutputSink::Mode::Check); // the control: only the project root
                 bare.routeRoots({rc}, {});

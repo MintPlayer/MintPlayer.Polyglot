@@ -645,13 +645,25 @@ $r3Fixture = {
     '{ "targets": ["csharp"] }' | Set-Content (Join-Path $cc "pgconfig.json")
     "System.Console.WriteLine(PolyglotProgram.alpha());" | Set-Content (Join-Path $cc "Program.cs")
     dotnet add $cc package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    # review r9 (part 2): -v q cannot show the transpiler ran, so each build gets a NEW alpha() body and must have
+    # rewritten obj\<cfg as typed>\net8.0\polyglot\a.cs with it (an mtime from this build, the new `return N;`), and
+    # the app must print N. A skipped Polyglot target leaves the previous body (and mtime) behind: the pin fails.
+    $n = 0
     foreach ($cfgArgs in @(@(), @("-c", "debug"), @("-c", "Debug"))) {
+        $n++
+        "fn alpha(): i32 {`n  return $n`n}`n" | Set-Content (Join-Path $cc "a.pg")
+        $cfgDir = if ($cfgArgs.Count) { $cfgArgs[1] } else { "Debug" }
+        $emitted = Join-Path $cc "obj/$cfgDir/net8.0/polyglot/a.cs"
+        $before = [DateTime]::UtcNow.AddSeconds(-2) # NTFS/FAT timestamp slack
         $b = dotnet build $cc --nologo -v q @cfgArgs 2>&1 | Out-String
         $bRc = $LASTEXITCODE
         $objNames = @(Get-ChildItem (Join-Path $cc "obj") -Directory -Name) -join ','
         $label = if ($cfgArgs.Count) { $cfgArgs -join ' ' } else { "(default)" }
-        ck ($bRc -eq 0 -and $b -notmatch 'differs from' -and $objNames -ceq 'Debug') `
-            "review r8 (gating): dotnet build $label after a plain build passes and renames nothing (exit $bRc; obj: $objNames)"
+        $wrote = (Test-Path -LiteralPath $emitted) -and (Get-Item -LiteralPath $emitted).LastWriteTimeUtc -ge $before -and
+                 ((Get-Content -Raw -LiteralPath $emitted) -match "return $n;")
+        $ran = "$(dotnet run --project $cc --no-build @cfgArgs 2>&1)".Trim()
+        ck ($bRc -eq 0 -and $b -notmatch 'differs from' -and $objNames -ceq 'Debug' -and $wrote -and $ran -eq "$n") `
+            "review r8 (gating) + r9: dotnet build $label after a plain build transpiles (wrote $emitted with 'return $n;': $wrote; app prints '$ran'), passes and renames nothing (exit $bRc; obj: $objNames)"
     }
     $r
 }

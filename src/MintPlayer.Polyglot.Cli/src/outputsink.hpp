@@ -215,11 +215,14 @@ public:
     //   re-enters the folder as `proj` — that route spells `proj` itself, and a case-sensitive clone resolves it so.
     // - `callerRoots` (`--out`, `--build-owned`) are the caller's own output folders (MSBuild passes
     //   `obj/<Configuration>/<tfm>/polyglot/`, so `-c debug` types `obj/debug/…` over an `obj/Debug/` an earlier build
-    //   made). P40 review r8: such a root is never compared, refused or renamed, so it matches under its TYPED spelling
+    //   made). P40 review r8: on a route into it, such a root is never compared, refused or renamed, so it matches under its TYPED spelling
     //   as well as its disk spelling. (r7 respelled it from disk only; the project-folder root then contained the
     //   typed `obj/debug/…` and its components were compared — `dotnet build -c debug` exited 1.)
-    // Every spelling of every root is also an ANCESTOR CHAIN that is never compared (alignDirectoryCase): renaming an
-    // ancestor of a root renames the root.
+    // A route that goes INTO a root, under one of that root's spellings, never compares the root or the ancestors
+    // along that prefix (alignDirectoryCase: renaming an ancestor of a root renames the root); everything strictly
+    // below the root is compared. P40 review r9: a route that only passes an ancestor and then LEAVES the root's
+    // subtree is compared like any other — r8 skipped every ancestor of every root, so `--out proj/out` exempted
+    // H4's `../proj/gen/…` over the disk's `Proj`.
     void routeRoots(const std::vector<std::filesystem::path>& roots, const std::vector<std::filesystem::path>& callerRoots) {
         roots_.clear();
         for (const auto& r : roots) roots_.push_back(diskSpelledDir(r));
@@ -452,20 +455,28 @@ private:
         return true;
     }
 
-    // P40 review r8: is `dir` (absolute) one of the route roots, or an ancestor of one, under any stored spelling?
-    // Compared exactly, element by element: an ancestor spelled in yet another case is an ordinary component.
-    bool isRootOrAncestor(const std::filesystem::path& dir) const {
-        const std::filesystem::path d = dir.lexically_normal();
-        for (const auto& r : roots_) {
-            auto ri = r.begin();
-            bool prefix = true;
-            for (const auto& e : d) {
-                if (e.empty()) continue; // a trailing separator's empty element
-                if (ri == r.end() || *ri != e) { prefix = false; break; }
-                ++ri;
-            }
-            if (prefix) return true;
+    // Is `a` (absolute, lexically normal) `b` or an ancestor of it? Compared exactly, element by element — a
+    // component spelled in another case is a different component. Empty elements (a trailing separator) are skipped.
+    static bool isPathPrefix(const std::filesystem::path& a, const std::filesystem::path& b) {
+        auto bi = b.begin();
+        for (const auto& e : a) {
+            if (e.empty()) continue;
+            while (bi != b.end() && bi->empty()) ++bi;
+            if (bi == b.end() || *bi != e) return false;
+            ++bi;
         }
+        return true;
+    }
+
+    // P40 review r9 (narrowing r8): is `dir` a route root, or an ancestor of one, ON THE WAY INTO that root? True
+    // only when some root, under one stored spelling (typed or disk), is a prefix of `routed` — the route goes into
+    // that root — and `dir` lies along that prefix. A route that LEAVES a root's subtree (`../proj/gen/…` next to a
+    // `--out proj/out` typed over the disk's `Proj`) is compared component by component exactly as before r8 (H4):
+    // a case-sensitive clone resolves its `proj` on its own, whatever the caller typed for a sibling folder.
+    bool isRootOnRoute(const std::filesystem::path& dir, const std::filesystem::path& routed) const {
+        const std::filesystem::path d = dir.lexically_normal();
+        for (const auto& r : roots_)
+            if (isPathPrefix(r, routed) && isPathPrefix(d, r)) return true;
         return false;
     }
 
@@ -541,9 +552,11 @@ private:
             if (comp.empty() || comp == ".") continue;
             const fs::path next = cur / comp;
             if (comp == "..") { cur = next; continue; }
-            // P40 review r8: a root, or an ancestor of one, under any of its spellings (`obj/debug` on the way to a
-            // `--out obj/debug/net10.0/polyglot` typed over the disk's `obj/Debug`), is the caller's: never compared.
-            if (isRootOrAncestor(next)) { cur = next; continue; }
+            // P40 review r8/r9: a root, or an ancestor of one, that this route goes INTO under one of the root's
+            // spellings (`obj/debug` on the way to a `--out obj/debug/net10.0/polyglot` typed over the disk's
+            // `obj/Debug`) is the caller's: never compared. Below the root, and on a route that leaves the root's
+            // subtree, every component is compared.
+            if (isRootOnRoute(next, abs)) { cur = next; continue; }
             if (!noteSpelling(cur, comp, out, claim)) return Put::Conflict; // P40 review r5: gating 2
             DirNames& names = listing(cur);
             const fs::path variant = caseVariantIn(next, names);

@@ -2068,7 +2068,8 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     (also the default sink, which is an input's folder) and include rules' climbed roots stay disk-spelled only,
     which H4 needs (a route re-entering `Proj` as `../proj/…` spells `proj` itself). And a root, or any ancestor of
     one, under any stored spelling, is never compared or renamed (`isRootOrAncestor`), so a route that passes
-    through `obj/debug/` on its way elsewhere does not rename the caller's folder either; only components strictly
+    through `obj/debug/` on its way elsewhere does not rename the caller's folder either (**narrowed in review
+    round 9, below: that exemption re-opened H4; it now holds only for a route INTO that root**); only components strictly
     below a root are case-aligned, as PLAN's r4 entry and outputsink.hpp's `routeRoots` comment always said. Watch
     mode gets the same split. Pinned: cli-smoke R1 (MSBuild's flag shape with a foreign `App.AssemblyInfo.cs`:
     `--check` up to date, build exit 0, `obj/` still `Debug` with nothing renamed) and rr1 case 7; run-nuget R2
@@ -2102,3 +2103,29 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **POSIX.** outputsink.hpp, main.cpp and registry.hpp changed: the WSL g++/cmake build + unit run is part of
     the end gate.
   - **Not touched:** sema, lower, the emitters and the plugins. No conformance program was added (floor pin 204).
+- **2026-10-19 — Review round 9** (Spark's re-verification of `22b56f5`: one gating regression + part 2). The
+  gating shapes fail on `22b56f5` per the reviewer's `pg22b_me\h4x\h4x.log` (`h4x.sh`, `h4b.sh`) and are refused on
+  `be5140d`; the new cli-smoke checks ("review r9"), the run-nuget R2 rewrite and the `review r9:` unit check pin them.
+  - **Gating [H4] — a caller root typed through the config folder in H4's case.** r8's `isRootOrAncestor` skipped a
+    component whenever it was an ancestor of ANY root under any stored spelling. With `--out proj/out` (or
+    `--build-owned proj/obj`, or MSBuild's flag shape run from a cwd typed `…\proj`) beside H4's include rule
+    `../proj/gen/%(Filename)` over the disk's `Proj`, the typed `proj` is an ancestor of the caller root, so H4's
+    route was never compared with `Proj`: `--check` exited 3 and the build exited 0 writing `Proj/gen/a.ts`, which a
+    case-sensitive clone resolves as a second `proj/` tree. **The narrowed rule** (`OutputSink::isRootOnRoute`): a
+    component is skipped only when the route goes INTO a root — that root, under the spelling being matched (typed
+    or disk), is an element-wise exact prefix of the routed directory — and then only the root's own components (the
+    root and its ancestors along that prefix). Everything strictly below the root is aligned as in r8; a route that
+    leaves the root's subtree (H4's `proj/gen` beside `proj/out`, or `obj/debug/other` beside a typed
+    `obj/debug/net/polyglot`) is compared exactly as on `be5140d`. Watch mode shares the sink, so the same rule.
+    Pinned: cli-smoke (a) `build proj/a.pg --out proj/out`, (b) `--build-owned proj/obj`, (c) MSBuild's flag shape
+    from a child cwd typed `…\proj` (ProcessStartInfo; `Push-Location` respells the cwd as on disk) — each refused
+    with H4's message under `--check` and build, nothing written; a `review r9:` unit check for the prefix rule (a
+    typed `proj/out` exempts a route into it, not `proj/gen`). **Adjusted unit check:** r8's "a route through its
+    ancestor is never compared" (`obj/debug/other/b.cs` beside a typed `obj/debug/net/polyglot`) encoded exactly the
+    bug — that route leaves the root's subtree — so it now expects a refusal naming `Debug`, with `obj/` unrenamed.
+    R1, rr1 case 7, R2 and every earlier H4 shape are unchanged.
+  - **Part 2 — the R2 pin proves the transpiler ran.** run-nuget's R2 builds at `-v q`; each of its three builds now
+    rewrites `a.pg` with a new `return N`, and must leave `obj\<cfg as typed>\net8.0\polyglot\a.cs` with an mtime
+    from that build and `return N;`, and an app that prints N. A skipped Polyglot target fails the pin.
+  - **POSIX.** outputsink.hpp changed: the WSL g++/cmake build + unit run is part of the end gate.
+  - **Not touched:** sema, lower, the emitters, the plugins and the registry. Floor pin 204.
