@@ -111,6 +111,12 @@ void printUsage() {
         << "  fmt    Re-prints <input.pg> as canonical Polyglot to stdout (the round-trip printer).\n"
         << "  check  Reports parse/type diagnostics without emitting. --json prints a machine-readable\n"
         << "         array (line/col/severity/message) for editor tooling.\n"
+        << "         check works offline (it never uses the network). A target whose plugin is an\n"
+        << "         uncached registry dependency is reported `not verified` and skipped, with its\n"
+        << "         targetOptions and include rules. A first-party package (@mintplayer/polyglot-\n"
+        << "         target-<t>) degrades only its own target; an uncached third-party package (whose\n"
+        << "         target only its manifest names) degrades every target no first-party dependency\n"
+        << "         names. A misspelled target or a broken file: plugin is still an error (exit 64).\n"
         << "  install  Pre-warms the plugin cache (optional: build auto-resolves); inside a project it\n"
         << "         also pins pgconfig.lock.json. --update re-resolves a range past a satisfied lock.\n"
         << "  lsp    Runs the Language Server over stdio (JSON-RPC): diagnostics, go-to-definition,\n"
@@ -151,10 +157,19 @@ LibConfig parseLibList(const std::string& libArg) {
 // dependency was uncached, so a misspelled `"csharpp"` or a broken `file:` plugin beside one exited 0. A first-party
 // package names its target (`@mintplayer/polyglot-target-<t>`); a third-party one only says in its manifest, so an
 // uncached third-party package leaves every missing target that no first-party dependency names unverified.
+// P40 review r5 (gating 3): an include rule's "target" that is not loaded is "not verified", not unknown, while a
+// registry dependency that could provide it is uncached and could not be fetched — in EVERY command, not only an
+// offline `check`: a target only an include rule names is built only through `--target`, so a build that does not
+// ask for it must not fail for it (`targets` keeps its own, stricter, offline-only degradation: a build needs them).
 struct ResolvedTargets {
     std::set<std::string> unverified;
+    std::set<std::string> ruleUnverified; // include-rule targets (not in `unverified`) degraded as above
     bool configError = false; // a malformed lockfile: refuse (64)
 };
+// The targets bundled next to the executable (loadPluginsNextToExe), as opposed to ones a pgconfig dependency
+// provides: an include rule may name a dependency's target that `targets` omits (built through `--target`), but an
+// in-box target `targets` omits is configured nowhere, so a rule naming it never applies (P40 review r5).
+std::set<std::string> g_inBoxTargets;
 ResolvedTargets resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false, bool offline = false) {
     static cli::ResolveState state;
     const cli::HttpGet offlineGet = [](const std::string&, const std::vector<std::string>&, std::string&, std::string& err) {
@@ -169,12 +184,11 @@ ResolvedTargets resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false
     out.configError = !res.configErrors.empty();
     std::set<std::string> missTargets;
     bool thirdPartyMiss = false;
-    if (offline)
-        for (const auto& [npm, msg] : res.networkMisses) {
-            const std::string t = cli::targetNameForPackage(npm);
-            if (t.empty()) thirdPartyMiss = true;
-            else missTargets.insert(t);
-        }
+    for (const auto& [npm, msg] : res.networkMisses) {
+        const std::string t = cli::targetNameForPackage(npm);
+        if (t.empty()) thirdPartyMiss = true;
+        else missTargets.insert(t);
+    }
     for (const auto& m : res.messages) {
         const bool miss = offline && std::any_of(res.networkMisses.begin(), res.networkMisses.end(),
                                                  [&](const auto& nm) { return nm.second == m; });
@@ -185,15 +199,19 @@ ResolvedTargets resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false
         if (spec.rfind("file:", 0) != 0)
             if (const std::string t = cli::targetNameForPackage(cli::normalizePluginPackageName(key)); !t.empty())
                 firstPartyNamed.insert(t);
+    auto missed = [&](const std::string& t) { return missTargets.count(t) || (thirdPartyMiss && !firstPartyNamed.count(t)); };
     for (const auto& t : pc.targets) {
         if (findTarget(t).ok()) continue;
-        if (missTargets.count(t) || (thirdPartyMiss && !firstPartyNamed.count(t))) {
+        if (offline && missed(t)) {
             out.unverified.insert(t);
             continue;
         }
         std::cerr << "polyglot: target '" << t << "' is neither bundled nor provided by a pgconfig "
                   << "dependency; add one, e.g. \"dependencies\": { \"" << t << "\": \"latest\" }\n";
     }
+    for (const auto& r : pc.include)
+        for (const auto& t : r.targets)
+            if (!out.unverified.count(t) && !findBackend(t) && missed(t)) out.ruleUnverified.insert(t);
     return out;
 }
 
@@ -206,8 +224,17 @@ ResolvedTargets resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false
 // the network and exit 64 without one. It gates against every configured target that IS available offline
 // (in-box, `file:`, lock-pinned cache); a target whose plugin is not available offline is reported as
 // unverified (with its targetOptions) and skipped, not refused; everything else is validated exactly as for build.
+// The note for include-rule targets degraded to "not verified" (P40 review r5, gating 3).
+void noteRuleUnverified(const std::set<std::string>& ruleUnverified, bool offline) {
+    if (ruleUnverified.empty()) return;
+    std::cout << "polyglot: note: include rule target(s) "
+              << joinNames(std::vector<std::string>(ruleUnverified.begin(), ruleUnverified.end()))
+              << " not verified: the dependency that would provide them is not cached"
+              << (offline ? " and this command works offline" : " and could not be fetched") << "\n";
+}
+
 int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::TargetOptionsByTarget& flags = {},
-                        bool offline = false) {
+                        bool offline = false, const std::string& alsoBuilt = {}) {
     for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
     if (!pc.errors.empty()) return 64;
     if (!pc.found) {
@@ -231,7 +258,11 @@ int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::Targ
                   << " not verified: their plugins are not cached and this command works offline\n";
     std::vector<std::string> optErrors; // every targetOptions layer, against the loaded plugins (P40 B1)
     cli::validateTargetOptions(pc, flags, optErrors, unverified.empty() ? nullptr : &unverified);
-    cli::validateIncludeTargets(pc, optErrors, unverified); // P40 review r4: a rule's "target" names a target
+    noteRuleUnverified(rt.ruleUnverified, offline);
+    std::set<std::string> ruleSkip = unverified;
+    ruleSkip.insert(rt.ruleUnverified.begin(), rt.ruleUnverified.end());
+    // P40 review r4: a rule's "target" names a target; r5: one this config builds
+    cli::validateIncludeTargets(pc, optErrors, ruleSkip, g_inBoxTargets, alsoBuilt);
     for (const auto& m : optErrors) std::cerr << "polyglot: " << m << "\n";
     return optErrors.empty() ? rc : 64;
 }
@@ -361,6 +392,8 @@ std::string sinkPut(cli::OutputSink& sink, const fs::path& out, const std::strin
                     const cli::OutputSink::Claim& claim = {}) {
     switch (sink.put(out, content, claim)) {
         case cli::OutputSink::Put::Conflict: {
+            // P40 review r5: two spellings of one path (`gen/` vs `Gen/`) are not a content conflict.
+            if (!sink.spellingClash().empty()) return sink.spellingClash();
             // P40 review (#75): name BOTH producers — the old message blamed "two modules or config groups"
             // even when one module reached from two roots was the culprit.
             const std::string& first = sink.conflictingProducer();
@@ -781,7 +814,9 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
     {
         std::vector<std::string> optErrors; // P40 B1: a bad targetOptions block refuses the cycle
         cli::validateTargetOptions(pc, optionFlags, optErrors, unverified.empty() ? nullptr : &unverified);
-        cli::validateIncludeTargets(pc, optErrors, unverified);
+        std::set<std::string> ruleSkip = unverified;
+        ruleSkip.insert(rt.ruleUnverified.begin(), rt.ruleUnverified.end());
+        cli::validateIncludeTargets(pc, optErrors, ruleSkip, g_inBoxTargets, targetArg);
         for (const auto& m : optErrors) emitTopLevel(m);
         if (!optErrors.empty()) return c;
     }
@@ -828,7 +863,11 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         sink.adoptBlockedBy(rec);
     }
     sink.trust({}, {}, adopt);
-    sink.routeRoots({outDirArg, entryDir, pc.found ? pc.dir : entryDir});
+    {
+        std::vector<fs::path> roots{outDirArg, entryDir, pc.found ? pc.dir : entryDir};
+        for (auto& r : cli::includeRouteRoots(pc)) roots.push_back(std::move(r)); // P40 review r5: gating 1
+        sink.routeRoots(std::move(roots));
+    }
     sink.headerLines(loadedHeaderLines);
     for (const auto& t : targets) {
         BackendHandle h = findTarget(t); // resolveConfiguredTargets above already ran the P30 pipeline
@@ -983,7 +1022,7 @@ struct BuildOpts {
 int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs, const BuildOpts& o) {
     // P40 review (A5): parse/shape errors, every declared target, every targetOptions layer — before anything
     // is written, and whatever --target / --only would have skipped.
-    if (const int refused = refuseInvalidConfig(pc, run.dryRun(), o.optionFlags)) return refused;
+    if (const int refused = refuseInvalidConfig(pc, run.dryRun(), o.optionFlags, false, o.target)) return refused;
 
     const fs::path firstInput = inputs.front();
     // P40 A5: absolute, so the resolver's default root and every relative specifier are cwd-independent.
@@ -1377,7 +1416,7 @@ int runBuild(const std::vector<std::string>& args) {
     if (discovery) {
         pc0 = loadPgConfig(fs::current_path());
         // P40 review (A5): the whole config is validated before discovery reads its patterns.
-        if (const int refused = refuseInvalidConfig(pc0, check, o.optionFlags)) return refused;
+        if (const int refused = refuseInvalidConfig(pc0, check, o.optionFlags, false, o.target)) return refused;
         inputs = discoverIncludeInputs(pc0);
         if (inputs.empty()) {
             std::cerr << "polyglot: 'build' needs an input file (or a pgconfig.json whose `include` "
@@ -1477,6 +1516,7 @@ int runBuild(const std::vector<std::string>& args) {
         std::vector<fs::path> roots{o.outDir};
         for (const auto& [key, group] : groups) {
             if (group.first.found) roots.push_back(group.first.dir);
+            for (auto& r : cli::includeRouteRoots(group.first)) roots.push_back(std::move(r)); // P40 review r5: gating 1
             for (const auto& in : group.second) roots.push_back(in.has_parent_path() ? in.parent_path() : fs::path("."));
         }
         run.sink.routeRoots(std::move(roots));
@@ -1488,6 +1528,9 @@ int runBuild(const std::vector<std::string>& args) {
     // Rule 4 of the deletion invariant: any failed group means nothing is deleted and no record is rewritten.
     if (rc == 0 && (!recordPath.empty() || (discovery && !flagRouted)))
         rc = worseExit(rc, reconcileOutputs(run, recordPath, defaultRecord, discovery && !flagRouted ? &pc0 : nullptr));
+    // P40 review r5: the stale-temp sweep obeys rule 4 too — it runs only when every group (and the
+    // reconciliation) succeeded, never during a failing build.
+    if (rc == 0 && !check) run.sink.sweepStaleTemps();
     if (rc == 0 && !check && !depfileArg.empty() && !cli::writeDepfile(depfileArg, run.deps)) {
         std::cerr << "polyglot: cannot write the depfile '" << depfileArg.string() << "'\n";
         rc = worseExit(rc, 1);
@@ -2418,6 +2461,7 @@ void loadPluginsNextToExe(const char* argv0) {
         if (!loadBackend(ss.str(), err))
             std::cerr << "polyglot: " << manifest.string() << ": " << err << "\n";
     }
+    for (const auto& n : backendNames()) g_inBoxTargets.insert(n); // before any pgconfig dependency loads
 }
 
 } // namespace

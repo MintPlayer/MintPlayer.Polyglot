@@ -270,6 +270,36 @@ inline std::string normalizeOutputTemplate(std::string s) {
     return s;
 }
 
+// P40 review r5 (gating 1): where one include rule's route STARTS, for the A3 directory-case check — the config
+// folder climbed by the template's leading `..` segments (`../web/gen/%(RecursiveDir)…` starts at the config
+// folder's parent, so `web/`, `gen/` and every directory %(RecursiveDir) adds are the route's own and are compared
+// with the disk). A rooted template starts at its literal folder (everything before the first `%(`, cut back to
+// the last separator): a user's absolute checkout path is never renamed, only what the template adds below it.
+// Empty = the config folder itself (already a root).
+inline std::filesystem::path includeRouteRoot(const std::filesystem::path& configDir, const std::string& tmpl) {
+    namespace fs = std::filesystem;
+    std::string lit = tmpl.substr(0, tmpl.find("%("));
+    std::replace(lit.begin(), lit.end(), '\\', '/');
+    if (fs::path(lit).has_root_name()) { // `C:/out/%(Filename)` — routing keeps it absolute
+        const std::size_t slash = lit.rfind('/');
+        return slash == std::string::npos ? fs::path() : absoluteDir(fs::path(lit.substr(0, slash + 1)));
+    }
+    const fs::path rel = fs::path(normalizeOutputTemplate(lit)).lexically_normal();
+    fs::path up;
+    for (const auto& c : rel) {
+        if (c != "..") break;
+        up /= c;
+    }
+    return up.empty() ? fs::path() : absoluteDir(configDir / up);
+}
+inline std::vector<std::filesystem::path> includeRouteRoots(const PgConfig& pc) {
+    std::vector<std::filesystem::path> out;
+    if (!pc.found) return out;
+    for (const auto& r : pc.include)
+        if (std::filesystem::path root = includeRouteRoot(pc.dir, r.output); !root.empty()) out.push_back(std::move(root));
+    return out;
+}
+
 // P40 B5 + review (#75): the scan folder of one `"owned": true` rule — the template's literal folder prefix
 // (everything before the first `%(`, cut back to the last separator), resolved exactly as routing resolves
 // it. Recursive when what follows can introduce directories (`%(RecursiveDir)`, `%(Directory)`, or any
@@ -382,8 +412,15 @@ inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>
                             errors.push_back("pgconfig.json: an include rule's \"" + rk + "\" is blank");
                     } else if (rk == "target") {
                         // P40 review r4: a blank string (`""`, `" "`) was accepted; the rule then never applied.
-                        if (rv.kind != K::String) stringList(rv, "an include rule's \"target\" (a name or a list of names)");
-                        else if (blank(rv.asString()))
+                        if (rv.kind != K::String) {
+                            stringList(rv, "an include rule's \"target\" (a name or a list of names)");
+                            // P40 review r5: `[]` read as "every target" (an absent key) — the opposite of what an
+                            // empty list says. Refused like `"targets": []`; omitting the key is the "every target" form.
+                            if (rv.kind == K::Array && rv.items().empty())
+                                errors.push_back("pgconfig.json: an include rule's \"target\" is an empty list (name at "
+                                                 "least one target, e.g. [\"typescript\"], or omit the key to apply the "
+                                                 "rule to every target)");
+                        } else if (blank(rv.asString()))
                             errors.push_back("pgconfig.json: an include rule's \"target\" is blank (name a target, e.g. "
                                              "\"typescript\", or omit the key to apply the rule to every target)");
                     } else if (rk != "targetOptions" && rk != "owned") { // both checked where they are read
@@ -557,16 +594,33 @@ inline void validateTargetOptions(const PgConfig& pc, const TargetOptionsByTarge
 // could not verify). A typo (`"typescrpt"`) made the rule never apply, so the TS output silently landed next to
 // the .pg. Checked against the loaded plugins, like targetOptions keys — not against `targets`, since a
 // `--target <t>` override may build a target the set does not list.
+// P40 review r5: and a target this config builds. A loaded target that `targets` omits is refused when it is
+// BUNDLED (`inBox`): nothing configures it, so the rule never applies and the output silently lands next to the .pg
+// (`"python"` with `"targets": ["typescript"]`). A target a pgconfig dependency provides may be omitted from
+// `targets` — it is built through `--target`, which `alsoBuilt` names for this run. Without `targets` (every build
+// passes --target) a loaded target is enough.
 inline void validateIncludeTargets(const PgConfig& pc, std::vector<std::string>& errors,
-                                   const std::set<std::string>& unverified = {}) {
+                                   const std::set<std::string>& unverified = {},
+                                   const std::set<std::string>& inBox = {}, const std::string& alsoBuilt = {}) {
     if (!pc.found) return;
     for (const auto& r : pc.include)
         for (const auto& t : r.targets) {
-            if (findBackend(t) || unverified.count(t)) continue;
-            std::string loaded;
-            for (const auto& n : backendNames()) loaded += (loaded.empty() ? "" : ", ") + n;
-            errors.push_back("pgconfig.json include rule '" + r.pattern + "': \"target\" names unknown target '" + t +
-                             "' (loaded targets: " + loaded + ")");
+            if (unverified.count(t)) continue;
+            if (!findBackend(t)) {
+                std::string loaded;
+                for (const auto& n : backendNames()) loaded += (loaded.empty() ? "" : ", ") + n;
+                errors.push_back("pgconfig.json include rule '" + r.pattern + "': \"target\" names unknown target '" + t +
+                                 "' (loaded targets: " + loaded + ")");
+                continue;
+            }
+            if (pc.targets.empty() || t == alsoBuilt || !inBox.count(t) ||
+                std::find(pc.targets.begin(), pc.targets.end(), t) != pc.targets.end())
+                continue;
+            std::string configured;
+            for (const auto& n : pc.targets) configured += (configured.empty() ? "" : ", ") + n;
+            errors.push_back("pgconfig.json include rule '" + r.pattern + "': \"target\" names '" + t +
+                             "', which this config does not build (\"targets\": " + configured +
+                             "), so the rule never applies; add '" + t + "' to \"targets\", or name a configured target");
         }
 }
 

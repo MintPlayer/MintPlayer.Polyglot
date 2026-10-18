@@ -216,6 +216,7 @@ inline bool resolvePluginDependency(const HttpGet& http, const std::string& npmN
 struct ResolveState {
     std::set<std::string> succeeded;
     std::map<std::string, std::string> failed; // key -> message (repeated verbatim, no re-network)
+    std::set<std::string> failedNetwork; // P40 review r5: the failed keys whose resolve needed the network
 };
 
 struct ResolveResult {
@@ -273,6 +274,8 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
             if (const auto it = state->failed.find(memoKey); it != state->failed.end()) {
                 res.ok = false;
                 res.messages.push_back(it->second);
+                // a memoized miss is still a network miss (a second config group / the discovery pre-check)
+                if (state->failedNetwork.count(memoKey)) res.networkMisses.emplace_back(npmName, it->second);
                 continue;
             }
         }
@@ -293,6 +296,7 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
             res.messages.push_back(err);
             if (usedNetwork) res.networkMisses.emplace_back(npmName, err);
             if (state) state->failed[memoKey] = err;
+            if (state && usedNetwork) state->failedNetwork.insert(memoKey);
         }
     }
 

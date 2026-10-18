@@ -4598,6 +4598,19 @@ int main() {
         const cli::PgConfig bad = cli::loadPgConfig(base);
         check(!bad.errors.empty() && has(bad.errors[0], "pattern") && has(bad.errors[0], "output"),
               "P30 s7: an include rule missing pattern/output is a manifest error, not a silent no-op");
+        // Review round 5 — CLI half: `"target": []` is refused (it read as "every target"), like `"targets": []`.
+        cli::writeFile(base / "pgconfig.json", "{ \"include\": [ { \"pattern\": \"*.pg\", \"target\": [], \"output\": \"gen/%(Filename)\" } ] }");
+        const cli::PgConfig emptyTarget = cli::loadPgConfig(base);
+        check(emptyTarget.errors.size() == 1 && has(emptyTarget.errors[0], "\"target\" is an empty list"),
+              "review r5: an include rule's \"target\": [] is a config error");
+        // Review round 5 (gating 1): where a route starts — the config folder climbed by the template's leading `..`.
+        const fs::path cfgDir = cli::absoluteDir(base / "proj");
+        check(cli::includeRouteRoot(cfgDir, "gen/%(Filename)").empty() && cli::includeRouteRoot(cfgDir, "%(Filename)").empty(),
+              "review r5: a route inside the config folder starts at the config folder (no extra root)");
+        check(cli::includeRouteRoot(cfgDir, "../web/gen/%(RecursiveDir)%(Filename)") == cli::absoluteDir(base) &&
+                  cli::includeRouteRoot(cfgDir, "..\\..\\x/%(Filename)") == cli::absoluteDir(base / "..") &&
+                  cli::includeRouteRoot(cfgDir, "gen/../../web/Gen/%(Filename)") == cli::absoluteDir(base),
+              "review r5: a route leaving the config folder starts where its leading `..` segments land");
         fs::remove_all(base, ec);
     }
 
@@ -5707,6 +5720,19 @@ int main() {
             const bool dedup = w.put(tmp / "sink" / "." / "a.cs", "x") == cli::OutputSink::Put::Deduped;
             const bool conflict = w.put(f, "y") == cli::OutputSink::Put::Conflict;
             check(written && dedup && conflict, "P40 B5: one run-wide produced set: identical = dedup, different = conflict");
+            // Review round 5 (gating 2): two spellings of one routed directory or file in ONE run conflict on any
+            // filesystem and in Check mode (nothing on disk yet), naming both — not as a content conflict.
+            const fs::path sp = tmp / "spell";
+            cli::OutputSink s1(cli::OutputSink::Mode::Check);
+            s1.routeRoots({sp});
+            const bool first = s1.put(sp / "gen" / "a.ts", "a", cli::OutputSink::Claim{"'a.pg'", {}, {}}) == cli::OutputSink::Put::Written;
+            const bool same = s1.put(sp / "gen" / "c.ts", "c", cli::OutputSink::Claim{"'c.pg'", {}, {}}) == cli::OutputSink::Put::Written;
+            const bool dirClash = s1.put(sp / "Gen" / "b.ts", "b", cli::OutputSink::Claim{"'b.pg'", {}, {}}) == cli::OutputSink::Put::Conflict;
+            const std::string dirMsg = s1.spellingClash();
+            const bool fileClash = s1.put(sp / "gen" / "A.ts", "x", cli::OutputSink::Claim{"'x.pg'", {}, {}}) == cli::OutputSink::Put::Conflict;
+            check(first && same && dirClash && has(dirMsg, "'gen' and 'Gen' differ only by case") && has(dirMsg, "'a.pg'") &&
+                      has(dirMsg, "'b.pg'") && fileClash && has(s1.spellingClash(), "'a.ts' and 'A.ts'"),
+                  "review r5: another spelling of a routed directory or file in the same run is a spelling conflict");
             cli::OutputSink check2(cli::OutputSink::Mode::Check);
             check(check2.put(f, "x") == cli::OutputSink::Put::Unchanged && !check2.drifted() &&
                       check2.put(tmp / "sink" / "b.cs", "z") == cli::OutputSink::Put::Written,
