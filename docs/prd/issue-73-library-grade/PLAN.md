@@ -1579,3 +1579,70 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     refusal by message, each fix by emission).
   - **Not touched (the other half):** classes/ctors, emission order, records, PHP evaluation order, the cast wrap, the
     default folding of `1 / 2 + 0.5` and `-1e400`, overload link names, the through-call init check, the temp prefix.
+
+- **2026-10-18 — Review round 5 — classes/names half (gating 4–17, 24 + part 2 "Language"): as built.** Every
+  reviewer repro (`pgc43_r2`, `pgc43_h2`, `pgc43_h3`, `pgc43_h4`) was reproduced on `c436aae` first; each is now in
+  the corpus. A corpus-diff guard (every conformance program emitted for all four targets before and after) is
+  explained file by file in the round-5 report.
+  - **#4 + #12 reach-ordered emission.** The through-call check now follows every statically known body an
+    initializer runs: free functions and statics (as before), constructors (`ctor:<C>`: the body, the instance field
+    initializers, the base constructor), instance methods and computed properties (`m:<C>.<n>`, and every override
+    of them), extensions (`ext:`), a function passed as an argument, and class definitions (`cls:<C>`: its static
+    initializers). A module value may reach a class declared after it: sema records the same-file classes it reaches
+    (`ValueDecl/ClassDecl::needsClasses` → `ir::Global/Class::needsClasses`) and `ir::declarationOrder` places each
+    (bases first, then what its statics reach) before the value; only a module value read at or after the
+    initializer is refused (a class never moves later and a value never moves, so that is the only cycle). Static
+    initializers keep source order; code outside the class reaching it during its static initializers is refused
+    (#12 — TS binds the class name only after the class is defined; a `static fn` of the class is fine). o1/o2/o13/o15/
+    x7p/x7q now agree on all four, o3/o12 build, `init_uses_class_with_later_base` became accepted.
+  - **#5/#6 constructor scan** (flow.cpp, `CtorVirtualScan`): follows lambdas run during construction (in place, bound
+    to a local or field then called, passed as an argument) and `this` passed to a free function, static, constructor,
+    another object's method or an extension, through the parameter that receives it; a stored callback stays legal.
+    It runs only for a class that can be subclassed: `open`/`abstract` or a base of a program class (deriving from a
+    non-open class is legal in .pg, so "final" means "nothing derives from it").
+  - **#7** C# runs field initializers before the base constructor: a class whose base has a constructor exposes
+    `decl.deferredInitFields` (its non-literal instance initializers) and `decl.fields.N.deferInit`; the C# templates
+    omit those initializers and assign them first in the constructor (synthesized when absent). Other targets unchanged.
+  - **#8** any statement before an explicit `super(…)` is refused. **#10** `open`/`override`/`abstract` on a static is
+    refused.
+  - **#9** abstract members are real: `ir::Class::isAbstract`/`ir::Method::isAbstract` → C#/TS/PHP `abstract`, Python
+    `abc.ABC` + `@abc.abstractmethod` (`module.abstractClasses.count` triggers `import abc`). Sema refuses an abstract
+    method with a body or in a concrete class, `abstract` on a non-method, a concrete class leaving an abstract method
+    unimplemented, and constructing an abstract class.
+  - **#11** an omitted record positional default is filled at the construction (`appendDefaults`, as for extensions);
+    the r4 refusal's remedy text is now true.
+  - **#13** C# link names also clash on declarations alone: two user declarations with the same erased C# signature
+    (method type parameters by position, reference nullability dropped) get signature names whether or not anything
+    calls them; mangled names mark a nullable parameter (`describe__stringOrNull`), so `string`/`string?` stay
+    distinct (also for PHP). A lone declaration keeps its name (e4/e4m verified). **#14** a function value is recorded
+    (`fnRefSites_`) and takes the final link name; lowering passes its unique name (PHP).
+  - **#15** `checkConvert` refuses a scalar into a declared type (class, record, interface, union, enum) and back, and
+    a union/enum into anything but itself; `mayApply` categorizes unions/enums.
+  - **#16** runtime names: TS qualifies `globalThis.Error` (non-exhaustive match) and `globalThis.process` (file I/O) and
+    no longer refuses `Symbol`/`Object`; Python escapes `id`/`open`; PHP suffixes every builtin function its
+    templates/prelude call (`intdiv`, `fmod`, `strpos`, `strtolower`, …) and escapes the `Error` class; a user type
+    named like a core type (`Error`, `Iterable`, `Array`, `Option`, `INumber`) is refused in `linkCoreModule` (the
+    comment promised a sema collision that never happened — the user class silently replaced std's `Error`). A unit
+    check scans every manifest's templates and prelude for unqualified references (`x(`, `new X`, `X.`, `X::`) not in
+    the identifier lists, so the lists cannot drift (an explicit allowlist names the templates' own locals/helpers).
+  - **#17** a local assigned a non-constant anywhere is never CS0219 (`Local::nonConstAssign`); a Python local def whose
+    body was all elided gets `pass`.
+  - **#24** new manifest datum `identifiers.renames` (validated: an object of non-empty strings); C# respells a user
+    `_` as `__u` (contains `__`, so no user name can meet it) — `@_` is still `_`, and the emitter's discard `_ = …`
+    captured a user `_`.
+  - **Part 2.** The through-call check follows extensions (`tc6`) and functions passed as values (`hx1`). A bare
+    function name as a statement is refused. A module value of function type is callable by name (`calleeIsField`
+    now also marks it; lowered through the callee value). Module values are checked before the bodies and an
+    un-annotated one takes its initializer's type (x7d3: PHP `+` on its methods' strings). An overflowing f32 default
+    says so. `#pragma warning disable CS8981` when the C# file declares an all-lowercase type name
+    (`module.allLowercaseTypeNames.count`). Union `==` compares through a prelude helper on TS (`__pgUnionEq`; it used
+    `JSON.stringify`, comparing a class payload by content — a silent divergence from C# — and throwing on bigint) and
+    PHP (`__pg_ueq`; `===` compared a record payload by identity, x7a). SPEC: generic and defaulted functions are
+    refused as values; a stored function value and a module lambda's body are not followed by the init-order check.
+  - **Tests:** conformance `decl_order_reach`, `ctor_calls_final`, `field_init_order`, `abstract_members`,
+    `record_defaults`, `link_names_decl/`, `link_names_value/`, `overload_unions`, `runtime_names_used`,
+    `unused_locals_assigned`, `underscore_names`, `module_values_typed`, `union_record_eq` (each with `.expected`; none
+    uses `Map`); 26 refusal fixtures in the r5 classes/names block of `run-refusals.ps1`; the unit block `r5:` (each
+    refusal by message, each fix by emission, the manifest drift scan).
+  - **Not touched (the other half):** nullability paths, `?.`, `??` lambda operands, `apply<T>` with a unit lambda,
+    PHP/Python plain `=` evaluation order, the field-narrowing message, function variance, `h?.f(5)`, PHP arrow capture.

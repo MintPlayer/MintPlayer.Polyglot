@@ -1997,6 +1997,12 @@ int main() {
                         "C# emits no CS8981 pragma without an all-lowercase type name");
                 check(compileStd("let twice: (i32) => i32 = (x: i32) => x * 2\nfn f(): i32 => twice(4)\n", findTarget("csharp")).ok,
                       "r5: a module value of function type is callable by name");
+                {
+                    const std::string ue = "record Pt(x: i32)\nunion S {\n  Dot(at: Pt)\n  E\n}\nfn f(): bool => Dot(Pt(1)) == Dot(Pt(1))\n";
+                    emitsR5(ue, "typescript", {"function __pgUnionEq(", "__pgUnionEq("}, {"JSON.stringify"},
+                            "TS compares union values through __pgUnionEq (not JSON.stringify)");
+                    emitsR5(ue, "php", {"function __pg_ueq(", "__pg_ueq("}, {}, "PHP compares union values through __pg_ueq");
+                }
             }
             // P40 review r5 #16: each target's runtime-name lists cover every identifier its templates and prelude
             // reference unqualified (a call `x(`, `new X`, or the head of `X.` / `X::`) — so a user name can never shadow
@@ -2007,7 +2013,7 @@ int main() {
                 const std::map<std::string, std::set<std::string>> allow = {
                     {"csharp", {"Equals", "GetHashCode", "ReferenceEquals", "LowerAscii", "UpperAscii", "Show", "Str",
                                 "a", "dg", "digits", "fm", "s", "sb", "x", "global", "var", "when", "main"}},
-                    {"typescript", {"as", "catch", "for", "if", "super", "constructor"}},
+                    {"typescript", {"as", "catch", "for", "if", "super", "constructor", "ka"}},
                     {"python", {"a", "b", "d", "m", "n", "r", "s", "x", "cache", "ctypes"}},
                     {"php", {"equals"}},
                 };

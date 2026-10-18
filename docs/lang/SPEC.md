@@ -230,7 +230,9 @@ let same = (a == Vec2(1.0, 2.0))    // true: structural equality
 A record's body holds **methods, operators and computed properties only** (and `static fn`s). Its state is
 its positional fields — they alone take part in equality, hashing and `with` on every target — so a body
 field, static or not, is refused (*record 'P' declares a body field 'twice'*): make it a positional field
-(with a default) or a computed property; a constant belongs in a module-level `let`/`const`.
+(with a default) or a computed property; a constant belongs in a module-level `let`/`const`. A positional
+field's default is filled in at every construction that omits it (`record P(x: i32, y: i32 = 5)`: `P(1)` is
+`P(1, 5)` on every target — P40 review r5); defaults follow the same constant rule as parameter defaults (§5).
 
 ### 4.3 Nullability
 
@@ -315,12 +317,32 @@ takes **no** `override`, and writing one there is an error (as is `override` wit
 **Construction runs the whole base chain** (P40 review r4) on every target: a subclass constructor calls
 the base constructor whether or not it writes `super(…)` (an omitted call is `super()`), and a subclass with
 no constructor still runs it — including a base whose only constructor work is a field initializer. When the
-base constructor takes arguments, the subclass must declare a constructor that writes `super(…)`. An
-inherited field is therefore assigned before the subclass constructor's first statement and may be read
-there (`super(); this.y = this.x + 10`). A constructor may **not** call an overridable (`open`, `abstract`
-or `override`) method on `this`, directly or through other methods it calls on `this`: a subclass override
-would run before the subclass's own fields are initialized (C# reads defaults, TS `undefined`, Python raises
-`AttributeError`). Call it after construction, or make it non-open.
+base constructor takes arguments, the subclass must declare a constructor that writes `super(…)`, and
+`super(…)` must be its **first statement** (P40 review r5): nothing may run before the base constructor
+(C# `: base(…)` cannot see a local, and the other targets would silently run a statement written first after
+it) — compute the arguments inline or in a `static fn`. An inherited field is therefore assigned before the
+subclass constructor's first statement and may be read there (`super(); this.y = this.x + 10`). A subclass's
+own field initializers run **after** the base constructor on every target (C# natively runs them before it, so
+the C# plugin assigns a subclass's non-literal initializers in its constructor, right after the base call).
+
+A constructor of a class that **can be subclassed** — `open` or `abstract`, or the base of some class in the
+program — may **not** call an overridable (`open`, `abstract` or `override`) method on the object under
+construction: a subclass override would run before the subclass's own fields are initialized (C# reads
+defaults, TS `undefined`, Python raises `AttributeError`). The check follows every path the constructor
+*runs* (P40 review r5): methods and computed properties it calls on `this`, a lambda invoked in place, a lambda
+bound to a local or field that it then calls, a lambda passed as an argument (the callee may call it right
+away), and `this` passed to a free function, a static method, another class's constructor, a method of
+another object or an extension — followed through the parameter that receives it (*… calls the overridable
+method 'describe' on 'this' (through 'show')*). A lambda that is only stored (a callback) is not run and stays
+legal. A class nothing can derive from may call its own `override` or an inherited open method: `this` is
+exactly that class. Call it after construction, or make it non-open.
+
+**Abstract members** (P40 review r5): an `abstract class` may declare `abstract fn` signatures (no body); it
+is never constructed, and a concrete subclass must override every abstract method it inherits. Each target
+declares real abstract members — C#, TS and PHP `abstract`, Python `@abc.abstractmethod` on an `abc.ABC`
+class. `abstract` on anything but a method, an abstract method with a body or in a non-abstract class, and
+constructing an abstract class are refused. A **static** member is never `open`, `override` or `abstract`
+(statics are not dispatched virtually; C# CS0112).
 
 An **interface body holds bodiless, non-static method signatures only** — no fields, properties,
 initializers, operators, or default method bodies (express field-like needs as a getter method). The
@@ -390,6 +412,12 @@ union Shape {
 
 `match` over a `union` is **exhaustiveness-checked at compile time** (P3) — a missing case is an error, not
 a fall-through.
+
+Union values compare **structurally** with `==`/`!=`, as C# compares the case records: the same case with equal
+payloads, a record payload by its own equality, a nested union recursively, and anything else — a class
+instance, a list — by reference (P40 review r5: TS and PHP compare through a prelude helper; TS compared with
+`JSON.stringify`, so a class payload compared by content and an `i64` payload threw, and PHP compared the tagged
+arrays with `===`, so a record payload compared by identity).
 
 ### 4.6 `is` / `as` (P37 B)
 
@@ -538,20 +566,30 @@ differently:
   definite-assignment walk follows control flow exactly: a `while true` left by `break`, a do-while body and a
   `finally` that assigns before an early `return` all count. An inherited field counts as assigned (the base
   constructor already ran).
-- **Initialization order** (P40 review r3, r4) — a `static` field or module `let`/`const` initializer may not
-  read a static or module value declared **at or after it in the same file**, nor use (construct, read a static
-  of, call a static of) a class, record, enum or union declared later — nor a class whose base class is
-  declared later (a class is defined after its base): TS, Python and PHP run initializers in declaration order
-  (C# alone initializes statics lazily, and read a default). This covers what the initializer reaches through
-  calls too: the bodies of the same-module functions and static methods it calls, transitively, and of a lambda
-  it invokes in place (*the initializer of 'a' calls 'seed', which reads 'b', declared later*). A lambda that is
-  only stored runs later and is exempt, as are calls inside it; instance methods and constructors reached from
-  an initializer are not followed. Measured before r4, the through-call shape diverged four ways (`let a =
-  seed()` reading a later `b`: C# 0, TS ReferenceError, Python NameError, PHP `null`).
-  With those reads ruled out, the targets that run a module top to bottom emit it in a dependency order: enums,
-  interfaces (base first), unions, records, functions, then classes and module values interleaved in source
-  order, a class following a base declared after it (a module value can read an earlier one from a static
-  initializer: `let SCALE = 2.0` then `static let FACTOR = SCALE * 3.0`).
+- **Initialization order** (P40 review r3, r4, r5) — TS, Python and PHP run initializers in declaration order
+  (C# alone initializes statics lazily, and reads a default), so an initializer is checked against everything
+  it **runs**: its own expression, and transitively the bodies it reaches — functions and static methods it
+  calls, constructors (with the class's instance field initializers and the base constructor), instance methods
+  (and every override of them) and computed properties, extensions, a function passed as an argument, a lambda
+  it invokes in place, and the static initializers of every class it uses (defining a class runs them).
+  - A **module value** may not reach a module value declared **at or after it in the same file** (*the
+    initializer of 'a' calls 'seed', which reads 'b', declared later*; *… uses 'Box', which reads 'u', declared
+    later*). It **may** reach a class declared after it: the emission order defines every class a value
+    reaches — with its bases and the classes its own statics reach — before the value (P40 review r5: `let shop
+    = Shop()` whose constructor builds a later `Item`).
+  - A **static** initializer may not read a static or module value declared at or after it, nor use (construct,
+    read or call a static of) a class, record, enum or union declared later, nor a class whose base is declared
+    later. Code **outside** its class may not use the class while its statics run (*the initializer of
+    'Config.users' calls 'join', which reads 'Config' while class 'Config' is still being defined*): TS binds the
+    class name only after the class is defined. A `static fn` of the same class may (it sees the class's own
+    binding).
+  - Exempt: a lambda that is only stored runs later, as do calls inside it; a function only stored as a value
+    (not passed as an argument); and a module value holding a lambda, when it is called — its body is not
+    followed.
+  The targets that run a module top to bottom emit it in that dependency order: enums, interfaces (base
+  first), unions, records, functions, extensions, then classes and module values in source order, a class
+  moving earlier only for a value that reaches it or to follow a base declared after it (a module value can
+  read an earlier one from a static initializer: `let SCALE = 2.0` then `static let FACTOR = SCALE * 3.0`).
 - **Member hiding** — redeclaring an inherited instance member without `override` is refused (C# would hide it
   non-virtually, TS/Python/PHP override it); an `open` method takes `override`, anything else is renamed.
   Statics take part (P40 review r4): a static named like an inherited instance member, or the reverse, is a PHP
@@ -563,7 +601,8 @@ differently:
   arithmetic (`1 / 2 + 0.5` is `0.5`), widened where it meets a float; an `i32` overflow or an integer division
   by zero is not folded (and so refused). A negative zero keeps its sign, and an expression whose float literals
   are all `f32` folds in single precision to an `f32` literal (`0.1f + 0.2f` → `0.3f`). A default that is not a
-  finite number (`-1e400`, an overflowing product) is refused — no target can spell it as a constant. A call or
+  finite number (`-1e400`, an overflowing product, an `f32` product beyond single precision such as `3.0e38f * 10.0f`)
+  is refused — no target can spell it as a constant. A call or
   any other expression is refused — C# and PHP accept only constants there, and Python evaluates a default once.
 - **Integer literal range** — an unsuffixed integer literal (optionally negated) is an `i32` unless it flows into
   a 64-bit slot; one outside the range of the ≤32-bit integer slot it flows into, or of `i32` when it initializes
@@ -573,14 +612,21 @@ differently:
   built only from literals, operators and casts that C# folds: `if 1 + 1 == 3`, `if "a" == "a"`; `while true`
   itself is the infinite loop), a self-assignment `x = x`, `== null` on a non-nullable number, bool, char or
   enum value, and a local set to a constant (a literal, an operator or cast over literals, an enum member) and
-  never read are refused (C# CS0162 / CS1717 / CS0472 / CS0219). Prefix a deliberately unused local with `_`:
-  such a `let _x = <constant>` that is never read has no effect and is not emitted (one that is later assigned
-  is refused — C# reports it whatever its name).
+  never read are refused (C# CS0162 / CS1717 / CS0472 / CS0219). CS0219 fires only when **every** assignment is
+  a constant, so a local later assigned a non-constant (`var _last = 0; _last = compute()`) is accepted, read or
+  not (P40 review r5). Prefix a deliberately unused local with `_`: such a `let _x = <constant>` that is never
+  read has no effect and is not emitted (one later assigned only constants is refused — C# reports it whatever
+  its name). An all-lowercase type name (`class point`) compiles under warnings-as-errors: the C# file disables
+  CS8981 when one is declared.
 - **Function values and operators** — any callee expression may be called (`adder(1)(4)`, `fs[0](4)`, an
   immediately-invoked lambda with typed parameters and an expression body), and so may a function-typed field
   (`h.f(4)`, `(h.f)(4)`, `K.g(4)`). A top-level function is a value of its function type (`apply(five)`; PHP
   passes the first-class callable `five(...)`) when it is a single, non-generic user function without default
-  parameters — an overloaded, generic or std function is refused there: pass a lambda that calls it. A function
+  parameters — an overloaded, **generic** or **defaulted** (any parameter with a default) or std function is
+  refused as a value (*function 'f' cannot be used as a value: it is generic*): pass a lambda that calls it
+  (`(x: i32) => f(x)`). The value names the same target name a call would (its C# link name and PHP unique
+  name — P40 review r5). A bare function name as a statement (`five`) is refused: write `five()`. A module
+  value of function type is called by name like a local (`let twice = …; twice(4)`). A function
   value has no members and no methods (`g.toString()` is refused). A function value flowing into a function slot
   must have exactly that type — in particular a value-returning function into `(…) => unit` is refused (C#
   CS0407): wrap it, `() => five()`. A lambda flowing into a `(…) => unit` slot must not produce a value (a
@@ -948,7 +994,13 @@ These clarify or bound features surfaced by the wave-2 coverage sweep (issues #3
   same-named method is a declaration-site error. Give the overloads distinct names. Across modules
   (P40 review A8), a call only considers the overloads **visible to the calling module** (its own and the
   ones its imports name): another module's never-imported `check(i32)` cannot win `check(5)`. Two modules
-  declaring the same signature is a duplicate, and the error names both modules.
+  declaring the same signature is a duplicate, and the error names both modules. An argument applies to a
+  parameter only when it converts: a union or enum parameter takes only that type, a declared type never takes
+  a scalar (P40 review r5 — `kind(5)` had bound `kind(s: Shape)`). C# links every module's functions into one
+  class, so two declarations C# would see as one signature — type parameters differing only in name
+  (`same<T>(T)` / `same<U>(U)`), reference types differing only in nullability (`describe(string)` /
+  `describe(string?)`) — get signature link names (`same__T`, `describe__stringOrNull`) whether or not
+  anything calls them; a lone declaration keeps its name.
 - **Namespace and renaming imports** are refused (#39e) — `import * as ns` and `{ a as b }`; import members
   by their own name (`import { a, b } from "…"`). Modules merge into one flat namespace.
 - **An unresolvable member on a concrete/primitive receiver** is refused, not emitted verbatim (#56a) —
@@ -979,11 +1031,19 @@ target (C# `@switch`, Python/PHP `global_`) or, on a target with no escape (TS),
 **runtime name the generated code refers to unqualified** (P40 review r4): on Python a builtin the output calls
 (`fn max` becomes `max_`, so the emitted `Math.max` still reaches the builtin), on PHP a global builtin class
 (`class Directory`/`Generator`/`TypeError` become `Directory_`/…, not a redeclaration fatal). The generated code
-qualifies its own references where the target allows it (TS throws `globalThis.TypeError`, PHP names `\Exception`),
-so a user `class TypeError` on TS keeps its name; a TS runtime global the output cannot qualify everywhere
-(`Math`, `Number`, `String`, `BigInt`, `Array`, `Object`, `JSON`, `Promise`, `Symbol`, `console`, `globalThis`) is
-refused as a user name. A respelled name is part of that target's public surface — pick another name for an
-exported API.
+qualifies its own references where the target allows it (TS throws `globalThis.TypeError`/`globalThis.Error` and
+reaches `globalThis.process`, PHP names `\Exception`), so a user `class TypeError` on TS keeps its name; a TS runtime
+global the output cannot qualify everywhere (`Math`, `Number`, `String`, `BigInt`, `Array`, `JSON`, `Promise`,
+`console`, `globalThis`) is refused as a user name. Each list is exactly what that target's templates and prelude
+reference unqualified (P40 review r5; a unit check scans every manifest so the lists cannot drift): Python also
+escapes `id` and `open`; PHP suffixes a user function named like any builtin function its templates call
+(`intdiv`, `fmod`, `strpos`, `strtolower`, … become `intdiv_pg`, …). PHP refuses to redeclare **any** builtin
+function, used or not; the list covers the ones the output calls and the common names — a user function named
+like another PHP builtin is still a PHP fatal (rename it). On C#, a user `_` is respelled `__u` (`identifiers.renames`):
+the output writes a dropped value as the discard `_ = …`, which a variable named `_` would capture. A user type
+may not reuse a **core type** name (`Error`, `Iterable`, `Array`, `Option`, `INumber`): std code relies on them
+(*'Error' redeclares the std core type 'Error'*). A respelled name is part of that target's public surface —
+pick another name for an exported API.
 
 **Resolution** (PRD §4.5, PLAN P12): `std.*` resolves from the compiler's embedded registry; other
 specifiers resolve through a pluggable module loader (the CLI maps a logical `a.b.c` to `<root>/a/b/c.pg`
