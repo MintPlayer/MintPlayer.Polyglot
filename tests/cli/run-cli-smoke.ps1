@@ -457,7 +457,8 @@ try {
         # UNC and a nested config's own refusal.
         $u = New-Proj (Join-Path $work "rv-unc") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"\\\\server\\share\\gen\\%(Filename)","owned":true}]}' @{ "a.pg" = $fnA }
         $r = Pg $u @("build")
-        Check ($r.Rc -eq 64 -and $r.Out -match '"owned": true is refused') "P40 review: an owned UNC template (\\server\share\...) is refused (64)"
+        # P40 review r4: the REASON, not only the shared "owned: true is refused" prefix every refusal carries.
+        Check ($r.Rc -eq 64 -and $r.Out -match '"owned": true is refused because its output .* is an absolute \(UNC\) path') "P40 review: an owned UNC template (\\server\share\...) is refused (64) as an absolute (UNC) path"
         $n = New-Proj (Join-Path $work "rv-nested") '{"targets":["typescript"],"include":[{"pattern":"**/*.pg","output":"gen/%(RecursiveDir)%(Filename)"}]}' @{ "top.pg" = $fnA }
         New-Proj (Join-Path $n "inner") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"./%(Filename)","owned":true}]}' @{ "x.pg" = $fnB; "keep.ts" = $hdr } | Out-Null
         $r = Pg $n @("build", "inner/x.pg")
@@ -690,8 +691,11 @@ try {
 
         # Gating 1: a non-ASCII project path. The outputs list and the depfile were written in the ANSI code page
         # (a lone 0xE9 for 'é'; '日' is outside CP1252 entirely) while MSBuild reads them as UTF-8.
-        $u = New-Proj (Join-Path $work "rv3-utf8/p$([char]0xE9)$([char]0x65E5)") '{"targets":["csharp","typescript"],"originInfo":true,"include":[{"pattern":"*.pg","target":"typescript","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = "import { alpha } from `"./a`"`nfn b(): i32 { return alpha() }" }
-        $r = Pg $u @("build", "a.pg", "b.pg", "--out", "obj", "--record", "obj/rec.json", "--depfile", "obj/deps", "--outputs-list", "obj/list")
+        # P40 review r4: a non-ASCII SOURCE name too (`日.pg`), so the record (relative inputs/outputs) and that file's
+        # source map (`file`, `sources`) hold bytes >= 0x80 — with ASCII-only content their strict decode could not fail.
+        $ri = "$([char]0x65E5)"
+        $u = New-Proj (Join-Path $work "rv3-utf8/p$([char]0xE9)$([char]0x65E5)") '{"targets":["csharp","typescript"],"originInfo":true,"include":[{"pattern":"*.pg","target":"typescript","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = "import { alpha } from `"./a`"`nfn b(): i32 { return alpha() }"; "$ri.pg" = 'fn ri(): i32 { return 3 }' }
+        $r = Pg $u @("build", "a.pg", "b.pg", "$ri.pg", "--out", "obj", "--record", "obj/rec.json", "--depfile", "obj/deps", "--outputs-list", "obj/list")
         $list = ReadUtf8Strict (Join-Path $u "obj/list")
         $deps = ReadUtf8Strict (Join-Path $u "obj/deps")
         $listOk = $null -ne $list -and $list.Contains((Join-Path $u "obj\a.cs")) -and $list.Contains((Join-Path $u "gen\a.ts")) -and
@@ -699,10 +703,13 @@ try {
         $depsOk = $null -ne $deps -and $deps.Contains((Join-Path $u "pgconfig.json")) -and
                   @($deps.Trim() -split "`n" | Where-Object { -not (Test-Path -LiteralPath $_.Trim()) }).Count -eq 0
         Check ($r.Rc -eq 0 -and $listOk -and $depsOk) "P40 review r3 (gating 1): under 'p$([char]0xE9)$([char]0x65E5)' the outputs list and the depfile are UTF-8 and every line names an existing file"
-        $recOk = $false; try { $null = (ReadUtf8Strict (Join-Path $u "obj/rec.json")) | ConvertFrom-Json; $recOk = $true } catch {}
-        $mapOk = $false; try { $mapOk = (((ReadUtf8Strict (Join-Path $u "gen/a.ts.map")) | ConvertFrom-Json).file -ceq 'a.ts') } catch {}
-        Check ($recOk -and $mapOk) "P40 review r3 (gating 1): ... and the record and the source map read back as UTF-8 JSON"
-        $r = Pg $u @("build", "a.pg", "b.pg", "--out", "obj", "--record", "obj/rec.json", "--depfile", "obj/deps", "--outputs-list", "obj/list", "--check")
+        # A failed strict decode returns $null, and `$null | ConvertFrom-Json` does NOT throw — so test for it first.
+        $recTxt = ReadUtf8Strict (Join-Path $u "obj/rec.json")
+        $recOk = $false; try { $recOk = $null -ne $recTxt -and $recTxt.Contains("$ri.pg") -and $null -ne ($recTxt | ConvertFrom-Json) } catch {}
+        $mapTxt = ReadUtf8Strict (Join-Path $u "gen/$ri.ts.map")
+        $mapOk = $false; try { $m = $mapTxt | ConvertFrom-Json; $mapOk = $null -ne $mapTxt -and $m.file -ceq "$ri.ts" -and ($m.sources -join ',') -ceq "../$ri.pg" } catch {}
+        Check ($recOk -and $mapOk) "P40 review r3 (gating 1): ... and the record and the source map (holding '$ri') read back as strict UTF-8 JSON"
+        $r = Pg $u @("build", "a.pg", "b.pg", "$ri.pg", "--out", "obj", "--record", "obj/rec.json", "--depfile", "obj/deps", "--outputs-list", "obj/list", "--check")
         Check ($r.Rc -eq 0) "P40 review r3 (gating 1): ... and --check over that path is clean (exit $($r.Rc))"
 
         # Gating 4a: with originInfo, a case-only rename also renames the sidecar (its `file` names the OLD owner).
@@ -775,11 +782,17 @@ try {
         (Get-Content -Raw $recp) -replace '"version": 1,', '"version": 1.5,' | Set-Content -LiteralPath $recp -NoNewline
         $r = Pg $v @("build")
         Check ($r.Rc -eq 0 -and $r.Out -match 'unreadable') "P40 review r3: a record with version 1.5 is unreadable, not version 1"
+        # P40 review r4 (gating 1): only an output's OWN temp (exact shape), older than 10 minutes, AND carrying the
+        # header line is swept. A headerless one, a wrong shape, or another output's name is never touched.
         $old = Join-Path $v "gen/a.ts.pgtmp.1.2.3"; $fresh = Join-Path $v "gen/a.ts.pgtmp.4.5.6"
-        Set-Content -LiteralPath $old -Value "x"; Set-Content -LiteralPath $fresh -Value "y"
-        (Get-Item $old).LastWriteTime = (Get-Date).AddHours(-1)
+        $bare = Join-Path $v "gen/a.ts.pgtmp.7.8.9"; $shape = Join-Path $v "gen/a.ts.pgtmp.1.2"; $other = Join-Path $v "gen/zz.ts.pgtmp.1.2.3"
+        $caseTmp = Join-Path $v "gen/a.ts.pgcase.tmp"
+        foreach ($f in @($old, $fresh, $shape, $other, $caseTmp)) { Set-Content -LiteralPath $f -Value $hdr }
+        Set-Content -LiteralPath $bare -Value "x"
+        foreach ($f in @($old, $bare, $shape, $other, $caseTmp)) { (Get-Item -LiteralPath $f).LastWriteTime = (Get-Date).AddHours(-1) }
         Set-Content -LiteralPath (Join-Path $v "a.pg") -Value 'fn alpha(): i32 { return 7 }'
-        Check ((Pg $v @("build")).Rc -eq 0 -and -not (Test-Path $old) -and (Test-Path $fresh)) "P40 review r3: an hour-old *.pgtmp.* is swept on the next write; a fresh one (a parallel build's) is kept"
+        Check ((Pg $v @("build")).Rc -eq 0 -and -not (Test-Path $old) -and -not (Test-Path $caseTmp) -and (Test-Path $fresh) -and (Test-Path $bare) -and (Test-Path $shape) -and (Test-Path $other)) `
+            "P40 review r4: hour-old headed a.ts.pgtmp.<n>.<n>.<n> and a.ts.pgcase.tmp are swept; a fresh one, a headerless one, a wrong shape and another output's are kept"
 
         if ($IsWindows) {
             # Part 2: a reader holding the output without FILE_SHARE_DELETE — the write is retried, then FAILS (exit 1)
@@ -789,12 +802,24 @@ try {
             $twin = Join-Path $h "gen/a.ts"
             $before = Get-Content -Raw $twin
             Set-Content -LiteralPath (Join-Path $h "a.pg") -Value 'fn alpha(): i32 { return 99 }'
-            $fs = [IO.File]::Open($twin, 'Open', 'Read', 'Read')
-            try { $r = Pg $h @("build") } finally { $fs.Dispose() }
-            Check ($r.Rc -ne 0 -and $r.Out -match 'cannot write' -and (Get-Content -Raw $twin) -ceq $before -and
+            # P40 review r4: held with FileShare.ReadWrite (what MSVC's ifstream shares) — FileShare.Read also blocked the
+            # OLD truncate-and-write fallback, so it could not tell the two apart — and the HOLDER's bytes are asserted.
+            function HeldRead($stream) { $stream.Position = 0; $buf = New-Object byte[] 65536; $n = $stream.Read($buf, 0, $buf.Length); [Text.Encoding]::UTF8.GetString($buf, 0, $n) }
+            $fs = [IO.File]::Open($twin, 'Open', 'Read', 'ReadWrite')
+            try { $r = Pg $h @("build"); $holderSaw = HeldRead $fs } finally { $fs.Dispose() }
+            Check ($r.Rc -ne 0 -and $r.Out -match 'cannot write' -and (Get-Content -Raw $twin) -ceq $before -and $holderSaw -ceq $before -and
                    @(Get-ChildItem (Join-Path $h "gen") -Filter '*.pgtmp.*').Count -eq 0) `
-                "P40 review r3: a held output is retried then refused (exit $($r.Rc)), the reader's bytes intact, no temp left"
+                "P40 review r4: an output held with FileShare.ReadWrite is retried then refused (exit $($r.Rc)), the holder still reads the old bytes, no temp left"
             Check ((Pg $h @("build")).Rc -eq 0 -and (Get-Content -Raw $twin) -match '99') "P40 review r3: ... and the next build, unheld, writes it"
+            # P40 review r4: a reader that shares DELETE (FileShare.ReadWrite|Delete) no longer blocks the write: the POSIX-
+            # semantics rename replaces the file; the holder keeps reading the old bytes, new readers see the new ones.
+            $before = Get-Content -Raw $twin
+            Set-Content -LiteralPath (Join-Path $h "a.pg") -Value 'fn alpha(): i32 { return 123 }'
+            $fs = [IO.File]::Open($twin, 'Open', 'Read', [IO.FileShare]'ReadWrite, Delete')
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            try { $r = Pg $h @("build"); $ms = $sw.ElapsedMilliseconds; $holderSaw = HeldRead $fs } finally { $fs.Dispose() }
+            Check ($r.Rc -eq 0 -and (Get-Content -Raw $twin) -match '123' -and $holderSaw -ceq $before -and $ms -lt 3000) `
+                "P40 review r4: an output held with FileShare.ReadWrite|Delete is replaced at once (exit $($r.Rc), $ms ms; the holder keeps the old bytes)"
 
             # Gates: owned-scope aliases through an 8.3 short name and a junction are refused (Windows-only shapes).
             $jroot = Join-Path $work "rv3-alias"
@@ -809,6 +834,156 @@ try {
                 Check ($r.Rc -eq 64 -and $r.Out -match '"owned": true is refused' -and (Test-Path (Join-Path $real "keep/other.ts"))) "P40 review r3: an owned scope through the 8.3 name '$short' of the config folder is refused (64)"
             } else { Check $true "P40 review r3: 8.3 alias (skipped: this volume generates no short names)" }
         }
+    }
+
+    # -- P40 review r4 (#75): the CLI half of round 4 -----------------------------------------------------------
+    & {
+        $hdr = "// <auto-generated/>`n// Generated by Polyglot. Do not edit: regenerate with ``polyglot build``.`nexport const dummy = 1;"
+        $caseInsensitive = $false
+        $probe = New-Proj (Join-Path $work "rv4-ci-probe") $null @{ "Probe.txt" = "x" }
+        if (Test-Path (Join-Path $probe "PROBE.TXT")) { $caseInsensitive = $true }
+
+        # Gating 1: the stale-temp sweep never deletes a headerless file, a `.pgtmp.` source, or anything next to
+        # a `--target`/default-sink output that is not that output's own headed temp (Spark: sweep.sh, r1\c6).
+        $s = New-Proj (Join-Path $work "rv4-sweep") $null @{ "src/a.pg" = $fnA; "src/keep.pgtmp.txt" = "my notes, not generated"; "src/plan.pgcase.tmp" = "my plan, not generated"; "src/notes.pgtmp.pg" = $fnB }
+        foreach ($f in @("src/keep.pgtmp.txt", "src/plan.pgcase.tmp", "src/notes.pgtmp.pg")) { (Get-Item -LiteralPath (Join-Path $s $f)).LastWriteTime = (Get-Date).AddHours(-2) }
+        $r = Pg $s @("build", "src/a.pg", "--target", "csharp")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $s "src/keep.pgtmp.txt")) -and (Test-Path (Join-Path $s "src/plan.pgcase.tmp"))) `
+            "P40 review r4 (gating 1): build --target keeps 2 h old headerless src/keep.pgtmp.txt and src/plan.pgcase.tmp"
+        $r = Pg $s @("build", "src/notes.pgtmp.pg", "--target", "csharp")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $s "src/notes.pgtmp.pg")) -and (Test-Path (Join-Path $s "src/notes.pgtmp.cs"))) `
+            "P40 review r4 (gating 1): building src/notes.pgtmp.pg never deletes the source itself"
+
+        # Gating 2: a case-only rename of a DIRECTORY component the route creates (Spark: a3d.sh, r1\c2 G2/G3).
+        if ($caseInsensitive) {
+            $d = New-Proj (Join-Path $work "rv4-a3d") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"gen/%(RecursiveDir)%(Filename)","owned":true}]}' @{ "src/Foo/a.pg" = $fnA }
+            Check ((Pg $d @("build")).Rc -eq 0 -and (@(Get-ChildItem (Join-Path $d "gen") -Name) -join ',') -ceq 'Foo') "P40 review r4 A3d: build writes gen/Foo/a.ts"
+            Move-Item (Join-Path $d "src/Foo") (Join-Path $d "src/tmpdir"); Move-Item (Join-Path $d "src/tmpdir") (Join-Path $d "src/foo")
+            $before = Snapshot $d
+            $r = Pg $d @("build", "--check")
+            # (A directory's git remedy restages the index: `git mv -f gen/Foo gen/foo` exits 128 on Windows for a
+            # case-only DIRECTORY rename, before or after the disk rename.)
+            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*gen[\\/]Foo -> foo' -and $r.Out -cmatch 'git rm -r -q --cached ".*gen/Foo" && git add ".*gen/foo"' -and (Snapshot $d) -ceq $before) `
+                "P40 review r4 A3d: --check reports the directory case rename with the git restage hint (exit $($r.Rc); was 0), touching nothing"
+            $r = Pg $d @("build")
+            Check ($r.Rc -eq 0 -and (@(Get-ChildItem (Join-Path $d "gen") -Name) -join ',') -ceq 'foo' -and (Test-Path (Join-Path $d "gen/foo/a.ts")) -and $r.Out -cmatch 'git rm -r -q --cached') `
+                "P40 review r4 A3d: build renames gen/Foo to gen/foo and names the git remedy (exit $($r.Rc))"
+            Check ((Pg $d @("build", "--check")).Rc -eq 0) "P40 review r4 A3d: ... after which --check is clean"
+            # G3: the output template's own spelling changes (Gen/ -> gen/).
+            $g = New-Proj (Join-Path $work "rv4-g3") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"Gen/%(Filename)","owned":true}]}' @{ "a.pg" = $fnA }
+            Pg $g @("build") | Out-Null
+            Set-Content -LiteralPath (Join-Path $g "pgconfig.json") -Value '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)","owned":true}]}'
+            $r = Pg $g @("build", "--check")
+            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*Gen -> gen') "P40 review r4 G3: --check reports Gen -> gen (exit $($r.Rc))"
+            $r = Pg $g @("build")
+            Check ($r.Rc -eq 0 -and (@(Get-ChildItem $g -Directory -Name | Where-Object { $_ -ieq 'gen' }) -join ',') -ceq 'gen') "P40 review r4 G3: build renames Gen/ to gen/ (exit $($r.Rc))"
+            # A directory holding a file that is NOT Polyglot output is never renamed: refused, with the hint.
+            $x = New-Proj (Join-Path $work "rv4-a3d-foreign") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"Gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+            Pg $x @("build") | Out-Null
+            Set-Content -LiteralPath (Join-Path $x "Gen/notes.txt") -Value "mine"
+            Set-Content -LiteralPath (Join-Path $x "pgconfig.json") -Value '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}'
+            $r = Pg $x @("build")
+            Check ($r.Rc -eq 1 -and $r.Out -match 'not Polyglot output' -and $r.Out -match 'git rm -r -q --cached' -and (@(Get-ChildItem $x -Directory -Name | Where-Object { $_ -ieq 'gen' }) -join ',') -ceq 'Gen') `
+                "P40 review r4 A3d: a directory with a foreign file is not renamed; the build refuses with the hint (exit $($r.Rc))"
+            # The git remedy, run verbatim, fixes the commit (a directory rename on a core.ignorecase checkout).
+            if (Get-Command git -ErrorAction SilentlyContinue) {
+                $gq = @("-c", "user.name=gate", "-c", "user.email=gate@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=", "-c", "core.autocrlf=false")
+                $gd = New-Proj (Join-Path $work "rv4-a3d-git") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"gen/%(RecursiveDir)%(Filename)","owned":true}]}' @{ "src/Models/x.pg" = $fnA }
+                Pg $gd @("build") | Out-Null
+                Set-Content -LiteralPath (Join-Path $gd ".gitignore") -Value ".polyglot/"
+                & git @gq -C $gd init -q 2>&1 | Out-Null; & git @gq -C $gd add -A 2>&1 | Out-Null; & git @gq -C $gd commit -q -m one 2>&1 | Out-Null
+                & git @gq -C $gd mv src/Models src/m_tmp 2>&1 | Out-Null; & git @gq -C $gd mv src/m_tmp src/models 2>&1 | Out-Null
+                $r = Pg $gd @("build")
+                $m = [regex]::Match($r.Out, 'git rm -r -q --cached "([^"]*)" && git add "([^"]*)"')
+                $hint = $m.Value
+                Push-Location $gd
+                try {
+                    if ($m.Success) { & git @gq rm -r -q --cached $m.Groups[1].Value 2>&1 | Out-Null; & git @gq add $m.Groups[2].Value 2>&1 | Out-Null }
+                    & git @gq add -A 2>&1 | Out-Null; & git @gq commit -q -m two 2>&1 | Out-Null
+                    $files = (& git @gq ls-files 2>&1 | Out-String)
+                } finally { Pop-Location }
+                Check ($hint -and $files -cmatch 'gen/models/x\.ts' -and $files -cnotmatch 'gen/Models/') "P40 review r4 A3d: the printed '$hint' fixes the committed directory case"
+            }
+        } else { Check $true "P40 review r4 A3d/G3 (skipped: case-sensitive filesystem)" }
+
+        # Part 2: no git hint for a build-owned (obj/) output — those are never tracked.
+        if ($caseInsensitive) {
+            $o = New-Proj (Join-Path $work "rv4-obj-hint") '{"targets":["csharp"]}' @{ "Fold.pg" = $fnA }
+            $bargs = @("--out", "obj/polyglot", "--record", "obj/rec.json", "--build-owned", "obj/polyglot")
+            Pg $o (@("build", "Fold.pg") + $bargs) | Out-Null
+            Move-Item (Join-Path $o "Fold.pg") (Join-Path $o "x.tmp"); Move-Item (Join-Path $o "x.tmp") (Join-Path $o "fold.pg")
+            $r = Pg $o (@("build", "fold.pg") + $bargs)
+            Check ($r.Rc -eq 0 -and $r.Out -match 'case-only rename' -and $r.Out -notmatch 'git mv') "P40 review r4: a build-owned obj/ output is case-renamed without a git mv hint"
+        }
+
+        # Part 2: with a record present the refusal names the real remedy, and --adopt never takes over — not with
+        # explicit inputs without --record, and not under --watch.
+        $a = New-Proj (Join-Path $work "rv4-adopt") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+        Pg $a @("build") | Out-Null
+        Set-Content -LiteralPath (Join-Path $a "b.pg") -Value $fnB
+        Set-Content -LiteralPath (Join-Path $a "gen/b.ts") -Value "export const handWritten = 1;"
+        $r = Pg $a @("build")
+        Check ($r.Rc -eq 1 -and $r.Out -match 'delete the outputs record' -and $r.Out -notmatch 'pass --adopt once') "P40 review r4: with a record, the overwrite refusal names deleting the record, not --adopt"
+        $r = Pg $a @("build", "b.pg", "--adopt")
+        Check ($r.Rc -eq 1 -and $r.Out -match '--adopt is ignored' -and (Get-Content -Raw (Join-Path $a "gen/b.ts")) -match 'handWritten') `
+            "P40 review r4: explicit inputs without --record do not adopt over an existing record (exit $($r.Rc))"
+        $wlog = Join-Path $work "rv4-adopt-watch.log"
+        $proc = Start-Process -FilePath $Cli -ArgumentList @("build", "b.pg", "--watch", "--adopt") -WorkingDirectory $a `
+            -RedirectStandardOutput $wlog -RedirectStandardError (Join-Path $work "rv4-adopt-watch.err") -PassThru -NoNewWindow
+        $deadline = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $deadline -and -not ((Get-Content $wlog -Raw -ErrorAction SilentlyContinue) -match 'watching for changes')) { Start-Sleep -Milliseconds 200 }
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Check ((Get-Content -Raw (Join-Path $a "gen/b.ts")) -match 'handWritten' -and (Get-Content $wlog -Raw) -match '--adopt is ignored') "P40 review r4: --watch --adopt does not take over while a record exists"
+
+        # Part 2: offline `check` degrades ONLY the targets an uncached registry dependency provides.
+        $oldCache = $env:POLYGLOT_CACHE
+        $env:POLYGLOT_CACHE = Join-Path $work "rv4-offline-cache"
+        try {
+            $q = New-Proj (Join-Path $work "rv4-offline-typo") '{"targets":["csharpp"],"dependencies":{"nosuch":"^1.0.0"}}' @{ "a.pg" = $fnA }
+            $r1 = Pg $q @("check", "a.pg")
+            $q2 = New-Proj (Join-Path $work "rv4-offline-ok") '{"targets":["csharp","nosuch"],"dependencies":{"nosuch":"^1.0.0"}}' @{ "a.pg" = $fnA }
+            $r2 = Pg $q2 @("check", "a.pg")
+            $q3 = New-Proj (Join-Path $work "rv4-offline-file") '{"targets":["csharp","broken"],"dependencies":{"nosuch":"^1.0.0","broken":"file:./nope"}}' @{ "a.pg" = $fnA }
+            $r3 = Pg $q3 @("check", "a.pg")
+        } finally { $env:POLYGLOT_CACHE = $oldCache }
+        Check ($r1.Rc -eq 64 -and $r1.Out -match 'csharpp') "P40 review r4: offline check refuses a misspelled target beside an uncached registry dependency (exit $($r1.Rc); was 0)"
+        Check ($r2.Rc -eq 0 -and $r2.Out -match "note: target\(s\) nosuch not verified") "P40 review r4: ... and degrades exactly the uncached dependency's target (exit $($r2.Rc))"
+        Check ($r3.Rc -eq 64) "P40 review r4: ... and a broken file: plugin beside it is still an error (exit $($r3.Rc))"
+
+        # Part 2: an include rule's "target" names a target; --target "" is a usage error.
+        foreach ($t in @('" "', '""', '"typescrpt"')) {
+            $p = New-Proj (Join-Path $work ("rv4-ruletarget-" + [guid]::NewGuid().ToString('N').Substring(0, 6))) ('{"targets":["typescript"],"include":[{"pattern":"*.pg","target":' + $t + ',"output":"gen/%(Filename)"}]}') @{ "a.pg" = $fnA }
+            $r = Pg $p @("build")
+            Check ($r.Rc -eq 64 -and -not (Test-Path (Join-Path $p "a.ts"))) "P40 review r4: an include rule with target $t is refused (exit $($r.Rc)), nothing written next to the .pg"
+        }
+        $p = New-Proj (Join-Path $work "rv4-target-empty") '{"targets":["csharp","typescript"]}' @{ "a.pg" = $fnA }
+        $r = Pg $p @("build", "a.pg", "--target", "")
+        Check ($r.Rc -eq 64 -and -not (Test-Path (Join-Path $p "a.cs"))) "P40 review r4: --target `"`" is exit 64, not every target (exit $($r.Rc))"
+
+        # Part 2: a pgconfig.json that is not UTF-8 is refused by name (64); a record with a raw 0xE9 is unreadable.
+        $p = New-Proj (Join-Path $work "rv4-cp1252") $null @{ "a.pg" = $fnA }
+        [IO.File]::WriteAllBytes((Join-Path $p "pgconfig.json"), [byte[]](([Text.Encoding]::ASCII.GetBytes('{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"g')) + 0xE9 + [Text.Encoding]::ASCII.GetBytes('n/%(Filename)"}]}')))
+        $r = Pg $p @("build")
+        Check ($r.Rc -eq 64 -and $r.Out -match 'pgconfig\.json: malformed JSON: invalid UTF-8') "P40 review r4: a CP1252 pgconfig.json exits 64 naming the file (exit $($r.Rc); was 1)"
+        $p = New-Proj (Join-Path $work "rv4-rec-e9") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+        Pg $p @("build") | Out-Null
+        $recp = Join-Path $p ".polyglot/outputs.json"
+        $bytes = [IO.File]::ReadAllBytes($recp); $i = [Array]::IndexOf($bytes, [byte][char]'a'); $bytes[$i] = 0xE9; [IO.File]::WriteAllBytes($recp, $bytes)
+        $r = Pg $p @("build")
+        Check ($r.Rc -eq 0 -and $r.Out -match 'outputs record .* is unreadable') "P40 review r4: a record holding a raw 0xE9 is reported unreadable by name, never a crash (exit $($r.Rc))"
+
+        # Part 2: an owned folder INSIDE a nested project (src/sub/gen with src/sub/pgconfig.json) is that project's.
+        $n = New-Proj (Join-Path $work "rv4-nested-owned") '{"targets":["typescript"],"include":[{"pattern":"src/*.pg","output":"src/sub/gen/%(Filename)","owned":true}]}' @{ "src/a.pg" = $fnA }
+        New-Proj (Join-Path $n "src/sub") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "x.pg" = $fnB } | Out-Null
+        Pg (Join-Path $n "src/sub") @("build") | Out-Null
+        $r = Pg $n @("build", "--check")
+        Check ($r.Out -notmatch 'would delete' -and (Test-Path (Join-Path $n "src/sub/gen/x.ts"))) "P40 review r4: the outer owned scan never reports the nested project's src/sub/gen/x.ts (exit $($r.Rc))"
+
+        # Part 2: pgconfig.lock.json is strict — a duplicate key is refused (64), never the first value.
+        $l = New-Proj (Join-Path $work "rv4-lock") '{"targets":["csharp"],"dependencies":{"csharp":"*"}}' @{ "a.pg" = $fnA }
+        Set-Content -LiteralPath (Join-Path $l "pgconfig.lock.json") -Value '{"lockfileVersion":1,"packages":{"@x/p":{"version":"1.0.0","resolved":"u","integrity":"sha512-a","integrity":"sha512-b"}}}'
+        $r = Pg $l @("build", "a.pg")
+        Check ($r.Rc -eq 64 -and $r.Out -match 'pgconfig\.lock\.json: malformed JSON: duplicate key') "P40 review r4: a lockfile with a duplicate key is refused by name (exit $($r.Rc))"
     }
 
     $g39Ok = (Test-G39 "counter" $false "counter" @("csharp", "typescript", "python", "php"))

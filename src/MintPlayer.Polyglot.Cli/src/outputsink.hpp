@@ -31,9 +31,11 @@
 // Anything else is Refused: exit 1, the file untouched — and under --check an error, not `would update`.
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <set>
@@ -102,6 +104,24 @@ inline DirNames listDirNames(const std::filesystem::path& dir) {
 // found for `ärger.ts`; the filesystem's own answer (it opened `p`) plus file identity needs no fold table. On
 // Windows the candidate must also be an ordinal case-insensitive match (CompareStringOrdinal, the table NTFS
 // uses), so an 8.3 short-name alias of the same file is never mistaken for a case variant.
+// P40 review r4: on POSIX (APFS) the name test is no longer `true`. Identity alone picked a HARD LINK to the file
+// that happened to sort first (`a.ts` linked to `Foo.ts`) and renamed it. Without the volume's fold table the
+// test is conservative: the same number of code points, each pair equal, an ASCII case pair, or both non-ASCII
+// (where the filesystem's own answer — it opened `p` — plus file identity decide).
+#ifndef _WIN32
+inline std::vector<char32_t> utf8CodePoints(const std::string& s) {
+    std::vector<char32_t> out;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        const int n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
+        char32_t cp = n == 1 ? c : n == 2 ? (c & 0x1F) : n == 3 ? (c & 0x0F) : (c & 0x07);
+        for (int k = 1; k < n && i + k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        out.push_back(cp);
+        i += static_cast<std::size_t>(n);
+    }
+    return out;
+}
+#endif
 inline bool sameNameIgnoringCase(const std::filesystem::path& a, const std::filesystem::path& b) {
 #ifdef _WIN32
     const auto& x = a.native();
@@ -109,23 +129,37 @@ inline bool sameNameIgnoringCase(const std::filesystem::path& a, const std::file
     return CompareStringOrdinal(x.c_str(), static_cast<int>(x.size()), y.c_str(), static_cast<int>(y.size()), TRUE) ==
            CSTR_EQUAL;
 #else
-    (void)a;
-    (void)b;
-    return true; // POSIX case-insensitive volumes (APFS) have no short names: identity alone decides
+    const auto x = utf8CodePoints(a.native());
+    const auto y = utf8CodePoints(b.native());
+    if (x.size() != y.size()) return false;
+    auto lower = [](char32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; };
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        if (x[i] == y[i] || lower(x[i]) == lower(y[i])) continue;
+        if (x[i] >= 0x80 && y[i] >= 0x80) continue;
+        return false;
+    }
+    return true;
 #endif
 }
+// The on-disk spelling `p` resolved to, when it differs from `p`'s own only by case: the entry whose name is a
+// case variant of `p`'s AND which is the same file. P40 review r4: chosen by NAME among the equivalent entries,
+// never by identity alone; two candidates (hard links that are both case variants) is ambiguous, and nothing is
+// renamed.
 inline std::filesystem::path caseVariantIn(const std::filesystem::path& p, const DirNames& names) {
     namespace fs = std::filesystem;
     std::error_code ec;
     const fs::path want = p.filename();
     if (names.count(want.native()) || !fs::exists(p, ec) || ec) return {}; // exact spelling, or no file at all
     const fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
+    fs::path found;
     for (const auto& n : names) {
         const fs::path name(n);
         if (!sameNameIgnoringCase(name, want)) continue;
-        if (fs::equivalent(dir / name, p, ec) && !ec) return dir / name;
+        if (!fs::equivalent(dir / name, p, ec) || ec) continue;
+        if (!found.empty()) return {}; // ambiguous
+        found = dir / name;
     }
-    return {};
+    return found;
 }
 inline std::filesystem::path caseVariantOnDisk(const std::filesystem::path& p) {
     return caseVariantIn(p, listDirNames(p.has_parent_path() ? p.parent_path() : std::filesystem::path(".")));
@@ -148,16 +182,28 @@ inline std::string gitCaseRenameHint(const std::filesystem::path& from, const st
     };
     return "git mv -f " + shown(from) + " " + shown(to);
 }
+// P40 review r4: the same for a DIRECTORY. `git mv -f gen/Foo gen/foo` exits 128 ("renaming 'gen/Foo' failed:
+// Invalid argument") once the directory already has the new case on disk — which is exactly when the build
+// prints the note — so the remedy restages the index instead: drop the old spelling, add the new one.
+inline std::string gitCaseRenameDirHint(const std::filesystem::path& from, const std::filesystem::path& to) {
+    const std::string mv = gitCaseRenameHint(from, to); // git mv -f "<from>" "<to>"
+    const std::size_t split = mv.find("\" \"");
+    const std::string a = mv.substr(10, split + 1 - 10), b = mv.substr(split + 2);
+    return "git rm -r -q --cached " + a + " && git add " + b;
+}
 
-// The rename itself. A direct rename handles a case-only change on NTFS and APFS; the two-step through a
-// temporary name is the fallback for a filesystem that treats it as a no-op or an error.
+// The rename itself (a file or a directory). A direct rename handles a case-only change on NTFS and APFS; the
+// two-step through a temporary name is the fallback for a filesystem that treats it as a no-op or an error.
+// P40 review r4: the temporary is named after the NEW spelling (`<to>.pgcase.tmp`), so the stale-temp sweep can
+// tie a leftover to the output that owns it, and an existing entry of that name is never replaced.
 inline bool renameCaseOnly(const std::filesystem::path& from, const std::filesystem::path& to) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::rename(from, to, ec);
     if (!ec && caseVariantOnDisk(to).empty()) return true;
-    fs::path tmp = from;
+    fs::path tmp = to;
     tmp += ".pgcase.tmp";
+    if (fs::exists(tmp, ec)) return false;
     ec.clear();
     fs::rename(from, tmp, ec);
     if (ec) return false;
@@ -191,12 +237,36 @@ public:
         adopt_ = adopt;
     }
 
+    // P40 review r4: the outputs record that made --adopt moot ("" = none). A refusal then names the real remedy
+    // (move the file, or delete the record) instead of sending the user to --adopt, which is ignored.
+    void adoptBlockedBy(std::filesystem::path record) { adoptBlockedBy_ = std::move(record); }
+    const std::filesystem::path& adoptBlockedBy() const { return adoptBlockedBy_; }
+
+    // P40 review r4 (A3, directories): the directories the routes START from — every config folder, the --out
+    // folder, each input's folder. Only the path components an output adds BELOW the deepest of these are the
+    // route's own, so only those are compared for a case-only difference with the disk; a user's checkout or
+    // source folder spelled differently in a command line is never renamed.
+    void routeRoots(std::vector<std::filesystem::path> roots) {
+        roots_.clear();
+        for (auto& r : roots) roots_.push_back(absoluteDir(r));
+    }
+    // Every header line a loaded target emits — "everything in this directory is Polyglot output" accepts any
+    // target's (a gen/ folder may hold twins of several targets). Evaluated when a directory rename needs it.
+    void headerLines(std::function<std::vector<std::string>()> f) { headerLines_ = std::move(f); }
+
+    // After a Refused put: the full diagnostic, when the refusal is not the plain overwrite guard ("" = it is).
+    const std::string& refusal() const { return refusal_; }
+
     // Produce one file. A path produced earlier in the RUN with identical content is a no-op (a shared
     // module reached from several roots); different content is a conflict, never a silent clobber — across
     // config groups too. Write mode is write-if-changed (an unchanged twin keeps its mtime, so a dev server
     // watching it does not churn); Check mode compares against disk and records drift. An existing file
     // with different bytes is replaced only when it is Polyglot's (the overwrite guard above) — else Refused.
     Put put(const std::filesystem::path& out, const std::string& content, const Claim& claim = {}) {
+        refusal_.clear();
+        // P40 review r4 (A3): a directory the route creates may exist under another case first (`gen/Foo/` for
+        // `gen/foo/a.ts`, `Gen/` for an output template now spelling `gen/`).
+        if (const Put p = alignDirectoryCase(out, claim); p != Put::Written) return p;
         // P40 review (A3): the existing file answers to `out` only up to case. Rename it to the exact case first
         // (it is the same file, so the overwrite guard decides, as for any replacement); --check reports it.
         bool trustedByRename = false;
@@ -224,9 +294,12 @@ public:
             } else {
                 trustedByRename = true;
                 caseRenamed_[vkey] = spelled; // the old spelling is this output now: never stale, never an extra
+                // P40 review r4: a build-owned output (MSBuild's obj/) is never tracked, so no git remedy is named.
+                const bool tracked = !underBuildOwned(vkey);
                 if (checking()) {
                     drift_.insert("polyglot: would rename " + variant.string() + " -> " + out.filename().string() +
-                                  " (case only; then stage it with: " + gitCaseRenameHint(variant, out) + ")");
+                                  (tracked ? " (case only; then stage it with: " + gitCaseRenameHint(variant, out) + ")"
+                                           : std::string(" (case only)")));
                 } else if (!renameCaseOnly(variant, out)) {
                     std::cerr << "polyglot: cannot rename '" << variant.string() << "' to '" << out.filename().string() << "'\n";
                     return Put::Failed;
@@ -235,8 +308,9 @@ public:
                     names.insert(out.filename().native());
                     std::cout << "  ~> " << variant.string() << " -> " << out.filename().string() << " (case-only rename)\n";
                     // git (core.ignorecase) does not see a case-only change on its own.
-                    std::cout << "polyglot: note: a case-only rename is not staged by `git add` on a case-insensitive "
-                                 "checkout; run: " << gitCaseRenameHint(variant, out) << "\n";
+                    if (tracked)
+                        std::cout << "polyglot: note: a case-only rename is not staged by `git add` on a case-insensitive "
+                                     "checkout; run: " << gitCaseRenameHint(variant, out) << "\n";
                 }
             }
         }
@@ -247,6 +321,7 @@ public:
             return Put::Conflict;
         }
         produced_[key] = {content, claim.producer};
+        if (!checking()) sweepStaleTempsOf(out, claim, names);
         std::string existing;
         const bool exists = readFile(out, existing);
         if (exists && existing == content) {
@@ -294,16 +369,154 @@ private:
     // P40 review r3: one listing per output directory per run, kept current as this sink writes and renames —
     // the case-variant check used to list the folder once per OUTPUT (O(n²) for a large generated folder).
     DirNames& dirNames(const std::filesystem::path& out) {
-        const std::filesystem::path dir = out.has_parent_path() ? out.parent_path() : std::filesystem::path(".");
+        return listing(out.has_parent_path() ? out.parent_path() : std::filesystem::path("."));
+    }
+    DirNames& listing(const std::filesystem::path& dir) {
         const std::string key = outputKey(dir);
         auto it = dirNames_.find(key);
         if (it == dirNames_.end()) it = dirNames_.emplace(key, listDirNames(dir)).first;
         return it->second;
     }
 
-    bool mayOverwrite(const std::filesystem::path& out, const std::string& key, const Claim& claim) const {
+    bool underBuildOwned(const std::string& key) const {
         for (const auto& d : buildOwned_)
             if (key.size() > d.size() && key.compare(0, d.size(), d) == 0 && key[d.size()] == '/') return true;
+        return false;
+    }
+
+    // P40 review r4 (gating 1): the temp files an interrupted run left for THIS output — exactly writeFile's
+    // `<output>.pgtmp.<n>.<n>.<n>` and renameCaseOnly's `<output>.pgcase.tmp`, next to it — are deleted, and only
+    // under the deletion invariant: the temp must prove itself Polyglot's exactly as the output would (its header
+    // line; a sidecar's temp names the owner), and be older than ten minutes (a parallel build — net8;net9 sharing
+    // a routed twin — may have its own in flight). Nothing else in the folder is ever looked at.
+    void sweepStaleTempsOf(const std::filesystem::path& out, const Claim& claim, DirNames& names) {
+        namespace fs = std::filesystem;
+        const fs::path dir = out.has_parent_path() ? out.parent_path() : fs::path(".");
+        fs::path caseTemp = out.filename();
+        caseTemp += ".pgcase.tmp";
+        const auto cutoff = fs::file_time_type::clock::now() - std::chrono::minutes(10);
+        std::vector<fs::path::string_type> gone;
+        for (const auto& n : names) {
+            const fs::path name(n);
+            if (!isWriteTempOf(name, out.filename()) && name != caseTemp) continue;
+            const fs::path p = dir / name;
+            std::error_code ec;
+            if (!fs::is_regular_file(fs::symlink_status(p, ec)) || ec) continue;
+            const auto t = fs::last_write_time(p, ec);
+            if (ec || t >= cutoff) continue;
+            const bool ours = claim.sidecarOf.empty() ? carriesGeneratedLine(p, claim.headerLine) : isOwnSidecar(p, claim.sidecarOf);
+            if (!ours) continue;
+            if (fs::remove(p, ec) && !ec) {
+                std::cout << "  x  " << p.string() << " (temp file of an interrupted run)\n";
+                gone.push_back(n);
+            }
+        }
+        for (const auto& n : gone) names.erase(n);
+    }
+
+    // Is every file under `dir` Polyglot's? (A file carrying any target's header line, a recorded output, or a
+    // source map naming such a sibling; an empty directory is.) `example` names the first file that is not.
+    bool allPolyglotOutput(const std::filesystem::path& dir, const Claim& claim, std::filesystem::path& example) const {
+        namespace fs = std::filesystem;
+        std::vector<std::string> headers = headerLines_ ? headerLines_() : std::vector<std::string>();
+        if (!claim.headerLine.empty()) headers.push_back(claim.headerLine);
+        auto marked = [&](const fs::path& f) {
+            for (const auto& h : headers)
+                if (carriesGeneratedLine(f, h)) return true;
+            return recorded_.count(outputKey(f)) != 0;
+        };
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code tec;
+            const fs::file_status st = it->symlink_status(tec);
+            if (fs::is_directory(st)) continue;
+            const fs::path f = it->path();
+            if (fs::is_regular_file(st)) {
+                if (marked(f)) continue;
+                const fs::path owner = f.parent_path() / f.stem(); // `a.ts.map` -> `a.ts`
+                if (f.has_extension() && fs::is_regular_file(owner, tec) && marked(owner) && isOwnSidecar(f, owner)) continue;
+            }
+            example = f; // unmarked, or a symlink / special file
+            return false;
+        }
+        return !ec;
+    }
+
+    // P40 review r4 (A3, directories): compare every directory component the route adds below its root with the
+    // disk. A component that exists only under another case is renamed to the route's spelling when everything
+    // in it is Polyglot output (or the directory is build-owned); otherwise the put is Refused with the git remedy.
+    // --check reports `would rename` (exit 3). Returns Written to mean "carry on".
+    Put alignDirectoryCase(const std::filesystem::path& out, const Claim& claim) {
+        namespace fs = std::filesystem;
+        const fs::path abs = absoluteDir(out.has_parent_path() ? out.parent_path() : fs::path("."));
+        // The deepest root `abs` lies in (case-insensitively on Windows: a root and an output spelled from it).
+        fs::path base;
+        for (const auto& r : roots_) {
+            const fs::path rel = abs.lexically_relative(r);
+            bool inside = !rel.empty() && *rel.begin() != "..";
+#ifdef _WIN32
+            if (!inside) { // the same prefix up to case
+                const auto& a = abs.native();
+                const auto& rn = r.native();
+                inside = a.size() >= rn.size() && (a.size() == rn.size() || a[rn.size()] == L'\\' || rn.back() == L'\\') &&
+                         sameNameIgnoringCase(fs::path(a.substr(0, rn.size())), r);
+            }
+#endif
+            if (inside && r.native().size() > base.native().size()) base = r;
+        }
+        if (base.empty()) return Put::Written;
+        const fs::path rel = fs::path(abs.native().substr(std::min(abs.native().size(), base.native().size()))).relative_path();
+        fs::path cur = base;
+        for (const auto& comp : rel) {
+            if (comp.empty() || comp == ".") continue;
+            const fs::path next = cur / comp;
+            if (comp == "..") { cur = next; continue; }
+            DirNames& names = listing(cur);
+            const fs::path variant = caseVariantIn(next, names);
+            if (!variant.empty()) {
+                const std::string vkey = outputKey(variant);
+                if (!dirRenamed_.count(vkey)) {
+                    for (const auto& [k, prod] : produced_)
+                        if (k.size() > vkey.size() && k.compare(0, vkey.size(), vkey) == 0 && k[vkey.size()] == '/') {
+                            conflictWith_ = prod.producer;
+                            return Put::Conflict; // this run already wrote into the other spelling
+                        }
+                    const bool owned = underBuildOwned(vkey + "/x");
+                    fs::path example;
+                    const std::string hint = gitCaseRenameDirHint(variant, next);
+                    if (!owned && !allPolyglotOutput(variant, claim, example)) {
+                        refusal_ = "error: the directory '" + variant.string() + "' differs from '" + comp.string() +
+                                   "', where '" + out.string() + "' is routed, only by case, and it holds '" +
+                                   example.string() + "', which is not Polyglot output, so it is not renamed; rename it "
+                                   "to '" + comp.string() + "' yourself (then restage it for git: " + hint +
+                                   ") or fix the include rule's output spelling";
+                        return Put::Refused;
+                    }
+                    dirRenamed_.insert(vkey);
+                    if (checking()) {
+                        drift_.insert("polyglot: would rename " + variant.string() + " -> " + comp.string() +
+                                      (owned ? std::string(" (case-only directory rename)")
+                                             : " (case-only directory rename; then stage it with: " + hint + ")"));
+                    } else if (!renameCaseOnly(variant, next)) {
+                        std::cerr << "polyglot: cannot rename '" << variant.string() << "' to '" << comp.string() << "'\n";
+                        return Put::Failed;
+                    } else {
+                        names.erase(variant.filename().native());
+                        names.insert(comp.native());
+                        std::cout << "  ~> " << variant.string() << " -> " << comp.string() << " (case-only directory rename)\n";
+                        if (!owned)
+                            std::cout << "polyglot: note: a case-only rename is not staged by `git add` on a "
+                                         "case-insensitive checkout; run: " << hint << "\n";
+                    }
+                }
+            }
+            cur = next;
+        }
+        return Put::Written;
+    }
+
+    bool mayOverwrite(const std::filesystem::path& out, const std::string& key, const Claim& claim) const {
+        if (underBuildOwned(key)) return true;
         const bool marked = claim.sidecarOf.empty() ? carriesGeneratedLine(out, claim.headerLine) : isOwnSidecar(out, claim.sidecarOf);
         if (marked) return true;
         // Only `path` entries are recorded (a sidecar proves itself by naming its owner, above), so this is
@@ -334,9 +547,14 @@ private:
     std::map<std::string, Produced> produced_; // outputKey -> what produced it, run-wide
     std::map<std::string, std::string> caseRenamed_; // old spelling's outputKey -> the output it became (A3)
     std::map<std::string, DirNames> dirNames_;       // outputKey of a directory -> its entry names (A3)
+    std::set<std::string> dirRenamed_;               // outputKeys of directories already case-renamed (or reported)
     std::set<std::string> drift_;
     std::set<std::string> recorded_;
     std::vector<std::string> buildOwned_; // outputKeys of the build-owned directories
+    std::vector<std::filesystem::path> roots_; // where routes start (A3 directories)
+    std::function<std::vector<std::string>()> headerLines_;
+    std::filesystem::path adoptBlockedBy_;
+    std::string refusal_;
     bool adopt_ = false;
     std::string conflictWith_;
 };
@@ -466,6 +684,7 @@ struct OwnedScope {
     std::filesystem::path dir; // absolute
     bool recursive = false;
     std::string ext;           // the built target's file extension (".ts")
+    std::filesystem::path configDir; // the config that declares the rule (a nested project sits below it)
 };
 
 // Every file in scope that this run did not produce. Dot-dirs and the usual dependency/output trees are
@@ -479,7 +698,17 @@ std::vector<std::filesystem::path> ownedExtras(const OwnedScope& s, IsProduced i
     // P40 review r3: a subtree with its OWN pgconfig.json is a nested project — its outputs are its build's,
     // exactly as discovery leaves its sources to it (discoverIncludeInputs). The outer build used to report
     // `would delete src/sub/gen/x.ts`, the nested project's output.
+    // P40 review r4: ... and so is a scope that lies INSIDE a nested project — `src/sub/gen` with a
+    // `src/sub/pgconfig.json` — so every folder from the scope up to (not including) the declaring config's is
+    // checked, not only the scope root and the folders below it.
     if (fs::exists(s.dir / "pgconfig.json", ec)) return found;
+    if (!s.configDir.empty()) {
+        const fs::path stop = absoluteDir(s.configDir);
+        const fs::path up = absoluteDir(s.dir).lexically_relative(stop);
+        if (!up.empty() && *up.begin() != "..") // the scope is below the config (a sibling route has no nesting)
+            for (fs::path d = absoluteDir(s.dir).parent_path(); d != stop && d.has_relative_path(); d = d.parent_path())
+                if (fs::exists(d / "pgconfig.json", ec)) return found;
+    }
     auto consider = [&](const fs::directory_entry& e) {
         std::error_code tec;
         if (!e.is_regular_file(tec)) return;

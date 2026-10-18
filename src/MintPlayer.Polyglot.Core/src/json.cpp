@@ -1,7 +1,9 @@
 #include "mintplayer/polyglot/json.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <string>
 
 namespace mintplayer::polyglot::json {
 
@@ -90,11 +92,16 @@ struct Parser {
                 case 'r':  out += '\r'; break;
                 case 't':  out += '\t'; break;
                 case 'u': {
+                    const std::size_t at = i - 2;
                     unsigned cp = hex4();
                     if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < s.size() && s[i] == '\\' && s[i + 1] == 'u') {
                         i += 2; // consume the "\u" of the low surrogate
                         unsigned lo = hex4();
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        if (lo >= 0xDC00 && lo <= 0xDFFF) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        else fail(at, "invalid \\u surrogate pair");
+                    } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+                        // P40 review r4: a lone surrogate has no UTF-8 form; the result would be invalid UTF-8.
+                        fail(at, "lone \\u surrogate in a JSON string");
                     }
                     appendUtf8(out, cp);
                     break;
@@ -251,7 +258,43 @@ Value parse(const std::string& text) {
     return p.parseDocument();
 }
 
+// P40 review r4: JSON text is UTF-8 (RFC 8259 §8.1). A CP1252 pgconfig (`g\xE9n`) or a record holding a raw 0xE9
+// byte used to parse, and the bytes then reached a path conversion that threw "No mapping for the Unicode
+// character…" — exit 1 with no file named. Strict readers now refuse the document. Rejects overlong forms,
+// surrogate code points and anything above U+10FFFF; returns the offset of the first bad byte, or npos.
+static std::size_t firstInvalidUtf8(const std::string& s) {
+    std::size_t i = 0;
+    const std::size_t n = s.size();
+    while (i < n) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) { ++i; continue; }
+        int len;
+        unsigned cp;
+        if (c >= 0xC2 && c <= 0xDF) { len = 2; cp = c & 0x1Fu; }
+        else if (c >= 0xE0 && c <= 0xEF) { len = 3; cp = c & 0x0Fu; }
+        else if (c >= 0xF0 && c <= 0xF4) { len = 4; cp = c & 0x07u; }
+        else return i;
+        if (i + static_cast<std::size_t>(len) > n) return i;
+        for (int k = 1; k < len; ++k) {
+            const unsigned char cc = static_cast<unsigned char>(s[i + static_cast<std::size_t>(k)]);
+            if ((cc & 0xC0) != 0x80) return i;
+            cp = (cp << 6) | (cc & 0x3Fu);
+        }
+        if ((len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000) || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+            return i;
+        i += static_cast<std::size_t>(len);
+    }
+    return std::string::npos;
+}
+
 Value parse(const std::string& text, std::string& error) {
+    if (const std::size_t bad = firstInvalidUtf8(text); bad != std::string::npos) {
+        char hex[8];
+        std::snprintf(hex, sizeof(hex), "0x%02X", static_cast<unsigned>(static_cast<unsigned char>(text[bad])));
+        error = std::string("invalid UTF-8 (byte ") + hex + ") at byte offset " + std::to_string(bad) +
+                "; save the file as UTF-8";
+        return Value{};
+    }
     Parser p{text};
     Value v = p.parseDocument();
     error = p.error;
