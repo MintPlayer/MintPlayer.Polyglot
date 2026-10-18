@@ -50,9 +50,12 @@ $canaryName = "__floor_canary"
 # P40 review r4: with SEVERITY. CS0168 is a warning that only TreatWarningsAsErrors turns into an error, so a
 # code-only comparison (the regex accepted `warning CS0168`) passed with TWAE switched off.
 $canaryExpected = "error CS0168,error CS9058"
-# P40 review r4: the corpus size is PINNED (a floor, so new programs never need an edit here). Comparing the
-# accounted count with the discovered count proved bookkeeping only — a corpus that lost programs still passed.
-$minPrograms = 146
+# P40 review r4: the corpus size is PINNED. Comparing the accounted count with the discovered count proved
+# bookkeeping only — a corpus that lost programs still passed.
+# P40 review r5: pinned EXACTLY (a `>=` floor let programs added since drop out silently). The ONE number to bump
+# when a conformance program is added (or deliberately removed): every top-level tests/conformance/programs/*.pg
+# plus every directory there holding an entry.pg. At c436aae: 157 = 152 files + 5 directories (153 net8.0, 4 net9.0).
+$expectedPrograms = 157
 # Isolation from the machine: the work dir is under %TEMP%, so a Directory.Build.props/.targets (or a central
 # package file) in any ancestor would be imported; and net8.0's end of support (2026-11-10) would add NETSDK1138,
 # which can fail the build with no CS line. Global properties, because ImportDirectoryBuildProps is read by
@@ -68,7 +71,7 @@ try {
         $entry = Join-Path $d.FullName "entry.pg"
         if (Test-Path $entry) { $programs += , @($d.Name, $entry, $d.FullName) }
     }
-    if ($programs.Count -lt $minPrograms) { Fail "found $($programs.Count) conformance program(s) under $progDir, expected at least $minPrograms — programs dropped out of the corpus (lower `$minPrograms only when one is deliberately removed)" }
+    if ($programs.Count -ne $expectedPrograms) { Fail "found $($programs.Count) conformance program(s) under $progDir, expected exactly $expectedPrograms — a program was added or dropped out of the corpus (update `$expectedPrograms in tests/floor/run-floor.ps1 when that is deliberate)" }
     $byFloor = @{ "net8.0" = [System.Collections.Generic.List[string]]::new(); "net9.0" = [System.Collections.Generic.List[string]]::new() }
     $refused = [System.Collections.Generic.List[string]]::new()
     foreach ($p in $programs) {

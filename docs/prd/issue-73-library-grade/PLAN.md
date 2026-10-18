@@ -1579,3 +1579,61 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     refusal by message, each fix by emission).
   - **Not touched (the other half):** classes/ctors, emission order, records, PHP evaluation order, the cast wrap, the
     default folding of `1 / 2 + 0.5` and `-1e400`, overload link names, the through-call init check, the temp prefix.
+- **2026-10-18 — Review round 5 — CLI half** (Spark's re-verification of `c436aae`: gating items 1–3, part 2 "CLI and
+  MSBuild", the CLI "Docs" items and "Gates"). Every item was reproduced against the `c436aae` CLI first; the new
+  cli-smoke block ("Review round 5 — CLI half") and four unit checks fail there and pass here.
+  - **Gating 1 [H] — A3 compares the directories of a route that leaves the config folder.** The roots
+    `alignDirectoryCase` measures from were the config folders, `--out` and the input folders, so for
+    `../web/gen/%(RecursiveDir)%(Filename)` no root contained the output and nothing was compared (local `--check`
+    exit 0 while a case-sensitive clone's exited 3 forever). `includeRouteRoot` (pgconfig.hpp) adds each include
+    rule's own starting point: the config folder climbed by the template's leading `..` segments, after
+    `lexically_normal` (so `gen/../../web` counts too). Every folder the route adds below it (`web/`, `gen/` and
+    whatever `%(RecursiveDir)` adds) is compared, which also covers a template change `../web/Gen/` → `../web/gen/`.
+    The deepest root still wins, so a route that comes back into the config folder (`../proj/gen`) never compares
+    the config folder's own name. An absolute template (`C:/out/%(Filename)`) starts at its literal folder: the
+    user's checkout path is never renamed. Both the build and watch paths add the roots. MSBuild's D3 command goes
+    through the same multi-root path.
+  - **Gating 2 [H] — another spelling in the same run is a conflict, on the first run.** The cached parent listing
+    never saw a directory this run created, so `a.pg → gen/` then `b.pg → Gen/` wrote both into `gen/`, and every
+    later run failed with the content-conflict text. That listing is now refreshed when `put` creates directories.
+    The rule itself no longer depends on the disk: `noteSpelling` records every name the run routes into each folder
+    (each directory component below the root, and each file name). A second name differing only by case is
+    `Put::Conflict` with `spellingClash()`, a message naming both producers and both routed paths. It fires on NTFS,
+    on ext4 and under `--check` alike: one filesystem merges the two names and the other keeps both, so the outputs
+    differ. `routedNamesClash` folds like NTFS on Windows (CompareStringOrdinal). On POSIX it folds ASCII letters
+    only, so two different non-ASCII names are never a false conflict.
+  - **Gating 3 [R] — an uncached dependency's include-rule target is "not verified".** `resolveConfiguredTargets`
+    now collects network misses in every command, not only offline `check`, and puts an unloaded include-rule target
+    that such a miss could provide into `ruleUnverified`. The match is by first-party package name, or any missing
+    target when a third-party package is uncached. Those targets are noted (`include rule target(s) X not verified`)
+    and skipped. `targets` keeps its offline-only degradation, because a build needs those. A memoized failed
+    resolve now remembers it was a network miss (`ResolveState::failedNetwork`). Without that, the second
+    validation of one build (the discovery pre-check, then the group) called the target unknown. Offline `check`
+    and a build with no registry now exit 0 for `rt.sh` and write `a.cs`. A misspelled rule target beside the
+    uncached dependency is still exit 64.
+  - **Part 2 — one hint for a nested rename.** Only the outermost directory renamed in a run names the git remedy
+    (`hintedDirs_`). Inner directory renames and file renames inside it still happen and print `~>`, but print no
+    note, because the outer `git rm -r --cached … && git add …` restages the whole subtree. `--check` reports only
+    that outermost directory. G4 (`src/Foo/Bar` → `src/foo/bar`) and G5 (`src/Foo/Bar.pg` → `src/foo/bar.pg`) now
+    print one hint, and it exits 0 and fixes the commit.
+  - **Part 2 — an include rule's `"target"` must name a target this config builds.** A loaded target that `targets`
+    omits is refused when it is BUNDLED (`g_inBoxTargets`, snapshotted after `loadPluginsNextToExe`), because
+    nothing configures it and the rule never applies (`"python"` beside `"targets": ["typescript"]`). A
+    dependency-provided target may still be omitted, since it is built through `--target`. So may the run's own
+    `--target`, which `--target python` relies on, and a config with no `targets` at all. **`"target": []` is
+    refused** at parse time, consistent with `"targets": []`: an empty list says "no target", not "every target",
+    and the every-target form is omitting the key.
+  - **Part 2 — the temp sweep obeys rule 4.** The sweep moved out of `put` into `OutputSink::sweepStaleTemps`, which
+    the build calls only when every group and the reconciliation succeeded. An exit-1 build now keeps a stale
+    headed temp, and the next clean build removes it. The invariant comment (outputsink.hpp) now lists three
+    deletion paths, with rule 4 covering all of them. `--watch` no longer sweeps at all, which matches its "never
+    deletes" contract.
+  - **Docs.** README: offline `check`'s "not verified" degradation and its third-party limit, the same degradation
+    for a build's include-rule target, the include rule `"target"` contract, the sweep wording (it runs at the end
+    of a successful build, and a map temp proves itself by its `file` field, not a header line), routes leaving the
+    config folder, the same-run spelling conflict, and the single hint. `--help` (`check`) covers the offline
+    degradation and its third-party limit.
+  - **Gates.** The floor pins the corpus EXACTLY: `$expectedPrograms = 157` (152 files + 5 `entry.pg` directories,
+    153 at net8.0 and 4 at net9.0) in tests/floor/run-floor.ps1. It is the one number to bump when a conformance
+    program is added.
+  - **Not touched (the language halves):** sema, lower, the emitters and the plugins' language arms.
