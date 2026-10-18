@@ -15,7 +15,7 @@
          hits back to the .pg (path AND line numbers) instead of reporting nothing for code in obj/.
          Off by default — the generated code is byte-identical without it. -->
     <PolyglotOriginInfo Condition="'$(PolyglotOriginInfo)' == ''">false</PolyglotOriginInfo>
-    <!-- P40 B6: a subset of the pgconfig.json `targets` to build here, ';'- or ','-separated (e.g. csharp).
+    <!-- P40 B6: a subset of the pgconfig.json `targets` to build here, ';'- or ','-separated (e.g. csharp, or csharp;typescript).
          Empty = every pgconfig target (D3: the consumer's pgconfig decides). -->
     <PolyglotTargets Condition="'$(PolyglotTargets)' == ''"></PolyglotTargets>
   </PropertyGroup>
@@ -24,13 +24,7 @@
     <PolyglotFile Include="**\*.pg" Exclude="$(DefaultItemExcludes);bin\**;obj\**" />
     <!-- Make .pg files visible in the IDE's solution explorer. -->
     <None Include="@(PolyglotFile)" Condition="'$(EnableDefaultItems)' != 'false'" />
-    <!-- P40 review (#75): Visual Studio's fast up-to-date check skips MSBuild entirely unless an input it
-         knows about changed — without these, editing or deleting a .pg (or the config/lockfile) in VS left
-         the project "up to date". The project's own pgconfig.json/lockfile; a config in a parent folder is
-         still a depfile input of the transpile itself. -->
-    <UpToDateCheckInput Include="@(PolyglotFile)" />
-    <UpToDateCheckInput Include="$(MSBuildProjectDirectory)\pgconfig.json" Condition="Exists('$(MSBuildProjectDirectory)\pgconfig.json')" />
-    <UpToDateCheckInput Include="$(MSBuildProjectDirectory)\pgconfig.lock.json" Condition="Exists('$(MSBuildProjectDirectory)\pgconfig.lock.json')" />
+    <!-- (UpToDateCheckInput is declared in the .targets, after the project body: P40 review r3.) -->
   </ItemGroup>
 
 </Project>

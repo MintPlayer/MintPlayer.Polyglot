@@ -180,14 +180,21 @@ files at this build's output paths (they then carry the header and are recorded)
 package, the `obj/…/polyglot/` folder belongs to the build outright (it passes `--build-owned`), and it
 compiles only the `.cs` files the transpile reported, so a headerless stale `.cs` that 0.10.x left there is
 ignored. A 0.10.x twin routed **outside** `obj/` (a TypeScript twin in a web app) still needs taking over
-once: `dotnet build -p:PolyglotAdopt=true` (the `PolyglotAdopt` property passes `--adopt`; don't leave it
-set). Neither option ever widens what may be *deleted*.
+once: `dotnet build -p:PolyglotAdopt=true` (the `PolyglotAdopt` property passes `--adopt`). `--adopt` names
+every file it takes over, and it is honoured only while the project has **no outputs record yet**: once a
+build has written one, the record decides what is Polyglot's, so a flag left set is ignored with a warning
+(and the MSBuild targets warn for as long as `PolyglotAdopt` is set). Neither option ever widens what may be
+*deleted*.
 
 **Build systems.** `--depfile <file>` writes every input the outputs depend on (each `.pg`, every
 `pgconfig.json` and lockfile consulted, `file:` plugins), one path per line, so MSBuild, Nx or make can
-key an incremental or cached build on exactly those files. The MSBuild package passes `--record`,
-`--depfile` and `--build-owned`, and transpiles before the SDK hashes `@(Compile)`, so deleting a `.pg`
-recompiles even when every other generated file is unchanged.
+key an incremental or cached build on exactly those files. `--outputs-list <file>` writes every file the
+run produced, one absolute path per line, so a build system compiles exactly those instead of globbing a
+folder. Both files are UTF-8, whatever the system code page. The MSBuild package passes `--record`,
+`--depfile`, `--outputs-list` and `--build-owned`: `@(Compile)` takes the `.cs` files of the outputs list
+(a stale headerless `.cs` in `obj/` is never compiled), a listed file deleted by hand re-runs the
+transpile, and it transpiles before the SDK hashes `@(Compile)`, so deleting a `.pg` recompiles even when
+every other generated file is unchanged.
 
 ### Target options — namespaces, wrapper class, accessibility
 
@@ -317,15 +324,22 @@ polyglot build --check --only typescript    # CI: exit 3 when the committed twin
 polyglot build --only typescript            # refresh the twin (writes no C#)
 ```
 
+**A case-only rename needs `git mv`.** Renaming `Foo.pg` to `foo.pg` renames the twin (and its source
+map) to the exact case, and `--check` reports it as `would rename`. On a case-insensitive checkout
+(`core.ignorecase=true`, the Windows and macOS default) `git add -A` does not stage a case-only change, so
+the commit would keep `gen/Foo.ts` and a case-sensitive clone's check would fail. Polyglot prints the
+remedy with the rename; run it before committing, e.g. `git mv -f gen/Foo.ts gen/foo.ts`.
+
 The emitted C# needs **C# 11 and a .NET 8 BCL** (`std.collections` `Map<K, V>` needs .NET 9; it is
 `OrderedDictionary<K, V>`); the `tests/floor` gate compiles the whole conformance corpus at that floor with
 `Nullable` and `TreatWarningsAsErrors`.
 
-`csharp.class` renames only the top-level wrapper. Extension-method helpers — `std` receiver rewrites and the
-internal `_pg_*` guards — live in a separate static class, `PolyglotExtensions`, in the same namespace, with
-the same `csharp.access`. The `_pg_*` guards are `internal`, so an assembly you grant `InternalsVisibleTo`
-sees them as `string` extension methods once it imports that namespace. Give each library its own
-`csharp.namespace` and those helpers never meet.
+`csharp.class` renames only the top-level wrapper. Your own `extension` functions live in a separate static
+class, `PolyglotExtensions`, in the same namespace, with the same `csharp.access`. The `std` guards
+(`_pg_charAt`, `_pg_split`, …) are plain `internal static` methods of the wrapper class, called as
+`PolyglotProgram._pg_charAt(s, 1)`; they are not `this string` extensions, so an assembly you grant
+`InternalsVisibleTo` sees nothing new on `string`. Give each library its own `csharp.namespace` and these
+helpers never meet.
 
 ## Testing & code coverage
 

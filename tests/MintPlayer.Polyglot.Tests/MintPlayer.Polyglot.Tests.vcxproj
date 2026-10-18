@@ -75,6 +75,10 @@
     <ClCompile Include="src\tests_main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <!-- P40 review r3: the CLI's UTF-8 active code page — the suite exercises the same path code. -->
+    <Manifest Include="..\..\src\MintPlayer.Polyglot.Cli\utf8.manifest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\MintPlayer.Polyglot.Core\MintPlayer.Polyglot.Core.vcxproj">
       <Project>{A1A1A1A1-1111-4111-8111-111111111111}</Project>
     </ProjectReference>

@@ -145,15 +145,27 @@ LibConfig parseLibList(const std::string& libArg) {
 // (packument -> maxSatisfying -> SRI verify -> extract -> validate -> cache -> lock). Shared by
 // build, watch, and the LSP — the static ResolveState memoizes successes AND failures per config
 // generation, so a long-lived host retries on pgconfig change instead of hammering the network.
-void resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false) {
+// `offline` (P40 review r3, for `check`): never touches the network — in-box, `file:` and the lock-pinned cache
+// only. Returns true when some dependency would have needed the registry (so its targets are unverified).
+bool resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false, bool offline = false) {
     static cli::ResolveState state;
-    const cli::ResolveResult res =
-        cli::resolvePluginDependencies(pc, cli::defaultHttpGet(), /*update=*/false, &state, dryRun);
-    for (const auto& m : res.messages) std::cerr << "polyglot: " << m << "\n";
+    bool neededNetwork = false;
+    const cli::HttpGet offlineGet = [&](const std::string&, const std::vector<std::string>&, std::string&,
+                                        std::string& err) {
+        neededNetwork = true;
+        err = "not in the plugin cache, and `polyglot check` does not use the network (`polyglot install` or a "
+              "build fetches it)";
+        return false;
+    };
+    // The memo is shared by build/watch/LSP; an offline miss must not poison a later online resolve.
+    const cli::ResolveResult res = cli::resolvePluginDependencies(pc, offline ? offlineGet : cli::defaultHttpGet(),
+                                                                  /*update=*/false, offline ? nullptr : &state, dryRun);
+    for (const auto& m : res.messages) std::cerr << "polyglot: " << (neededNetwork ? "note: " : "") << m << "\n";
     for (const auto& t : pc.targets)
-        if (!findTarget(t).ok())
+        if (!findTarget(t).ok() && !neededNetwork)
             std::cerr << "polyglot: target '" << t << "' is neither bundled nor provided by a pgconfig "
                       << "dependency; add one, e.g. \"dependencies\": { \"" << t << "\": \"latest\" }\n";
+    return neededNetwork;
 }
 
 // P40 review (A5): ONE refusal for a pgconfig that fails to parse or validate, shared by every command that
@@ -161,7 +173,12 @@ void resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false) {
 // silently ignored and exit 0. Validates the WHOLE config, not only the part this run uses: every declared
 // target must resolve (even when `--only`/`--target` would skip it) and every targetOptions layer must check.
 // Returns 0 when the config is usable (or absent), else 64 after printing every problem.
-int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::TargetOptionsByTarget& flags = {}) {
+// `offline` (P40 review r3): `check` writes nothing and must work offline — it used to resolve dependencies over
+// the network and exit 64 without one. It gates against every configured target that IS available offline
+// (in-box, `file:`, lock-pinned cache); a target whose plugin is not available offline is reported as
+// unverified (with its targetOptions) and skipped, not refused; everything else is validated exactly as for build.
+int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::TargetOptionsByTarget& flags = {},
+                        bool offline = false) {
     for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
     if (!pc.errors.empty()) return 64;
     if (!pc.found) {
@@ -170,17 +187,25 @@ int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::Targ
         for (const auto& m : flagErrors) std::cerr << "polyglot: " << m << "\n";
         return flagErrors.empty() ? 0 : 64;
     }
-    resolveConfiguredTargets(pc, dryRun); // pgconfig `dependencies` + lock-first cache + registry (P30)
+    // pgconfig `dependencies` + lock-first cache + registry (P30)
+    const bool unverifiable = resolveConfiguredTargets(pc, dryRun, offline);
     int rc = 0;
+    std::set<std::string> unverified;
     for (const auto& t : pc.targets) {
         BackendHandle h = findTarget(t);
-        if (!h.ok()) {
-            std::cerr << "polyglot: " << (pc.dir / "pgconfig.json").string() << ": " << h.error() << "\n";
-            rc = 64;
+        if (h.ok()) continue;
+        if (unverifiable) {
+            unverified.insert(t);
+            continue;
         }
+        std::cerr << "polyglot: " << (pc.dir / "pgconfig.json").string() << ": " << h.error() << "\n";
+        rc = 64;
     }
+    if (!unverified.empty())
+        std::cout << "polyglot: note: target(s) " << joinNames(std::vector<std::string>(unverified.begin(), unverified.end()))
+                  << " not verified: their plugins are not cached and this command works offline\n";
     std::vector<std::string> optErrors; // every targetOptions layer, against the loaded plugins (P40 B1)
-    cli::validateTargetOptions(pc, flags, optErrors);
+    cli::validateTargetOptions(pc, flags, optErrors, unverifiable ? &unverified : nullptr);
     for (const auto& m : optErrors) std::cerr << "polyglot: " << m << "\n";
     return optErrors.empty() ? rc : 64;
 }
@@ -454,7 +479,7 @@ void noteClosureDeps(RunState& run, const SourceMap& sources) {
     for (std::size_t fid = 1; fid < sources.files.size(); ++fid) {
         const std::string& canon = sources.files[fid];
         if (canon.find('/') == std::string::npos && canon.find('\\') == std::string::npos) continue;
-        run.deps.insert(fs::path(canon).make_preferred().string());
+        run.deps.insert(cli::utf8(fs::path(canon).make_preferred()));
     }
 }
 
@@ -697,21 +722,33 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
     // would silently not apply here. (P40 B1: target options ride on libForTarget, so they apply here too.)
     lib.originInfo = originInfo || pc.originInfo;
 
-    resolveConfiguredTargets(pc); // safe per-cycle: already-registered names are skipped
+    // safe per-cycle: already-registered names are skipped. `check --watch` resolves like `check`: offline and
+    // dry-run (P40 review r3) — a target whose plugin is not available offline is unverified and skipped.
+    const bool unverifiable = resolveConfiguredTargets(pc, /*dryRun=*/checkOnly, /*offline=*/checkOnly);
+    std::set<std::string> unverified;
+    if (unverifiable)
+        for (const auto& t : pc.targets)
+            if (!findTarget(t).ok()) unverified.insert(t);
     {
         std::vector<std::string> optErrors; // P40 B1: a bad targetOptions block refuses the cycle
-        cli::validateTargetOptions(pc, optionFlags, optErrors);
+        cli::validateTargetOptions(pc, optionFlags, optErrors, unverifiable ? &unverified : nullptr);
         for (const auto& m : optErrors) emitTopLevel(m);
         if (!optErrors.empty()) return c;
     }
 
-    // The target set mirrors runBuild's resolution; `check --watch` uses the derived reference
-    // target only. No config + no --target refuses per cycle (P30 slice 4) — adding a
-    // pgconfig.json is watched, so the next save recovers.
+    // The target set mirrors runBuild's resolution. `check --watch` gates exactly like `check` (P40 review r3
+    // item 5): every configured target (minus the offline-unverified ones), else the derived reference target.
+    // No config + no --target refuses a build cycle (P30 slice 4) — adding a pgconfig.json is watched, so the
+    // next save recovers.
     std::vector<std::string> targets;
     if (checkOnly) {
-        if (const Backend* ref = cli::referenceBackend()) targets.push_back(ref->name());
-        else { emitTopLevel("no full-coverage reference target is loaded (no plugins found?)"); return c; }
+        if (pc.found)
+            for (const auto& t : pc.targets)
+                if (!unverified.count(t)) targets.push_back(t);
+        if (targets.empty()) {
+            if (const Backend* ref = cli::referenceBackend()) targets.push_back(ref->name());
+            else { emitTopLevel("no full-coverage reference target is loaded (no plugins found?)"); return c; }
+        }
     } else if (!targetArg.empty()) {
         targets.push_back(targetArg);
     } else if (!pc.targets.empty()) {
@@ -904,13 +941,13 @@ int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs,
 
     // The depfile (P40 D17): the config and lockfile that decide this group, and its `file:` plugins.
     if (pc.found) {
-        run.deps.insert((pc.dir / "pgconfig.json").make_preferred().string());
+        run.deps.insert(cli::utf8((pc.dir / "pgconfig.json").make_preferred()));
         std::error_code ec;
         const fs::path lock = cli::lockfilePath(pc.dir);
-        if (fs::exists(lock, ec)) run.deps.insert(fs::path(lock).make_preferred().string());
+        if (fs::exists(lock, ec)) run.deps.insert(cli::utf8(fs::path(lock).make_preferred()));
         for (const auto& [key, spec] : pc.dependencies)
             if (spec.rfind("file:", 0) == 0)
-                run.deps.insert((pc.dir / spec.substr(5) / "polyglot-plugin.json").lexically_normal().make_preferred().string());
+                run.deps.insert(cli::utf8((pc.dir / spec.substr(5) / "polyglot-plugin.json").lexically_normal().make_preferred()));
     }
 
     // (refuseInvalidConfig above already resolved the pgconfig `dependencies` — P30 — and validated every
@@ -1350,6 +1387,16 @@ int runBuild(const std::vector<std::string>& args) {
             for (const auto& [key, sec] : run.prev.sections)
                 for (const auto& out : sec.outputs) recorded.insert(cli::outputKey(cli::recordResolve(out.path, recDir)));
         }
+        // P40 review r3: --adopt is the ONE-TIME upgrade of a project that has no outputs record yet (0.10.x kept
+        // none). Left set (PolyglotAdopt=true in a csproj), it silently disabled the overwrite guard on every
+        // later build — a second run overwrote a new hand-written gen/b.ts. Once a record exists the record is the
+        // trust source, so the flag is ignored, loudly. (Each adopted file is named by the sink.)
+        if (adopt && !recordPath.empty() && run.prevLoad != cli::RecordLoad::Missing) {
+            std::cerr << "polyglot: warning: --adopt is ignored: the outputs record '" << recordPath.string()
+                      << "' exists, so the record decides which existing files are Polyglot's (adopt is the one-time "
+                         "upgrade for a project without one; remove PolyglotAdopt / --adopt)\n";
+            adopt = false;
+        }
         run.sink.trust(std::move(recorded), buildOwned, adopt);
     }
     int rc = 0;
@@ -1369,7 +1416,7 @@ int runBuild(const std::vector<std::string>& args) {
     if (rc == 0 && !check && !outputsListArg.empty()) {
         std::set<std::string> lines;
         for (const auto& s : run.sections)
-            for (const auto& [f, map] : s.outputs) lines.insert(fs::absolute(f).lexically_normal().make_preferred().string());
+            for (const auto& [f, map] : s.outputs) lines.insert(cli::utf8(fs::absolute(f).lexically_normal().make_preferred()));
         std::string doc;
         for (const auto& l : lines) doc += l + "\n";
         if (!cli::writeFile(outputsListArg, doc)) {
@@ -1435,10 +1482,10 @@ std::string diagnosticsToJson(const std::vector<Diagnostic>& diags, const Source
     return out;
 }
 
-// `polyglot check <input.pg> [--json] [--root <dir>] [--lib <a,b>]` — runs the frontend (lex/parse/sema +
-// capability gating for the reference target) and reports diagnostics, without emitting any output. This is
-// the editor-tooling entry point: `--json` prints a machine-readable array editors turn into squiggles.
-// (The reference target is C#, whose capability set is the full §3.A surface, so nothing gates spuriously.)
+// `polyglot check <input.pg> [--json] [--watch] [--root <dir>] [--lib <a,b>]` — runs the compile pipeline for
+// every configured target (or the full-coverage reference target when there is no config / none is loaded) and
+// reports diagnostics, without emitting any output. `--watch` uses the same gate per cycle. This is the
+// editor-tooling entry point: `--json` prints a machine-readable array editors turn into squiggles.
 int runCheck(const std::vector<std::string>& args) {
     fs::path input;
     fs::path root;
@@ -1470,7 +1517,8 @@ int runCheck(const std::vector<std::string>& args) {
     fs::path entryDir = input.has_parent_path() ? input.parent_path() : fs::path(".");
     PgConfig pc = loadPgConfig(entryDir); // fills root/lib the user didn't pass explicitly
     // P40 review (A5): never check with the config ignored. Dry-run: `check` writes nothing (no lockfile).
-    if (const int refused = refuseInvalidConfig(pc, /*dryRun=*/true)) return refused;
+    // P40 review r3: offline — check never needs a registry plugin.
+    if (const int refused = refuseInvalidConfig(pc, /*dryRun=*/true, {}, /*offline=*/true)) return refused;
     if (root.empty() && pc.found && !pc.root.empty()) root = pc.root;
     if (libArg.empty() && pc.found) libArg = pc.lib;
     if (root.empty()) root = entryDir;

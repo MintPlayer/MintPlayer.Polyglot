@@ -81,6 +81,10 @@
     <ClInclude Include="src\outputsink.hpp" />
   </ItemGroup>
   <ItemGroup>
+    <!-- P40 review r3: UTF-8 as the process ANSI code page (see the file). CMake embeds the same file. -->
+    <Manifest Include="utf8.manifest" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\MintPlayer.Polyglot.Core\MintPlayer.Polyglot.Core.vcxproj">
       <Project>{A1A1A1A1-1111-4111-8111-111111111111}</Project>
     </ProjectReference>

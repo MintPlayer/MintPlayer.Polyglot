@@ -14,6 +14,8 @@
          PolyglotClass       csharp.class      } they win over the project's pgconfig.json   (P40 B1)
          PolyglotAccess      csharp.access     }
          PolyglotEntryPoint  csharp.entryPoint } false = no `Main` for an entry file (the app owns its entry point)
+         PolyglotAdopt       true = take over unmarked existing outputs ONCE (the 0.10.x upgrade; ignored, with a
+                             warning, once the outputs record exists; the build warns while it is set)
          PolyglotOriginInfo  true = #line origin pragmas for coverage attribution             (P38)
          PolyglotWatch       false = don't register the .pg sources as dotnet-watch items
          PolyglotLib         the ambient std prelude list (pgconfig `lib`)
@@ -32,7 +34,7 @@
              closure — imported ones outside the project included — and file: plugin manifests).
            * the INPUTS CACHE: the .pg set plus every option that changes the emitted bytes, rewritten only
              when different. It replaces the old stamp-NAME tag (P38): flipping PolyglotOriginInfo,
-             PolyglotTargets, PolyglotLib, PolyglotNamespace, PolyglotClass, PolyglotAccess or PolyglotRoot — or adding/removing a .pg — changes
+             PolyglotTargets, PolyglotLib, PolyglotNamespace, PolyglotClass, PolyglotAccess, PolyglotEntryPoint or PolyglotRoot — or adding/removing a .pg — changes
              the file, so the target re-runs. Inputs/Outputs alone can never see a REMOVED item. -->
     <_PolyglotRecord>$(IntermediateOutputPath)polyglot.outputs.json</_PolyglotRecord>
     <_PolyglotDepfile>$(IntermediateOutputPath)polyglot.deps</_PolyglotDepfile>
@@ -60,6 +62,17 @@
     <Watch Include="@(PolyglotFile)" />
   </ItemGroup>
 
+  <!-- P40 review (#75): Visual Studio's fast up-to-date check skips MSBuild entirely unless an input it knows
+       about changed — without these, editing or deleting a .pg (or the config/lockfile) in VS left the project
+       "up to date". The project's own pgconfig.json/lockfile; a config in a parent folder is still a depfile
+       input of the transpile itself. P40 review r3: here, not in the .props — the .props is imported before the
+       project body, so a PolyglotFile the csproj adds was missed. -->
+  <ItemGroup>
+    <UpToDateCheckInput Include="@(PolyglotFile)" />
+    <UpToDateCheckInput Include="$(MSBuildProjectDirectory)\pgconfig.json" Condition="Exists('$(MSBuildProjectDirectory)\pgconfig.json')" />
+    <UpToDateCheckInput Include="$(MSBuildProjectDirectory)\pgconfig.lock.json" Condition="Exists('$(MSBuildProjectDirectory)\pgconfig.lock.json')" />
+  </ItemGroup>
+
   <!-- Fail LOUDLY when no packed binary matches the host — a silent skip would cascade into misleading
        "type not found" errors far from the cause. -->
   <Target Name="_PolyglotVerifyTool" Condition="'@(PolyglotFile)' != ''">
@@ -80,6 +93,7 @@
       <_PolyglotCacheLine Include="namespace=$(PolyglotNamespace)" />
       <_PolyglotCacheLine Include="class=$(PolyglotClass)" />
       <_PolyglotCacheLine Include="access=$(PolyglotAccess)" />
+      <_PolyglotCacheLine Include="entryPoint=$(PolyglotEntryPoint)" />
       <_PolyglotCacheLine Include="origin=$(PolyglotOriginInfo)" />
       <_PolyglotCacheLine Include="root=$(PolyglotRoot)" />
     </ItemGroup>
@@ -87,6 +101,20 @@
     <ReadLinesFromFile File="$(_PolyglotDepfile)" Condition="Exists('$(_PolyglotDepfile)')">
       <Output TaskParameter="Lines" ItemName="_PolyglotDep" />
     </ReadLinesFromFile>
+    <!-- P40 review r3: an output the last transpile produced that is gone now (a listed .cs deleted by hand gave
+         CS2001 until a .pg changed) re-runs the transpile. Not as Outputs: an unchanged output keeps its old
+         mtime (write-if-changed), so it would look out of date after every .pg edit and the target would never
+         skip again. Deleting the stamp is the precise signal — a missing Output. -->
+    <ReadLinesFromFile File="$(_PolyglotOutputsList)" Condition="Exists('$(_PolyglotOutputsList)')">
+      <Output TaskParameter="Lines" ItemName="_PolyglotPrevListed" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_PolyglotMissingOutput Include="@(_PolyglotPrevListed)" Condition="!Exists('%(FullPath)')" />
+    </ItemGroup>
+    <Delete Files="$(_PolyglotStamp)" Condition="'@(_PolyglotMissingOutput)' != ''" />
+    <!-- P40 review r3: PolyglotAdopt is a one-build switch; say so for as long as it stays set. -->
+    <Warning Condition="'$(PolyglotAdopt)' == 'true'"
+             Text="MintPlayer.Polyglot.MSBuild: PolyglotAdopt=true is set. It is the one-time upgrade for 0.10.x outputs (the CLI honours it only while the project has no outputs record yet); remove it after one build." />
   </Target>
 
   <!-- §4.5 module linking: transpile the WHOLE .pg set in ONE CLI invocation (not batched per file). The CLI
@@ -114,11 +142,13 @@
           Condition="'@(PolyglotFile)' != ''"
           Inputs="@(PolyglotFile);$(PolyglotTool);$(_PolyglotInputsCache);@(_PolyglotDep)"
           Outputs="$(_PolyglotStamp);$(_PolyglotOutputsList)">
-    <!-- PolyglotTargets as an item list: MSBuild splits it on ';', trims each entry and drops empty ones, so
-         "csharp;" or " csharp ; typescript" reach the CLI as "csharp" / "csharp,typescript". (The CLI refuses an
+    <!-- PolyglotTargets as an item list: ',' is turned into ';', then MSBuild splits on ';', trims each entry and
+         drops empty ones, so "csharp;", "csharp," or " csharp , typescript" reach the CLI as "csharp" /
+         "csharp,typescript" (P40 review r3: the props documented ',' but "csharp," reached the CLI verbatim).
+         Unescape: a property function's result is escaped, so its ';' would not split the item list. (The CLI refuses an
          empty name in its only flag since P40 review B7 — an empty entry used to widen the build to ALL targets.) -->
     <ItemGroup>
-      <_PolyglotTargetName Include="$(PolyglotTargets)" />
+      <_PolyglotTargetName Include="$([MSBuild]::Unescape($(PolyglotTargets.Replace(',', ';'))))" />
     </ItemGroup>
     <PropertyGroup>
       <_PolyglotLibArg></_PolyglotLibArg>

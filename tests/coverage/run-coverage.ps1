@@ -106,14 +106,14 @@ try {
         }
         if ($t.sink -eq 'sidecar') {
             $map = "$emitted.map"
-            Check ((Test-Path $map) -and ((Get-Content $map -Raw) -match '"version"\s*:\s*3')) `
+            Check ((Test-Path $map) -and ((Get-Content $map -Raw) -cmatch '"version"\s*:\s*3')) `
                 "$($t.name): --origin-info writes a v3 sidecar"
             # The footer is manifest data with no comment-syntax knowledge in the CLI, so a target that
             # declares one must get it in its OWN comment syntax.
-            Check ((Get-Content $emitted -Raw) -match 'sourceMappingURL=03_enums_unions_match') `
+            Check ((Get-Content $emitted -Raw) -cmatch 'sourceMappingURL=03_enums_unions_match') `
                 "$($t.name): the emitted file points at its sidecar"
         } else {
-            Check ((Get-Content $emitted -Raw) -match '#line\s+\d+') `
+            Check ((Get-Content $emitted -Raw) -cmatch '#line\s+\d+') `
                 "$($t.name): --origin-info writes per-line directives"
         }
     }
@@ -121,7 +121,7 @@ try {
     # PHP never emits a closing `?>`, so the footer lands after the last statement and stays inside PHP
     # mode. If that ever changes, the footer moves into HTML output and silently stops being a comment.
     $php = Get-Content (Join-Path $work 'php/03_enums_unions_match.php') -Raw
-    Check (-not ($php -match '\?>')) "php: output never leaves PHP mode, so the footer stays a comment"
+    Check (-not ($php -cmatch '\?>')) "php: output never leaves PHP mode, so the footer stays a comment"
 
     # ---------------------------------------------------------------------------------------------
     # 2. GOLDEN: real coverage.py reports projected onto the .pg.
@@ -146,7 +146,7 @@ try {
         $a = (Get-Content $actual -Raw) -replace "`r`n", "`n"
         $e = (Get-Content $expectedPath -Raw) -replace "`r`n", "`n"
         Check ([string]::Equals($a, $e, [StringComparison]::Ordinal)) "coverage remap ($($case.fmt)) matches the expected .pg-keyed report"
-        Check ($a -match 'docs/lang/samples/03_enums_unions_match\.pg') `
+        Check ($a -cmatch 'docs/lang/samples/03_enums_unions_match\.pg') `
             "coverage remap ($($case.fmt)) keys the report on a repo-relative .pg path"
     }
 
@@ -155,7 +155,7 @@ try {
         # would over-credit whenever both suites cover the same arm. lcov's BRDA is arm-keyed, so it must
         # not appear unless --branch-arms was asked for.
         $lcov = Get-Content (Join-Path $work 'pg.lcov') -Raw
-        Check (-not ($lcov -match 'BRDA:')) "lcov output carries no arm records by default"
+        Check (-not ($lcov -cmatch 'BRDA:')) "lcov output carries no arm records by default"
 
         # ----------------------------------------------------------------------------------------
         # Every output format round-trips through the CLI, not just the two the goldens pin. Cobertura
@@ -167,7 +167,7 @@ try {
                               '--target', 'python', '--generated-dir', $gen, '--root', $repo,
                               '--out-format', $fmt, '--out', $o)
             Check (($r.ExitCode -eq 0) -and (Test-Path $o) -and
-                   ((Get-Content $o -Raw) -match 'docs/lang/samples/03_enums_unions_match\.pg')) `
+                   ((Get-Content $o -Raw) -cmatch 'docs/lang/samples/03_enums_unions_match\.pg')) `
                 "--out-format $fmt writes a .pg-keyed report"
         }
 
@@ -198,7 +198,7 @@ try {
                               '--generated-dir', $csOut, '--root', $repo, '--out', $csProjected)
             Check ($r.ExitCode -eq 0) "csharp: a .pg-keyed report passes through the directive sink"
             $csText = Get-Content $csProjected -Raw
-            Check ($csText -match "<line number=`"$pgLine`" hits=`"4`"") `
+            Check ($csText -cmatch "<line number=`"$pgLine`" hits=`"4`"") `
                 "csharp: the reported line keeps its hits through the pass-through"
             # The file set comes from the #line directives, so lines the report never mentioned are
             # present at zero rather than missing (D7).
@@ -208,14 +208,14 @@ try {
             # P40 B7: #line paths are relative to the generated file now, so the remap must resolve them
             # against the generated file's folder — never the working directory. Same remap, run from an
             # unrelated cwd, must give the same report.
-            Check ($firstDirective.Matches[0].Groups[2].Value -notmatch '^[A-Za-z]:|^/') `
+            Check ($firstDirective.Matches[0].Groups[2].Value -cnotmatch '^[A-Za-z]:|^/') `
                 "csharp: #line paths are relative to the generated file (checkout-independent)"
             $elsewhere = Join-Path $work 'elsewhere'
             New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
             $csProjected2 = Join-Path $work 'cs.pg.cwd.xml'
             $r = Invoke-Cli @('coverage', 'remap', $synth, '--target', 'csharp',
                               '--generated-dir', $csOut, '--root', $repo, '--out', $csProjected2) -Cwd $elsewhere
-            Check ($r.ExitCode -eq 0 -and ((Get-Content $csProjected2 -Raw) -eq $csText)) `
+            Check ($r.ExitCode -eq 0 -and ((Get-Content $csProjected2 -Raw) -ceq $csText)) `
                 "csharp: remap from a different working directory resolves relative directives identically"
 
             # A report that is NOT .pg-keyed is the signature of --origin-info having been off, whose
