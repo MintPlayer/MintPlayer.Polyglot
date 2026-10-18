@@ -187,6 +187,7 @@ pass on comes from `spec` properties instead:
 | `forbidsShadowedLocals` | `false` | a nested-scope local may not reuse an outer local's name → the scope-legalization pass runs (C#, CS0136) |
 | `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
 | `nativeCompoundAssign` | `false` | a native `a op= b` on a built-in scalar slot means exactly `a = a op b` as the `Binary` rule renders it — same §3.C wrap, integer division and concatenation (C#, whose compound narrows back implicitly). Off, lowering expands each compound to `a = a op b`, evaluating the target's receiver and indices once (impure ones go to a temp), so the `Binary` rule's masking applies; the emitter folds it back to `a op= b` only where the rule rendered the plain infix `a op b` |
+| `operandSnapshot` | `""` | non-empty = the target reads a VARIABLE operand of a native binary operator (and the slot of a native compound) only when the operator executes, after its right operand ran (PHP). When a right operand may have side effects, lowering marks such a left operand and the emitter wraps it in this template — `{tmp}` a fresh temp, `{0}` the operand text (PHP: `(${tmp} = {0})`) — and an impure compound is never folded back to `op=`. Must spell both placeholders (review r4) |
 
 Capabilities also serve the **anti-silent-drop coverage contract** enforced at load time: every IR
 construct the compiler can produce must have a rule, *or* the plugin must declare its stance via the
@@ -297,16 +298,21 @@ that is a member of the file-local `__PgRt` class.
   honest refusals (TypeScript does this for JS reserved words). Applied wherever a rule routes a
   name through `{"fn":"ident"}` — which your rules should do for **every** declared/referenced name.
 - `mangle`: single-character repair for emitted names the target's grammar forbids (Python maps the
-  overload marker `$` → `_`); applied via `{"fn":"mangleName"}` / the decl-context `mangle`.
+  overload marker `$` → `__`); applied via `{"fn":"mangleName"}` / the decl-context `mangle`.
 - `caseInsensitive: true`: the target matches `keywords` and `functionBuiltins` regardless of case (PHP: a
   class `Finally` is the keyword `finally`); list them lowercase.
 
 **Function names across modules (P40 review r3).** `decl.mangledName` / `node.mangledCallee` mangle only
 within the declaring module's visible overload set (a module-scoped target — TS, Python — uses them). A target
-that links every module's free functions into ONE scope reads the link name instead: `decl.linkName` /
-`node.linkCallee` (empty unless another user module declares the same name; then the signature-mangled name —
-C#, which keeps native overloading otherwise), or `decl.linkOrEmitName` / `node.linkOrMangledCallee` (the link
-name when set, else the mangled one — PHP, which has no overloading at all). A call whose callee is not a name
+that links every module's free functions into ONE scope reads a link name instead: `decl.linkName` /
+`node.linkCallee` for a target WITH native overloading (C#) — empty unless the program has a real clash for
+that name, i.e. some call where a second same-named declaration of the shared scope could also apply, so the
+target's own overload resolution might pick another overload than the checker did (a generic beside a specific
+overload, an overload from a module the caller never imported); then the signature-mangled name (review r4) —
+or `decl.uniqueName` / `node.uniqueCallee` for a target WITHOUT overloading (PHP): the signature-mangled name
+whenever the program declares the name more than once. A mangled name joins the parts with `$`, which the
+`mangle` block spells; spell it `__` where `$` is not an identifier character — no user identifier may contain
+`__` (SPEC §2), so a mangled name can never collide with a user's. A call whose callee is not a name
 (`adder(1)(4)`, an IIFE) sets `node.hasCalleeExpr`; emit `node.calleeExpr` with side `"recv"` (`node.calleeKind`
 names its kind, `{"type":"node.calleeType"}` renders its function type).
 - `reserved`: names your *generated* code claims (synthesized temps, scaffolding). A trailing `*`
@@ -375,6 +381,7 @@ Tests inside `case`/`when`: `{"eq": [path, value]}`, `{"has": path}` (non-empty)
 | `block` | Open a block with `head` (string rule), run `body` decl rules one level deeper, close per `blockStyle`. |
 | `mapDecl` | Run the `each` decl rule once per element of a list (paths on `item.…`). |
 | `mapMembers` | Run the **named** rule (`"rule"`) once per member of a list, each against its own decl context. `{"mapMembers": "decl.methods", "rule": "MethodDecl"}` |
+| `mapOrder` | Run every top-level declaration of `module.order` (the Core's dependency order — see SPEC §5 "Initialization order") with its kind's rule: `{"mapOrder": "module.order", "kinds": {"enum": {"rule": "EnumDecl"}, …, "global": {"each": <item rule over item.name/type/init>}}}`. Every kind — `enum`, `interface`, `union`, `record`, `function`, `extension`, `class`, `global` — needs an entry (load error otherwise). A target that runs a module top to bottom (TS, Python, PHP) uses it; a lazily initializing one (C#) may keep per-kind `mapMembers` |
 | `stmts` | Emit the IR statement list at a path through the shared statement walk. |
 | `seq` | Run decl rules in order. |
 | `indent` | Run decl rules one level deeper without a head/closer (manual joins — TS's `catch` chain). |
@@ -458,8 +465,8 @@ That's the whole catalog — 18 names. Any other `{"fn": …}` fails the load.
   extern-mapped types to `{"fn":"substExtern"}` and spell the rest (see PHP's four-line `Type`).
 
 `Program` is the whole-file scaffold. PHP's is a `seq`: a `<?php` line, the `require_once` imports,
-the `{"fn":"preludeSlot"}` marker, `mapMembers` over enums, records, classes, a `mapDecl` over
-globals, `mapMembers` over functions, and a guarded entry call.
+the `{"fn":"preludeSlot"}` marker, one `mapOrder` over `module.order` (every declaration, in dependency order),
+and a guarded entry call.
 
 **The prelude (P40).** Embedded std/core declarations (`Option`, the `std.io` functions, …) are
 *prelude* declarations, and only the ones the file's code **reaches** are emitted — a program that

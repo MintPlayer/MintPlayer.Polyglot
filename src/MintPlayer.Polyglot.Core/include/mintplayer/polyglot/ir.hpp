@@ -116,6 +116,9 @@ struct Binary : Expr {
     // equality on every target (TS/Py/PHP call `.eq(...)`; C# emits the user eq as `override Equals`).
     bool lhsIsUnion = false;
     bool lhsHasUserEq = false;
+    // P40 review r4 #9: the left operand is a variable and the right operand may have side effects, on a
+    // target that reads a variable operand late (BackendSpec::operandSnapshot) — the emitter snapshots it.
+    bool snapshotLhs = false;
     Binary(SourcePos p, Type t, std::string o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::Binary, p, std::move(t)), op(std::move(o)), lhs(std::move(l)), rhs(std::move(r)) {}
 };
@@ -174,6 +177,7 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     std::string callee;        // source name — C# uses this (native overloading)
     std::string mangledCallee; // resolved overload's per-target name — TS uses this (== callee if unique)
     std::string linkCallee;    // P40 review r3 2(e): the resolved overload's link name (C#); empty = callee
+    std::string uniqueCallee;  // P40 review r4 #13: the resolved overload's unique name (PHP); empty = callee
     bool isPrint = false;
     bool isFree = false;       // a top-level free function (C# qualifies as `Program.callee`); not a local value
     std::vector<ExprPtr> args;
@@ -353,6 +357,9 @@ struct Assign : Stmt {
     // Binary whose lhs re-reads the target), so the Binary rule's §3.C masking/division/concat applies. The
     // emitter folds it back to `t op= v` only when that rule rendered the plain infix `t op v`.
     std::string compoundOp;
+    // P40 review r4 #9: never fold back to the native `op=` — its value may have side effects and the target
+    // reads a native compound's slot only after evaluating the value (BackendSpec::operandSnapshot).
+    bool keepExpanded = false;
     Assign(SourcePos p, ExprPtr t, std::string o, ExprPtr v)
         : Stmt(StmtKind::Assign, p), target(std::move(t)), op(std::move(o)), value(std::move(v)) {}
 };
@@ -515,7 +522,8 @@ struct Function {
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
-    std::string linkName;    // P40 review r3 2(e): the name in a one-scope link (C#); == name unless another module declares it
+    std::string linkName;    // P40 review r3 2(e): the name in a one-scope link with overloading (C#); see FunctionDecl
+    std::string uniqueName;  // P40 review r4 #13: the name in a one-scope link without overloading (PHP)
     std::vector<GenericParam> generics;
     std::vector<Param> params;
     Type returnType;
@@ -581,6 +589,7 @@ struct Method {
     std::vector<std::string> globalRefs;
 };
 struct Record { // an immutable data type (record)
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
@@ -594,6 +603,7 @@ struct EnumCase {
     long long value;
 };
 struct Enum {
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<EnumCase> cases;
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
@@ -607,6 +617,7 @@ struct UnionCase {
     std::vector<UnionCaseField> fields; // empty = payload-free case
 };
 struct Union {
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<GenericParam> generics; // `union Option<T> { … }`
     std::vector<UnionCase> cases;
@@ -625,6 +636,7 @@ struct ClassField {
     bool initIsLiteral = false;
 };
 struct Class { // a mutable reference type
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
@@ -634,10 +646,11 @@ struct Class { // a mutable reference type
     std::vector<Param> initParams;
     bool hasSuper = false;             // init calls `super(...)`: C# `: base(args)`, TS `super(args);`
     // Does an ANCESTOR have a real constructor to chain up to? True if a base (transitively) is a user
-    // class with an `init`, or a native/extern base (Error→`\Exception`, …) — which always has a ctor.
-    // False when the only bases are interfaces or user classes with no `init`. PHP gates its
-    // `parent::__construct(...)` on this: unlike C#/TS/Python, PHP has no implicit default base ctor, so a
-    // `super()` to an initless base is a fatal `Cannot call constructor` (issue #48).
+    // class with an `init` or an instance field initializer (both make it emit a constructor), or a
+    // native/extern base (Error→`\Exception`, …) — which always has a ctor. False when the only bases are
+    // interfaces or user classes with neither. PHP and Python gate their explicit base call on this, written
+    // `super()` or not: neither has an implicit base-ctor call, and PHP has no default base ctor, so a call
+    // to an initless base is a fatal `Cannot call constructor` (issue #48, review r4 #3).
     bool baseHasInit = false;
     // P40 B2 (D10): the `.pg` name of the native/extern class at the root of the base chain (`Error` for
     // `class B : A` with `class A : Error`), "" when the chain ends in user classes or interfaces only. A
@@ -649,6 +662,7 @@ struct Class { // a mutable reference type
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct Interface { // a contract: method signatures only (no bodies). C# `interface`, TS `interface`.
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;     // extended interfaces
@@ -656,6 +670,7 @@ struct Interface { // a contract: method signatures only (no bodies). C# `interf
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct Global { // a top-level `const`/`let` value
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     bool isConst = false;
     Type type;
@@ -729,5 +744,28 @@ struct Module {
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).
 std::string dump(const Module& m);
+
+// P40 review r4 #7: one top-level declaration, as a position in the module's per-kind lists. `kind` is one of
+// kDeclOrderKinds; `list` the module path of its list (`module.classes`); `index` its index in that list (for
+// functions, in the target-filtered `module.functions` view the caller passes).
+struct DeclRef {
+    std::string kind;
+    std::string list;
+    std::size_t index = 0;
+};
+// Every kind a declaration order holds — a plugin's `mapOrder` must name a rule for each (anti-silent-drop).
+inline const char* const kDeclOrderKinds[] = {"enum", "interface", "union", "record", "function", "extension",
+                                              "class", "global"};
+// The order in which a target that runs a module top to bottom (TS, Python, PHP) must emit its declarations.
+// Declarations with no eager dependency on user code come first, in kind order — enums (nothing), interfaces
+// (their base interfaces, base first), unions, records (interfaces; enum-case defaults), then functions and
+// extensions (Python evaluates a default — an enum case — when it defines the function, and an initializer may
+// call one). Classes and module values follow, INTERLEAVED in source order, because each runs code when it is
+// reached (static initializers, value initializers) and sema guarantees that code reads only what is declared
+// before it (SPEC §5 "Initialization order", through same-module calls too). The one forward edge sema allows
+// is a class's base declared later: such a class moves to just after its base. Prelude declarations come first
+// within their group. `functionIndices` is the target-filtered function view (an `actual` for another target
+// is not emitted).
+std::vector<DeclRef> declarationOrder(const Module& m, const std::vector<std::size_t>& functionIndices);
 
 } // namespace mintplayer::polyglot::ir

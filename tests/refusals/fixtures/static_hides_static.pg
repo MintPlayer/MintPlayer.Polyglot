@@ -1,0 +1,15 @@
+// REFUSED (P40 review r4 #6): a static redeclared in a subclass hides the base's static — C# CS0108 (an error
+// under warnings-as-errors) and TS4114 under noImplicitOverride.
+import "std.io"
+
+open class B {
+  static var count: i32 = 1
+}
+class D : B {
+  static var count: i32 = 2
+}
+
+fn main() {
+  print(B.count)
+  print(D.count)
+}

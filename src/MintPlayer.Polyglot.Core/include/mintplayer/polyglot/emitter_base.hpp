@@ -27,6 +27,8 @@ namespace mintplayer::polyglot {
 const char* exprKindName(ir::ExprKind k);
 bool boundTemplateIsAtomic(const BackendSpec& spec, const ir::Bound& b);
 bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c);
+// Lexically a primary expression (identifier chars, brackets, member/scope punctuation only) — see .cpp.
+bool textIsPrimary(const std::string& t);
 
 // The shared EvalContext over an ir::Expr + a BackendSpec — the seam that plugs the P18 rule interpreter
 // into the real IR. Everything target-INDEPENDENT lives here: the path->IR mapping (`node.lhs`,
@@ -307,6 +309,7 @@ private:
     TypePred isRecord_, isInterface_;
     std::vector<std::size_t> fns_; // actualTarget-filtered function indices
     int entry_ = -1;               // first isEntry function (unfiltered), -1 = none
+    std::vector<ir::DeclRef> order_; // review r4 #7: `module.order` (ir::declarationOrder over this view)
 };
 
 // The statement-scoped context a per-kind STATEMENT rule evaluates against (`stmt.*` reads — the For

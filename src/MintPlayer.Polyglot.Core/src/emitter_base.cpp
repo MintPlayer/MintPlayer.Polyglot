@@ -151,7 +151,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.isFree")        return c.isFree ? "true" : "false";
         if (path == "node.args.count")    return std::to_string(c.args.size());
         if (path == "node.linkCallee")    return c.linkCallee.empty() || c.linkCallee == c.callee ? std::string() : c.linkCallee; // P40 r3 2(e)
-        if (path == "node.linkOrMangledCallee") return !c.linkCallee.empty() && c.linkCallee != c.callee ? c.linkCallee : c.mangledCallee;
+        if (path == "node.uniqueCallee") return !c.uniqueCallee.empty() ? c.uniqueCallee : c.mangledCallee; // P40 r4 #13
         if (path == "node.hasCalleeExpr") return c.calleeExpr ? "true" : "";
         if (path == "node.calleeKind")    return c.calleeExpr ? exprKindName(c.calleeExpr->kind) : "";
     }
@@ -467,6 +467,17 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
     const ir::Expr* c = childExpr(path);
     if (!c) return "";
     std::string inner = emit_(*c);
+    // P40 review r4 #9: a variable left operand the target would read only after the right operand ran is
+    // snapshotted first (BackendSpec::operandSnapshot: PHP `($__c3 = $n) + bump()`). The assignment is its own
+    // parenthesized primary, so no precedence wrapping applies.
+    if (path == "node.lhs" && e_.kind == ir::ExprKind::Binary && static_cast<const ir::Binary&>(e_).snapshotLhs &&
+        !spec_.operandSnapshot.empty()) {
+        std::string out = spec_.operandSnapshot;
+        const std::string tmp = freshName("__c");
+        for (std::size_t at; (at = out.find("{tmp}")) != std::string::npos;) out.replace(at, 5, tmp);
+        if (const std::size_t at = out.find("{0}"); at != std::string::npos) out.replace(at, 3, inner);
+        return out;
+    }
     if (side == "l" || side == "r") { // binary operand: wrap by precedence + associativity (shared policy)
         // A widening cast can emit as pure identity on a target (f32->f64 is textless on TS/Python/PHP),
         // which would silently swallow the parens its operand needs — `(a + b) * x` becoming `a + b * x`
@@ -494,6 +505,10 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
         }
         return inner;
     }
+    // P40 review r4 #10: a cast can print as anything — `(double)x`, `Number(x)`, or (an identity cast on TS/PHP)
+    // its bare operand, so `-f64(-y)` printed `--y`, a pre-decrement. A prefix operator's cast operand is
+    // therefore judged on its PRINTED text: wrapped unless that text is lexically primary.
+    if (side == "unary" && c->kind == ir::ExprKind::Cast) return textIsPrimary(inner) ? inner : "(" + inner + ")";
     if (!side.empty() && wrapAtom(*c, side)) return "(" + inner + ")"; // "recv"/"unary": per-target policy
     return inner;
 }
@@ -569,12 +584,19 @@ const char* exprKindName(ir::ExprKind k) {
 // its argument. Purely lexical, so it holds for every target's template syntax without knowing it.
 bool boundTemplateIsAtomic(const BackendSpec& spec, const ir::Bound& b) {
     const std::string& t = b.tmpl;
-    auto isIdent = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '\\'; };
     if (t == "$this" && b.receiver) return !receiverNeedsParens(spec, *b.receiver);
     if (t.size() == 2 && t[0] == '$' && std::isdigit(static_cast<unsigned char>(t[1]))) {
         const std::size_t i = static_cast<std::size_t>(t[1] - '0');
         return i < b.args.size() && !receiverNeedsParens(spec, *b.args[i]);
     }
+    return textIsPrimary(t);
+}
+
+// The same lexical rule over any emitted text: `x`, `a.b(c)`, `(double)x`, `\strlen($x)` are primary; `-y`,
+// `a + b`, `new Foo()` are not (P40 review r4 #10 decides a cast operand's parentheses on its printed text).
+bool textIsPrimary(const std::string& t) {
+    auto isIdent = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '\\'; };
+    if (t.empty()) return false;
     int depth = 0;
     for (std::size_t i = 0; i < t.size(); ++i) {
         const char c = t[i];
@@ -614,8 +636,7 @@ bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
                                             static_cast<const ir::IntLit&>(c).text[0] == '-';
     if (c.kind == ir::ExprKind::Float) return !static_cast<const ir::FloatLit&>(c).text.empty() &&
                                               static_cast<const ir::FloatLit&>(c).text[0] == '-';
-    if (c.kind == ir::ExprKind::Cast) return false;
-    return receiverNeedsParens(spec_, c);
+    return receiverNeedsParens(spec_, c); // (a Cast operand is judged on its printed text in emitChild)
 }
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
@@ -1270,8 +1291,8 @@ std::string FnDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")        return f_.name;
     if (path == "decl.mangledName") return f_.mangledName;
     if (path == "decl.linkName") return f_.linkName.empty() || f_.linkName == f_.name ? std::string() : f_.linkName; // P40 r3 2(e)
-    if (path == "decl.linkOrEmitName") // a one-scope target WITHOUT native overloading (PHP): unique across the closure
-        return !f_.linkName.empty() && f_.linkName != f_.name ? f_.linkName : (f_.mangledName.empty() ? f_.name : f_.mangledName);
+    if (path == "decl.uniqueName") // a one-scope target WITHOUT native overloading (PHP): unique across the closure
+        return !f_.uniqueName.empty() ? f_.uniqueName : (f_.mangledName.empty() ? f_.name : f_.mangledName);
     if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
     // A std/core/lib prelude function (originModule "<prelude>"), emitted into EVERY module. On a target
     // with one global function namespace (PHP), that redeclares it across `require`d files — the plugin
@@ -1352,6 +1373,7 @@ ModuleDeclCtx::ModuleDeclCtx(const ir::Module& m, const DeclHooks& hooks, EmitFn
         if (f.actualTarget.empty() || f.actualTarget == target) fns_.push_back(i);
         if (entry_ < 0 && f.isEntry) entry_ = static_cast<int>(i);
     }
+    order_ = ir::declarationOrder(m_, fns_);
 }
 
 std::string ModuleDeclCtx::get(const std::string& path) const {
@@ -1364,6 +1386,7 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
     if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.order.count")      return std::to_string(order_.size()); // review r4 #7
     if (path == "module.userDecls.count") { // P40 B1: declarations of THIS file's own (non-prelude) code
         std::size_t n = 0;
         auto count = [&n](const auto& vec) {
@@ -1397,6 +1420,11 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
         if (f == "isConst") return m_.globals[i].isConst ? "true" : "false";
         if (f == "hasInit") return m_.globals[i].init ? "true" : "false";
         if (f == "isPrelude") return ir::isPreludeOrigin(m_.globals[i].originModule) ? "true" : "false"; // P40 §0
+    }
+    if (path.rfind("module.order.", 0) == 0 && splitIndexed(path, 13, i, f) && i < order_.size()) {
+        if (f == "kind")  return order_[i].kind;
+        if (f == "list")  return order_[i].list;
+        if (f == "index") return std::to_string(order_[i].index);
     }
     if (path.rfind("module.imports.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.imports.size()) {
         if (f == "path")        return m_.imports[i].path;
@@ -1683,6 +1711,38 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
                     OriginScope memberScope(*this, sub->declPos());
                     runDeclRule(it->second, *sub, *sub, helpers);
                 }
+            return;
+        }
+        case K::MapOrder: { // review r4 #7: each declaration of the order list through its kind's rule
+            int n = 0;
+            for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
+            for (int i = 0; i < n; ++i) {
+                const std::string at = r.s + "." + std::to_string(i);
+                const std::string kind = ctx.get(at + ".kind");
+                const std::string list = ctx.get(at + ".list");
+                const std::string idxText = ctx.get(at + ".index");
+                const std::size_t idx = idxText.empty() ? 0 : static_cast<std::size_t>(std::stoul(idxText));
+                const engine::Rule* k = nullptr;
+                for (const auto& p : r.parts) if (p.s == kind) k = &p;
+                if (!k) continue; // unreachable: the loader requires a rule for every kind
+                if (engine::TraceSink* sink = engine::traceSink()) sink->hit(k->srcId, k->offset);
+                if (k->kind == K::MapMembers) {
+                    if (!helpers) continue;
+                    auto it = helpers->find(k->s2);
+                    if (it == helpers->end()) continue;
+                    if (auto sub = root.memberCtx(list, idx)) { // as MapMembers: attribute lines, then the decl
+                        const std::string ac = sub->get("decl.attrLines.count");
+                        int an = 0;
+                        for (char c : ac) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
+                        for (int j = 0; j < an; ++j) lineHidden(sub->get("decl.attrLines." + std::to_string(j)));
+                        OriginScope memberScope(*this, sub->declPos());
+                        runDeclRule(it->second, *sub, *sub, helpers);
+                    }
+                } else if (k->kind == K::MapDecl && !k->parts.empty()) { // as MapDecl over the item's own list
+                    engine::ItemCtx item(ctx, ctx.resolvePath(list) + "." + std::to_string(idx), static_cast<int>(idx));
+                    runDeclRule(k->parts[0], item, root, helpers);
+                }
+            }
             return;
         }
         case K::Case:
@@ -2213,7 +2273,7 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             // P40: an expanded compound `t = t op v` folds back to the idiomatic `t op= v` exactly when the
             // Binary rule rendered the plain infix `t op v` (or `t op (v)`) — then the native compound means
             // the same thing. Any masking/helper/concat spelling (TS `(t + v | 0)`, PHP `t . v`) stays expanded.
-            if (!a.compoundOp.empty() && a.value && a.value->kind == ir::ExprKind::Binary) {
+            if (!a.compoundOp.empty() && !a.keepExpanded && a.value && a.value->kind == ir::ExprKind::Binary) {
                 const auto& b = static_cast<const ir::Binary&>(*a.value);
                 const std::string t = emitExpr(*a.target);
                 const std::string v = emitExpr(*a.value);

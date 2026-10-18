@@ -34,7 +34,7 @@ have gone another way, the rationale is stated so the alternative can be reconsi
 |---|---|---|
 | Line comment | `// …` | trivia — kept by the lexer for readable output (P2) |
 | Block comment | `/* … */` | nesting allowed |
-| Identifier | `[A-Za-z_][A-Za-z0-9_]*` | |
+| Identifier | `[A-Za-z_][A-Za-z0-9_]*` | may not contain `__` (two underscores) anywhere: that spelling belongs to compiler-generated names — lowering and emitter temporaries (`__c0`, `__opt1`), the std primitives (`__pg…`) and overload signature names (`parse__string`) — so a user name can never collide with one (*identifier '__c0' contains '__', which is reserved for compiler-generated names*) |
 | Int literal | `42`, `0xFF`, `0b1010`, `1_000`, `42i64`, `255u8` | default type `i32`; `_` separators allowed |
 | Float literal | `3.14`, `1e-9`, `2.0f`, `64f` | default type `f64`; suffix `f`/`f32` = `f32`, `d`/`f64` = `f64` |
 | Bool | `true`, `false` | |
@@ -222,6 +222,11 @@ let same = (a == Vec2(1.0, 2.0))    // true: structural equality
 
 `record` copies use a `with { field = … }` expression (C# `with`; TS a generated `with()` method).
 
+A record's body holds **methods, operators and computed properties only** (and `static fn`s). Its state is
+its positional fields — they alone take part in equality, hashing and `with` on every target — so a body
+field, static or not, is refused (*record 'P' declares a body field 'twice'*): make it a positional field
+(with a default) or a computed property; a constant belongs in a module-level `let`/`const`.
+
 ### 4.3 Nullability
 
 Types are **non-null by default**. A trailing `?` makes a type nullable; `null` is only assignable there.
@@ -293,6 +298,16 @@ allow this shape; single implementation inheritance keeps lowering trivial). Met
 marked `open` (→ C# `virtual`; TS is structurally virtual anyway). **`override` follows C# conventions**:
 it marks only an override of an `open`/`abstract` **base-class** member — implementing an interface method
 takes **no** `override`, and writing one there is an error (as is `override` with no base-class member).
+
+**Construction runs the whole base chain** (P40 review r4) on every target: a subclass constructor calls
+the base constructor whether or not it writes `super(…)` (an omitted call is `super()`), and a subclass with
+no constructor still runs it — including a base whose only constructor work is a field initializer. When the
+base constructor takes arguments, the subclass must declare a constructor that writes `super(…)`. An
+inherited field is therefore assigned before the subclass constructor's first statement and may be read
+there (`super(); this.y = this.x + 10`). A constructor may **not** call an overridable (`open`, `abstract`
+or `override`) method on `this`, directly or through other methods it calls on `this`: a subclass override
+would run before the subclass's own fields are initialized (C# reads defaults, TS `undefined`, Python raises
+`AttributeError`). Call it after construction, or make it non-open.
 
 An **interface body holds bodiless, non-static method signatures only** — no fields, properties,
 initializers, operators, or default method bodies (express field-like needs as a getter method). The
@@ -508,17 +523,34 @@ differently:
   lambda capturing `this`, no passing `this` (Swift's two-phase rule). An instance field **initializer** may
   not use `this` at all (initializers run before the constructor on C#/TS and inside it on Python/PHP). The
   definite-assignment walk follows control flow exactly: a `while true` left by `break`, a do-while body and a
-  `finally` that assigns before an early `return` all count.
-- **Initialization order** (P40 review r3) — a `static` field or module `let`/`const` initializer may not
-  directly read a static or module value declared **later in the same file**, nor use (construct, read a static
-  of, call a static of) a class, record, enum or union declared later: TS, Python and PHP run initializers in
-  declaration order (C# alone initializes statics lazily). Reads inside a lambda are deferred and exempt; an
-  indirect read through a function call is not detected — keep initializers' callees free of later statics.
+  `finally` that assigns before an early `return` all count. An inherited field counts as assigned (the base
+  constructor already ran).
+- **Initialization order** (P40 review r3, r4) — a `static` field or module `let`/`const` initializer may not
+  read a static or module value declared **at or after it in the same file**, nor use (construct, read a static
+  of, call a static of) a class, record, enum or union declared later — nor a class whose base class is
+  declared later (a class is defined after its base): TS, Python and PHP run initializers in declaration order
+  (C# alone initializes statics lazily, and read a default). This covers what the initializer reaches through
+  calls too: the bodies of the same-module functions and static methods it calls, transitively, and of a lambda
+  it invokes in place (*the initializer of 'a' calls 'seed', which reads 'b', declared later*). A lambda that is
+  only stored runs later and is exempt, as are calls inside it; instance methods and constructors reached from
+  an initializer are not followed. Measured before r4, the through-call shape diverged four ways (`let a =
+  seed()` reading a later `b`: C# 0, TS ReferenceError, Python NameError, PHP `null`).
+  With those reads ruled out, the targets that run a module top to bottom emit it in a dependency order: enums,
+  interfaces (base first), unions, records, functions, then classes and module values interleaved in source
+  order, a class following a base declared after it (a module value can read an earlier one from a static
+  initializer: `let SCALE = 2.0` then `static let FACTOR = SCALE * 3.0`).
 - **Member hiding** — redeclaring an inherited instance member without `override` is refused (C# would hide it
   non-virtually, TS/Python/PHP override it); an `open` method takes `override`, anything else is renamed.
+  Statics take part (P40 review r4): a static named like an inherited instance member, or the reverse, is a PHP
+  fatal, and a static over an inherited static is C# CS0108 (an error under warnings-as-errors) and TS4114 —
+  all refused; rename it.
 - **Default parameter values** are constants: a literal (optionally negated), `null`, an enum case, or a float
-  constant expression over `+ - * /`, which is folded to one literal (`dt: f64 = 1.0 / 60.0`). A call or any
-  other expression is refused — C# and PHP accept only constants there, and Python evaluates a default once.
+  constant expression over `+ - * /`, which is folded to one literal (`dt: f64 = 1.0 / 60.0`). The fold follows
+  the expression's types, as the same expression evaluates at run time: an integer-only part is `i32`
+  arithmetic (`1 / 2 + 0.5` is `0.5`), widened where it meets a float; an `i32` overflow or an integer division
+  by zero is not folded (and so refused). A default that is not a finite number (`-1e400`, an overflowing
+  product) is refused — no target can spell it as a constant. A call or any other expression is refused — C#
+  and PHP accept only constants there, and Python evaluates a default once.
 - **Warnings-as-errors shapes** — a constant `if`/`while` condition (`if true`, `while 1 == 1`; `while true`
   itself is the infinite loop), a self-assignment `x = x`, `== null` on a non-nullable number, bool, char or
   enum value, and a local set to a constant and never read are refused (C# CS0162 / CS1717 / CS0472 / CS0219). Prefix a deliberately
@@ -630,6 +662,13 @@ binary operator — with `t`'s receiver and indices evaluated **once**, and `v` 
 in a plain assignment. A target whose native compound already means that (the plugin trait
 `nativeCompoundAssign`; C#) keeps it; elsewhere the compound expands, an impure receiver/index goes to a
 temp first, and the output folds back to `op=` only where the binary op needs no wrap or helper.
+
+**Operands are evaluated left to right** on every target — a binary operator's left operand (and a compound's
+target) is read before its right operand runs, as C#, JS and Python do. PHP reads a *variable* operand only
+when the operator executes (`$n + bump()` saw `bump()`'s write to `$n`; so did `$n += bump()` and a native
+`$this->total += $this->next()`). A target declaring the plugin datum `operandSnapshot` (PHP) snapshots such
+a variable into a temp when the right operand may have side effects (`($__c3 = $n) + bump()`) and keeps an
+impure compound expanded (P40 review r4).
 
 Operator support is **graded per target** via keyed capabilities
 `operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}`: PHP supports `:eq` (`->eq(...)`)

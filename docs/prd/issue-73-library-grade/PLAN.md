@@ -1461,3 +1461,68 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     `日.pg`, so the record and that source map hold bytes >= 0x80, and a failed strict decode can no longer pass
     through `$null | ConvertFrom-Json`; the UNC check matches the reason, now "is an absolute (UNC) path".
     `numeric_edges` tests `(f64)f32.parse("1e39") > 1.0e300` (only an infinity passes).
+
+- **2026-10-18 — Review round 4 — classes/order/evaluation half (gating 3–13 + part 2 "through-call gap" and
+  "compiler temps"): as built.** Every reviewer repro (`pgf00_me`, `pgf00_h2`, `pgf00_r2`) was reproduced
+  failing on `f00dd24` first; each is now in the corpus, passing.
+  - **#3 base constructors.** `baseHasInit` counted only a base with an `init`, so a base whose only constructor
+    work is a field initializer never ran on PHP, and PHP/Python emitted the base call only for a written
+    `super()` (a subclass with a field initializer and no constructor skipped it). Now an ancestor with an `init`
+    or an instance field initializer counts; PHP/Python call the base constructor whenever one exists; an `init`
+    without `super()` chains implicitly on every target (TS also threw "Must call super constructor" for it).
+    Found on the way and refused: an omitted `super(…)` when the base constructor takes arguments (C# CS7036).
+  - **#4** an inherited instance field counts as assigned in `init` (flow.cpp walks the user base chain).
+  - **#5** flow.cpp refuses a constructor that reaches a call to an `open`/`abstract`/`override` method on
+    `this` — directly or through non-open methods it calls on `this` (stored lambdas are deferred). The language
+    has no bare-name method calls and field initializers may not use `this` (r3), so that is every path.
+  - **#6** statics joined the hiding check: static/instance clashes (PHP fatal) and static-over-static (CS0108 /
+    TS4114) are refused. Emitting `new`/`override` was rejected: it is not expressible on all four targets.
+  - **#7 emission order.** TS/Python/PHP now emit one `module.order` through a new decl rule `mapOrder` (the
+    loader requires a rule for every kind — anti-silent-drop): enums, interfaces (base first), unions, records,
+    functions, extensions, then classes and module values interleaved in SOURCE order, a class moving only to
+    follow a base declared after it. `ir::declarationOrder` computes it from IR data alone (decl positions —
+    new `pos` on the IR decls — and class bases); C# keeps its per-kind layout (statics are lazy there). Sema
+    keeps that order sound: initializers read only earlier values/types (r3 2(h), now through calls too, see
+    below) and may not use a class whose base is declared after them, so the interleave has no cycles. The
+    enum-default regression (Python NameError) works again; `static let FACTOR = SCALE * 3.0` (h10) agrees on
+    all four; a subclass before its base runs on TS/Python.
+  - **#8** record body fields — static or not — are refused (every emitter dropped them). Emitting was rejected:
+    a record's state is its positional fields (equality, hashing, `with`), and a static would need four new
+    record templates plus the ordering above; a module `let` or a `static fn` covers the need.
+  - **#9 PHP late operand reads.** New manifest datum `operandSnapshot` (PHP: `(${tmp} = {0})`, validated at
+    load): when a binary's right operand may have side effects, lowering marks a variable left operand
+    (`Binary::snapshotLhs`) and the emitter snapshots it (`($__c3 = $n) + bump()`); an impure compound is kept
+    expanded (`Assign::keepExpanded`) because PHP's native `op=` reads its slot after the value — a field,
+    static or element read in the expanded form is fetched in order. C#/TS/Python output is unchanged.
+  - **#10** a cast under a prefix operator is parenthesized on its PRINTED text (`textIsPrimary`, the lexical
+    rule bound templates already used): `-f64(-y)` printed `--y` on TS/PHP.
+  - **#11** the default folder follows typed semantics: an integer-only subexpression is `i32` arithmetic
+    (`1 / 2 + 0.5` is 0.5), an `i32` overflow or integer division by zero is not folded (refused as
+    non-constant), and a non-finite result — a literal, a negation or an operator — is refused (`-1e400`
+    emitted `-inf.0`). (The `-0.0` sign and other numeric edges are the other half's.)
+  - **#12/#13 link names.** C# keeps native overloading and now takes signature link names only on a REAL clash:
+    after every call is resolved, a name with a call where a second same-named declaration of the one shared
+    class may apply (`mayApply`: arity + definite type incompatibility; a type parameter accepts anything) gets
+    `__`-joined signature names on all its declarations. So `show(Shape)`/`show<T>` in one module agree on C#,
+    and a library keeps `util` when an unrelated module declares `util(string)` (e4/e4m). Overload resolution
+    also skips declarations that can never take the arguments (`show("text")` had bound `show(Shape)`). PHP (one
+    function namespace, no overloading) reads a separate `uniqueName`/`uniqueCallee` (renamed from
+    `linkOrEmitName`/`linkOrMangledCallee`, clean cutover): mangled whenever the program declares the name twice
+    — documented as a real clash in PHP's single scope rather than "fixed". Signature names join with `__` on
+    C#/Python/PHP (`specMangle` replaces with a whole string; TS keeps `$`).
+  - **Part 2, compiler temps:** every user identifier containing `__` is refused language-wide (capability.cpp;
+    SPEC §2) — temps (`__c0`), std primitives (`__pg…`) and signature names (`parse__string`) can never meet a
+    user name. Parameters are now reported at their own position.
+  - **Part 2, the through-call gap:** sema records what each free-function / static-method body reads (module
+    values, statics, types — outside stored lambdas) and calls; an initializer's direct calls and a lambda it
+    invokes in place are followed transitively, and a read of a value declared at or after the initializer is
+    refused (h1/h2/h3). Instance methods and constructors reached from an initializer are not followed
+    (documented in SPEC §5).
+  - **Tests:** conformance `ctor_base_chain`, `late_operand_reads`, `cast_under_unary`, `default_fold_typed`,
+    `overload_generic_specific`, `link_names/`, `decl_order` (each with `.expected`); refusal fixtures
+    `ctor_open_call`, `ctor_open_call_indirect`, `static_hides_instance`, `static_hides_static`,
+    `default_non_finite`, `double_underscore_name`, `record_body_field`, `record_static_field`,
+    `init_reads_later_via_call`, `static_init_reads_later_via_call`, `init_iife_reads_later`,
+    `init_uses_class_with_later_base`, `super_args_omitted`; unit checks for the C# clash/no-clash link names and
+    the `__` refusal (two r3 unit expectations updated to the new semantics).
+  - **Verified:** see the round-4 report (legs listed there). No `#ifdef`/platform code changed.

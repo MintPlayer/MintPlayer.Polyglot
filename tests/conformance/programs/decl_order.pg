@@ -1,0 +1,64 @@
+import "std.io"
+
+// P40 review r4 #7: TS, Python and PHP run a module top to bottom, so declarations are emitted in an order
+// that satisfies every eager dependency: enums, interfaces (base first), unions and records first, then
+// functions (Python evaluates an enum-case default when it defines one), then classes and module values
+// interleaved in SOURCE order — a class moving only to follow a base class declared after it.
+
+// An enum-case default whose enum is declared after the function (Python NameError at import, regression).
+fn paint(c: Color = Color.Green): string => match c {
+  Red => "red",
+  Green => "green",
+}
+
+class Tone {
+  fn tone(c: Color = Color.Red): string => paint(c)
+}
+
+// A module value read by a later class's static initializer (TS ReferenceError, Python NameError, PHP 0).
+let SCALE: f64 = 2.0
+
+class Cfg {
+  static let FACTOR: f64 = SCALE * 3.0
+  static let TWICE: f64 = doubled()
+}
+
+fn doubled(): f64 => SCALE * 2.0
+
+// A subclass declared before its base (TS ReferenceError, Python NameError).
+class Derived : Base {
+  fn who(): string => "derived"
+}
+
+open class Base {
+  fn hello(): string => "hello"
+}
+
+// A module value constructing that subclass: it follows the moved class.
+let made: Derived = Derived()
+
+// A record implementing an interface declared after it, and an interface extending a later interface.
+record Pt(x: i32) : Named {
+  fn name(): string => "pt"
+  fn badge(): string => "t"
+}
+
+interface Named : Tagged {
+  fn name(): string
+}
+
+interface Tagged {
+  fn badge(): string
+}
+
+enum Color { Red, Green }
+
+fn main() {
+  print(paint())
+  print(Tone().tone())
+  print(Cfg.FACTOR)
+  print(Cfg.TWICE)
+  print(made.hello() + " " + made.who())
+  let p = Pt(1)
+  print(p.name() + p.badge())
+}

@@ -1,0 +1,23 @@
+import "std.io"
+import { viaM } from "./parsing"
+import { other } from "./util"
+
+// P40 review r4 #13: overload link names.
+//  * `parsing` declares `parse(string)`, this module `parse(string, i32)` — C# and PHP link every module's free
+//    functions into one scope. The link name was `parse_string`, which collided with this module's own
+//    `fn parse_string` (C# CS0111, PHP "Cannot redeclare"). A signature name now joins its parts with `__`,
+//    which no user identifier may contain, so it can never meet a user's name.
+//  * `util` declares the only `util(i32)`; this module declares `util(string)`. No call could bind both, so C#
+//    keeps the plain name `util` (a library's C# API no longer changes when an unrelated module declares the
+//    same name). PHP has no overloading at all, so its single function namespace still needs distinct names.
+fn parse(s: string, base: i32): i32 => 2
+fn parse_string(s: string): i32 => 3
+fn util(s: string): string => s + "!"
+
+fn main() {
+  print(viaM("a"))
+  print(parse("a", 10))
+  print(parse_string("a"))
+  print(other(1))
+  print(util("x"))
+}

@@ -47,6 +47,7 @@
     },
     "blockStyle": "bracesKnR",
     "stmtEnd": ";",
+    "operandSnapshot": "(${tmp} = {0})",
     "throwKeyword": "throw",
     "rethrow": "throw $__e;",
     "memberOp": "->",
@@ -235,7 +236,7 @@
       },
       "mangle": {
         "replace": "$",
-        "with": "_"
+        "with": "__"
       },
       "reserved": [
         "__e",
@@ -453,7 +454,7 @@
                           "fn": "identFn",
                           "args": [
                             {
-                              "get": "node.linkOrMangledCallee"
+                              "get": "node.uniqueCallee"
                             }
                           ]
                         }
@@ -2788,7 +2789,7 @@
                   "fn": "identFn",
                   "args": [
                     {
-                      "get": "decl.linkOrEmitName"
+                      "get": "decl.uniqueName"
                     }
                   ]
                 }
@@ -2897,7 +2898,7 @@
                       "fn": "ident",
                       "args": [
                         {
-                          "get": "decl.linkOrEmitName"
+                          "get": "decl.uniqueName"
                         }
                       ]
                     },
@@ -3470,19 +3471,9 @@
                             "when": [
                               [
                                 {
-                                  "and": [
-                                    {
-                                      "eq": [
-                                        "decl.hasSuper",
-                                        "true"
-                                      ]
-                                    },
-                                    {
-                                      "eq": [
-                                        "decl.baseHasInit",
-                                        "true"
-                                      ]
-                                    }
+                                  "eq": [
+                                    "decl.baseHasInit",
+                                    "true"
                                   ]
                                 },
                                 {
@@ -3626,66 +3617,53 @@
           "fn": "preludeSlot"
         },
         {
-          "mapMembers": "module.enums",
-          "rule": "EnumDecl"
-        },
-        {
-          "mapMembers": "module.records",
-          "rule": "RecordDecl"
-        },
-        {
-          "mapMembers": "module.interfaces",
-          "rule": "InterfaceDecl"
-        },
-        {
-          "mapMembers": "module.classes",
-          "rule": "ClassDecl"
-        },
-        {
-          "mapDecl": "module.globals",
-          "each": {
-            "line": {
-              "tmpl": [
-                "$",
-                {
-                  "fn": "ident",
-                  "args": [
+          "mapOrder": "module.order",
+          "kinds": {
+            "enum": { "rule": "EnumDecl" },
+            "interface": { "rule": "InterfaceDecl" },
+            "union": { "rule": "UnionDecl" },
+            "record": { "rule": "RecordDecl" },
+            "function": { "rule": "FunctionDecl" },
+            "extension": { "rule": "FunctionDecl" },
+            "class": { "rule": "ClassDecl" },
+            "global": {
+              "each": {
+                "line": {
+                  "tmpl": [
+                    "$",
                     {
-                      "get": "item.name"
-                    }
-                  ]
-                },
-                " = ",
-                {
-                  "case": {
-                    "when": [
-                      [
+                      "fn": "ident",
+                      "args": [
                         {
-                          "eq": [
-                            "item.hasInit",
-                            "true"
-                          ]
-                        },
-                        {
-                          "emit": "item.init"
+                          "get": "item.name"
                         }
                       ]
-                    ],
-                    "else": "null"
-                  }
-                },
-                ";"
-              ]
+                    },
+                    " = ",
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.hasInit",
+                                "true"
+                              ]
+                            },
+                            {
+                              "emit": "item.init"
+                            }
+                          ]
+                        ],
+                        "else": "null"
+                      }
+                    },
+                    ";"
+                  ]
+                }
+              }
             }
           }
-        },
-        {
-          "mapMembers": "module.functions",
-          "rule": "FunctionDecl"
-        },
-        {
-          "mapMembers": "module.extensions",
-          "rule": "FunctionDecl"
         },
         {
           "case": {

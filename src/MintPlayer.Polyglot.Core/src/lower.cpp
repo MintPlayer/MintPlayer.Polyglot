@@ -96,7 +96,10 @@ std::vector<std::string> scanGlobalRefs(const std::unordered_set<std::string>& g
 class Lowerer { // per-target since P19 slice 9: binding/extern-type arms are picked here, not at emit
 public:
     Lowerer(const CompilationUnit& unit, std::string target) : target_(std::move(target)) {
-        if (const Backend* b = findBackend(target_)) nativeCompound_ = b->nativeCompoundAssign();
+        if (const Backend* b = findBackend(target_)) {
+            nativeCompound_ = b->nativeCompoundAssign();
+            lateOperands_ = b->lateOperandReads();
+        }
         // Names that denote a constructible type, so `Name(args)` lowers to a construction, not a call.
         // (Error/Iterable arrive as core-prelude `extern class`es in unit.classes — no special-case here.)
         for (const auto& r : unit.records) typeNames_.insert(r.name);
@@ -312,6 +315,7 @@ public:
         for (const auto& e : unit.enums) {
             ir::Enum ie;
             ie.name = e.name;
+            ie.pos = e.pos;
             long long next = 0;
             for (const auto& c : e.cases) { long long v = c.hasValue ? c.value : next; ie.cases.push_back({c.name, v}); next = v + 1; }
             ie.originModule = e.originModule;
@@ -320,6 +324,7 @@ public:
         for (const auto& u : unit.unions) {
             ir::Union iu;
             iu.name = u.name;
+            iu.pos = u.pos;
             iu.generics = generics(u.generics);
             iu.originModule = u.originModule;
             for (const auto& c : u.cases) {
@@ -336,6 +341,7 @@ public:
             if (r.isAttribute && !materialized_.count(r.name)) continue;
             ir::Record rec;
             rec.name = r.name;
+            rec.pos = r.pos;
             rec.attrLines = renderAttrLines(r.attributes);
             rec.generics = generics(r.generics);
             for (const auto& b : r.bases) rec.bases.push_back(b);
@@ -352,6 +358,7 @@ public:
         for (const auto& d : unit.interfaces) { // contracts: signatures only, emitted as `interface`
             ir::Interface ii;
             ii.name = d.name;
+            ii.pos = d.pos;
             ii.generics = generics(d.generics);
             for (const auto& b : d.bases) ii.bases.push_back(b);
             for (const auto& mem : d.members)
@@ -371,6 +378,7 @@ public:
         for (const auto& v : unit.values) { // top-level const/let
             ir::Global g;
             g.name = v.name;
+            g.pos = v.pos;
             g.isConst = v.isConst;
             g.type = v.hasType ? v.type : (v.init ? v.init->type : TypeRef{});
             if (v.init) g.init = expr(*v.init);
@@ -424,6 +432,7 @@ public:
             f.name = fn.name;
             f.mangledName = fn.mangledName.empty() ? fn.name : fn.mangledName;
             f.linkName = fn.linkName.empty() ? fn.name : fn.linkName;
+            f.uniqueName = fn.uniqueName.empty() ? f.mangledName : fn.uniqueName;
             f.actualTarget = fn.actualTarget;
             f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
@@ -441,9 +450,11 @@ public:
         m.attrImports = attrImports_; // P37 D Tier 1: verbatim import/using lines for used bindings
 
         // Stamp ir::Class.baseHasInit transitively now that every class/interface is lowered (issue #48).
-        // A base contributes a chainable ctor when it is a user class with an `init` (or one whose own
-        // ancestors do), OR a base that is neither a user class nor a user interface — i.e. an extern/native
-        // type like Error/Exception, which always has a constructor. Interface bases contribute nothing.
+        // A base contributes a chainable ctor when it is a user class with an `init` or an instance field
+        // initializer (or one whose own ancestors do), OR a base that is neither a user class nor a user
+        // interface — i.e. an extern/native type like Error/Exception, which always has a constructor.
+        // Interface bases contribute nothing. Every target must run that constructor: an emitted
+        // constructor chains to it even without a written `super()` (review r4 #3).
         {
             std::unordered_map<std::string, const ir::Class*> byName;
             for (const auto& c : m.classes) byName[c.name] = &c;
@@ -458,7 +469,11 @@ public:
                 for (const auto& b : c.bases) {
                     auto cit = byName.find(b.name);
                     if (cit != byName.end()) {                 // a user class base
-                        if (cit->second->hasInit || classChains(*cit->second)) { chains = true; break; }
+                        // P40 review r4 #3: a base whose only constructor work is an instance field
+                        // initializer still gets a runtime constructor (needsCtor) that must run.
+                        bool baseInits = cit->second->hasInit;
+                        for (const auto& f : cit->second->fields) if (!f.isStatic && f.init) baseInits = true;
+                        if (baseInits || classChains(*cit->second)) { chains = true; break; }
                     } else if (ifaceNames.count(b.name) == 0) { // not a class, not an interface → native base
                         chains = true; break;
                     }
@@ -466,7 +481,16 @@ public:
                 memo[c.name] = chains ? 1 : 0;
                 return chains;
             };
-            for (auto& c : m.classes) c.baseHasInit = classChains(c);
+            for (auto& c : m.classes) {
+                c.baseHasInit = classChains(c);
+                // Review r4 #3: a constructor with no written `super()` in a class with a base class still
+                // calls the base constructor (C# does so implicitly; TS requires the call — it threw "Must
+                // call super constructor" — and PHP/Python only run it when called). The argument-less
+                // implicit call is well-typed: sema refuses an omitted `super(…)` when the base needs args.
+                if (c.hasInit && !c.hasSuper)
+                    for (const auto& b : c.bases)
+                        if (ifaceNames.count(b.name) == 0) { c.hasSuper = true; break; }
+            }
             // P40 B2: the native root of each base chain (same walk, same cycle guard).
             std::unordered_set<std::string> visiting;
             std::function<std::string(const ir::Class&)> rootOf = [&](const ir::Class& c) -> std::string {
@@ -497,6 +521,7 @@ private:
     int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
     // P40: the target's native `a op= b` is faithful to its Binary rule (plugin trait); else compounds expand.
     bool nativeCompound_ = false;
+    bool lateOperands_ = false; // review r4 #9: the target reads a variable operand when its operator runs
     // P40: surface sub-expressions of a compound target that were hoisted into a temp — `expr()` lowers each
     // to that temp's Var, so the write side and the re-read side both see the single evaluation.
     std::unordered_map<const Expr*, std::string> evalOnce_;
@@ -736,6 +761,7 @@ private:
     ir::Class lowerClass(const ClassDecl& c) {
         ir::Class ic;
         ic.name = c.name;
+        ic.pos = c.pos;
         ic.attrLines = renderAttrLines(c.attributes);
         ic.generics = generics(c.generics);
         ic.bases = c.bases;
@@ -978,6 +1004,8 @@ private:
                     b->lhsIsUnion = unionCases_.count(ln) != 0;   // #57: structural `==` over union cases
                     b->lhsHasUserEq = userEqTypes_.count(ln) != 0; // #49: user `operator fn eq` wins
                 }
+                if (e.text != "&&" && e.text != "||" && e.text != "??" && !rereadable(*e.rhs))
+                    b->snapshotLhs = lateVariable(*b->lhs);
                 return b;
             }
             case ExprKind::Member: {
@@ -1116,6 +1144,7 @@ private:
                 call->isFree = freeFns_.count(callee) > 0; // a top-level fn (vs a function-valued local)
                 call->mangledCallee = e.overloadName.empty() ? callee : e.overloadName; // TS overload target
                 call->linkCallee = e.linkName; // C#: the one-scope link name (P40 review r3 2(e))
+                call->uniqueCallee = e.uniqueName; // PHP: the one-scope unique name (P40 review r4 #13)
                 call->typeArgs = e.typeArgs; // P40 A4: explicit `f<T>(…)` survives (C# CS0411 otherwise)
                 for (const auto& a : e.args) call->args.push_back(expr(*a));
                 return call;
@@ -1428,9 +1457,24 @@ private:
         for (const Expr* p : hoisted) evalOnce_.erase(p);
         const std::string binOp = s.op.substr(0, s.op.size() - 1);
         auto b = std::make_unique<ir::Binary>(s.pos, t.type, binOp, std::move(read), expr(*s.value));
+        // Review r4 #9: on a late-read target, a native `t op= v` reads t after v ran — it is kept expanded, and a
+        // variable t is snapshotted (a field/static/element read is fetched in order).
+        if (valueImpure) b->snapshotLhs = lateVariable(*b->lhs);
         auto a = std::make_unique<ir::Assign>(s.pos, std::move(write), "=", std::move(b));
         a->compoundOp = s.op;
+        a->keepExpanded = lateOperands_ && valueImpure;
         return a;
+    }
+
+    // P40 review r4 #9: on a target that reads a variable operand only when its operator runs (PHP's CV
+    // operands), is this lowered left operand such a variable — a local, parameter or module value, under any
+    // conversions (an identity cast prints bare)? Anything else is evaluated into a temporary in order.
+    bool lateVariable(const ir::Expr& x) const {
+        if (!lateOperands_) return false;
+        const ir::Expr* p = &x;
+        while (p->kind == ir::ExprKind::Cast && static_cast<const ir::Cast&>(*p).operand)
+            p = static_cast<const ir::Cast&>(*p).operand.get();
+        return p->kind == ir::ExprKind::Var;
     }
 
     std::vector<ir::StmtPtr> block(const std::vector<StmtPtr>& body) {

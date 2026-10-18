@@ -68,13 +68,13 @@ struct Test {
 struct Rule {
     enum class Kind {
         Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type, Fresh, // string flavor
-        Line, Block, MapDecl, Stmts, Seq, MapMembers, Indent,                     // decl flavor
+        Line, Block, MapDecl, Stmts, Seq, MapMembers, Indent, MapOrder,           // decl flavor
     } kind = Kind::Lit;
     std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts/MapMembers: path | Fn/Call: name | Interleave: lits | Fresh: prefix
     std::string s2;                             // Interleave: holes path | MapMembers: decl rule per member | Fresh: alias
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children
-    std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps
+    std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps | MapOrder: one per kind (a MapMembers {s: kind, s2: rule} or a MapDecl {s: kind, parts[0]: each})
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule
     // Arm-coverage provenance — see the identical fields on `Test`.

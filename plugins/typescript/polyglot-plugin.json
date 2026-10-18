@@ -3168,108 +3168,91 @@
           }
         },
         {
-          "mapMembers": "module.enums",
-          "rule": "EnumDecl"
-        },
-        {
-          "mapMembers": "module.interfaces",
-          "rule": "InterfaceDecl"
-        },
-        {
-          "mapMembers": "module.unions",
-          "rule": "UnionDecl"
-        },
-        {
-          "mapMembers": "module.records",
-          "rule": "RecordDecl"
-        },
-        {
-          "mapMembers": "module.classes",
-          "rule": "ClassDecl"
-        },
-        {
-          "mapDecl": "module.globals",
-          "each": {
-            "line": {
-              "tmpl": [
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.isPrelude",
-                            "true"
-                          ]
-                        },
-                        ""
-                      ]
-                    ],
-                    "else": "export "
-                  }
-                },
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.isConst",
-                            "true"
-                          ]
-                        },
-                        "const "
-                      ]
-                    ],
-                    "else": "let "
-                  }
-                },
-                {
-                  "fn": "ident",
-                  "args": [
+          "mapOrder": "module.order",
+          "kinds": {
+            "enum": { "rule": "EnumDecl" },
+            "interface": { "rule": "InterfaceDecl" },
+            "union": { "rule": "UnionDecl" },
+            "record": { "rule": "RecordDecl" },
+            "function": { "rule": "FunctionDecl" },
+            "extension": { "rule": "ExtensionDecl" },
+            "class": { "rule": "ClassDecl" },
+            "global": {
+              "each": {
+                "line": {
+                  "tmpl": [
                     {
-                      "get": "item.name"
-                    }
-                  ]
-                },
-                ": ",
-                {
-                  "type": "item.type"
-                },
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.hasInit",
-                            "true"
-                          ]
-                        },
-                        {
-                          "tmpl": [
-                            " = ",
+                      "case": {
+                        "when": [
+                          [
                             {
-                              "emit": "item.init"
-                            }
+                              "eq": [
+                                "item.isPrelude",
+                                "true"
+                              ]
+                            },
+                            ""
                           ]
+                        ],
+                        "else": "export "
+                      }
+                    },
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.isConst",
+                                "true"
+                              ]
+                            },
+                            "const "
+                          ]
+                        ],
+                        "else": "let "
+                      }
+                    },
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "item.name"
                         }
                       ]
-                    ]
-                  }
-                },
-                ";"
-              ]
+                    },
+                    ": ",
+                    {
+                      "type": "item.type"
+                    },
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.hasInit",
+                                "true"
+                              ]
+                            },
+                            {
+                              "tmpl": [
+                                " = ",
+                                {
+                                  "emit": "item.init"
+                                }
+                              ]
+                            }
+                          ]
+                        ]
+                      }
+                    },
+                    ";"
+                  ]
+                }
+              }
             }
           }
-        },
-        {
-          "mapMembers": "module.extensions",
-          "rule": "ExtensionDecl"
-        },
-        {
-          "mapMembers": "module.functions",
-          "rule": "FunctionDecl"
         },
         {
           "case": {

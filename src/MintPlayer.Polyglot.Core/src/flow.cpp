@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -259,8 +260,9 @@ Assigned meet(const Assigned& a, const Assigned& b) {
 
 class FieldInit {
 public:
-    FieldInit(DiagnosticBag& d, const ClassDecl& c, const std::vector<const Member*>& required)
-        : d_(d), c_(c), required_(required) {}
+    FieldInit(DiagnosticBag& d, const ClassDecl& c, const std::vector<const Member*>& required,
+              const std::set<std::string>& inherited)
+        : d_(d), c_(c), required_(required), inherited_(inherited) {}
 
     Assigned list(const std::vector<StmtPtr>& b, Assigned in) {
         for (const auto& s : b) {
@@ -298,9 +300,12 @@ private:
         for (const Member* m : required_) if (m->name == n) return true;
         return false;
     }
+    // A field of this class, or an instance field it inherits: the base constructor (written `super()` or
+    // implicit) runs before any statement of this one on every target, so an inherited field is assigned
+    // (review r4 #4 — `super(); this.y = this.x + 10` was refused).
     bool isField(const std::string& n) const {
         for (const auto& m : c_.members) if (m.kind == MemberKind::Field && m.name == n) return true;
-        return false;
+        return inherited_.count(n) != 0;
     }
     void earlyThis(SourcePos at, const std::set<std::string>& in) {
         std::string pending;
@@ -419,12 +424,13 @@ private:
     DiagnosticBag& d_;
     const ClassDecl& c_;
     const std::vector<const Member*>& required_;
+    const std::set<std::string>& inherited_;               // instance fields declared by a base class
     bool quiet_ = false;                                   // computing a finally's own assignments: no reports
     std::vector<Assigned> breaks_, continues_;              // per enclosing loop: the meet of break/continue states
     std::vector<std::set<std::string>> finallyAssigned_;    // per enclosing try: what its finally assigns
 };
 
-void checkFieldsDefinitelyAssigned(const ClassDecl& c, DiagnosticBag& d) {
+void checkFieldsDefinitelyAssigned(const ClassDecl& c, DiagnosticBag& d, const std::set<std::string>& inherited) {
     if (c.isExtern) return;
     // P40 review r3 2(g): an instance field initializer runs before the constructor body on some targets and
     // inside it on others (Python/PHP), so `this` there reads fields in a target-dependent state (`let b =
@@ -441,7 +447,7 @@ void checkFieldsDefinitelyAssigned(const ClassDecl& c, DiagnosticBag& d) {
     for (const auto& m : c.members)
         if (m.kind == MemberKind::Field && !m.init && m.bindings.empty()) required.push_back(&m);
     if (required.empty()) return;
-    FieldInit fi(d, c, required);
+    FieldInit fi(d, c, required, inherited);
     std::set<std::string> somewhere;
     std::set<std::string> missing; // fields some completing init leaves unassigned
     bool anyCtor = false;
@@ -462,6 +468,90 @@ void checkFieldsDefinitelyAssigned(const ClassDecl& c, DiagnosticBag& d) {
             d.error(f->pos, "field '" + f->name + "' of class '" + c.name +
                                 "' is not assigned on every path through init — assign it on each branch "
                                 "(a loop body may run zero times), or give it an initializer");
+    }
+}
+
+// Every expression in a statement list / expression tree (pre-order); `f` returns false to skip a subtree.
+template <class F> void eachExpr(const Expr* e, F& f);
+template <class F> void eachExpr(const std::vector<StmtPtr>& b, F& f) {
+    for (const auto& s : b) {
+        if (!s) continue;
+        eachExpr(s->target.get(), f); eachExpr(s->value.get(), f);
+        eachExpr(s->thenBody, f); eachExpr(s->elseBody, f); eachExpr(s->finallyBody, f);
+        for (const auto& c : s->catches) { eachExpr(c.guard.get(), f); eachExpr(c.body, f); }
+    }
+}
+template <class F> void eachExpr(const Expr* e, F& f) {
+    if (!e || !f(*e)) return;
+    eachExpr(e->lhs.get(), f); eachExpr(e->rhs.get(), f); eachExpr(e->extra.get(), f); eachExpr(e->block, f);
+    for (const auto& a : e->args) eachExpr(a.get(), f);
+    for (const auto& fv : e->fields) eachExpr(fv.value.get(), f);
+    for (const auto& a : e->arms) { eachExpr(a.guard.get(), f); eachExpr(a.body.get(), f); eachExpr(a.block, f); }
+}
+
+bool hasModifier(const Member& m, const char* mod) {
+    for (const auto& x : m.modifiers) if (x == mod) return true;
+    return false;
+}
+
+// P40 review r4 #5: a constructor that calls an overridable method on `this` runs a subclass override before
+// the subclass's own fields are initialized — C# reads default(T), TS undefined, Python raises AttributeError,
+// PHP reads null. Refused: no constructor may reach (directly, or through non-overridable methods of its own
+// class chain called on `this`) a call to an `open`/`abstract`/`override` method on `this`.
+void checkCtorVirtualCalls(const ClassDecl& c, const std::map<std::string, const ClassDecl*>& classes,
+                           DiagnosticBag& d) {
+    // The method `name` as `this` of class `c` sees it: the nearest declaration up the base chain.
+    auto lookup = [&](const std::string& name) -> const Member* {
+        std::set<std::string> seen;
+        const ClassDecl* k = &c;
+        while (k && seen.insert(k->name).second) {
+            for (const auto& m : k->members) if (m.kind == MemberKind::Method && m.name == name) return &m;
+            const ClassDecl* next = nullptr;
+            for (const auto& b : k->bases) {
+                auto it = classes.find(b.name);
+                if (it != classes.end()) { next = it->second; break; }
+            }
+            k = next;
+        }
+        return nullptr;
+    };
+    for (const auto& ctor : c.members) {
+        if (ctor.kind != MemberKind::Constructor) continue;
+        std::set<const Member*> visited;
+        std::vector<std::pair<const Member*, std::string>> work; // (method body to scan, the chain so far)
+        bool reported = false;
+        auto scan = [&](const std::vector<StmtPtr>& body, const Expr* exprBody, const std::string& via) {
+            auto f = [&](const Expr& e) -> bool {
+                if (reported) return false;
+                if (e.kind == ExprKind::Lambda) return false; // deferred: runs whenever it is called
+                if (e.kind != ExprKind::Call || !e.lhs || e.lhs->kind != ExprKind::Member || !e.lhs->lhs ||
+                    e.lhs->lhs->kind != ExprKind::This)
+                    return true;
+                const Member* m = lookup(e.lhs->text);
+                if (!m) return true;
+                if (hasModifier(*m, "open") || hasModifier(*m, "abstract") || hasModifier(*m, "override")) {
+                    d.error(e.pos, "the constructor of class '" + c.name + "' calls the overridable method '" +
+                                       e.lhs->text + "' on 'this'" + via + " — a subclass override would run "
+                                       "before the subclass's fields are initialized (C# reads defaults, TS "
+                                       "undefined, Python raises AttributeError); call it after construction, or "
+                                       "make the method non-open");
+                    reported = true;
+                    return false;
+                }
+                if (visited.insert(m).second)
+                    work.emplace_back(m, via.empty() ? " (through '" + m->name + "')"
+                                                     : via.substr(0, via.size() - 1) + " -> '" + m->name + "')");
+                return true;
+            };
+            eachExpr(body, f);
+            eachExpr(exprBody, f);
+        };
+        scan(ctor.body, ctor.exprBody.get(), "");
+        while (!work.empty() && !reported) {
+            auto [m, via] = work.back();
+            work.pop_back();
+            scan(m->body, m->exprBody.get(), via);
+        }
     }
 }
 
@@ -505,10 +595,29 @@ void checkFlow(const CompilationUnit& unit, DiagnosticBag& diags) {
         flow.body(fn.body, !isUnit(fn.returnType), fn.pos, "function '" + fn.name + "'");
     }
     for (const auto& r : unit.records) checkMembers(flow, r.members, r.name, r.originModule == "<prelude>");
+    std::map<std::string, const ClassDecl*> classes;
+    for (const auto& c : unit.classes) classes[c.name] = &c;
     for (const auto& c : unit.classes) {
         if (c.isExtern) continue; // native-backed std carrier: its members are bindings, not .pg bodies
         checkMembers(flow, c.members, c.name, c.originModule == "<prelude>");
-        checkFieldsDefinitelyAssigned(c, diags);
+        std::set<std::string> inherited, seen{c.name};
+        std::vector<const ClassDecl*> work{&c};
+        while (!work.empty()) { // every user base class, transitively (the cycle guard is `seen`)
+            const ClassDecl* k = work.back();
+            work.pop_back();
+            for (const auto& b : k->bases) {
+                auto it = classes.find(b.name);
+                if (it == classes.end() || !seen.insert(b.name).second) continue;
+                for (const auto& m : it->second->members) {
+                    bool isStatic = false;
+                    for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
+                    if (m.kind == MemberKind::Field && !isStatic) inherited.insert(m.name);
+                }
+                work.push_back(it->second);
+            }
+        }
+        checkFieldsDefinitelyAssigned(c, diags, inherited);
+        checkCtorVirtualCalls(c, classes, diags);
     }
     for (const auto& i : unit.interfaces) checkMembers(flow, i.members, i.name, i.originModule == "<prelude>");
     for (const auto& e : unit.extensions) {

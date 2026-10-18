@@ -1,0 +1,25 @@
+import "std.io"
+
+// P40 review r4 #10: an identity cast between two minus signs printed bare on TS/PHP as `--y`, a
+// pre-decrement. A prefix operator's cast operand is parenthesized unless its printed text is primary.
+fn a(y: f64): f64 => -f64(-y)
+fn b(w: i64): i64 => -((i64)(-w))
+fn c(w: i64): i64 => -i64(-w)
+fn d(z: f32): f32 => -((f32)(-z))
+fn negneg(x: f64): f64 => -(f64)(-x)
+fn negnegF(x: f32): f64 => -(f64)(-x)
+fn negnegL(x: i64): i64 => -(i64)(-x)
+fn sumNeg(p: f64, q: f64): f64 => -f64(p + q)
+
+fn main() {
+  var y = 2.5
+  print(a(y))
+  print(y)
+  print(b(7i64))
+  print(c(7i64))
+  print(d(1.5f))
+  print(negneg(2.5))
+  print(negnegF(1.5f))
+  print(negnegL(4i64))
+  print(sumNeg(1.0, 2.0))
+}

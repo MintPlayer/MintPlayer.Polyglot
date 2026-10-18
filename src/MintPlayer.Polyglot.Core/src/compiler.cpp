@@ -1247,6 +1247,7 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         a.name = f.name;
         a.mangledName = f.mangledName;
         a.linkName = f.linkName;
+        a.uniqueName = f.uniqueName;
         a.pos = f.pos;
         a.namePos = f.namePos;
         a.generics = f.generics;

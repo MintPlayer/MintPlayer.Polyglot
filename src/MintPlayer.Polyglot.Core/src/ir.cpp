@@ -1,5 +1,6 @@
 #include "mintplayer/polyglot/ir.hpp"
 
+#include <algorithm>
 #include <string>
 
 namespace mintplayer::polyglot::ir {
@@ -322,6 +323,85 @@ private:
 std::string dump(const Module& m) {
     Dumper d;
     return d.run(m);
+}
+
+std::vector<DeclRef> declarationOrder(const Module& m, const std::vector<std::size_t>& functionIndices) {
+    std::vector<DeclRef> out;
+    // Prelude first, then the order the list already has (source order within one file).
+    auto inOrder = [&](const auto& vec, const char* kind, const char* list) {
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t i = 0; i < vec.size(); ++i)
+                if (isPreludeOrigin(vec[i].originModule) == (pass == 0)) out.push_back({kind, list, i});
+    };
+    inOrder(m.enums, "enum", "module.enums");
+    { // interfaces: an interface after the in-module interfaces it extends
+        std::vector<bool> placed(m.interfaces.size(), false);
+        std::vector<std::size_t> todo;
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t i = 0; i < m.interfaces.size(); ++i)
+                if (isPreludeOrigin(m.interfaces[i].originModule) == (pass == 0)) todo.push_back(i);
+        auto ready = [&](std::size_t i) {
+            for (const auto& b : m.interfaces[i].bases)
+                for (std::size_t j = 0; j < m.interfaces.size(); ++j)
+                    if (j != i && m.interfaces[j].name == b.name && !placed[j]) return false;
+            return true;
+        };
+        for (bool progress = true; progress;) {
+            progress = false;
+            for (std::size_t i : todo)
+                if (!placed[i] && ready(i)) { placed[i] = true; out.push_back({"interface", "module.interfaces", i}); progress = true; break; }
+        }
+        for (std::size_t i : todo) if (!placed[i]) out.push_back({"interface", "module.interfaces", i}); // a cycle: as written
+    }
+    inOrder(m.unions, "union", "module.unions");
+    inOrder(m.records, "record", "module.records");
+    for (int pass = 0; pass < 2; ++pass)
+        for (std::size_t k = 0; k < functionIndices.size(); ++k)
+            if (isPreludeOrigin(m.functions[functionIndices[k]].originModule) == (pass == 0))
+                out.push_back({"function", "module.functions", k});
+    inOrder(m.extensions, "extension", "module.extensions");
+
+    // Classes and module values, interleaved by source position; a class waits for its in-module base classes.
+    struct Item { bool isClass; std::size_t index; bool prelude; SourcePos pos; };
+    std::vector<Item> items;
+    for (std::size_t i = 0; i < m.classes.size(); ++i)
+        items.push_back({true, i, isPreludeOrigin(m.classes[i].originModule), m.classes[i].pos});
+    for (std::size_t i = 0; i < m.globals.size(); ++i)
+        items.push_back({false, i, isPreludeOrigin(m.globals[i].originModule), m.globals[i].pos});
+    std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+        if (a.prelude != b.prelude) return a.prelude;
+        if (a.pos.fileId != b.pos.fileId) return a.pos.fileId < b.pos.fileId;
+        if (a.pos.line != b.pos.line) return a.pos.line < b.pos.line;
+        return a.pos.col < b.pos.col;
+    });
+    std::vector<bool> classPlaced(m.classes.size(), false);
+    auto basesPlaced = [&](std::size_t c) {
+        for (const auto& b : m.classes[c].bases)
+            for (std::size_t j = 0; j < m.classes.size(); ++j)
+                if (j != c && m.classes[j].name == b.name && !classPlaced[j]) return false;
+        return true;
+    };
+    auto place = [&](const Item& it) {
+        if (it.isClass) { classPlaced[it.index] = true; out.push_back({"class", "module.classes", it.index}); }
+        else out.push_back({"global", "module.globals", it.index});
+    };
+    std::vector<Item> pending; // classes whose base class comes later
+    for (const Item& it : items) {
+        if (it.isClass && !basesPlaced(it.index)) { pending.push_back(it); continue; }
+        place(it);
+        for (bool progress = true; progress;) { // a placed class may release a waiting subclass (and its subclasses)
+            progress = false;
+            for (std::size_t k = 0; k < pending.size(); ++k)
+                if (basesPlaced(pending[k].index)) {
+                    place(pending[k]);
+                    pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(k));
+                    progress = true;
+                    break;
+                }
+        }
+    }
+    for (const Item& it : pending) place(it); // an inheritance cycle (refused by sema): as written
+    return out;
 }
 
 } // namespace mintplayer::polyglot::ir

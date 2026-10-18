@@ -1,0 +1,29 @@
+import "std.io"
+
+// P40 review r4 #12: within ONE module, a generic overload beside a specific one. The checker binds the
+// specific overload; C#'s own resolution prefers the exactly inferred generic (`show<Disk>` over the
+// conversion to `Shape`, `opt<int>` over `int` -> `int?`), so C# printed `generic generic`. Such a name now
+// takes signature link names on C#, so every target calls what the checker chose.
+open class Shape {
+  fn name(): string => "shape"
+}
+class Disk : Shape {
+}
+
+fn show(x: Shape): string => "shape-overload"
+fn show<T>(x: T): string => "generic"
+fn opt(x: i32?): string => "nullable"
+fn opt<T>(x: T): string => "generic"
+
+// No clash: an i32 argument can never bind `label(string)`, so C# keeps the plain overloaded name.
+fn label(n: i32): string => "int"
+fn label(s: string): string => "string"
+
+fn main() {
+  print(show(Disk()))
+  let n: i32 = 1
+  print(opt(n))
+  print(show("text"))
+  print(label(1))
+  print(label("a"))
+}

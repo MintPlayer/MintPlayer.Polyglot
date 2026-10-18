@@ -81,6 +81,12 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     r.spec.forbidsShadowedLocals = doc["forbidsShadowedLocals"].asBool(false);
     r.spec.expressionOnlyLambdas = doc["expressionOnlyLambdas"].asBool(false);
     r.spec.nativeCompoundAssign  = doc["nativeCompoundAssign"].asBool(false);
+    r.spec.operandSnapshot       = doc["operandSnapshot"].asString();
+    if (!r.spec.operandSnapshot.empty() && (r.spec.operandSnapshot.find("{tmp}") == std::string::npos ||
+                                            r.spec.operandSnapshot.find("{0}") == std::string::npos)) {
+        r.errors.push_back("backend spec: 'operandSnapshot' must spell both '{tmp}' (the temp) and '{0}' (the operand)");
+        return r;
+    }
 
     // P40 A1: per-context literal spelling. Shape-checked here so a broken context never emits a literal the
     // target misreads: every context names its quote, maps the backslash and that quote, and carries a
@@ -328,7 +334,9 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            std::string(",\"linksWithoutImports\":") + (spec.linksWithoutImports ? "true" : "false") +
            std::string(",\"forbidsShadowedLocals\":") + (spec.forbidsShadowedLocals ? "true" : "false") +
            std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") +
-           std::string(",\"nativeCompoundAssign\":") + (spec.nativeCompoundAssign ? "true" : "false") + gen + wa + an + tbls + escs + ids + "}";
+           std::string(",\"nativeCompoundAssign\":") + (spec.nativeCompoundAssign ? "true" : "false") +
+           (spec.operandSnapshot.empty() ? std::string() : ",\"operandSnapshot\":" + json::quote(spec.operandSnapshot)) +
+           gen + wa + an + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

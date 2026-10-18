@@ -1,0 +1,13 @@
+// REFUSED (P40 review r4 #8): a record body field was dropped by every emitter (C# CS1061, TS2339, Python
+// AttributeError, PHP null). A record's state is its positional fields — they alone take part in equality,
+// hashing and `with`.
+import "std.io"
+
+record P(x: i32) {
+  let twice: i32 = 7
+  fn sum(): i32 => this.x + this.twice
+}
+
+fn main() {
+  print(P(4).sum())
+}

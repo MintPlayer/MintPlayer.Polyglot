@@ -1,0 +1,19 @@
+// REFUSED (P40 review r4 #3): a constructor always runs the base constructor (`super()` when none is
+// written), so a base constructor that takes arguments needs an explicit `super(…)` — C# CS7036, a TS error.
+import "std.io"
+
+open class B {
+  var x: i32
+  constructor(x: i32) {
+    this.x = x
+  }
+}
+class D : B {
+  constructor() {
+    print("d")
+  }
+}
+
+fn main() {
+  print(D().x)
+}

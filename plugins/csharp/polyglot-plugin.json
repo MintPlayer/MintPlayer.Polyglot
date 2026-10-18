@@ -264,7 +264,7 @@
       },
       "mangle": {
         "replace": "$",
-        "with": "_"
+        "with": "__"
       },
       "reserved": [
         "PolyglotExtensions",

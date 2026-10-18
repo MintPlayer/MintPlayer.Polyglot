@@ -237,6 +237,8 @@ struct FnSig {
     SourcePos pos;                     // the declaration (its file id = its module: D16 overload visibility)
     std::string mangled;               // the declaration's per-module mangled name (FunctionDecl::mangledName)
     std::string linkName;              // the declaration's link name (FunctionDecl::linkName)
+    std::string uniqueName;            // the declaration's unique name (FunctionDecl::uniqueName)
+    bool prelude = false;              // a std/prelude declaration (not part of the user's one-scope link)
 };
 
 // The generic-param names bounded by the INumber marker — those whose inferred type argument must be numeric.
@@ -378,7 +380,9 @@ public:
             checkCallSiteDefaults(fn.params, "function '" + fn.name + "'"); // P40 review r3 2(j)
             pushScope();
             for (const auto& p : fn.params) declare(p.name, p.type, false, p.pos);
+            bodyKey_ = fnBodyKey(fn.pos); // review r4 (part 2): record what this body reads for checkThroughCalls
             checkBlock(fn.body);
+            bodyKey_.clear();
             popScope();
             popGenerics(fn.generics);
             scopeStart_ = {}; scopeEnd_ = {};
@@ -386,6 +390,50 @@ public:
             inAsync_ = false;
             recordModel_ = false;
         }
+        // P40 review r4 #3: a constructor always runs its base class's constructor — `super()` when none is written.
+        // When the base constructor needs arguments, an omitted call (or a missing constructor) is C# CS7036 and a
+        // TS error, so the subclass must write `super(…)`.
+        for (const auto& c : unit.classes) {
+            if (c.isExtern) continue;
+            for (const auto& b : c.bases) {
+                if (b.kind != TypeRef::Kind::Named || interfaceNames_.count(b.name) || externClassNames_.count(b.name)) continue;
+                auto bt = types_.find(b.name);
+                if (bt == types_.end() || !bt->second.hasCtor || bt->second.ctorRequired == 0) continue;
+                bool anyCtor = false;
+                for (const auto& m : c.members) {
+                    if (m.kind != MemberKind::Constructor) continue;
+                    anyCtor = true;
+                    bool calls = false;
+                    for (const auto& st : m.body)
+                        if (st->kind == StmtKind::ExprStmt && st->value && st->value->kind == ExprKind::Call &&
+                            st->value->lhs && st->value->lhs->kind == ExprKind::Super)
+                            calls = true;
+                    if (!calls)
+                        diags_.error(m.pos, "the constructor of class '" + c.name + "' must call `super(…)`: the "
+                                            "constructor of base class '" + b.name + "' takes arguments");
+                }
+                if (!anyCtor)
+                    diags_.error(c.namePos.line ? c.namePos : c.pos,
+                                 "class '" + c.name + "' needs a constructor that calls `super(…)`: the constructor of "
+                                 "base class '" + b.name + "' takes arguments");
+                break;
+            }
+        }
+        // P40 review r4 #8: a record's body holds methods, operators and computed properties only. Every emitter
+        // dropped a body field (C# CS1061 / TS2339 / Python AttributeError / PHP null), static or not. Its state
+        // is its positional fields — they alone take part in equality, hashing and `with` on every target.
+        for (const auto& r : unit.records)
+            for (const auto& m : r.members) {
+                if (m.kind != MemberKind::Field && m.kind != MemberKind::Const) continue;
+                bool isStatic = m.kind == MemberKind::Const;
+                for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
+                diags_.error(m.namePos.line ? m.namePos : m.pos,
+                             "record '" + r.name + "' declares " + (isStatic ? "a static field" : "a body field") + " '" +
+                                 m.name + "' — a record's state is its positional fields (they alone take part in "
+                                 "equality, hashing and `with`); " +
+                                 (isStatic ? "declare a module-level `let`/`const`, or a `static fn`"
+                                           : "make it a positional field (with a default), or a computed property"));
+            }
         for (std::size_t i = 0; i < unit.records.size(); ++i) {
             recordModel_ = model_ && req_ && i < req_->userRecords; // record refs inside user type bodies too
             checkTypeBody(unit.records[i].name, unit.records[i].generics, unit.records[i].members, &unit.records[i].fields);
@@ -418,11 +466,82 @@ public:
             else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
                 diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
         }
+        assignLinkNames(unit);
+        checkThroughCalls(); // review r4 (part 2): what an initializer reads through the calls it makes
         // P40 review (A9/B11): reachability, missing returns, field definite assignment, self-comparison.
         checkFlow(unit, diags_);
     }
 
 private:
+    // P40 review r4 #12/#13: every resolved free-function call, for the link-name decision below.
+    struct CallSite {
+        Expr* call;
+        std::string name;
+        std::vector<TypeRef> args;
+        SourcePos chosen; // the declaration sema bound (its FnSig::pos)
+    };
+    std::vector<CallSite> callSites_;
+
+    // Could a target with native overloading (C#) consider `sig` applicable to these argument types? Answers
+    // "no" only when that is certain — an arity outside [required, all], or an argument that can never
+    // convert to its parameter (a string for a number, a bool for a string, unrelated user types, …). A type
+    // parameter accepts anything, so a generic overload is applicable wherever its arity fits.
+    bool mayApply(const FnSig& sig, const std::vector<TypeRef>& args) const {
+        if (args.size() < sig.required || args.size() > sig.params.size()) return false;
+        auto category = [&](const TypeRef& t) -> int { // 0 unknown/open, 1 numeric, 2 string, 3 bool, 4 char, 5 user
+            if (t.kind != TypeRef::Kind::Named || t.name.empty() || !t.args.empty()) return 0;
+            if (std::find(sig.generics.begin(), sig.generics.end(), t.name) != sig.generics.end()) return 0;
+            TypeRef base = t;
+            base.nullable = false; // `i32?` takes an i32 (and null)
+            if (isNumericTypeName(base)) return 1;
+            if (t.name == "string") return 2;
+            if (t.name == "bool") return 3;
+            if (t.name == "char") return 4;
+            if (types_.count(t.name) && !interfaceNames_.count(t.name)) return 5;
+            return 0;
+        };
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            const TypeRef& p = sig.params[i];
+            const TypeRef& a = args[i];
+            const int cp = category(p), ca = category(a);
+            if (cp == 0 || ca == 0) continue;
+            if (cp != ca) return false;
+            if (cp == 5 && a.name != p.name && !inheritsFrom(a.name, p.name)) return false;
+        }
+        return true;
+    }
+
+    // C# links every module's free functions into one class and resolves overloads natively. That agrees with
+    // sema only when sema's choice is the ONLY applicable same-named declaration at every call: C# prefers an
+    // exactly inferred generic over a conversion (`show<T>(Disk)` beats `show(Shape)`), and sees overloads of
+    // modules the caller never imported. A name with such a call gets signature link names on all of its
+    // declarations (`show__Shape`, `show__T`); every other name keeps its plain name — a library's C# API no
+    // longer changes because an unrelated module declares the same name with a different signature.
+    void assignLinkNames(CompilationUnit& u) {
+        std::set<std::string> clash;
+        for (const auto& cs : callSites_) {
+            auto f = fns_.find(cs.name);
+            if (f == fns_.end() || clash.count(cs.name)) continue;
+            int applicable = 0;
+            for (const auto& sig : f->second)
+                if (!sig.prelude && mayApply(sig, cs.args)) ++applicable;
+            if (applicable > 1) clash.insert(cs.name);
+        }
+        std::unordered_map<std::string, std::string> byPos; // declaration position -> its link name
+        auto key = [](const SourcePos& p) { return std::to_string(p.fileId) + ":" + std::to_string(p.line) + ":" + std::to_string(p.col); };
+        for (auto& fn : u.functions) {
+            std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
+            fn.linkName = clash.count(fn.name) ? mangleFn(fn.name, ps, true) : fn.name;
+            byPos[key(fn.pos)] = fn.linkName;
+        }
+        for (auto& [name, set] : fns_)
+            for (auto& sig : set)
+                if (auto it = byPos.find(key(sig.pos)); it != byPos.end())
+                    sig.linkName = it->second;
+        for (auto& cs : callSites_)
+            if (auto it = byPos.find(key(cs.chosen)); it != byPos.end())
+                cs.call->linkName = it->second;
+    }
     DiagnosticBag& diags_;
     std::unordered_set<const Expr*> allowedSupers_; // D6: the `super` callees of hoisted base-ctor calls
     std::unordered_map<std::string, std::vector<FnSig>> fns_; // name -> overload set
@@ -442,17 +561,88 @@ private:
     std::unordered_map<std::string, SourcePos> typeDeclPos_;   // user type / union case name -> decl pos
     SourcePos initDeclPos_{0, 0, 0};
     std::string initDeclName_;
-    void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos) {
-        if (initDeclPos_.line == 0 || lambdaDepth_ > 0 || declPos.line == 0 || declPos.fileId != initDeclPos_.fileId) return;
-        if (declPos.line < initDeclPos_.line || (declPos.line == initDeclPos_.line && declPos.col < initDeclPos_.col)) return;
-        diags_.error(usePos, "the initializer of '" + initDeclName_ + "' reads '" + shown + "', which is declared later — "
-                             "TS, Python and PHP run initializers in declaration order (it would read an "
-                             "uninitialized value or fail); declare '" + shown + "' first");
+    static bool posBefore(const SourcePos& a, const SourcePos& b) {
+        return a.line < b.line || (a.line == b.line && a.col < b.col);
+    }
+    // `via` non-empty: `shown` is the base class of the used class `via` (a class is defined after its bases).
+    void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos, const std::string& via = "") {
+        if (declPos.line == 0) return;
+        if (initDeclPos_.line == 0) {
+            // P40 review r4 (part 2): not in an initializer — inside a free function or static method body, the
+            // use is recorded, so an initializer that CALLS this body is checked against it (checkThroughCalls).
+            if (!bodyKey_.empty() && lambdaDepth_ <= initLambdaFloor_) bodyReads_[bodyKey_].push_back({declPos, shown, via});
+            return;
+        }
+        if (lambdaDepth_ > initLambdaFloor_ || declPos.fileId != initDeclPos_.fileId) return;
+        if (posBefore(declPos, initDeclPos_)) return;
+        diags_.error(usePos, initOrderMessage(initDeclName_, shown, via, ""));
+    }
+    static std::string initOrderMessage(const std::string& init, const std::string& shown, const std::string& via,
+                                        const std::string& callee) {
+        const std::string what = !via.empty() ? "uses '" + via + "', whose base class '" + shown + "' is declared later"
+                                 : callee.empty() ? "reads '" + shown + "', which is declared later"
+                                                  : "reads '" + shown + "', declared later";
+        return "the initializer of '" + init + "' " + (callee.empty() ? what : "calls '" + callee + "', which " + what) +
+               " — TS, Python and PHP run initializers in declaration order (it would read an uninitialized value "
+               "or fail; C# reads a default); declare '" + shown + "' first";
     }
     // A type used (constructed, a static/enum case read, a static call) in an initializer: a class declared later
-    // does not exist yet on TS (ReferenceError) or Python (NameError) when the initializer runs.
+    // does not exist yet on TS (ReferenceError) or Python (NameError) when the initializer runs — nor does a
+    // class whose base class is declared later (review r4 #7: a class is defined only after its bases).
     void noteTypeUse(const std::string& name, SourcePos usePos) {
         if (auto it = typeDeclPos_.find(name); it != typeDeclPos_.end()) checkInitOrder(it->second, name, usePos);
+        std::unordered_set<std::string> seen{name};
+        std::vector<std::string> work{name};
+        while (!work.empty()) {
+            const std::string n = work.back();
+            work.pop_back();
+            auto ti = types_.find(n);
+            if (ti == types_.end()) continue;
+            for (const auto& b : ti->second.bases) {
+                if (interfaceNames_.count(b) || !seen.insert(b).second) continue;
+                if (auto bp = typeDeclPos_.find(b); bp != typeDeclPos_.end()) checkInitOrder(bp->second, b, usePos, name);
+                work.push_back(b);
+            }
+        }
+    }
+    // P40 review r4 (part 2) — the through-call gap: an initializer that calls a same-module function or static
+    // method (or invokes a lambda in place) runs that body right then, so the body's reads count as the
+    // initializer's. Bodies are keyed `fn:<file>:<line>:<col>` (a free function's declaration) or
+    // `st:<Owner>.<method>`; lambdas inside them are deferred, except one invoked in place.
+    std::string bodyKey_;
+    int initLambdaFloor_ = 0; // lambda depth of an in-place-invoked lambda being checked (its body is not deferred)
+    struct BodyRead { SourcePos decl; std::string shown, via; };
+    std::unordered_map<std::string, std::vector<BodyRead>> bodyReads_;
+    std::unordered_map<std::string, std::set<std::string>> bodyCalls_;
+    struct InitCall { SourcePos initPos; std::string initName; SourcePos callPos; std::string callee, calleeShown; };
+    std::vector<InitCall> initCalls_;
+    static std::string fnBodyKey(const SourcePos& p) {
+        return "fn:" + std::to_string(p.fileId) + ":" + std::to_string(p.line) + ":" + std::to_string(p.col);
+    }
+    void noteDirectCall(const std::string& key, const std::string& shown, SourcePos callPos) {
+        if (lambdaDepth_ > initLambdaFloor_) return; // inside a lambda: runs whenever it is called
+        if (initDeclPos_.line != 0) initCalls_.push_back({initDeclPos_, initDeclName_, callPos, key, shown});
+        else if (!bodyKey_.empty()) bodyCalls_[bodyKey_].insert(key);
+    }
+    void checkThroughCalls() {
+        for (const auto& ic : initCalls_) {
+            std::set<std::string> seen{ic.callee};
+            std::vector<std::string> work{ic.callee};
+            bool reported = false;
+            while (!work.empty() && !reported) {
+                const std::string k = work.back();
+                work.pop_back();
+                if (auto r = bodyReads_.find(k); r != bodyReads_.end())
+                    for (const auto& rd : r->second)
+                        if (rd.decl.fileId == ic.initPos.fileId && !posBefore(rd.decl, ic.initPos)) {
+                            diags_.error(ic.callPos, initOrderMessage(ic.initName, rd.shown, rd.via, ic.calleeShown));
+                            reported = true;
+                            break;
+                        }
+                if (auto c = bodyCalls_.find(k); c != bodyCalls_.end())
+                    for (const auto& n : c->second) if (seen.insert(n).second) work.push_back(n);
+            }
+        }
     }
     std::unordered_map<std::string, FnSig> unionCtors_;        // union case name -> ctor sig
     std::unordered_map<std::string, std::string> unionCaseOwner_; // case name -> union type
@@ -946,6 +1136,7 @@ private:
             sig.numericParams = numericBounded(fn.generics);
             sig.boundSpecs = fn.generics;
             sig.pos = fn.pos;
+            sig.prelude = fn.originModule == "<prelude>";
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
                 if (sameParamList(existing.params, sig.params)) {
@@ -964,8 +1155,10 @@ private:
         }
         // Assign per-target names: an overloaded function mangles its params. P40 review r3 (part 2): the overload
         // set is the one the DECLARING module sees (its own + imported declarations, D16) — a library's exported
-        // name must not change because an unrelated module declares the same name. The link name (C#, one shared
-        // class) is the mangled one whenever another user module declares the name too.
+        // name must not change because an unrelated module declares the same name. The unique name (PHP, one
+        // function namespace, no overloading) is the mangled one whenever the program declares the name twice.
+        // The link name (C#, one shared class WITH native overloading) starts as the plain name and is mangled
+        // only on a real clash, decided once every call is resolved (assignLinkNames, review r4 #12/#13).
         std::unordered_map<std::string, std::set<std::string>> userOrigins; // name -> user modules declaring it
         for (const auto& fn : u.functions)
             if (fn.actualTarget.empty() && fn.originModule != "<prelude>") userOrigins[fn.name].insert(fn.originModule);
@@ -974,10 +1167,11 @@ private:
         };
         for (auto& fn : u.functions) {
             std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
-            const bool linkMangled = userOrigins[fn.name].size() > 1;
+            const bool crossModule = userOrigins[fn.name].size() > 1;
+            fn.linkName = fn.name;
             if (!fn.actualTarget.empty()) { // an actual reuses its expect's names
                 fn.mangledName = fn.name;
-                fn.linkName = linkMangled ? mangleFn(fn.name, ps, true) : fn.name;
+                fn.uniqueName = crossModule ? mangleFn(fn.name, ps, true) : fn.name;
                 continue;
             }
             auto& set = fns_[fn.name];
@@ -987,9 +1181,9 @@ private:
                     modules_->visible(fn.pos.fileId, sig.pos.fileId, fn.name))
                     ++visible;
             fn.mangledName = mangleFn(fn.name, ps, visible > 1);
-            fn.linkName = linkMangled ? mangleFn(fn.name, ps, true) : fn.name;
+            fn.uniqueName = crossModule ? mangleFn(fn.name, ps, true) : fn.mangledName;
             for (auto& sig : set)
-                if (samePos(sig.pos, fn.pos)) { sig.mangled = fn.mangledName; sig.linkName = fn.linkName; }
+                if (samePos(sig.pos, fn.pos)) { sig.mangled = fn.mangledName; sig.linkName = fn.linkName; sig.uniqueName = fn.uniqueName; }
         }
         for (const auto& v : u.values) {
             if (values_.count(v.name)) diags_.error(v.pos, "duplicate top-level '" + v.name + "'");
@@ -1258,15 +1452,30 @@ private:
                     // P40 review r3 2(f): redeclaring an inherited INSTANCE member without `override` is member
                     // hiding — C# binds it non-virtually (CS0108 is only a warning: `Base`-typed access sees the
                     // base member), while TS/Python/PHP override it. Refused, whatever the member kind.
-                    bool isStatic = false;
+                    bool isStatic = m.kind == MemberKind::Const;
                     for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
-                    if (isStatic || m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator) continue;
+                    if (m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator) continue;
                     for (const auto& b : bases) {
                         if (b.kind != TypeRef::Kind::Named || b.name.empty() || interfaceNames_.count(b.name)) continue;
                         MemberHit hit = findMemberOn(b, m.name);
-                        if (!hit.m || hit.m->isStatic || hit.m->kind == MemberKind::Constructor ||
-                            interfaceNames_.count(hit.owner))
+                        if (!hit.m || hit.m->kind == MemberKind::Constructor || interfaceNames_.count(hit.owner))
                             continue;
+                        // P40 review r4 #6: statics hide too. A static over an instance member (or the reverse) is
+                        // a PHP fatal ("Cannot make static method … non static"); a static over a static is C#
+                        // CS0108 (an error under warnings-as-errors) and TS4114 under noImplicitOverride.
+                        const bool hitStatic = hit.m->isStatic || hit.m->kind == MemberKind::Const;
+                        if (isStatic || hitStatic) {
+                            diags_.error(m.namePos, "'" + m.name + "' redeclares " +
+                                                        std::string(hitStatic ? "the static" : "the instance") +
+                                                        " member '" + hit.owner + "." + m.name + "' as " +
+                                                        (isStatic ? "a static" : "an instance") + " member — rename "
+                                                        "it; Polyglot has no member hiding (" +
+                                                        (isStatic && hitStatic
+                                                             ? "C# hides a static non-virtually, CS0108; TS requires "
+                                                               "'override', TS4114"
+                                                             : "PHP refuses a static/instance clash") + ")");
+                            break;
+                        }
                         const bool bothMethods = m.kind == MemberKind::Method && hit.m->kind == MemberKind::Method;
                         diags_.error(m.namePos, "'" + m.name + "' redeclares a member inherited from '" + hit.owner + "' — " +
                                                     (bothMethods && hit.m->isOpen
@@ -1365,30 +1574,78 @@ private:
     // A float constant expression (`1.0 / 60.0`, `-2.5 * 4.0`): folded at compile time so a default stays a plain
     // literal on every target (a PHP default may not call a helper; Python would evaluate it once). Only `+ - * /`
     // over float literals (and int literals inside them) fold; an infinity or NaN result does not.
-    static bool foldFloat(const Expr* e, double& v, bool& sawFloat) {
-        if (!e) return false;
-        if (e->kind == ExprKind::FloatLit) { sawFloat = true; v = std::strtod(e->text.c_str(), nullptr); return true; }
+    // P40 review r4 #11: the fold follows the expression's real typed semantics — an int-only subexpression is
+    // i32 arithmetic (`1 / 2` is 0, as `print(1 / 2 + 0.5)` prints 0.5), widened to f64 only where it meets a
+    // float. An i32 result out of range, or an integer division by zero, is not folded (the default is then
+    // refused as non-constant). A non-finite result — at a literal (`1e400`), a negation or an operator — is
+    // reported as NonFinite: no target can spell it as a constant default.
+    enum class Fold { No, Ok, NonFinite };
+    struct FoldVal { bool isInt = false; long long i = 0; double d = 0; double asDouble() const { return isInt ? static_cast<double>(i) : d; } };
+    static bool finite(double d) { return d == d && d - d == 0; }
+    static bool inI32(long long x) { return x >= -2147483648LL && x <= 2147483647LL; }
+    static Fold foldConst(const Expr* e, FoldVal& v, bool& sawFloat) {
+        if (!e) return Fold::No;
+        if (e->kind == ExprKind::FloatLit) {
+            sawFloat = true; v.isInt = false; v.d = std::strtod(e->text.c_str(), nullptr);
+            return finite(v.d) ? Fold::Ok : Fold::NonFinite;
+        }
         if (e->kind == ExprKind::IntLit) {
-            for (char c : e->text) if (!std::isdigit(static_cast<unsigned char>(c))) return false;
-            v = std::strtod(e->text.c_str(), nullptr);
-            return true;
+            if (e->text.empty() || e->text.size() > 10) return Fold::No;
+            for (char c : e->text) if (!std::isdigit(static_cast<unsigned char>(c))) return Fold::No;
+            v.isInt = true; v.i = std::strtoll(e->text.c_str(), nullptr, 10);
+            return inI32(v.i) ? Fold::Ok : Fold::No;
         }
-        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldFloat(e->lhs.get(), v, sawFloat)) return false; v = -v; return true; }
+        if (e->kind == ExprKind::Unary && e->text == "-") {
+            Fold f = foldConst(e->lhs.get(), v, sawFloat);
+            if (f != Fold::Ok) return f;
+            if (v.isInt) { v.i = -v.i; return inI32(v.i) ? Fold::Ok : Fold::No; }
+            v.d = -v.d;
+            return Fold::Ok;
+        }
         if (e->kind == ExprKind::Binary && (e->text == "+" || e->text == "-" || e->text == "*" || e->text == "/")) {
-            double a, b;
-            if (!foldFloat(e->lhs.get(), a, sawFloat) || !foldFloat(e->rhs.get(), b, sawFloat)) return false;
-            v = e->text == "+" ? a + b : e->text == "-" ? a - b : e->text == "*" ? a * b : a / b;
-            return v == v && v - v == 0; // finite
+            FoldVal a, b;
+            Fold fa = foldConst(e->lhs.get(), a, sawFloat);
+            if (fa != Fold::Ok) return fa;
+            Fold fb = foldConst(e->rhs.get(), b, sawFloat);
+            if (fb != Fold::Ok) return fb;
+            const char op = e->text[0];
+            if (a.isInt && b.isInt) {
+                v.isInt = true;
+                if (op == '/') { if (b.i == 0) return Fold::No; v.i = a.i / b.i; } // C-style truncation, as i32 `/`
+                else v.i = op == '+' ? a.i + b.i : op == '-' ? a.i - b.i : a.i * b.i;
+                return inI32(v.i) ? Fold::Ok : Fold::No;
+            }
+            const double x = a.asDouble(), y = b.asDouble();
+            v.isInt = false;
+            v.d = op == '+' ? x + y : op == '-' ? x - y : op == '*' ? x * y : x / y;
+            return finite(v.d) ? Fold::Ok : Fold::NonFinite;
         }
-        return false;
+        return Fold::No;
     }
 
     void checkCallSiteDefaults(std::vector<Param>& ps, const std::string& what) {
         for (auto& p : ps) {
             if (!p.hasDefault || !p.defaultValue) continue;
+            if (p.defaultValue->kind == ExprKind::FloatLit) { // a bare literal is kept as written, if finite
+                FoldVal lv; bool sf = false;
+                if (foldConst(p.defaultValue.get(), lv, sf) == Fold::NonFinite) {
+                    diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
+                                 "the default of '" + p.name + "' in " + what + " is not a finite number — no "
+                                 "target can spell an infinity or NaN as a constant default");
+                    continue;
+                }
+            }
             if (p.defaultValue->kind == ExprKind::Binary || p.defaultValue->kind == ExprKind::Unary) {
-                double fv = 0; bool sawFloat = false;
-                if (foldFloat(p.defaultValue.get(), fv, sawFloat) && sawFloat) {
+                FoldVal fold; bool sawFloat = false;
+                const Fold folded = foldConst(p.defaultValue.get(), fold, sawFloat);
+                if (folded == Fold::NonFinite) {
+                    diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
+                                 "the default of '" + p.name + "' in " + what + " is not a finite number — no "
+                                 "target can spell an infinity or NaN as a constant default");
+                    continue;
+                }
+                const double fv = fold.asDouble();
+                if (folded == Fold::Ok && sawFloat) {
                     std::string txt;
                     for (int prec = 15; prec <= 17; ++prec) { // the shortest text that round-trips the double
                         char buf[64];
@@ -1495,6 +1752,7 @@ private:
                 currentReturn_ = (m.kind == MemberKind::Constructor) ? namedType("unit") : m.returnType;
                 inAsync_ = m.isAsync;
                 inCtor_ = m.kind == MemberKind::Constructor;
+                if (isStatic && m.kind == MemberKind::Method) bodyKey_ = "st:" + typeName + "." + m.name; // review r4
                 scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
@@ -1512,6 +1770,7 @@ private:
                 scopeStart_ = {}; scopeEnd_ = {};
                 inAsync_ = false;
                 inCtor_ = false;
+                bodyKey_.clear();
                 currentThis_ = tNamed(typeName);
             } else if ((m.kind == MemberKind::Field || m.kind == MemberKind::Const) && m.init) {
                 // P40 follow-up: a field initializer is an expression like any other — it was never checked, so it
@@ -3403,6 +3662,10 @@ private:
                 if (types_.count(typeName)) {
                     noteTypeUse(typeName, e.pos);
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
+                        { // review r4 (part 2): a static call runs the declaring class's body right away
+                            MemberHit owner = findMemberOn(tNamed(typeName), method);
+                            noteDirectCall("st:" + (owner.m ? owner.owner : typeName) + "." + method, typeName + "." + method, e.pos);
+                        }
                         if (auto it = memberDefId_.find(typeName + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                         std::string what = "static method '" + typeName + "." + method + "'";
                         checkArgs(m->params, argTypes, e.args, what, e.pos, m->required);
@@ -3508,7 +3771,12 @@ private:
         // P40 review r3 2(a): any other callee is a function VALUE (`adder(1)(4)`, `fs[0](4)`, an IIFE) — its
         // arguments check against the function type and the call yields its return type, like a named fn.
         if (e.lhs->kind == ExprKind::Lambda) { // an immediately-invoked lambda: its type is spelled from its parts
-            checkExpr(*e.lhs);
+            { // review r4 (part 2): it runs right here — inside an initializer its body is not deferred
+                const int floor = initLambdaFloor_;
+                if (lambdaDepth_ <= initLambdaFloor_) initLambdaFloor_ = lambdaDepth_ + 1;
+                checkExpr(*e.lhs);
+                initLambdaFloor_ = floor;
+            }
             const Expr& lam = *e.lhs;
             bool typed = !lam.flag && lam.lhs && !lam.lhs->type.absent() && !lam.lhs->type.name.empty();
             for (const auto& p : lam.params) typed = typed && !p.type.absent();
@@ -3622,6 +3890,15 @@ private:
                     if (modules_->visible(e.pos.fileId, sig.pos.fileId, name)) visibleSet.push_back(sig);
                 if (!visibleSet.empty()) candidates = &visibleSet;
             }
+            // P40 review r4 #12: an overload that can never take these arguments (a string for a `Shape`) does not
+            // compete — resolveOverload scores a user-typed parameter leniently, and `show("text")` bound
+            // `show(Shape)` beside an applicable `show<T>`. When none applies, the whole set stays (checkArgs
+            // then names the mismatch).
+            std::vector<FnSig> applicableSet;
+            if (candidates->size() > 1) {
+                for (const auto& sig : *candidates) if (mayApply(sig, argTypes)) applicableSet.push_back(sig);
+                if (!applicableSet.empty() && applicableSet.size() < candidates->size()) candidates = &applicableSet;
+            }
             const FnSig* chosen = resolveOverload(*candidates, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
             // Bind the type params first — from explicit `f<T>(…)` args (P40 A4, emitted) or inferred from the
@@ -3661,7 +3938,10 @@ private:
             checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             checkGenericBounds(chosen->boundSpecs, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             e.overloadName = chosen->mangled.empty() ? name : chosen->mangled; // the declaring module's name for it
-            e.linkName = chosen->linkName;
+            e.uniqueName = chosen->uniqueName;
+            e.linkName = chosen->linkName; // provisional: assignLinkNames rewrites it once every call is resolved
+            callSites_.push_back({&e, name, argTypes, chosen->pos});
+            noteDirectCall(fnBodyKey(chosen->pos), name, e.pos); // review r4 (part 2): the through-call gap
             TypeRef r = gen.empty() ? chosen->result : substGeneric(chosen->result, gen, binds);
             return chosen->isAsync ? awaitable(r) : r;
         }

@@ -1,0 +1,13 @@
+// REFUSED (P40 review r4 #8): a record's static field was dropped by every emitter (C# CS0117, TS undefined,
+// Python AttributeError, PHP undefined constant). A static method stays fine; a constant is a module value.
+import "std.io"
+
+record Temp(c: i32) {
+  static let FREEZING: i32 = 0
+  static fn of(v: i32): Temp => Temp(v)
+}
+
+fn main() {
+  print(Temp.FREEZING)
+  print(Temp.of(5).c)
+}
