@@ -251,6 +251,12 @@ $staleFixture = {
     ck (-not (Test-Path (Join-Path $web "gen/c.ts")) -and -not (Test-Path (Join-Path $web "gen/c.ts.map")) -and (Test-Path (Join-Path $web "gen2/c.ts"))) `
         "P40: re-routing the twin deletes the old one (and its .map)"
 
+    # P40 review r4: PolyglotOutDir is part of the inputs cache — a changed out dir re-runs the transpile instead
+    # of skipping it (CoreCompile then failed with CS0103 until a .pg changed).
+    $b = dotnet build $p --nologo -v q "-p:PolyglotOutDir=obj\alt\" 2>&1 | Out-String
+    ck ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $p "obj/alt/c.cs"))) "P40 review r4: -p:PolyglotOutDir=obj\alt\ re-transpiles into it and builds (no CS0103)"
+    dotnet build $p --nologo -v q 2>&1 | Out-Null
+
     # net8;net10 — one record per intermediate dir: a single-TFM build never deletes the other TFM's outputs.
     $m = Join-Path $work "StaleMulti"
     dotnet new classlib -o $m --framework net8.0 | Out-Null

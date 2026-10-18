@@ -222,6 +222,11 @@ struct ResolveResult {
     bool ok = true;
     bool lockChanged = false;
     std::vector<std::string> messages;
+    // P40 review r4: the registry dependencies that failed only because they needed the network (an offline
+    // `check`): npm package name -> its message. Kept apart so ONLY their targets degrade to "not verified" —
+    // a misspelled target or a broken `file:` plugin beside them is still an error.
+    std::vector<std::pair<std::string, std::string>> networkMisses;
+    std::vector<std::string> configErrors; // a malformed lockfile: the config is refused (exit 64)
 };
 
 inline std::string configStamp(const PgConfig& pc) {
@@ -239,6 +244,12 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
     ResolveResult res;
     if (!pc.found || pc.dependencies.empty()) return res;
     Lockfile lock = loadLockfile(pc.dir);
+    if (!lock.error.empty()) { // P40 review r4: strict — never re-resolve over (and rewrite) a lockfile we misread
+        res.ok = false;
+        res.configErrors.push_back(lockfilePath(pc.dir).string() + ": " + lock.error);
+        res.messages.push_back(res.configErrors.back());
+        return res;
+    }
     const std::string stamp = configStamp(pc);
 
     for (const auto& [key, spec] : pc.dependencies) {
@@ -268,12 +279,19 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
 
         ResolvedPlugin rp;
         std::string err;
-        if (resolvePluginDependency(http, npmName, spec, pc.dir, lock, update, rp, err)) {
+        bool usedNetwork = false; // did resolving THIS dependency reach for the registry?
+        const HttpGet tracked = [&](const std::string& url, const std::vector<std::string>& headers, std::string& body,
+                                    std::string& e) {
+            usedNetwork = true;
+            return http(url, headers, body, e);
+        };
+        if (resolvePluginDependency(tracked, npmName, spec, pc.dir, lock, update, rp, err)) {
             if (rp.fetched) res.lockChanged = true;
             if (state) state->succeeded.insert(memoKey);
         } else {
             res.ok = false;
             res.messages.push_back(err);
+            if (usedNetwork) res.networkMisses.emplace_back(npmName, err);
             if (state) state->failed[memoKey] = err;
         }
     }

@@ -146,13 +146,18 @@ LibConfig parseLibList(const std::string& libArg) {
 // build, watch, and the LSP — the static ResolveState memoizes successes AND failures per config
 // generation, so a long-lived host retries on pgconfig change instead of hammering the network.
 // `offline` (P40 review r3, for `check`): never touches the network — in-box, `file:` and the lock-pinned cache
-// only. Returns true when some dependency would have needed the registry (so its targets are unverified).
-bool resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false, bool offline = false) {
+// only. `unverified` names the configured targets an uncached REGISTRY dependency would provide (they are skipped,
+// not refused). P40 review r4: only those — it used to be every target that failed to load as soon as any registry
+// dependency was uncached, so a misspelled `"csharpp"` or a broken `file:` plugin beside one exited 0. A first-party
+// package names its target (`@mintplayer/polyglot-target-<t>`); a third-party one only says in its manifest, so an
+// uncached third-party package leaves every missing target that no first-party dependency names unverified.
+struct ResolvedTargets {
+    std::set<std::string> unverified;
+    bool configError = false; // a malformed lockfile: refuse (64)
+};
+ResolvedTargets resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false, bool offline = false) {
     static cli::ResolveState state;
-    bool neededNetwork = false;
-    const cli::HttpGet offlineGet = [&](const std::string&, const std::vector<std::string>&, std::string&,
-                                        std::string& err) {
-        neededNetwork = true;
+    const cli::HttpGet offlineGet = [](const std::string&, const std::vector<std::string>&, std::string&, std::string& err) {
         err = "not in the plugin cache, and `polyglot check` does not use the network (`polyglot install` or a "
               "build fetches it)";
         return false;
@@ -160,12 +165,36 @@ bool resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false, bool offl
     // The memo is shared by build/watch/LSP; an offline miss must not poison a later online resolve.
     const cli::ResolveResult res = cli::resolvePluginDependencies(pc, offline ? offlineGet : cli::defaultHttpGet(),
                                                                   /*update=*/false, offline ? nullptr : &state, dryRun);
-    for (const auto& m : res.messages) std::cerr << "polyglot: " << (neededNetwork ? "note: " : "") << m << "\n";
-    for (const auto& t : pc.targets)
-        if (!findTarget(t).ok() && !neededNetwork)
-            std::cerr << "polyglot: target '" << t << "' is neither bundled nor provided by a pgconfig "
-                      << "dependency; add one, e.g. \"dependencies\": { \"" << t << "\": \"latest\" }\n";
-    return neededNetwork;
+    ResolvedTargets out;
+    out.configError = !res.configErrors.empty();
+    std::set<std::string> missTargets;
+    bool thirdPartyMiss = false;
+    if (offline)
+        for (const auto& [npm, msg] : res.networkMisses) {
+            const std::string t = cli::targetNameForPackage(npm);
+            if (t.empty()) thirdPartyMiss = true;
+            else missTargets.insert(t);
+        }
+    for (const auto& m : res.messages) {
+        const bool miss = offline && std::any_of(res.networkMisses.begin(), res.networkMisses.end(),
+                                                 [&](const auto& nm) { return nm.second == m; });
+        std::cerr << "polyglot: " << (miss ? "note: " : "") << m << "\n";
+    }
+    std::set<std::string> firstPartyNamed; // targets a first-party dependency of this config names
+    for (const auto& [key, spec] : pc.dependencies)
+        if (spec.rfind("file:", 0) != 0)
+            if (const std::string t = cli::targetNameForPackage(cli::normalizePluginPackageName(key)); !t.empty())
+                firstPartyNamed.insert(t);
+    for (const auto& t : pc.targets) {
+        if (findTarget(t).ok()) continue;
+        if (missTargets.count(t) || (thirdPartyMiss && !firstPartyNamed.count(t))) {
+            out.unverified.insert(t);
+            continue;
+        }
+        std::cerr << "polyglot: target '" << t << "' is neither bundled nor provided by a pgconfig "
+                  << "dependency; add one, e.g. \"dependencies\": { \"" << t << "\": \"latest\" }\n";
+    }
+    return out;
 }
 
 // P40 review (A5): ONE refusal for a pgconfig that fails to parse or validate, shared by every command that
@@ -188,16 +217,12 @@ int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::Targ
         return flagErrors.empty() ? 0 : 64;
     }
     // pgconfig `dependencies` + lock-first cache + registry (P30)
-    const bool unverifiable = resolveConfiguredTargets(pc, dryRun, offline);
-    int rc = 0;
-    std::set<std::string> unverified;
+    const ResolvedTargets rt = resolveConfiguredTargets(pc, dryRun, offline);
+    const std::set<std::string>& unverified = rt.unverified;
+    int rc = rt.configError ? 64 : 0;
     for (const auto& t : pc.targets) {
         BackendHandle h = findTarget(t);
-        if (h.ok()) continue;
-        if (unverifiable) {
-            unverified.insert(t);
-            continue;
-        }
+        if (h.ok() || unverified.count(t)) continue;
         std::cerr << "polyglot: " << (pc.dir / "pgconfig.json").string() << ": " << h.error() << "\n";
         rc = 64;
     }
@@ -205,7 +230,8 @@ int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::Targ
         std::cout << "polyglot: note: target(s) " << joinNames(std::vector<std::string>(unverified.begin(), unverified.end()))
                   << " not verified: their plugins are not cached and this command works offline\n";
     std::vector<std::string> optErrors; // every targetOptions layer, against the loaded plugins (P40 B1)
-    cli::validateTargetOptions(pc, flags, optErrors, unverifiable ? &unverified : nullptr);
+    cli::validateTargetOptions(pc, flags, optErrors, unverified.empty() ? nullptr : &unverified);
+    cli::validateIncludeTargets(pc, optErrors, unverified); // P40 review r4: a rule's "target" names a target
     for (const auto& m : optErrors) std::cerr << "polyglot: " << m << "\n";
     return optErrors.empty() ? rc : 64;
 }
@@ -312,6 +338,22 @@ struct RunState {
     bool dryRun() const { return sink.checking(); }
 };
 
+// P40 review r4: the discovery outputs record of one config, when it exists ("" = none). Its presence means the
+// record — not --adopt — decides which existing files are Polyglot's, whichever way this run was invoked.
+fs::path existingDefaultRecord(const PgConfig& pc) {
+    std::error_code ec;
+    const fs::path rec = pc.dir / ".polyglot" / "outputs.json";
+    return fs::exists(rec, ec) ? rec : fs::path();
+}
+
+// Every header line a loaded target emits (the A3 directory rename: "is everything in it Polyglot output?").
+std::vector<std::string> loadedHeaderLines() {
+    std::vector<std::string> out;
+    for (const auto& n : backendNames())
+        if (const Backend* b = findBackend(n); b && !b->generatedHeaderLine().empty()) out.push_back(b->generatedHeaderLine());
+    return out;
+}
+
 // Put one file through the sink; a non-empty return is the diagnostic. Deduping across a multi-root
 // project build (§4.5) and across config groups (P40): identical content is written once, a genuine
 // content conflict (two modules or groups resolving to one output path) is a hard error, never a clobber.
@@ -337,6 +379,7 @@ std::string sinkPut(cli::OutputSink& sink, const fs::path& out, const std::strin
             return m;
         }
         case cli::OutputSink::Put::Refused: {
+            if (!sink.refusal().empty()) return sink.refusal(); // a directory case clash (P40 review r4)
             // P40 review (#75, D21): the overwrite guard — the owned-folder rule's wording.
             std::string m = "error: '" + out.string() + "' already exists but ";
             if (!claim.sidecarOf.empty())
@@ -345,9 +388,14 @@ std::string sinkPut(cli::OutputSink& sink, const fs::path& out, const std::strin
                 m += "this target emits no generated header";
             else
                 m += "does not carry the `" + claim.headerLine + "` line";
-            m += " and is not in the outputs record, so it is never overwritten; move it out of the way, or "
-                 "pass --adopt once to take over outputs of a polyglot older than 0.11 (which wrote no header; "
-                 "under MSBuild, build once with -p:PolyglotAdopt=true)";
+            m += " and is not in the outputs record, so it is never overwritten; move it out of the way, or ";
+            // P40 review r4: with a record present --adopt is ignored, so naming it sent the user in a loop.
+            if (!sink.adoptBlockedBy().empty())
+                m += "delete the outputs record '" + sink.adoptBlockedBy().string() + "' and build once with --adopt "
+                     "(-p:PolyglotAdopt=true under MSBuild) to take over every unmarked output again";
+            else
+                m += "pass --adopt once to take over outputs of a polyglot older than 0.11 (which wrote no header; "
+                     "under MSBuild, build once with -p:PolyglotAdopt=true)";
             return m;
         }
         case cli::OutputSink::Put::Failed: return "cannot write '" + out.string() + "'";
@@ -724,14 +772,16 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 
     // safe per-cycle: already-registered names are skipped. `check --watch` resolves like `check`: offline and
     // dry-run (P40 review r3) — a target whose plugin is not available offline is unverified and skipped.
-    const bool unverifiable = resolveConfiguredTargets(pc, /*dryRun=*/checkOnly, /*offline=*/checkOnly);
-    std::set<std::string> unverified;
-    if (unverifiable)
-        for (const auto& t : pc.targets)
-            if (!findTarget(t).ok()) unverified.insert(t);
+    const ResolvedTargets rt = resolveConfiguredTargets(pc, /*dryRun=*/checkOnly, /*offline=*/checkOnly);
+    const std::set<std::string>& unverified = rt.unverified;
+    if (rt.configError) {
+        emitTopLevel("pgconfig.lock.json is malformed (see above); fix or delete it");
+        return c;
+    }
     {
         std::vector<std::string> optErrors; // P40 B1: a bad targetOptions block refuses the cycle
-        cli::validateTargetOptions(pc, optionFlags, optErrors, unverifiable ? &unverified : nullptr);
+        cli::validateTargetOptions(pc, optionFlags, optErrors, unverified.empty() ? nullptr : &unverified);
+        cli::validateIncludeTargets(pc, optErrors, unverified);
         for (const auto& m : optErrors) emitTopLevel(m);
         if (!optErrors.empty()) return c;
     }
@@ -767,7 +817,19 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
     }
 
     cli::OutputSink sink; // one writer per cycle: its produced-path set catches a conflict across targets
-    sink.trust({}, {}, adopt); // P40 review (D21): no record in watch; the header (or --adopt) is the proof
+    // P40 review (D21): no record in watch; the header (or --adopt) is the proof. P40 review r4: but the project's
+    // discovery record, when it exists, still blocks --adopt (watch used to adopt over it).
+    if (const fs::path rec = pc.found ? existingDefaultRecord(pc) : fs::path(); !rec.empty()) {
+        if (adopt)
+            emitDiag(absInput.string() + "(1,1): warning: --adopt is ignored: the outputs record '" + rec.string() +
+                         "' exists, so the record decides which existing files are Polyglot's",
+                     Severity::Warning);
+        adopt = false;
+        sink.adoptBlockedBy(rec);
+    }
+    sink.trust({}, {}, adopt);
+    sink.routeRoots({outDirArg, entryDir, pc.found ? pc.dir : entryDir});
+    sink.headerLines(loadedHeaderLines);
     for (const auto& t : targets) {
         BackendHandle h = findTarget(t); // resolveConfiguredTargets above already ran the P30 pipeline
         if (!h.ok()) {
@@ -1144,6 +1206,7 @@ int reconcileOutputs(RunState& run, const fs::path& recordPath, bool defaultReco
                 Doomed d;
                 if (!targetTraits(s.target, d.header, d.sidecarExt)) continue;
                 scope.ext = findTarget(s.target).backend()->fileExtension();
+                scope.configDir = ownedPc->dir;
                 for (const auto& f : cli::ownedExtras(scope, [&](const fs::path& p) { return sink.isProduced(p); })) {
                     const std::string k = cli::outputKey(f);
                     if (doomed.count(k)) continue;
@@ -1292,6 +1355,11 @@ int runBuild(const std::vector<std::string>& args) {
                      "pgconfig set (use --only a,b to build a subset of the pgconfig targets)\n";
         return 64;
     }
+    // P40 review r4: `--target ""` (or blank) silently meant "every pgconfig target" — the opposite of naming one.
+    if (targetFlags == 1 && std::all_of(o.target.begin(), o.target.end(), [](unsigned char c) { return std::isspace(c) != 0; })) {
+        std::cerr << "polyglot: --target '" << o.target << "' is empty; it names one target (e.g. --target csharp)\n";
+        return 64;
+    }
     if (!o.target.empty() && !o.only.empty()) {
         std::cerr << "polyglot: --only and --target cannot be combined (--target overrides the pgconfig targets; "
                      "--only narrows them)\n";
@@ -1391,13 +1459,28 @@ int runBuild(const std::vector<std::string>& args) {
         // none). Left set (PolyglotAdopt=true in a csproj), it silently disabled the overwrite guard on every
         // later build — a second run overwrote a new hand-written gen/b.ts. Once a record exists the record is the
         // trust source, so the flag is ignored, loudly. (Each adopted file is named by the sink.)
-        if (adopt && !recordPath.empty() && run.prevLoad != cli::RecordLoad::Missing) {
-            std::cerr << "polyglot: warning: --adopt is ignored: the outputs record '" << recordPath.string()
-                      << "' exists, so the record decides which existing files are Polyglot's (adopt is the one-time "
-                         "upgrade for a project without one; remove PolyglotAdopt / --adopt)\n";
+        // P40 review r4: ANY outputs record of the project blocks it — also the discovery record under a group's
+        // `.polyglot/` when this run has explicit inputs and no --record (it used to adopt then).
+        fs::path blocking;
+        if (!recordPath.empty() && run.prevLoad != cli::RecordLoad::Missing) blocking = recordPath;
+        for (const auto& [key, group] : groups)
+            if (blocking.empty() && group.first.found) blocking = existingDefaultRecord(group.first);
+        if (!blocking.empty()) {
+            if (adopt)
+                std::cerr << "polyglot: warning: --adopt is ignored: the outputs record '" << blocking.string()
+                          << "' exists, so the record decides which existing files are Polyglot's (adopt is the one-time "
+                             "upgrade for a project without one; remove PolyglotAdopt / --adopt)\n";
             adopt = false;
+            run.sink.adoptBlockedBy(blocking);
         }
         run.sink.trust(std::move(recorded), buildOwned, adopt);
+        std::vector<fs::path> roots{o.outDir};
+        for (const auto& [key, group] : groups) {
+            if (group.first.found) roots.push_back(group.first.dir);
+            for (const auto& in : group.second) roots.push_back(in.has_parent_path() ? in.parent_path() : fs::path("."));
+        }
+        run.sink.routeRoots(std::move(roots));
+        run.sink.headerLines(loadedHeaderLines);
     }
     int rc = 0;
     for (auto& [key, group] : groups) rc = worseExit(rc, buildGroup(run, group.first, group.second, o));
@@ -2294,6 +2377,10 @@ int runInstall(const std::vector<std::string>& args) {
     for (const auto& m : pc.errors) std::cerr << "polyglot: " << m << "\n";
     if (!pc.errors.empty()) return 64;
     cli::Lockfile lock = pc.found ? cli::loadLockfile(pc.dir) : cli::Lockfile{};
+    if (!lock.error.empty()) { // P40 review r4: strict; never rewrite a lockfile that was misread
+        std::cerr << "polyglot: " << cli::lockfilePath(pc.dir).string() << ": " << lock.error << "\n";
+        return 64;
+    }
 
     cli::ResolvedPlugin rp;
     std::string err;

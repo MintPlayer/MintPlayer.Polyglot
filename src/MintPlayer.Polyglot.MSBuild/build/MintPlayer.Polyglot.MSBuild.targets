@@ -96,6 +96,9 @@
       <_PolyglotCacheLine Include="entryPoint=$(PolyglotEntryPoint)" />
       <_PolyglotCacheLine Include="origin=$(PolyglotOriginInfo)" />
       <_PolyglotCacheLine Include="root=$(PolyglotRoot)" />
+      <!-- P40 review r4: a changed PolyglotOutDir (-p:PolyglotOutDir=obj\alt\) skipped the transpile, and
+           CoreCompile then failed with CS0103 until a .pg changed. -->
+      <_PolyglotCacheLine Include="outDir=$(PolyglotOutDir)" />
     </ItemGroup>
     <WriteLinesToFile File="$(_PolyglotInputsCache)" Lines="@(_PolyglotCacheLine)" Overwrite="true" WriteOnlyWhenDifferent="true" />
     <ReadLinesFromFile File="$(_PolyglotDepfile)" Condition="Exists('$(_PolyglotDepfile)')">

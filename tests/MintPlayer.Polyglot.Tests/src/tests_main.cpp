@@ -5737,18 +5737,95 @@ int main() {
             const bool nestedOk = extras.size() == 1 && extras[0].filename() == "stale.ts";
             bool retryOk = true;
 #ifdef _WIN32
-            // MSVC's ifstream opens without FILE_SHARE_DELETE, so the rename fails until the reader closes.
+            // P40 review r4: the holder is explicit about its sharing (an ifstream shares WRITE, which proved nothing),
+            // and what the HOLDER reads is asserted, not only the disk.
+            auto holdAndRead = [](const fs::path& p, DWORD share, HANDLE& h) {
+                h = CreateFileW(p.c_str(), GENERIC_READ, share, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                return h != INVALID_HANDLE_VALUE;
+            };
+            auto readHeld = [](HANDLE h) {
+                char buf[64];
+                DWORD got = 0;
+                SetFilePointer(h, 0, nullptr, FILE_BEGIN);
+                return ReadFile(h, buf, sizeof(buf), &got, nullptr) ? std::string(buf, got) : std::string("<read failed>");
+            };
+            // (a) shared READ|WRITE but not DELETE: no rename can replace it, so writeFile retries until it closes.
             const fs::path held = tmp / "held" / "a.ts";
             cli::writeFile(held, "old");
-            auto reader = std::make_unique<std::ifstream>(held, std::ios::binary);
-            std::thread closer([&] { std::this_thread::sleep_for(std::chrono::milliseconds(150)); reader.reset(); });
+            HANDLE h1 = INVALID_HANDLE_VALUE;
+            const bool opened1 = holdAndRead(held, FILE_SHARE_READ | FILE_SHARE_WRITE, h1);
+            std::string sawWhileHeld;
+            std::thread closer([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                sawWhileHeld = readHeld(h1);
+                CloseHandle(h1);
+            });
             const bool wrote = cli::writeFile(held, "new");
             closer.join();
             std::string back;
-            retryOk = wrote && cli::readFile(held, back) && back == "new";
+            retryOk = opened1 && wrote && sawWhileHeld == "old" && cli::readFile(held, back) && back == "new";
+            // (b) shared READ|WRITE|DELETE (.NET FileShare.ReadWrite|Delete, a dev server): the POSIX-semantics rename
+            // replaces it at once — the holder keeps reading the OLD bytes, a new open sees the new ones.
+            const fs::path held2 = tmp / "held" / "b.ts";
+            cli::writeFile(held2, "old");
+            HANDLE h2 = INVALID_HANDLE_VALUE;
+            const bool opened2 = holdAndRead(held2, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, h2);
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool wrote2 = cli::writeFile(held2, "new");
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            const std::string holderSees = opened2 ? readHeld(h2) : std::string();
+            if (opened2) CloseHandle(h2);
+            std::string back2;
+            const bool posixOk = opened2 && wrote2 && ms < 1000 && holderSees == "old" && cli::readFile(held2, back2) && back2 == "new";
+            check(posixOk, "P40 review r4: writeFile replaces a file a reader holds with FILE_SHARE_DELETE at once (holder sees '" +
+                               holderSees + "', " + std::to_string(ms) + " ms)");
             check(GetACP() == CP_UTF8, "P40 review r3 (gating 1): the executables run with UTF-8 as the ANSI code page (utf8.manifest)");
 #endif
-            check(nestedOk && retryOk, "P40 review r3: the owned scan skips a nested config's subtree; writeFile retries a rename a reader blocks");
+            check(nestedOk && retryOk, "P40 review r3: the owned scan skips a nested config's subtree; writeFile retries a rename a reader blocks (the holder keeps the old bytes)");
+        }
+        {   // P40 review r4: the CLI half — temp names, strict UTF-8 / lockfile parsing, nested owned scopes, case picks.
+            check(cli::isWriteTempOf("a.ts.pgtmp.1.22.333", "a.ts") && !cli::isWriteTempOf("a.ts.pgtmp.1.2", "a.ts") &&
+                      !cli::isWriteTempOf("a.ts.pgtmp.1.2.3.4", "a.ts") && !cli::isWriteTempOf("a.ts.pgtmp.1.x.3", "a.ts") &&
+                      !cli::isWriteTempOf("keep.pgtmp.txt", "keep.ts") && !cli::isWriteTempOf("b.ts.pgtmp.1.2.3", "a.ts") &&
+                      !cli::isWriteTempOf("a.ts.pgtmp..2.3", "a.ts"),
+                  "P40 review r4 (gating 1): only writeFile's exact temp shape `<output>.pgtmp.<n>.<n>.<n>` is a temp of that output");
+            std::string e1, e2, e3, e4;
+            json::parse("{\"output\": \"g\xE9n\"}", e1);                     // CP1252
+            json::parse("{\"output\": \"g\xC3\xA9n\"}", e2);                 // UTF-8
+            json::parse("{\"x\": \"\\uD800\"}", e3);                          // a lone surrogate escape
+            json::parse("{\"x\": \"\xED\xA0\x80\"}", e4);                     // an encoded surrogate
+            check(e1.find("invalid UTF-8") != std::string::npos && e2.empty() && !e3.empty() && !e4.empty(),
+                  "P40 review r4: strict json::parse refuses invalid UTF-8 and lone surrogates (" + e1 + ")");
+            const fs::path lk = tmp / "lock-r4";
+            fs::create_directories(lk, ec);
+            cli::writeFile(cli::lockfilePath(lk),
+                           "{\"lockfileVersion\": 1, \"packages\": {\"@x/p\": {\"version\": \"1.0.0\", \"resolved\": \"u\", "
+                           "\"integrity\": \"sha512-a\", \"integrity\": \"sha512-b\"}}}");
+            const cli::Lockfile dup = cli::loadLockfile(lk);
+            cli::writeFile(cli::lockfilePath(lk), "{\"lockfileVersion\": 1, \"packages\": {\"@x/p\": {\"version\": 1}}}");
+            const cli::Lockfile shape = cli::loadLockfile(lk);
+            check(!dup.found && dup.error.find("duplicate") != std::string::npos && !shape.found && !shape.error.empty(),
+                  "P40 review r4: pgconfig.lock.json is parsed strictly (a duplicate key or a wrong shape is an error, not the first value)");
+            // An owned scope INSIDE a nested project (src/sub/gen with src/sub/pgconfig.json) is the nested build's.
+            const fs::path n = tmp / "nested-r4";
+            const std::string hdr = "// Generated by Polyglot. Do not edit.\n";
+            cli::writeFile(n / "pgconfig.json", "{}");
+            cli::writeFile(n / "src" / "sub" / "pgconfig.json", "{}");
+            cli::writeFile(n / "src" / "sub" / "gen" / "x.ts", hdr);
+            cli::OwnedScope inner{n / "src" / "sub" / "gen", false, ".ts", n};
+            check(cli::ownedExtras(inner, [](const fs::path&) { return false; }).empty(),
+                  "P40 review r4: an owned folder inside a nested project is never scanned by the outer build");
+            // A case variant is picked by NAME among the entries that are the same file (a hard link sorting first
+            // is not it).
+            const fs::path cv = tmp / "case-r4";
+            cli::writeFile(cv / "Foo.ts", hdr);
+            fs::create_hard_link(cv / "Foo.ts", cv / "a.ts", ec);
+            if (fs::exists(cv / "foo.ts") && !ec) {
+                const fs::path v = cli::caseVariantOnDisk(cv / "foo.ts");
+                check(v.filename() == "Foo.ts", "P40 review r4: the case variant of foo.ts is Foo.ts, not the hard link a.ts (got '" + v.filename().string() + "')");
+            } else {
+                check(true, "P40 review r4: case variant pick (skipped: case-sensitive filesystem or no hard links)");
+            }
         }
         {   // P40 review (#75 pre-push, item 1): the owned-scope ancestor test asks the FILESYSTEM, not the spelling.
             const fs::path base = tmp / "t" / "Proj";

@@ -47,7 +47,12 @@ $expectedRefused = @()
 # The canary compiled inside the net8.0 library (tests/floor/canary): exactly these diagnostics, or the leg is
 # not observing what it claims (LangVersion 11 and TreatWarningsAsErrors live, csc actually run).
 $canaryName = "__floor_canary"
-$canaryExpected = "CS0168,CS9058"
+# P40 review r4: with SEVERITY. CS0168 is a warning that only TreatWarningsAsErrors turns into an error, so a
+# code-only comparison (the regex accepted `warning CS0168`) passed with TWAE switched off.
+$canaryExpected = "error CS0168,error CS9058"
+# P40 review r4: the corpus size is PINNED (a floor, so new programs never need an edit here). Comparing the
+# accounted count with the discovered count proved bookkeeping only — a corpus that lost programs still passed.
+$minPrograms = 146
 # Isolation from the machine: the work dir is under %TEMP%, so a Directory.Build.props/.targets (or a central
 # package file) in any ancestor would be imported; and net8.0's end of support (2026-11-10) would add NETSDK1138,
 # which can fail the build with no CS line. Global properties, because ImportDirectoryBuildProps is read by
@@ -63,7 +68,7 @@ try {
         $entry = Join-Path $d.FullName "entry.pg"
         if (Test-Path $entry) { $programs += , @($d.Name, $entry, $d.FullName) }
     }
-    if ($programs.Count -eq 0) { Fail "no conformance programs found under $progDir — the leg would pass vacuously" }
+    if ($programs.Count -lt $minPrograms) { Fail "found $($programs.Count) conformance program(s) under $progDir, expected at least $minPrograms — programs dropped out of the corpus (lower `$minPrograms only when one is deliberately removed)" }
     $byFloor = @{ "net8.0" = [System.Collections.Generic.List[string]]::new(); "net9.0" = [System.Collections.Generic.List[string]]::new() }
     $refused = [System.Collections.Generic.List[string]]::new()
     foreach ($p in $programs) {
@@ -141,11 +146,11 @@ $items
         $seen = @{}
         foreach ($line in Get-Content $buildLog) {
             # <work>/src/<program>/<file>.cs(L,C): error CS1234: message [proj]
-            if ($line -cmatch '[\\/]src[\\/]([^\\/]+)[\\/][^(]+\((\d+),(\d+)\): (?:error|warning) (CS\d{4}): ') {
-                $key = "$($Matches[1])|$($Matches[2])|$($Matches[3])|$($Matches[4])"
+            if ($line -cmatch '[\\/]src[\\/]([^\\/]+)[\\/][^(]+\((\d+),(\d+)\): (error|warning) (CS\d{4}): ') {
+                $key = "$($Matches[1])|$($Matches[2])|$($Matches[3])|$($Matches[5])"
                 if ($seen.ContainsKey($key)) { continue }
                 $seen[$key] = $true
-                $diags.Add([pscustomobject]@{ Program = $Matches[1]; Code = $Matches[4]; Line = $line.Trim(); Tfm = $tfm })
+                $diags.Add([pscustomobject]@{ Program = $Matches[1]; Code = $Matches[5]; Severity = $Matches[4]; Line = $line.Trim(); Tfm = $tfm })
             }
         }
         if ($rc -ne 0 -and $seen.Count -eq 0) {
@@ -156,7 +161,7 @@ $items
 
     # 3. Zero diagnostics. (The temporary allow list that let this leg land before the emitter fixes is gone:
     #    the floor is a contract, so a diagnostic is fixed at its root, never listed.)
-    $canaryCodes = @($diags | Where-Object { $_.Program -ceq $canaryName } | ForEach-Object { $_.Code } | Sort-Object -Unique) -join ","
+    $canaryCodes = @($diags | Where-Object { $_.Program -ceq $canaryName } | ForEach-Object { "$($_.Severity) $($_.Code)" } | Sort-Object -Unique) -join ","
     if ($canaryCodes -cne $canaryExpected) {
         Fail "the canary produced [$canaryCodes], expected exactly [$canaryExpected] — the net8.0 library build did not observe LangVersion 11 + TreatWarningsAsErrors (or did not run csc)"
     } else { Write-Host "[PASS] canary: exactly $canaryExpected (C# 11 and TreatWarningsAsErrors are live)" }

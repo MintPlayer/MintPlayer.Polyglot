@@ -16,6 +16,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -69,43 +70,87 @@ inline bool readFile(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
-// P40 review r3: a temp file a crashed (or killed) run left behind — `<name>.pgtmp.<…>` from writeFile, or
-// `<name>.pgcase.tmp` from a case-only rename. Swept once per directory per process, and only when older than
-// ten minutes: a parallel build (net8;net9 sharing a routed twin) may have its own in-flight temp there.
-inline bool isPolyglotTempName(const std::string& name) {
-    return name.find(".pgtmp.") != std::string::npos ||
-           (name.size() > 11 && name.compare(name.size() - 11, 11, ".pgcase.tmp") == 0);
+// P40 review r4 (gating 1): the EXACT name of a temp file writeFile stages `output` through —
+// `<output file name>.pgtmp.<digits>.<digits>.<digits>` — and nothing else. The round-3 sweep matched any name
+// that merely CONTAINED `.pgtmp.` (or ended in `.pgcase.tmp`) in the whole folder being written, so it deleted
+// `src/keep.pgtmp.txt`, and even the `.pg` source `notes.pgtmp.pg`. Stale temps are now swept by the OutputSink
+// only, per output this run produces, and only when the temp carries Polyglot's header line (the deletion
+// invariant, outputsink.hpp) — see OutputSink::sweepStaleTempsOf.
+inline bool isWriteTempOf(const std::filesystem::path& tempName, const std::filesystem::path& outputName) {
+    const auto& t = tempName.native();
+    auto prefix = outputName.native();
+    for (const char c : std::string(".pgtmp.")) prefix.push_back(static_cast<std::filesystem::path::value_type>(c));
+    if (t.size() <= prefix.size() || t.compare(0, prefix.size(), prefix) != 0) return false;
+    int groups = 1;
+    bool digitSeen = false;
+    for (std::size_t i = prefix.size(); i < t.size(); ++i) {
+        const auto c = t[i];
+        if (c >= '0' && c <= '9') { digitSeen = true; continue; }
+        if (c != '.' || !digitSeen) return false;
+        digitSeen = false;
+        ++groups;
+    }
+    return digitSeen && groups == 3;
 }
-inline void sweepStaleTemps(const std::filesystem::path& dir) {
-    namespace fs = std::filesystem;
-    static std::mutex mu;
-    static std::set<fs::path> swept;
-    {
-        std::lock_guard<std::mutex> lock(mu);
-        if (!swept.insert(dir).second) return;
+
+// Replace `to` with `from` in one rename. P40 review r4: on Windows MoveFileEx cannot replace a file that a
+// reader holds open, even when the reader shares FILE_SHARE_DELETE, so the write failed after ~4 s where a POSIX
+// rename would succeed. A rename with FILE_RENAME_FLAG_POSIX_SEMANTICS (SetFileInformationByHandle,
+// FileRenameInfoEx — Windows 10 1607+, NTFS) replaces it the POSIX way: the reader keeps the OLD bytes, new
+// opens see the new file. Where that call is not supported (older Windows, FAT, some network shares) it falls
+// back to MoveFileEx, which still fails while the file is held — writeFile retries, then refuses.
+inline bool replaceFileAtomically(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
+#ifdef _WIN32
+    ec.clear();
+    const std::wstring dst = std::filesystem::absolute(to, ec).native();
+    if (ec) return false;
+    HANDLE h = CreateFileW(from.c_str(), DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        const std::size_t bytes = sizeof(FILE_RENAME_INFO) + dst.size() * sizeof(wchar_t);
+        std::vector<unsigned char> buf(bytes, 0);
+        auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buf.data());
+        // Flags (FILE_RENAME_FLAG_REPLACE_IF_EXISTS 0x1 | FILE_RENAME_FLAG_POSIX_SEMANTICS 0x2) shares the union
+        // slot of the older ReplaceIfExists BOOLEAN; written as a DWORD so either SDK declaration works.
+        const DWORD flags = 0x1 | 0x2;
+        std::memcpy(buf.data(), &flags, sizeof(flags));
+        info->RootDirectory = nullptr;
+        info->FileNameLength = static_cast<DWORD>(dst.size() * sizeof(wchar_t));
+        std::memcpy(info->FileName, dst.c_str(), info->FileNameLength);
+        const FILE_INFO_BY_HANDLE_CLASS kFileRenameInfoEx = static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+        const BOOL ok = SetFileInformationByHandle(h, kFileRenameInfoEx, info, static_cast<DWORD>(bytes));
+        const DWORD err = ok ? 0 : GetLastError();
+        CloseHandle(h);
+        if (ok) return true;
+        // Supported but refused (a reader without FILE_SHARE_DELETE, access denied): report it, retry later.
+        if (err != ERROR_INVALID_PARAMETER && err != ERROR_NOT_SUPPORTED && err != ERROR_INVALID_FUNCTION) {
+            ec = std::error_code(static_cast<int>(err), std::system_category());
+            return false;
+        }
     }
-    std::error_code ec;
-    const auto cutoff = fs::file_time_type::clock::now() - std::chrono::minutes(10);
-    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
-        std::error_code fec;
-        if (!it->is_regular_file(fec) || !isPolyglotTempName(it->path().filename().string())) continue;
-        if (const auto t = fs::last_write_time(it->path(), fec); !fec && t < cutoff) fs::remove(it->path(), fec);
-    }
+    if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    return false;
+#else
+    std::filesystem::rename(from, to, ec); // rename(2) already has POSIX semantics
+    return !ec;
+#endif
 }
 
 // Atomic replace (P40 review of #75): write a uniquely named temp file next to `path`, then rename it over
 // `path`. Truncate-then-write let a concurrent reader (parallel TFM builds sharing a routed twin) see a half
 // written file and refuse it as not Polyglot's. Readers now see the old bytes or the new ones, never a mix.
-// P40 review r3: when the rename cannot replace the target — on Windows, exactly while a reader holds it open
-// without FILE_SHARE_DELETE, as MSVC's ifstream does — it is RETRIED with a short backoff (~3 s in all), then
-// the write FAILS. It used to fall back to truncate-and-write, which is the torn read the rename exists to
-// prevent, and the run exited 0.
+// P40 review r3: when the rename cannot replace the target — on Windows, while a reader holds it open WITHOUT
+// FILE_SHARE_DELETE — it is RETRIED with a short backoff (~3 s in all), then the write FAILS. It used to fall back
+// to truncate-and-write, which is the torn read the rename exists to prevent, and the run exited 0. A reader
+// that shares delete no longer blocks the write at all (replaceFileAtomically, P40 review r4).
+// No sweep here (P40 review r4): writeFile serves every writer (outputs, maps, the record, the depfile, the
+// outputs list), so it cannot prove a leftover temp is its own; the OutputSink sweeps an output's own temps.
 inline bool writeFile(const std::filesystem::path& path, const std::string& content) {
     namespace fs = std::filesystem;
     std::error_code ec;
     const fs::path dir = path.has_parent_path() ? path.parent_path() : fs::path(".");
     if (path.has_parent_path()) fs::create_directories(dir, ec); // `--out newdir` just works
-    sweepStaleTemps(dir);
     static std::atomic<unsigned> counter{0};
     const auto stamp = static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count());
     fs::path tmp = path;
@@ -119,9 +164,7 @@ inline bool writeFile(const std::filesystem::path& path, const std::string& cont
         if (os.fail()) { fs::remove(tmp, ec); return false; }
     }
     for (int attempt = 0, delayMs = 10;; ++attempt, delayMs = std::min(delayMs * 2, 500)) {
-        ec.clear();
-        fs::rename(tmp, path, ec);
-        if (!ec) return true;
+        if (replaceFileAtomically(tmp, path, ec)) return true;
         if (attempt == 10) break; // 10+20+40+…+500 ms ≈ 3 s
         std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
     }
@@ -247,6 +290,8 @@ inline bool ownedScope(const std::filesystem::path& configDir, const std::string
     recursive = rest.find("%(RecursiveDir)") != std::string::npos || rest.find("%(Directory)") != std::string::npos ||
                 rest.find('/') != std::string::npos;
     dir.clear();
+    // P40 review r4: a UNC template (`\\server\share\…`) is named for what it is, not as a leading separator.
+    if (lit.rfind("//", 0) == 0) { err = "is an absolute (UNC) path"; return false; }
     if (!lit.empty() && lit.front() == '/') { err = "starts with a path separator"; return false; }
     if (fs::path(lit).has_root_name() || fs::path(lit).is_absolute()) { err = "is an absolute path"; return false; }
     const std::size_t slash = lit.rfind('/');
@@ -336,7 +381,11 @@ inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>
                         else if (!rv.asString().empty() && blank(rv.asString()))
                             errors.push_back("pgconfig.json: an include rule's \"" + rk + "\" is blank");
                     } else if (rk == "target") {
+                        // P40 review r4: a blank string (`""`, `" "`) was accepted; the rule then never applied.
                         if (rv.kind != K::String) stringList(rv, "an include rule's \"target\" (a name or a list of names)");
+                        else if (blank(rv.asString()))
+                            errors.push_back("pgconfig.json: an include rule's \"target\" is blank (name a target, e.g. "
+                                             "\"typescript\", or omit the key to apply the rule to every target)");
                     } else if (rk != "targetOptions" && rk != "owned") { // both checked where they are read
                         errors.push_back("pgconfig.json: an include rule has an unknown key \"" + rk +
                                          "\" (known keys: pattern, output, target, targetOptions, owned)");
@@ -502,6 +551,23 @@ inline void validateTargetOptions(const PgConfig& pc, const TargetOptionsByTarge
         for (const auto& r : pc.include) check(r.targetOptions, "pgconfig.json include rule '" + r.pattern + "'");
     }
     check(flags, "--target-option");
+}
+
+// P40 review r4: every name an include rule's `"target"` lists must be a loaded target (or one an offline `check`
+// could not verify). A typo (`"typescrpt"`) made the rule never apply, so the TS output silently landed next to
+// the .pg. Checked against the loaded plugins, like targetOptions keys — not against `targets`, since a
+// `--target <t>` override may build a target the set does not list.
+inline void validateIncludeTargets(const PgConfig& pc, std::vector<std::string>& errors,
+                                   const std::set<std::string>& unverified = {}) {
+    if (!pc.found) return;
+    for (const auto& r : pc.include)
+        for (const auto& t : r.targets) {
+            if (findBackend(t) || unverified.count(t)) continue;
+            std::string loaded;
+            for (const auto& n : backendNames()) loaded += (loaded.empty() ? "" : ", ") + n;
+            errors.push_back("pgconfig.json include rule '" + r.pattern + "': \"target\" names unknown target '" + t +
+                             "' (loaded targets: " + loaded + ")");
+        }
 }
 
 inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& pc,

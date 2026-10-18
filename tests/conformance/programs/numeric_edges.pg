@@ -18,7 +18,7 @@ fn zeros(n: i32): string {
 
 fn main() {
   print(f32.parse("0.1") == 0.1f)
-  print(f32.parse("1e39") > 3.0e38f)
+  print((f64)f32.parse("1e39") > 1.0e300) // an infinity: an unrounded 1e39 is far below 1e300 (P40 review r4)
   print(i32.parse(zeros(5000) + "1"))
   print(i32.tryParse(zeros(5000) + "7") ?? -1)
   print(i64.parse("-" + zeros(4400) + "42"))
