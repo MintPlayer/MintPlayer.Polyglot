@@ -589,9 +589,26 @@ public:
     }
 
     void run() {
-        for (const auto& ctor : c_.members) {
+        // Review r7 (gating 1): first COLLECT, without reporting, every own field the construction stores a value
+        // derived from the object into — on any path the rule follows (an alias, a capturing lambda, a local or a
+        // non-open method's parameter holding one), in this class's constructors and its bases' (they run first).
+        // Repeated until no new field is found, so a store's position relative to the call does not matter.
+        collecting_ = true;
+        for (std::size_t before = static_cast<std::size_t>(-1); before != taintedFields_.size();) {
+            before = taintedFields_.size();
+            std::set<std::string> seen;
+            for (const ClassDecl* k = &c_; k && seen.insert(k->name).second; k = baseOf(k)) checkCtors(*k);
+        }
+        collecting_ = false;
+        checkCtors(c_);
+    }
+
+private:
+    void checkCtors(const ClassDecl& k) {
+        for (const auto& ctor : k.members) {
             if (ctor.kind != MemberKind::Constructor) continue;
             visited_.clear();
+            running_.clear();
             reported_ = false;
             Ctx cx;
             cx.selfIsThis = true;
@@ -599,8 +616,6 @@ public:
             body(ctor.body, ctor.exprBody.get(), cx, {});
         }
     }
-
-private:
     struct Ctx;
     // A lambda a local or parameter holds, with the context it was written in (null = the holder's own context):
     // its free names mean what they meant there.
@@ -626,6 +641,7 @@ private:
     mutable std::set<const Expr*> capturing_; // recursion guard for captures()
     std::set<const Expr*> running_;           // recursion guard for running a lambda's body
     bool reported_ = false;
+    bool collecting_ = false; // r7: the collect pass (taintedFields_ only, nothing reported)
 
     static bool overridable(const Member& m) {
         return hasModifier(m, "open") || hasModifier(m, "abstract") || hasModifier(m, "override");
@@ -744,6 +760,7 @@ private:
         return s + ")";
     }
     void report(const Expr& at, const std::string& method, const Via& via) {
+        if (collecting_) return;
         d_.error(at.pos, "the constructor of class '" + c_.name + "' calls the overridable method '" + method +
                              "' on 'this'" + render(via) + " — a subclass override would run before the subclass's "
                              "fields are initialized (C# reads defaults, TS undefined, Python raises AttributeError); "
@@ -752,6 +769,7 @@ private:
     }
     // `role` names the use, with `{X}` standing for the derived value (`what`).
     void escape(const Expr& at, const std::string& role, const std::string& what, const Via& via) {
+        if (collecting_) return;
         std::string r = role;
         if (auto p = r.find("{X}"); p != std::string::npos) r.replace(p, 3, what);
         d_.error(at.pos, "the constructor of class '" + c_.name + "' " + r + render(via) + " — '" + c_.name +
@@ -885,7 +903,7 @@ private:
             // Its own field: a derived lambda may be stored there; the object itself may not (a later read of the
             // field would escape the rule).
             if (isSelf(v, cx)) { escape(*v, "stores {X} in its own field '" + t->text + "'", derived(v, cx), via); return; }
-            if (s.op == "=" && !derived(v, cx).empty()) return;
+            if (s.op == "=" && !derived(v, cx).empty()) { taintedFields_.insert(t->text); return; } // r7: a later call of it is refused
             expr(v, cx, via, "uses {X} as a value");
             return;
         }
@@ -997,13 +1015,20 @@ private:
         const Expr* recv = lhs->lhs.get();
         const std::string& n = lhs->text;
         if (isSelf(recv, cx)) {
-            if (e.calleeIsField) { // a function-typed field called: refused when it may hold a derived lambda
+            const Member* own = lookupOn(&c_, n);
+            if (e.calleeIsField && !(own && own->kind == MemberKind::Property)) { // a function-typed field called: refused when it may hold a derived lambda
                 if (std::string w = derived(lhs, cx); !w.empty()) { escape(e, "calls {X}", w, via); return; }
                 if (!derivedArgs.empty()) refuseArgs("the function-typed field '" + n + "'");
                 return;
             }
-            if (const Member* m = lookupOn(&c_, n)) {
+            if (const Member* m = own) {
                 if (overridable(*m)) { report(e, n, via); return; }
+                if (m->kind == MemberKind::Property) { // r7: its getter runs, then the function value it returns
+                    memberBody(*m, m->body, m->init.get(), nullptr, cx, plus(via, "'" + n + "'"));
+                    if (!derivedArgs.empty() && !reported_)
+                        refuseArgs("the function value that the property '" + n + "' returns, whose body is not known here");
+                    return;
+                }
                 memberBody(*m, m->body, m->exprBody.get(), &e, cx, plus(via, "'" + n + "'"));
                 return;
             }
@@ -1027,6 +1052,10 @@ private:
         if (auto k = classes_.find(recvType); k != classes_.end() && !k->second->isExtern) {
             if (const Member* m = lookupOn(k->second, n, isStatic)) {
                 if (overridable(*m)) { refuseArgs(shown + ", which a subclass may override"); return; }
+                if (m->kind == MemberKind::Property) { // r7: the call runs the function value the getter returns
+                    refuseArgs("the function value that the property " + shown + " returns, whose body is not known here");
+                    return;
+                }
                 runCallee(m->params, m->body, m->exprBody.get(), false, e, cx, plus(via, shown));
                 return;
             }

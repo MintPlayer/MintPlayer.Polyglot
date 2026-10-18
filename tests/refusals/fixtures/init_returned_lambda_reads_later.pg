@@ -1,0 +1,18 @@
+// P40 review r7 (part 2, item 4) - Spark r4_ret_v.
+import "std.io"
+
+// rule 4: a call through a LOCAL holding a lambda that a function RETURNED; the lambda reads a LATER VALUE
+// (must be refused)
+fn adder(): (i32) => i32 {
+  return (x: i32) => x + offset
+}
+fn calc(): i32 {
+  let f = adder()
+  return f(1)
+}
+let r: i32 = calc()
+let offset: i32 = 100
+
+fn main() {
+  print(r)
+}

@@ -1,0 +1,22 @@
+// P40 review r7 (part 2, docs p2hint2): lambdas as the arms of an `if`/`match` initializer. With typed parameters
+// the local takes the arms' function type as its declared slot (C# had no common type for `var`: CS0173), an
+// annotated local types untyped arms, and a return slot does too. Untyped arms with no slot are refused
+// (fixture infer_lambda_arms).
+import "std.io"
+
+fn pick(b: bool): (i32) => i32 => if b { (x) => x * 2 } else { (x) => x + 1 }
+
+fn main() {
+  let f = if true { (x: i32) => x } else { (x: i32) => x + 1 }
+  print(f(4))
+  let g: (i32) => i32 = if false { (x) => x } else { (x) => x + 10 }
+  print(g(4))
+  let k = 2
+  let h = match k {
+    1 => (s: string) => s + "!",
+    _ => (s: string) => s + "?",
+  }
+  print(h("a"))
+  print(pick(true)(4))
+  print(pick(false)(4))
+}

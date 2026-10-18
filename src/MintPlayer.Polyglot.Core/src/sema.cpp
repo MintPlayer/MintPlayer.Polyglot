@@ -45,11 +45,27 @@ bool typeFullyKnown(const TypeRef& t) {
 // element list literal (`[]`), a bare `null`, and a lambda with un-annotated parameters. Deliberately NOT
 // a bare unconstrained `tUnknown()` from an unmodeled generic/std call: the checker stays lenient there
 // (see the note above `tUnknown`), so flagging it would be a false positive.
+// Review r7: a lambda with an un-annotated parameter as an `if`/`match` arm of the value — nothing types that
+// parameter without a declared slot (C# CS0173, TS TS7006). (A `??` operand is typed by the other operand.)
+static bool untypedLambdaArm(const Expr& v) {
+    switch (v.kind) {
+        case ExprKind::Lambda:
+            for (const auto& p : v.params) if (p.type.absent()) return true;
+            return false;
+        case ExprKind::IfExpr: return (v.rhs && untypedLambdaArm(*v.rhs)) || (v.extra && untypedLambdaArm(*v.extra));
+        case ExprKind::Match:
+            for (const auto& a : v.arms) if (a.body && untypedLambdaArm(*a.body)) return true;
+            return false;
+        default: return false;
+    }
+}
+
 bool uninferableInit(const Expr& value, const TypeRef& inferred) {
     if (value.kind == ExprKind::Lambda) {           // a lambda's type is reconstructible iff every param is typed
         for (const auto& p : value.params) if (p.type.absent()) return true;
         return false;
     }
+    if (untypedLambdaArm(value)) return true; // review r7: the same lambda as an `if`/`match` arm (p2hint2)
     if (inferred.kind == TypeRef::Kind::Named && inferred.name == "List" &&
         (inferred.args.empty() || !typeFullyKnown(inferred.args[0]))) return true;   // `[]` -> List<unknown>
     // bare `null` (P40 review r6: a NAMED placeholder — a nullable function type with no parameters, `(() => unit)?`,
@@ -479,12 +495,14 @@ public:
         // the bodies, and an un-annotated value takes its initializer's type — every body read it as unknown, so
         // `d.hello() + " "` on `let d = Derived()` was an untyped `+` (PHP added the strings: a TypeError).
         for (const auto& v : unit.values) // review r6 #4: a call through a module lambda value runs its body
-            if (v.init && v.init->kind == ExprKind::Lambda) valueLambdaKeys_[v.name] = lambdaBodyKey(*v.init);
+            if (v.init && v.init->kind == ExprKind::Lambda) valueLambdaKeys_[v.name] = {lambdaBodyKey(*v.init)};
         for (auto& v : unit.values) {
             if (!v.init) continue;
             initDeclPos_ = v.pos; initDeclName_ = v.name;
             TypeRef it = checkExpr(*v.init);
             initDeclPos_ = {0, 0, 0};
+            if (!valueLambdaKeys_.count(v.name)) // review r7: a value bound to a call's result holds what it returns
+                if (auto ks = lambdaKeysOf(*v.init); !ks.empty()) valueLambdaKeys_[v.name] = std::move(ks);
             if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
             else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
                 diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init, it));
@@ -575,7 +593,7 @@ public:
             for (const auto& p : d.params) declare(p.name, p.type, false, p.pos);
             checkCallSiteDefaults(d.params, "extension '" + d.receiver.name + "." + d.name + "'");
             bodyKey_ = "ext:" + d.receiver.name + "." + d.name; // review r5 #4: followed from an initializer's call
-            if (d.exprBody) { checkExpr(*d.exprBody); checkConvert(d.exprBody, d.returnType, "extension body"); }
+            if (d.exprBody) { checkExpr(*d.exprBody); noteReturnedLambdas(*d.exprBody); checkConvert(d.exprBody, d.returnType, "extension body"); }
             else checkBlock(d.body);
             bodyKey_.clear();
             popScope();
@@ -909,20 +927,41 @@ private:
     }
     // Review r6 #4: note a call to every lambda body a function value may hold when it is called or passed on — a
     // lambda literal, a local bound to lambdas, or a module value whose initializer is a lambda.
+    // Review r7: also a CALL whose body is known — `ret:<body key>` stands for every lambda that body returns
+    // (recorded by noteReturnedLambdas as the body is checked, so the callee's position does not matter).
     std::vector<std::string> lambdaKeysOf(const Expr& v) const {
         if (v.kind == ExprKind::Lambda) return {lambdaBodyKey(v)};
+        if (v.kind == ExprKind::Call) {
+            if (auto it = callBodyKey_.find(&v); it != callBodyKey_.end()) return {"ret:" + it->second};
+            return {};
+        }
+        if (v.kind == ExprKind::IfExpr || v.kind == ExprKind::Match || (v.kind == ExprKind::Binary && v.text == "??")) {
+            std::vector<std::string> ks; // review r7: every lambda an arm (or a `??` operand) may yield
+            auto add = [&](const Expr* x) { if (x) for (auto& k : lambdaKeysOf(*x)) ks.push_back(std::move(k)); };
+            if (v.kind == ExprKind::IfExpr) { add(v.rhs.get()); add(v.extra.get()); }
+            else if (v.kind == ExprKind::Match) { for (const auto& a : v.arms) add(a.body.get()); }
+            else { add(v.lhs.get()); add(v.rhs.get()); }
+            return ks;
+        }
         if (v.kind != ExprKind::Name) return {};
         if (const Local* l = lookup(v.text)) return l->lambdaKeys;
-        if (auto it = valueLambdaKeys_.find(v.text); it != valueLambdaKeys_.end()) return {it->second};
+        if (auto it = valueLambdaKeys_.find(v.text); it != valueLambdaKeys_.end()) return it->second;
         return {};
     }
     void noteFunctionValueRun(const Expr& v, const std::string& shown, SourcePos at) {
         for (const auto& k : lambdaKeysOf(v)) noteDirectCall(k, shown, at);
     }
-    std::unordered_map<std::string, std::string> valueLambdaKeys_; // module value -> its lambda initializer's body key
+    // Review r7: a body returning a function value — the lambdas it may hold become `ret:<this body>`'s callees.
+    void noteReturnedLambdas(const Expr& v) {
+        if (bodyKey_.empty() || lambdaDepth_ > initLambdaFloor_) return;
+        for (auto& k : lambdaKeysOf(v)) bodyCalls_["ret:" + bodyKey_].insert(std::move(k));
+    }
+    std::unordered_map<const Expr*, std::string> callBodyKey_; // review r7: a call -> the body key it runs
+    std::unordered_map<std::string, std::vector<std::string>> valueLambdaKeys_; // module value -> the lambda body keys it may hold
     // The class whose body a key names (`st:`/`m:`/`set:`/`ctor:`/`cls:`/`lam:`); "" for a free function or an
     // extension.
     static std::string bodyOwner(const std::string& k) {
+        if (k.rfind("ret:", 0) == 0) return bodyOwner(k.substr(4)); // review r7: what that body returns
         if (k.rfind("lam:", 0) == 0) return k.substr(4, k.find('@') - 4);
         for (const char* p : {"st:", "m:", "set:"})
             if (k.rfind(p, 0) == 0) { std::string s = k.substr(std::strlen(p)); return s.substr(0, s.find('.')); }
@@ -934,7 +973,7 @@ private:
     void forEachCallee(const std::string& k, const std::function<void(const std::string&)>& f) const {
         if (auto c = bodyCalls_.find(k); c != bodyCalls_.end())
             for (const auto& n : c->second) f(n);
-        for (const std::string pre : {"m:", "set:"}) { // review r6 #4: a setter's overrides too
+        for (const std::string pre : {"m:", "set:", "ret:m:"}) { // review r6 #4: a setter's overrides too (r7: returns)
             if (k.rfind(pre, 0) != 0) continue;
             const std::string owner = bodyOwner(k), name = k.substr(pre.size() + owner.size() + 1);
             for (const auto& [t, info] : types_) {
@@ -1742,6 +1781,13 @@ private:
     static bool sameSigType(const TypeRef& a, const TypeRef& b) {
         if (a.kind == TypeRef::Kind::Named && b.kind == TypeRef::Kind::Named &&
             a.name == b.name && a.nullable == b.nullable) return true;
+        // Review r7: a function type (and a tuple) matches structurally — it has no name, and was never equal.
+        if (a.kind == TypeRef::Kind::Function && b.kind == TypeRef::Kind::Function) {
+            if (a.nullable != b.nullable || a.ret.size() > 1 || b.ret.size() > 1 || !sameSigParams(a.args, b.args)) return false;
+            return sameRetType(a.ret.empty() ? TypeRef{} : a.ret[0], b.ret.empty() ? TypeRef{} : b.ret[0]);
+        }
+        if (a.kind == TypeRef::Kind::Tuple && b.kind == TypeRef::Kind::Tuple)
+            return a.nullable == b.nullable && sameSigParams(a.args, b.args);
         Ty sa = scalarTyOf(a);
         return sa != Ty::Unknown && sa == scalarTyOf(b);
     }
@@ -2253,7 +2299,7 @@ private:
                                                                  "arguments inline or in a `static fn`");
                         }
                     }
-                if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Constructor) checkConvert(m.exprBody, m.returnType, "method body"); }
+                if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); noteReturnedLambdas(*m.exprBody); if (m.kind != MemberKind::Constructor) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
                 scopeStart_ = {}; scopeEnd_ = {};
@@ -3028,6 +3074,13 @@ private:
                 else if (s.value && !intLiteralFits(*s.value, init, "initializer of '" + s.name + "'")) {}
                 else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
                     diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value, init));
+                else if (s.value && (s.value->kind == ExprKind::IfExpr || s.value->kind == ExprKind::Match) && yieldsLambda(*s.value) &&
+                         init.kind == TypeRef::Kind::Function && typeFullyKnown(init)) {
+                    // Review r7: lambdas as `if`/`match` arms have no common type of their own (C# CS0173 on `var`):
+                    // the inferred function type becomes the local's declared slot, so every target types them.
+                    s.hasDeclType = true;
+                    s.declType = init;
+                }
                 if (!blockIsBindings_.empty() && blockIsBindings_.back().count(s.name))
                     diags_.error(s.namePos, "'" + s.name + "' was bound by an `is` test earlier in this block; "
                                             "pick another name (the emitted binding outlives the branch)");
@@ -3061,6 +3114,8 @@ private:
                                                       !st->type.name.empty() && knownType(st->type) &&
                                                       !isBuiltinType(st->type.name);
                             if (!userCompound) checkCompoundValue(s, st->type, "assignment to '" + nm + "'");
+                            if (s.op != "=") // review r7: a compound user operator runs its body, as on a qualified target
+                                noteOperatorRun(st->type, operatorMethod(s.op.substr(0, s.op.size() - 1)), s.pos);
                         }
                     } else if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
@@ -3279,6 +3334,7 @@ private:
                 }
                 if (s.value) {
                     checkExpr(*s.value);
+                    noteReturnedLambdas(*s.value); // review r7: a caller may run the lambda it returns
                     if (isUnitT(currentReturn_)) diags_.error(s.pos, "this function returns unit; 'return' takes no value");
                     else checkConvert(s.value, currentReturn_, "return value");
                 } else if (!isUnitT(currentReturn_)) {
@@ -4614,7 +4670,7 @@ private:
             if (a->kind == ExprKind::Name && a->fnRef && !fnRefSites_.empty() && fnRefSites_.back().ref == a.get())
                 noteDirectCall(fnBodyKey(fnRefSites_.back().decl), a->text, a->pos);
             // review r6 #4: so may a lambda passed as an argument — a literal, or one a local or module value holds
-            else noteFunctionValueRun(*a, a->kind == ExprKind::Lambda ? kLambdaArg : a->text, a->pos);
+            else noteFunctionValueRun(*a, a->kind == ExprKind::Name ? a->text : kLambdaArg, a->pos); // r7: or a call's
         }
 
         if (e.lhs->kind == ExprKind::Member) {
@@ -4647,6 +4703,7 @@ private:
                         { // review r4 (part 2): a static call runs the declaring class's body right away
                             MemberHit owner = findMemberOn(tNamed(typeName), method);
                             noteDirectCall("st:" + (owner.m ? owner.owner : typeName) + "." + method, typeName + "." + method, e.pos);
+                            callBodyKey_[&e] = "st:" + (owner.m ? owner.owner : typeName) + "." + method; // review r7
                         }
                         if (auto it = memberDefId_.find(typeName + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                         std::string what = "static method '" + typeName + "." + method + "'";
@@ -4673,6 +4730,7 @@ private:
             if (recv.kind == TypeRef::Kind::Named) {
                 if (auto it = extensions_.find(recv.name + "." + method); it != extensions_.end()) {
                     noteDirectCall("ext:" + recv.name + "." + method, recv.name + "." + method, e.pos); // review r5 #4
+                    callBodyKey_[&e] = "ext:" + recv.name + "." + method; // review r7: the lambdas it returns
                     // #56b: bidirectionally instantiate a lambda arg's param types from the extension's
                     // function-typed param (generics bound from the receiver — List<T> vs List<string> -> T=
                     // string), then RE-CHECK the lambda body so std methods on those params bind (else
@@ -4725,6 +4783,7 @@ private:
                                                 "'; use its operator instead of calling it by name");
                     // review r5 #4: an instance method call runs that body (or an override's) right away
                     noteDirectCall("m:" + hit.owner + "." + method, recv.name + "." + method, e.pos);
+                    callBodyKey_[&e] = "m:" + hit.owner + "." + method; // review r7: the lambdas it returns
                     if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                     // P40 slice 7: the class's type params come from the receiver (`Box<i32>.set(v: T)` takes
                     // an i32), then the method's own params are inferred from the args as for a free fn.
@@ -4956,6 +5015,7 @@ private:
             e.linkName = chosen->linkName; // provisional: assignLinkNames rewrites it once every call is resolved
             callSites_.push_back({&e, name, argTypes, chosen->pos});
             noteDirectCall(fnBodyKey(chosen->pos), name, e.pos); // review r4 (part 2): the through-call gap
+            callBodyKey_[&e] = fnBodyKey(chosen->pos);           // review r7: the lambdas it returns
             TypeRef r = gen.empty() ? chosen->result : substGeneric(chosen->result, gen, binds);
             return chosen->isAsync ? awaitable(r) : r;
         }
@@ -4966,6 +5026,12 @@ private:
                 m && m->isStatic && (m->kind == MemberKind::Method || m->kind == MemberKind::Operator)) {
                 checkArgs(m->params, argTypes, e.args, "static method '" + currentClass_ + "." + name + "'", e.pos, m->required);
                 e.staticOwner = currentClass_;
+                { // review r7: a bare static call runs the declaring class's body, exactly as `Owner.name(…)` does
+                    MemberHit owner = findMemberOn(tNamed(currentClass_), name);
+                    const std::string key = "st:" + (owner.m ? owner.owner : currentClass_) + "." + name;
+                    noteDirectCall(key, currentClass_ + "." + name, e.pos);
+                    callBodyKey_[&e] = key;
+                }
                 TypeRef r = inferResult(m->generics, m->params, argTypes, m->type);
                 return m->isAsync ? awaitable(r) : r;
             }

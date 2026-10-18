@@ -1,0 +1,62 @@
+// P40 review r7 (gating 1) — the LEGAL neighbours of the constructor rule's field case (SPEC §4.4). A lambda that
+// reaches `this` (through an alias, a local lambda, or a non-open method's parameter) may be STORED in an own field
+// during construction; calling such a field is what the rule refuses. Calling a field that only ever holds a
+// non-capturing lambda, another object's function-typed property (nothing of the object goes in), and an own
+// property whose getter returns a non-capturing lambda all stay legal. A class nothing can subclass is not checked.
+import "std.io"
+
+class Fmt {
+  let show: (string) => string => (s: string) => "<" + s + ">"
+}
+
+open class Base {
+  var cb: () => string = () => "none"
+  var plain: () => string = () => "none"
+  var label: string = ""
+  constructor(f: Fmt) {
+    let me = this
+    this.cb = () => me.describe()
+    let g = () => this.describe()
+    this.cb = () => g()
+    this.setCb(() => this.describe())
+    this.setPlain(() => "plain")
+    this.label = this.plain() + f.show("x") + this.mark()
+  }
+  fn setCb(f: () => string) {
+    this.cb = f
+  }
+  fn setPlain(f: () => string) {
+    this.plain = f
+  }
+  let mark: () => string => () => "!"
+  open fn describe(): string => "base"
+}
+
+class Derived : Base {
+  var extra: string = "X"
+  constructor() {
+    super(Fmt())
+  }
+  override fn describe(): string => "derived" + this.extra
+}
+
+class Solo {
+  var cb: () => string = () => "none"
+  var label: string = ""
+  var extra: string = "S"
+  constructor() {
+    this.setCb(() => this.describe())
+    this.label = this.cb()
+  }
+  fn setCb(f: () => string) {
+    this.cb = f
+  }
+  fn describe(): string => "solo" + this.extra
+}
+
+fn main() {
+  let d = Derived()
+  print(d.label)
+  print(d.cb())
+  print(Solo().label)
+}

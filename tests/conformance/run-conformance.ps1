@@ -88,7 +88,9 @@ $expectedRefusers = @(
     # Same gate as prop_accessors: PHP has no property setters (< 8.4).
     'prop_block_accessors',
     # Review round 6 — init-order/constructors half: a property setter + an arithmetic operator (both gates above).
-    'init_order_setter_op'
+    'init_order_setter_op',
+    # Review round 7 — language half: a compound `+=` through a user arithmetic operator (the gate above).
+    'init_order_static_compound'
 )
 
 # Normalize the requested target set; the csharp oracle is always present.

@@ -1,0 +1,8 @@
+// P40 review r7 (docs p2hint2): lambdas with untyped parameters as the arms of an un-annotated `if` — nothing types
+// `x` (C# CS0173, TS TS7006), so the local is refused like a bare untyped lambda.
+import "std.io"
+
+fn main() {
+  let f = if true { (x) => x } else { (x) => x + 1 }
+  print("x")
+}

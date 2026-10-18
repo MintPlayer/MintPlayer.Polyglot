@@ -1,0 +1,23 @@
+// P40 review r7 (gating 1) - Spark r5_h_fieldlocal.
+import "std.io"
+
+// rule 5 MUST REFUSE: the constructor stores, in its own field, a lambda that calls a LOCAL lambda capturing `this`,
+// then CALLS the field (the inner lambda calls the overridable method)
+open class Base {
+  var cb: () => string = () => "none"
+  var label: string = ""
+  constructor() {
+    let f = () => this.describe()
+    this.cb = () => f()
+    this.label = this.cb()
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

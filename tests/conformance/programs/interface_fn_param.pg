@@ -1,0 +1,22 @@
+// P40 review r7 (part 2): an interface method whose parameter (or result) is a FUNCTION type matches an
+// implementation spelling the same function type (Spark iface_fn) — function types are compared structurally.
+import "std.io"
+
+interface Runner {
+  fn go(f: () => string): string
+  fn map(n: i32, f: (i32) => i32): i32
+  fn maker(): (i32) => i32
+}
+
+class Now : Runner {
+  fn go(f: () => string): string => f()
+  fn map(n: i32, f: (i32) => i32): i32 => f(n)
+  fn maker(): (i32) => i32 => (x: i32) => x * 3
+}
+
+fn main() {
+  let r: Runner = Now()
+  print(r.go(() => "ok"))
+  print(r.map(4, (x: i32) => x + 1))
+  print(r.maker()(5))
+}

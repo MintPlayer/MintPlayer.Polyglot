@@ -1,0 +1,25 @@
+// P40 review r7 (part 2, item 4) - Spark r4_cmps_v.
+import "std.io"
+
+// rule 4: a compound `+=` on a STATIC field named bare inside its class (a static method the initializer calls)
+// runs `plus`, which reads a LATER VALUE (must be refused)
+class Acc {
+  var n: i32
+  constructor(n: i32) {
+    this.n = n
+  }
+  operator fn plus(o: Acc): Acc => Acc(this.n + o.n + step)
+}
+class Bank {
+  static var total: Acc = Acc(1)
+  static fn deposit(): i32 {
+    total += Acc(2)
+    return total.n
+  }
+}
+let r: i32 = Bank.deposit()
+let step: i32 = 10
+
+fn main() {
+  print(r)
+}
