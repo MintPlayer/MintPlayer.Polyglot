@@ -108,9 +108,11 @@ New-Item -ItemType Directory -Force $work | Out-Null
 
 # Hermetic ambient env for the NODE leg: exactly what the emitted std runtime surface references (see std
 # overlays in the typescript plugin). Keeps the type-check offline and independent of an installed @types/node.
+# `process` is a `var`, as @types/node declares it (`declare global { var process: NodeJS.Process }`): the file I/O
+# helpers reach it as `globalThis.process` so a user `fn process` cannot shadow it (P40 review r5 #16).
 @'
 declare const console: { log(...args: any[]): void };
-declare const process: { getBuiltinModule(id: string): any };
+declare var process: { getBuiltinModule(id: string): any };
 '@ | Set-Content (Join-Path $work "env.d.ts")
 
 # P40 B2 / D10: the Angular CLI LIBRARY flag set (what `ng new --strict` + ng-packagr apply), with declaration
