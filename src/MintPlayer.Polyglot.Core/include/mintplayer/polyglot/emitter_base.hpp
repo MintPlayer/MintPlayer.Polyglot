@@ -139,6 +139,7 @@ public:
     // Identifier repair reads the spec's `identifiers` block (keyword escape / emitted-name mangle) —
     // generic catalog entries, not per-backend code (P19 slice 6).
     std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
+    std::string identType(const std::string& n) const { return specIdentType(specFn_(), n); } // review r5
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
     // Free-function-position collision repair (PHP builtins); no-op where the spec declares no `fnBuiltins`.
     std::string identFn(const std::string& n) const { return specIdentFn(specFn_(), n); }
@@ -259,6 +260,9 @@ private:
     const DeclHooks& hooks_;
     EmitFn emit_;
     std::vector<std::size_t> staticInit_, instanceInit_; // field indices with an initializer, by static-ness
+    // review r5 #7: instance fields whose initializer is not a literal, in a class whose base has a constructor —
+    // a target that runs field initializers BEFORE the base constructor (C#) assigns them after it instead.
+    std::vector<std::size_t> deferInit_;
     std::vector<std::size_t> ifaceBases_;                // base indices the predicate calls interfaces
     int extBase_ = -1;                                   // the last non-interface base index (-1 = none)
 };

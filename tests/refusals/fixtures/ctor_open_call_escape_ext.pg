@@ -1,0 +1,26 @@
+// REFUSED (P40 review r5 #5): an extension called on `this` in the constructor calls the open method.
+import "std.io"
+
+extension fn Widget.show() {
+  print(this.describe())
+}
+open class Widget {
+  var label: string
+  constructor() {
+    this.label = "w"
+    this.show()
+  }
+  open fn describe(): string => "widget"
+}
+class Button : Widget {
+  let caption: string
+  constructor() {
+    super()
+    this.caption = "ok"
+  }
+  override fn describe(): string => "button:" + this.caption
+}
+
+fn main() {
+  print(Button().describe())
+}

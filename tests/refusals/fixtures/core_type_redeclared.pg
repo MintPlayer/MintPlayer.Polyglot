@@ -1,0 +1,11 @@
+// REFUSED (P40 review r5 #16): a user class named like the core `Error` replaced it, so std code throwing `Error(…)`
+// constructed the user class (C# CS1729, TS2554, a PHP "Cannot redeclare class Error" fatal).
+import "std.io"
+
+class Error {
+  var v: i32 = 7
+}
+
+fn main() {
+  print(Error().v)
+}

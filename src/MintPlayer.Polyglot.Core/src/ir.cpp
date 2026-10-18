@@ -1,6 +1,7 @@
 #include "mintplayer/polyglot/ir.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <string>
 
 namespace mintplayer::polyglot::ir {
@@ -374,33 +375,53 @@ std::vector<DeclRef> declarationOrder(const Module& m, const std::vector<std::si
         if (a.pos.line != b.pos.line) return a.pos.line < b.pos.line;
         return a.pos.col < b.pos.col;
     });
-    std::vector<bool> classPlaced(m.classes.size(), false);
+    std::vector<int> classState(m.classes.size(), 0); // 0 not placed, 1 being placed, 2 placed
+    auto classIndex = [&](const std::string& name) -> std::ptrdiff_t {
+        for (std::size_t j = 0; j < m.classes.size(); ++j)
+            if (m.classes[j].name == name) return static_cast<std::ptrdiff_t>(j);
+        return -1;
+    };
     auto basesPlaced = [&](std::size_t c) {
         for (const auto& b : m.classes[c].bases)
-            for (std::size_t j = 0; j < m.classes.size(); ++j)
-                if (j != c && m.classes[j].name == b.name && !classPlaced[j]) return false;
+            if (auto j = classIndex(b.name); j >= 0 && static_cast<std::size_t>(j) != c && classState[j] != 2) return false;
         return true;
     };
-    auto place = [&](const Item& it) {
-        if (it.isClass) { classPlaced[it.index] = true; out.push_back({"class", "module.classes", it.index}); }
-        else out.push_back({"global", "module.globals", it.index});
+    // Review r5 #4: a module value needs the classes its initializer reaches (sema's needsClasses) — defined before
+    // it, each after its own bases and the classes its static initializers reach. Sema refuses the only cycle (a
+    // class reaching a value declared at or after the value), so this pulls classes forward, never values.
+    std::function<void(std::size_t)> placeClass = [&](std::size_t c) {
+        if (classState[c] != 0) return; // placed, or being placed (an inheritance cycle, refused by sema)
+        classState[c] = 1;
+        for (const auto& b : m.classes[c].bases)
+            if (auto j = classIndex(b.name); j >= 0) placeClass(static_cast<std::size_t>(j));
+        for (const auto& n : m.classes[c].needsClasses)
+            if (auto j = classIndex(n); j >= 0) placeClass(static_cast<std::size_t>(j));
+        classState[c] = 2;
+        out.push_back({"class", "module.classes", c});
     };
-    std::vector<Item> pending; // classes whose base class comes later
+    std::vector<Item> pending; // classes whose base class comes later (and that no value pulled forward)
     for (const Item& it : items) {
-        if (it.isClass && !basesPlaced(it.index)) { pending.push_back(it); continue; }
-        place(it);
+        if (it.isClass) {
+            if (classState[it.index] == 2) continue; // pulled forward by an earlier value
+            if (!basesPlaced(it.index)) { pending.push_back(it); continue; }
+            placeClass(it.index);
+        } else {
+            for (const auto& n : m.globals[it.index].needsClasses)
+                if (auto j = classIndex(n); j >= 0) placeClass(static_cast<std::size_t>(j));
+            out.push_back({"global", "module.globals", it.index});
+        }
         for (bool progress = true; progress;) { // a placed class may release a waiting subclass (and its subclasses)
             progress = false;
             for (std::size_t k = 0; k < pending.size(); ++k)
-                if (basesPlaced(pending[k].index)) {
-                    place(pending[k]);
+                if (classState[pending[k].index] == 2 || basesPlaced(pending[k].index)) {
+                    placeClass(pending[k].index);
                     pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(k));
                     progress = true;
                     break;
                 }
         }
     }
-    for (const Item& it : pending) place(it); // an inheritance cycle (refused by sema): as written
+    for (const Item& it : pending) placeClass(it.index); // an inheritance cycle (refused by sema): as written
     return out;
 }
 

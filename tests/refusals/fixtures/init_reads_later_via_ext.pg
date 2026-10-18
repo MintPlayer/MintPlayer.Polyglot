@@ -1,0 +1,12 @@
+// REFUSED (P40 review r5, part 2): `a`'s initializer calls the extension `plusB`, which reads `b`, declared later.
+// TS threw a ReferenceError, Python a NameError; C# printed 5 (b read as 0).
+import "std.io"
+
+extension fn i32.plusB(): i32 => this + b
+
+let a: i32 = 5.plusB()
+let b: i32 = 3
+
+fn main() {
+  print(a)
+}

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 
@@ -553,6 +554,7 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "opSpelling")  return spec_.binOp(args.empty() ? std::string() : args[0]);
     // Identifier repair — generic catalog entries parameterized by the spec's `identifiers` block (P19).
     if (name == "ident")      return specIdent(spec_, args.empty() ? std::string() : args[0]);
+    if (name == "identType") return specIdentType(spec_, args.empty() ? std::string() : args[0]);
     if (name == "identFn")    return specIdentFn(spec_, args.empty() ? std::string() : args[0]);
     if (name == "mangleName") return specMangle(spec_, args.empty() ? std::string() : args[0]);
     // P40 A1: literal text over the spec's `literals` data — {"fn":"literal","args":["<context>", <text>]} is
@@ -761,6 +763,7 @@ std::string TypeRefCtx::renderType(const std::string& path) const {
 
 std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident") return specIdent(spec_, args.empty() ? std::string() : args[0]);
+    if (name == "identType") return specIdentType(spec_, args.empty() ? std::string() : args[0]);
     if (name == "substExtern") { // substitute `$0,$1,…` in the extern-class spelling with rendered type args
         const std::string tmpl = externTemplate();
         std::string out;
@@ -801,6 +804,7 @@ std::string EnumDeclCtx::get(const std::string& path) const {
 
 std::string EnumDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -831,6 +835,7 @@ std::string UnionDeclCtx::get(const std::string& path) const {
 std::string UnionDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "generics") return hooks_.generics(u_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -922,6 +927,7 @@ std::string InterfaceDeclCtx::builtin(const std::string& name, const std::vector
         return i < it_.methods.size() ? hooks_.generics(it_.methods[i].generics) : "";
     }
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "where") return hooks_.where(it_.generics);
     return "";
 }
@@ -987,6 +993,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";
     if (path == "decl.isVirtual")  return m_.isVirtual ? "true" : "false";
     if (path == "decl.isOverride") return m_.isOverride ? "true" : "false";
+    if (path == "decl.isAbstract") return m_.isAbstract ? "true" : "false"; // review r5 #9
     if (path == "decl.isIterator") return m_.isIterator ? "true" : "false";
     if (path == "decl.propHasSetter")  return m_.propHasSetter ? "true" : "false"; // accessor-block setter (#39c)
     if (path == "decl.propSetterParam") return m_.setterParamName;
@@ -1027,6 +1034,7 @@ std::string MethodDeclCtx::builtin(const std::string& name, const std::vector<st
     if (name == "generics") return hooks_.generics(m_.generics);
     if (name == "where")    return hooks_.where(m_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -1098,6 +1106,7 @@ std::string RecordDeclCtx::builtin(const std::string& name, const std::vector<st
     if (name == "generics") return hooks_.generics(r_.generics);
     if (name == "where")    return hooks_.where(r_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -1125,6 +1134,8 @@ ClassDeclCtx::ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn em
     : c_(c), hooks_(hooks), emit_(std::move(emit)) {
     for (std::size_t i = 0; i < c_.fields.size(); ++i)
         if (c_.fields[i].init) (c_.fields[i].isStatic ? staticInit_ : instanceInit_).push_back(i);
+    if (c_.baseHasInit)
+        for (std::size_t i : instanceInit_) if (!c_.fields[i].initIsLiteral) deferInit_.push_back(i);
     for (std::size_t i = 0; i < c_.bases.size(); ++i) {
         if (isInterface && isInterface(c_.bases[i])) ifaceBases_.push_back(i);
         else extBase_ = static_cast<int>(i);
@@ -1234,10 +1245,16 @@ std::string ClassDeclCtx::get(const std::string& path) const {
         return std::to_string(n);
     }
     if (path == "decl.instanceInitFields.count") return std::to_string(instanceInit_.size());
+    if (path == "decl.isAbstract")       return c_.isAbstract ? "true" : "false"; // review r5 #9
+    if (path == "decl.deferredInitFields.count") return std::to_string(deferInit_.size()); // review r5 #7
     std::size_t i = 0;
     std::string f;
+    if (path.rfind("decl.deferredInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < deferInit_.size() && f == "name")
+        return c_.fields[deferInit_[i]].name;
     if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size()) {
         const ir::ClassField& fld = c_.fields[i];
+        if (f == "deferInit") // review r5 #7
+            return std::find(deferInit_.begin(), deferInit_.end(), i) != deferInit_.end() ? "true" : "false";
         if (f == "attrLines.count") return std::to_string(fld.attrLines.size()); // P37 D Tier 1
         if (f.rfind("attrLines.", 0) == 0) {
             const std::size_t j = static_cast<std::size_t>(std::stoul(f.substr(10)));
@@ -1273,6 +1290,7 @@ std::string ClassDeclCtx::builtin(const std::string& name, const std::vector<std
     if (name == "generics") return hooks_.generics(c_.generics);
     if (name == "where")    return hooks_.where(c_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -1306,6 +1324,8 @@ std::string ClassDeclCtx::emitChild(const std::string& path, const std::string&)
         return emit_(*c_.fields[staticInit_[i]].init);
     if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size() && f == "init")
         return emit_(*c_.fields[instanceInit_[i]].init);
+    if (path.rfind("decl.deferredInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < deferInit_.size() && f == "init")
+        return emit_(*c_.fields[deferInit_[i]].init); // review r5 #7
     return "";
 }
 
@@ -1369,6 +1389,7 @@ std::string FnDeclCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "generics") return hooks_.generics(f_.generics);
     if (name == "where")    return hooks_.where(f_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "identFn")  return hooks_.identFn(args.empty() ? std::string() : args[0]);
     if (name == "mangle")   return hooks_.mangle(args.empty() ? std::string() : args[0]);
     return "";
@@ -1419,6 +1440,25 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.interfaces.count") return std::to_string(m_.interfaces.size());
     if (path == "module.records.count")    return std::to_string(m_.records.size());
     if (path == "module.classes.count")    return std::to_string(m_.classes.size());
+    if (path == "module.allLowercaseTypeNames.count") { // review r5 (part 2): C# CS8981 under warnings-as-errors
+        auto lower = [](const std::string& n) {
+            if (n.empty()) return false;
+            for (char ch : n) if (ch < 'a' || ch > 'z') return false;
+            return true;
+        };
+        std::size_t n = 0;
+        for (const auto& c : m_.classes) if (lower(c.name)) ++n;
+        for (const auto& r : m_.records) if (lower(r.name)) ++n;
+        for (const auto& e : m_.enums) if (lower(e.name)) ++n;
+        for (const auto& u : m_.unions) if (lower(u.name)) ++n;
+        for (const auto& i : m_.interfaces) if (lower(i.name)) ++n;
+        return std::to_string(n);
+    }
+    if (path == "module.abstractClasses.count") { // review r5 #9 (Python imports abc for them)
+        std::size_t n = 0;
+        for (const auto& c : m_.classes) if (c.isAbstract) ++n;
+        return std::to_string(n);
+    }
     if (path == "module.extensions.count") return std::to_string(m_.extensions.size());
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
@@ -1475,6 +1515,7 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
 
 std::string ModuleDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
     return "";
 }
@@ -1604,6 +1645,7 @@ std::string StmtCtx::get(const std::string& path) const {
 
 std::string StmtCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
     if (name == "table" && args.size() >= 2) return hooks_.table(args[0], args[1]); // P40 review B6 (rangeWideType)
     return "";
@@ -1981,10 +2023,20 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
         }
     // P40 §0: the manifest preludes this file required, in DESCENDING key order (the order the historical
     // top-of-file prepend produced — kept so output is byte-identical where the slot sits at the top).
-    std::vector<std::string> keys;
+    std::vector<std::string> sorted;
     for (const auto& k : requires_)
-        if (spec().preludes.count(k)) keys.push_back(k);
-    std::sort(keys.begin(), keys.end(), std::greater<std::string>());
+        if (spec().preludes.count(k)) sorted.push_back(k);
+    std::sort(sorted.begin(), sorted.end(), std::greater<std::string>());
+    // Review r5: a prelude's own requirements (`preludeRequires`) join, each placed before its first dependent.
+    std::vector<std::string> keys;
+    std::set<std::string> placed;
+    std::function<void(const std::string&)> place = [&](const std::string& k) {
+        if (!placed.insert(k).second) return;
+        if (auto d = spec().preludeRequires.find(k); d != spec().preludeRequires.end())
+            for (const auto& dep : d->second) place(dep);
+        keys.push_back(k);
+    };
+    for (const auto& k : sorted) place(k);
     if (keys.empty()) return out_;
     // P38/issue #69: preludes are spliced in AFTER the walk, so they never pass through line() — the one
     // writer of out_ that bypasses the per-line invariant. They are synthesized runtime text with no `.pg`

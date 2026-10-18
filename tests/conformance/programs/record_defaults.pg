@@ -1,0 +1,24 @@
+// P40 review r5 #11: a record's positional defaults are filled in at each construction that omits them (a literal,
+// a negated literal, a string, an enum case), so the remedy the record-body-field refusal names — "make it a
+// positional field (with a default)" — works. Every emitter dropped them (C# CS7036, TS `undefined`, Python and PHP
+// argument errors).
+import "std.io"
+
+enum Color { Red, Blue }
+record P(x: i32, y: i32 = 5)
+record Q(name: string = "q", n: i32 = -2)
+record R(c: Color = Color.Blue)
+record S(x: i32, twice: i32 = 7) {
+  fn sum(): i32 => this.x + this.twice
+}
+
+fn main() {
+  print(P(1).y)
+  print(P(1, 2).y)
+  print(Q().name)
+  print(Q().n)
+  print(Q("z").n)
+  print(R().c == Color.Blue)
+  print(S(4).sum())
+  print(P(1) == P(1, 5))
+}

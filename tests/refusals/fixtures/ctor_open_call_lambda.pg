@@ -1,0 +1,19 @@
+// REFUSED (P40 review r5 #5): a lambda invoked in place in the constructor calls the open method — the override ran
+// before the subclass's fields were set (C# `derivedX`, TS `derivedundefined`, Python AttributeError, PHP `derived`).
+import "std.io"
+
+open class Base {
+  var label: string = ""
+  constructor() {
+    this.label = (() => this.describe())()
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

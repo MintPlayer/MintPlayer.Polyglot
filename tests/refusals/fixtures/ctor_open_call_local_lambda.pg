@@ -1,0 +1,19 @@
+// REFUSED (P40 review r5 #5): a lambda bound to a local and called in the constructor runs the open method now.
+import "std.io"
+
+open class Base {
+  var label: string = ""
+  constructor() {
+    let f = () => this.describe()
+    this.label = f()
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

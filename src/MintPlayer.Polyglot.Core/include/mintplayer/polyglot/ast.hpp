@@ -146,7 +146,8 @@ struct Expr {
     // variable's nullable type on the read and converts it (a value-type Nullable<T> needs the unwrap on C#).
     bool narrowedNonNull = false;
     // Call (set by sema — P40 review r4): `recv.f(args)` / `Type.g(args)` names a FIELD of function type, not a
-    // method — the call goes through the field's value (lowered like any function-value callee).
+    // method — the call goes through the field's value (lowered like any function-value callee). Review r5: also a bare
+    // `name(args)` naming a MODULE VALUE of function type.
     bool calleeIsField = false;
     // Name (set by sema — P40 review r4 item 20): a top-level function used as a VALUE (`apply(five)`); its
     // overloadName/linkName carry the resolved names, and lowering emits a function reference (ir::Call isRef).
@@ -340,6 +341,9 @@ struct ClassDecl {
     std::vector<TargetBinding> typeBindings; // `extern class`: the `type { actual… }` per-target spelling arms
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
     std::vector<AttrUse> attributes;     // P37 D: attributes attached to this class
+    // P40 review r5 #4 (set by sema): same-file classes its static initializers reach (directly or through the
+    // bodies they call) — the emission order defines them before this class when it moves the class forward.
+    std::vector<std::string> needsClasses;
 };
 struct InterfaceDecl {
     std::string name;
@@ -372,6 +376,9 @@ struct ValueDecl {                       // top-level `const` / `let`
     bool hasType = false;
     ExprPtr init;
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
+    // P40 review r5 #4 (set by sema): same-file classes the initializer reaches — directly or through any body it
+    // runs (functions, constructors, methods, extensions, static initializers). They are emitted before the value.
+    std::vector<std::string> needsClasses;
 };
 
 struct EnumCase {

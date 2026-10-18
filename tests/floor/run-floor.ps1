@@ -54,8 +54,8 @@ $canaryExpected = "error CS0168,error CS9058"
 # bookkeeping only — a corpus that lost programs still passed.
 # P40 review r5: pinned EXACTLY (a `>=` floor let programs added since drop out silently). The ONE number to bump
 # when a conformance program is added (or deliberately removed): every top-level tests/conformance/programs/*.pg
-# plus every directory there holding an entry.pg. At c436aae: 157 = 152 files + 5 directories (153 net8.0, 4 net9.0).
-$expectedPrograms = 157
+# plus every directory there holding an entry.pg. At c436aae: 157 = 152 files + 5 directories; after review round 5: 178 = 171 files + 7 directories (173 net8.0, 5 net9.0).
+$expectedPrograms = 178
 # Isolation from the machine: the work dir is under %TEMP%, so a Directory.Build.props/.targets (or a central
 # package file) in any ancestor would be imported; and net8.0's end of support (2026-11-10) would add NETSDK1138,
 # which can fail the build with no CS line. Global properties, because ImportDirectoryBuildProps is read by

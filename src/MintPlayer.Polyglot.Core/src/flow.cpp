@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <iterator>
 #include <map>
@@ -556,24 +557,6 @@ void checkFieldsDefinitelyAssigned(const ClassDecl& c, DiagnosticBag& d, const s
     }
 }
 
-// Every expression in a statement list / expression tree (pre-order); `f` returns false to skip a subtree.
-template <class F> void eachExpr(const Expr* e, F& f);
-template <class F> void eachExpr(const std::vector<StmtPtr>& b, F& f) {
-    for (const auto& s : b) {
-        if (!s) continue;
-        eachExpr(s->target.get(), f); eachExpr(s->value.get(), f);
-        eachExpr(s->thenBody, f); eachExpr(s->elseBody, f); eachExpr(s->finallyBody, f);
-        for (const auto& c : s->catches) { eachExpr(c.guard.get(), f); eachExpr(c.body, f); }
-    }
-}
-template <class F> void eachExpr(const Expr* e, F& f) {
-    if (!e || !f(*e)) return;
-    eachExpr(e->lhs.get(), f); eachExpr(e->rhs.get(), f); eachExpr(e->extra.get(), f); eachExpr(e->block, f);
-    for (const auto& a : e->args) eachExpr(a.get(), f);
-    for (const auto& fv : e->fields) eachExpr(fv.value.get(), f);
-    for (const auto& a : e->arms) { eachExpr(a.guard.get(), f); eachExpr(a.body.get(), f); eachExpr(a.block, f); }
-}
-
 bool hasModifier(const Member& m, const char* mod) {
     for (const auto& x : m.modifiers) if (x == mod) return true;
     return false;
@@ -581,63 +564,254 @@ bool hasModifier(const Member& m, const char* mod) {
 
 // P40 review r4 #5: a constructor that calls an overridable method on `this` runs a subclass override before
 // the subclass's own fields are initialized — C# reads default(T), TS undefined, Python raises AttributeError,
-// PHP reads null. Refused: no constructor may reach (directly, or through non-overridable methods of its own
-// class chain called on `this`) a call to an `open`/`abstract`/`override` method on `this`.
-void checkCtorVirtualCalls(const ClassDecl& c, const std::map<std::string, const ClassDecl*>& classes,
-                           DiagnosticBag& d) {
-    // The method `name` as `this` of class `c` sees it: the nearest declaration up the base chain.
-    auto lookup = [&](const std::string& name) -> const Member* {
-        std::set<std::string> seen;
-        const ClassDecl* k = &c;
-        while (k && seen.insert(k->name).second) {
-            for (const auto& m : k->members) if (m.kind == MemberKind::Method && m.name == name) return &m;
-            const ClassDecl* next = nullptr;
-            for (const auto& b : k->bases) {
-                auto it = classes.find(b.name);
-                if (it != classes.end()) { next = it->second; break; }
-            }
-            k = next;
-        }
-        return nullptr;
-    };
-    for (const auto& ctor : c.members) {
-        if (ctor.kind != MemberKind::Constructor) continue;
-        std::set<const Member*> visited;
-        std::vector<std::pair<const Member*, std::string>> work; // (method body to scan, the chain so far)
-        bool reported = false;
-        auto scan = [&](const std::vector<StmtPtr>& body, const Expr* exprBody, const std::string& via) {
-            auto f = [&](const Expr& e) -> bool {
-                if (reported) return false;
-                if (e.kind == ExprKind::Lambda) return false; // deferred: runs whenever it is called
-                if (e.kind != ExprKind::Call || !e.lhs || e.lhs->kind != ExprKind::Member || !e.lhs->lhs ||
-                    e.lhs->lhs->kind != ExprKind::This)
-                    return true;
-                const Member* m = lookup(e.lhs->text);
-                if (!m) return true;
-                if (hasModifier(*m, "open") || hasModifier(*m, "abstract") || hasModifier(*m, "override")) {
-                    d.error(e.pos, "the constructor of class '" + c.name + "' calls the overridable method '" +
-                                       e.lhs->text + "' on 'this'" + via + " — a subclass override would run "
-                                       "before the subclass's fields are initialized (C# reads defaults, TS "
-                                       "undefined, Python raises AttributeError); call it after construction, or "
-                                       "make the method non-open");
-                    reported = true;
-                    return false;
-                }
-                if (visited.insert(m).second)
-                    work.emplace_back(m, via.empty() ? " (through '" + m->name + "')"
-                                                     : via.substr(0, via.size() - 1) + " -> '" + m->name + "')");
-                return true;
-            };
-            eachExpr(body, f);
-            eachExpr(exprBody, f);
-        };
-        scan(ctor.body, ctor.exprBody.get(), "");
-        while (!work.empty() && !reported) {
-            auto [m, via] = work.back();
-            work.pop_back();
-            scan(m->body, m->exprBody.get(), via);
+// PHP reads null. Refused: no constructor may reach a call to an `open`/`abstract`/`override` method on the
+// object under construction.
+// Review r5 #5: "reach" follows every statically known path the constructor RUNS — non-overridable methods and
+// computed properties called on `this`, a lambda invoked in place, a lambda bound to a local or field that the
+// body then calls, a lambda passed as an argument (the callee may call it now), and `this` passed to a free
+// function, a static method, a constructor, a method of another object or an extension (followed through the
+// parameter that receives it). A lambda only stored is deferred (a callback set in a constructor stays legal).
+// Review r5 #6: only a class that can be subclassed is checked — `open`/`abstract`, or the base of a class in
+// the program; otherwise `this` is exactly that class and no override can run early.
+class CtorVirtualScan {
+public:
+    CtorVirtualScan(const ClassDecl& c, const std::map<std::string, const ClassDecl*>& classes,
+                    const CompilationUnit& u, DiagnosticBag& d)
+        : c_(c), classes_(classes), u_(u), d_(d) {}
+
+    void run() {
+        for (const auto& ctor : c_.members) {
+            if (ctor.kind != MemberKind::Constructor) continue;
+            visited_.clear();
+            reported_ = false;
+            Ctx cx;
+            cx.selfIsThis = true;
+            body(ctor.body, ctor.exprBody.get(), cx, {});
         }
     }
+
+private:
+    struct Ctx {
+        bool selfIsThis = false;          // `this` denotes the object under construction
+        std::set<std::string> selfNames;  // parameters/locals that alias it
+        std::map<std::string, std::vector<const Expr*>> lambdas; // a local ("f") or a field of it (".f") -> lambdas bound
+    };
+    using Via = std::vector<std::string>;
+
+    const ClassDecl& c_;
+    const std::map<std::string, const ClassDecl*>& classes_;
+    const CompilationUnit& u_;
+    DiagnosticBag& d_;
+    std::set<std::string> visited_;
+    bool reported_ = false;
+
+    static bool overridable(const Member& m) {
+        return hasModifier(m, "open") || hasModifier(m, "abstract") || hasModifier(m, "override");
+    }
+    const ClassDecl* baseOf(const ClassDecl* k) const {
+        for (const auto& b : k->bases)
+            if (auto it = classes_.find(b.name); it != classes_.end()) return it->second;
+        return nullptr;
+    }
+    // The member `name` (a method or computed property) as an instance of `start` sees it: the nearest
+    // declaration up the base chain.
+    const Member* lookupOn(const ClassDecl* start, const std::string& name, bool wantStatic) const {
+        std::set<std::string> seen;
+        for (const ClassDecl* k = start; k && seen.insert(k->name).second; k = baseOf(k))
+            for (const auto& m : k->members)
+                if ((m.kind == MemberKind::Method || m.kind == MemberKind::Property) && m.name == name &&
+                    hasModifier(m, "static") == wantStatic)
+                    return &m;
+        return nullptr;
+    }
+    bool isSelfClassOrBase(const std::string& name) const {
+        std::set<std::string> seen;
+        for (const ClassDecl* k = &c_; k && seen.insert(k->name).second; k = baseOf(k))
+            if (k->name == name) return true;
+        return false;
+    }
+    bool isSelf(const Expr* e, const Ctx& cx) const {
+        return e && ((e->kind == ExprKind::This && cx.selfIsThis) || (e->kind == ExprKind::Name && cx.selfNames.count(e->text)));
+    }
+    static std::string render(const Via& via) {
+        if (via.empty()) return "";
+        std::string s = " (through ";
+        for (std::size_t i = 0; i < via.size(); ++i) s += (i ? " -> " : "") + via[i];
+        return s + ")";
+    }
+    void report(const Expr& at, const std::string& method, const Via& via) {
+        d_.error(at.pos, "the constructor of class '" + c_.name + "' calls the overridable method '" + method +
+                             "' on 'this'" + render(via) + " — a subclass override would run before the subclass's "
+                             "fields are initialized (C# reads defaults, TS undefined, Python raises AttributeError); "
+                             "call it after construction, or make the method non-open");
+        reported_ = true;
+    }
+    static Via plus(const Via& via, const std::string& step) { Via v = via; v.push_back(step); return v; }
+
+    void body(const std::vector<StmtPtr>& stmts, const Expr* exprBody, Ctx& cx, const Via& via) {
+        std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(&stmts)) + "/" +
+                          std::to_string(reinterpret_cast<std::uintptr_t>(exprBody)) + (cx.selfIsThis ? "/this" : "/");
+        for (const auto& n : cx.selfNames) key += "," + n;
+        if (!visited_.insert(key).second) return;
+        for (const auto& s : stmts) stmt(s.get(), cx, via);
+        expr(exprBody, cx, via);
+    }
+    // A body run with the object bound to `this` (selfIsThis) or to the parameter `param`.
+    template <class P>
+    void callee(const std::vector<StmtPtr>& stmts, const Expr* exprBody, bool selfIsThis, const std::vector<P>& params,
+                std::size_t argIndex, const Via& via) {
+        Ctx nc;
+        nc.selfIsThis = selfIsThis;
+        if (!selfIsThis) {
+            if (argIndex >= params.size()) return;
+            nc.selfNames.insert(params[argIndex].name);
+        }
+        body(stmts, exprBody, nc, via);
+    }
+    void lambdaBody(const Expr* lam, Ctx& cx, const Via& via) {
+        if (!lam || lam->kind != ExprKind::Lambda) return;
+        Ctx inner = cx; // its own locals; the object stays visible to it (a capture)
+        for (const auto& p : lam->params) inner.selfNames.erase(p.name);
+        if (lam->flag) for (const auto& s : lam->block) stmt(s.get(), inner, via);
+        else expr(lam->lhs.get(), inner, via);
+    }
+    void stmt(const Stmt* s, Ctx& cx, const Via& via) {
+        if (!s || reported_) return;
+        if (s->kind == StmtKind::Let && s->value) {
+            if (s->value->kind == ExprKind::Lambda) { cx.lambdas[s->name].push_back(s->value.get()); return; }
+            if (isSelf(s->value.get(), cx)) cx.selfNames.insert(s->name); // `let me = this`
+            else cx.selfNames.erase(s->name);
+        }
+        if (s->kind == StmtKind::Assign && s->value && s->value->kind == ExprKind::Lambda && s->target) {
+            if (s->target->kind == ExprKind::Name) { cx.lambdas[s->target->text].push_back(s->value.get()); return; }
+            if (s->target->kind == ExprKind::Member && isSelf(s->target->lhs.get(), cx)) {
+                cx.lambdas["." + s->target->text].push_back(s->value.get());
+                return;
+            }
+        }
+        expr(s->target.get(), cx, via);
+        expr(s->value.get(), cx, via);
+        for (const auto& b : s->thenBody) stmt(b.get(), cx, via);
+        for (const auto& b : s->elseBody) stmt(b.get(), cx, via);
+        for (const auto& c : s->catches) {
+            expr(c.guard.get(), cx, via);
+            for (const auto& b : c.body) stmt(b.get(), cx, via);
+        }
+        for (const auto& b : s->finallyBody) stmt(b.get(), cx, via);
+    }
+    void bound(const std::string& key, Ctx& cx, const Via& via) {
+        if (auto it = cx.lambdas.find(key); it != cx.lambdas.end())
+            for (const Expr* lam : std::vector<const Expr*>(it->second)) lambdaBody(lam, cx, plus(via, "a lambda"));
+    }
+    void expr(const Expr* e, Ctx& cx, const Via& via) {
+        if (!e || reported_) return;
+        switch (e->kind) {
+            case ExprKind::Lambda: return; // deferred: runs whenever it is called
+            case ExprKind::Call: call(*e, cx, via); return;
+            case ExprKind::Member:
+                if (isSelf(e->lhs.get(), cx)) // a computed property read on the object runs its getter
+                    if (const Member* m = lookupOn(&c_, e->text, false); m && m->kind == MemberKind::Property) {
+                        if (overridable(*m)) { report(*e, e->text, via); return; }
+                        Ctx nc; nc.selfIsThis = true;
+                        body(m->body, m->init.get(), nc, plus(via, "'" + m->name + "'"));
+                    }
+                break;
+            default: break;
+        }
+        expr(e->lhs.get(), cx, via);
+        expr(e->rhs.get(), cx, via);
+        expr(e->extra.get(), cx, via);
+        for (const auto& a : e->args) expr(a.get(), cx, via);
+        for (const auto& f : e->fields) expr(f.value.get(), cx, via);
+        for (const auto& a : e->arms) {
+            expr(a.guard.get(), cx, via);
+            expr(a.body.get(), cx, via);
+            for (const auto& b : a.block) stmt(b.get(), cx, via);
+        }
+    }
+    void call(const Expr& e, Ctx& cx, const Via& via) {
+        const Expr* lhs = e.lhs.get();
+        // The arguments run first; a lambda argument may be called by the callee right away.
+        for (const auto& a : e.args) {
+            if (a && a->kind == ExprKind::Lambda) lambdaBody(a.get(), cx, plus(via, "a lambda"));
+            else expr(a.get(), cx, via);
+            if (reported_) return;
+        }
+        std::vector<std::size_t> selfArgs;
+        for (std::size_t i = 0; i < e.args.size(); ++i) if (isSelf(e.args[i].get(), cx)) selfArgs.push_back(i);
+        if (!lhs) return;
+        if (lhs->kind == ExprKind::Lambda) { lambdaBody(lhs, cx, plus(via, "a lambda")); return; } // invoked in place
+        if (lhs->kind == ExprKind::Name) {
+            const std::string& n = lhs->text;
+            if (cx.lambdas.count(n)) { bound(n, cx, via); return; }
+            for (std::size_t i : selfArgs) {
+                for (const auto& fn : u_.functions)
+                    if (fn.name == n && !fn.isExpect) callee(fn.body, nullptr, false, fn.params, i, plus(via, "'" + n + "'"));
+                if (auto k = classes_.find(n); k != classes_.end()) // `Helper(this)`: the object reaches its constructor
+                    for (const auto& m : k->second->members)
+                        if (m.kind == MemberKind::Constructor) callee(m.body, m.exprBody.get(), false, m.params, i, plus(via, "'" + n + "'"));
+            }
+            return;
+        }
+        if (lhs->kind != ExprKind::Member) { expr(lhs, cx, via); return; }
+        const Expr* recv = lhs->lhs.get();
+        const std::string& n = lhs->text;
+        if (isSelf(recv, cx)) {
+            if (e.calleeIsField) { bound("." + n, cx, via); return; }
+            if (const Member* m = lookupOn(&c_, n, false)) {
+                if (overridable(*m)) { report(e, n, via); return; }
+                Ctx nc; nc.selfIsThis = true;
+                body(m->body, m->exprBody.get(), nc, plus(via, "'" + n + "'"));
+            } else {
+                for (const auto& x : u_.extensions) // an extension called on the object: `this` is the object
+                    if (x.name == n && isSelfClassOrBase(x.receiver.name)) {
+                        Ctx nc; nc.selfIsThis = true;
+                        body(x.body, x.exprBody.get(), nc, plus(via, "'" + n + "'"));
+                    }
+            }
+            for (std::size_t i : selfArgs) // `this.m(this)`: also bound to the parameter
+                if (const Member* m = lookupOn(&c_, n, false)) callee(m->body, m->exprBody.get(), false, m->params, i, plus(via, "'" + n + "'"));
+            return;
+        }
+        expr(recv, cx, via);
+        if (selfArgs.empty() || reported_) return;
+        // The object passed to a static method, a method of another object, or an extension on another value.
+        const ClassDecl* owner = nullptr;
+        bool isStatic = false;
+        std::string recvType;
+        if (recv && recv->kind == ExprKind::Name && classes_.count(recv->text) && !cx.selfNames.count(recv->text)) {
+            owner = classes_.at(recv->text);
+            isStatic = true;
+        } else if (recv && recv->type.kind == TypeRef::Kind::Named) {
+            recvType = recv->type.name;
+            if (auto k = classes_.find(recvType); k != classes_.end()) owner = k->second;
+        }
+        const std::string shown = "'" + (owner && isStatic ? owner->name + "." : "") + n + "'";
+        for (std::size_t i : selfArgs) {
+            if (const Member* m = owner ? lookupOn(owner, n, isStatic) : nullptr)
+                callee(m->body, m->exprBody.get(), false, m->params, i, plus(via, shown));
+            if (!isStatic)
+                for (const auto& x : u_.extensions)
+                    if (x.name == n && x.receiver.name == recvType) callee(x.body, x.exprBody.get(), false, x.params, i, plus(via, shown));
+        }
+    }
+};
+
+// Can `c` be subclassed? `open`/`abstract`, or some class in the program derives from it.
+bool canBeSubclassed(const ClassDecl& c, const CompilationUnit& u, const std::map<std::string, const ClassDecl*>& classes) {
+    for (const auto& m : c.modifiers) if (m == "open" || m == "abstract") return true;
+    for (const auto& k : u.classes) {
+        std::set<std::string> seen{k.name};
+        for (const ClassDecl* p = &k; p;) {
+            const ClassDecl* next = nullptr;
+            for (const auto& b : p->bases)
+                if (auto it = classes.find(b.name); it != classes.end()) { next = it->second; break; }
+            if (!next || !seen.insert(next->name).second) break;
+            if (next == &c) return true;
+            p = next;
+        }
+    }
+    return false;
 }
 
 void checkMembers(Flow& flow, const std::vector<Member>& members, const std::string& owner, bool prelude) {
@@ -702,7 +876,7 @@ void checkFlow(const CompilationUnit& unit, DiagnosticBag& diags) {
             }
         }
         checkFieldsDefinitelyAssigned(c, diags, inherited);
-        checkCtorVirtualCalls(c, classes, diags);
+        if (canBeSubclassed(c, unit, classes)) CtorVirtualScan(c, classes, unit, diags).run();
     }
     for (const auto& i : unit.interfaces) checkMembers(flow, i.members, i.name, i.originModule == "<prelude>");
     for (const auto& e : unit.extensions) {

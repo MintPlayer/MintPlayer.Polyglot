@@ -48,6 +48,27 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     loadStringMap(doc["binaryOp"], r.spec.binaryOp);
     loadStringMap(doc["wrapInt"], r.spec.wrapInt);
     loadStringMap(doc["preludes"], r.spec.preludes);
+    { // review r5: prelude -> the preludes it needs; every name must be a declared prelude (anti-silent-drop)
+        const json::Value& pr = doc["preludeRequires"];
+        if (pr.kind == json::Value::Kind::Object) {
+            for (const auto& [k, v] : pr.members) {
+                if (!r.spec.preludes.count(k))
+                    r.errors.push_back("backend spec: preludeRequires names '" + k + "', which is not a declared prelude");
+                if (v.kind != json::Value::Kind::Array) {
+                    r.errors.push_back("backend spec: preludeRequires['" + k + "'] must be an array of prelude names");
+                    continue;
+                }
+                for (const auto& d : v.items()) {
+                    if (d.kind != json::Value::Kind::String || !r.spec.preludes.count(d.asString()))
+                        r.errors.push_back("backend spec: preludeRequires['" + k + "'] names '" + d.asString() +
+                                           "', which is not a declared prelude");
+                    else r.spec.preludeRequires[k].push_back(d.asString());
+                }
+            }
+        } else if (pr.kind != json::Value::Kind::Null) {
+            r.errors.push_back("backend spec: preludeRequires must be an object of prelude -> [prelude, ...]");
+        }
+    }
 
     for (const auto& kv : doc["delimited"].members) {
         const json::Value& d = kv.second;
@@ -211,8 +232,23 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
         // it can neither shadow what the emitted code calls nor redeclare a builtin class.
         for (const json::Value& k : ids["runtimeNames"].items())
             if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
+        // P40 review r5: builtin class names, escaped only where a type name is spelled (specIdentType).
+        for (const json::Value& k : ids["classBuiltins"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.classBuiltins.insert(k.asString());
         if (ids["caseInsensitive"].kind == json::Value::Kind::Bool)
             r.spec.identifiersCaseInsensitive = ids["caseInsensitive"].asBool();
+        // P40 review r5 #24: a user identifier the generated code would misread, respelled whole (C#: a user `_`
+        // is the discard `_ = …` the emitter writes for a dropped value; `@_` is still `_`, so it cannot escape).
+        const json::Value& rn = ids["renames"];
+        if (rn.kind == json::Value::Kind::Object) {
+            for (const auto& [k, v] : rn.members) {
+                if (v.kind != json::Value::Kind::String || v.asString().empty())
+                    r.errors.push_back("backend spec: identifiers.renames['" + k + "'] must be a non-empty string");
+                else r.spec.renames[k] = v.asString();
+            }
+        } else if (rn.kind != json::Value::Kind::Null) {
+            r.errors.push_back("backend spec: identifiers.renames must be an object of name -> spelling");
+        }
         const json::Value& esc = ids["escape"];
         if (esc.kind == json::Value::Kind::Object) {
             r.spec.escapeStrategy = esc["strategy"].asString();
@@ -347,6 +383,20 @@ std::string backendSpecToJson(const BackendSpec& spec) {
         if (!spec.reservedNames.empty()) ids += ",\"reserved\":" + arr(spec.reservedNames);
         if (!spec.globalNames.empty()) ids += ",\"globals\":" + arr(spec.globalNames);
         if (spec.identifiersCaseInsensitive) ids += ",\"caseInsensitive\":true";
+        if (!spec.classBuiltins.empty()) { // review r5
+            std::vector<std::string> cb(spec.classBuiltins.begin(), spec.classBuiltins.end());
+            std::sort(cb.begin(), cb.end());
+            ids += ",\"classBuiltins\":" + arr(cb);
+        }
+        if (!spec.renames.empty()) { // review r5 #24
+            std::vector<std::string> ks;
+            for (const auto& [k, v] : spec.renames) ks.push_back(k);
+            std::sort(ks.begin(), ks.end()); // deterministic serialization
+            ids += ",\"renames\":{";
+            for (std::size_t i = 0; i < ks.size(); ++i)
+                ids += (i ? "," : "") + json::quote(ks[i]) + ":" + json::quote(spec.renames.at(ks[i]));
+            ids += "}";
+        }
         if (!spec.fnBuiltins.empty()) {
             std::vector<std::string> fbs(spec.fnBuiltins.begin(), spec.fnBuiltins.end());
             std::sort(fbs.begin(), fbs.end()); // deterministic serialization
@@ -362,6 +412,20 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"binaryOp\":" + mapJson(spec.binaryOp) +
            ",\"wrapInt\":" + mapJson(spec.wrapInt) +
            ",\"preludes\":" + mapJson(spec.preludes) +
+           [&] { // review r5: deterministic serialization of preludeRequires (omitted when empty)
+               if (spec.preludeRequires.empty()) return std::string();
+               std::vector<std::string> ks;
+               for (const auto& [k, v] : spec.preludeRequires) ks.push_back(k);
+               std::sort(ks.begin(), ks.end());
+               std::string o = ",\"preludeRequires\":{";
+               for (std::size_t i = 0; i < ks.size(); ++i) {
+                   o += (i ? "," : "") + json::quote(ks[i]) + ":[";
+                   const auto& v = spec.preludeRequires.at(ks[i]);
+                   for (std::size_t j = 0; j < v.size(); ++j) o += (j ? "," : "") + json::quote(v[j]);
+                   o += "]";
+               }
+               return o + "}";
+           }() +
            ",\"delimited\":" + delim +
            ",\"blockStyle\":" + json::quote(bs) +
            ",\"stmtEnd\":" + json::quote(spec.stmtEnd) +

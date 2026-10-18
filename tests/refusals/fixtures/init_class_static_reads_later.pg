@@ -1,0 +1,14 @@
+// REFUSED (P40 review r5 #4): `w` needs class `Box` defined first, and defining `Box` runs its static initializer,
+// which reads `u` — declared after `w`.
+import "std.io"
+
+let w: Box = Box()
+let u: i32 = 5
+class Box {
+  static let s: i32 = u
+  var v: i32 = 1
+}
+
+fn main() {
+  print(w.v)
+}

@@ -114,6 +114,7 @@ public:
                 for (const auto& f : c.params) caseFields_[c.name].push_back(f.name);
             }
         for (const auto& e : unit.extensions) { extensions_[e.receiver.name].insert(e.name); extParams_[e.receiver.name + "." + e.name] = &e.params; }
+        for (const auto& r : unit.records) recordParams_[r.name] = &r.fields; // review r5 #11: omitted positional defaults
         // P40 B3: a std (prelude) extension written in .pg — a guard over unchecked primitives — is emitted
         // under the reserved name `_pg_<name>`. On the targets where an extension is a free function
         // (TS/Python/PHP) its plain name (`contains`, `split`, …) would share the user's function namespace
@@ -381,6 +382,7 @@ public:
             ir::Global g;
             g.name = v.name;
             g.pos = v.pos;
+            g.needsClasses = v.needsClasses; // review r5 #4
             g.isConst = v.isConst;
             g.type = v.hasType ? v.type : (v.init ? v.init->type : TypeRef{});
             if (v.init) g.init = expr(*v.init);
@@ -538,6 +540,7 @@ private:
     std::unordered_map<std::string, std::unordered_set<std::string>> extensions_; // receiver type -> method names
     std::unordered_map<std::string, BindingEntry> bindings_; // "Type.member" -> FFI arms
     std::unordered_map<std::string, BindingEntry> ctorBindings_; // "Type" -> ctor FFI arms
+    std::unordered_map<std::string, const std::vector<Param>*> recordParams_; // record -> positional fields (defaults, r5 #11)
     std::unordered_map<std::string, const std::vector<Param>*> extParams_; // "Recv.method" -> extension params (defaults)
     std::unordered_map<std::string, std::string> extEmitName_;    // "Recv.method" -> emitted name (std .pg guards)
     std::unordered_map<std::string, std::string> staticRedirect_; // "Type.member" -> prelude free fn (extern static with a body)
@@ -766,6 +769,8 @@ private:
         ir::Class ic;
         ic.name = c.name;
         ic.pos = c.pos;
+        ic.needsClasses = c.needsClasses; // review r5 #4
+        for (const auto& mod : c.modifiers) if (mod == "abstract") ic.isAbstract = true; // review r5 #9
         ic.attrLines = renderAttrLines(c.attributes);
         ic.generics = generics(c.generics);
         ic.bases = c.bases;
@@ -844,6 +849,7 @@ private:
             if (mod == "static") im.isStatic = true;
             else if (mod == "open") im.isVirtual = true;
             else if (mod == "override") im.isOverride = true;
+            else if (mod == "abstract") im.isAbstract = true; // review r5 #9
         }
         im.generics = generics(m.generics);
         // Same module-global fact as on ir::Function — a property getter's expr counts as its body.
@@ -943,6 +949,7 @@ private:
                     ref->isFree = true;
                     ref->mangledCallee = e.overloadName.empty() ? e.text : e.overloadName;
                     ref->linkCallee = e.linkName;
+                    ref->uniqueCallee = e.uniqueName; // review r5 #14: PHP names it by its unique name too
                     return ref;
                 }
                 if (auto u = caseUnion_.find(e.text); u != caseUnion_.end()) // bare payload-free union case
@@ -1150,7 +1157,7 @@ private:
                             appendDefaults(*p->second, e.args.size(), mc->args);
                     return mc;
                 }
-                if (e.lhs && e.lhs->kind != ExprKind::Name) {
+                if (e.lhs && (e.lhs->kind != ExprKind::Name || e.calleeIsField)) { // r5: a module function value too
                     // P40 review r3 2(a): any other callee is a function VALUE — `adder(1)(4)`, `fs[0](4)`,
                     // `(if c {f} else {g})(4)`, an immediately-invoked lambda. It used to lower to an empty
                     // callee name, so `adder(10)(4)` emitted `(4)` and returned the argument.
@@ -1168,6 +1175,10 @@ private:
                     auto n = std::make_unique<ir::New>(e.pos, e.type, callee);
                     n->typeArgs = e.typeArgs; // explicit `Box<i32>(7)` type args (empty if inferred)
                     for (const auto& a : e.args) n->args.push_back(expr(*a));
+                    // review r5 #11: a record's omitted positional defaults are filled here, like an extension's —
+                    // no target's record constructor carried them (C# CS7036, TS `undefined`, Python/PHP errors).
+                    if (auto rp = recordParams_.find(callee); rp != recordParams_.end())
+                        appendDefaults(*rp->second, e.args.size(), n->args);
                     return n;
                 }
                 if (auto u = caseUnion_.find(callee); u != caseUnion_.end()) { // union case construction

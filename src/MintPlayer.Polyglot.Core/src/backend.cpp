@@ -188,7 +188,7 @@ namespace {
 // SILENTLY before this check existed (the slice-6d gate caught exactly that); now it fails the load.
 const std::unordered_set<std::string>& fnCatalog() {
     static const std::unordered_set<std::string> names = {
-        "intSuffix", "literal", "quoted", "opSpelling", "ident", "identFn", "mangleName", "wrap", "table",
+        "intSuffix", "literal", "quoted", "opSpelling", "ident", "identType", "identFn", "mangleName", "wrap", "table",
         "subst", "require", "inlineBlock", "parenIfContains", "parenIfStarts", // shared expression catalog
         "generics", "where", "mangle",     // declaration-context catalog
         "substExtern",                     // type-context catalog (extern-class template substitution)

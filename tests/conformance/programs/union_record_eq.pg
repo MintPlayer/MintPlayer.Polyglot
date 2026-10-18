@@ -1,0 +1,43 @@
+// P40 review r5 (part 2, older PHP item): a union value whose case carries a record compares structurally, as C#
+// compares its generated case records. PHP held the union as an array and compared it with `===`, so the record
+// payloads compared by identity (`Dot(Pt(1, 2)) == Dot(Pt(1, 2))` printed false); it now compares through a
+// prelude helper (`__pg_ueq`: records by equals(), nested unions recursively, everything else by ===). TS compared
+// with JSON.stringify — a class payload by content (C# compares it by reference: a silent divergence) and a bigint
+// payload threw; it now compares through the same rule (`__pgUnionEq`).
+import "std.io"
+
+record Pt(x: i32, y: i32)
+class Ref {
+  var v: i32 = 1
+}
+union Held {
+  H(r: Ref)
+  Big(n: i64)
+}
+
+union Shape {
+  Circle(center: Pt, r: i32)
+  Dot(at: Pt)
+  Label(text: string)
+}
+
+union Wrap {
+  One(s: Shape)
+  None2
+}
+
+fn main() {
+  print(Circle(Pt(1, 2), 3) == Circle(Pt(1, 2), 3))
+  print(Dot(Pt(1, 2)) == Dot(Pt(1, 2)))
+  print(Dot(Pt(1, 2)) == Dot(Pt(1, 3)))
+  print(Dot(Pt(1, 2)) != Dot(Pt(1, 3)))
+  print(Label("1e1") == Label("10"))
+  print(Label("a") == Label("a"))
+  print(One(Dot(Pt(4, 5))) == One(Dot(Pt(4, 5))))
+  print(One(Dot(Pt(4, 5))) == None2)
+  let r = Ref()
+  print(H(r) == H(r))
+  print(H(Ref()) == H(Ref()))
+  print(Big(9007199254740993i64) == Big(9007199254740993i64))
+  print(Big(9007199254740993i64) == Big(9007199254740992i64))
+}

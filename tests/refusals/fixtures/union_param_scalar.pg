@@ -1,0 +1,14 @@
+// REFUSED (P40 review r5 #15): an i32 is not a `Shape` — it was accepted (C# CS1503, TS2345; Python and PHP printed
+// "shape").
+import "std.io"
+
+union Shape {
+  Circle(r: i32)
+  Square(s: i32)
+}
+
+fn kind(s: Shape): string => "shape"
+
+fn main() {
+  print(kind(5))
+}

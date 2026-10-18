@@ -247,8 +247,8 @@
         "__opt*",
         "__w*"
       ],
-      "runtimeNames": [
-        "directory", "generator", "closure", "exception", "errorexception", "typeerror", "valueerror",
+      "classBuiltins": [
+        "directory", "error", "generator", "closure", "exception", "errorexception", "typeerror", "valueerror",
         "arithmeticerror", "divisionbyzeroerror", "argumentcounterror", "assertionerror", "compileerror", "parseerror",
         "unhandledmatcherror", "throwable", "traversable", "iterator", "iteratoraggregate", "arrayaccess", "countable",
         "stringable", "serializable", "jsonserializable", "arrayobject", "arrayiterator", "stdclass", "datetime",
@@ -263,7 +263,13 @@
       "functionBuiltins": {
         "suffix": "_pg",
         "names": [
-          "abs", "array_filter", "array_keys", "array_map", "array_merge",
+          "abs", "acos", "acosh", "array_key_exists", "array_key_first", "get_class", "is_object", "method_exists", "asin", "asinh", "atan", "atan2", "atanh",
+          "chr", "cosh", "fdiv", "file_exists", "file_get_contents", "file_put_contents", "fmod", "function_exists",
+          "iconv", "ini_set", "intdiv", "is_bool", "is_float", "is_infinite", "is_int", "is_nan", "is_string", "log10",
+          "ltrim", "pack", "preg_match", "preg_replace", "preg_replace_callback", "preg_split", "rtrim", "sinh",
+          "str_contains", "str_ends_with", "str_repeat", "str_replace", "str_starts_with", "strcmp", "strpos",
+          "strtolower", "strtoupper", "strtr", "tanh", "unlink", "unpack", "var_export",
+          "array_filter", "array_keys", "array_map", "array_merge",
           "array_pop", "array_push", "array_reverse", "array_shift", "array_slice",
           "array_splice", "array_values", "assert", "ceil", "compact", "cos", "count",
           "current", "date", "die", "each", "end", "eval", "exit",
@@ -277,6 +283,7 @@
       }
     },
     "preludes": {
+      "pgUeq": "if (!function_exists(__NAMESPACE__.'\\\\__pg_ueq')) {\n    // a union value (a tagged array) compared as C# compares its generated case records (review r5): a record\n    // payload by its equals(), a nested union recursively, anything else (a scalar, a class instance, a list) by ===\n    function __pg_ueq($a, $b) {\n        if (is_array($a)) {\n            if (!is_array($b) || count($a) !== count($b)) {\n                return false;\n            }\n            foreach ($a as $k => $v) {\n                if (!array_key_exists($k, $b) || !__pg_ueq($v, $b[$k])) {\n                    return false;\n                }\n            }\n            return true;\n        }\n        if (is_object($a) && is_object($b) && get_class($a) === get_class($b) && method_exists($a, 'equals')) {\n            return $a->equals($b);\n        }\n        return $a === $b;\n    }\n}\n",
       "pgU64": "if (!function_exists(__NAMESPACE__.'\\\\__pg_u64parse')) {\n    // a u64 above PHP_INT_MAX has no PHP int: refuse it loudly instead of clamping (SPEC 3.C PHP caveat)\n    function __pg_u64parse($s) {\n        $d = ltrim(ltrim($s, '+'), '0');\n        if (strlen($d) > 19 || (strlen($d) === 19 && strcmp($d, '9223372036854775807') > 0)) {\n            throw new \\Error(\"u64.parse: '\" . $s . \"' exceeds PHP's 63-bit integer range\");\n        }\n        return intval($s);\n    }\n}\n",
       "pgU16": "if (!function_exists(__NAMESPACE__.'\\\\__pg_u16')) {\n    // UTF-16 code-unit indexing over PHP's UTF-8 strings (P40 B3, D15: needs ext-iconv). An ASCII string is\n    // its own UTF-16 index space (fast path); any other is indexed through a cached UTF-16LE copy.\n    function __pg_u16($s) {\n        // null when ASCII, else the UTF-16LE copy. A short string is just recomputed; a long one is cached\n        // (the last one, plus a small LRU), so indexing a long string in a loop is O(1) per call.\n        static $ks = null, $kv = null, $lru = [];\n        if ($ks === $s) {\n            return $kv;\n        }\n        if (strlen($s) < 256) {\n            return preg_match('/[\\x80-\\xFF]/', $s) ? __pg_u16le($s) : null;\n        }\n        if (array_key_exists($s, $lru)) {\n            $v = $lru[$s];\n            unset($lru[$s]);\n        } else {\n            $v = preg_match('/[\\x80-\\xFF]/', $s) ? __pg_u16le($s) : null;\n            if (count($lru) >= 8) {\n                unset($lru[array_key_first($lru)]);\n            }\n        }\n        $lru[$s] = $v;\n        $ks = $s;\n        $kv = $v;\n        return $v;\n    }\n    function __pg_u16le($s) {\n        if (!function_exists('iconv')) {\n            throw new \\Error('Polyglot: the PHP target needs the iconv extension (ext-iconv) for non-ASCII strings');\n        }\n        $r = @iconv('UTF-8', 'UTF-16LE', $s);\n        if ($r !== false) {\n            return $r;\n        }\n        // not valid UTF-8: a lone surrogate a substring split off (held as WTF-8) \u2014 decode by hand\n        $out = '';\n        $n = strlen($s);\n        for ($i = 0; $i < $n;) {\n            $b = ord($s[$i]);\n            if ($b < 0x80) {\n                $c = $b;\n                $i += 1;\n            } elseif ($b < 0xE0) {\n                $c = (($b & 0x1F) << 6) | (ord($s[$i + 1]) & 0x3F);\n                $i += 2;\n            } elseif ($b < 0xF0) {\n                $c = (($b & 0x0F) << 12) | ((ord($s[$i + 1]) & 0x3F) << 6) | (ord($s[$i + 2]) & 0x3F);\n                $i += 3;\n            } else {\n                $c = (($b & 0x07) << 18) | ((ord($s[$i + 1]) & 0x3F) << 12) | ((ord($s[$i + 2]) & 0x3F) << 6) | (ord($s[$i + 3]) & 0x3F);\n                $i += 4;\n            }\n            if ($c >= 0x10000) {\n                $c -= 0x10000;\n                $out .= pack('v2', 0xD800 + ($c >> 10), 0xDC00 + ($c & 0x3FF));\n            } else {\n                $out .= pack('v', $c);\n            }\n        }\n        return $out;\n    }\n    function __pg_u16_unit8($c) {\n        if ($c < 0x80) {\n            return chr($c);\n        }\n        if ($c < 0x800) {\n            return chr(0xC0 | ($c >> 6)) . chr(0x80 | ($c & 0x3F));\n        }\n        return chr(0xE0 | ($c >> 12)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n    }\n    function __pg_u16_to8($u) {\n        $r = @iconv('UTF-16LE', 'UTF-8', $u);\n        if ($r !== false) {\n            return $r;\n        }\n        $out = '';\n        $n = strlen($u);\n        for ($i = 0; $i < $n; $i += 2) {\n            $c = ord($u[$i]) | (ord($u[$i + 1]) << 8);\n            if ($c >= 0xD800 && $c <= 0xDBFF && $i + 3 < $n) {\n                $d = ord($u[$i + 2]) | (ord($u[$i + 3]) << 8);\n                if ($d >= 0xDC00 && $d <= 0xDFFF) {\n                    $c = 0x10000 + (($c - 0xD800) << 10) + ($d - 0xDC00);\n                    $out .= chr(0xF0 | ($c >> 18)) . chr(0x80 | (($c >> 12) & 0x3F)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n                    $i += 2;\n                    continue;\n                }\n            }\n            $out .= __pg_u16_unit8($c);\n        }\n        return $out;\n    }\n    function __pg_len16($s) {\n        $v = __pg_u16($s);\n        return $v === null ? strlen($s) : strlen($v) >> 1;\n    }\n    function __pg_u16_char($s, $i) {\n        $v = __pg_u16($s);\n        return $v === null ? $s[$i] : __pg_u16_unit8(ord($v[2 * $i]) | (ord($v[2 * $i + 1]) << 8));\n    }\n    function __pg_u16_cp($s, $i) {\n        $v = __pg_u16($s);\n        if ($v === null) {\n            return ord($s[$i]);\n        }\n        $c = ord($v[2 * $i]) | (ord($v[2 * $i + 1]) << 8);\n        if ($c >= 0xD800 && $c <= 0xDBFF && 2 * $i + 3 < strlen($v)) {\n            $d = ord($v[2 * $i + 2]) | (ord($v[2 * $i + 3]) << 8);\n            if ($d >= 0xDC00 && $d <= 0xDFFF) {\n                return 0x10000 + (($c - 0xD800) << 10) + ($d - 0xDC00);\n            }\n        }\n        return $c;\n    }\n    function __pg_u16_sub($s, $a, $b) {\n        $v = __pg_u16($s);\n        return $v === null ? substr($s, $a, $b - $a) : __pg_u16_to8(substr($v, 2 * $a, 2 * ($b - $a)));\n    }\n    function __pg_u16_find($s, $n, $f) {\n        static $kn = null, $kascii = true, $kv = '';\n        if ($kn !== $n) {\n            $kascii = !preg_match('/[\\x80-\\xFF]/', $n);\n            $kv = null;\n            $kn = $n;\n        }\n        $v = __pg_u16($s);\n        if ($v === null) {\n            if (!$kascii) {\n                return -1;\n            }\n            $p = strpos($s, $n, $f);\n            return $p === false ? -1 : $p;\n        }\n        if ($kv === null) {\n            $kv = __pg_u16le($n); // the needle is reconverted only when it changes\n        }\n        $p = 2 * $f;\n        while (($p = strpos($v, $kv, $p)) !== false) {\n            if (($p & 1) === 0) {\n                return $p >> 1;\n            }\n            $p++;\n        }\n        return -1;\n    }\n    function __pg_cmp16($a, $b) {\n        if (preg_match('/[\\x80-\\xFF]/', $a) || preg_match('/[\\x80-\\xFF]/', $b)) {\n            // UTF-16BE bytes order exactly as UTF-16 code units do (UTF-8 bytes order as code points)\n            $a = $a === '' ? '' : pack('n*', ...unpack('v*', __pg_u16le($a)));\n            $b = $b === '' ? '' : pack('n*', ...unpack('v*', __pg_u16le($b)));\n        }\n        $r = strcmp($a, $b);\n        return $r < 0 ? -1 : ($r > 0 ? 1 : 0);\n    }\n    function __pg_u16_lone(...$xs) {\n        // a lone surrogate (held as WTF-8, ED A0-BF ..) only matches like C#/TS in the UTF-16 view; without\n        // one, the UTF-8 byte answer is the UTF-16 answer\n        foreach ($xs as $x) {\n            if (preg_match('/\\xED[\\xA0-\\xBF]/', $x)) {\n                return true;\n            }\n        }\n        return false;\n    }\n    function __pg_u16_has($s, $n) {\n        return __pg_u16_lone($s, $n) ? __pg_u16_find($s, $n, 0) !== -1 : str_contains($s, $n);\n    }\n    function __pg_u16_starts($s, $p) {\n        return __pg_u16_lone($s, $p) ? str_starts_with(__pg_u16le($s), __pg_u16le($p)) : str_starts_with($s, $p);\n    }\n    function __pg_u16_ends($s, $p) {\n        return __pg_u16_lone($s, $p) ? str_ends_with(__pg_u16le($s), __pg_u16le($p)) : str_ends_with($s, $p);\n    }\n    function __pg_u16_pieces($s, $sep) {\n        // the UTF-16LE pieces of $s around $sep, matching only at unit-aligned (even) offsets\n        $v = __pg_u16le($s);\n        $k = __pg_u16le($sep);\n        $kl = strlen($k);\n        $out = [];\n        $from = 0;\n        $p = 0;\n        while (($p = strpos($v, $k, $p)) !== false) {\n            if (($p & 1) === 0) {\n                $out[] = substr($v, $from, $p - $from);\n                $p += $kl;\n                $from = $p;\n            } else {\n                $p++;\n            }\n        }\n        $out[] = substr($v, $from);\n        return $out;\n    }\n    function __pg_u16_replace($s, $n, $r) {\n        if (!__pg_u16_lone($s, $n, $r)) {\n            return str_replace($n, $r, $s);\n        }\n        return __pg_u16_to8(implode(__pg_u16le($r), __pg_u16_pieces($s, $n)));\n    }\n    function __pg_u16_split($s, $sep) {\n        if (!__pg_u16_lone($s, $sep)) {\n            return explode($sep, $s);\n        }\n        return array_map(fn($u) => __pg_u16_to8($u),__pg_u16_pieces($s, $sep));\n    }\n}\n",
       "pgChr8": "if (!function_exists(__NAMESPACE__.'\\\\__pg_chr8')) {\n    // a Unicode scalar value -> UTF-8 (string.fromCodePoint; no mbstring needed, S17)\n    function __pg_chr8($c) {\n        if ($c < 0x80) {\n            return chr($c);\n        }\n        if ($c < 0x800) {\n            return chr(0xC0 | ($c >> 6)) . chr(0x80 | ($c & 0x3F));\n        }\n        if ($c < 0x10000) {\n            return chr(0xE0 | ($c >> 12)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n        }\n        return chr(0xF0 | ($c >> 18)) . chr(0x80 | (($c >> 12) & 0x3F)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n    }\n}\n",
@@ -532,9 +539,9 @@
                 },
                 {
                   "tmpl": [
-                    {
+                    { "fn": "identType", "args": [ {
                       "get": "node.staticType"
-                    },
+                    } ] },
                     "::",
                     { "case": { "when": [ [
                       { "and": [
@@ -659,9 +666,9 @@
             },
             {
               "tmpl": [
-                {
+                { "fn": "identType", "args": [ {
                   "get": "node.staticType"
-                },
+                } ] },
                 "::",
                 {
                   "fn": "ident",
@@ -879,7 +886,7 @@
       "tmpl": [
         "new ",
         {
-          "fn": "ident",
+          "fn": "identType",
           "args": [
             {
               "get": "node.typeName"
@@ -1196,6 +1203,19 @@
     "Binary": {
       "case": {
         "when": [
+          [
+            {
+              "and": [
+                { "or": [ { "eq": [ "node.op", "==" ] }, { "eq": [ "node.op", "!=" ] } ] },
+                { "eq": [ "node.lhsIsUnion", "true" ] }
+              ]
+            },
+            { "tmpl": [
+              { "fn": "require", "args": ["pgUeq"] },
+              { "case": { "when": [ [ { "eq": [ "node.op", "!=" ] }, "!" ] ] } },
+              "__pg_ueq(", { "emit": "node.lhs" }, ", ", { "emit": "node.rhs" }, ")"
+            ] }
+          ],
           [
             {
               "and": [
@@ -2445,7 +2465,7 @@
           "tmpl": [
             "interface ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -2575,7 +2595,7 @@
           ]
         ],
         "else": {
-          "fn": "ident",
+          "fn": "identType",
           "args": [
             {
               "get": "type.name"
@@ -3008,7 +3028,9 @@
         ")"
       ]
     },
-    "MethodDecl": {
+    "MethodDecl": { "case": { "when": [
+      [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": { "tmpl": [ "abstract ", { "call": "phpMethodSig" }, ";" ] } } ]
+    ], "else": {
       "block": {
         "head": {
           "call": "phpMethodSig"
@@ -3047,14 +3069,14 @@
           }
         ]
       }
-    },
+    } } },
     "EnumDecl": {
       "block": {
         "head": {
           "tmpl": [
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3096,7 +3118,7 @@
           "tmpl": [
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3290,9 +3312,10 @@
       "block": {
         "head": {
           "tmpl": [
+            { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ] ] } },
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3576,7 +3599,7 @@
               [
                 { "eq": ["item.initIsLiteral", "false"] },
                 { "line": { "tmpl": [
-                  { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                  { "fn": "identType", "args": [ { "get": "decl.name" } ] },
                   "::$",
                   { "fn": "ident", "args": [ { "get": "item.name" } ] },
                   " = ",

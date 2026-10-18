@@ -9,6 +9,8 @@
 #include <deque>
 #include <set>
 #include <cstdlib>
+#include <cstring>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -334,6 +336,7 @@ std::string mangleFn(const std::string& name, const std::vector<TypeRef>& params
     for (std::size_t i = 0; i < params.size(); ++i) {
         if (i) m += "_";
         m += (params[i].kind == TypeRef::Kind::Named && !params[i].name.empty()) ? params[i].name : "x";
+        if (params[i].nullable) m += "OrNull"; // review r5 #13: `f(string)` and `f(string?)` get distinct names
     }
     return m;
 }
@@ -380,6 +383,9 @@ struct Local {
     // warnings-as-errors consumer cannot build) — refused when its scope closes.
     int reads = 0;
     bool constInit = false;
+    // P40 review r5 #17: assigned a non-constant somewhere — C# CS0219 fires only when EVERY assignment is a
+    // constant, so such a local is never reported (`var _last = 0; _last = compute()` compiles clean).
+    bool nonConstAssign = false;
     SourcePos declPos{0, 0, 0};
     Stmt* declStmt = nullptr; // the `let` that declared it (r4: an unread `_x = <const>` is dropped there)
 };
@@ -400,11 +406,26 @@ public:
         resolveAllTypes(unit);
         checkImplements(unit); // issue #29: implements-conformance, override rule, interface-body shape
         checkAttributesPass(unit); // P37 D: attribute declarations + every [Name(args)] attachment
+        checkAbstractClasses(unit); // review r5 #9 (before any body: construction reads abstractClassNames_)
 
         // Pre-register file-local definitions (functions, types + members, values) so a reference from any
         // user body resolves to one. The linker APPENDS merged std/import decls, so indices [0, userX) are
         // the entry file's own. (First decl of a name wins; overload precision is a follow-up.)
         if (model_ && req_) registerUserSymbols(unit);
+
+        // Type-check top-level const/let initializers first, so their types propagate. Review r5 (part 2): BEFORE
+        // the bodies, and an un-annotated value takes its initializer's type — every body read it as unknown, so
+        // `d.hello() + " "` on `let d = Derived()` was an untyped `+` (PHP added the strings: a TypeError).
+        for (auto& v : unit.values) {
+            if (!v.init) continue;
+            initDeclPos_ = v.pos; initDeclName_ = v.name;
+            TypeRef it = checkExpr(*v.init);
+            initDeclPos_ = {0, 0, 0};
+            if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
+            else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
+                diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
+            else if (concreteType(it)) values_[v.name] = it;
+        }
 
         for (std::size_t i = 0; i < unit.functions.size(); ++i) {
             auto& fn = unit.functions[i];
@@ -489,23 +510,16 @@ public:
             pushScope();
             for (const auto& p : d.params) declare(p.name, p.type, false, p.pos);
             checkCallSiteDefaults(d.params, "extension '" + d.receiver.name + "." + d.name + "'");
+            bodyKey_ = "ext:" + d.receiver.name + "." + d.name; // review r5 #4: followed from an initializer's call
             if (d.exprBody) { checkExpr(*d.exprBody); checkConvert(d.exprBody, d.returnType, "extension body"); }
             else checkBlock(d.body);
+            bodyKey_.clear();
             popScope();
             popGenerics(d.generics);
             currentThis_ = tUnknown();
         }
-        for (auto& v : unit.values) { // type-check top-level const/let initializers (so their types propagate)
-            if (!v.init) continue;
-            initDeclPos_ = v.pos; initDeclName_ = v.name;
-            TypeRef it = checkExpr(*v.init);
-            initDeclPos_ = {0, 0, 0};
-            if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
-            else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
-                diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
-        }
         assignLinkNames(unit);
-        checkThroughCalls(); // review r4 (part 2): what an initializer reads through the calls it makes
+        checkThroughCalls(unit); // review r4 (part 2): what an initializer reads through the calls it makes
         // P40 review (A9/B11): reachability, missing returns, field definite assignment, self-comparison.
         checkFlow(unit, diags_);
     }
@@ -519,6 +533,10 @@ private:
         SourcePos chosen; // the declaration sema bound (its FnSig::pos)
     };
     std::vector<CallSite> callSites_;
+    // P40 review r5 #14: every top-level function used as a value, with the declaration it names — its link name
+    // is decided with the calls' (a value kept the provisional one: C# CS0117, a PHP undefined function).
+    struct FnRefSite { Expr* ref; SourcePos decl; };
+    std::vector<FnRefSite> fnRefSites_;
 
     // Could a target with native overloading (C#) consider `sig` applicable to these argument types? Answers
     // "no" only when that is certain — an arity outside [required, all], or an argument that can never
@@ -535,6 +553,7 @@ private:
             if (t.name == "string") return 2;
             if (t.name == "bool") return 3;
             if (t.name == "char") return 4;
+            if (unionOrEnum(t.name)) return 6; // review r5 #15: a union/enum takes only itself (it was uncategorized)
             if (types_.count(t.name) && !interfaceNames_.count(t.name)) return 5;
             return 0;
         };
@@ -544,6 +563,7 @@ private:
             const int cp = category(p), ca = category(a);
             if (cp == 0 || ca == 0) continue;
             if (cp != ca) return false;
+            if (cp == 6 && a.name != p.name) return false;
             if (cp == 5 && a.name != p.name && !inheritsFrom(a.name, p.name)) return false;
         }
         return true;
@@ -565,6 +585,21 @@ private:
                 if (!sig.prelude && mayApply(sig, cs.args)) ++applicable;
             if (applicable > 1) clash.insert(cs.name);
         }
+        // P40 review r5 #13: declarations alone can clash too — two that C# sees as ONE signature (CS0111) whether or
+        // not anything calls them: type parameters differing only in name (`same<T>(T)` / `same<U>(U)`) and reference
+        // types differing only in nullability (`describe(string)` / `describe(string?)`). A lone declaration, or two
+        // with different C# signatures, keeps its plain name (round 4's e4/e4m).
+        {
+            std::unordered_map<std::string, std::set<std::string>> sigsByName;
+            for (const auto& fn : u.functions) {
+                if (fn.originModule == "<prelude>" || !fn.actualTarget.empty() || fn.isExpect) continue;
+                std::vector<std::string> gen;
+                for (const auto& g : fn.generics) gen.push_back(g.name);
+                std::string key = std::to_string(gen.size()) + "(";
+                for (const auto& p : fn.params) key += erasedCsType(p.type, gen) + ",";
+                if (!sigsByName[fn.name].insert(key).second) clash.insert(fn.name);
+            }
+        }
         std::unordered_map<std::string, std::string> byPos; // declaration position -> its link name
         auto key = [](const SourcePos& p) { return std::to_string(p.fileId) + ":" + std::to_string(p.line) + ":" + std::to_string(p.col); };
         for (auto& fn : u.functions) {
@@ -579,6 +614,85 @@ private:
         for (auto& cs : callSites_)
             if (auto it = byPos.find(key(cs.chosen)); it != byPos.end())
                 cs.call->linkName = it->second;
+        for (auto& fr : fnRefSites_) // review r5 #14: a function used as a value names the same declaration
+            if (auto it = byPos.find(key(fr.decl)); it != byPos.end())
+                fr.ref->linkName = it->second;
+    }
+    // P40 review r5 #9: every target now declares real abstract members (C# / TS / PHP `abstract`, Python
+    // `@abc.abstractmethod` on an `abc.ABC` class), so the shapes they reject are refused here: an abstract method
+    // with a body or outside an abstract class (CS0513 / TS1244), `abstract` on anything but a method, a concrete
+    // class leaving an inherited abstract method unimplemented (CS0534 / TS2515), and constructing an abstract
+    // class (CS0144 / TS2511 / a Python TypeError / a PHP Error).
+    std::unordered_set<std::string> abstractClassNames_;
+    void checkAbstractClasses(const CompilationUnit& u) {
+        std::unordered_map<std::string, const ClassDecl*> byName;
+        for (const auto& c : u.classes) if (!c.isExtern) byName[c.name] = &c;
+        auto has = [](const std::vector<std::string>& mods, const char* m) {
+            return std::find(mods.begin(), mods.end(), m) != mods.end();
+        };
+        for (const auto& c : u.classes) {
+            if (c.isExtern) continue;
+            const bool abstractCls = has(c.modifiers, "abstract");
+            if (abstractCls) abstractClassNames_.insert(c.name);
+            for (const auto& m : c.members) {
+                if (!has(m.modifiers, "abstract")) continue;
+                const SourcePos at = m.namePos.line ? m.namePos : m.pos;
+                if (m.kind != MemberKind::Method)
+                    diags_.error(at, "only a method can be 'abstract' ('" + m.name + "' in class '" + c.name + "')");
+                else if (m.hasBody)
+                    diags_.error(at, "abstract method '" + c.name + "." + m.name + "' has a body — an abstract method "
+                                     "declares a signature only; drop the body, or make it `open`");
+                else if (!abstractCls)
+                    diags_.error(at, "abstract method '" + m.name + "' in class '" + c.name + "', which is not abstract "
+                                     "— declare `abstract class " + c.name + "` (C# CS0513)");
+            }
+            if (abstractCls) continue;
+            std::set<std::string> implemented, seen;
+            for (const ClassDecl* k = &c; k && seen.insert(k->name).second;) {
+                for (const auto& m : k->members) {
+                    if (m.kind != MemberKind::Method || has(m.modifiers, "static")) continue;
+                    if (!has(m.modifiers, "abstract")) implemented.insert(m.name);
+                    else if (k != &c && !implemented.count(m.name)) { // its own: reported above
+                        diags_.error(c.namePos.line ? c.namePos : c.pos,
+                                     "class '" + c.name + "' does not implement the abstract method '" + k->name + "." +
+                                         m.name + "' — override it, or declare `abstract class " + c.name + "`");
+                        implemented.insert(m.name); // once per method
+                    }
+                }
+                const ClassDecl* next = nullptr;
+                for (const auto& b : k->bases)
+                    if (auto it = byName.find(b.name); it != byName.end()) { next = it->second; break; }
+                k = next;
+            }
+        }
+    }
+    // A parameter type as a C# signature sees it: a method type parameter by position, a reference type's
+    // nullability erased (a value type's `?` is Nullable<T>, a distinct type).
+    std::string erasedCsType(const TypeRef& t, const std::vector<std::string>& gen) const {
+        if (t.kind == TypeRef::Kind::Function) {
+            std::string s = "fn(";
+            for (const auto& a : t.args) s += erasedCsType(a, gen) + ",";
+            s += ")";
+            for (const auto& r : t.ret) s += erasedCsType(r, gen);
+            return s;
+        }
+        if (t.kind != TypeRef::Kind::Named) {
+            std::string s = "k" + std::to_string(static_cast<int>(t.kind)) + "(";
+            for (const auto& a : t.args) s += erasedCsType(a, gen) + ",";
+            return s + ")";
+        }
+        for (std::size_t i = 0; i < gen.size(); ++i)
+            if (gen[i] == t.name) return "!!" + std::to_string(i);
+        TypeRef base = t;
+        base.nullable = false;
+        const bool valueType = isNumericTypeName(base) || t.name == "bool" || t.name == "char" || enumNames_.count(t.name);
+        std::string s = t.name;
+        if (!t.args.empty()) {
+            s += "<";
+            for (const auto& a : t.args) s += erasedCsType(a, gen) + ",";
+            s += ">";
+        }
+        return s + (t.nullable && valueType ? "?" : "");
     }
     DiagnosticBag& diags_;
     std::unordered_set<const Expr*> allowedSupers_; // D6: the `super` callees of hoisted base-ctor calls
@@ -599,28 +713,46 @@ private:
     std::unordered_map<std::string, SourcePos> typeDeclPos_;   // user type / union case name -> decl pos
     SourcePos initDeclPos_{0, 0, 0};
     std::string initDeclName_;
+    // P40 review r5 #4: the class whose STATIC initializer is being checked ("" = a module value's initializer).
+    // A module value may use a class declared after it: the emission order places that class (with its bases and
+    // what its own statics reach) ahead of the value. A static initializer keeps source order.
+    std::string initClass_;
+    std::unordered_set<std::string> userClassNames_; // non-extern user classes (the ones the emission order may move)
     static bool posBefore(const SourcePos& a, const SourcePos& b) {
         return a.line < b.line || (a.line == b.line && a.col < b.col);
     }
     // `via` non-empty: `shown` is the base class of the used class `via` (a class is defined after its bases).
-    void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos, const std::string& via = "") {
+    // `cls` non-empty: the use needs class `cls` to exist (a construction, a static read or call, a base).
+    void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos, const std::string& via = "",
+                        const std::string& cls = "") {
         if (declPos.line == 0) return;
         if (initDeclPos_.line == 0) {
-            // P40 review r4 (part 2): not in an initializer — inside a free function or static method body, the
-            // use is recorded, so an initializer that CALLS this body is checked against it (checkThroughCalls).
-            if (!bodyKey_.empty() && lambdaDepth_ <= initLambdaFloor_) bodyReads_[bodyKey_].push_back({declPos, shown, via});
+            // P40 review r4 (part 2): not in an initializer — inside a body (r5: any body an initializer can run —
+            // a function, a static or instance method, a constructor, an extension), the use is recorded, so an
+            // initializer that CALLS this body is checked against it (checkThroughCalls).
+            if (!bodyKey_.empty() && lambdaDepth_ <= initLambdaFloor_) bodyReads_[bodyKey_].push_back({declPos, shown, via, cls});
             return;
         }
-        if (lambdaDepth_ > initLambdaFloor_ || declPos.fileId != initDeclPos_.fileId) return;
+        if (lambdaDepth_ > initLambdaFloor_) return;
+        // r5 #4: defining a class runs its static initializers, so they are what its definition reads.
+        if (!initClass_.empty()) bodyReads_["cls:" + initClass_].push_back({declPos, shown, via, cls});
+        if (declPos.fileId != initDeclPos_.fileId) return;
+        // r5 #4: a module value may use a class declared later — the emission order places the class (and its
+        // bases) first, and checkThroughCalls checks what defining it reads.
+        if (initClass_.empty() && userClassNames_.count(cls)) {
+            if (via.empty()) initCalls_.push_back({initDeclPos_, initDeclName_, usePos, "cls:" + cls, cls, "", true});
+            return;
+        }
         if (posBefore(declPos, initDeclPos_)) return;
         diags_.error(usePos, initOrderMessage(initDeclName_, shown, via, ""));
     }
     static std::string initOrderMessage(const std::string& init, const std::string& shown, const std::string& via,
-                                        const std::string& callee) {
+                                        const std::string& callee, bool uses = false) {
         const std::string what = !via.empty() ? "uses '" + via + "', whose base class '" + shown + "' is declared later"
                                  : callee.empty() ? "reads '" + shown + "', which is declared later"
                                                   : "reads '" + shown + "', declared later";
-        return "the initializer of '" + init + "' " + (callee.empty() ? what : "calls '" + callee + "', which " + what) +
+        return "the initializer of '" + init + "' " +
+               (callee.empty() ? what : (uses ? "uses '" : "calls '") + callee + "', which " + what) +
                " — TS, Python and PHP run initializers in declaration order (it would read an uninitialized value "
                "or fail; C# reads a default); declare '" + shown + "' first";
     }
@@ -628,7 +760,7 @@ private:
     // does not exist yet on TS (ReferenceError) or Python (NameError) when the initializer runs — nor does a
     // class whose base class is declared later (review r4 #7: a class is defined only after its bases).
     void noteTypeUse(const std::string& name, SourcePos usePos) {
-        if (auto it = typeDeclPos_.find(name); it != typeDeclPos_.end()) checkInitOrder(it->second, name, usePos);
+        if (auto it = typeDeclPos_.find(name); it != typeDeclPos_.end()) checkInitOrder(it->second, name, usePos, "", name);
         std::unordered_set<std::string> seen{name};
         std::vector<std::string> work{name};
         while (!work.empty()) {
@@ -638,7 +770,7 @@ private:
             if (ti == types_.end()) continue;
             for (const auto& b : ti->second.bases) {
                 if (interfaceNames_.count(b) || !seen.insert(b).second) continue;
-                if (auto bp = typeDeclPos_.find(b); bp != typeDeclPos_.end()) checkInitOrder(bp->second, b, usePos, name);
+                if (auto bp = typeDeclPos_.find(b); bp != typeDeclPos_.end()) checkInitOrder(bp->second, b, usePos, name, b);
                 work.push_back(b);
             }
         }
@@ -647,39 +779,128 @@ private:
     // method (or invokes a lambda in place) runs that body right then, so the body's reads count as the
     // initializer's. Bodies are keyed `fn:<file>:<line>:<col>` (a free function's declaration) or
     // `st:<Owner>.<method>`; lambdas inside them are deferred, except one invoked in place.
+    // P40 review r5 #4: every statically known body an initializer can run is followed — also `ctor:<Class>` (the
+    // constructor plus the instance field initializers), `m:<Class>.<name>` (an instance method or computed
+    // property, and every override of it), `ext:<Recv>.<name>` (an extension), a function passed as an argument,
+    // and `cls:<Class>` (defining the class: its static initializers). A class an initializer reaches is placed
+    // ahead of the value by the emission order (ValueDecl/ClassDecl::needsClasses); only a read of a module value
+    // declared at or after the initializer — a real cycle — is refused.
     std::string bodyKey_;
     int initLambdaFloor_ = 0; // lambda depth of an in-place-invoked lambda being checked (its body is not deferred)
-    struct BodyRead { SourcePos decl; std::string shown, via; };
+    struct BodyRead { SourcePos decl; std::string shown, via, cls; };
     std::unordered_map<std::string, std::vector<BodyRead>> bodyReads_;
     std::unordered_map<std::string, std::set<std::string>> bodyCalls_;
-    struct InitCall { SourcePos initPos; std::string initName; SourcePos callPos; std::string callee, calleeShown; };
+    struct InitCall {
+        SourcePos initPos; std::string initName; SourcePos callPos; std::string callee, calleeShown;
+        std::string initClass; // the class of a static initializer; "" for a module value
+        bool use = false;      // the initializer USES class `calleeShown` (no call): worded "uses"
+    };
     std::vector<InitCall> initCalls_;
+    std::unordered_map<std::string, std::set<std::string>> valueNeeds_; // module value -> classes it reaches
     static std::string fnBodyKey(const SourcePos& p) {
         return "fn:" + std::to_string(p.fileId) + ":" + std::to_string(p.line) + ":" + std::to_string(p.col);
     }
     void noteDirectCall(const std::string& key, const std::string& shown, SourcePos callPos) {
         if (lambdaDepth_ > initLambdaFloor_) return; // inside a lambda: runs whenever it is called
-        if (initDeclPos_.line != 0) initCalls_.push_back({initDeclPos_, initDeclName_, callPos, key, shown});
-        else if (!bodyKey_.empty()) bodyCalls_[bodyKey_].insert(key);
+        if (initDeclPos_.line != 0) {
+            initCalls_.push_back({initDeclPos_, initDeclName_, callPos, key, shown, initClass_});
+            if (!initClass_.empty()) bodyCalls_["cls:" + initClass_].insert(key); // r5 #4: defining the class runs it
+        } else if (!bodyKey_.empty()) bodyCalls_[bodyKey_].insert(key);
     }
-    void checkThroughCalls() {
+    // The class whose body a key names (`st:`/`m:`/`ctor:`/`cls:`); "" for a free function or an extension.
+    static std::string bodyOwner(const std::string& k) {
+        for (const char* p : {"st:", "m:"})
+            if (k.rfind(p, 0) == 0) { std::string s = k.substr(std::strlen(p)); return s.substr(0, s.find('.')); }
+        for (const char* p : {"ctor:", "cls:"})
+            if (k.rfind(p, 0) == 0) return k.substr(std::strlen(p));
+        return "";
+    }
+    // Every body a key may run next: its recorded calls, and for an instance member every override of it.
+    void forEachCallee(const std::string& k, const std::function<void(const std::string&)>& f) const {
+        if (auto c = bodyCalls_.find(k); c != bodyCalls_.end())
+            for (const auto& n : c->second) f(n);
+        if (k.rfind("m:", 0) == 0) {
+            const std::string owner = bodyOwner(k), name = k.substr(2 + owner.size() + 1);
+            for (const auto& [t, info] : types_) {
+                if (t == owner || !inheritsFrom(t, owner)) continue;
+                for (const auto& m : info.members)
+                    if (m.name == name && !m.isStatic) { f("m:" + t + "." + name); break; }
+            }
+        }
+    }
+    void checkThroughCalls(CompilationUnit& u) {
+        // A constructor runs its base class's constructor; defining a class needs its base class defined.
+        for (const auto& c : u.classes) {
+            if (c.isExtern) continue;
+            for (const auto& b : c.bases)
+                if (userClassNames_.count(b.name)) {
+                    bodyCalls_["ctor:" + c.name].insert("ctor:" + b.name);
+                    bodyCalls_["cls:" + c.name].insert("cls:" + b.name);
+                }
+        }
         for (const auto& ic : initCalls_) {
+            const bool isValue = ic.initClass.empty();
             std::set<std::string> seen{ic.callee};
             std::vector<std::string> work{ic.callee};
             bool reported = false;
             while (!work.empty() && !reported) {
                 const std::string k = work.back();
                 work.pop_back();
+                if (isValue && k.rfind("cls:", 0) == 0) { // a class the value needs: placed ahead of it
+                    const std::string cn = k.substr(4);
+                    if (auto tp = typeDeclPos_.find(cn); tp != typeDeclPos_.end() && tp->second.fileId == ic.initPos.fileId)
+                        valueNeeds_[ic.initName].insert(cn);
+                }
                 if (auto r = bodyReads_.find(k); r != bodyReads_.end())
-                    for (const auto& rd : r->second)
-                        if (rd.decl.fileId == ic.initPos.fileId && !posBefore(rd.decl, ic.initPos)) {
-                            diags_.error(ic.callPos, initOrderMessage(ic.initName, rd.shown, rd.via, ic.calleeShown));
+                    for (const auto& rd : r->second) {
+                        if (isValue && userClassNames_.count(rd.cls)) { // ordered ahead of the value, not refused
+                            if (seen.insert("cls:" + rd.cls).second) work.push_back("cls:" + rd.cls);
+                            continue;
+                        }
+                        // r5 #12: code OUTSIDE a class cannot see the class while its static initializers run (TS
+                        // binds the class name only after the class is defined: a ReferenceError).
+                        if (!isValue && rd.cls == ic.initClass && bodyOwner(k) != ic.initClass) {
+                            diags_.error(ic.callPos, "the initializer of '" + ic.initName + "' calls '" + ic.calleeShown +
+                                                         "', which reads '" + rd.shown + "' while class '" + ic.initClass +
+                                                         "' is still being defined — TS binds a class's name only after "
+                                                         "its static initializers ran (a ReferenceError); read it directly "
+                                                         "in the initializer, or make the helper a `static fn` of '" +
+                                                         ic.initClass + "'");
                             reported = true;
                             break;
                         }
-                if (auto c = bodyCalls_.find(k); c != bodyCalls_.end())
-                    for (const auto& n : c->second) if (seen.insert(n).second) work.push_back(n);
+                        if (rd.decl.fileId == ic.initPos.fileId && !posBefore(rd.decl, ic.initPos)) {
+                            diags_.error(ic.callPos, initOrderMessage(ic.initName, rd.shown, rd.via, ic.calleeShown, ic.use));
+                            reported = true;
+                            break;
+                        }
+                    }
+                if (reported) break;
+                forEachCallee(k, [&](const std::string& n) { if (seen.insert(n).second) work.push_back(n); });
             }
+        }
+        // What each module value and each class definition needs placed before it (ir::declarationOrder).
+        for (auto& v : u.values)
+            if (auto it = valueNeeds_.find(v.name); it != valueNeeds_.end())
+                v.needsClasses.assign(it->second.begin(), it->second.end());
+        for (auto& c : u.classes) {
+            if (c.isExtern) continue;
+            std::set<std::string> needs, seen{"cls:" + c.name};
+            std::vector<std::string> work{"cls:" + c.name};
+            while (!work.empty()) {
+                const std::string k = work.back();
+                work.pop_back();
+                if (auto r = bodyReads_.find(k); r != bodyReads_.end())
+                    for (const auto& rd : r->second)
+                        if (userClassNames_.count(rd.cls) && seen.insert("cls:" + rd.cls).second) work.push_back("cls:" + rd.cls);
+                forEachCallee(k, [&](const std::string& n) { if (seen.insert(n).second) work.push_back(n); });
+                if (k.rfind("cls:", 0) == 0 && k != "cls:" + c.name) {
+                    const std::string cn = k.substr(4);
+                    if (auto tp = typeDeclPos_.find(cn); tp != typeDeclPos_.end() && tp->second.fileId == c.pos.fileId)
+                        needs.insert(cn);
+                }
+            }
+            c.needsClasses.assign(needs.begin(), needs.end());
         }
     }
     std::unordered_map<std::string, FnSig> unionCtors_;        // union case name -> ctor sig
@@ -788,7 +1009,7 @@ private:
     void popScope() {
         std::vector<std::pair<SourcePos, std::string>> unused;
         for (const auto& [n, l] : scopes_.back()) {
-            if (!l.constInit || l.reads != 0 || n.empty()) continue;
+            if (!l.constInit || l.reads != 0 || n.empty() || l.nonConstAssign) continue;
             if (n[0] != '_') { unused.push_back({l.declPos, n}); continue; }
             // P40 review r4 (part 2): the documented `_` opt-out. The declaration has no effect (its initializer is
             // a constant), so it is dropped — C# would report the kept local as CS0219 under TreatWarningsAsErrors.
@@ -1263,7 +1484,7 @@ private:
         };
         for (const auto& d : u.classes) noteStatics(d.name, d.members);
         for (const auto& d : u.records) noteStatics(d.name, d.members);
-        for (const auto& d : u.classes) if (!d.isExtern) typeDeclPos_[d.name] = d.pos;
+        for (const auto& d : u.classes) if (!d.isExtern) { typeDeclPos_[d.name] = d.pos; userClassNames_.insert(d.name); }
         for (const auto& d : u.records) typeDeclPos_[d.name] = d.pos;
         for (const auto& d : u.enums) typeDeclPos_[d.name] = d.pos;
         for (const auto& d : u.unions) { typeDeclPos_[d.name] = d.pos; for (const auto& c : d.cases) typeDeclPos_[c.name] = d.pos; }
@@ -1511,6 +1732,21 @@ private:
             for (const auto& m : members) {
                 bool hasOverride = false;
                 for (const auto& mod : m.modifiers) if (mod == "override") hasOverride = true;
+                { // P40 review r5 #10: a static is never dispatched virtually — C# CS0112 (`static virtual`/`override`)
+                    bool isStatic = m.kind == MemberKind::Const;
+                    std::string virt;
+                    for (const auto& mod : m.modifiers) {
+                        if (mod == "static") isStatic = true;
+                        if (mod == "open" || mod == "override" || mod == "abstract") virt = mod;
+                    }
+                    if (isStatic && !virt.empty()) {
+                        diags_.error(m.namePos.line ? m.namePos : m.pos,
+                                     "static member '" + m.name + "' cannot be '" + virt + "' — a static is not "
+                                     "inherited or dispatched virtually (C# CS0112); remove '" + virt +
+                                     "', or make it an instance member");
+                        continue;
+                    }
+                }
                 if (!hasOverride) {
                     // P40 review r3 2(f): redeclaring an inherited INSTANCE member without `override` is member
                     // hiding — C# binds it non-virtually (CS0108 is only a warning: `Base`-typed access sees the
@@ -1689,7 +1925,7 @@ private:
     // P40 review r4 (part 2): an f32 constant expression (`0.1f + 0.2f`) — every float literal f32-suffixed — folds
     // in single precision, each operation rounded to f32 as C# folds it, to an f32 literal. (The f64 fold below read
     // `0.1f` as the double 0.1 and produced an f64 literal, refused as "f64 to f32".)
-    static bool foldF32(const Expr* e, float& v) {
+    static bool foldF32(const Expr* e, float& v, bool* nonFinite = nullptr) { // r5: nonFinite = an f32 overflow
         if (!e) return false;
         if (e->kind == ExprKind::FloatLit) {
             if (floatLitType(e->text) != "f32") return false;
@@ -1698,14 +1934,16 @@ private:
             if (d.size() >= 3 && d.compare(d.size() - 3, 3, "f32") == 0) d.resize(d.size() - 3);
             else if (!d.empty() && d.back() == 'f') d.pop_back();
             v = std::strtof(d.c_str(), nullptr);
+            if (!(v == v && v - v == 0) && nonFinite) *nonFinite = true;
             return v == v && v - v == 0;
         }
-        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldF32(e->lhs.get(), v)) return false; v = -v; return true; }
+        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldF32(e->lhs.get(), v, nonFinite)) return false; v = -v; return true; }
         if (e->kind == ExprKind::Binary && (e->text == "+" || e->text == "-" || e->text == "*" || e->text == "/")) {
             float a, b;
-            if (!foldF32(e->lhs.get(), a) || !foldF32(e->rhs.get(), b)) return false;
+            if (!foldF32(e->lhs.get(), a, nonFinite) || !foldF32(e->rhs.get(), b, nonFinite)) return false;
             volatile float r = e->text == "+" ? a + b : e->text == "-" ? a - b : e->text == "*" ? a * b : a / b;
             v = r;
+            if (!(v == v && v - v == 0) && nonFinite) *nonFinite = true;
             return v == v && v - v == 0; // finite
         }
         return false;
@@ -1726,6 +1964,14 @@ private:
             bool foldedF32 = false; // r4: an all-f32 default folded in single precision (skip the f64 fold)
             if (p.defaultValue->kind == ExprKind::Binary || p.defaultValue->kind == ExprKind::Unary) {
                 float f32v = 0;
+                bool f32Overflow = false;
+                if (p.defaultValue->kind == ExprKind::Binary && !foldF32(p.defaultValue.get(), f32v, &f32Overflow) &&
+                    f32Overflow) { // review r5 (part 2): it was refused as "f64 to f32" (the f64 fold is finite)
+                    diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
+                                 "the default of '" + p.name + "' in " + what + " is not a finite f32 — it overflows "
+                                 "single precision; no target can spell an infinity as a constant default");
+                    continue;
+                }
                 if (p.defaultValue->kind == ExprKind::Binary && foldF32(p.defaultValue.get(), f32v)) {
                     foldedF32 = true;
                     std::string txt;
@@ -1865,6 +2111,8 @@ private:
                 inAsync_ = m.isAsync;
                 inCtor_ = m.kind == MemberKind::Constructor;
                 if (isStatic && m.kind == MemberKind::Method) bodyKey_ = "st:" + typeName + "." + m.name; // review r4
+                else if (m.kind == MemberKind::Method) bodyKey_ = "m:" + typeName + "." + m.name;         // review r5 #4
+                else if (m.kind == MemberKind::Constructor) bodyKey_ = "ctor:" + typeName;              // review r5 #4
                 scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
@@ -1872,10 +2120,22 @@ private:
                 // D6: the one legal `super` — a top-level `super(…)` statement in a constructor body, the exact
                 // shape lowering hoists into the base-constructor call. Every other `super` is refused.
                 if (m.kind == MemberKind::Constructor)
-                    for (const auto& st : m.body)
+                    for (std::size_t si = 0; si < m.body.size(); ++si) {
+                        const auto& st = m.body[si];
                         if (st->kind == StmtKind::ExprStmt && st->value && st->value->kind == ExprKind::Call &&
-                            st->value->lhs && st->value->lhs->kind == ExprKind::Super)
+                            st->value->lhs && st->value->lhs->kind == ExprKind::Super) {
                             allowedSupers_.insert(st->value->lhs.get());
+                            // P40 review r5 #8: the base constructor runs before the constructor's first statement
+                            // (SPEC §4.4) — C# `: base(…)` cannot see a local, and the other targets would run
+                            // a statement written first after it. Every target needs `super(…)` first.
+                            if (si != 0)
+                                diags_.error(m.body[0]->pos, "a statement before `super(…)` in the constructor of '" +
+                                                                 typeName + "' — the base constructor runs first on "
+                                                                 "every target (C# `: base(…)` cannot see a local); "
+                                                                 "make `super(…)` the first statement, computing its "
+                                                                 "arguments inline or in a `static fn`");
+                        }
+                    }
                 if (m.hasBody && m.exprBodied && m.exprBody) { checkExpr(*m.exprBody); if (m.kind != MemberKind::Constructor) checkConvert(m.exprBody, m.returnType, "method body"); }
                 else if (m.hasBody) checkBlock(m.body);
                 popScope();
@@ -1891,19 +2151,24 @@ private:
                 bool isStatic = m.kind == MemberKind::Const;
                 for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
                 currentThis_ = isStatic ? tUnknown() : tNamed(typeName);
-                if (isStatic) { initDeclPos_ = m.pos; initDeclName_ = typeName + "." + m.name; }
+                if (isStatic) { initDeclPos_ = m.pos; initDeclName_ = typeName + "." + m.name; initClass_ = typeName; }
+                else bodyKey_ = "ctor:" + typeName; // review r5 #4: an instance field initializer runs in the constructor
                 pushScope();
                 checkExpr(*m.init);
                 initDeclPos_ = {0, 0, 0};
+                initClass_.clear();
+                bodyKey_.clear();
                 checkConvert(m.init, m.type, "initializer of field '" + m.name + "'");
                 popScope();
                 currentThis_ = tNamed(typeName);
             } else if (m.kind == MemberKind::Property && (m.init || !m.body.empty() || m.hasSetter)) {
                 currentReturn_ = m.type;
                 pushScope();
+                bodyKey_ = "m:" + typeName + "." + m.name; // review r5 #4: a getter runs where the property is read
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                 if (m.init) { checkExpr(*m.init); checkConvert(m.init, m.type, "property getter"); }
                 else if (!m.body.empty()) checkBlock(m.body); // block-bodied getter (accessor block, #39c)
+                bodyKey_.clear();
                 popScope();
                 if (m.hasSetter) { // the setter body sees `this`, the record fields, and the value param
                     currentReturn_ = namedType("unit");
@@ -2392,6 +2657,16 @@ private:
         Ty a = scalarTyOf(target), i = scalarTyOf(from);
         if (a != Ty::Unknown && i != Ty::Unknown && a != i)
             diags_.error(slot->pos, std::string("type mismatch (") + ctx + "): expected " + tyName(a) + ", found " + tyName(i));
+        // P40 review r5 #15: a scalar never converts to a declared type (a class, record, interface, union or enum),
+        // nor the reverse, and a union or enum converts only to itself — `kind(5)` bound `kind(s: Shape)` (C#
+        // CS1503, TS2345; Python and PHP printed "shape").
+        if ((a == Ty::Unknown) != (i == Ty::Unknown) ? declaredUserType(a == Ty::Unknown ? target : from)
+                                                     : (a == Ty::Unknown && declaredUserType(from) && declaredUserType(target) &&
+                                                        from.name != target.name &&
+                                                        (unionOrEnum(from.name) || unionOrEnum(target.name)))) {
+            diags_.error(slot->pos, "cannot convert '" + showTy(from) + "' to '" + showTy(target) + "' (" + ctx + ")");
+            return;
+        }
         // Nominal subtyping (issue #29): a known user type flowing into a differently-named known user-type
         // slot is valid only when the source extends/implements the target — previously ANY named-type
         // mismatch passed silently and failed (or dispatched wrongly) in the generated target code.
@@ -2426,6 +2701,14 @@ private:
                                    target.name + "' (" + ctx + "); give it a wider type (e.g. '" + lit->text + "i64')");
         return false;
     }
+
+    // review r5 #15: a type the program declares (class, record, interface, union, enum) — not a type parameter,
+    // not a std carrier (`List`, …), not a scalar.
+    bool declaredUserType(const TypeRef& t) const {
+        return t.kind == TypeRef::Kind::Named && !t.name.empty() && !genericsInScope_.count(t.name) &&
+               (typeDeclPos_.count(t.name) || interfaceNames_.count(t.name)) && !unionCaseOwner_.count(t.name);
+    }
+    bool unionOrEnum(const std::string& n) const { return unionAllCases_.count(n) || enumNames_.count(n); }
 
     // A member that holds a value (a field, const or computed property) rather than a callable method.
     static bool isValueMember(const MemberInfo& m) {
@@ -2641,6 +2924,7 @@ private:
                         Local* ml = lookupMut(nm);
                         ml->assigns++;
                         if (s.op != "=") ml->reads++; // a compound reads the target
+                        else if (!isConstExpr(s.value.get())) ml->nonConstAssign = true; // review r5 #17: no CS0219
                         ml->nonNull = false;
                         // P37 C7: a compound op on a USER type converts against the operator member's own
                         // signature (lenient, like binary resolution) — the rhs is the operator's operand,
@@ -2701,7 +2985,14 @@ private:
                 }
                 break;
             }
-            case StmtKind::ExprStmt: checkExpr(*s.value); break;
+            case StmtKind::ExprStmt:
+                checkExpr(*s.value);
+                // review r5 (part 2): a bare function name is a value, not a call — C# CS0201 (it emitted
+                // `PolyglotProgram.five;`), and a no-op elsewhere.
+                if (s.value->kind == ExprKind::Name && s.value->fnRef)
+                    diags_.error(s.value->pos, "'" + s.value->text + "' names a function but does not call it — "
+                                               "write '" + s.value->text + "()'");
+                break;
             case StmtKind::Throw:    if (s.value) checkExpr(*s.value); break;
             case StmtKind::Yield:
                 if (inAsync_)
@@ -3497,7 +3788,7 @@ private:
         if (const MemberInfo* m = enclosingStatic(e.text)) {
             e.staticOwner = currentClass_;
             if (auto dp = staticDeclPos_.find(currentClass_ + "." + e.text); dp != staticDeclPos_.end())
-                checkInitOrder(dp->second, currentClass_ + "." + e.text, e.pos);
+                checkInitOrder(dp->second, currentClass_ + "." + e.text, e.pos, "", currentClass_);
             return m->type;
         }
         if (auto f = fns_.find(e.text); f != fns_.end()) return checkFnRef(e, f->second);
@@ -3530,7 +3821,9 @@ private:
         if (auto it = fnDefId_.find(e.text); it != fnDefId_.end()) recordRef(e.pos, e.text, it->second);
         e.fnRef = true;
         e.overloadName = sig.mangled.empty() ? e.text : sig.mangled;
-        e.linkName = sig.linkName;
+        e.linkName = sig.linkName;     // provisional, like a call's: assignLinkNames rewrites it (review r5 #14)
+        e.uniqueName = sig.uniqueName; // review r5 #14: PHP names the function by its unique name
+        fnRefSites_.push_back({&e, sig.pos});
         TypeRef ft; ft.kind = TypeRef::Kind::Function;
         ft.args = sig.params;
         ft.ret.push_back(sig.isAsync ? awaitable(sig.result) : sig.result);
@@ -3990,7 +4283,7 @@ private:
             if (const MemberInfo* m = findMember(e.lhs->text, e.text)) {
                 if (auto it = memberDefId_.find(e.lhs->text + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
                 if (auto dp = staticDeclPos_.find(e.lhs->text + "." + e.text); dp != staticDeclPos_.end())
-                    checkInitOrder(dp->second, e.lhs->text + "." + e.text, e.pos);
+                    checkInitOrder(dp->second, e.lhs->text + "." + e.text, e.pos, "", e.lhs->text);
                 TypeRef t = m->type; if (e.flag) t.nullable = true; return t;
             }
             diags_.error(e.pos, "type '" + e.lhs->text + "' has no member '" + e.text + "'");
@@ -4003,6 +4296,8 @@ private:
         if (knownType(recv)) {
             if (MemberHit hit = findMemberOn(recv, e.text); hit.m) {
                 result = memberTypeOf(hit, hit.m->type, e.pos); // P40 slice 7: `Box<i32>.value` is i32, not T
+                if (hit.m->kind == MemberKind::Property) // review r5 #4: reading a computed property runs its getter
+                    noteDirectCall("m:" + hit.owner + "." + e.text, recv.name + "." + e.text, e.pos);
                 if (auto it = memberDefId_.find(recv.name + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
             } else diags_.error(e.pos, "type '" + recv.name + "' has no member '" + e.text + "'");
         } else if (recv.kind == TypeRef::Kind::Function) { // P40 review r3 item 6: was accepted, emitted verbatim
@@ -4086,7 +4381,12 @@ private:
         }
 
         std::vector<TypeRef> argTypes;
-        for (auto& a : e.args) argTypes.push_back(checkExpr(*a));
+        for (auto& a : e.args) {
+            argTypes.push_back(checkExpr(*a));
+            // review r5 (part 2): a function passed as an argument may run inside the call — follow its body
+            if (a->kind == ExprKind::Name && a->fnRef && !fnRefSites_.empty() && fnRefSites_.back().ref == a.get())
+                noteDirectCall(fnBodyKey(fnRefSites_.back().decl), a->text, a->pos);
+        }
 
         if (e.lhs->kind == ExprKind::Member) {
             // Method call `recv.method(args)`.
@@ -4143,6 +4443,7 @@ private:
             // `type 'T' has no method` error doesn't fire for a method an extension actually supplies.
             if (recv.kind == TypeRef::Kind::Named) {
                 if (auto it = extensions_.find(recv.name + "." + method); it != extensions_.end()) {
+                    noteDirectCall("ext:" + recv.name + "." + method, recv.name + "." + method, e.pos); // review r5 #4
                     // #56b: bidirectionally instantiate a lambda arg's param types from the extension's
                     // function-typed param (generics bound from the receiver — List<T> vs List<string> -> T=
                     // string), then RE-CHECK the lambda body so std methods on those params bind (else
@@ -4193,6 +4494,8 @@ private:
                     if (m->kind == MemberKind::Operator)
                         diags_.error(e.pos, "'" + method + "' is an operator member of '" + hit.owner +
                                                 "'; use its operator instead of calling it by name");
+                    // review r5 #4: an instance method call runs that body (or an override's) right away
+                    noteDirectCall("m:" + hit.owner + "." + method, recv.name + "." + method, e.pos);
                     if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                     // P40 slice 7: the class's type params come from the receiver (`Box<i32>.set(v: T)` takes
                     // an i32), then the method's own params are inferred from the args as for a free fn.
@@ -4312,6 +4615,9 @@ private:
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
             noteTypeUse(name, e.pos);
+            noteDirectCall("ctor:" + name, name, e.pos); // review r5 #4: the constructor (and field initializers) run now
+            if (abstractClassNames_.count(name)) // review r5 #9
+                diags_.error(e.pos, "cannot construct abstract class '" + name + "' — construct a concrete subclass");
             if (auto it = typeDefId_.find(name); it != typeDefId_.end()) recordRef(e.lhs->pos, name, it->second);
             // P40 slice 7: a generic type's construction binds its type params — from explicit args
             // (`Box<i32>(7)`), else inferred from the ctor args (`Box(7)` is Box<i32>, and the args are
@@ -4430,6 +4736,14 @@ private:
                 TypeRef r = inferResult(m->generics, m->params, argTypes, m->type);
                 return m->isAsync ? awaitable(r) : r;
             }
+        }
+        // review r5 (part 2): a module value of function type is called through its value (`twice(4)`), like a
+        // function-typed local — it was "call to undeclared function".
+        if (auto v = values_.find(name); v != values_.end() && v->second.kind == TypeRef::Kind::Function) {
+            TypeRef ft = checkName(*e.lhs); // the read: init-order checks, references, the declared type
+            e.lhs->type = ft;
+            e.calleeIsField = true; // lowered through the callee value, like a function-typed field
+            return callFunctionValue(ft, argTypes, e, "'" + name + "'");
         }
         diags_.error(e.pos, "call to undeclared function '" + name + "'");
         return tUnknown();

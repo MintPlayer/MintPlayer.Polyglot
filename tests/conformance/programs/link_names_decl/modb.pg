@@ -1,0 +1,3 @@
+fn describe(s: string?): string => "b:" + (s ?? "none")
+fn same<U>(x: U): U => x
+fn helperB(): i32 => 2

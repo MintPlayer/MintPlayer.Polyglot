@@ -1,0 +1,13 @@
+// REFUSED (P40 review r5, part 2): `seed`, passed to `apply` as a value, runs inside `a`'s initializer and reads
+// `b`, declared later. C# printed 0, TS threw a ReferenceError, Python a NameError, PHP printed null.
+import "std.io"
+
+fn apply(f: () => i32): i32 => f()
+fn seed(): i32 => b
+
+let a: i32 = apply(seed)
+let b: i32 = 5
+
+fn main() {
+  print(a)
+}
