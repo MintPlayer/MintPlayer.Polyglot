@@ -5,9 +5,18 @@ import struct
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as fh:
-    prelude = json.load(fh)["spec"]["preludes"]["fstr"]
+    spec = json.load(fh)["spec"]
+preludes, requires = spec["preludes"], spec.get("preludeRequires", {})
+order = []
+def need(name):  # the emitter's rule: a prelude's `preludeRequires` come first (e.g. `import builtins`)
+    if name in order:
+        return
+    for dep in requires.get(name, []):
+        need(dep)
+    order.append(name)
+need("fstr")
 scope = {}
-exec(prelude, scope)
+exec("\n".join(preludes[n] for n in order), scope)
 pg_str = scope["_pg_str"]
 
 n = bad = 0
