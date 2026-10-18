@@ -3580,7 +3580,7 @@ int main() {
         const char* js = R"({ "name":"demo", "scalarType":{"i32":"int"}, "intSuffix":{"i64":"L"},
             "binaryOp":{"==":"==="}, "delimited":{"tuple":{"open":"[","sep":", ","close":"]"}},
             "blockStyle":"colonIndent", "stmtEnd":"", "throwKeyword":"raise",
-            "trueLit":"True","falseLit":"False","nullLit":"None" })";
+            "trueLit":"True","falseLit":"False","nullLit":"None", "assignmentOrder":"targetFirst" })";
         SpecLoadResult r = loadBackendSpec(js);
         check(r.ok && r.spec.name == "demo" && r.spec.scalarType.at("i32") == "int" &&
               r.spec.binOp("==") == "===" && r.spec.blockStyle == BlockStyle::ColonIndent &&
@@ -3591,6 +3591,10 @@ int main() {
         // Missing name / unknown blockStyle fail loudly (never a silent bad spec).
         check(!loadBackendSpec(R"({"scalarType":{}})").ok, "P18: spec without 'name' is rejected");
         check(!loadBackendSpec(R"({"name":"x","blockStyle":"squiggly"})").ok, "P18: unknown blockStyle is rejected");
+        // P40 review r7: an error pushed without an early return still fails the load (it used to be dropped).
+        check(!loadBackendSpec(R"({"name":"x"})").ok, "r7: a spec without the required 'assignmentOrder' is rejected");
+        check(!loadBackendSpec(R"({"name":"x","assignmentOrder":"targetFirst","exprStmt":{"bogus":1}})").ok,
+              "r7: an unknown exprStmt key fails the load");
 
         // Round-trip: serialize → parse → equal struct.
         SpecLoadResult back = loadBackendSpec(backendSpecToJson(r.spec));
@@ -3737,11 +3741,11 @@ int main() {
         // A minimal artifact missing nearly every rule: the coverage contract must name the first gap
         // (a construct with no rule and no declared stance).
         check(!loadBackend(R"({"schema":2,"name":"stubby",
-                              "spec":{"name":"stubby"},"rules":{"Program":"x","Type":"x"}})", err) &&
+                              "spec":{"name":"stubby","assignmentOrder":"targetFirst"},"rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "anti-silent-drop"),
               "P19: loadBackend refuses a plugin with undeclared coverage gaps");
         // A "native" capability claim with no rule behind it is also a lie the loader catches.
-        check(!loadBackend(R"({"schema":2,"name":"stubby2","spec":{"name":"stubby2"},
+        check(!loadBackend(R"({"schema":2,"name":"stubby2","spec":{"name":"stubby2","assignmentOrder":"targetFirst"},
                               "capabilities":{"patternMatching":"native"},
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "no rule"),
@@ -3752,7 +3756,7 @@ int main() {
     {
         // An unknown capability key is a LOAD error — never a silently-defaulted-to-native typo.
         std::string err;
-        check(!loadBackend(R"({"schema":2,"name":"stubby3","spec":{"name":"stubby3"},
+        check(!loadBackend(R"({"schema":2,"name":"stubby3","spec":{"name":"stubby3","assignmentOrder":"targetFirst"},
                               "capabilities":{"operatorOverloadng":"native"},
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "unknown capability key 'operatorOverloadng'"),
@@ -5216,7 +5220,7 @@ int main() {
         // The vocabulary is CLOSED: an unknown style is a plugin LOAD ERROR, never a silent default —
         // that is what makes version skew loud (the `blockStyle` precedent).
         const std::string head =
-            "{\"schema\":2,\"name\":\"t\",\"spec\":{\"name\":\"t\"},"
+            "{\"schema\":2,\"name\":\"t\",\"spec\":{\"name\":\"t\",\"assignmentOrder\":\"targetFirst\"},"
             "\"rules\":{\"Program\":{\"line\":\"\"},\"Type\":{\"line\":\"\"}},";
         std::string err;
         check(!validateBackend(head + "\"originMapping\":{\"style\":\"dwarf\"}}", err) &&

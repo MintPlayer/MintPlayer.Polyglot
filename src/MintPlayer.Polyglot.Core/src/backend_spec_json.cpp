@@ -300,7 +300,9 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
         }
     }
 
-    r.ok = true;
+    // Anti-silent-drop: every check above that pushes an error without returning (an unknown exprStmt key, a
+    // bad assignmentOrder, …) still fails the load — a spec is either fully valid or not loaded.
+    r.ok = r.errors.empty();
     return r;
 }
 
