@@ -136,7 +136,7 @@ Every key `loadBackendSpec` reads (all optional except `name`; defaults shown wh
 | `rethrow` | string | The value-less rethrow statement, terminator included; default `"throw;"` (PHP: `"throw $__e;"`). |
 | `trueLit` / `falseLit` / `nullLit` | string | Literal spellings; defaults `true`/`false`/`null` (Python: `True`/`False`/`None`). |
 | `literals` | object of contexts | **Required** `string` context, plus `interp` / `char` as the target needs (P40). Each context has `quote` (its delimiter), `map` (source sequence → replacement, longest match wins; must escape `\` and the quote; PHP adds `$` → `\$`), `codepoint` (how a character the Core must escape is spelled: `\u$H4`, `\u{$H}`; `$H4`/`$H8` pad, `$H` is minimal) and optional `astral` (a `$H8`/`$H` template, or `"surrogates"`, the default). The Core alone decides *which* characters escape — C0, DEL, C1 (incl. U+0085), U+2028/2029, U+FEFF — and printable non-ASCII passes through raw. NUL is never `\0` (the octal trap). Read by `{"fn":"quoted"}` / `{"fn":"literal"}`. |
-| `tables` | map of maps | Named lookup tables for `{"fn":"table"}` / `{"fn":"subst"}`. Two are read by the shared statement walk: `localDecl` (`mutable`/`const` templates, `$x` = the name — PHP `"$$x"`, TS `let $x`/`const $x`) and `yield` (`value`/`empty` — PHP `"yield $x;"` / `"return;"`). TS also carries `opMethod` and `bigNarrow`. |
+| `tables` | map of maps | Named lookup tables for `{"fn":"table"}` / `{"fn":"subst"}`. Two are read by the shared statement walk: `localDecl` (`mutable`/`const` templates, `$x` = the name — PHP `"$$x"`, TS `let $x`/`const $x`) and `yield` (`value`/`empty` — PHP `"yield $x;"` / `"return;"`); `localDeclTyped` (the same with `$T` = the declared type) and `localNullInit.typed` (P40 review r6: a `null` initializer of a typed local, `$x` = `null`, `$T` = the type — TS `"$x as $T"`, because tsc narrows `let t: T \| null = null` to `null` and a read after `t !== null` is `never`; absent = the bare `null`). TS also carries `opMethod` and `bigNarrow`. |
 | `generics` | object | `{"style", "boundsIntro", "boundsSep", "erase"}`. `style`: `"whereClauses"` (C# `<T> where T : A`) \| `"inlineBounds"` (TS `<T extends A>`) \| `""` (none). `erase` lists compile-time-only bounds (`INumber`, `IMapKey`). A marker bound that is NOT erased renders through its std type binding instead: C# binds `"IMapKey.type": "notnull"`, so `<K: IMapKey>` emits `where K : notnull` (what `OrderedDictionary<K, V>` demands). |
 | `wrapAtom` | object | `{"recvPrimary": [...], "unary": [...]}`. `recvPrimary` lists the IR kinds this target emits as a **primary** expression (`"var"`, `"this"`, `"call"`, `"methodCall"`, `"member"`, `"index"`, `"str"`, `"char"`, `"bool"`, `"null"`, `"int"`, `"float"`, `"listLit"`, `"tuple"`, `"interp"`, `"extern"`, `"new"`, `"makeCase"`, `"nullAssert"`, …); a receiver of **any other** kind is parenthesized, so an unlisted or new kind is safe by default. Derived, not listed: a binary routed to an `opMethod` method is a call, and a bound template is primary iff it is lexically atomic. `unary` lists the kinds a unary operand wraps: `"binary"`, `"unary"`, `"cast"`, `"cond"`, `"binaryScalar"`. |
 | `absentNormalize` | object | `{"prefix": "(", "suffix": " ?? null)", "foldedBy": ["coalesce", "nullAssert", "nullSafe"]}` (P40 review A1, r4) — the wrapper a bound template puts around a value only to fold a second absent form into the one `T?` absence (TS: `undefined` into `null`). Where the bound call flows straight into a consumer listed in `foldedBy` — `coalesce` (the left operand of `??`), `nullAssert` (`x!`), `nullSafe` (a `?.` receiver) — the emitter strips it (std and user `extern` templates alike), since that consumer's emitted form already treats every absent form alike: tsc >= 5.6 rejects `(x ?? null) ?? d` (TS2871). `foldedBy` is required and validated at load; list only the consumers whose emitted form really folds (TS's `==` is `===`, so a null comparison is not one). |
@@ -316,7 +316,12 @@ overload, an overload from a module the caller never imported); then the signatu
 or `decl.uniqueName` / `node.uniqueCallee` for a target WITHOUT overloading (PHP): the signature-mangled name
 whenever the program declares the name more than once. A mangled name joins the parts with `$`, which the
 `mangle` block spells; spell it `__` where `$` is not an identifier character — no user identifier may contain
-`__` (SPEC §2), so a mangled name can never collide with a user's. A call whose callee is not a name
+`__` (SPEC §2), so a mangled name can never collide with a user's. The parameter spelling is structural (P40
+review r6: `$tuple$…$end`, `$fn$…$to$…$end`, `List$of$…$end`), so it can hold several `$` in a row — route every
+mangled name through `mangle`. An extension called as a free function reads **`node.freeName`** (the method
+call) and **`decl.emitName`** / `decl.uniqueName` (its declaration): `<name>$<Receiver>` when its name is shared
+with another extension or a top-level function, value or type (both would otherwise be one name in the module
+scope), else its plain name; a target with real extension methods keeps `node.method` / `decl.name`. A call whose callee is not a name
 (`adder(1)(4)`, an IIFE) sets `node.hasCalleeExpr`; emit `node.calleeExpr` with side `"recv"` (`node.calleeKind`
 names its kind, `{"type":"node.calleeType"}` renders its function type). A call through a function-typed
 **field** (`h.f(4)`, `K.g(4)`) has a `member` callee — a target whose `recv->f(…)` would call a METHOD (PHP)
@@ -338,8 +343,17 @@ consumer is in `foldedBy`.
   in the template when the target can (TS throws `globalThis.TypeError`, PHP writes `\Exception`); list the name
   here only when it cannot be qualified everywhere.
 - `globals`: runtime globals user code must not shadow and that cannot be escaped (a target with no `escape`
-  strategy — TS: `console`, `Math`, `Number`, `String`, `BigInt`, `Array`, `Object`, `JSON`, `Promise`, `Symbol`,
-  `globalThis`); same refusal mechanism as `reserved`.
+  strategy — TS: `console`, `Math`, `Number`, `String`, `BigInt`, `Array`, `JSON`, `Promise`, `globalThis`);
+  same refusal mechanism as `reserved`, in every identifier position. Prefer qualifying the reference
+  (`globalThis.Object.keys`) so the name can stay free.
+- `classNames` (P40 review r6): an object of name → reason for names a user **class or record** (what every
+  target emits as a class) may not take; a field, local or enum of that name stays legal. TS:
+  `{ "Object": "TS2725: a class named 'Object' is a compile error under --module nodenext …" }` — the diagnostic
+  quotes the reason. `Symbol` is not listed: no template references it.
+- **Type positions count too** (P40 review r6): a template that spells a TS lib type unqualified
+  (`a as Record<string, unknown>`) is shadowed by a user type of that name (TS2315). Spell the structure instead
+  (`{ [k: string]: unknown }`) or list the name; the manifest drift unit check scans calls, `new`, member heads
+  and TS lib types in type positions.
 
 ### 3.5 `options` — consumer-set target options (P40)
 
@@ -381,7 +395,7 @@ the primitive. Rules live in the manifest's `rules` table, keyed by IR construct
 | `tmpl` | Concatenate a list of sub-rules. | `{"tmpl": ["$", {"fn":"ident","args":[{"get":"node.name"}]}]}` |
 | `get` | Read a context scalar by path. | `{"get": "node.text"}` |
 | `emit` | Recursively emit the child expression at a path (no parens added). | `{"emit": "node.index"}` |
-| `emitChild` | Like `emit`, with `side` (`"l"`/`"r"`/`"recv"`/`"unary"`) driving `wrapAtom` parenthesization. | `{"emitChild": "node.lhs", "side": "l"}` |
+| `emitChild` | Like `emit`, with `side` (`"l"`/`"r"`/`"recv"`/`"unary"`/`"operand"`) driving `wrapAtom` parenthesization. `"operand"` (P40 review r6) marks an operand that more of the expression's own syntax follows — a lambda there is parenthesized (Python's `(lambda: 1) if b else None`). `emit` takes no `side`. | `{"emitChild": "node.lhs", "side": "l"}` |
 | `map` | Emit each element of a list, joined by `sep`; optional `item` template (paths on `item.…`), optional `side`. | `{"map": "node.args", "sep": ", "}` |
 | `interleave` | Zip a literal list with a hole list (string interpolation): `lit0 hole0 lit1 …`. Takes `lits`, `holes`, `lit`, `hole`. | see PHP `Interp` |
 | `fold` | Right-fold over a list (`list`, `each`, `seed`); `each` reads the accumulated tail as `{"get":"acc"}`. Python's match → ternary chain. | see Python `Match` |
@@ -419,7 +433,10 @@ name per `identifiers.escape`) · **`mangleName`** (forbidden-character repair p
 `identifiers.mangle`) ·
 **`wrap`** (`[width, expr]` — the `spec.wrapInt` template) · **`table`** (`[table, key]` — a
 `spec.tables` lookup, `""` if absent) · **`subst`** (`[table, key, x]` — look up a template and
-substitute `$x`; identity if absent) · **`require`** (`[key]` — record a prelude key, emit nothing) ·
+substitute `$x`; identity if absent) · **`require`** (`[key]` — record a prelude key, emit nothing; the
+interpreter handles it itself, so it records from **every** rule context — expression, statement, declaration,
+method, class, module, type — P40 review r6: a declaration template's `require` used to be dropped, and a Python
+module using `builtins` only through `@builtins.staticmethod` got no `import builtins`) ·
 **`inlineBlock`** (a block lambda's body flattened onto one line) · **`parenIfContains`** (P40 A6,
 `[chars, text]` — parenthesize `text` when it contains any of `chars`; C# wraps a string-typed
 interpolation hole with `[":", …]`, since a top-level `:` starts a format specifier — a `:` nested in a call

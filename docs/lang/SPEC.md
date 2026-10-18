@@ -74,7 +74,9 @@ default is `i32`; float-literal default is `f64`.
 **Numeric conversions use a cast `(T)value`** — there are no `toI64()`/`toU32()`/… conversion methods
 (they would be a combinatorial swamp). **Lossless widenings are implicit**: a narrower value flowing into
 a wider slot (assignment, call argument, return, mixed-width arithmetic) is converted automatically —
-`i8→i16→i32→i64`, `u8→u16→u32→u64`, `i32→f64`, `f32→f64`. **Everything else needs an explicit cast**:
+`i8→i16→i32→i64`, `u8→u16→u32→u64`, `i32→f64`, `f32→f64` — into a nullable wider slot too (`let x: i64? = a`
+with an `i32 a`; P40 review r6: TS held a number where a bigint was declared), where a narrowing value equally
+needs its cast (`i64` into `i32?`). **Everything else needs an explicit cast**:
 narrowing (`(i32)big`), lossy widening (`(f64)someI64` — loses precision past 2⁵³), and sign changes
 (`(u32)signed`). A cast never fails silently and never miscompiles; it truncates toward zero (float→int)
 and wraps (narrowing) exactly as .NET does, mirrored on the JS side (`BigInt`/`Number`/`Math.trunc`/masking).
@@ -315,6 +317,10 @@ outside it can reassign the variable between the test and the read.
 **Fields and other expressions are not narrowed** — any call between the test and the read may reassign a
 field — so `if this.name != null { shout(this.name) }` is refused with that rule named: read it into a local
 (`let v = this.name`, then test `v`), or use `!`. `!` on a narrowed variable is allowed and is a no-op.
+The narrowing is the language's, not a target checker's: tsc narrows `let t: T | null = null` to `null` until an
+assignment it can see, so TS writes a `null` initializer as `null as T | null` (P40 review r6; manifest
+`localNullInit`). A generic `T?` (an `Option`, §4.4) compared with `null` is a presence test (`match o { Some(_) =>
+…, None => … }`), never a conversion to the native `T?` (which has no type for an unconstrained C# `T`: CS8506).
 
 ### 4.4 Interfaces, inheritance, generics
 
@@ -658,8 +664,12 @@ differently:
   for value types), records, nullability and type arguments must match exactly, and a value-returning function
   into `(…) => unit` is refused (C# CS0407): wrap it, `() => five()`. A generic call may not infer a type
   parameter as `unit` from a lambda that returns nothing (`apply<T>(f: () => T)` with `() => print("x")` — C#
-  CS0411: there is no `Func<void>`); give the parameter a `(…) => unit` type, or return a value. A lambda as a
-  binary operand is parenthesized on every target (`cb ?? (() => 9)`). A lambda flowing into a `(…) => unit` slot must not produce a value (a
+  CS0411: there is no `Func<void>`); give the parameter a `(…) => unit` type, or return a value — nor from a
+  named function or a `() => unit` local that returns nothing (`apply(hello)`, P40 review r6). `==` and `!=` on
+  function values are refused (C# has no equality for a lambda operand — CS0019 — and compares delegates by
+  invocation list, TS/Python by identity, PHP closures as objects); the null test `cb != null` stays. A lambda as a
+  binary operand is parenthesized on every target (`cb ?? (() => 9)`), and so is a lambda that more of the
+  expression follows (Python's `(lambda: 1) if b else None`, a match arm's value — P40 review r6). A lambda flowing into a `(…) => unit` slot must not produce a value (a
   block's `return v`, or an expression body that is not a call); a call body's result is discarded on every
   target, also when the call is a bound property read or lookup (`() => s.len()` — C# `() => { _ = s.Length; }`).
   An expression statement whose value is dropped is spelled the same way. An `operator fn` is reached only
@@ -815,6 +825,12 @@ for a bound (`actual … extern`) extension that is the only way its template's 
 default is evaluated in the caller's scope, it must be a literal (optionally negated) or `null`. The same
 holds for a member of an `extern class`.
 
+An extension is imported by its name like a function (`import { shout } from "./text"`). Where an extension is a
+free function in the module scope (TS, Python, PHP), one whose name is also another extension's (`i32.twice` and
+`string.twice`) or a top-level function's, value's or type's (`let twice = 7`) is emitted under
+`<name>$<Receiver>` (`twice$i32`; `twice__i32` on Python and PHP) — both would otherwise be one declaration
+(P40 review r6). C# keeps the extension method's own name; a lone extension keeps its plain name everywhere.
+
 ### 6.4 Lambdas & closures
 
 ```pg
@@ -830,6 +846,13 @@ both targets (PRD §3.A). The **bare single-parameter form is the only place par
 the canonical formatter prints `x => …` for one untyped parameter and parenthesizes everything else.
 Note `=>` is reused for expression-bodied members (§6.1/§6.2) and `match` arms (§4.5) — those are not
 lambdas.
+
+**A lambda's body is typed** (P40 review r6). An unannotated parameter takes the type of the function slot the
+lambda flows into (`mapS(s => s + "!")` — `s` is a `string`, so the `+` is a concatenation on PHP, and an `i32`
+sum wraps on overflow as everywhere else), and a lambda whose parameters are all typed and whose body is an
+expression has a function type of its own (`let f = () => "x"` makes `f()` a `string`). The parameter stays
+unannotated in the output: each target infers it from the same slot. A local lambda that shadows a top-level
+function of the same name is called through its value.
 
 **Loop-variable capture is per-iteration** (issue #46): a closure created inside a `for` loop captures the
 loop variable's value *at that iteration*, not a single shared variable. This is the TS `let` / PHP
@@ -1041,7 +1064,16 @@ These clarify or bound features surfaced by the wave-2 coverage sweep (issues #3
   class, so two declarations C# would see as one signature — type parameters differing only in name
   (`same<T>(T)` / `same<U>(U)`), reference types differing only in nullability (`describe(string)` /
   `describe(string?)`) — get signature link names (`same__T`, `describe__stringOrNull`) whether or not
-  anything calls them; a lone declaration keeps its name.
+  anything calls them; a lone declaration keeps its name. The signature spelling is **structural**, so it is
+  injective over C#'s erased signature (P40 review r6): a plain name stays readable (`i32`, `Shape`,
+  `stringOrNull`), and compound types are bracketed by `$`-markers no `.pg` name contains — a tuple
+  `$tuple$string$and$i32$end`, a function type `$fn$string$to$i32$end`, type arguments `List$of$i32$end` (each
+  `$` is `__` on C#, Python and PHP); a name's own `_` is spelled `$u`, and a name that itself ends in `OrNull`
+  closes with `$n`. So `pairOf((string, i32))` / `pairOf((string?, i32))` are `pairOf____tuple__string__and__i32__end`
+  / `…stringOrNull…` — both had been `pairOf__x` (CS0111, a PHP redeclare). **Nullability takes part in overload
+  resolution**: a maybe-null argument (a `T?` value or `null`) cannot bind a parameter of a concrete non-null type
+  and matches a nullable parameter of its own type exactly, so `show(m)` with `m: string?` picks `show(string?)`,
+  and a non-null argument still prefers `show(string)`.
 - **Namespace and renaming imports** are refused (#39e) — `import * as ns` and `{ a as b }`; import members
   by their own name (`import { a, b } from "…"`). Modules merge into one flat namespace.
 - **An unresolvable member on a concrete/primitive receiver** is refused, not emitted verbatim (#56a) —
@@ -1080,9 +1112,13 @@ binding kind that collides: on PHP a builtin **function** name is suffixed only 
 `intdiv_pg`; a method or field `intdiv` keeps its name), and a builtin **class** name only where a type name is
 spelled (`class Directory`/`Generator`/`TypeError` → `Directory_`, also in `new`, `::` and type positions; a field
 `directory` or `error` keeps its name). A TS runtime global the output cannot qualify everywhere (`Math`, `Number`,
-`String`, `BigInt`, `Array`, `JSON`, `Promise`, `console`, `globalThis`) is refused as a user name. A unit check
-scans every manifest's templates and prelude for unqualified runtime references the lists do not cover, and for any
-bare Python builtin, so this cannot drift. PHP refuses to redeclare **any** builtin function, used or not; the
+`String`, `BigInt`, `Array`, `JSON`, `Promise`, `console`, `globalThis`) is refused as a user name. On TS a **class
+or record** named `Object` is refused too (manifest `identifiers.classNames`): it is TS2725 under `--module
+nodenext` (P40 review r6) — an enum, field or local of that name is fine, and `Symbol` is allowed. A unit check
+scans every manifest's templates and prelude for unqualified runtime references the lists do not cover — calls,
+`new`, member heads, and TS lib types in type positions (`Record<…>`, `Partial<…>`; the union-equality helper
+spelled `Record<string, unknown>`, which a user `class Record` shadowed: TS2315) — and for any bare Python builtin,
+so this cannot drift. PHP refuses to redeclare **any** builtin function, used or not; the
 list covers the ones the output calls and the common names — a user function named like another PHP builtin is
 still a PHP fatal (rename it). On C#, a user `_` is respelled `__u` (`identifiers.renames`):
 the output writes a dropped value as the discard `_ = …`, which a variable named `_` would capture. A user type
@@ -1104,7 +1140,10 @@ is. A name used without the import that makes it visible is a compile error nami
 merged closure still shares one namespace, so two modules of one closure may not declare the same name
 (a collision is an error, never a silent pick) — per-module namespaces are a later step. A bare import emits
 real target imports for every name (TS `import { … }`, Python `from x import *`), so an extension-only module
-links. Renaming (`as`) and namespace (`* as ns`) imports are refused (PRD §3.B, #39e). `expect`/`actual` (target-gated capabilities) and `extern` (the FFI hatch) are implemented as
+links. A target's imports are completed from what each file's **lowered** code references, not only from its
+source imports (P40 review r6): a record or extension default filled in at a call site in another module names the
+default's own types (`P(1)` becomes `P(1, Color.Blue)`), so `Color` — and a type a third module declares — is
+imported there too. Renaming (`as`) and namespace (`* as ns`) imports are refused (PRD §3.B, #39e). `expect`/`actual` (target-gated capabilities) and `extern` (the FFI hatch) are implemented as
 of P7.
 
 Platform/SDK/environment APIs (`window`, `System.Windows.Forms`, …) are **not** in the core language at

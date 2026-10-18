@@ -1774,3 +1774,63 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     refusal by message, each fix by emission, the manifest drift scan).
   - **Not touched (the other half):** nullability paths, `?.`, `??` lambda operands, `apply<T>` with a unit lambda,
     PHP/Python plain `=` evaluation order, the field-narrowing message, function variance, `h?.f(5)`, PHP arrow capture.
+
+
+- **2026-10-18 — Review round 6 — records/names/python half (gating 6–10 + part 2 "Language" items): as built.**
+  Every reviewer repro (`pge43_l1`, `pge43_l2`, `pge43_rg\rep`, `pgc43_r2\nf5`, `pgf00_h2\v2e3`) was reproduced on
+  `e4360b3` first; each is now a conformance program or a refusal fixture. Nearby shapes that must stay accepted were
+  written down first and are pinned too (unit block `r6`).
+  - **#6 imports follow the lowered code.** `crossModuleReferences` (reachability.cpp — the prelude walker generalized
+    to an index predicate, in a "spelled only" mode: declared types, callees, constructions, static receivers, cases,
+    patterns; never an expression's inferred type or std template text) lists, per file, the other modules' user
+    declarations its LOWERED code names; `buildImports` adds what the source imports did not (a bare import already
+    names everything), to the module's existing import or as a new one. A function name declared by two modules is
+    ambiguous and never added (functions are not one flat namespace). `P(1)` → `P(1, Color.Blue)` now imports
+    `Color`, and `Tone` from a third module. Also: an extension is importable by name (`validateImportNames` listed
+    no extensions, while the D16 scope check asked for exactly that import).
+  - **#7** `__pgUnionEq` spells `{ [k: string]: unknown }`; the r5 drift scan also flags TS lib types (`Record`,
+    `Partial`, `Iterator`, …, 49 names) anywhere in TS template/prelude code unless listed or a Polyglot core/std type
+    of the same name (`Map`, `Iterable`, `Error`). Fails on the `e4360b3` manifest (`Record(type)`).
+  - **#8 structural mangled names** (`mangleTypeSpelling`): plain names unchanged (`i32`, `stringOrNull`), compound
+    forms bracketed by `$`-markers (`$tuple$a$and$b$end`, `$fn$a$to$r$end`, `List$of$a$end`), a name's own `_` is
+    `$u`, a name ending in `OrNull` closes with `$n` — injective over the erased key, and PHP's unique names (the same
+    function) too (`l13fx`, `l13tu2`). Note: two overloads differing only in type arguments (`f(List<string>)` /
+    `f(List<string?>)`) are still refused by sema as duplicates (pre-existing, unchanged).
+  - **#9** `refuseUnitInference` also refuses any argument whose function TYPE returns unit (a named unit function, a
+    `() => unit` local); `apply(five)` and a value-returning local stay accepted.
+  - **#10 one `require` path.** `evalRule` handles `{"fn":"require"}` itself and calls the new
+    `EvalContext::requirePrelude`; the expression context records into its set, every declaration/statement context
+    forwards to `DeclHooks::requirePrelude` (the owning emitter's set), the type context to the emitter, and the
+    `item`/`acc`/`fresh` wrappers forward. Unit checks emit each Python shape alone (static method, computed property,
+    range loop, guarded typed catch) and assert `import builtins`, plus a static scan that every Python string
+    spelling `builtins.` sits in a rule that requires `pyBuiltins`; conformance `python_builtins_decls/` RUNS them
+    (one library module per shape).
+  - **Part 2.** TS: an extension whose name is shared (another extension, a top-level function/value/type) is emitted
+    as `<name>$<Receiver>` on the free-function targets (`node.freeName`, `decl.emitName`/`uniqueName`; C# keeps
+    `node.method`/`decl.name`) — `i32.twice` + `string.twice` had also collided. TS `null` initializer of a typed local
+    → `null as T | null` (table `localNullInit.typed`). TS `class`/`record` `Object` refused through new manifest datum
+    `identifiers.classNames` (name → reason, validated; TS2725) — enum/field/local `Object` and `class Symbol` stay
+    accepted. Hints: a nullable no-parameter function type was taken for the bare-`null` placeholder (`k15cin` was
+    refused at all); the fallback hint follows the slot kind. i32 into a NULLABLE wider slot widens (`BigInt(a)` on TS);
+    a narrowing non-literal into one is refused like the non-null slot (a literal keeps its leniency). Overload
+    resolution: a maybe-null argument cannot bind a concrete non-null parameter and matches a nullable one exactly.
+    PHP concat: a lambda's unannotated parameters take the slot's types and the body is re-typed (restored to
+    unannotated afterwards), and a lambda with typed params + expression body has a function type — which also makes
+    a lambda's `i32` arithmetic wrap like everywhere else (an overflow divergence before). A local lambda shadowing a
+    top-level function is called through its value (C# called the function — found while testing, a silent
+    miscompile). A generic `T?` compared with `null` lowers to a presence match (C# CS8506). `==`/`!=` on function
+    values refused (CS0019). Python parenthesizes a lambda that more of the expression follows (new emitChild side
+    `"operand"`: the Cond `then` and a match arm's value) — `nf5` agrees.
+  - **Corpus diff** (`e4360b3` vs this half, the 178 old programs × 4 targets): 43 files changed, all explained —
+    16 Python files: `import builtins` moves to the top of the prelude block (now required directly by a
+    statement/declaration template); 8 TS files: `null as T | null`; `union_eq`/`union_record_eq` TS: the
+    index-signature type; `closures`/`closure_this`/`nullable_slot_arms` TS/Python/PHP (8 files): a slot-typed
+    lambda's `i32` arithmetic now wraps; `optional_boundary` all four: the Option null test is a presence match;
+    `runtime_names_used` all four: its source changed (`class Object` became a field — the TS refusal).
+  - **Tests:** conformance `default_cross_module/`, `link_names_structural/`, `python_builtins_decls/`,
+    `union_eq_record_name`, `overload_nullability`, `lambda_slot_typed`, `generic_option_null_test`,
+    `i64_nullable_widen`, `python_lambda_cond`, `ext_name_shared`, `null_init_narrow`, `inferable_fn_local`,
+    `ts_object_names` (13, each with `.expected`, none uses `Map`; floor pin 178 → 191 here); refusal fixtures
+    `infer_unit_fn_value`, `infer_unit_fn_local`, `fn_value_equality`, `nullable_numeric_narrow`; unit block `r6`.
+  - **Not touched (the other half):** the init-order check (setters, operators, indexers, lambdas), the constructor
+    `this` rule, the cycle message, static computed properties.
