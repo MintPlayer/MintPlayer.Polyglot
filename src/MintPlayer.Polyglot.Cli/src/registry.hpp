@@ -19,6 +19,7 @@
 //                         NO_PROXY natively. Auth tokens are deliberately unsupported (public
 //                         packages only — documented refusal, not an oversight).
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -62,6 +63,19 @@ struct HttpOutcome {
     HttpOutcome(Kind k) : kind(k) {}
     explicit operator bool() const { return kind == Kind::Ok; }
 };
+
+// P40 review r7: the outcome of a non-200 final status. A 5xx is a network miss like a transport failure — a
+// proxy with no upstream answers 502/504, an overloaded registry 503, and none of them says anything about the
+// package — so a registry dependency degrades to "not verified" exactly as offline. A 4xx (404: no such package)
+// is the registry's answer, and stays an error. `err` is completed with the status and the URL.
+inline HttpOutcome httpStatusOutcome(long status, const std::string& url, std::string& err) {
+    err = "http: status " + std::to_string(status) + " for " + url;
+    if (status >= 500 && status <= 599) {
+        err += " (a server or proxy error: treated as a network miss)";
+        return HttpOutcome::Kind::Transport;
+    }
+    return HttpOutcome::Kind::Response;
+}
 
 // GET `url` with extra request `headers` ("Name: value"), filling `body` (binary-safe).
 // Implementations fail with a human diagnostic in `err`; a non-200 final status is a `Response`
@@ -140,10 +154,7 @@ inline HttpOutcome httpGetWinHttp(const std::string& url, const std::vector<std:
     DWORD status = 0, statusLen = sizeof status;
     WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusLen, WINHTTP_NO_HEADER_INDEX);
-    if (status != 200) {
-        err = "http: status " + std::to_string(status) + " for " + url;
-        return done(HttpOutcome::Kind::Response);
-    }
+    if (status != 200) return done(httpStatusOutcome(static_cast<long>(status), url, err));
 
     for (;;) {
         DWORD avail = 0;
@@ -249,20 +260,21 @@ inline HttpOutcome httpGetLibcurl(const std::string& url, const std::vector<std:
         return false;
     }
     if (status != 200) {
-        err = "http: status " + std::to_string(status) + " for " + url;
         body.clear();
-        return HttpOutcome::Kind::Response;
+        return httpStatusOutcome(status, url, err);
     }
     return true;
 }
 
 inline HttpOutcome httpGetCurlSubprocess(const std::string& url, const std::vector<std::string>& headers,
-                                         std::string& body, std::string& err) {
+                                         std::string& body, std::string& err, bool* answered = nullptr) {
     // Refuse anything that could escape single quotes — registry URLs/headers never contain them.
     for (const std::string& s : headers)
         if (s.find('\'') != std::string::npos) { err = "http: unsafe header"; return false; }
     if (url.find('\'') != std::string::npos) { err = "http: unsafe URL"; return false; }
-    std::string cmd = "curl --fail --silent --show-error --location --max-time 300";
+    // P40 review r7: `--write-out` appends "\n<final status>" after the body (also when `--fail` suppresses the
+    // body), so a 5xx can be told from a 4xx as the in-process clients do (httpStatusOutcome).
+    std::string cmd = "curl --fail --silent --show-error --location --max-time 300 --write-out '\\n%{http_code}'";
     for (const auto& h : headers) cmd += " -H '" + h + "'";
     cmd += " '" + url + "'";
     FILE* p = popen(cmd.c_str(), "r");
@@ -271,11 +283,31 @@ inline HttpOutcome httpGetCurlSubprocess(const std::string& url, const std::vect
     std::size_t n;
     while ((n = fread(buf, 1, sizeof buf, p)) > 0) body.append(buf, n);
     const int rc = pclose(p);
+    long status = 0;
+    if (const std::size_t nl = body.rfind('\n'); nl != std::string::npos) {
+        const std::string code = body.substr(nl + 1);
+        if (!code.empty() && code.size() <= 3 && std::all_of(code.begin(), code.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
+            status = std::stol(code);
+            body.resize(nl);
+        }
+    }
+    if (answered) *answered = status != 0; // curl ran and the server sent a status ("000" = none)
     if (rc != 0) {
-        err = "http: curl exited with status " + std::to_string(rc) + " for " + url;
         body.clear();
-        // `--fail` makes curl exit 22 for an HTTP status >= 400: the server answered.
+        // `--fail` makes curl exit 22 for an HTTP status >= 400: the server answered — with a 4xx (an error) or a
+        // 5xx (a network miss).
+        if (WIFEXITED(rc) && WEXITSTATUS(rc) == 22 && status >= 400) return httpStatusOutcome(status, url, err);
+        err = "http: curl exited with status " + std::to_string(rc) + " for " + url;
         return WIFEXITED(rc) && WEXITSTATUS(rc) == 22 ? HttpOutcome(HttpOutcome::Kind::Response) : HttpOutcome(false);
+    }
+    if (status == 0) { // no status trailer: the body cannot be told from it
+        err = "http: curl reported no final status for " + url;
+        body.clear();
+        return false;
+    }
+    if (status != 200) {
+        body.clear();
+        return httpStatusOutcome(status, url, err);
     }
     return true;
 }
@@ -285,8 +317,9 @@ inline HttpGet defaultHttpGet() {
               std::string& err) -> HttpOutcome {
         if (detail::Curl::get().lib) return httpGetLibcurl(url, headers, body, err);
         std::string subErr;
-        const HttpOutcome sub = httpGetCurlSubprocess(url, headers, body, subErr);
-        if (sub || sub.kind == HttpOutcome::Kind::Response) {
+        bool answered = false;
+        const HttpOutcome sub = httpGetCurlSubprocess(url, headers, body, subErr, &answered);
+        if (sub || sub.kind == HttpOutcome::Kind::Response || answered) { // a 5xx is a network miss, curl is there
             err = subErr;
             return sub;
         }

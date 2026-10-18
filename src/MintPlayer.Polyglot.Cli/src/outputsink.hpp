@@ -87,83 +87,6 @@ inline std::string outputKey(const std::filesystem::path& p) {
     return (ec ? std::filesystem::absolute(p, ec).lexically_normal() : c).generic_string();
 }
 
-// The entry names of one directory, as the filesystem spells them.
-using DirNames = std::set<std::filesystem::path::string_type>;
-inline DirNames listDirNames(const std::filesystem::path& dir) {
-    DirNames names;
-    std::error_code ec;
-    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
-        names.insert(it->path().filename().native());
-    return names;
-}
-
-// P40 review (A3): on a case-INSENSITIVE filesystem (NTFS, APFS by default) `gen/foo.ts` opens the existing
-// `gen/Foo.ts`, so write-if-changed reused it and a case-only rename of the .pg never reached the output name —
-// a Linux checkout then had the wrong file forever. Returns the existing file's on-disk path when `p` exists but
-// its exact name is not among the directory's entries — i.e. the filesystem matched it under another spelling —
-// and that entry is the same file (fs::equivalent); else empty. On a case-sensitive filesystem `p` does not
-// exist (or exists exactly), so this is always empty there.
-// P40 review r3 (A3c): no case FOLDING. `towlower` folded ASCII only (the C locale), so `Ärger.ts` was never
-// found for `ärger.ts`; the filesystem's own answer (it opened `p`) plus file identity needs no fold table. On
-// Windows the candidate must also be an ordinal case-insensitive match (CompareStringOrdinal, the table NTFS
-// uses), so an 8.3 short-name alias of the same file is never mistaken for a case variant.
-// P40 review r4: on POSIX (APFS) the name test is no longer `true`. Identity alone picked a HARD LINK to the file
-// that happened to sort first (`a.ts` linked to `Foo.ts`) and renamed it. Without the volume's fold table the
-// test is conservative: the same number of code points, each pair equal, an ASCII case pair, or both non-ASCII
-// (where the filesystem's own answer — it opened `p` — plus file identity decide).
-#ifndef _WIN32
-inline std::vector<char32_t> utf8CodePoints(const std::string& s) {
-    std::vector<char32_t> out;
-    for (std::size_t i = 0; i < s.size();) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        const int n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
-        char32_t cp = n == 1 ? c : n == 2 ? (c & 0x1F) : n == 3 ? (c & 0x0F) : (c & 0x07);
-        for (int k = 1; k < n && i + k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
-        out.push_back(cp);
-        i += static_cast<std::size_t>(n);
-    }
-    return out;
-}
-#endif
-inline bool sameNameIgnoringCase(const std::filesystem::path& a, const std::filesystem::path& b) {
-#ifdef _WIN32
-    const auto& x = a.native();
-    const auto& y = b.native();
-    return CompareStringOrdinal(x.c_str(), static_cast<int>(x.size()), y.c_str(), static_cast<int>(y.size()), TRUE) ==
-           CSTR_EQUAL;
-#else
-    const auto x = utf8CodePoints(a.native());
-    const auto y = utf8CodePoints(b.native());
-    if (x.size() != y.size()) return false;
-    auto lower = [](char32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; };
-    for (std::size_t i = 0; i < x.size(); ++i) {
-        if (x[i] == y[i] || lower(x[i]) == lower(y[i])) continue;
-        if (x[i] >= 0x80 && y[i] >= 0x80) continue;
-        return false;
-    }
-    return true;
-#endif
-}
-// The on-disk spelling `p` resolved to, when it differs from `p`'s own only by case: the entry whose name is a
-// case variant of `p`'s AND which is the same file. P40 review r4: chosen by NAME among the equivalent entries,
-// never by identity alone; two candidates (hard links that are both case variants) is ambiguous, and nothing is
-// renamed.
-inline std::filesystem::path caseVariantIn(const std::filesystem::path& p, const DirNames& names) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    const fs::path want = p.filename();
-    if (names.count(want.native()) || !fs::exists(p, ec) || ec) return {}; // exact spelling, or no file at all
-    const fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
-    fs::path found;
-    for (const auto& n : names) {
-        const fs::path name(n);
-        if (!sameNameIgnoringCase(name, want)) continue;
-        if (!fs::equivalent(dir / name, p, ec) || ec) continue;
-        if (!found.empty()) return {}; // ambiguous
-        found = dir / name;
-    }
-    return found;
-}
 // P40 review r5 (gating 2): do two names a run ROUTES differ only by case, so that a case-insensitive filesystem
 // merges them? Decided without the disk (the second spelling may not exist yet, and --check writes nothing). On
 // Windows the NTFS ordinal fold (CompareStringOrdinal); on POSIX ASCII letters only — two different non-ASCII
@@ -202,28 +125,33 @@ inline std::filesystem::path caseVariantOnDisk(const std::filesystem::path& p) {
 // What to tell the user after a case-only rename (P40 review r3, A3b): with `core.ignorecase=true` (Windows'
 // and macOS' default) `git add -A` does not stage a case change, so the commit keeps the old spelling and a
 // case-sensitive clone's `--check` fails — A3's original symptom. Polyglot cannot fix git; it names the remedy.
-inline std::string gitCaseRenameHint(const std::filesystem::path& from, const std::filesystem::path& to) {
+// P40 review r7: the hint is independent of the directory it is run from. It used to name cwd-relative paths, so
+// run from anywhere but the build's cwd it named the wrong files — from the repo root, the H4 hint's
+// `git rm -r --cached "."` (the build ran inside the folder) unstaged EVERY tracked file. Now each git command
+// runs in the renamed entry's parent (`git -C "<absolute parent, as the disk spells it>"`) and names the old and
+// new spellings as plain names there: both differ only in their last component, and a pathspec that is a bare
+// name cannot escape that folder. `--` keeps a name that starts with '-' a path.
+struct GitCaseRename {
+    std::string dir, from, to; // quoted: the parent folder, the old name, the new name
+};
+inline GitCaseRename gitCaseRenameParts(const std::filesystem::path& from, const std::filesystem::path& to) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    // LEXICALLY relative: fs::relative canonicalizes, and on a case-insensitive volume canonicalizing returns the
-    // ON-DISK spelling — the old name for both sides.
-    const fs::path cwd = fs::current_path(ec);
-    auto shown = [&](const fs::path& p) {
-        const fs::path abs = fs::absolute(p, ec).lexically_normal();
-        const fs::path rel = abs.lexically_relative(cwd);
-        const fs::path use = (rel.empty() || *rel.begin() == "..") ? abs : rel;
-        return "\"" + use.generic_string() + "\"";
-    };
-    return "git mv -f " + shown(from) + " " + shown(to);
+    const fs::path absTo = fs::absolute(to, ec).lexically_normal();
+    const fs::path absFrom = fs::absolute(from, ec).lexically_normal();
+    auto q = [](const fs::path& p) { return "\"" + p.generic_string() + "\""; };
+    return {q(diskSpelledDir(absTo.parent_path())), q(absFrom.filename()), q(absTo.filename())};
+}
+inline std::string gitCaseRenameHint(const std::filesystem::path& from, const std::filesystem::path& to) {
+    const GitCaseRename g = gitCaseRenameParts(from, to);
+    return "git -C " + g.dir + " mv -f -- " + g.from + " " + g.to;
 }
 // P40 review r4: the same for a DIRECTORY. `git mv -f gen/Foo gen/foo` exits 128 ("renaming 'gen/Foo' failed:
 // Invalid argument") once the directory already has the new case on disk — which is exactly when the build
 // prints the note — so the remedy restages the index instead: drop the old spelling, add the new one.
 inline std::string gitCaseRenameDirHint(const std::filesystem::path& from, const std::filesystem::path& to) {
-    const std::string mv = gitCaseRenameHint(from, to); // git mv -f "<from>" "<to>"
-    const std::size_t split = mv.find("\" \"");
-    const std::string a = mv.substr(10, split + 1 - 10), b = mv.substr(split + 2);
-    return "git rm -r -q --cached " + a + " && git add " + b;
+    const GitCaseRename g = gitCaseRenameParts(from, to);
+    return "git -C " + g.dir + " rm -r -q --cached -- " + g.from + " && git -C " + g.dir + " add -- " + g.to;
 }
 
 // The rename itself (a file or a directory). A direct rename handles a case-only change on NTFS and APFS; the
@@ -282,7 +210,9 @@ public:
     // source folder spelled differently in a command line is never renamed.
     void routeRoots(std::vector<std::filesystem::path> roots) {
         roots_.clear();
-        for (auto& r : roots) roots_.push_back(absoluteDir(r));
+        // P40 review r7: spelled as on disk — an input folder typed `proj` (disk: `Proj`) must not contain, under its
+        // own spelling, a route that re-enters the folder as `proj`.
+        for (auto& r : roots) roots_.push_back(diskSpelledDir(r));
     }
     // Every header line a loaded target emits — "everything in this directory is Polyglot output" accepts any
     // target's (a gen/ folder may hold twins of several targets). Evaluated when a directory rename needs it.

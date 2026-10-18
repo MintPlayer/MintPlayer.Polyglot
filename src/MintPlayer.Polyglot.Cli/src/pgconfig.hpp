@@ -248,6 +248,84 @@ struct PgConfig {
     std::filesystem::path dir; // where the config was found (file: deps + the lockfile resolve against it)
 };
 
+// The entry names of one directory, as the filesystem spells them.
+using DirNames = std::set<std::filesystem::path::string_type>;
+inline DirNames listDirNames(const std::filesystem::path& dir) {
+    DirNames names;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        names.insert(it->path().filename().native());
+    return names;
+}
+
+// P40 review (A3): on a case-INSENSITIVE filesystem (NTFS, APFS by default) `gen/foo.ts` opens the existing
+// `gen/Foo.ts`, so write-if-changed reused it and a case-only rename of the .pg never reached the output name —
+// a Linux checkout then had the wrong file forever. Returns the existing file's on-disk path when `p` exists but
+// its exact name is not among the directory's entries — i.e. the filesystem matched it under another spelling —
+// and that entry is the same file (fs::equivalent); else empty. On a case-sensitive filesystem `p` does not
+// exist (or exists exactly), so this is always empty there.
+// P40 review r3 (A3c): no case FOLDING. `towlower` folded ASCII only (the C locale), so `Ärger.ts` was never
+// found for `ärger.ts`; the filesystem's own answer (it opened `p`) plus file identity needs no fold table. On
+// Windows the candidate must also be an ordinal case-insensitive match (CompareStringOrdinal, the table NTFS
+// uses), so an 8.3 short-name alias of the same file is never mistaken for a case variant.
+// P40 review r4: on POSIX (APFS) the name test is no longer `true`. Identity alone picked a HARD LINK to the file
+// that happened to sort first (`a.ts` linked to `Foo.ts`) and renamed it. Without the volume's fold table the
+// test is conservative: the same number of code points, each pair equal, an ASCII case pair, or both non-ASCII
+// (where the filesystem's own answer — it opened `p` — plus file identity decide).
+#ifndef _WIN32
+inline std::vector<char32_t> utf8CodePoints(const std::string& s) {
+    std::vector<char32_t> out;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        const int n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
+        char32_t cp = n == 1 ? c : n == 2 ? (c & 0x1F) : n == 3 ? (c & 0x0F) : (c & 0x07);
+        for (int k = 1; k < n && i + k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        out.push_back(cp);
+        i += static_cast<std::size_t>(n);
+    }
+    return out;
+}
+#endif
+inline bool sameNameIgnoringCase(const std::filesystem::path& a, const std::filesystem::path& b) {
+#ifdef _WIN32
+    const auto& x = a.native();
+    const auto& y = b.native();
+    return CompareStringOrdinal(x.c_str(), static_cast<int>(x.size()), y.c_str(), static_cast<int>(y.size()), TRUE) ==
+           CSTR_EQUAL;
+#else
+    const auto x = utf8CodePoints(a.native());
+    const auto y = utf8CodePoints(b.native());
+    if (x.size() != y.size()) return false;
+    auto lower = [](char32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; };
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        if (x[i] == y[i] || lower(x[i]) == lower(y[i])) continue;
+        if (x[i] >= 0x80 && y[i] >= 0x80) continue;
+        return false;
+    }
+    return true;
+#endif
+}
+// The on-disk spelling `p` resolved to, when it differs from `p`'s own only by case: the entry whose name is a
+// case variant of `p`'s AND which is the same file. P40 review r4: chosen by NAME among the equivalent entries,
+// never by identity alone; two candidates (hard links that are both case variants) is ambiguous, and nothing is
+// renamed.
+inline std::filesystem::path caseVariantIn(const std::filesystem::path& p, const DirNames& names) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path want = p.filename();
+    if (names.count(want.native()) || !fs::exists(p, ec) || ec) return {}; // exact spelling, or no file at all
+    const fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
+    fs::path found;
+    for (const auto& n : names) {
+        const fs::path name(n);
+        if (!sameNameIgnoringCase(name, want)) continue;
+        if (!fs::equivalent(dir / name, p, ec) || ec) continue;
+        if (!found.empty()) return {}; // ambiguous
+        found = dir / name;
+    }
+    return found;
+}
+
 // P40 A5: the walk owns the FORM of its input. A relative start ("." for `a.pg`, "LibA" for `LibA/a.pg`)
 // has no lexical parent to walk to, so it used to stop early and silently ignore the config. Absolute +
 // lexical normalisation (not weakly_canonical: the watch precedent, and symlinked checkouts keep working)
@@ -257,6 +335,61 @@ inline std::filesystem::path absoluteDir(const std::filesystem::path& p) {
     std::filesystem::path d = std::filesystem::absolute(p.empty() ? std::filesystem::path(".") : p, ec).lexically_normal();
     if (!d.has_filename() && d.has_relative_path()) d = d.parent_path(); // "C:\x\" -> "C:\x" (one identity)
     return d;
+}
+
+// P40 review r7: absoluteDir, spelled as the DISK spells it — each existing component that the filesystem matched
+// only up to case (`proj` typed, `Proj` on disk) is replaced by its on-disk entry (onDiskCaseVariant, below). A config folder reached through a typed path in another case used to keep the typed
+// spelling, so a route re-entering it (`../proj/gen/…`) looked like it stayed inside the config root and the
+// A3 directory-case check never compared `proj` with the disk. Components that do not exist are kept as typed;
+// on a case-sensitive filesystem nothing changes (an existing path is spelled exactly).
+// The on-disk name of the existing entry `dir/name` when it differs from `name` only by case ("" = spelled exactly,
+// or not a case variant). Never a directory listing: the walk crosses folders like %TEMP% with 10^5 entries. On
+// Windows FindFirstFileW on the exact path returns the entry's stored name (an 8.3 alias resolving to its long name
+// is not a case variant, so it is kept as typed). On POSIX only a case-insensitive volume (APFS) can hold a variant:
+// the name with its ASCII case flipped must open the same file before the folder is listed.
+inline std::filesystem::path onDiskCaseVariant(const std::filesystem::path& dir, const std::filesystem::path& name) {
+    namespace fs = std::filesystem;
+#ifdef _WIN32
+    WIN32_FIND_DATAW fd;
+    const HANDLE h = FindFirstFileW((dir / name).native().c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return {};
+    FindClose(h);
+    const fs::path got(fd.cFileName);
+    return got.native() != name.native() && sameNameIgnoringCase(got, name) ? got : fs::path();
+#else
+    std::string flipped = name.native();
+    bool letters = false;
+    for (char& c : flipped) {
+        if (c >= 'a' && c <= 'z') { c = static_cast<char>(c - 32); letters = true; }
+        else if (c >= 'A' && c <= 'Z') { c = static_cast<char>(c + 32); letters = true; }
+    }
+    std::error_code ec;
+    if (!letters || !fs::exists(dir / flipped, ec) || ec || !fs::equivalent(dir / flipped, dir / name, ec) || ec) return {};
+    const fs::path v = caseVariantIn(dir / name, listDirNames(dir));
+    return v.empty() ? fs::path() : v.filename();
+#endif
+}
+
+inline std::filesystem::path diskSpelledDir(const std::filesystem::path& p) {
+    namespace fs = std::filesystem;
+    const fs::path abs = absoluteDir(p);
+    fs::path cur = abs.root_path();
+    bool exists = true;
+    for (const auto& comp : abs.relative_path()) {
+        if (comp.empty()) continue;
+        const fs::path next = cur / comp;
+        if (exists) {
+            std::error_code ec;
+            if (!fs::exists(next, ec) || ec) {
+                exists = false;
+            } else if (const fs::path v = onDiskCaseVariant(cur, comp); !v.empty()) {
+                cur /= v;
+                continue;
+            }
+        }
+        cur = next;
+    }
+    return cur;
 }
 
 // P40 review (#75): ONE normalization for an include rule's output template, shared by routing
@@ -434,7 +567,8 @@ inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>
 }
 
 inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
-    for (std::filesystem::path d = absoluteDir(startDir);; d = d.parent_path()) {
+    // P40 review r7: the config folder is spelled as on disk, whatever case the input or cwd was typed in.
+    for (std::filesystem::path d = diskSpelledDir(startDir);; d = d.parent_path()) {
         std::string src;
         if (readFile(d / "pgconfig.json", src)) {
             std::string jsonErr;
