@@ -1411,3 +1411,55 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Cross-half interaction caught by the merge:** the CLI half's exact net9.0-set assertion in the floor leg
     met the language half's new `coalesce_chain` program (it chains `Map` lookups, so its C# needs
     `OrderedDictionary<K, V>`); `$expectedNet9` is now `[coalesce_chain, map]`.
+- **2026-10-18 — Review round 4 — nullability/functions/names half (gating 14–22 + part 2 "Language"): as built.**
+  Every reviewer repro (`pgf00_r2`, `pgf00_h2`, `pgf00_h4\extra`) was reproduced first, then fixed at the root.
+  - **14** checkConvert refuses a maybe-null value (incl. `null` and `a ?? b` with a nullable `b`) into a non-null
+    concrete slot (`nullRefusingSlot`: a function type or a scalar/declared/std type; never a type parameter,
+    `Option`, `Iterable`, `unit`). Narrowed reads are already typed non-null, so narrowing keeps working; the whole
+    corpus and std compiled unchanged.
+  - **15** a call through a narrowed nullable function local uses its narrowed type; C# and TS `Type` rules spell a
+    nullable function type (`Action?`, `((() => void) | null)`) ahead of the function arm.
+  - **16** `markCoalesced` became `markAbsentConsumer(x, consumer)`: `??` (`coalesce`), `x!` (`nullAssert`) and a
+    `?.` receiver (`nullSafe`) mark the bounds flowing into them, and `absentNormalize.foldedBy` (manifest, required,
+    validated) lists which consumers fold every absent form on that target — TS lists all three (`==` is `===` there,
+    so a null comparison is not one).
+  - **17** `??=` has its own check (`checkCoalesceAssign`): refused on a target that cannot be null (non-null or
+    narrowed) or an optional generic; its value converts into the slot; a user-indexer target is refused. New spec
+    flag `nativeCoalesceAssign` (C#/TS/PHP true): without it lowering emits `if t == null { t = v }` with the target's
+    receiver/indices hoisted once (`hoistTargetParts`, shared with `expandCompound`).
+  - **18** a top-level function used as a value is typed as its function type (it was Unknown) — `checkFnRef`: a
+    single, non-generic, non-std user function without defaults; overloaded/generic/std ones are refused with the
+    lambda to write. A function value into a function slot must match exactly (value-returning into `() => unit`:
+    CS0407, refused). A unit lambda's call body that is not a statement expression on every target
+    (`isStatementExpr`: invocation/construction/await/statement match or no value) becomes a one-statement block
+    whose `ExprStmt::discard` the emitter spells with `exprStmt.discardPrefix` (C# `_ = `); the same applies to
+    every dropped expression statement (`s.len()` as a statement was CS0201 too).
+  - **19** a method call on a function value is refused (like member access, r3).
+  - **20** a function-value name lowers to `ir::Call` with `isRef` (the resolved mangled/link names); every Call rule
+    drops the argument list for it and PHP prints `five(...)`.
+  - **21** builtin `parenIfStarts`; TS's arrow expression body uses it with `{`, and `exprStmt.parenIfStarts: ["{"]`
+    covers an expression statement starting with an object literal.
+  - **22** `identifiers.runtimeNames`: runtime names the generated code references unqualified, escaped like keywords
+    — Python builtins the templates call (`max`, `len`, `str` (moved from `globals`), `isinstance`, …), PHP's global
+    builtin classes (`directory`, `generator`, `typeerror`, … lowercase, case-insensitive). TS has no escape
+    strategy (it refuses reserved words), so its null-assert now throws `globalThis.TypeError` (a user `class
+    TypeError` keeps its name) and the capitalized globals its templates cannot qualify join `globals` (refused).
+    Kept off the Python list on purpose: names used as operator-member spellings (`set`, `hash`) and `print` (std's
+    own actual — it would rename every Python output).
+  - **Part 2.** `let _x = <const>` never read is not emitted (`Stmt::dropUnused`); an assigned-but-unread `_x` is
+    refused. `isConstExpr` counts casts and enum members (CS0219). Constant conditions are evaluated as C# folds them
+    (`constEval`: literals, unary/binary operators, casts — `1 + 1 == 3`, `"a" == "a"`). A function-typed field is
+    callable (`h.f(4)`, `(h.f)(4)`, `K.g(4)`; AST `calleeIsField` → the callee-value path; PHP parenthesizes a member
+    callee). A call's `(` must be on the callee's line, like `[` (P37 D8) — a line starting with `(` is a new
+    statement (SPEC §2). TS annotates its match temp with the scrutinee's scalar spelling (`node.scrutineeScalar`,
+    TS2367). Defaults: `-0.0` keeps its sign (`signbit`); an all-`f32` constant default folds in single precision to
+    an `f32` literal (`foldF32`); PHP spells `-9223372036854775808` `PHP_INT_MIN` (`node.negatesInt64Min`) and an
+    unsuffixed `-9223372036854775808` adopts into an i64 slot; an unsuffixed literal out of range of the ≤32-bit slot
+    it flows into (or of `i32` for an inferred local) is refused. **Documented, not fixed:** PHP's i64 overflow
+    printing as a float (`9223372036854776000`) is the published PHP 64-bit caveat (SPEC §9, now naming the print form).
+  - **Tests:** conformance `nullable_functions`, `function_values`, `runtime_name_clash`, `default_edges` (each with
+    `.expected`; the first two use `Map`, so the floor's `$expectedNet9` names them); refusal fixtures
+    `nullable_to_nonnull`, `fn_value_method`, `coalesce_assign_nonnull`; the r4 block of unit checks (each
+    refusal by message, each fix by emission).
+  - **Not touched (the other half):** classes/ctors, emission order, records, PHP evaluation order, the cast wrap, the
+    default folding of `1 / 2 + 0.5` and `-1e400`, overload link names, the through-call init check, the temp prefix.

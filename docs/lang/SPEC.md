@@ -45,6 +45,11 @@ have gone another way, the rationale is stated so the alternative can be reconsi
 
 Statements are **newline-terminated**; `;` is an **optional separator**, needed only to place several
 statements on one line (`a = 1; b = 2`). The sample programs omit it. Blocks `{ }` need no trailing `;`.
+A call's `(` and a subscript's `[` must start on the **same line** as the expression they apply to: a line that
+begins with `(` or `[` starts a new statement, never a continuation of the previous one (so
+`((x: i32) => print(x))(8)` on its own line is an immediately-invoked lambda, not a call on the line above).
+An expression continues onto the next line after a token that cannot end it (a binary operator, `,`, an open
+`(`/`[`), and a line that begins with `.` or `?.` continues a member chain.
 The lexer is trivia-bearing (it keeps comments and spacing) so backends can reproduce author intent in
 the output.
 
@@ -254,6 +259,14 @@ stringification, so a maybe-null value must be handled before it is used:
 - `string + T` with a type parameter `T` is an error — interpolate instead (like `string + i32`).
 - `.member` / `.method()` on a nullable receiver is an error — use `?.`, narrow it, or assert with `!`.
 - An if-expression with a `null` branch is nullable: `if c { 1 } else { null }` is `i32?`.
+- A maybe-null value flowing into a non-null slot — a return, an initializer, an argument, an assignment,
+  a field — is an error (*cannot convert 'i32?' to 'i32' … the value may be null*), including `null` itself
+  and `a ?? b` whose fallback `b` is nullable (P40 review r4). A narrowed local converts.
+- `t ??= v` assigns `v` only when `t` is null; `t` must be able to be null (a non-null or narrowed target is
+  refused, like `??`), `v` converts into `t`'s type, and a target without a native `??=` (Python) evaluates
+  it as `if t == null { t = v }` with `t`'s receiver evaluated once.
+- A nullable **function** type `(() => unit)?` is spelled nullable on the typed targets (C# `Action?`, TS
+  `(() => void) | null`); a narrowed function-valued local or parameter is callable (`if cb != null { cb() }`).
 
 **Null flow-narrowing.** A nullable **local or parameter** is non-null where a test proves it:
 
@@ -517,16 +530,33 @@ differently:
 - **Member hiding** — redeclaring an inherited instance member without `override` is refused (C# would hide it
   non-virtually, TS/Python/PHP override it); an `open` method takes `override`, anything else is renamed.
 - **Default parameter values** are constants: a literal (optionally negated), `null`, an enum case, or a float
-  constant expression over `+ - * /`, which is folded to one literal (`dt: f64 = 1.0 / 60.0`). A call or any
-  other expression is refused — C# and PHP accept only constants there, and Python evaluates a default once.
-- **Warnings-as-errors shapes** — a constant `if`/`while` condition (`if true`, `while 1 == 1`; `while true`
+  constant expression over `+ - * /`, which is folded to one literal (`dt: f64 = 1.0 / 60.0`; a negative zero
+  keeps its sign; an expression whose float literals are all `f32` folds in single precision to an `f32`
+  literal, `0.1f + 0.2f` → `0.3f`). A call or any other expression is refused — C# and PHP accept only
+  constants there, and Python evaluates a default once.
+- **Integer literal range** — an unsuffixed integer literal (optionally negated) is an `i32` unless it flows into
+  a 64-bit slot; one outside the range of the ≤32-bit integer slot it flows into, or of `i32` when it initializes
+  an un-annotated local, is refused (`let v: i32 = 2147483648` — C# typed it `uint`). Suffix it (`2147483648i64`).
+  The i64 minimum `-9223372036854775808` is a valid i64 literal on every target (PHP spells it `PHP_INT_MIN`).
+- **Warnings-as-errors shapes** — a constant `if`/`while` condition (`if true`, `while 1 == 1`, and any condition
+  built only from literals, operators and casts that C# folds: `if 1 + 1 == 3`, `if "a" == "a"`; `while true`
   itself is the infinite loop), a self-assignment `x = x`, `== null` on a non-nullable number, bool, char or
-  enum value, and a local set to a constant and never read are refused (C# CS0162 / CS1717 / CS0472 / CS0219). Prefix a deliberately
-  unused local with `_`.
+  enum value, and a local set to a constant (a literal, an operator or cast over literals, an enum member) and
+  never read are refused (C# CS0162 / CS1717 / CS0472 / CS0219). Prefix a deliberately unused local with `_`:
+  such a `let _x = <constant>` that is never read has no effect and is not emitted (one that is later assigned
+  is refused — C# reports it whatever its name).
 - **Function values and operators** — any callee expression may be called (`adder(1)(4)`, `fs[0](4)`, an
-  immediately-invoked lambda with typed parameters and an expression body); a function value has no members;
-  a lambda flowing into a `(…) => unit` slot must not produce a value (a block's `return v`, or an expression
-  body that is not a call). An `operator fn` is reached only through its operator, never called by name.
+  immediately-invoked lambda with typed parameters and an expression body), and so may a function-typed field
+  (`h.f(4)`, `(h.f)(4)`, `K.g(4)`). A top-level function is a value of its function type (`apply(five)`; PHP
+  passes the first-class callable `five(...)`) when it is a single, non-generic user function without default
+  parameters — an overloaded, generic or std function is refused there: pass a lambda that calls it. A function
+  value has no members and no methods (`g.toString()` is refused). A function value flowing into a function slot
+  must have exactly that type — in particular a value-returning function into `(…) => unit` is refused (C#
+  CS0407): wrap it, `() => five()`. A lambda flowing into a `(…) => unit` slot must not produce a value (a
+  block's `return v`, or an expression body that is not a call); a call body's result is discarded on every
+  target, also when the call is a bound property read or lookup (`() => s.len()` — C# `() => { _ = s.Length; }`).
+  An expression statement whose value is dropped is spelled the same way. An `operator fn` is reached only
+  through its operator, never called by name.
   `??` needs a left operand that can be null (a non-nullable or narrowed one is refused — the fallback is dead
   code, and C#/TS reject it). `>>>` and `>>>=` are refused: shift an unsigned value with `>>`.
 
@@ -802,7 +832,7 @@ relaxation is **opt-in and named**, never silent:
 | `Math.round` half values | **half-to-even** (banker's — the .NET default) on every target; TS and PHP carry shims (their natives are half-up / half-away) | — |
 | shifts | count masked (`& 31` / `& 63`, the .NET rule) and result wrapped to the operand width on every target | — |
 | float `%` | C-style `fmod` (result takes the DIVIDEND's sign — the .NET/JS behavior); Python emits `math.fmod`, PHP `fmod()` | — |
-| PHP 64-bit wrap | **published caveat:** PHP has no i64/u64 wrap emulation (no GMP dependency) — i64 arithmetic is faithful only while intermediates stay inside ±2⁶³ (beyond it PHP promotes to float); u64 values above 2⁶³−1 are not representable | a GMP-backed strict mode could be offered later |
+| PHP 64-bit wrap | **published caveat:** PHP has no i64/u64 wrap emulation (no GMP dependency) — i64 arithmetic is faithful only while intermediates stay inside ±2⁶³ (beyond it PHP promotes to float, so an overflowing i64 product prints as a float such as `9223372036854776000` where C# prints the wrapped value); u64 values above 2⁶³−1 are not representable | a GMP-backed strict mode could be offered later |
 | string index units | **faithful**: `len`/`charAt`/`codePointAt`/`substring`/`indexOf` count **UTF-16 code units** on every target — natively on C#/TS, through helpers on Python and PHP (§8; PHP requires `ext-iconv`). `"é".len()` is 1 and `"a😀b".len()` is 4 everywhere; `compareOrdinal` orders by code unit everywhere (an astral character sorts before U+E000–U+FFFF) | — |
 | lone surrogates | a `substring`/`charAt` that splits a pair holds the lone half faithfully (its `len`, `codePointAt` and printed U+FFFD agree everywhere), and every std search matches it by UTF-16 code unit on every target: `indexOf`, `contains`, `startsWith`, `endsWith`, `replaceAll` and `split` agree (`"a\u{1F600}".contains(hi)` is true and `split(hi)` gives 2 parts on all four; Python/PHP switch to the UTF-16 view only when an operand holds a lone half) | **published caveat:** on Python and PHP, two lone halves joined by `+` are not re-paired for `==` (`"\u{1F600}".substring(0, 1) + "\u{1F600}".substring(1, 2) == "\u{1F600}"` is true on C#/TS, false on Python/PHP); `print` still shows the paired character |
 | `codePoints()` | iterates code points on every target | **published caveat:** a lone surrogate is U+FFFD on C# (`EnumerateRunes`) and kept as is on TS/Python; PHP's `preg_split('//u')` fails on the ill-formed string |
@@ -905,6 +935,17 @@ import "std.io"                                       // bare: link only
 names). The specifier is a quoted string so that a bare name like `"std.io"` reads as a logical module and a
 `"./physics"` reads as importer-relative (Node/TS/Deno convention) — the latter enables cross-`.pg`
 user modules. An interpolated string (`"…${}…"`) is rejected as a specifier.
+
+**Target names a user name may collide with.** A user identifier that is a target keyword is respelled on that
+target (C# `@switch`, Python/PHP `global_`) or, on a target with no escape (TS), refused. So is one that spells a
+**runtime name the generated code refers to unqualified** (P40 review r4): on Python a builtin the output calls
+(`fn max` becomes `max_`, so the emitted `Math.max` still reaches the builtin), on PHP a global builtin class
+(`class Directory`/`Generator`/`TypeError` become `Directory_`/…, not a redeclaration fatal). The generated code
+qualifies its own references where the target allows it (TS throws `globalThis.TypeError`, PHP names `\Exception`),
+so a user `class TypeError` on TS keeps its name; a TS runtime global the output cannot qualify everywhere
+(`Math`, `Number`, `String`, `BigInt`, `Array`, `Object`, `JSON`, `Promise`, `Symbol`, `console`, `globalThis`) is
+refused as a user name. A respelled name is part of that target's public surface — pick another name for an
+exported API.
 
 **Resolution** (PRD §4.5, PLAN P12): `std.*` resolves from the compiler's embedded registry; other
 specifiers resolve through a pluggable module loader (the CLI maps a logical `a.b.c` to `<root>/a/b/c.pg`

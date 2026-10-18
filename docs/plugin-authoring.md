@@ -139,7 +139,7 @@ Every key `loadBackendSpec` reads (all optional except `name`; defaults shown wh
 | `tables` | map of maps | Named lookup tables for `{"fn":"table"}` / `{"fn":"subst"}`. Two are read by the shared statement walk: `localDecl` (`mutable`/`const` templates, `$x` = the name — PHP `"$$x"`, TS `let $x`/`const $x`) and `yield` (`value`/`empty` — PHP `"yield $x;"` / `"return;"`). TS also carries `opMethod` and `bigNarrow`. |
 | `generics` | object | `{"style", "boundsIntro", "boundsSep", "erase"}`. `style`: `"whereClauses"` (C# `<T> where T : A`) \| `"inlineBounds"` (TS `<T extends A>`) \| `""` (none). `erase` lists compile-time-only bounds (`INumber`, `IMapKey`). A marker bound that is NOT erased renders through its std type binding instead: C# binds `"IMapKey.type": "notnull"`, so `<K: IMapKey>` emits `where K : notnull` (what `OrderedDictionary<K, V>` demands). |
 | `wrapAtom` | object | `{"recvPrimary": [...], "unary": [...]}`. `recvPrimary` lists the IR kinds this target emits as a **primary** expression (`"var"`, `"this"`, `"call"`, `"methodCall"`, `"member"`, `"index"`, `"str"`, `"char"`, `"bool"`, `"null"`, `"int"`, `"float"`, `"listLit"`, `"tuple"`, `"interp"`, `"extern"`, `"new"`, `"makeCase"`, `"nullAssert"`, …); a receiver of **any other** kind is parenthesized, so an unlisted or new kind is safe by default. Derived, not listed: a binary routed to an `opMethod` method is a call, and a bound template is primary iff it is lexically atomic. `unary` lists the kinds a unary operand wraps: `"binary"`, `"unary"`, `"cast"`, `"cond"`, `"binaryScalar"`. |
-| `absentNormalize` | object | `{"prefix": "(", "suffix": " ?? null)"}` (P40 review A1) — the wrapper a bound template puts around a value only to fold a second absent form into the one `T?` absence (TS: `undefined` into `null`). Where the bound call is the left operand of `??`, the emitter strips it (std and user `extern` templates alike), since `??` coalesces every absent form — tsc >= 5.6 rejects `(x ?? null) ?? d` (TS2871). |
+| `absentNormalize` | object | `{"prefix": "(", "suffix": " ?? null)", "foldedBy": ["coalesce", "nullAssert", "nullSafe"]}` (P40 review A1, r4) — the wrapper a bound template puts around a value only to fold a second absent form into the one `T?` absence (TS: `undefined` into `null`). Where the bound call flows straight into a consumer listed in `foldedBy` — `coalesce` (the left operand of `??`), `nullAssert` (`x!`), `nullSafe` (a `?.` receiver) — the emitter strips it (std and user `extern` templates alike), since that consumer's emitted form already treats every absent form alike: tsc >= 5.6 rejects `(x ?? null) ?? d` (TS2871). `foldedBy` is required and validated at load; list only the consumers whose emitted form really folds (TS's `==` is `===`, so a null comparison is not one). |
 | `identifiers` | object | See §3.4. |
 
 ### 3.2 `capabilities` — tri-state, and the coverage contract
@@ -186,6 +186,8 @@ pass on comes from `spec` properties instead:
 | `linksWithoutImports` | `false` | modules link by compilation into one unit — no import statements (C#) |
 | `forbidsShadowedLocals` | `false` | a nested-scope local may not reuse an outer local's name → the scope-legalization pass runs (C#, CS0136) |
 | `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
+| `exprStmt` | absent | `{"discardPrefix": "_ = ", "parenIfStarts": ["{"]}` (P40 review r4). `discardPrefix` is written before an expression statement whose value is dropped and that is not an invocation, construction or await (a bound property read such as `s.len()`, a map lookup, a union-case literal — also the body of such a lambda flowing into `(…) => unit`, which lowering turns into a one-statement block): C# admits only statement expressions (CS0201). `parenIfStarts` lists tokens an expression statement may not begin with; a statement printing so is parenthesized (JS `{`). |
+| `nativeCoalesceAssign` | `false` | the target has a native `t ??= v` that stores only when `t` is null (C# 8, ES2021, PHP 7.4). Off (Python), lowering expands it to `if t == null { t = v }`, evaluating the target's receiver and indices once (P40 review r4) |
 | `nativeCompoundAssign` | `false` | a native `a op= b` on a built-in scalar slot means exactly `a = a op b` as the `Binary` rule renders it — same §3.C wrap, integer division and concatenation (C#, whose compound narrows back implicitly). Off, lowering expands each compound to `a = a op b`, evaluating the target's receiver and indices once (impure ones go to a temp), so the `Binary` rule's masking applies; the emitter folds it back to `a op= b` only where the rule rendered the plain infix `a op b` |
 
 Capabilities also serve the **anti-silent-drop coverage contract** enforced at load time: every IR
@@ -287,7 +289,8 @@ that is a member of the file-local `__PgRt` class.
   "escape":   { "strategy": "suffix", "with": "_" },
   "mangle":   { "replace": "$", "with": "_" },
   "reserved": ["__e", "__opt*", "__w*"],
-  "globals":  ["str"]
+  "runtimeNames": ["len", "max", "str", "TypeError"],
+  "globals":  ["console", "Math"]
 }
 ```
 
@@ -308,11 +311,24 @@ that links every module's free functions into ONE scope reads the link name inst
 C#, which keeps native overloading otherwise), or `decl.linkOrEmitName` / `node.linkOrMangledCallee` (the link
 name when set, else the mangled one — PHP, which has no overloading at all). A call whose callee is not a name
 (`adder(1)(4)`, an IIFE) sets `node.hasCalleeExpr`; emit `node.calleeExpr` with side `"recv"` (`node.calleeKind`
-names its kind, `{"type":"node.calleeType"}` renders its function type).
+names its kind, `{"type":"node.calleeType"}` renders its function type). A call through a function-typed
+**field** (`h.f(4)`, `K.g(4)`) has a `member` callee — a target whose `recv->f(…)` would call a METHOD (PHP)
+parenthesizes it. A top-level function used as a **value** (`apply(five)`, P40 review r4) is a `Call` with
+`node.isRef` = `"true"` and no arguments: print the resolved name without the argument list (PHP: the first-class
+callable `five(...)`).
 - `reserved`: names your *generated* code claims (synthesized temps, scaffolding). A trailing `*`
   reserves a prefix family (`__w*`). A user identifier matching one is refused with a per-target
   diagnostic — this is what makes generated-name collisions loud instead of miscompiles.
-- `globals`: runtime globals user code must not shadow (Python's `str`); same refusal mechanism.
+- `runtimeNames` (P40 review r4): the runtime names your generated code refers to **unqualified** in the scope a
+  user name lives in — Python builtins the templates call (`len`, `max`, `str`, `isinstance`, `math`, …), PHP's
+  global builtin classes (`Directory`, `Generator`, `TypeError`, `ArrayObject`, … — a user class of that name is a
+  redeclaration fatal in the global namespace). A user identifier spelling one is escaped **exactly like a
+  keyword** (it joins the `keywords` set, so it needs an `escape` strategy). Prefer qualifying your own reference
+  in the template when the target can (TS throws `globalThis.TypeError`, PHP writes `\Exception`); list the name
+  here only when it cannot be qualified everywhere.
+- `globals`: runtime globals user code must not shadow and that cannot be escaped (a target with no `escape`
+  strategy — TS: `console`, `Math`, `Number`, `String`, `BigInt`, `Array`, `Object`, `JSON`, `Promise`, `Symbol`,
+  `globalThis`); same refusal mechanism as `reserved`.
 
 ### 3.5 `options` — consumer-set target options (P40)
 
@@ -395,7 +411,9 @@ substitute `$x`; identity if absent) · **`require`** (`[key]` — record a prel
 **`inlineBlock`** (a block lambda's body flattened onto one line) · **`parenIfContains`** (P40 A6,
 `[chars, text]` — parenthesize `text` when it contains any of `chars`; C# wraps a string-typed
 interpolation hole with `[":", …]`, since a top-level `:` starts a format specifier — a `:` nested in a call
-or a string only costs harmless parentheses).
+or a string only costs harmless parentheses) · **`parenIfStarts`** (P40 review r4, `[token, text]` — parenthesize
+`text` when it begins with `token`; TS wraps an arrow's expression body with `["{", …]`, since `() => {…}` would
+parse an object literal as a block).
 
 Also in expression context: **`identFn`** (as `ident`, for a function name, honouring
 `identifiers.functionBuiltins`).
