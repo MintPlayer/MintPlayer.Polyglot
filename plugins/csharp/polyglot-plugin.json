@@ -1484,6 +1484,7 @@
         {
           "case": {
             "when": [
+              [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ],
               [
                 {
                   "eq": [
@@ -2361,6 +2362,10 @@
         "else": {
           "case": {
             "when": [
+              [
+                { "eq": [ "decl.isAbstract", "true" ] },
+                { "line": { "tmpl": [ { "call": "csMethodSig" }, ";" ] } }
+              ],
               [
                 {
                   "eq": [
@@ -3427,6 +3432,7 @@
     "csClassHead": {
       "tmpl": [
         { "call": "csAccess" },
+        { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ] ] } },
         "class ",
         {
           "fn": "ident",
@@ -3544,9 +3550,9 @@
                       "when": [
                         [
                           {
-                            "eq": [
-                              "item.hasInit",
-                              "true"
+                            "and": [
+                              { "eq": [ "item.hasInit", "true" ] },
+                              { "eq": [ "item.deferInit", "false" ] }
                             ]
                           },
                           {
@@ -3571,9 +3577,9 @@
               "when": [
                 [
                   {
-                    "eq": [
-                      "decl.hasInit",
-                      "true"
+                    "or": [
+                      { "eq": [ "decl.hasInit", "true" ] },
+                      { "not": { "eq": [ "decl.deferredInitFields.count", "0" ] } }
                     ]
                   },
                   {
@@ -3628,6 +3634,12 @@
                         ]
                       },
                       "body": [
+                        {
+                          "mapDecl": "decl.deferredInitFields",
+                          "each": { "line": { "tmpl": [
+                            "this.", { "fn": "ident", "args": [ { "get": "item.name" } ] }, " = ", { "emit": "item.init" }, ";"
+                          ] } }
+                        },
                         {
                           "stmts": "decl.initBody"
                         }

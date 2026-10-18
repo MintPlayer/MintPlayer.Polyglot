@@ -2997,7 +2997,9 @@
         ")"
       ]
     },
-    "MethodDecl": {
+    "MethodDecl": { "case": { "when": [
+      [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": { "tmpl": [ "abstract ", { "call": "phpMethodSig" }, ";" ] } } ]
+    ], "else": {
       "block": {
         "head": {
           "call": "phpMethodSig"
@@ -3036,7 +3038,7 @@
           }
         ]
       }
-    },
+    } } },
     "EnumDecl": {
       "block": {
         "head": {
@@ -3279,6 +3281,7 @@
       "block": {
         "head": {
           "tmpl": [
+            { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ] ] } },
             "class ",
             {
               "fn": "ident",

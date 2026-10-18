@@ -581,6 +581,7 @@ struct Method {
     bool isAsync = false;         // `async` method — return wrapped in Task/Promise/async def (§4.7)
     bool isVirtual = false;       // `open fn` — C# `virtual` (overridable); SPEC §grammar 210-213
     bool isOverride = false;      // `override fn` — C# `override` (replaces a base virtual)
+    bool isAbstract = false;      // `abstract fn` — no body; every target declares a real abstract member (review r5 #9)
     bool isIterator = false;      // body has a `yield` — C# `IEnumerable`, TS generator `*method()` (§4.x)
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
@@ -671,6 +672,8 @@ struct Class { // a mutable reference type
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
+    std::vector<std::string> needsClasses; // review r5 #4: classes its static initializers reach (declarationOrder)
+    bool isAbstract = false;               // `abstract class` — never constructed; may declare abstract methods (r5 #9)
 };
 struct Interface { // a contract: method signatures only (no bodies). C# `interface`, TS `interface`.
     SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
@@ -687,6 +690,7 @@ struct Global { // a top-level `const`/`let` value
     Type type;
     ExprPtr init;
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
+    std::vector<std::string> needsClasses; // review r5 #4: classes the initializer reaches — emitted before it
 };
 // A native-backed `extern class`: how its name spells on THE ACTIVE TARGET (`$0,$1,…` = the rendered type
 // args) — lowering picks the target's arm (P19 slice 9). Construction (`Type(args)` with `$T`/`$0…` ctor

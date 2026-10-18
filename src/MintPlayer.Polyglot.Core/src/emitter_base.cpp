@@ -981,6 +981,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";
     if (path == "decl.isVirtual")  return m_.isVirtual ? "true" : "false";
     if (path == "decl.isOverride") return m_.isOverride ? "true" : "false";
+    if (path == "decl.isAbstract") return m_.isAbstract ? "true" : "false"; // review r5 #9
     if (path == "decl.isIterator") return m_.isIterator ? "true" : "false";
     if (path == "decl.propHasSetter")  return m_.propHasSetter ? "true" : "false"; // accessor-block setter (#39c)
     if (path == "decl.propSetterParam") return m_.setterParamName;
@@ -1119,6 +1120,8 @@ ClassDeclCtx::ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn em
     : c_(c), hooks_(hooks), emit_(std::move(emit)) {
     for (std::size_t i = 0; i < c_.fields.size(); ++i)
         if (c_.fields[i].init) (c_.fields[i].isStatic ? staticInit_ : instanceInit_).push_back(i);
+    if (c_.baseHasInit)
+        for (std::size_t i : instanceInit_) if (!c_.fields[i].initIsLiteral) deferInit_.push_back(i);
     for (std::size_t i = 0; i < c_.bases.size(); ++i) {
         if (isInterface && isInterface(c_.bases[i])) ifaceBases_.push_back(i);
         else extBase_ = static_cast<int>(i);
@@ -1228,10 +1231,16 @@ std::string ClassDeclCtx::get(const std::string& path) const {
         return std::to_string(n);
     }
     if (path == "decl.instanceInitFields.count") return std::to_string(instanceInit_.size());
+    if (path == "decl.isAbstract")       return c_.isAbstract ? "true" : "false"; // review r5 #9
+    if (path == "decl.deferredInitFields.count") return std::to_string(deferInit_.size()); // review r5 #7
     std::size_t i = 0;
     std::string f;
+    if (path.rfind("decl.deferredInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < deferInit_.size() && f == "name")
+        return c_.fields[deferInit_[i]].name;
     if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size()) {
         const ir::ClassField& fld = c_.fields[i];
+        if (f == "deferInit") // review r5 #7
+            return std::find(deferInit_.begin(), deferInit_.end(), i) != deferInit_.end() ? "true" : "false";
         if (f == "attrLines.count") return std::to_string(fld.attrLines.size()); // P37 D Tier 1
         if (f.rfind("attrLines.", 0) == 0) {
             const std::size_t j = static_cast<std::size_t>(std::stoul(f.substr(10)));
@@ -1300,6 +1309,8 @@ std::string ClassDeclCtx::emitChild(const std::string& path, const std::string&)
         return emit_(*c_.fields[staticInit_[i]].init);
     if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size() && f == "init")
         return emit_(*c_.fields[instanceInit_[i]].init);
+    if (path.rfind("decl.deferredInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < deferInit_.size() && f == "init")
+        return emit_(*c_.fields[deferInit_[i]].init); // review r5 #7
     return "";
 }
 
@@ -1413,6 +1424,11 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.interfaces.count") return std::to_string(m_.interfaces.size());
     if (path == "module.records.count")    return std::to_string(m_.records.size());
     if (path == "module.classes.count")    return std::to_string(m_.classes.size());
+    if (path == "module.abstractClasses.count") { // review r5 #9 (Python imports abc for them)
+        std::size_t n = 0;
+        for (const auto& c : m_.classes) if (c.isAbstract) ++n;
+        return std::to_string(n);
+    }
     if (path == "module.extensions.count") return std::to_string(m_.extensions.size());
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());

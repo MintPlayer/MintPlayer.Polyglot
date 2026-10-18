@@ -1433,12 +1433,10 @@
             "when": [
               [
                 {
-                  "not": {
-                    "eq": [
-                      "module.interfaces.count",
-                      "0"
-                    ]
-                  }
+                  "or": [
+                    { "not": { "eq": [ "module.interfaces.count", "0" ] } },
+                    { "not": { "eq": [ "module.abstractClasses.count", "0" ] } }
+                  ]
                 },
                 {
                   "line": "import abc"
@@ -1721,6 +1719,15 @@
             "when": [
               [
                 {
+                  "and": [
+                    { "eq": [ "decl.bases.count", "0" ] },
+                    { "eq": [ "decl.isAbstract", "true" ] }
+                  ]
+                },
+                "(abc.ABC)"
+              ],
+              [
+                {
                   "eq": [
                     "decl.bases.count",
                     "0"
@@ -1739,6 +1746,7 @@
                     "type": "item"
                   }
                 },
+                { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, ", abc.ABC" ] ] } },
                 ")"
               ]
             }
@@ -2403,6 +2411,7 @@
             ]
           }
         },
+        { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": "@abc.abstractmethod" } ] ] } },
         {
           "case": {
             "when": [

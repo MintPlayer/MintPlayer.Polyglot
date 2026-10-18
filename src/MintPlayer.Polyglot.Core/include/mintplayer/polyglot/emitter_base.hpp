@@ -259,6 +259,9 @@ private:
     const DeclHooks& hooks_;
     EmitFn emit_;
     std::vector<std::size_t> staticInit_, instanceInit_; // field indices with an initializer, by static-ness
+    // review r5 #7: instance fields whose initializer is not a literal, in a class whose base has a constructor —
+    // a target that runs field initializers BEFORE the base constructor (C#) assigns them after it instead.
+    std::vector<std::size_t> deferInit_;
     std::vector<std::size_t> ifaceBases_;                // base indices the predicate calls interfaces
     int extBase_ = -1;                                   // the last non-interface base index (-1 = none)
 };

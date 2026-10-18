@@ -331,6 +331,9 @@ struct ClassDecl {
     std::vector<TargetBinding> typeBindings; // `extern class`: the `type { actual… }` per-target spelling arms
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
     std::vector<AttrUse> attributes;     // P37 D: attributes attached to this class
+    // P40 review r5 #4 (set by sema): same-file classes its static initializers reach (directly or through the
+    // bodies they call) — the emission order defines them before this class when it moves the class forward.
+    std::vector<std::string> needsClasses;
 };
 struct InterfaceDecl {
     std::string name;
@@ -363,6 +366,9 @@ struct ValueDecl {                       // top-level `const` / `let`
     bool hasType = false;
     ExprPtr init;
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
+    // P40 review r5 #4 (set by sema): same-file classes the initializer reaches — directly or through any body it
+    // runs (functions, constructors, methods, extensions, static initializers). They are emitted before the value.
+    std::vector<std::string> needsClasses;
 };
 
 struct EnumCase {
