@@ -1639,6 +1639,18 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     `JSON.stringify`, comparing a class payload by content — a silent divergence from C# — and throwing on bigint) and
     PHP (`__pg_ueq`; `===` compared a record payload by identity, x7a). SPEC: generic and defaulted functions are
     refused as values; a stored function value and a module lambda's body are not followed by the init-order check.
+  - **Follow-up (coordinator): runtime names by qualification, not by escaping.** Escaping a runtime name in every
+    position renamed a generated library's members (`self.id_`). Now the output qualifies what it calls: Python
+    calls every builtin through `builtins.` (`builtins.len`, `builtins.range`, `builtins.isinstance(x, builtins.bool)`,
+    `@builtins.property`) and imports `abc`/`asyncio` as `_PG_abc`/`_PG_asyncio`; Python `runtimeNames` is just
+    `builtins`, and `Exception` (std `Error`'s spelling, used in `raise`/`except`/class bases) joins `globals`.
+    `import builtins` is a prelude (`pyBuiltins`) required by the bindings and rules that use it, and by the preludes
+    that do through new manifest datum `preludeRequires` (validated: every name a declared prelude; a required
+    prelude's own requirements join and are emitted before it). PHP's builtin classes moved from `runtimeNames` to new
+    datum `identifiers.classBuiltins`, escaped only through the new builtin `identType` (class/enum/record/interface
+    heads, the Type rule, `new`, `X::`); builtin functions were already suffixed only at free-function positions. The
+    drift unit check also fails on any bare Python builtin. Conformance `member_names_builtin`; unit checks pin that
+    Python fields/methods `id`/`len`/`str`/`max` and PHP members `strpos`/`error`/`intdiv` keep their names.
   - **Tests:** conformance `decl_order_reach`, `ctor_calls_final`, `field_init_order`, `abstract_members`,
     `record_defaults`, `link_names_decl/`, `link_names_value/`, `overload_unions`, `runtime_names_used`,
     `unused_locals_assigned`, `underscore_names`, `module_values_typed`, `union_record_eq` (each with `.expected`; none

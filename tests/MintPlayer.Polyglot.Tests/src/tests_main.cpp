@@ -1861,8 +1861,10 @@ int main() {
                         "fn g(k: i32): i32 => get(() => Some(k))\n", "typescript", {"get(() => ({"}, {"get(() => {"},
                         "TS parenthesizes an object-literal arrow body (item 21)");
                 // 22: runtime names — Python/PHP escape, TS refuses an unqualifiable global, TS qualifies TypeError.
-                emitsR4("fn max(a: i32, b: i32): i32 => a\nfn g(): i32 => max(1, 2)\n", "python", {"def max_(", "max_(1, 2)"},
-                        {}, "Python escapes a user fn named like a builtin (item 22)");
+                // (r5: Python no longer escapes it — the output calls `builtins.max`, so the user name stays as written.)
+                emitsR4("import \"std.math\"\nfn max(a: i32, b: i32): i32 => a\nfn g(): i32 => max(1, 2) + Math.max(3, 4)\n", "python",
+                        {"def max(", "max(1, 2)", "builtins.max(3, 4)", "import builtins"}, {"max_"},
+                        "Python keeps a user fn named like a builtin and calls the builtin qualified (item 22, r5)");
                 emitsR4("class Directory {\n  let n: i32 = 1\n}\nfn g(): i32 => Directory().n\n", "php",
                         {"class Directory_", "new Directory_("}, {}, "PHP escapes a class named like a builtin class (item 22)");
                 emitsR4("fn g(x: i32?): i32 => x!\n", "typescript", {"throw new globalThis.TypeError("}, {},
@@ -1957,7 +1959,7 @@ int main() {
                     emitsR5(ab, "csharp", {"abstract class S", "public abstract int a();", "public override int a()"}, {},
                             "C# emits an abstract class and method (#9)");
                     emitsR5(ab, "typescript", {"abstract class S", "abstract a(): number;"}, {}, "TS emits abstract members (#9)");
-                    emitsR5(ab, "python", {"class S(abc.ABC):", "@abc.abstractmethod", "import abc"}, {},
+                    emitsR5(ab, "python", {"class S(_PG_abc.ABC):", "@_PG_abc.abstractmethod", "import abc as _PG_abc"}, {},
                             "Python emits an abc.ABC class with @abc.abstractmethod (#9)");
                     emitsR5(ab, "php", {"abstract class S", "abstract public function a();"}, {}, "PHP emits abstract members (#9)");
                     refusesR5("abstract class S {\n  abstract fn a(): i32\n}\nfn f(): i32 => S().a()\n",
@@ -1975,7 +1977,17 @@ int main() {
                 refusesR5("union Shape {\n  Circle(r: i32)\n  Square(s: i32)\n}\nfn kind(s: Shape): i32 => 1\nfn f(): i32 => kind(5)\n",
                           "cannot convert 'i32' to 'Shape'", "an i32 into a union parameter (#15)");
                 // #16
-                emitsR5("fn id(n: i32): i32 => n\nfn f(): i32 => id(1)\n", "python", {"def id_("}, {}, "Python escapes a user fn 'id' (#16)");
+                emitsR5("fn id(n: i32): i32 => n\nfn f(): i32 => id(1)\n", "python", {"def id("}, {"id_"},
+                        "Python keeps a user fn 'id' (the output calls builtins.id) (#16)");
+                emitsR5("class Box {\n  var id: i32 = 1\n  var len: i32 = 2\n  var str: string = \"s\"\n  fn max(x: i32): i32 => x\n}\n"
+                        "fn f(b: Box): i32 => b.id + b.len + b.max(3)\n", "python", {"self.id = 1", "self.len = 2", "self.str = \"s\"",
+                        "def max(self, x):", "b.id + b.len"}, {"id_", "len_", "str_", "max_"},
+                        "Python keeps fields/methods named like builtins (r5)");
+                emitsR5("class Box {\n  var strpos: i32 = 1\n  var error: i32 = 2\n  fn intdiv(fmod: i32): i32 => fmod\n}\n"
+                        "class Directory {\n  var n: i32 = 1\n}\nfn f(b: Box): i32 => b.strpos + b.intdiv(2) + Directory().n\n", "php",
+                        {"$strpos", "$error", "function intdiv($fmod)", "->intdiv(2)", "class Directory_", "new Directory_("},
+                        {"strpos_pg", "error_", "intdiv_pg", "fmod_pg"},
+                        "PHP escapes a builtin class name only as a class, a builtin function name only as a free function (r5)");
                 emitsR5("fn intdiv(a: i32, b: i32): i32 => a\nfn f(): i32 => intdiv(1, 2)\n", "php", {"function intdiv_pg("}, {},
                         "PHP suffixes a user fn named like a builtin its templates call (#16)");
                 emitsR5("class Symbol {\n  var n: i32 = 1\n}\nfn f(): i32 => Symbol().n\n", "typescript", {"class Symbol"}, {},
@@ -2014,9 +2026,20 @@ int main() {
                     {"csharp", {"Equals", "GetHashCode", "ReferenceEquals", "LowerAscii", "UpperAscii", "Show", "Str",
                                 "a", "dg", "digits", "fm", "s", "sb", "x", "global", "var", "when", "main"}},
                     {"typescript", {"as", "catch", "for", "if", "super", "constructor", "ka"}},
-                    {"python", {"a", "b", "d", "m", "n", "r", "s", "x", "cache", "ctypes"}},
+                    {"python", {"a", "b", "d", "m", "n", "r", "s", "x", "cache", "ctypes", "super"}},
                     {"php", {"equals"}},
                 };
+                // Python: the output qualifies every builtin it uses (`builtins.len`, the `builtins` module itself the one
+                // escaped name), so a user `fn max`, field `id` or param `len` keeps its name. No builtin may appear bare —
+                // called, passed (`isinstance(x, bool)`) or as a decorator — except `super` (a .pg keyword: never a user
+                // name, and zero-argument `super()` must be spelled bare).
+                const std::set<std::string> pyBuiltins = {
+                    "abs", "all", "any", "bin", "bool", "bytearray", "bytes", "callable", "chr", "classmethod", "complex",
+                    "dict", "dir", "divmod", "enumerate", "filter", "float", "format", "frozenset", "getattr", "hasattr",
+                    "hash", "hex", "id", "int", "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min",
+                    "next", "object", "oct", "open", "ord", "pow", "print", "property", "range", "repr", "reversed",
+                    "round", "set", "setattr", "slice", "sorted", "staticmethod", "str", "sum", "tuple", "type", "vars",
+                    "zip", "TypeError", "ValueError", "ZeroDivisionError", "KeyError", "IndexError", "StopIteration"};
                 for (const char* t : {"csharp", "typescript", "python", "php"}) {
                     std::string text;
                     cli::readFile(cli::executablePath().parent_path() / "plugins" / t / "polyglot-plugin.json", text);
@@ -2029,7 +2052,7 @@ int main() {
                         return n;
                     };
                     std::set<std::string> covered;
-                    for (const char* list : {"keywords", "reserved", "runtimeNames", "globals"})
+                    for (const char* list : {"keywords", "reserved", "runtimeNames", "globals", "classBuiltins"})
                         for (const auto& v : ids[list].items()) covered.insert(key(v.asString()));
                     for (const auto& v : ids["functionBuiltins"]["names"].items()) covered.insert(key(v.asString()));
                     std::vector<std::string> strings;
@@ -2078,6 +2101,9 @@ int main() {
                                               (code[k] == '.' && k + 1 < code.size() && std::isalpha(static_cast<unsigned char>(code[k + 1]))));
                             if (use && name[0] != '_' && name != "new" && !covered.count(key(name)) && !allow.at(t).count(name))
                                 missing.insert(name);
+                            const bool defined = i >= 4 && code.compare(i - 4, 4, "def ") == 0; // the template's own def
+                            if (std::string(t) == "python" && pyBuiltins.count(name) && !defined)
+                                missing.insert(name + "(bare)");
                             i = j;
                         }
                     }
@@ -2163,8 +2189,8 @@ int main() {
             EmitResult tsg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("typescript"));
             check(tsg.ok && !has(tsg.code, "IMapKey"), "P40 s9: TS erases the IMapKey bound");
             EmitResult py = compileStd(use, findTarget("python"));
-            check(py.ok && has(py.code, "(m.pop(\"a\", _PG_ABSENT) is not _PG_ABSENT)") && has(py.code, "_PG_ABSENT = object()") &&
-                      has(py.code, "list(m.keys())"),
+            check(py.ok && has(py.code, "(m.pop(\"a\", _PG_ABSENT) is not _PG_ABSENT)") && has(py.code, "_PG_ABSENT = builtins.object()") &&
+                      has(py.code, "builtins.list(m.keys())"),
                   "P40 s9: Python dict, remove via a dedicated pop sentinel, list snapshot");
             EmitResult pyNo = compileStd("fn f(m: Map<string, i32>): i32 => m.count\n", findTarget("python"));
             check(pyNo.ok && !has(pyNo.code, "_PG_ABSENT"), "P40 s9: the Python sentinel is emitted only when remove is used");
@@ -5070,8 +5096,8 @@ int main() {
         // Python: the interface exists as an abc.ABC class, so the implements clause resolves at import.
         EmitResult py = compileStd(iface +
             "class Net : IPgNet {\n  fn forward(x: i32): i32 => x + 1\n}\nfn main() {}\n", findTarget("python"));
-        check(py.ok && has(py.code, "import abc") && has(py.code, "class IPgNet(abc.ABC):") &&
-                  has(py.code, "@abc.abstractmethod") && has(py.code, "class Net(IPgNet):"),
+        check(py.ok && has(py.code, "import abc as _PG_abc") && has(py.code, "class IPgNet(_PG_abc.ABC):") &&
+                  has(py.code, "@_PG_abc.abstractmethod") && has(py.code, "class Net(IPgNet):"),
               "issue#29: Python emits the interface as an abc.ABC base");
         // #38 (issue #29 follow-up): a typed match binding IS now a runtime type test on a concrete class —
         // it compiles and emits a C# declaration pattern (`Disk d`), not a fake first-arm-always-wins.

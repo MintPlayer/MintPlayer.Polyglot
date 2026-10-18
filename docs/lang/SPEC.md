@@ -1027,19 +1027,23 @@ names). The specifier is a quoted string so that a bare name like `"std.io"` rea
 user modules. An interpolated string (`"…${}…"`) is rejected as a specifier.
 
 **Target names a user name may collide with.** A user identifier that is a target keyword is respelled on that
-target (C# `@switch`, Python/PHP `global_`) or, on a target with no escape (TS), refused. So is one that spells a
-**runtime name the generated code refers to unqualified** (P40 review r4): on Python a builtin the output calls
-(`fn max` becomes `max_`, so the emitted `Math.max` still reaches the builtin), on PHP a global builtin class
-(`class Directory`/`Generator`/`TypeError` become `Directory_`/…, not a redeclaration fatal). The generated code
-qualifies its own references where the target allows it (TS throws `globalThis.TypeError`/`globalThis.Error` and
-reaches `globalThis.process`, PHP names `\Exception`), so a user `class TypeError` on TS keeps its name; a TS runtime
-global the output cannot qualify everywhere (`Math`, `Number`, `String`, `BigInt`, `Array`, `JSON`, `Promise`,
-`console`, `globalThis`) is refused as a user name. Each list is exactly what that target's templates and prelude
-reference unqualified (P40 review r5; a unit check scans every manifest so the lists cannot drift): Python also
-escapes `id` and `open`; PHP suffixes a user function named like any builtin function its templates call
-(`intdiv`, `fmod`, `strpos`, `strtolower`, … become `intdiv_pg`, …). PHP refuses to redeclare **any** builtin
-function, used or not; the list covers the ones the output calls and the common names — a user function named
-like another PHP builtin is still a PHP fatal (rename it). On C#, a user `_` is respelled `__u` (`identifiers.renames`):
+target (C# `@switch`, Python/PHP `global_`) or, on a target with no escape (TS), refused. The generated code
+**qualifies the runtime names it uses** wherever the target allows it, so a user name that merely spells one keeps
+its name (P40 review r5): TS throws `globalThis.TypeError`/`globalThis.Error` and reaches `globalThis.process`;
+Python calls every builtin through the `builtins` module (`builtins.len`, `builtins.range`, `builtins.isinstance(x,
+builtins.bool)`, `@builtins.property`; `import builtins` is emitted only when used) and imports `abc`/`asyncio` under
+compiler names (`_PG_abc`), so a function `max`, a field `id`, a parameter `len` or a local `str` is emitted as
+written — only the name `builtins` itself is escaped (`builtins_`), and a user name `Exception` (the spelling of
+std's `Error`) is refused; PHP names `\Exception`. Where a name cannot be qualified, the escape applies only to the
+binding kind that collides: on PHP a builtin **function** name is suffixed only for a free function (`fn intdiv` →
+`intdiv_pg`; a method or field `intdiv` keeps its name), and a builtin **class** name only where a type name is
+spelled (`class Directory`/`Generator`/`TypeError` → `Directory_`, also in `new`, `::` and type positions; a field
+`directory` or `error` keeps its name). A TS runtime global the output cannot qualify everywhere (`Math`, `Number`,
+`String`, `BigInt`, `Array`, `JSON`, `Promise`, `console`, `globalThis`) is refused as a user name. A unit check
+scans every manifest's templates and prelude for unqualified runtime references the lists do not cover, and for any
+bare Python builtin, so this cannot drift. PHP refuses to redeclare **any** builtin function, used or not; the
+list covers the ones the output calls and the common names — a user function named like another PHP builtin is
+still a PHP fatal (rename it). On C#, a user `_` is respelled `__u` (`identifiers.renames`):
 the output writes a dropped value as the discard `_ = …`, which a variable named `_` would capture. A user type
 may not reuse a **core type** name (`Error`, `Iterable`, `Array`, `Option`, `INumber`): std code relies on them
 (*'Error' redeclares the std core type 'Error'*). A respelled name is part of that target's public surface —

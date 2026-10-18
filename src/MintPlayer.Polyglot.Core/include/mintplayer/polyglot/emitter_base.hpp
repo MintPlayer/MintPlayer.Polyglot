@@ -139,6 +139,7 @@ public:
     // Identifier repair reads the spec's `identifiers` block (keyword escape / emitted-name mangle) —
     // generic catalog entries, not per-backend code (P19 slice 6).
     std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
+    std::string identType(const std::string& n) const { return specIdentType(specFn_(), n); } // review r5
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
     // Free-function-position collision repair (PHP builtins); no-op where the spec declares no `fnBuiltins`.
     std::string identFn(const std::string& n) const { return specIdentFn(specFn_(), n); }

@@ -56,17 +56,27 @@
     },
     "rethrow": "raise",
     "preludes": {
-      "pgU16": "_PG_ASTRAL = __import__('re').compile('[\\U00010000-\\U0010FFFF]')\n_PG_SURR = __import__('re').compile('[\\ud800-\\udfff]')\n_PG_U16_CACHE = {}\n_PG_U16_LAST = [None, None]\ndef _pg_u16_pair(m):\n    c = ord(m.group(0)) - 0x10000\n    return chr(0xD800 + (c >> 10)) + chr(0xDC00 + (c & 0x3FF))\ndef _pg_u16v(s):\n    # the UTF-16 view of a non-ASCII str: each astral code point expanded to its surrogate pair. A short\n    # string is just recomputed; a long one is cached (the last one, plus a small LRU), so indexing a long\n    # string in a loop is O(1) per call even when short strings are indexed in between.\n    last = _PG_U16_LAST\n    if last[0] is s:\n        return last[1]\n    if len(s) < 256:\n        return _PG_ASTRAL.sub(_pg_u16_pair, s)\n    cache = _PG_U16_CACHE\n    e = cache.pop(id(s), None)\n    if e is not None and e[0] is s:\n        v = e[1]\n    else:\n        v = _PG_ASTRAL.sub(_pg_u16_pair, s)\n        if len(cache) >= 8:\n            cache.pop(next(iter(cache)))\n    cache[id(s)] = (s, v)\n    last[0] = s\n    last[1] = v\n    return v\ndef _pg_len16(s):\n    return len(s) if s.isascii() else len(_pg_u16v(s))\ndef _pg_u16_char(s, i):\n    return s[i] if s.isascii() else _pg_u16v(s)[i]\ndef _pg_u16_cp(s, i):\n    if s.isascii():\n        return ord(s[i])\n    v = _pg_u16v(s)\n    c = ord(v[i])\n    if 0xD800 <= c <= 0xDBFF and i + 1 < len(v):\n        d = ord(v[i + 1])\n        if 0xDC00 <= d <= 0xDFFF:\n            return 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00)\n    return c\ndef _pg_u16_sub(s, a, b):\n    if s.isascii():\n        return s[a:b]\n    return _pg_u16_fix(_pg_u16v(s)[a:b])\ndef _pg_u16_find(s, n, f):\n    if s.isascii():\n        return s.find(n, f) if n.isascii() else -1\n    return _pg_u16v(s).find(n if n.isascii() else _pg_u16v(n), f)\ndef _pg_cmp16(a, b):\n    if not (a.isascii() and b.isascii()):\n        a = a.encode('utf-16-be', 'surrogatepass')\n        b = b.encode('utf-16-be', 'surrogatepass')\n    return -1 if a < b else (1 if a > b else 0)\ndef _pg_u16_fix(r):\n    # re-pair the surrogate halves of a UTF-16 view slice into the str's astral code points\n    return r.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'surrogatepass') if _PG_SURR.search(r) else r\ndef _pg_u16_lone(*xs):\n    # a str holding a surrogate code point (a lone half a substring split off, or halves joined by +) only\n    # matches like C#/TS in the UTF-16 view; without one, the code-point answer is the UTF-16 answer\n    for x in xs:\n        if not x.isascii() and _PG_SURR.search(x):\n            return True\n    return False\ndef _pg_u16_has(s, n):\n    return _pg_u16v(s).find(_pg_u16v(n)) >= 0 if _pg_u16_lone(s, n) else n in s\ndef _pg_u16_starts(s, p):\n    return _pg_u16v(s).startswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.startswith(p)\ndef _pg_u16_ends(s, p):\n    return _pg_u16v(s).endswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.endswith(p)\ndef _pg_u16_replace(s, n, r):\n    if _pg_u16_lone(s, n, r):\n        return _pg_u16_fix(_pg_u16v(s).replace(_pg_u16v(n), _pg_u16v(r)))\n    return s.replace(n, r)\ndef _pg_u16_split(s, sep):\n    if _pg_u16_lone(s, sep):\n        return [_pg_u16_fix(p) for p in _pg_u16v(s).split(_pg_u16v(sep))]\n    return s.split(sep)\n",
+      "pgU16": "_PG_ASTRAL = __import__('re').compile('[\\U00010000-\\U0010FFFF]')\n_PG_SURR = __import__('re').compile('[\\ud800-\\udfff]')\n_PG_U16_CACHE = {}\n_PG_U16_LAST = [None, None]\ndef _pg_u16_pair(m):\n    c = builtins.ord(m.group(0)) - 0x10000\n    return builtins.chr(0xD800 + (c >> 10)) + builtins.chr(0xDC00 + (c & 0x3FF))\ndef _pg_u16v(s):\n    # the UTF-16 view of a non-ASCII str: each astral code point expanded to its surrogate pair. A short\n    # string is just recomputed; a long one is cached (the last one, plus a small LRU), so indexing a long\n    # string in a loop is O(1) per call even when short strings are indexed in between.\n    last = _PG_U16_LAST\n    if last[0] is s:\n        return last[1]\n    if builtins.len(s) < 256:\n        return _PG_ASTRAL.sub(_pg_u16_pair, s)\n    cache = _PG_U16_CACHE\n    e = cache.pop(builtins.id(s), None)\n    if e is not None and e[0] is s:\n        v = e[1]\n    else:\n        v = _PG_ASTRAL.sub(_pg_u16_pair, s)\n        if builtins.len(cache) >= 8:\n            cache.pop(builtins.next(builtins.iter(cache)))\n    cache[builtins.id(s)] = (s, v)\n    last[0] = s\n    last[1] = v\n    return v\ndef _pg_len16(s):\n    return builtins.len(s) if s.isascii() else builtins.len(_pg_u16v(s))\ndef _pg_u16_char(s, i):\n    return s[i] if s.isascii() else _pg_u16v(s)[i]\ndef _pg_u16_cp(s, i):\n    if s.isascii():\n        return builtins.ord(s[i])\n    v = _pg_u16v(s)\n    c = builtins.ord(v[i])\n    if 0xD800 <= c <= 0xDBFF and i + 1 < builtins.len(v):\n        d = builtins.ord(v[i + 1])\n        if 0xDC00 <= d <= 0xDFFF:\n            return 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00)\n    return c\ndef _pg_u16_sub(s, a, b):\n    if s.isascii():\n        return s[a:b]\n    return _pg_u16_fix(_pg_u16v(s)[a:b])\ndef _pg_u16_find(s, n, f):\n    if s.isascii():\n        return s.find(n, f) if n.isascii() else -1\n    return _pg_u16v(s).find(n if n.isascii() else _pg_u16v(n), f)\ndef _pg_cmp16(a, b):\n    if not (a.isascii() and b.isascii()):\n        a = a.encode('utf-16-be', 'surrogatepass')\n        b = b.encode('utf-16-be', 'surrogatepass')\n    return -1 if a < b else (1 if a > b else 0)\ndef _pg_u16_fix(r):\n    # re-pair the surrogate halves of a UTF-16 view slice into the str's astral code points\n    return r.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'surrogatepass') if _PG_SURR.search(r) else r\ndef _pg_u16_lone(*xs):\n    # a str holding a surrogate code point (a lone half a substring split off, or halves joined by +) only\n    # matches like C#/TS in the UTF-16 view; without one, the code-point answer is the UTF-16 answer\n    for x in xs:\n        if not x.isascii() and _PG_SURR.search(x):\n            return True\n    return False\ndef _pg_u16_has(s, n):\n    return _pg_u16v(s).find(_pg_u16v(n)) >= 0 if _pg_u16_lone(s, n) else n in s\ndef _pg_u16_starts(s, p):\n    return _pg_u16v(s).startswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.startswith(p)\ndef _pg_u16_ends(s, p):\n    return _pg_u16v(s).endswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.endswith(p)\ndef _pg_u16_replace(s, n, r):\n    if _pg_u16_lone(s, n, r):\n        return _pg_u16_fix(_pg_u16v(s).replace(_pg_u16v(n), _pg_u16v(r)))\n    return s.replace(n, r)\ndef _pg_u16_split(s, sep):\n    if _pg_u16_lone(s, sep):\n        return [_pg_u16_fix(p) for p in _pg_u16v(s).split(_pg_u16v(sep))]\n    return s.split(sep)\n",
       "pgOut16": "def _pg_out16(s):\n    # stdout: re-pair adjacent surrogate halves, and print a lone one as U+FFFD (as C# and Node do)\n    return s if s.isascii() else s.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'replace')\n",
-      "asyncEntry": "import asyncio\n",
-      "fdiv": "def _pg_fdiv(a, b):\n    # IEEE division like C#/JS: x/0.0 is an infinity, 0.0/0.0 NaN (Python raises ZeroDivisionError)\n    try:\n        return a / b\n    except ZeroDivisionError:\n        if a != a or a == 0:\n            return float(\"nan\")\n        return float(\"inf\") if (a > 0) == (__import__('math').copysign(1.0, b) > 0) else float(\"-inf\")\ndef _pg_fmod(a, b):\n    # C# % on doubles: NaN for a zero divisor or an infinite dividend (math.fmod raises ValueError there)\n    if b == 0 or a != a or b != b or a in (float(\"inf\"), float(\"-inf\")):\n        return float(\"nan\")\n    return __import__('math').fmod(a, b)\n",
-      "pgInt": "def _pg_int(s):\n    # the validated integer text, without the leading zeros that trip Python's 4300-digit int() limit\n    d = s.lstrip(\"+-\").lstrip(\"0\") or \"0\"\n    return -int(d) if s[:1] == \"-\" else int(d)\n",
+      "asyncEntry": "import asyncio as _PG_asyncio\n",
+      "pyBuiltins": "import builtins\n",
+      "fdiv": "def _pg_fdiv(a, b):\n    # IEEE division like C#/JS: x/0.0 is an infinity, 0.0/0.0 NaN (Python raises ZeroDivisionError)\n    try:\n        return a / b\n    except builtins.ZeroDivisionError:\n        if a != a or a == 0:\n            return builtins.float(\"nan\")\n        return builtins.float(\"inf\") if (a > 0) == (__import__('math').copysign(1.0, b) > 0) else builtins.float(\"-inf\")\ndef _pg_fmod(a, b):\n    # C# % on doubles: NaN for a zero divisor or an infinite dividend (math.fmod raises ValueError there)\n    if b == 0 or a != a or b != b or a in (builtins.float(\"inf\"), builtins.float(\"-inf\")):\n        return builtins.float(\"nan\")\n    return __import__('math').fmod(a, b)\n",
+      "pgInt": "def _pg_int(s):\n    # the validated integer text, without the leading zeros that trip Python's 4300-digit int() limit\n    d = s.lstrip(\"+-\").lstrip(\"0\") or \"0\"\n    return -builtins.int(d) if s[:1] == \"-\" else builtins.int(d)\n",
       "pgF32": "def _pg_f32(x):\n    # round a double to the nearest f32 (an out-of-range value becomes an infinity, as C# float.Parse does)\n    import ctypes\n    return ctypes.c_float(x).value\n",
       "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
-      "pgFail": "def _pg_fail(at):\n    raise TypeError(\"null-assert failed (\" + at + \")\")\n",
-      "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if not isinstance(x, float):\n        return str(x)\n    if x != x:\n        return \"NaN\"\n    if x in (float(\"inf\"), float(\"-inf\")):\n        return \"Infinity\" if x > 0 else \"-Infinity\"\n    if x == 0:\n        return \"0\"\n    s = repr(x)\n    neg = s[0] == \"-\"\n    if neg:\n        s = s[1:]\n    m, _, e = s.partition(\"e\")\n    i, _, f = m.partition(\".\")\n    d = (i + f).lstrip(\"0\")\n    n = len(i) + (int(e) if e else 0) - (len(i) + len(f) - len(d))\n    d = d.rstrip(\"0\")\n    k = len(d)\n    if k <= n <= 21:\n        r = d + \"0\" * (n - k)\n    elif 0 < n <= 21:\n        r = d[:n] + \".\" + d[n:]\n    elif -6 < n <= 0:\n        r = \"0.\" + \"0\" * -n + d\n    else:\n        r = d[0] + (\".\" + d[1:] if k > 1 else \"\") + \"e\" + (\"+\" if n >= 1 else \"-\") + str(abs(n - 1))\n    return \"-\" + r if neg else r\n",
-      "pgAbsent": "_PG_ABSENT = object()  # Map.remove's pop sentinel: never a stored value\n",
-      "pgAscii": "_PG_UPPER = str.maketrans(\"abcdefghijklmnopqrstuvwxyz\", \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\")\n_PG_LOWER = str.maketrans(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\")\n"
+      "pgFail": "def _pg_fail(at):\n    raise builtins.TypeError(\"null-assert failed (\" + at + \")\")\n",
+      "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if builtins.isinstance(x, builtins.bool):\n        return \"true\" if x else \"false\"\n    if not builtins.isinstance(x, builtins.float):\n        return builtins.str(x)\n    if x != x:\n        return \"NaN\"\n    if x in (builtins.float(\"inf\"), builtins.float(\"-inf\")):\n        return \"Infinity\" if x > 0 else \"-Infinity\"\n    if x == 0:\n        return \"0\"\n    s = builtins.repr(x)\n    neg = s[0] == \"-\"\n    if neg:\n        s = s[1:]\n    m, _, e = s.partition(\"e\")\n    i, _, f = m.partition(\".\")\n    d = (i + f).lstrip(\"0\")\n    n = builtins.len(i) + (builtins.int(e) if e else 0) - (builtins.len(i) + builtins.len(f) - builtins.len(d))\n    d = d.rstrip(\"0\")\n    k = builtins.len(d)\n    if k <= n <= 21:\n        r = d + \"0\" * (n - k)\n    elif 0 < n <= 21:\n        r = d[:n] + \".\" + d[n:]\n    elif -6 < n <= 0:\n        r = \"0.\" + \"0\" * -n + d\n    else:\n        r = d[0] + (\".\" + d[1:] if k > 1 else \"\") + \"e\" + (\"+\" if n >= 1 else \"-\") + builtins.str(builtins.abs(n - 1))\n    return \"-\" + r if neg else r\n",
+      "pgAbsent": "_PG_ABSENT = builtins.object()  # Map.remove's pop sentinel: never a stored value\n",
+      "pgAscii": "_PG_UPPER = builtins.str.maketrans(\"abcdefghijklmnopqrstuvwxyz\", \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\")\n_PG_LOWER = builtins.str.maketrans(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\")\n"
+    },
+    "preludeRequires": {
+      "pgU16": ["pyBuiltins"],
+      "fdiv": ["pyBuiltins"],
+      "pgInt": ["pyBuiltins"],
+      "pgFail": ["pyBuiltins"],
+      "fstr": ["pyBuiltins"],
+      "pgAbsent": ["pyBuiltins"],
+      "pgAscii": ["pyBuiltins"]
     },
     "tables": {
       "localDecl": {
@@ -193,9 +203,10 @@
         "__w*"
       ],
       "runtimeNames": [
-        "abs", "chr", "float", "int", "isinstance", "iter", "len", "list", "max", "min", "next", "object", "ord",
-        "range", "repr", "round", "slice", "str", "super", "type", "Exception", "ValueError", "TypeError",
-        "math", "abc", "asyncio", "id", "open"
+        "builtins"
+      ],
+      "globals": [
+        "Exception"
       ]
     }
   },
@@ -970,7 +981,7 @@
                                         },
                                         {
                                           "tmpl": [
-                                            " and isinstance(__e, ",
+                                            { "fn": "require", "args": ["pyBuiltins"] }, " and builtins.isinstance(__e, ",
                                             {
                                               "type": "item.type"
                                             },
@@ -1219,7 +1230,7 @@
                         }
                       ]
                     },
-                    " in range(",
+                    { "fn": "require", "args": ["pyBuiltins"] }, " in builtins.range(",
                     {
                       "emit": "stmt.rangeStart"
                     },
@@ -1439,7 +1450,7 @@
                   ]
                 },
                 {
-                  "line": "import abc"
+                  "line": "import abc as _PG_abc"
                 }
               ]
             ]
@@ -1515,7 +1526,7 @@
                         {
                           "line": {
                             "tmpl": [
-                              "asyncio.run(",
+                              "_PG_asyncio.run(",
                               {
                                 "fn": "mangle",
                                 "args": [
@@ -1725,7 +1736,7 @@
                     { "eq": [ "decl.isAbstract", "true" ] }
                   ]
                 },
-                "(abc.ABC)"
+                "(_PG_abc.ABC)"
               ],
               [
                 {
@@ -1747,7 +1758,7 @@
                     "type": "item"
                   }
                 },
-                { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, ", abc.ABC" ] ] } },
+                { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, ", _PG_abc.ABC" ] ] } },
                 ")"
               ]
             }
@@ -1796,7 +1807,7 @@
                 }
               }
             },
-            "abc.ABC)"
+            "_PG_abc.ABC)"
           ]
         },
         "body": [
@@ -1805,7 +1816,7 @@
             "each": {
               "seq": [
                 {
-                  "line": "@abc.abstractmethod"
+                  "line": "@_PG_abc.abstractmethod"
                 },
                 {
                   "line": {
@@ -2388,9 +2399,7 @@
                     "property"
                   ]
                 },
-                {
-                  "line": "@property"
-                }
+                { "line": { "tmpl": [ { "fn": "require", "args": ["pyBuiltins"] }, "@builtins.property" ] } }
               ]
             ]
           }
@@ -2405,14 +2414,12 @@
                     "true"
                   ]
                 },
-                {
-                  "line": "@staticmethod"
-                }
+                { "line": { "tmpl": [ { "fn": "require", "args": ["pyBuiltins"] }, "@builtins.staticmethod" ] } }
               ]
             ]
           }
         },
-        { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": "@abc.abstractmethod" } ] ] } },
+        { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": "@_PG_abc.abstractmethod" } ] ] } },
         {
           "case": {
             "when": [
@@ -2577,7 +2584,7 @@
     },
     "IsTest": {
       "tmpl": [
-        "isinstance(",
+        { "fn": "require", "args": ["pyBuiltins"] }, "builtins.isinstance(",
         { "emit": "node.operand" },
         ", ",
         { "type": "node.testType" },
@@ -2632,7 +2639,7 @@
               "tmpl": [
                 "(",
                 { "emit": "node.operand" },
-                " if isinstance(",
+                { "fn": "require", "args": ["pyBuiltins"] }, " if builtins.isinstance(",
                 { "emit": "node.operand" },
                 ", ",
                 { "type": "node.castType" },
@@ -2645,7 +2652,7 @@
           "tmpl": [
             "(",
             { "get": "node.tempName" },
-            " if isinstance((",
+            { "fn": "require", "args": ["pyBuiltins"] }, " if builtins.isinstance((",
             { "get": "node.tempName" },
             " := ",
             { "emit": "node.operand" },
@@ -2765,7 +2772,7 @@
             },
             {
               "tmpl": [
-                "float(",
+                { "fn": "require", "args": ["pyBuiltins"] }, "builtins.float(",
                 {
                   "emit": "node.operand"
                 },
@@ -2803,7 +2810,7 @@
             },
             {
               "tmpl": [
-                "int(",
+                { "fn": "require", "args": ["pyBuiltins"] }, "builtins.int(",
                 {
                   "emit": "node.operand"
                 },
@@ -3397,7 +3404,7 @@
             },
             {
               "tmpl": [
-                "isinstance(_m, ",
+                { "fn": "require", "args": ["pyBuiltins"] }, "builtins.isinstance(_m, ",
                 { "type": "item.pattern.testType" },
                 ")"
               ]
@@ -3941,26 +3948,26 @@
     "std.collections": {
       "List.type": "list",
       "List.constructor": "[]",
-      "List.count": "len($this)",
+      "List.count": { "template": "builtins.len($this)", "requires": ["pyBuiltins"] },
       "List.add": "$this.append($0)",
       "List.clear": "$this.clear()",
       "List.removeAll": "$this[:] = [__e for __e in $this if not (($0)(__e))]",
       "List.removeAt": "$this.pop($0)",
       "Map.type": "dict",
       "Map.constructor": "{}",
-      "Map.count": "len($this)",
+      "Map.count": { "template": "builtins.len($this)", "requires": ["pyBuiltins"] },
       "Map.get": "$this.get($0)",
       "Map.set": "$this.__setitem__($0, $1)",
       "Map.has": "($0 in $this)",
       "Map.remove": { "template": "($this.pop($0, _PG_ABSENT) is not _PG_ABSENT)", "requires": ["pgAbsent"] },
-      "Map.keys": "list($this.keys())",
-      "Map.values": "list($this.values())"
+      "Map.keys": { "template": "builtins.list($this.keys())", "requires": ["pyBuiltins"] },
+      "Map.values": { "template": "builtins.list($this.values())", "requires": ["pyBuiltins"] }
     },
     "std.io": {
       "print": { "template": "__import__('builtins').print(_pg_out16(_pg_str(x)))", "requires": ["fstr", "pgOut16"] },
       "readText": "__import__('pathlib').Path(path).read_text()",
       "writeText": "__import__('pathlib').Path(path).write_text(content)",
-      "appendText": "open(path, 'a').write(content)",
+      "appendText": { "template": "builtins.open(path, 'a').write(content)", "requires": ["pyBuiltins"] },
       "fileExists": "__import__('os').path.exists(path)",
       "deleteFile": "__import__('os').remove(path)"
     },
@@ -3988,24 +3995,24 @@
       "Math.asinh": "__import__('math').asinh($0)",
       "Math.acosh": "__import__('math').acosh($0)",
       "Math.atanh": "__import__('math').atanh($0)",
-      "Math.trunc": "float(__import__('math').trunc($0))",
-      "Math.floor": "float(__import__('math').floor($0))",
-      "Math.ceil": "float(__import__('math').ceil($0))",
-      "Math.min": "min($0, $1)",
-      "Math.max": "max($0, $1)",
-      "Math.abs": "abs($0)",
-      "Math.sign": "(lambda a: type(a)(1) if a > 0 else (type(a)(-1) if a < 0 else a - a))($0)",
+      "Math.trunc": { "template": "builtins.float(__import__('math').trunc($0))", "requires": ["pyBuiltins"] },
+      "Math.floor": { "template": "builtins.float(__import__('math').floor($0))", "requires": ["pyBuiltins"] },
+      "Math.ceil": { "template": "builtins.float(__import__('math').ceil($0))", "requires": ["pyBuiltins"] },
+      "Math.min": { "template": "builtins.min($0, $1)", "requires": ["pyBuiltins"] },
+      "Math.max": { "template": "builtins.max($0, $1)", "requires": ["pyBuiltins"] },
+      "Math.abs": { "template": "builtins.abs($0)", "requires": ["pyBuiltins"] },
+      "Math.sign": { "template": "(lambda a: builtins.type(a)(1) if a > 0 else (builtins.type(a)(-1) if a < 0 else a - a))($0)", "requires": ["pyBuiltins"] },
       "Math.clamp": "(lambda x, lo, hi: lo if x < lo else (hi if x > hi else x))($0, $1, $2)",
-      "Math.round": "float(round($0))"
+      "Math.round": { "template": "builtins.float(builtins.round($0))", "requires": ["pyBuiltins"] }
     },
     "std.strings": {
-      "string.isEmpty": "(len($this) == 0)",
+      "string.isEmpty": { "template": "(builtins.len($this) == 0)", "requires": ["pyBuiltins"] },
       "string.len": { "template": "_pg_len16($this)", "requires": ["pgU16"] },
       "string.toUpper": "$this.upper()",
       "string.toLower": "$this.lower()",
       "string.toUpperAscii": { "template": "$this.translate(_PG_UPPER)", "requires": ["pgAscii"] },
       "string.toLowerAscii": { "template": "$this.translate(_PG_LOWER)", "requires": ["pgAscii"] },
-      "string.codePoints": "list($this)",
+      "string.codePoints": { "template": "builtins.list($this)", "requires": ["pyBuiltins"] },
       "string.startsWith": { "template": "_pg_u16_starts($this, $0)", "requires": ["pgU16"] },
       "string.endsWith": { "template": "_pg_u16_ends($this, $0)", "requires": ["pgU16"] },
       "string.contains": { "template": "_pg_u16_has($this, $0)", "requires": ["pgU16"] },
@@ -4017,18 +4024,18 @@
       "string.__pgIndexOf": { "template": "_pg_u16_find($this, $0, $1)", "requires": ["pgU16"] },
       "string.__pgReplaceAll": { "template": "_pg_u16_replace($this, $0, $1)", "requires": ["pgU16"] },
       "string.__pgSplit": { "template": "_pg_u16_split($this, $0)", "requires": ["pgU16"] },
-      "string.__pgFromCodePoint": "chr($0)"
+      "string.__pgFromCodePoint": { "template": "builtins.chr($0)", "requires": ["pyBuiltins"] }
     },
     "std.core": {
       "Error.type": "Exception",
       "Error.constructor": "$T($0)",
-      "Error.message": "str($this)",
+      "Error.message": { "template": "builtins.str($this)", "requires": ["pyBuiltins"] },
       "Iterable.type": "list",
       "Array.type": "list",
       "Array.constructor": "[]",
-      "Array.count": "len($this)",
-      "__pgText.rawLen": "len($0)",
-      "__pgText.rawCode": "ord($0[$1])",
+      "Array.count": { "template": "builtins.len($this)", "requires": ["pyBuiltins"] },
+      "__pgText.rawLen": { "template": "builtins.len($0)", "requires": ["pyBuiltins"] },
+      "__pgText.rawCode": { "template": "builtins.ord($0[$1])", "requires": ["pyBuiltins"] },
       "i8.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
       "i16.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
       "i32.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
@@ -4037,8 +4044,8 @@
       "u16.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
       "u32.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
       "u64.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
-      "f32.__pgParse": { "template": "_pg_f32(float($0))", "requires": ["pgF32"] },
-      "f64.__pgParse": "float($0)"
+      "f32.__pgParse": { "template": "_pg_f32(builtins.float($0))", "requires": ["pgF32", "pyBuiltins"] },
+      "f64.__pgParse": { "template": "builtins.float($0)", "requires": ["pyBuiltins"] }
     }
   },
   "fileExtension": ".py",

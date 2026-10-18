@@ -246,7 +246,7 @@
         "__opt*",
         "__w*"
       ],
-      "runtimeNames": [
+      "classBuiltins": [
         "directory", "error", "generator", "closure", "exception", "errorexception", "typeerror", "valueerror",
         "arithmeticerror", "divisionbyzeroerror", "argumentcounterror", "assertionerror", "compileerror", "parseerror",
         "unhandledmatcherror", "throwable", "traversable", "iterator", "iteratoraggregate", "arrayaccess", "countable",
@@ -528,9 +528,9 @@
                 },
                 {
                   "tmpl": [
-                    {
+                    { "fn": "identType", "args": [ {
                       "get": "node.staticType"
-                    },
+                    } ] },
                     "::",
                     { "case": { "when": [ [
                       { "and": [
@@ -655,9 +655,9 @@
             },
             {
               "tmpl": [
-                {
+                { "fn": "identType", "args": [ {
                   "get": "node.staticType"
-                },
+                } ] },
                 "::",
                 {
                   "fn": "ident",
@@ -875,7 +875,7 @@
       "tmpl": [
         "new ",
         {
-          "fn": "ident",
+          "fn": "identType",
           "args": [
             {
               "get": "node.typeName"
@@ -2454,7 +2454,7 @@
           "tmpl": [
             "interface ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -2584,7 +2584,7 @@
           ]
         ],
         "else": {
-          "fn": "ident",
+          "fn": "identType",
           "args": [
             {
               "get": "type.name"
@@ -3065,7 +3065,7 @@
           "tmpl": [
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3107,7 +3107,7 @@
           "tmpl": [
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3304,7 +3304,7 @@
             { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ] ] } },
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3588,7 +3588,7 @@
               [
                 { "eq": ["item.initIsLiteral", "false"] },
                 { "line": { "tmpl": [
-                  { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                  { "fn": "identType", "args": [ { "get": "decl.name" } ] },
                   "::$",
                   { "fn": "ident", "args": [ { "get": "item.name" } ] },
                   " = ",

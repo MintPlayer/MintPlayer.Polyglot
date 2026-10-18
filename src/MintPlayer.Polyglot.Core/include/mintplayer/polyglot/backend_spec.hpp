@@ -160,6 +160,10 @@ struct BackendSpec {
     // the program's entry fn is async). Prepended in ascending key order, innermost-first, so with both
     // recorded the output reads `idiv` text, then `asyncEntry` text, then the program.
     std::unordered_map<std::string, std::string> preludes;
+    // P40 review r5: preludes a prelude itself needs (Python: a helper calling `builtins.len` needs the
+    // `import builtins` prelude). Requiring a prelude requires these too, and each is emitted before its first
+    // dependent. Every name must be a declared prelude (validated at load).
+    std::unordered_map<std::string, std::vector<std::string>> preludeRequires;
 
     // Generic-parameter spelling strategy. `genericsStyle`: "inlineBounds" carries bounds on each
     // parameter (TS `<T extends A & B, U>`), "whereClauses" spells bare names and puts bounds in trailing
@@ -252,6 +256,9 @@ struct BackendSpec {
     // otherwise capture the emitter's own discard `_ = …`, and `@_` names the same identifier). The spelling
     // contains `__`, which no user identifier may (SPEC §2), so it cannot meet another user name.
     std::unordered_map<std::string, std::string> renames;
+    // P40 review r5: builtin CLASS names of the target's single class namespace (PHP `Directory`, `Error`, …,
+    // lowercase when identifiersCaseInsensitive). Escaped only in type-name position (`specIdentType`).
+    std::unordered_set<std::string> classBuiltins;
 };
 
 // A `.pg` identifier spelled for the target: keyword collisions escape per the spec's declared strategy.
@@ -264,6 +271,17 @@ inline std::string specIdentKey(const BackendSpec& s, const std::string& n) {
 inline std::string specIdent(const BackendSpec& s, const std::string& n) {
     if (auto r = s.renames.find(n); r != s.renames.end()) return r->second;
     if (s.keywords.count(specIdentKey(s, n)) == 0) return n;
+    if (s.escapeStrategy == "prefix") return s.escapeWith + n;
+    if (s.escapeStrategy == "suffix") return n + s.escapeWith;
+    return n;
+}
+
+// A TYPE name spelled for the target (a class/record/enum/interface declaration, a type reference, `new X`,
+// `X::m`): a keyword escapes as `specIdent` does, and so does a name in `classBuiltins` (PHP's builtin classes
+// live in the one class namespace) — only here, so a field, method, parameter or local of that spelling keeps it
+// (P40 review r5).
+inline std::string specIdentType(const BackendSpec& s, const std::string& n) {
+    if (s.classBuiltins.count(specIdentKey(s, n)) == 0 || s.renames.count(n)) return specIdent(s, n);
     if (s.escapeStrategy == "prefix") return s.escapeWith + n;
     if (s.escapeStrategy == "suffix") return n + s.escapeWith;
     return n;
