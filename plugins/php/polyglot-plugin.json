@@ -247,7 +247,7 @@
         "__w*"
       ],
       "runtimeNames": [
-        "directory", "generator", "closure", "exception", "errorexception", "typeerror", "valueerror",
+        "directory", "error", "generator", "closure", "exception", "errorexception", "typeerror", "valueerror",
         "arithmeticerror", "divisionbyzeroerror", "argumentcounterror", "assertionerror", "compileerror", "parseerror",
         "unhandledmatcherror", "throwable", "traversable", "iterator", "iteratoraggregate", "arrayaccess", "countable",
         "stringable", "serializable", "jsonserializable", "arrayobject", "arrayiterator", "stdclass", "datetime",
@@ -262,7 +262,13 @@
       "functionBuiltins": {
         "suffix": "_pg",
         "names": [
-          "abs", "array_filter", "array_keys", "array_map", "array_merge",
+          "abs", "acos", "acosh", "array_key_exists", "array_key_first", "asin", "asinh", "atan", "atan2", "atanh",
+          "chr", "cosh", "fdiv", "file_exists", "file_get_contents", "file_put_contents", "fmod", "function_exists",
+          "iconv", "ini_set", "intdiv", "is_bool", "is_float", "is_infinite", "is_int", "is_nan", "is_string", "log10",
+          "ltrim", "pack", "preg_match", "preg_replace", "preg_replace_callback", "preg_split", "rtrim", "sinh",
+          "str_contains", "str_ends_with", "str_repeat", "str_replace", "str_starts_with", "strcmp", "strpos",
+          "strtolower", "strtoupper", "strtr", "tanh", "unlink", "unpack", "var_export",
+          "array_filter", "array_keys", "array_map", "array_merge",
           "array_pop", "array_push", "array_reverse", "array_shift", "array_slice",
           "array_splice", "array_values", "assert", "ceil", "compact", "cos", "count",
           "current", "date", "die", "each", "end", "eval", "exit",

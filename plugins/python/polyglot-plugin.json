@@ -195,7 +195,7 @@
       "runtimeNames": [
         "abs", "chr", "float", "int", "isinstance", "iter", "len", "list", "max", "min", "next", "object", "ord",
         "range", "repr", "round", "slice", "str", "super", "type", "Exception", "ValueError", "TypeError",
-        "math", "abc", "asyncio"
+        "math", "abc", "asyncio", "id", "open"
       ]
     }
   },
@@ -1618,7 +1618,8 @@
               "else": ""
             }
           },
-          { "stmts": "stmt.body" }
+          { "stmts": "stmt.body" },
+          { "case": { "when": [ [ { "eq": [ "stmt.body.count", "0" ] }, { "line": "pass" } ] ] } }
         ]
       }
     },

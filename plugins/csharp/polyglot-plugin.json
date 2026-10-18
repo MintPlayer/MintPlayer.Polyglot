@@ -275,7 +275,8 @@
         "lhs",
         "__opt*",
         "__w*"
-      ]
+      ],
+      "renames": { "_": "__u" }
     }
   },
   "rules": {
@@ -2899,6 +2900,16 @@
         },
         {
           "line": "#nullable enable"
+        },
+        {
+          "case": {
+            "when": [
+              [
+                { "not": { "eq": ["module.allLowercaseTypeNames.count", "0"] } },
+                { "line": "#pragma warning disable CS8981 // a .pg type name may be all lowercase" }
+              ]
+            ]
+          }
         },
         {
           "case": {

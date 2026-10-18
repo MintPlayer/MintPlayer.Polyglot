@@ -205,6 +205,18 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
             if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
         if (ids["caseInsensitive"].kind == json::Value::Kind::Bool)
             r.spec.identifiersCaseInsensitive = ids["caseInsensitive"].asBool();
+        // P40 review r5 #24: a user identifier the generated code would misread, respelled whole (C#: a user `_`
+        // is the discard `_ = …` the emitter writes for a dropped value; `@_` is still `_`, so it cannot escape).
+        const json::Value& rn = ids["renames"];
+        if (rn.kind == json::Value::Kind::Object) {
+            for (const auto& [k, v] : rn.members) {
+                if (v.kind != json::Value::Kind::String || v.asString().empty())
+                    r.errors.push_back("backend spec: identifiers.renames['" + k + "'] must be a non-empty string");
+                else r.spec.renames[k] = v.asString();
+            }
+        } else if (rn.kind != json::Value::Kind::Null) {
+            r.errors.push_back("backend spec: identifiers.renames must be an object of name -> spelling");
+        }
         const json::Value& esc = ids["escape"];
         if (esc.kind == json::Value::Kind::Object) {
             r.spec.escapeStrategy = esc["strategy"].asString();
@@ -339,6 +351,15 @@ std::string backendSpecToJson(const BackendSpec& spec) {
         if (!spec.reservedNames.empty()) ids += ",\"reserved\":" + arr(spec.reservedNames);
         if (!spec.globalNames.empty()) ids += ",\"globals\":" + arr(spec.globalNames);
         if (spec.identifiersCaseInsensitive) ids += ",\"caseInsensitive\":true";
+        if (!spec.renames.empty()) { // review r5 #24
+            std::vector<std::string> ks;
+            for (const auto& [k, v] : spec.renames) ks.push_back(k);
+            std::sort(ks.begin(), ks.end()); // deterministic serialization
+            ids += ",\"renames\":{";
+            for (std::size_t i = 0; i < ks.size(); ++i)
+                ids += (i ? "," : "") + json::quote(ks[i]) + ":" + json::quote(spec.renames.at(ks[i]));
+            ids += "}";
+        }
         if (!spec.fnBuiltins.empty()) {
             std::vector<std::string> fbs(spec.fnBuiltins.begin(), spec.fnBuiltins.end());
             std::sort(fbs.begin(), fbs.end()); // deterministic serialization

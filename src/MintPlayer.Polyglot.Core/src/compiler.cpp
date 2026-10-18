@@ -1065,11 +1065,27 @@ int linkCoreModule(CompilationUnit& unit, DiagnosticBag& diags, SourceMap* src) 
     if (diags.hasErrors()) return coreFile;
     CompilationUnit core = parse(toks, diags);
     if (diags.hasErrors()) return coreFile;
-    std::unordered_set<std::string> have;
-    for (const auto& c : unit.classes) have.insert(c.name);
-    for (const auto& u : unit.unions)  have.insert(u.name);
-    for (auto& c : core.classes) if (!have.count(c.name)) { c.originModule = kPreludeOrigin; unit.classes.push_back(std::move(c)); }
-    for (auto& u : core.unions)  if (!have.count(u.name)) { u.originModule = kPreludeOrigin; unit.unions.push_back(std::move(u)); }
+    std::unordered_map<std::string, SourcePos> have;
+    for (const auto& c : unit.classes) have.emplace(c.name, c.namePos.line ? c.namePos : c.pos);
+    for (const auto& u : unit.unions)  have.emplace(u.name, u.pos);
+    for (const auto& r : unit.records) have.emplace(r.name, r.namePos.line ? r.namePos : r.pos);
+    for (const auto& i : unit.interfaces) have.emplace(i.name, i.namePos.line ? i.namePos : i.pos);
+    for (const auto& e : unit.enums) have.emplace(e.name, e.pos);
+    // P40 review r5 #16: a user type named like a core type (`class Error`) took the core type's place, so std
+    // code that throws `Error(…)` constructed the USER class (C# CS1729, TS2554, a PHP redeclare fatal). The core
+    // types are authoritative: the redeclaration is refused.
+    auto refuse = [&](const std::string& name) {
+        diags.error(have.at(name), "'" + name + "' redeclares the std core type '" + name + "' — the core types are "
+                                   "always in scope (std code relies on them); rename it");
+    };
+    for (auto& c : core.classes) {
+        if (have.count(c.name)) { refuse(c.name); continue; }
+        c.originModule = kPreludeOrigin; unit.classes.push_back(std::move(c));
+    }
+    for (auto& u : core.unions) {
+        if (have.count(u.name)) { refuse(u.name); continue; }
+        u.originModule = kPreludeOrigin; unit.unions.push_back(std::move(u));
+    }
     return coreFile;
 }
 

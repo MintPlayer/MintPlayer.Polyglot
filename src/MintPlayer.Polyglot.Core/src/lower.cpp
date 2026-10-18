@@ -1135,7 +1135,7 @@ private:
                             appendDefaults(*p->second, e.args.size(), mc->args);
                     return mc;
                 }
-                if (e.lhs && e.lhs->kind != ExprKind::Name) {
+                if (e.lhs && (e.lhs->kind != ExprKind::Name || e.calleeIsField)) { // r5: a module function value too
                     // P40 review r3 2(a): any other callee is a function VALUE — `adder(1)(4)`, `fs[0](4)`,
                     // `(if c {f} else {g})(4)`, an immediately-invoked lambda. It used to lower to an empty
                     // callee name, so `adder(10)(4)` emitted `(4)` and returned the argument.

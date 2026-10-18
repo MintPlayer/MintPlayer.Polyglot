@@ -146,7 +146,8 @@ struct Expr {
     // variable's nullable type on the read and converts it (a value-type Nullable<T> needs the unwrap on C#).
     bool narrowedNonNull = false;
     // Call (set by sema — P40 review r4): `recv.f(args)` / `Type.g(args)` names a FIELD of function type, not a
-    // method — the call goes through the field's value (lowered like any function-value callee).
+    // method — the call goes through the field's value (lowered like any function-value callee). Review r5: also a bare
+    // `name(args)` naming a MODULE VALUE of function type.
     bool calleeIsField = false;
     // Name (set by sema — P40 review r4 item 20): a top-level function used as a VALUE (`apply(five)`); its
     // overloadName/linkName carry the resolved names, and lowering emits a function reference (ir::Call isRef).

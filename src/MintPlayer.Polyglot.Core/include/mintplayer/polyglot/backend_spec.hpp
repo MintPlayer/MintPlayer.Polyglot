@@ -248,6 +248,10 @@ struct BackendSpec {
     // (issue #55). Empty on targets where free-function names never collide (C#/TS/Python).
     std::unordered_set<std::string> fnBuiltins;
     std::string fnBuiltinSuffix; // disambiguating suffix appended to a colliding function name ("" = none)
+    // P40 review r5 #24: identifiers respelled whole, wherever they appear (C# `_` -> `__u`: a user `_` would
+    // otherwise capture the emitter's own discard `_ = …`, and `@_` names the same identifier). The spelling
+    // contains `__`, which no user identifier may (SPEC §2), so it cannot meet another user name.
+    std::unordered_map<std::string, std::string> renames;
 };
 
 // A `.pg` identifier spelled for the target: keyword collisions escape per the spec's declared strategy.
@@ -258,6 +262,7 @@ inline std::string specIdentKey(const BackendSpec& s, const std::string& n) {
     return k;
 }
 inline std::string specIdent(const BackendSpec& s, const std::string& n) {
+    if (auto r = s.renames.find(n); r != s.renames.end()) return r->second;
     if (s.keywords.count(specIdentKey(s, n)) == 0) return n;
     if (s.escapeStrategy == "prefix") return s.escapeWith + n;
     if (s.escapeStrategy == "suffix") return n + s.escapeWith;

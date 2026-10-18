@@ -1424,6 +1424,20 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.interfaces.count") return std::to_string(m_.interfaces.size());
     if (path == "module.records.count")    return std::to_string(m_.records.size());
     if (path == "module.classes.count")    return std::to_string(m_.classes.size());
+    if (path == "module.allLowercaseTypeNames.count") { // review r5 (part 2): C# CS8981 under warnings-as-errors
+        auto lower = [](const std::string& n) {
+            if (n.empty()) return false;
+            for (char ch : n) if (ch < 'a' || ch > 'z') return false;
+            return true;
+        };
+        std::size_t n = 0;
+        for (const auto& c : m_.classes) if (lower(c.name)) ++n;
+        for (const auto& r : m_.records) if (lower(r.name)) ++n;
+        for (const auto& e : m_.enums) if (lower(e.name)) ++n;
+        for (const auto& u : m_.unions) if (lower(u.name)) ++n;
+        for (const auto& i : m_.interfaces) if (lower(i.name)) ++n;
+        return std::to_string(n);
+    }
     if (path == "module.abstractClasses.count") { // review r5 #9 (Python imports abc for them)
         std::size_t n = 0;
         for (const auto& c : m_.classes) if (c.isAbstract) ++n;

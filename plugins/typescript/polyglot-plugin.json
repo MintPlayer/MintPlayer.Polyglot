@@ -84,7 +84,7 @@
         "void"
       ],
       "globals": [
-        "console", "globalThis", "Math", "Number", "String", "BigInt", "Array", "Object", "JSON", "Promise", "Symbol"
+        "console", "globalThis", "Math", "Number", "String", "BigInt", "Array", "JSON", "Promise"
       ]
     },
     "rethrow": "throw __e;",
@@ -1598,7 +1598,7 @@
             }
           }
         },
-        "throw new Error(\"non-exhaustive match\"); })()"
+        "throw new globalThis.Error(\"non-exhaustive match\"); })()"
       ]
     },
     "Lambda": {
@@ -4728,11 +4728,11 @@
     },
     "std.io": {
       "print": "console.log(String(x))",
-      "readText": "process.getBuiltinModule('fs').readFileSync(path, 'utf8')",
-      "writeText": "process.getBuiltinModule('fs').writeFileSync(path, content)",
-      "appendText": "process.getBuiltinModule('fs').appendFileSync(path, content)",
-      "fileExists": "process.getBuiltinModule('fs').existsSync(path)",
-      "deleteFile": "process.getBuiltinModule('fs').unlinkSync(path)"
+      "readText": "globalThis.process.getBuiltinModule('fs').readFileSync(path, 'utf8')",
+      "writeText": "globalThis.process.getBuiltinModule('fs').writeFileSync(path, content)",
+      "appendText": "globalThis.process.getBuiltinModule('fs').appendFileSync(path, content)",
+      "fileExists": "globalThis.process.getBuiltinModule('fs').existsSync(path)",
+      "deleteFile": "globalThis.process.getBuiltinModule('fs').unlinkSync(path)"
     },
     "std.math": {
       "Math.PI": "Math.PI",

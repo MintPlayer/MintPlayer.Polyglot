@@ -363,6 +363,9 @@ struct Local {
     // warnings-as-errors consumer cannot build) — refused when its scope closes.
     int reads = 0;
     bool constInit = false;
+    // P40 review r5 #17: assigned a non-constant somewhere — C# CS0219 fires only when EVERY assignment is a
+    // constant, so such a local is never reported (`var _last = 0; _last = compute()` compiles clean).
+    bool nonConstAssign = false;
     SourcePos declPos{0, 0, 0};
     Stmt* declStmt = nullptr; // the `let` that declared it (r4: an unread `_x = <const>` is dropped there)
 };
@@ -389,6 +392,20 @@ public:
         // user body resolves to one. The linker APPENDS merged std/import decls, so indices [0, userX) are
         // the entry file's own. (First decl of a name wins; overload precision is a follow-up.)
         if (model_ && req_) registerUserSymbols(unit);
+
+        // Type-check top-level const/let initializers first, so their types propagate. Review r5 (part 2): BEFORE
+        // the bodies, and an un-annotated value takes its initializer's type — every body read it as unknown, so
+        // `d.hello() + " "` on `let d = Derived()` was an untyped `+` (PHP added the strings: a TypeError).
+        for (auto& v : unit.values) {
+            if (!v.init) continue;
+            initDeclPos_ = v.pos; initDeclName_ = v.name;
+            TypeRef it = checkExpr(*v.init);
+            initDeclPos_ = {0, 0, 0};
+            if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
+            else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
+                diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
+            else if (concreteType(it)) values_[v.name] = it;
+        }
 
         for (std::size_t i = 0; i < unit.functions.size(); ++i) {
             auto& fn = unit.functions[i];
@@ -481,15 +498,6 @@ public:
             popGenerics(d.generics);
             currentThis_ = tUnknown();
         }
-        for (auto& v : unit.values) { // type-check top-level const/let initializers (so their types propagate)
-            if (!v.init) continue;
-            initDeclPos_ = v.pos; initDeclName_ = v.name;
-            TypeRef it = checkExpr(*v.init);
-            initDeclPos_ = {0, 0, 0};
-            if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
-            else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
-                diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
-        }
         assignLinkNames(unit);
         checkThroughCalls(unit); // review r4 (part 2): what an initializer reads through the calls it makes
         // P40 review (A9/B11): reachability, missing returns, field definite assignment, self-comparison.
@@ -525,6 +533,7 @@ private:
             if (t.name == "string") return 2;
             if (t.name == "bool") return 3;
             if (t.name == "char") return 4;
+            if (unionOrEnum(t.name)) return 6; // review r5 #15: a union/enum takes only itself (it was uncategorized)
             if (types_.count(t.name) && !interfaceNames_.count(t.name)) return 5;
             return 0;
         };
@@ -534,6 +543,7 @@ private:
             const int cp = category(p), ca = category(a);
             if (cp == 0 || ca == 0) continue;
             if (cp != ca) return false;
+            if (cp == 6 && a.name != p.name) return false;
             if (cp == 5 && a.name != p.name && !inheritsFrom(a.name, p.name)) return false;
         }
         return true;
@@ -979,7 +989,7 @@ private:
     void popScope() {
         std::vector<std::pair<SourcePos, std::string>> unused;
         for (const auto& [n, l] : scopes_.back()) {
-            if (!l.constInit || l.reads != 0 || n.empty()) continue;
+            if (!l.constInit || l.reads != 0 || n.empty() || l.nonConstAssign) continue;
             if (n[0] != '_') { unused.push_back({l.declPos, n}); continue; }
             // P40 review r4 (part 2): the documented `_` opt-out. The declaration has no effect (its initializer is
             // a constant), so it is dropped — C# would report the kept local as CS0219 under TreatWarningsAsErrors.
@@ -1884,7 +1894,7 @@ private:
     // P40 review r4 (part 2): an f32 constant expression (`0.1f + 0.2f`) — every float literal f32-suffixed — folds
     // in single precision, each operation rounded to f32 as C# folds it, to an f32 literal. (The f64 fold below read
     // `0.1f` as the double 0.1 and produced an f64 literal, refused as "f64 to f32".)
-    static bool foldF32(const Expr* e, float& v) {
+    static bool foldF32(const Expr* e, float& v, bool* nonFinite = nullptr) { // r5: nonFinite = an f32 overflow
         if (!e) return false;
         if (e->kind == ExprKind::FloatLit) {
             if (floatLitType(e->text) != "f32") return false;
@@ -1893,14 +1903,16 @@ private:
             if (d.size() >= 3 && d.compare(d.size() - 3, 3, "f32") == 0) d.resize(d.size() - 3);
             else if (!d.empty() && d.back() == 'f') d.pop_back();
             v = std::strtof(d.c_str(), nullptr);
+            if (!(v == v && v - v == 0) && nonFinite) *nonFinite = true;
             return v == v && v - v == 0;
         }
-        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldF32(e->lhs.get(), v)) return false; v = -v; return true; }
+        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldF32(e->lhs.get(), v, nonFinite)) return false; v = -v; return true; }
         if (e->kind == ExprKind::Binary && (e->text == "+" || e->text == "-" || e->text == "*" || e->text == "/")) {
             float a, b;
-            if (!foldF32(e->lhs.get(), a) || !foldF32(e->rhs.get(), b)) return false;
+            if (!foldF32(e->lhs.get(), a, nonFinite) || !foldF32(e->rhs.get(), b, nonFinite)) return false;
             volatile float r = e->text == "+" ? a + b : e->text == "-" ? a - b : e->text == "*" ? a * b : a / b;
             v = r;
+            if (!(v == v && v - v == 0) && nonFinite) *nonFinite = true;
             return v == v && v - v == 0; // finite
         }
         return false;
@@ -1921,6 +1933,14 @@ private:
             bool foldedF32 = false; // r4: an all-f32 default folded in single precision (skip the f64 fold)
             if (p.defaultValue->kind == ExprKind::Binary || p.defaultValue->kind == ExprKind::Unary) {
                 float f32v = 0;
+                bool f32Overflow = false;
+                if (p.defaultValue->kind == ExprKind::Binary && !foldF32(p.defaultValue.get(), f32v, &f32Overflow) &&
+                    f32Overflow) { // review r5 (part 2): it was refused as "f64 to f32" (the f64 fold is finite)
+                    diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
+                                 "the default of '" + p.name + "' in " + what + " is not a finite f32 — it overflows "
+                                 "single precision; no target can spell an infinity as a constant default");
+                    continue;
+                }
                 if (p.defaultValue->kind == ExprKind::Binary && foldF32(p.defaultValue.get(), f32v)) {
                     foldedF32 = true;
                     std::string txt;
@@ -2466,6 +2486,16 @@ private:
         Ty a = scalarTyOf(target), i = scalarTyOf(from);
         if (a != Ty::Unknown && i != Ty::Unknown && a != i)
             diags_.error(slot->pos, std::string("type mismatch (") + ctx + "): expected " + tyName(a) + ", found " + tyName(i));
+        // P40 review r5 #15: a scalar never converts to a declared type (a class, record, interface, union or enum),
+        // nor the reverse, and a union or enum converts only to itself — `kind(5)` bound `kind(s: Shape)` (C#
+        // CS1503, TS2345; Python and PHP printed "shape").
+        if ((a == Ty::Unknown) != (i == Ty::Unknown) ? declaredUserType(a == Ty::Unknown ? target : from)
+                                                     : (a == Ty::Unknown && declaredUserType(from) && declaredUserType(target) &&
+                                                        from.name != target.name &&
+                                                        (unionOrEnum(from.name) || unionOrEnum(target.name)))) {
+            diags_.error(slot->pos, "cannot convert '" + showTy(from) + "' to '" + showTy(target) + "' (" + ctx + ")");
+            return;
+        }
         // Nominal subtyping (issue #29): a known user type flowing into a differently-named known user-type
         // slot is valid only when the source extends/implements the target — previously ANY named-type
         // mismatch passed silently and failed (or dispatched wrongly) in the generated target code.
@@ -2500,6 +2530,14 @@ private:
                                    target.name + "' (" + ctx + "); give it a wider type (e.g. '" + lit->text + "i64')");
         return false;
     }
+
+    // review r5 #15: a type the program declares (class, record, interface, union, enum) — not a type parameter,
+    // not a std carrier (`List`, …), not a scalar.
+    bool declaredUserType(const TypeRef& t) const {
+        return t.kind == TypeRef::Kind::Named && !t.name.empty() && !genericsInScope_.count(t.name) &&
+               (typeDeclPos_.count(t.name) || interfaceNames_.count(t.name)) && !unionCaseOwner_.count(t.name);
+    }
+    bool unionOrEnum(const std::string& n) const { return unionAllCases_.count(n) || enumNames_.count(n); }
 
     // A member that holds a value (a field, const or computed property) rather than a callable method.
     static bool isValueMember(const MemberInfo& m) {
@@ -2715,6 +2753,7 @@ private:
                         Local* ml = lookupMut(nm);
                         ml->assigns++;
                         if (s.op != "=") ml->reads++; // a compound reads the target
+                        else if (!isConstExpr(s.value.get())) ml->nonConstAssign = true; // review r5 #17: no CS0219
                         ml->nonNull = false;
                         // P37 C7: a compound op on a USER type converts against the operator member's own
                         // signature (lenient, like binary resolution) — the rhs is the operator's operand,
@@ -2775,7 +2814,14 @@ private:
                 }
                 break;
             }
-            case StmtKind::ExprStmt: checkExpr(*s.value); break;
+            case StmtKind::ExprStmt:
+                checkExpr(*s.value);
+                // review r5 (part 2): a bare function name is a value, not a call — C# CS0201 (it emitted
+                // `PolyglotProgram.five;`), and a no-op elsewhere.
+                if (s.value->kind == ExprKind::Name && s.value->fnRef)
+                    diags_.error(s.value->pos, "'" + s.value->text + "' names a function but does not call it — "
+                                               "write '" + s.value->text + "()'");
+                break;
             case StmtKind::Throw:    if (s.value) checkExpr(*s.value); break;
             case StmtKind::Yield:
                 if (inAsync_)
@@ -4459,6 +4505,14 @@ private:
                 TypeRef r = inferResult(m->generics, m->params, argTypes, m->type);
                 return m->isAsync ? awaitable(r) : r;
             }
+        }
+        // review r5 (part 2): a module value of function type is called through its value (`twice(4)`), like a
+        // function-typed local — it was "call to undeclared function".
+        if (auto v = values_.find(name); v != values_.end() && v->second.kind == TypeRef::Kind::Function) {
+            TypeRef ft = checkName(*e.lhs); // the read: init-order checks, references, the declared type
+            e.lhs->type = ft;
+            e.calleeIsField = true; // lowered through the callee value, like a function-typed field
+            return callFunctionValue(ft, argTypes, e, "'" + name + "'");
         }
         diags_.error(e.pos, "call to undeclared function '" + name + "'");
         return tUnknown();
