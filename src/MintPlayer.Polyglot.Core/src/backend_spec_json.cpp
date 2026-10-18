@@ -87,6 +87,20 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
         r.errors.push_back("backend spec: 'operandSnapshot' must spell both '{tmp}' (the temp) and '{0}' (the operand)");
         return r;
     }
+    r.spec.nativeCoalesceAssign  = doc["nativeCoalesceAssign"].asBool(false);
+    { // P40 review r4 items 18/21
+        const json::Value& es = doc["exprStmt"];
+        if (es.kind == json::Value::Kind::Object) {
+            for (const auto& m : es.members)
+                if (m.first != "discardPrefix" && m.first != "parenIfStarts")
+                    r.errors.push_back("exprStmt: unknown key '" + m.first + "' (discardPrefix, parenIfStarts)");
+            r.spec.exprStmtDiscardPrefix = es["discardPrefix"].asString();
+            for (const json::Value& k : es["parenIfStarts"].items()) {
+                if (k.asString().empty()) r.errors.push_back("exprStmt.parenIfStarts: an empty token");
+                else r.spec.exprStmtParenIfStarts.push_back(k.asString());
+            }
+        } else if (es.kind != json::Value::Kind::Null) r.errors.push_back("exprStmt must be an object");
+    }
 
     // P40 A1: per-context literal spelling. Shape-checked here so a broken context never emits a literal the
     // target misreads: every context names its quote, maps the backslash and that quote, and carries a
@@ -156,6 +170,16 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
         r.spec.absentNormalizeSuffix = an["suffix"].asString();
         if (r.spec.absentNormalizeSuffix.empty())
             r.errors.push_back("absentNormalize needs a non-empty 'suffix'");
+        for (const json::Value& k : an["foldedBy"].items()) { // P40 review r4 item 16
+            const std::string s = k.asString();
+            if (s != "coalesce" && s != "nullAssert" && s != "nullSafe")
+                r.errors.push_back("absentNormalize.foldedBy: unknown consumer '" + s +
+                                   "' (known: coalesce, nullAssert, nullSafe)");
+            else r.spec.absentFoldedBy.push_back(s);
+        }
+        if (r.spec.absentFoldedBy.empty())
+            r.errors.push_back("absentNormalize needs a non-empty 'foldedBy' (the consumers that fold every absent "
+                               "form on this target: coalesce, nullAssert, nullSafe)");
     }
 
     const json::Value& wa = doc["wrapAtom"];
@@ -172,6 +196,12 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     const json::Value& ids = doc["identifiers"];
     if (ids.kind == json::Value::Kind::Object) {
         for (const json::Value& k : ids["keywords"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
+        // P40 review r4 item 22: the runtime names the generated code refers to UNQUALIFIED in the scope a user
+        // name lives in (Python builtins such as `max`/`len`, JS globals such as `TypeError`/`Math`, PHP builtin
+        // classes in the global namespace). A user identifier spelling one is escaped exactly like a keyword, so
+        // it can neither shadow what the emitted code calls nor redeclare a builtin class.
+        for (const json::Value& k : ids["runtimeNames"].items())
             if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
         if (ids["caseInsensitive"].kind == json::Value::Kind::Bool)
             r.spec.identifiersCaseInsensitive = ids["caseInsensitive"].asBool();
@@ -251,7 +281,12 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     std::string an;
     if (!spec.absentNormalizeSuffix.empty())
         an = ",\"absentNormalize\":{\"prefix\":" + json::quote(spec.absentNormalizePrefix) +
-             ",\"suffix\":" + json::quote(spec.absentNormalizeSuffix) + "}";
+             ",\"suffix\":" + json::quote(spec.absentNormalizeSuffix) + ",\"foldedBy\":[" +
+             [&] {
+                 std::string o;
+                 for (std::size_t i = 0; i < spec.absentFoldedBy.size(); ++i) { if (i) o += ","; o += json::quote(spec.absentFoldedBy[i]); }
+                 return o;
+             }() + "]}";
 
     std::string tbls;
     if (!spec.tables.empty()) {
@@ -336,7 +371,12 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") +
            std::string(",\"nativeCompoundAssign\":") + (spec.nativeCompoundAssign ? "true" : "false") +
            (spec.operandSnapshot.empty() ? std::string() : ",\"operandSnapshot\":" + json::quote(spec.operandSnapshot)) +
-           gen + wa + an + tbls + escs + ids + "}";
+           std::string(",\"nativeCoalesceAssign\":") + (spec.nativeCoalesceAssign ? "true" : "false") +
+           [&] {
+               std::string o = ",\"exprStmt\":{\"discardPrefix\":" + json::quote(spec.exprStmtDiscardPrefix) + ",\"parenIfStarts\":[";
+               for (std::size_t i = 0; i < spec.exprStmtParenIfStarts.size(); ++i) { if (i) o += ","; o += json::quote(spec.exprStmtParenIfStarts[i]); }
+               return o + "]}";
+           }() + gen + wa + an + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

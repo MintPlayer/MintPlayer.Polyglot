@@ -1798,6 +1798,108 @@ int main() {
                     if (has(dg.message, "duplicate function 'check'") && has(dg.message, "module")) both = true;
                 check(!d.ok && both, "A8: the cross-module duplicate-overload error names both modules");
             }
+            // P40 review r4 — nullability / functions / names half: each refusal by message, each fix by emission.
+            {
+                auto refusesR4 = [&](const std::string& src, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget("csharp"));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r4: " + label);
+                };
+                auto emitsR4 = [&](const std::string& src, const char* target, std::initializer_list<const char*> frags,
+                                   std::initializer_list<const char*> absent, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool ok = r.ok;
+                    for (const char* f : frags) ok = ok && has(r.code, f);
+                    for (const char* f : absent) ok = ok && !has(r.code, f);
+                    check(ok, "r4: " + label);
+                };
+                // 14: nullable -> non-null is refused; narrowing still converts.
+                refusesR4("fn f(x: i32?): i32 => x\n", "the value may be null", "a nullable return into i32 (item 14)");
+                refusesR4("fn f(x: i32?, y: i32?): i32 {\n  let w: i32 = x ?? y\n  return w\n}\n", "the value may be null",
+                          "'x ?? y' with a nullable fallback into i32 (item 14)");
+                refusesR4("fn f(): i32 {\n  let n: i32 = null\n  return n\n}\n", "cannot convert null to 'i32'",
+                          "a null literal into i32 (item 14)");
+                refusesR4("fn g(n: i32): i32 => n\nfn f(x: i32?): i32 => g(x)\n", "the value may be null",
+                          "a nullable argument into an i32 parameter (item 14)");
+                check(compileStd("fn f(x: i32?): i32 {\n  if x != null {\n    return x\n  }\n  return 0\n}\n",
+                                 findTarget("csharp")).ok,
+                      "r4: a narrowed nullable converts to i32 (item 14)");
+                // 15: a narrowed nullable function value is callable; nullable function types are spelled nullable.
+                const std::string cb = "fn run(cb: (() => unit)?) {\n  if cb != null {\n    cb()\n  }\n}\n"
+                                       "fn ap(f: ((i32) => i32)?): i32 => f!(1)\n";
+                emitsR4(cb, "csharp", {"global::System.Action? cb", "global::System.Func<int, int>? f"}, {},
+                        "C# spells a nullable function type with '?' (item 15)");
+                emitsR4(cb, "typescript", {"cb: ((() => void) | null)", "f: (((arg0: number) => number) | null)"}, {},
+                        "TS parenthesizes a nullable function type (item 15)");
+                // 16: `m.get(k)!` drops the absent-normalization (TS2871).
+                emitsR4("import \"std.collections\"\nfn g(m: Map<string, i32>, k: string): i32 => m.get(k)!\n", "typescript",
+                        {"m.get(k) ?? __pgNullAssert("}, {"?? null) ??"}, "TS m.get(k)! has no inner '?? null' (item 16)");
+                // 17: `??=` — refused on a non-null target, native on C#, lowered on Python.
+                refusesR4("fn f(): i32 {\n  var y: i32 = 1\n  y ??= 5\n  return y\n}\n", "which cannot be null here",
+                          "'??=' on a non-null target (item 17)");
+                const std::string ca = "fn f(): i32 {\n  var y: i32? = null\n  y ??= 5\n  return y ?? 0\n}\n";
+                emitsR4(ca, "csharp", {"y ??= 5;"}, {}, "C# keeps a native '??=' (item 17)");
+                emitsR4(ca, "python", {"if (y is None):"}, {"??="}, "Python lowers '??=' to an if-null store (item 17)");
+                // 18: a value-returning named function into `() => unit` is refused; a non-statement unit body discards.
+                refusesR4("fn run(f: () => unit) { f() }\nfn five(): i32 => 5\nfn g() { run(five) }\n",
+                          "it returns a value the slot would discard", "a value-returning fn into () => unit (item 18)");
+                emitsR4("import \"std.strings\"\nfn run(f: () => unit) { f() }\nfn g(s: string) { run(() => s.len()) }\n",
+                        "csharp", {"() => { _ = s.Length; }"}, {}, "C# discards a property-read unit body (item 18)");
+                emitsR4("import \"std.strings\"\nfn g(s: string) {\n  s.len()\n}\n", "csharp", {"_ = s.Length;"}, {},
+                        "C# discards a property-read expression statement (item 18)");
+                // 19: a method call on a function value.
+                refusesR4("fn adder(k: i32): (i32) => i32 => (n: i32) => n + k\nfn f(): string => adder(1).toString()\n",
+                          "has no method 'toString'", "a method call on a function value (item 19)");
+                // 20: a named function passed as a value is a callable on PHP.
+                emitsR4("fn apply(f: () => i32): i32 => f()\nfn five(): i32 => 5\nfn g(): i32 => apply(five)\n", "php",
+                        {"apply(five(...))"}, {"$five"}, "PHP passes a named function as a first-class callable (item 20)");
+                refusesR4("fn apply(f: (i32) => i32): i32 => f(1)\nfn o(n: i32): i32 => n\nfn o(s: string): i32 => 0\n"
+                          "fn g(): i32 => apply(o)\n", "it is overloaded", "an overloaded function as a value (item 20)");
+                // 21: an arrow body that prints starting with `{` is parenthesized on TS.
+                emitsR4("fn get(f: () => Option<i32>): i32 => match f() {\n  Some(x) => x,\n  None => -1,\n}\n"
+                        "fn g(k: i32): i32 => get(() => Some(k))\n", "typescript", {"get(() => ({"}, {"get(() => {"},
+                        "TS parenthesizes an object-literal arrow body (item 21)");
+                // 22: runtime names — Python/PHP escape, TS refuses an unqualifiable global, TS qualifies TypeError.
+                emitsR4("fn max(a: i32, b: i32): i32 => a\nfn g(): i32 => max(1, 2)\n", "python", {"def max_(", "max_(1, 2)"},
+                        {}, "Python escapes a user fn named like a builtin (item 22)");
+                emitsR4("class Directory {\n  let n: i32 = 1\n}\nfn g(): i32 => Directory().n\n", "php",
+                        {"class Directory_", "new Directory_("}, {}, "PHP escapes a class named like a builtin class (item 22)");
+                emitsR4("fn g(x: i32?): i32 => x!\n", "typescript", {"throw new globalThis.TypeError("}, {},
+                        "TS null-assert throws globalThis.TypeError (item 22)");
+                {
+                    EmitResult r = compileStd("class Math {\n  let n: i32 = 1\n}\n", findTarget("typescript"));
+                    check(!r.ok && has(firstErr(r), "'Math' shadows a runtime global of target 'typescript'"),
+                          "r4: TS refuses a class shadowing a runtime global it cannot qualify (item 22)");
+                }
+                // Part 2 (language).
+                emitsR4("fn f(): i32 {\n  let _x = 5\n  return 1\n}\n", "csharp", {}, {"_x"},
+                        "an unread '_x = <const>' is not emitted (CS0219)");
+                refusesR4("fn f(): i32 {\n  var _x = 5\n  _x = 6\n  return 1\n}\n", "is assigned but never read",
+                          "an assigned-but-unread '_x' (CS0219)");
+                refusesR4("enum Color { Red, Green }\nfn f(): i32 {\n  let c = Color.Red\n  return 1\n}\n",
+                          "is set to a constant but never read", "an unused enum-member local (CS0219)");
+                refusesR4("fn f(): i32 {\n  let y = (i64)5\n  return 1\n}\n", "is set to a constant but never read",
+                          "an unused cast-constant local (CS0219)");
+                refusesR4("fn f(): i32 {\n  if \"a\" == \"a\" {\n    return 1\n  }\n  return 2\n}\n", "condition is always true",
+                          "a string-literal constant condition (CS0162)");
+                refusesR4("fn f(): i32 {\n  if 1 + 1 == 3 {\n    return 1\n  }\n  return 2\n}\n", "condition is always false",
+                          "an arithmetic constant condition (CS0162)");
+                emitsR4("class H {\n  var f: (i32) => i32 = (x: i32) => x * 3\n}\nfn g(): i32 => H().f(4)\n", "php",
+                        {"(new H())->f)(4)"}, {}, "a function-typed field is called through its value (PHP parenthesizes)");
+                emitsR4("fn f(): i32 {\n  let a = 1\n  ((x: i32) => x)(8)\n  return a\n}\n", "csharp", {"var a = 1;"}, {"1((", "1("},
+                        "a line starting with '(' is a new statement");
+                emitsR4("fn f(): i32 => match \"01\" {\n  \"1\" => 1,\n  _ => 2,\n}\n", "typescript", {"const _m: string = \"01\""},
+                        {}, "TS annotates a scalar match temp (TS2367)");
+                emitsR4("fn inv(x: f64 = -0.0): f64 => x\n", "csharp", {"= -0.0"}, {}, "a -0.0 default keeps its sign");
+                emitsR4("fn d(x: f32 = 0.1f + 0.2f): f32 => x\n", "csharp", {"= 0.3f"}, {}, "an f32 constant default folds to f32");
+                emitsR4("fn lo(x: i64 = -9223372036854775808i64): i64 => x\n", "php", {"$x = PHP_INT_MIN"}, {},
+                        "PHP spells the i64 minimum PHP_INT_MIN");
+                refusesR4("fn f(): i32 {\n  let v: i32 = 2147483648\n  return v\n}\n", "does not fit 'i32'",
+                          "an i32 slot refuses an out-of-range literal");
+                refusesR4("fn f(): i32 {\n  let v = 2147483648\n  return 0\n}\n", "does not fit 'i32'",
+                          "an inferred i32 local refuses an out-of-range literal");
+            }
             // A bare import of an extension-only module names its functions on TS and Python.
             {
                 MapModuleResolver res{{"./ext", "extension fn i32.twice(): i32 => this * 2\n"}};

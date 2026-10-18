@@ -1,0 +1,7 @@
+// REFUSED (P40 review r4 item 17): `??=` on a target that cannot be null — the store never happens, and C# rejects
+// it (CS0019).
+fn f(): i32 {
+  var y: i32 = 1
+  y ??= 5
+  return y
+}

@@ -1,0 +1,3 @@
+// REFUSED (P40 review r4 item 14): a value that may be null flowing into a non-null slot — C# CS0266/CS8629,
+// TS2322, and `null` returned from an `i32` function on the dynamic targets.
+fn f(x: i32?): i32 => x

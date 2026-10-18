@@ -99,6 +99,7 @@ public:
     bool expressionOnlyLambdas() const override { return spec_.expressionOnlyLambdas; }
     bool nativeCompoundAssign() const override { return spec_.nativeCompoundAssign; }
     bool lateOperandReads() const override { return !spec_.operandSnapshot.empty(); }
+    bool nativeCoalesceAssign() const override { return spec_.nativeCoalesceAssign; }
     const std::unordered_map<std::string, StdBinding>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }
@@ -187,7 +188,7 @@ namespace {
 const std::unordered_set<std::string>& fnCatalog() {
     static const std::unordered_set<std::string> names = {
         "intSuffix", "literal", "quoted", "opSpelling", "ident", "identFn", "mangleName", "wrap", "table",
-        "subst", "require", "inlineBlock", "parenIfContains", // shared expression catalog
+        "subst", "require", "inlineBlock", "parenIfContains", "parenIfStarts", // shared expression catalog
         "generics", "where", "mangle",     // declaration-context catalog
         "substExtern",                     // type-context catalog (extern-class template substitution)
         "preludeSlot",                     // P40 §0: the Program rule's prelude placement marker (decl position)

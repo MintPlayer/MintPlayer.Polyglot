@@ -145,6 +145,15 @@ struct Expr {
     // non-null here (`if x != null { … x … }`). `type` is the non-nullable type; lowering keeps the
     // variable's nullable type on the read and converts it (a value-type Nullable<T> needs the unwrap on C#).
     bool narrowedNonNull = false;
+    // Call (set by sema — P40 review r4): `recv.f(args)` / `Type.g(args)` names a FIELD of function type, not a
+    // method — the call goes through the field's value (lowered like any function-value callee).
+    bool calleeIsField = false;
+    // Name (set by sema — P40 review r4 item 20): a top-level function used as a VALUE (`apply(five)`); its
+    // overloadName/linkName carry the resolved names, and lowering emits a function reference (ir::Call isRef).
+    bool fnRef = false;
+    // Lambda (set by sema — P40 review r4 item 18): an expression-bodied lambda flowing into a function type
+    // returning unit — its body's value is discarded (lowering marks a non-statement body for the discard form).
+    bool lambdaUnitResult = false;
     // Lambda with a block body (set by sema — P40 follow-up): it flows into a function type whose result is a
     // concrete non-unit type, so every path of the block must `return` a value or `throw` (the flow pass checks
     // it, as for a function). Unset when the result type is unknown or unit.
@@ -189,6 +198,7 @@ struct Stmt {
     bool isMutable = false;         // Let: `var` (true) vs `let` (false)
     TypeRef declType;               // Let / Use: explicit annotation (when hasDeclType)
     bool hasDeclType = false;
+    bool dropUnused = false;        // Let (set by sema, r4): an unread `_`-prefixed local with a constant init — not emitted
 
     ExprPtr target;                 // Assign: lvalue
     std::string op;                 // Assign: "=", "+=", ...

@@ -42,7 +42,7 @@ function Fail($msg) { Write-Host "[FAIL] $msg"; $script:fail++ }
 # The corpus' expected shape — asserted exactly, so a program silently dropping out of the leg is a failure:
 #   * the programs whose C# uses a .NET 9 BCL type (std.collections Map<K, V> -> OrderedDictionary<K, V>);
 #   * the programs the C# target refuses by design (no C# to hold to the floor). None today.
-$expectedNet9 = @("coalesce_chain", "map")   # coalesce_chain (r3 item 3) chains Map lookups
+$expectedNet9 = @("coalesce_chain", "function_values", "map", "nullable_functions")   # coalesce_chain (r3 item 3) chains Map lookups; function_values / nullable_functions (r4) use Map
 $expectedRefused = @()
 # The canary compiled inside the net8.0 library (tests/floor/canary): exactly these diagnostics, or the leg is
 # not observing what it claims (LangVersion 11 and TreatWarningsAsErrors live, csc actually run).

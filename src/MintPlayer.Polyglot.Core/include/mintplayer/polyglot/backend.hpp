@@ -148,6 +148,8 @@ public:
     virtual bool nativeCompoundAssign() const { return false; }
     // A variable operand is read late (BackendSpec::operandSnapshot non-empty, review r4 #9).
     virtual bool lateOperandReads() const { return false; }
+    // A native `t ??= v` (BackendSpec::nativeCoalesceAssign); otherwise lowering expands it to an if-null store.
+    virtual bool nativeCoalesceAssign() const { return false; }
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }

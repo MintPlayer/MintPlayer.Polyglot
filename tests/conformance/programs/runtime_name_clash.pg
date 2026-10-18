@@ -1,0 +1,66 @@
+import "std.io"
+import "std.strings"
+import "std.collections"
+import { Math } from "std.math"
+
+// P40 review r4 item 22: user names that spell a target's runtime names. Python escapes a user `max`/`len` so the
+// emitted `Math.max`/`len(...)` still reach the builtins; PHP escapes classes named like its global builtin classes
+// (`Directory`, `Generator`, `TypeError` — a redeclaration fatal); TS's null-assert throws `globalThis.TypeError`, so
+// a user class `TypeError` neither replaces it nor escapes `catch (e: Error)`.
+
+fn max(xs: List<i32>): i32 {
+  var m = xs[0]
+  for x in xs {
+    if x > m {
+      m = x
+    }
+  }
+  return m
+}
+
+fn len(s: string): i32 => s.len() * 10
+
+fn count(xs: List<i32>, v: i32): i32 {
+  var n = 0
+  for x in xs {
+    if x == v {
+      n += 1
+    }
+  }
+  return n
+}
+
+class Directory {
+  var name: string = "dir"
+}
+
+class Generator {
+  fn next(): i32 => 1
+}
+
+class TypeError {
+  var code: i32 = 7
+}
+
+fn find(x: i32?): i32 => x!
+
+fn main() {
+  let xs = List<i32>()
+  xs.add(3)
+  xs.add(9)
+  xs.add(3)
+  print(max(xs))
+  print(count(xs, 3))
+  print(xs.count)
+  print(Math.max(1, 2))
+  print("abcd".len())
+  print(len("ab"))
+  print(Directory().name)
+  print(Generator().next())
+  print(TypeError().code)
+  try {
+    print(find(null))
+  } catch (e: Error) {
+    print("caught")
+  }
+}

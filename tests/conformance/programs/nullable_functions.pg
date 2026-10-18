@@ -1,0 +1,86 @@
+import "std.io"
+import "std.collections"
+
+// P40 review r4 items 15-17: nullable function values, `m.get(k)!`, and `??=`.
+
+// 15: a nullable function value narrowed by `!= null` is callable; `null` flows into a nullable function slot
+// (C# `Action?` / `Func<int, int>?`, TS `(() => void) | null`).
+fn run(cb: (() => unit)?) {
+  if cb != null {
+    cb()
+  }
+}
+
+fn apply(f: ((i32) => i32)?, x: i32): i32 {
+  if f == null {
+    return x
+  }
+  return f(x)
+}
+
+fn adder(k: i32): (i32) => i32 => (n: i32) => n + k
+
+// 16: `m.get(k)!` — the bound lookup's absent-normalization is dropped under `!` (TS2871 otherwise).
+fn must(m: Map<string, i32>, k: string): i32 => m.get(k)!
+
+class Box {
+  var v: i32? = null
+  var name: string? = "set"
+}
+
+class Counter {
+  static var hits: i32 = 0
+  static var cache: i32? = null
+  static var slot: i32 = 0
+}
+
+fn nextSlot(): i32 {
+  Counter.slot = Counter.slot + 1
+  return Counter.slot - 1
+}
+
+fn fallback(): i32 {
+  Counter.hits = Counter.hits + 1
+  return 40 + Counter.hits
+}
+
+fn main() {
+  run(null)
+  run(() => print("ran"))
+  print(apply(null, 1))
+  print(apply((n: i32) => n * 10, 2))
+  let f: ((i32) => i32)? = null
+  print((f ?? adder(7))(1))
+  var g: ((i32) => i32)? = null
+  g = adder(100)
+  if g != null {
+    print(g(5))
+  }
+
+  let m = Map<string, i32>()
+  m.set("a", 1)
+  print(must(m, "a"))
+
+  // 17: `??=` stores only when the target is null; the value is evaluated only then (Python lowers it).
+  var y: i32? = null
+  y ??= 5
+  y ??= fallback()
+  print(y ?? -1)
+  print(Counter.hits)
+  let b = Box()
+  b.v ??= 7
+  b.v ??= 8
+  b.name ??= "unset"
+  print(b.v ?? -1)
+  print(b.name ?? "none")
+  Counter.cache ??= fallback()
+  Counter.cache ??= fallback()
+  print(Counter.cache ?? -1)
+  print(Counter.hits)
+  let xs: List<i32?> = [null, 3, null]
+  xs[nextSlot()] ??= 10
+  xs[nextSlot()] ??= 20
+  print(xs[0] ?? -1)
+  print(xs[1] ?? -1)
+  print(Counter.slot)
+}

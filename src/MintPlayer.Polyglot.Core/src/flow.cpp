@@ -1,6 +1,7 @@
 #include "mintplayer/polyglot/flow.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <iterator>
 #include <map>
@@ -50,26 +51,110 @@ bool pathText(const Expr* e, std::string& out) {
 // A condition C# folds to a compile-time constant (P40 review r3, part 2): bool literals, `!`, `&&`/`||` over
 // constants, and a comparison of two numeric literals. C# then reports the dead branch (CS0162) — a warning a
 // warnings-as-errors consumer cannot build — so a constant `if`/`while` condition is refused at the source.
+// P40 review r4 (part 2): C# folds far more than the literal comparisons this used to see — arithmetic over
+// literals (`1 + 1 == 3`), string literal equality (`"a" == "a"`), casts of literals — and reported each such
+// condition's dead branch as CS0162. So the condition is evaluated as C# would: any expression built only from
+// literals, unary/binary operators and casts.
+struct ConstVal {
+    enum class K { None, Bool, Int, Float, Str } k = K::None;
+    bool b = false;
+    long long i = 0;
+    double f = 0;
+    std::string s;
+};
+
+std::string literalDigits(const std::string& text) {
+    std::string d;
+    for (char c : text) {
+        if (c == '_') continue;
+        if ((c == 'i' || c == 'u') && !d.empty()) break; // the width suffix (`5i64`, `7u8`)
+        d += c;
+    }
+    return d;
+}
+
+ConstVal constEval(const Expr* e) {
+    ConstVal r;
+    if (!e) return r;
+    switch (e->kind) {
+        case ExprKind::BoolLit: r.k = ConstVal::K::Bool; r.b = e->boolVal; return r;
+        case ExprKind::IntLit: {
+            const std::string d = literalDigits(e->text);
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long u = std::strtoull(d.c_str(), &end, 0);
+            if (errno == ERANGE || end == d.c_str()) return r;
+            r.k = ConstVal::K::Int; r.i = static_cast<long long>(u); return r;
+        }
+        case ExprKind::FloatLit: {
+            std::string d;
+            for (char c : e->text) if (c != '_' && c != 'f' && c != 'F') d += c;
+            r.k = ConstVal::K::Float; r.f = std::strtod(d.c_str(), nullptr); return r;
+        }
+        case ExprKind::StringLit: case ExprKind::CharLit: r.k = ConstVal::K::Str; r.s = e->text; return r;
+        case ExprKind::Cast: return constEval(e->lhs.get());
+        case ExprKind::Unary: {
+            ConstVal x = constEval(e->lhs.get());
+            if (e->text == "!" && x.k == ConstVal::K::Bool) { x.b = !x.b; return x; }
+            if (e->text == "-" && x.k == ConstVal::K::Int) { x.i = -x.i; return x; }
+            if (e->text == "-" && x.k == ConstVal::K::Float) { x.f = -x.f; return x; }
+            return r;
+        }
+        case ExprKind::Binary: {
+            const std::string& op = e->text;
+            ConstVal a = constEval(e->lhs.get()), b = constEval(e->rhs.get());
+            if (a.k == ConstVal::K::None || b.k == ConstVal::K::None) return r;
+            if (a.k == ConstVal::K::Bool && b.k == ConstVal::K::Bool) {
+                r.k = ConstVal::K::Bool;
+                if (op == "&&") r.b = a.b && b.b;
+                else if (op == "||") r.b = a.b || b.b;
+                else if (op == "==") r.b = a.b == b.b;
+                else if (op == "!=") r.b = a.b != b.b;
+                else r.k = ConstVal::K::None;
+                return r;
+            }
+            if (a.k == ConstVal::K::Str && b.k == ConstVal::K::Str) {
+                if (op == "+") { r.k = ConstVal::K::Str; r.s = a.s + b.s; }
+                else if (op == "==" || op == "!=") { r.k = ConstVal::K::Bool; r.b = (a.s == b.s) == (op == "=="); }
+                return r;
+            }
+            const bool numeric = (a.k == ConstVal::K::Int || a.k == ConstVal::K::Float) &&
+                                 (b.k == ConstVal::K::Int || b.k == ConstVal::K::Float);
+            if (!numeric) return r;
+            if (a.k == ConstVal::K::Int && b.k == ConstVal::K::Int) {
+                using U = unsigned long long; // wrapping, never UB (the value only decides a comparison)
+                if (op == "+") { r.k = ConstVal::K::Int; r.i = static_cast<long long>(U(a.i) + U(b.i)); return r; }
+                if (op == "-") { r.k = ConstVal::K::Int; r.i = static_cast<long long>(U(a.i) - U(b.i)); return r; }
+                if (op == "*") { r.k = ConstVal::K::Int; r.i = static_cast<long long>(U(a.i) * U(b.i)); return r; }
+                if ((op == "/" || op == "%") && b.i != 0 && !(b.i == -1 && a.i == (-9223372036854775807LL - 1))) { r.k = ConstVal::K::Int; r.i = op == "/" ? a.i / b.i : a.i % b.i; return r; }
+            }
+            const double x = a.k == ConstVal::K::Int ? static_cast<double>(a.i) : a.f;
+            const double y = b.k == ConstVal::K::Int ? static_cast<double>(b.i) : b.f;
+            if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") {
+                r.k = ConstVal::K::Bool;
+                if (a.k == ConstVal::K::Int && b.k == ConstVal::K::Int)
+                    r.b = op == "==" ? a.i == b.i : op == "!=" ? a.i != b.i : op == "<" ? a.i < b.i
+                        : op == "<=" ? a.i <= b.i : op == ">" ? a.i > b.i : a.i >= b.i;
+                else
+                    r.b = op == "==" ? x == y : op == "!=" ? x != y : op == "<" ? x < y : op == "<=" ? x <= y : op == ">" ? x > y : x >= y;
+                return r;
+            }
+            if (op == "+" || op == "-" || op == "*" || op == "/") {
+                r.k = ConstVal::K::Float;
+                r.f = op == "+" ? x + y : op == "-" ? x - y : op == "*" ? x * y : x / y;
+                return r;
+            }
+            return r;
+        }
+        default: return r;
+    }
+}
+
 bool constBool(const Expr* e, bool& v) {
-    if (!e) return false;
-    if (e->kind == ExprKind::BoolLit) { v = e->boolVal; return true; }
-    if (e->kind == ExprKind::Unary && e->text == "!") { bool x; if (!constBool(e->lhs.get(), x)) return false; v = !x; return true; }
-    if (e->kind == ExprKind::Binary && (e->text == "&&" || e->text == "||")) {
-        bool a, b;
-        if (!constBool(e->lhs.get(), a) || !constBool(e->rhs.get(), b)) return false;
-        v = e->text == "&&" ? (a && b) : (a || b);
-        return true;
-    }
-    if (e->kind == ExprKind::Binary && e->lhs && e->rhs &&
-        (e->lhs->kind == ExprKind::IntLit || e->lhs->kind == ExprKind::FloatLit) &&
-        (e->rhs->kind == ExprKind::IntLit || e->rhs->kind == ExprKind::FloatLit)) {
-        const std::string& op = e->text;
-        if (op != "==" && op != "!=" && op != "<" && op != "<=" && op != ">" && op != ">=") return false;
-        const double a = std::strtod(e->lhs->text.c_str(), nullptr), b = std::strtod(e->rhs->text.c_str(), nullptr);
-        v = op == "==" ? a == b : op == "!=" ? a != b : op == "<" ? a < b : op == "<=" ? a <= b : op == ">" ? a > b : a >= b;
-        return true;
-    }
-    return false;
+    const ConstVal c = constEval(e);
+    if (c.k != ConstVal::K::Bool) return false;
+    v = c.b;
+    return true;
 }
 
 class Flow {
