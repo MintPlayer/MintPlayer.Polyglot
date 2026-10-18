@@ -1774,3 +1774,57 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     refusal by message, each fix by emission, the manifest drift scan).
   - **Not touched (the other half):** nullability paths, `?.`, `??` lambda operands, `apply<T>` with a unit lambda,
     PHP/Python plain `=` evaluation order, the field-narrowing message, function variance, `h?.f(5)`, PHP arrow capture.
+- **2026-10-18 — Review round 6 — init-order/constructors half (gating 3–5 + part 2: init-order gaps x7f4/hx4/o11,
+  the l1_5m store-only callee, the self-cycle message, static computed properties): as built.**
+  - **3 [R] — hoisted kinds are never an order problem.** `checkInitOrder` now returns at once for a type
+    `ir::declarationOrder` emits before every class and value. The set is derived, not listed: every declared type
+    that is not a class (`typeDeclPos_` minus `userClassNames_` — enums, records, unions and their cases; interfaces
+    are never order-checked), because that order interleaves only classes with values. The same exemption covers
+    static initializers (SPEC §5 updated). Conformance `init_order_hoisted` (Spark l1_4i/j/k; failed to transpile
+    on e4360b3).
+  - **4 [H] — every body an initializer runs is followed.** A deferred lambda body is now its own body key
+    (`lam:<Class>@<file>:<line>:<col>`, recorded like a function's reads and calls); the code that RUNS it notes a
+    call: a lambda literal passed as an argument (also one held by a local or a module value), a call through a
+    local (every lambda bound or assigned to it, `Local::lambdaKeys`), and a call through a module lambda value
+    (`valueLambdaKeys_`, from its initializer). An in-place invocation keeps the old floor path. Operators are keyed
+    like methods (`m:<Owner>.<op>`) and noted at every use (binary incl. `!=` → `eq`, unary `neg`/`bnot`, the
+    indexer `get`/`set`, compound `op=`, `explicit` casts); a property setter is `set:<Owner>.<name>` (overrides
+    followed like `m:`), noted at every property assignment; a static computed property's getter is noted at a
+    qualified or unqualified read. The class a followed body constructs is placed ahead of the value by the
+    existing ordering, so l1_4d, l1_4u, x7f4, o11 and l1_4o now agree on all four, and l1_4l/l1_4t on the three
+    targets that have setters/operators; a read of a later VALUE is refused by name (l1_4q: *runs a lambda passed
+    as an argument, which reads 'b', declared later*; hx4: *calls 'f', which reads 'b'*; l1_12f: *calls 'users',
+    which reads 'Api' while class 'Api' is still being defined* — `bodyOwner` gives a lambda its lexical class).
+    A lambda only stored stays exempt. Conformance `init_order_bodies`, `init_order_setter_op` (pinned PHP
+    refuser: no setters / arithmetic operators); fixtures `init_lambda_arg_reads_later`,
+    `init_module_lambda_reads_later`, `static_init_lambda_arg_own_class`.
+  - **5 [H] — the constructor rule is local** (`flow.cpp` `CtorThisRule`, replacing the path scan). In a constructor
+    of a subclassable class, `this` or a derived value (alias, capturing lambda, local holding one, an own
+    function-holding field that some hierarchy body assigns a `this`-mentioning value or a non-param local) may
+    only read/assign own fields, store a derived lambda into an own field or bind it to a local, call own non-open
+    methods/properties (getter and setter)/indexers/extensions, run a known lambda (in place, or through the
+    local/param bound to it), or be passed to a callee whose body is statically known (free function, static
+    method, another class's constructor, another object's NON-open method, extension, lambda) — the receiving
+    parameter is checked by the same rule (part 2: "follow the parameter"). Anything else is refused by name:
+    passing it where the body is chosen at run time or is not `.pg` (interface or open method, `List.add`, a
+    function value), a collection/tuple/record/other object, a module value, a return, an operand, calling a
+    possibly-tainted function field. This is sound because a parameter obeying the rule cannot retain the object
+    past the call. **l1_5m stays refused, documented** (SPEC §4.4): its callee stores the lambda into another
+    object, which the constructor could call into next (`bus.fire()`); accepting it needs whole-program aliasing.
+    **l1_5a is now refused** (`reg.add(this)`: `List.add` has no body to follow) — the reviewer's own rule refuses
+    passing `this` to it; its other two shapes (a stored callback, an uncalled local lambda) stay legal. Round-5
+    item 6 holds (c5a, c5b print). Fixtures: `ctor_this_local_lambda_arg` (l1_5b), `ctor_this_field_lambda_helper`
+    (l1_5c), `ctor_this_to_lambda_value` (l1_5e), `ctor_this_interface_arg` (l1_5g), `ctor_this_open_method_arg`
+    (l1_5h), `ctor_this_in_list` (l1_5i), `ctor_this_into_other_object` (l1_5l), `ctor_this_callee_stores`,
+    `ctor_this_subscribe` (l1_5m), `ctor_this_list_add` (l1_5a); `ctor_open_call_field_lambda`'s expected text now
+    names the field. Conformance `ctor_this_rule` pins the legal neighbours; `ctor_calls_final` still passes
+    (`keep(this)` and `each(xs, (x) => this.note(x))` are followed callees).
+  - **Part 2.** The self-cycle message: a value reaching itself says *'v' reads itself during its own
+    initialization … break the cycle* (fixture `init_self_cycle`, l1_4g1). Static computed properties keep
+    `static`: lowering stamps `isProperty` on a static access (`stampStaticField`); C# and TS property templates
+    gain the `static` modifier, Python emits a static property as `@builtins.staticmethod` (no `@property`) and its
+    Member rule calls it on a static access, PHP already called `isProperty` accesses. A static property setter is
+    native on C#/TS and refused on Python through new capability key `propertySetters:static` (PHP's umbrella
+    `propertySetters: false` covers it). Conformance `static_computed_property`; unit block `r6:`.
+  - **Corpus diff:** every `tests/conformance` program emitted for all four targets by e4360b3 and by this branch:
+    0 emitted files changed, identical build status everywhere.

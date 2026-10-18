@@ -1,0 +1,13 @@
+// REFUSED (P40 review r6): #4 a static initializer calls a free function that runs a lambda reading the class still being defined (TS ReferenceError). Spark l1_12f.
+import "std.io"
+
+fn apply(f: () => string): string => f()
+fn users(): string => apply(() => Api.base + "/users")
+class Api {
+  static let base: string = "/api"
+  static let u: string = users()
+}
+
+fn main() {
+  print(Api.u)
+}

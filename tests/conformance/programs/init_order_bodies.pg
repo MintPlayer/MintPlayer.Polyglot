@@ -1,0 +1,67 @@
+// P40 review r6 #4: every body a module initializer RUNS is followed — a lambda passed as an argument (the callee
+// may call it at once), a module lambda value when it is called, a local bound to a lambda and called, a user
+// indexer, and a static computed property's getter. Each one here constructs a class declared later, so the
+// emission order places that class ahead of the value and all four targets agree (TS threw a ReferenceError and
+// Python a NameError at import). Spark repros l1_4d, l1_4u, x7f4, o11, l1_4o.
+import "std.io"
+
+fn build(f: () => Item): Item => f()
+let it: Item = build(() => Item("x"))
+class Item {
+  var name: string
+  constructor(name: string) {
+    this.name = name
+  }
+}
+
+class Grid {
+  operator fn get(x: i32, y: i32): Cell => Cell(x * 10 + y)
+}
+let c: Cell = Grid()[2, 3]
+class Cell {
+  var v: i32
+  constructor(v: i32) {
+    this.v = v
+  }
+}
+
+let mk: () => K = () => K()
+let early: K = (mk)()
+class K {
+  var v: i32 = 5
+}
+
+let make: () => Box = () => Box(7)
+let first: Box = make()
+class Box {
+  var v: i32
+  constructor(v: i32) {
+    this.v = v
+  }
+}
+
+fn viaLocal(): Tag {
+  let f = () => Tag()
+  return f()
+}
+let tagged: Tag = viaLocal()
+class Tag {
+  var t: string = "tag"
+}
+
+class Cfg {
+  static let level: i32 => Later().n
+}
+let lv: i32 = Cfg.level
+class Later {
+  var n: i32 = 4
+}
+
+fn main() {
+  print(it.name)
+  print(c.v)
+  print(early.v)
+  print(first.v)
+  print(tagged.t)
+  print(lv)
+}

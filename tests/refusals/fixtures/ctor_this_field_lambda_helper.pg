@@ -1,0 +1,21 @@
+// REFUSED (P40 review r6): #5 a lambda stored in a field, called through a non-open helper. Spark l1_5c.
+import "std.io"
+
+open class Base {
+  var cb: () => string = () => "none"
+  var label: string = ""
+  constructor() {
+    this.cb = () => this.describe()
+    this.label = this.fire()
+  }
+  fn fire(): string => this.cb()
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

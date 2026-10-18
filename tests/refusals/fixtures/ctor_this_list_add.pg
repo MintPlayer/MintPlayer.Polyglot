@@ -1,0 +1,28 @@
+// REFUSED (P40 review r6): #5 'this' added to a caller's list: std List.add has no body the rule can follow. Spark l1_5a.
+import "std.io"
+import "std.collections"
+
+open class Node {
+  var onTap: () => string = () => "none"
+  constructor(reg: List<Node>) {
+    reg.add(this)
+    this.onTap = () => this.describe()
+    let later = () => this.describe()
+  }
+  open fn describe(): string => "node"
+}
+class Leaf : Node {
+  var extra: string = "X"
+  constructor(reg: List<Node>) {
+    super(reg)
+  }
+  override fn describe(): string => "leaf" + this.extra
+}
+
+fn main() {
+  let reg: List<Node> = []
+  let l = Leaf(reg)
+  print(l.onTap())
+  print(reg.count)
+  print(reg[0].describe())
+}

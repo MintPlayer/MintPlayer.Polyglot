@@ -351,14 +351,33 @@ the C# plugin assigns a subclass's non-literal initializers in its constructor, 
 A constructor of a class that **can be subclassed** — `open` or `abstract`, or the base of some class in the
 program — may **not** call an overridable (`open`, `abstract` or `override`) method on the object under
 construction: a subclass override would run before the subclass's own fields are initialized (C# reads
-defaults, TS `undefined`, Python raises `AttributeError`). The check follows every path the constructor
-*runs* (P40 review r5): methods and computed properties it calls on `this`, a lambda invoked in place, a lambda
-bound to a local or field that it then calls, a lambda passed as an argument (the callee may call it right
-away), and `this` passed to a free function, a static method, another class's constructor, a method of
-another object or an extension — followed through the parameter that receives it (*… calls the overridable
-method 'describe' on 'this' (through 'show')*). A lambda that is only stored (a callback) is not run and stays
-legal. A class nothing can derive from may call its own `override` or an inherited open method: `this` is
-exactly that class. Call it after construction, or make it non-open.
+defaults, TS `undefined`, Python raises `AttributeError`). Since P40 review r6 this is a **local rule** on what
+the object may do while it is under construction, rather than a search for the paths that reach an override.
+In such a constructor, `this` — or a value derived from it: an alias (`let me = this`), a lambda that captures
+it, a local holding one, an own field that some body assigns one — may only:
+- read or assign its **own fields**, store a derived lambda into its own field (a callback set in a constructor),
+  or bind one to a local;
+- call its own **non-open** methods, computed properties (getters and setters), indexers and extensions — whose
+  bodies follow the same rule, transitively;
+- run a derived lambda whose body is known: one invoked in place, or called through the local or parameter
+  bound to it (its body follows the rule);
+- be passed as an argument to a callee whose body is **statically known** — a free function, a static method,
+  another class's constructor, another object's **non-open** method, an extension, a lambda — where the
+  parameter that receives it obeys this same rule (so nothing holds the object once the call returns).
+
+Everything else is refused, naming the use: calling an `open`/`abstract`/`override` member on it (*… calls the
+overridable method 'describe' on 'this' (through 'show')*); passing it where the body that runs is chosen at run
+time or is not a `.pg` body (an interface or open method, a std/extern member such as `List.add`, a function
+value — *… passes 'this' as an argument to 'accept', whose body is not known here*); putting it into a
+collection, tuple, record or another object, storing it in another object or a module value (also inside a
+callee: *… stores 'this' (as 'p') in another object (through 'Probe')*), returning it, using it as an operand;
+and calling an own function-typed field that may hold a lambda capturing it (*… calls the field 'cb' (it may
+hold a lambda that captures 'this')*). The rule over-approximates on purpose: a callee that only **stores** the
+lambda it is given (an event subscription, `bus.subscribe(() => this.refresh())`) is refused too, because the
+lambda then lives in an object the constructor could call into next (`bus.fire()`), and proving it does not
+would need whole-program aliasing. Subscribe after construction instead. A class nothing can derive from is
+not checked at all — it may call its own `override` or an inherited open method and pass `this` anywhere:
+`this` is exactly that class. Call it after construction, or make it non-open.
 
 **Abstract members** (P40 review r5): an `abstract class` may declare `abstract fn` signatures (no body); it
 is never constructed, and a concrete subclass must override every abstract method it inherits. Each target
@@ -589,26 +608,36 @@ differently:
   definite-assignment walk follows control flow exactly: a `while true` left by `break`, a do-while body and a
   `finally` that assigns before an early `return` all count. An inherited field counts as assigned (the base
   constructor already ran).
-- **Initialization order** (P40 review r3, r4, r5) — TS, Python and PHP run initializers in declaration order
-  (C# alone initializes statics lazily, and reads a default), so an initializer is checked against everything
-  it **runs**: its own expression, and transitively the bodies it reaches — functions and static methods it
-  calls, constructors (with the class's instance field initializers and the base constructor), instance methods
-  (and every override of them) and computed properties, extensions, a function passed as an argument, a lambda
-  it invokes in place, and the static initializers of every class it uses (defining a class runs them).
+- **Initialization order** (P40 review r3, r4, r5, r6) — TS, Python and PHP run initializers in declaration
+  order (C# alone initializes statics lazily, and reads a default), so an initializer is checked against
+  everything it **runs**: its own expression, and transitively every body it reaches — functions and static
+  methods it calls, constructors (with the class's instance field initializers and the base constructor),
+  instance methods (and every override of them), computed property getters **and setters**, user operators and
+  indexers (`a + b`, `a == b`, `-a`, `g[i]`, `g[i] = v`, a compound `a += b`, an explicit conversion), static
+  computed properties, extensions, a function **or lambda passed as an argument** (the callee may call it at
+  once), a lambda it invokes in place, a lambda **called through a local or a module value** bound to it, and the
+  static initializers of every class it uses (defining a class runs them).
   - A **module value** may not reach a module value declared **at or after it in the same file** (*the
-    initializer of 'a' calls 'seed', which reads 'b', declared later*; *… uses 'Box', which reads 'u', declared
-    later*). It **may** reach a class declared after it: the emission order defines every class a value
-    reaches — with its bases and the classes its own statics reach — before the value (P40 review r5: `let shop
-    = Shop()` whose constructor builds a later `Item`).
+    initializer of 'a' calls 'seed', which reads 'b', declared later*; *… runs a lambda passed as an argument,
+    which reads 'b', declared later*). A value whose initializer reaches **itself** is a cycle (*… uses 'K',
+    which reads 'v' — 'v' reads itself during its own initialization*). It **may** reach a class declared after
+    it: the emission order defines every class a value reaches — with its bases and the classes its own statics
+    reach — before the value (P40 review r5: `let shop = Shop()` whose constructor builds a later `Item`).
+  - An **enum, record, union or interface** is never an order problem, wherever it is declared (P40 review r6):
+    the emission order places every declared type that is not a class ahead of all classes and values. Only
+    classes are interleaved with values.
   - A **static** initializer may not read a static or module value declared at or after it, nor use (construct,
-    read or call a static of) a class, record, enum or union declared later, nor a class whose base is declared
-    later. Code **outside** its class may not use the class while its statics run (*the initializer of
-    'Config.users' calls 'join', which reads 'Config' while class 'Config' is still being defined*): TS binds the
-    class name only after the class is defined. A `static fn` of the same class may (it sees the class's own
-    binding).
-  - Exempt: a lambda that is only stored runs later, as do calls inside it; a function only stored as a value
-    (not passed as an argument); and a module value holding a lambda, when it is called — its body is not
-    followed.
+    read or call a static of) a class declared later, nor a class whose base is declared later. Code **outside**
+    its class may not use the class while its statics run (*the initializer of 'Config.users' calls 'join',
+    which reads 'Config' while class 'Config' is still being defined*): TS binds the class name only after the
+    class is defined. A `static fn` of the same class may (it sees the class's own binding), and so may a lambda
+    written inside the class.
+  - Exempt: a lambda that is only **stored** (in a field, a collection, a module value that is never called)
+    runs later, as do calls inside it; a function only stored as a value. A call through a local follows every
+    lambda bound or assigned to it; a call through a module value follows the lambda it is initialized with (a
+    `var` module value re-assigned inside a function is followed only into that initializer); a lambda that
+    reaches a callee through a field or a collection is not followed (it is stored, not run, where the
+    initializer hands it over).
   The targets that run a module top to bottom emit it in that dependency order: enums, interfaces (base
   first), unions, records, functions, extensions, then classes and module values in source order, a class
   moving earlier only for a value that reaches it or to follow a base declared after it (a module value can
@@ -800,6 +829,11 @@ class Grid<T> {
 
 Properties → C# properties / TS `get`/`set` accessors. Indexers → C# `this[…]` / TS `.get(…)`/`.set(…)`
 method calls (TS index signatures can't take multiple keys, so the call form is used uniformly).
+
+A computed property may be **static** (`static let level: i32 => Cfg.base * 2`, P40 review r6): C# and TS emit
+a static property / static getter; Python and PHP emit a static method that every read calls (`Cfg.level()` /
+`Cfg::level()`). A static property **setter** is native on C#/TS and refused on Python (capability
+`propertySetters:static` — a class-level assignment would bypass any descriptor) and on PHP (no setters).
 
 ### 6.3 Extension functions
 

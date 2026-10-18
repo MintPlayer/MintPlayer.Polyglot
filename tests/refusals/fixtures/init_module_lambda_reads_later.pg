@@ -1,0 +1,10 @@
+// REFUSED (P40 review r6): #4 calling a module lambda value runs its body: it reads a later value (C# 0, TS ReferenceError, Python NameError). Spark hx4.
+import "std.io"
+
+let f: () => i32 = () => b
+let a: i32 = f()
+let b: i32 = 5
+
+fn main() {
+  print(a)
+}

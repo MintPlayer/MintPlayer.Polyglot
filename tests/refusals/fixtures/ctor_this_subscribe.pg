@@ -1,0 +1,36 @@
+// REFUSED (P40 review r6): #5 (documented over-approximation, SPEC 4.4) a callee that only stores the lambda: it lands in an object the constructor could call into next (bus.fire()). Spark l1_5m.
+import "std.io"
+import "std.collections"
+
+class Bus {
+  var subs: List<() => string> = []
+  fn subscribe(f: () => string) {
+    this.subs.add(f)
+  }
+  fn fire(): string {
+    var out = ""
+    for f in this.subs {
+      out = out + f()
+    }
+    return out
+  }
+}
+open class Panel {
+  constructor(bus: Bus) {
+    bus.subscribe(() => this.refresh())
+  }
+  open fn refresh(): string => "panel"
+}
+class Fancy : Panel {
+  var extra: string = "X"
+  constructor(bus: Bus) {
+    super(bus)
+  }
+  override fn refresh(): string => "fancy" + this.extra
+}
+
+fn main() {
+  let bus = Bus()
+  let f = Fancy(bus)
+  print(bus.fire())
+}

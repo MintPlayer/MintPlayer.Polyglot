@@ -1,0 +1,91 @@
+// P40 review r6 #5 — the shapes the constructor `this` rule (SPEC §4.4) keeps LEGAL. In a constructor of a class
+// that can be subclassed, `this` reads and assigns its own fields, calls its own non-open helpers, computed
+// properties and indexers, stores a lambda capturing it into its own field, binds one to a local (never called, or
+// called when it only does the same), calls a callback that came in as a parameter, and is passed to callees whose
+// bodies are known and only read its fields or call its non-open methods (a free function, another class's method,
+// a static method, a lambda that a callee runs). A class nothing can subclass is not checked at all.
+import "std.io"
+import "std.collections"
+
+fn twice(n: i32): i32 => n * 2
+fn keep(p: Base) {
+  print("kept")
+}
+fn width(p: Base): i32 => p.n + 1
+fn each(xs: List<i32>, f: (i32) => unit) {
+  for x in xs {
+    f(x)
+  }
+}
+class Meter {
+  fn measure(p: Base): i32 => p.n * 10
+  static fn double(p: Base): i32 => p.n * 2
+}
+
+open class Base {
+  var n: i32 = 0
+  var log: List<string> = []
+  var onTap: () => string = () => "none"
+  var hook: () => i32 = () => 0
+  constructor(start: i32, cb: () => i32) {
+    this.n = twice(start)
+    this.bump()
+    this.log.add("n=${this.n}")
+    this.onTap = () => this.describe()
+    let later = () => this.describe()
+    let peek = () => this.n + 1
+    this.n = peek()
+    this.hook = cb
+    this.n = this.n + this.hook()
+    this.log.add(this.label)
+    keep(this)
+    this.log.add("${width(this)}|${Meter().measure(this)}|${Meter.double(this)}")
+    let xs: List<i32> = [1, 2]
+    each(xs, (x: i32) => this.note(x))
+  }
+  fn bump() {
+    this.n = this.n + 1
+  }
+  fn note(x: i32) {
+    this.log.add("+${x}")
+  }
+  let label: string => "label${this.n}"
+  open fn describe(): string => "base"
+}
+
+class Derived : Base {
+  var extra: string = "X"
+  constructor() {
+    super(3, () => 10)
+  }
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn show(w: Leaf): string => "show:" + w.describe()
+open class Root {
+  open fn describe(): string => "root"
+}
+class Leaf : Root {
+  var mark: string
+  var seen: string = ""
+  constructor(reg: List<Leaf>) {
+    super()
+    this.mark = "T"
+    reg.add(this)
+    this.seen = show(this) + "|" + [this][0].describe()
+  }
+  override fn describe(): string => "leaf" + this.mark
+}
+
+fn main() {
+  let d = Derived()
+  print(d.n)
+  print(d.onTap())
+  for line in d.log {
+    print(line)
+  }
+  let reg: List<Leaf> = []
+  let l = Leaf(reg)
+  print(l.seen)
+  print(reg.count)
+}
