@@ -1579,3 +1579,59 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     refusal by message, each fix by emission).
   - **Not touched (the other half):** classes/ctors, emission order, records, PHP evaluation order, the cast wrap, the
     default folding of `1 / 2 + 0.5` and `-1e400`, overload link names, the through-call init check, the temp prefix.
+
+- **2026-10-18 — Review round 5 — nullability/functions half (gating 18–23 + part 2 "Language" bullets): as built.**
+  Every reviewer repro (`pgc43_h3`, `pgc43_r2`, `pgc43_h2`) was reproduced failing on `c436aae` first, then fixed at
+  the root; nearby accepted shapes were written down first and are pinned too.
+  - **18 every slot converts.** checkConvert now sees each path a value takes into a slot: a `match`/`if` value
+    converts ARM BY ARM, and a match's own type joins its arms (`joinArmType`: nullable if any arm is, numeric arms
+    widen — it was the last arm's type); `yield` converts into the `Iterable` element; a record `with` override into
+    its (instantiated) field; an index into `i32` or a user indexer's `get` parameters (`convertIndexArgs`); a tuple
+    literal element by element. A non-literal value's type arguments must match exactly (`typeArgsDisagree`:
+    invariance, `Iterable` judges element nullability only). A lambda's arity and annotated parameter types must match
+    the function type (`lambdaParamsMatch`; unannotated ones still take the slot's). `null`, a maybe-null value or a
+    `T?` (an Option) into a bare `T` slot of the scope is refused. The corpus and std compiled unchanged (the diff
+    below), and the accepted neighbours — narrowed reads, fallbacks, nullable slots, widening arms, matching nullable
+    type args, `T?` fallbacks — are `nullable_slot_arms`.
+  - **19** a narrowing reaches exactly the lambda body that established it (`Local::narrowDepth`, saved/restored with
+    the narrowing): a test inside a lambda narrows a captured parameter, `let` or lambda-unassigned `var` for the rest
+    of that body; an outer narrowing still stops at the lambda. Sound because a lambda runs synchronously (no async
+    lambdas) and a `var` some lambda assigns is still never narrowed.
+  - **20 `?.` calls.** Sema (`nullSafeCallResult`) types `recv?.m(args)` on a maybe-null receiver as `T?` (a unit call
+    stays unit; an Option result is refused) and stamps `Expr::nullSafeCall`; on a non-null receiver `?.` is a plain
+    call. Lowering builds it from existing IR for every call kind — method, bound std member, extension, function-typed
+    field — by lowering the ordinary call with its receiver read through a once-evaluated binding (`nsRecv_`, the
+    narrowed-read Cast): as a statement (or a unit lambda body) `if recv != null { call }` (a non-variable receiver goes
+    to a temp first; a C# switch statement cannot hold a void call), as a value `match recv { null => null, v =>
+    (T?)call(v) }`. No new IR node, no plugin rule. A `?.` FIELD read gets TS's `absentNormalize` unless its consumer
+    folds (ir::Member::absentConsumer; markAbsentConsumer covers it), so `b?.n == null` agrees. `h?.f(5)` (part 2) is
+    supported by the same path.
+  - **21** a lambda as either binary operand is always parenthesized (IrExprCtx::emitChild) — `cb ?? (() => 9)`.
+  - **22** `refuseUnitInference`: a free generic call whose type parameter is bound by no other argument and only by
+    a lambda that returns nothing is refused (C# CS0411 — no `Func<void>`). Emitting an `Action` overload was not
+    natural (it would need a second declaration per generic function).
+  - **23** new REQUIRED manifest datum `assignmentOrder` (`targetFirst` C#/TS, `valueFirst` Python/PHP; a missing or
+    unknown value fails the load). On a valueFirst target a plain `=` (and a user-indexer store) with an impure value
+    hoists the target parts a call could change into temps (`valueFirstHoist` over r4's `hoistTargetParts`); sema's
+    `Expr::callStable` marks a `let`, a parameter or a `var` no lambda assigns, which stays in place — so ordinary
+    `xs[i] = f(i)` is unchanged. C#/TS output is unchanged. Python's half (part 2) is the same mechanism.
+  - **Part 2.** The field-read refusal names the rule (*fields are not narrowed by a null test (SPEC §4.3); read it
+    into a local first ('let v = this.name', …) or assert it with '!'*); narrowing `let` fields was NOT added (a call
+    between test and read is enough to break it, and tracking "no call in between" is not clean). Function values
+    convert with class/interface **variance** (`functionVariant`: contravariant parameters, covariant result; scalars,
+    records, nullability and type arguments stay exact) — fv6 runs on all four again. PHP reads a module value inside a
+    lambda live (`ir::Var::liveModuleRead` → PHP `$GLOBALS['x']`), so `tc2` prints `6|10` there too. Hints:
+    `showNullable` spells `(() => unit)?`; a function-valued initializer gets a function-typed annotation example.
+  - **Observed, not fixed (older, TS-only compile error):** a `const t: T | null = null` is narrowed to `null` by tsc,
+    so a later present-arm read is `never` (TS2339) — the same for any narrowing of a literal-null-initialized local;
+    an annotated match temp does not help (tsc narrows on the initializer too).
+  - **Corpus diff** (`c436aae` vs this half, all 157 programs × 4 targets): two files changed, both item 23 —
+    `null_assert` PHP/Python: `head.next!.next = Node(30)` hoists the asserted receiver ahead of the construction
+    (on C# the assert ran first; Python/PHP had run the constructor first), plus temp renumbering in the same files.
+  - **Tests:** conformance `nullable_slot_arms`, `captured_narrowing`, `nullsafe_calls` (Map → `$expectedNet9`),
+    `lambda_operands`, `assign_value_first`, `function_variance`, `module_value_lambda_live` (each with `.expected`);
+    refusal fixtures `nullable_match_arm`, `nullable_yield`, `nullable_with_field`, `nullable_index`,
+    `nullable_tuple_element`, `generic_arg_invariant`, `lambda_param_type`, `lambda_arity`, `typeparam_null`,
+    `slot_type_mismatch`, `nullsafe_call_nonnull`, `infer_unit_type_arg`, `field_not_narrowed`; the r5 unit block.
+  - **Not touched (the other half):** class ordering, constructors, abstract, record defaults, link names,
+    overload/union resolution, runtime names, the `_` rules and the C# `_` discard.

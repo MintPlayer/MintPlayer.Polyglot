@@ -188,6 +188,7 @@ pass on comes from `spec` properties instead:
 | `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
 | `exprStmt` | absent | `{"discardPrefix": "_ = ", "parenIfStarts": ["{"]}` (P40 review r4). `discardPrefix` is written before an expression statement whose value is dropped and that is not an invocation, construction or await (a bound property read such as `s.len()`, a map lookup, a union-case literal — also the body of such a lambda flowing into `(…) => unit`, which lowering turns into a one-statement block): C# admits only statement expressions (CS0201). `parenIfStarts` lists tokens an expression statement may not begin with; a statement printing so is parenthesized (JS `{`). |
 | `nativeCoalesceAssign` | `false` | the target has a native `t ??= v` that stores only when `t` is null (C# 8, ES2021, PHP 7.4). Off (Python), lowering expands it to `if t == null { t = v }`, evaluating the target's receiver and indices once (P40 review r4) |
+| `assignmentOrder` | **required** | `"targetFirst"` when a plain `t = v` evaluates the target's receiver and indices before the value (C#, JS), `"valueFirst"` when the value runs first (Python, PHP). On a valueFirst target, lowering evaluates the target parts a side-effecting value could change into temps ahead of it, so `xs[j] = incJ()` writes the slot named before the value ran (P40 review r5). Missing or any other value fails the load |
 | `nativeCompoundAssign` | `false` | a native `a op= b` on a built-in scalar slot means exactly `a = a op b` as the `Binary` rule renders it — same §3.C wrap, integer division and concatenation (C#, whose compound narrows back implicitly). Off, lowering expands each compound to `a = a op b`, evaluating the target's receiver and indices once (impure ones go to a temp), so the `Binary` rule's masking applies; the emitter folds it back to `a op= b` only where the rule rendered the plain infix `a op b` |
 | `operandSnapshot` | `""` | non-empty = the target reads a VARIABLE operand of a native binary operator (and the slot of a native compound) only when the operator executes, after its right operand ran (PHP). When a right operand may have side effects, lowering marks such a left operand and the emitter wraps it in this template — `{tmp}` a fresh temp, `{0}` the operand text (PHP: `(${tmp} = {0})`) — and an impure compound is never folded back to `op=`. Must spell both placeholders (review r4) |
 
@@ -321,7 +322,11 @@ names its kind, `{"type":"node.calleeType"}` renders its function type). A call 
 **field** (`h.f(4)`, `K.g(4)`) has a `member` callee — a target whose `recv->f(…)` would call a METHOD (PHP)
 parenthesizes it. A top-level function used as a **value** (`apply(five)`, P40 review r4) is a `Call` with
 `node.isRef` = `"true"` and no arguments: print the resolved name without the argument list (PHP: the first-class
-callable `five(...)`).
+callable `five(...)`). A `Var` reading a **module value inside a lambda** sets `node.liveModuleRead` = `"true"`
+(P40 review r5): a target whose closures capture by value at creation reads it live there (PHP `$GLOBALS['x']`).
+A `?.` call needs no rule of its own — lowering builds it from `If`/`Match`/`Cast` (P40 review r5) — but a `?.`
+**member read** whose target has a second absent form is wrapped in the spec's `absentNormalize` unless its
+consumer is in `foldedBy`.
 - `reserved`: names your *generated* code claims (synthesized temps, scaffolding). A trailing `*`
   reserves a prefix family (`__w*`). A user identifier matching one is refused with a per-target
   diagnostic — this is what makes generated-name collisions loud instead of miscompiles.
