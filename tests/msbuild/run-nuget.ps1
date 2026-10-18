@@ -633,6 +633,26 @@ $r3Fixture = {
     $tRc = $LASTEXITCODE
     $run = "$(dotnet run --project $o --no-build 2>&1)".Trim()
     ck ($tRc -eq 0 -and $run -eq "6") "r3: PolyglotTargets 'csharp,' builds the C# (',' is a separator; exit $tRc, prints '$run')"
+
+    # review r8 (gating, Spark pgb51_c\rootcase R2): a configuration typed in another case. `dotnet build` makes
+    # obj/Debug/; `-c debug` then passes --out/--build-owned as obj\debug\<tfm>\polyglot\, a root spelled in another
+    # case than the disk. r7 compared that root's components and refused obj/Debug (it holds the SDK's own
+    # AssemblyAttributes.cs): MSB3073. All three builds must pass, and obj/ keeps the one spelling MSBuild made.
+    $cc = Join-Path $work "r8-cfgcase"
+    dotnet new console -o $cc -n CfgCase --framework net8.0 | Out-Null
+    Copy-Item (Join-Path $work "nuget.config") (Join-Path $cc "nuget.config")
+    "fn alpha(): i32 {`n  return 1`n}`n" | Set-Content (Join-Path $cc "a.pg")
+    '{ "targets": ["csharp"] }' | Set-Content (Join-Path $cc "pgconfig.json")
+    "System.Console.WriteLine(PolyglotProgram.alpha());" | Set-Content (Join-Path $cc "Program.cs")
+    dotnet add $cc package MintPlayer.Polyglot.MSBuild --version $pkgVer | Out-Null
+    foreach ($cfgArgs in @(@(), @("-c", "debug"), @("-c", "Debug"))) {
+        $b = dotnet build $cc --nologo -v q @cfgArgs 2>&1 | Out-String
+        $bRc = $LASTEXITCODE
+        $objNames = @(Get-ChildItem (Join-Path $cc "obj") -Directory -Name) -join ','
+        $label = if ($cfgArgs.Count) { $cfgArgs -join ' ' } else { "(default)" }
+        ck ($bRc -eq 0 -and $b -notmatch 'differs from' -and $objNames -ceq 'Debug') `
+            "review r8 (gating): dotnet build $label after a plain build passes and renames nothing (exit $bRc; obj: $objNames)"
+    }
     $r
 }
 

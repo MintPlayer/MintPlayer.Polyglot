@@ -208,11 +208,25 @@ public:
     // folder, each input's folder. Only the path components an output adds BELOW the deepest of these are the
     // route's own, so only those are compared for a case-only difference with the disk; a user's checkout or
     // source folder spelled differently in a command line is never renamed.
-    void routeRoots(std::vector<std::filesystem::path> roots) {
+    //
+    // Two kinds of root:
+    // - `roots` (config folders, input folders, include rules' climbed roots) are spelled as on disk only (P40 review
+    //   r7, H4): an input folder typed `proj` (disk: `Proj`) must not contain, under its typed spelling, a route that
+    //   re-enters the folder as `proj` — that route spells `proj` itself, and a case-sensitive clone resolves it so.
+    // - `callerRoots` (`--out`, `--build-owned`) are the caller's own output folders (MSBuild passes
+    //   `obj/<Configuration>/<tfm>/polyglot/`, so `-c debug` types `obj/debug/…` over an `obj/Debug/` an earlier build
+    //   made). P40 review r8: such a root is never compared, refused or renamed, so it matches under its TYPED spelling
+    //   as well as its disk spelling. (r7 respelled it from disk only; the project-folder root then contained the
+    //   typed `obj/debug/…` and its components were compared — `dotnet build -c debug` exited 1.)
+    // Every spelling of every root is also an ANCESTOR CHAIN that is never compared (alignDirectoryCase): renaming an
+    // ancestor of a root renames the root.
+    void routeRoots(const std::vector<std::filesystem::path>& roots, const std::vector<std::filesystem::path>& callerRoots) {
         roots_.clear();
-        // P40 review r7: spelled as on disk — an input folder typed `proj` (disk: `Proj`) must not contain, under its
-        // own spelling, a route that re-enters the folder as `proj`.
-        for (auto& r : roots) roots_.push_back(diskSpelledDir(r));
+        for (const auto& r : roots) roots_.push_back(diskSpelledDir(r));
+        for (const auto& r : callerRoots) {
+            roots_.push_back(absoluteDir(r));
+            roots_.push_back(diskSpelledDir(r));
+        }
     }
     // Every header line a loaded target emits — "everything in this directory is Polyglot output" accepts any
     // target's (a gen/ folder may hold twins of several targets). Evaluated when a directory rename needs it.
@@ -438,6 +452,23 @@ private:
         return true;
     }
 
+    // P40 review r8: is `dir` (absolute) one of the route roots, or an ancestor of one, under any stored spelling?
+    // Compared exactly, element by element: an ancestor spelled in yet another case is an ordinary component.
+    bool isRootOrAncestor(const std::filesystem::path& dir) const {
+        const std::filesystem::path d = dir.lexically_normal();
+        for (const auto& r : roots_) {
+            auto ri = r.begin();
+            bool prefix = true;
+            for (const auto& e : d) {
+                if (e.empty()) continue; // a trailing separator's empty element
+                if (ri == r.end() || *ri != e) { prefix = false; break; }
+                ++ri;
+            }
+            if (prefix) return true;
+        }
+        return false;
+    }
+
     // P40 review r5: is `p` inside a directory this run renamed (or reports it would rename) with a git hint?
     bool underHintedDir(const std::filesystem::path& p) const {
         const std::string k = outputKey(p);
@@ -510,6 +541,9 @@ private:
             if (comp.empty() || comp == ".") continue;
             const fs::path next = cur / comp;
             if (comp == "..") { cur = next; continue; }
+            // P40 review r8: a root, or an ancestor of one, under any of its spellings (`obj/debug` on the way to a
+            // `--out obj/debug/net10.0/polyglot` typed over the disk's `obj/Debug`), is the caller's: never compared.
+            if (isRootOrAncestor(next)) { cur = next; continue; }
             if (!noteSpelling(cur, comp, out, claim)) return Put::Conflict; // P40 review r5: gating 2
             DirNames& names = listing(cur);
             const fs::path variant = caseVariantIn(next, names);

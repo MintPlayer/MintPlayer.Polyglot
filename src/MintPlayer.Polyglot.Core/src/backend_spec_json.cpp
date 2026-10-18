@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "mintplayer/polyglot/backend.hpp" // kPluginSchemaVersion: a missing required key names the schema
 #include "mintplayer/polyglot/json.hpp"
 
 namespace mintplayer::polyglot {
@@ -112,8 +113,15 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     { // P40 review r5 item 23: required — a forgotten order would silently write a rebound slot (anti-silent-drop)
         const json::Value& ao = doc["assignmentOrder"];
         const std::string s = ao.kind == json::Value::Kind::String ? ao.asString() : std::string();
+        // P40 review r8: a manifest built before the key existed (it has no `assignmentOrder` at all) hears which key
+        // is missing and which manifest schema requires it — a third-party author's first sight of the change.
         if (s == "targetFirst") r.spec.assignValueFirst = false;
         else if (s == "valueFirst") r.spec.assignValueFirst = true;
+        else if (ao.kind == json::Value::Kind::Null)
+            r.errors.push_back("backend spec: missing required key 'assignmentOrder', which manifest schema " +
+                               std::to_string(kPluginSchemaVersion) + " requires: \"targetFirst\" (a plain assignment "
+                               "evaluates the target's receiver/indices before the value) or \"valueFirst\" (the value "
+                               "first); the plugin was built for an earlier engine — add the key and rebuild it");
         else r.errors.push_back("backend spec: 'assignmentOrder' must be \"targetFirst\" (a plain assignment evaluates "
                                 "the target's receiver/indices before the value) or \"valueFirst\" (the value first)");
     }

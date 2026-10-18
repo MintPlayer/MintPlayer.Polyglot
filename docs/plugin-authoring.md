@@ -30,7 +30,7 @@ The manifest's top-level keys (all of them):
 
 | Key | Required | What it is |
 |---|---|---|
-| `schema` | yes | Manifest schema version. This compiler reads schema **`2`** and refuses any other value (or a missing one) at load, naming the version it expects — version skew between a plugin and the engine is loud, never a silent misread. Schema 2 (P40) added the `preludeSlot` marker and binding `requires`. |
+| `schema` | yes | Manifest schema version. This compiler reads schema **`2`** and refuses any other value (or a missing one) at load, naming the version it expects — version skew between a plugin and the engine is loud, never a silent misread. Schema 2 (P40) added the `preludeSlot` marker, binding `requires` and the required `spec.assignmentOrder`; a manifest without that key fails naming it and the schema that requires it. |
 | `name` | yes | The target name (`--target <name>`); must equal `spec.name`. |
 | `capabilities` | as needed | Tri-state feature stances: `"native"` / `"emulated"` / `false` (§3 below). |
 | `spec` | yes | The declarative per-target data tables (§3 below). |
@@ -538,7 +538,7 @@ pipeline (`validateBackend`) by `polyglot install` — rejects, with a named err
 - an unknown `{"fn": …}` builtin (outside the 18-name catalog);
 - a dangling reference: a `{"call": …}` or `mapMembers` `"rule"` naming a rule that doesn't exist;
 - loading a name that's already registered (`plugin 'x' is already loaded`);
-- a `schema` other than `2` (or none);
+- a `schema` other than `2` (or none), or a schema-2 spec without the required `assignmentOrder` (`missing required key 'assignmentOrder', which manifest schema 2 requires`);
 - a `Program` rule without exactly one unconditional `{"fn":"preludeSlot"}`, or a marker in any
   other rule;
 - a std binding (or a literal `{"fn":"require"}`) naming a key that is not in `spec.preludes`, an

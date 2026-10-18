@@ -454,7 +454,8 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     if (srcId > 0) armtrace::addStaticOffsets(srcId, armOffsets);
     for (const char* required : {"Program", "Type"})
         if (rules.find(required) == rules.end()) {
-            error = "plugin '" + name + "': missing required rule '" + std::string(required) + "'";
+            error = "plugin '" + name + "': missing required rule '" + std::string(required) + "' (manifest schema " +
+                    std::to_string(kPluginSchemaVersion) + ")";
             return nullptr;
         }
 

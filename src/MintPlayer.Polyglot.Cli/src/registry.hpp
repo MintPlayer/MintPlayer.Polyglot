@@ -74,6 +74,9 @@ inline HttpOutcome httpStatusOutcome(long status, const std::string& url, std::s
         err += " (a server or proxy error: treated as a network miss)";
         return HttpOutcome::Kind::Transport;
     }
+    // P40 review r8: a final 3xx is a redirect the client did not follow (redirects are followed internally, so it
+    // carried no usable `Location`) — the server's malformed answer, an error like a 4xx.
+    if (status >= 300 && status <= 399) err += " (a redirect that cannot be followed: no Location header)";
     return HttpOutcome::Kind::Response;
 }
 
@@ -148,8 +151,18 @@ inline HttpOutcome httpGetWinHttp(const std::string& url, const std::vector<std:
         return done(fail("add headers failed"));
 
     if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(req, nullptr))
+        !WinHttpReceiveResponse(req, nullptr)) {
+        // P40 review r8: WinHTTP follows redirects itself and fails the request when it cannot (a 3xx with no
+        // `Location`, or one to a scheme it refuses). The server answered — with a redirect nobody can follow — so
+        // it is a `Response` error (exit 64) like any other non-200 answer, never "offline". libcurl and the curl
+        // subprocess end on the 3xx status itself, which httpStatusOutcome classifies the same way.
+        if (const DWORD e = GetLastError(); e == ERROR_WINHTTP_REDIRECT_FAILED) {
+            err = "http: the server answered a redirect that cannot be followed (no Location header, or a redirect "
+                  "to another scheme) (" + std::to_string(e) + ") for " + url;
+            return done(HttpOutcome(HttpOutcome::Kind::Response));
+        }
         return done(fail("request failed (offline? proxy?)"));
+    }
 
     DWORD status = 0, statusLen = sizeof status;
     WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,

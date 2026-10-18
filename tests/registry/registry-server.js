@@ -9,7 +9,7 @@
 //                                             byte-equality the gate asserts)
 //   @mintplayer/polyglot-target-pyfixture2  — the packument LIES about the tarball's integrity
 //                                             (supply-chain tamper: the CLI must refuse)
-//   @mintplayer/polyglot-target-status<NNN>  — answers HTTP <NNN> (P40 review r7: 502/503 = a network miss)
+//   @mintplayer/polyglot-target-status<NNN>  — answers HTTP <NNN> (P40 review r7: 502/503 = a network miss; r8: 301, sent with no Location, = an error)
 //
 // Prints "READY <port>" once listening. The harness owns this process's lifetime (it Stop-Processes
 // it in its finally); a stdin-EOF self-exit was tried but is WRONG in non-interactive shells (CI, and

@@ -740,7 +740,7 @@ struct WatchCycle {
 WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, const fs::path& rootArg,
                           const std::string& targetArg, const std::string& libArgIn, bool checkOnly,
                           bool flagRouted, bool originInfo, const std::vector<std::string>& only,
-                          const cli::TargetOptionsByTarget& optionFlags, bool adopt) {
+                          const cli::TargetOptionsByTarget& optionFlags, bool adopt, bool outDirGiven) {
     WatchCycle c;
     const fs::path absInput = fs::absolute(input).lexically_normal();
     c.watched.push_back(absInput);
@@ -869,9 +869,12 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
     }
     sink.trust({}, {}, adopt);
     {
-        std::vector<fs::path> roots{outDirArg, entryDir, pc.found ? pc.dir : entryDir};
+        // P40 review r8: an explicit --out is the caller's folder, matched as typed too (see OutputSink::routeRoots).
+        std::vector<fs::path> roots{entryDir, pc.found ? pc.dir : entryDir};
+        std::vector<fs::path> callerRoots;
+        (outDirGiven ? callerRoots : roots).push_back(outDirArg);
         for (auto& r : cli::includeRouteRoots(pc)) roots.push_back(std::move(r)); // P40 review r5: gating 1
-        sink.routeRoots(std::move(roots));
+        sink.routeRoots(roots, callerRoots);
     }
     sink.headerLines(loadedHeaderLines);
     for (const auto& t : targets) {
@@ -930,7 +933,7 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
 int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root,
              const std::string& target, const std::string& libArg, bool checkOnly, bool flagRouted,
              bool originInfo = false, const std::vector<std::string>& only = {},
-             const cli::TargetOptionsByTarget& optionFlags = {}, bool adopt = false) {
+             const cli::TargetOptionsByTarget& optionFlags = {}, bool adopt = false, bool outDirGiven = false) {
     cli::PollingFileWatcher watcher;
 #ifdef _WIN32
     g_watchStopTarget = &watcher;
@@ -942,7 +945,7 @@ int runWatch(const fs::path& input, const fs::path& outDir, const fs::path& root
         std::cout << clockStamp() << " polyglot watch: " << verb << " " << absInput.string() << "\n";
         // --adopt is one-time: only the first cycle takes over unmarked outputs (they carry the header after it).
         WatchCycle c = watchBuildOnce(input, outDir, root, target, libArg, checkOnly, flagRouted, originInfo, only,
-                                      optionFlags, adopt && std::string(verb) == "building");
+                                      optionFlags, adopt && std::string(verb) == "building", outDirGiven);
         std::cout << clockStamp() << " polyglot watch: " << c.errors
                   << " error(s) - watching for changes\n";
         std::cout.flush();
@@ -1446,7 +1449,7 @@ int runBuild(const std::vector<std::string>& args) {
         if (!recordArg.empty() || !depfileArg.empty())
             std::cout << "polyglot: --watch keeps no outputs record or depfile and never deletes anything\n";
         return runWatch(firstInput, o.outDir, o.root, o.target, o.libArg, /*checkOnly=*/false, flagRouted,
-                        o.originInfo, o.only, o.optionFlags, adopt);
+                        o.originInfo, o.only, o.optionFlags, adopt, o.outDirGiven);
     }
 
     std::cout << "polyglot build";
@@ -1537,13 +1540,17 @@ int runBuild(const std::vector<std::string>& args) {
             run.sink.adoptBlockedBy(blocking);
         }
         run.sink.trust(std::move(recorded), buildOwned, adopt);
-        std::vector<fs::path> roots{o.outDir};
+        // P40 review r8: --out and --build-owned are the caller's folders, matched as typed too (never renamed); the
+        // default sink (no --out) is an input's folder, spelled as on disk like the other roots (H4).
+        std::vector<fs::path> callerRoots = buildOwned;
+        std::vector<fs::path> roots;
+        (o.outDirGiven ? callerRoots : roots).push_back(o.outDir);
         for (const auto& [key, group] : groups) {
             if (group.first.found) roots.push_back(group.first.dir);
             for (auto& r : cli::includeRouteRoots(group.first)) roots.push_back(std::move(r)); // P40 review r5: gating 1
             for (const auto& in : group.second) roots.push_back(in.has_parent_path() ? in.parent_path() : fs::path("."));
         }
-        run.sink.routeRoots(std::move(roots));
+        run.sink.routeRoots(roots, callerRoots);
         run.sink.headerLines(loadedHeaderLines);
     }
     int rc = 0;

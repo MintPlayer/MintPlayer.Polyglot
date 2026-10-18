@@ -3598,3 +3598,13 @@ evidence in `ANALYSIS.md`, and slices, spikes and decisions D1–D17 in its `PLA
   conformance dll under tr-TR/nl-BE/sv-SE/fa-IR), poison and `CurrentCulture` grep gates, two-library C#/PHP
   consumers, a TS barrel, `--check` and `--only` smoke tests, and origin-info byte-identity across two
   checkout roots.
+- **Release notes — for third-party plugin authors** (the repo keeps no CHANGELOG; this is the note to carry
+  into the release text). P40 bumps the plugin manifest schema **1 → 2**, and a plugin built for an older
+  engine no longer loads:
+  - a manifest declaring `"schema": 1` (or none) is refused, naming the schema this compiler reads (`2`);
+  - schema 2 adds the Program rule's `{"fn":"preludeSlot"}` marker, std-binding `requires`, and the
+    **required** `spec.assignmentOrder` (`"targetFirst"` or `"valueFirst"`, review r5 item 23). A manifest
+    without it — including one built against an intermediate P40 engine that already said `"schema": 2` — fails
+    with `missing required key 'assignmentOrder', which manifest schema 2 requires` (review r8), so a lockfile
+    pinning such a plugin exits 64 until the plugin is rebuilt. The in-box targets are unaffected.
+  - `docs/plugin-authoring.md` lists every key and every load error.

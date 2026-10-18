@@ -3750,6 +3750,15 @@ int main() {
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "no rule"),
               "P19: loadBackend refuses coverage gaps regardless of claims");
+        // Review round 8: a schema-2 manifest from before `assignmentOrder` existed names the missing key and the
+        // schema that requires it (it used to say only "must be targetFirst or valueFirst").
+        check(!loadBackend(R"({"schema":2,"name":"olden","spec":{"name":"olden"},"rules":{"Program":"x","Type":"x"}})", err) &&
+                  has(err, "plugin 'olden'") && has(err, "missing required key 'assignmentOrder'") &&
+                  has(err, "manifest schema " + std::to_string(kPluginSchemaVersion) + " requires"),
+              "review r8: a manifest without 'assignmentOrder' fails naming the key and the manifest schema it expects");
+        check(!loadBackend(R"({"schema":2,"name":"olden2","spec":{"name":"olden2","assignmentOrder":"sideways"},"rules":{"Program":"x","Type":"x"}})", err) &&
+                  has(err, "'assignmentOrder' must be") && !has(err, "missing required key"),
+              "review r8: ... while a present but invalid value keeps the value diagnostic");
     }
 
     // ---- P37 slice 0: keyed capability vocabulary (closed + load-validated, umbrella fallback) ----------
@@ -6327,7 +6336,7 @@ int main() {
             // filesystem and in Check mode (nothing on disk yet), naming both — not as a content conflict.
             const fs::path sp = tmp / "spell";
             cli::OutputSink s1(cli::OutputSink::Mode::Check);
-            s1.routeRoots({sp});
+            s1.routeRoots({sp}, {});
             const bool first = s1.put(sp / "gen" / "a.ts", "a", cli::OutputSink::Claim{"'a.pg'", {}, {}}) == cli::OutputSink::Put::Written;
             const bool same = s1.put(sp / "gen" / "c.ts", "c", cli::OutputSink::Claim{"'c.pg'", {}, {}}) == cli::OutputSink::Put::Written;
             const bool dirClash = s1.put(sp / "Gen" / "b.ts", "b", cli::OutputSink::Claim{"'b.pg'", {}, {}}) == cli::OutputSink::Put::Conflict;
@@ -6336,6 +6345,34 @@ int main() {
             check(first && same && dirClash && has(dirMsg, "'gen' and 'Gen' differ only by case") && has(dirMsg, "'a.pg'") &&
                       has(dirMsg, "'b.pg'") && fileClash && has(s1.spellingClash(), "'a.ts' and 'A.ts'"),
                   "review r5: another spelling of a routed directory or file in the same run is a spelling conflict");
+#ifdef _WIN32
+            // Review round 8 (gating): a caller root (--out / --build-owned) typed in another case than the disk
+            // (`obj/debug/…` over `obj/Debug/…`, MSBuild's `-c debug`) is never compared, refused or renamed — nor is
+            // an ancestor of it — while the project folder root alone would have compared `obj/Debug` and refused it.
+            {
+                const fs::path rc = tmp / "rootcase";
+                fs::create_directories(rc / "obj" / "Debug" / "net" / "polyglot");
+                std::ofstream(rc / "obj" / "Debug" / "net" / "App.AssemblyInfo.cs") << "// not Polyglot\n";
+                const fs::path typed = rc / "obj" / "debug" / "net" / "polyglot";
+                for (auto mode : {cli::OutputSink::Mode::Check, cli::OutputSink::Mode::Write}) {
+                    cli::OutputSink s(mode);
+                    s.trust({}, {typed}, false);
+                    s.routeRoots({rc}, {typed});
+                    const auto inRoot = s.put(typed / "a.cs", "x");
+                    const auto viaAncestor = s.put(rc / "obj" / "debug" / "other" / "b.cs", "y");
+                    std::set<std::string> names;
+                    for (const auto& e : fs::directory_iterator(rc / "obj")) names.insert(e.path().filename().string());
+                    check(inRoot == cli::OutputSink::Put::Written && viaAncestor == cli::OutputSink::Put::Written &&
+                              names == std::set<std::string>{"Debug"} && s.refusal().empty(),
+                          "review r8: a caller root typed 'obj/debug' over the disk's 'obj/Debug', and a route through its "
+                          "ancestor, are never compared or renamed");
+                }
+                cli::OutputSink bare(cli::OutputSink::Mode::Check); // the control: only the project root
+                bare.routeRoots({rc}, {});
+                check(bare.put(rc / "obj" / "debug" / "x" / "c.cs", "z") == cli::OutputSink::Put::Refused,
+                      "review r8: ... while a route below the project root that types 'debug' over 'Debug' is still compared");
+            }
+#endif
             cli::OutputSink check2(cli::OutputSink::Mode::Check);
             check(check2.put(f, "x") == cli::OutputSink::Put::Unchanged && !check2.drifted() &&
                       check2.put(tmp / "sink" / "b.cs", "z") == cli::OutputSink::Put::Written,

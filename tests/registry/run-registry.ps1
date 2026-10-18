@@ -154,6 +154,22 @@ try {
                 $outR -notmatch 'unknown target' -and (Test-Path (Join-Path $projR "a.cs"))) `
             "review r7: a rule target whose registry answers $code (a network miss) degrades to 'not verified' and the build emits (exit $rcR; was 64 'unknown target')"
     }
+    # review r8 (Spark i3\s5_301.log): a 301 with no `Location` is the server's malformed answer, not a missing
+    # network. WinHTTP failed the redirect itself (12156) and that read as "offline" — degraded, exit 0. Now it is an
+    # error on every client (libcurl and the curl subprocess end on the 301 status): 64 'unknown target', printed once.
+    $dep = "status301"
+    $projR = Join-Path $work "proj-rule-$dep"
+    New-Item -ItemType Directory -Force $projR | Out-Null
+    Set-Content (Join-Path $projR "a.pg") "fn a(): i32 => 1`n" -NoNewline
+    Set-Content (Join-Path $projR "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"dependencies`": { `"$dep`": `"^1.2.3`" }, " +
+        "`"include`": [ { `"pattern`": `"*.pg`", `"target`": `"$dep`", `"output`": `"gen/%(Filename)`" } ] }") -NoNewline
+    Push-Location $projR
+    $outR = & $Cli build 2>&1 | Out-String
+    $rcR = $LASTEXITCODE
+    Pop-Location
+    Assert ($rcR -eq 64 -and $outR -match "unknown target '$dep'" -and $outR -notmatch 'not verified|offline' -and
+            ([regex]::Matches($outR, 'redirect that cannot be followed')).Count -eq 1 -and -not (Test-Path (Join-Path $projR "a.cs"))) `
+        "review r8: a rule target whose registry answers 301 without Location exits 64 'unknown target', the error printed once (exit $rcR; was 0, 'offline? proxy?' degraded to 'not verified')"
 
     # --- 6/7. --target override + the config-sourced refusal ---------------------------------------
     & $Cli build (Join-Path $proj "main.pg") --target csharp --out $proj *> $null

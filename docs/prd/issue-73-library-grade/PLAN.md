@@ -2053,3 +2053,52 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     `indexer_value_param`, `interface_fn_param`, `lambda_arms_typed`, `ext_name_import/`, `type_only_import/` (8,
     each with `.expected`; floor pin 196 → 204: 6 files + 2 directories); 12 refusal fixtures (block "Review round
     7 — language half"); unit checks `r7:`.
+- **2026-10-18 — Review round 8** (Spark's re-verification of `be5140d`: one gating regression + part 2). Every
+  item fails on `be5140d` per the reviewer's logs (`rootcase.log`, `rr1\a3.log` case 7, `rh1\lock_c43.log`,
+  `i3\s5_301.log`); the new cli-smoke checks ("review r8"), the run-nuget R2 checks, registry stage 5b's
+  `status301` case and the `review r8:` unit checks pin them and pass here.
+  - **Gating [R] — a route root typed in another case than the disk.** r7's H4 fix spelled EVERY route root as on
+    disk (`OutputSink::routeRoots`), including `--out` and `--build-owned`. MSBuild passes both as
+    `obj\<Configuration>\<tfm>\polyglot\`, so `dotnet build -c debug` after a plain `dotnet build` typed
+    `obj/debug/…` over the disk's `obj/Debug/…`: the disk-spelled `--out` root no longer contained the typed output
+    path, the project-folder root did, and `alignDirectoryCase` compared `obj/Debug` with `debug` — refused (it
+    holds the SDK's AssemblyAttributes.cs; MSB3073), or with only Polyglot output inside, renamed (`--out GEN/SUB`
+    over `gen/sub` renamed both). The fix splits the roots: the caller's own output folders (`--out` when given,
+    every `--build-owned`) match under their **typed and** their disk spelling; config folders, input folders
+    (also the default sink, which is an input's folder) and include rules' climbed roots stay disk-spelled only,
+    which H4 needs (a route re-entering `Proj` as `../proj/…` spells `proj` itself). And a root, or any ancestor of
+    one, under any stored spelling, is never compared or renamed (`isRootOrAncestor`), so a route that passes
+    through `obj/debug/` on its way elsewhere does not rename the caller's folder either; only components strictly
+    below a root are case-aligned, as PLAN's r4 entry and outputsink.hpp's `routeRoots` comment always said. Watch
+    mode gets the same split. Pinned: cli-smoke R1 (MSBuild's flag shape with a foreign `App.AssemblyInfo.cs`:
+    `--check` up to date, build exit 0, `obj/` still `Debug` with nothing renamed) and rr1 case 7; run-nuget R2
+    (`dotnet build`, `-c debug`, `-c Debug` — all exit 0, `obj/` keeps `Debug`); unit checks (a typed caller root and
+    a route through its ancestor are left alone; the project root alone still compares). H4, H4 typed in another
+    case and every earlier case check are unchanged.
+  - **A manifest without `assignmentOrder` names the key and the schema.** Schema 2 made `spec.assignmentOrder`
+    required (r5 item 23); a manifest built against an intermediate P40 engine (`c436aae`, already `"schema": 2`)
+    lacks it and failed with *'assignmentOrder' must be "targetFirst" … or "valueFirst"*. A missing key now says
+    *missing required key 'assignmentOrder', which manifest schema 2 requires … the plugin was built for an
+    earlier engine — add the key and rebuild it*; an invalid value keeps the value diagnostic; a missing required
+    rule names the schema too. Release note for third-party plugin authors: there is no CHANGELOG in the repo, so
+    it is in `docs/prd/PLAN.md`'s P40 section ("Release notes — for third-party plugin authors"), and
+    `docs/plugin-authoring.md` lists the key and the load error.
+  - **A 3xx without `Location` is an error.** WinHTTP follows redirects itself and fails the request when it
+    cannot (`ERROR_WINHTTP_REDIRECT_FAILED`, 12156); that read as "request failed (offline? proxy?)" — a network
+    miss, so a rule target degraded to "not verified" (exit 0). It is now a `Response` error (*the server answered
+    a redirect that cannot be followed …*), exit 64, like any other non-200 answer. libcurl and the curl subprocess
+    (`--location`, no `Location`) end on the 301 status itself, which `httpStatusOutcome` already classified as
+    `Response`; its message now says the redirect cannot be followed. Registry stage 5b: `status301` (the fake
+    registry answers 301 with no `Location`) exits 64 "unknown target", the error printed once.
+  - **Deliberate behaviour changes** (this PR, named for the reviewers' regression sweeps):
+    - **The own-getter refusal also refuses a getter that returns a lambda capturing `this`**
+      (`r5_ok_getcap`: `let show: () => string => () => this.name + "!"` called from the constructor). `6713b69`
+      ran it on all four targets; SPEC §4.4 documents the rule (an own property's getter is checked like any own
+      member), and the method form was already refused on both CLIs.
+    - **Plugin manifests without `assignmentOrder` fail to load** (any third-party plugin built before r5 item 23,
+      including `c436aae`-era lockfile pins: exit 64). The in-box targets are unaffected.
+    - **A registry answering 301 without `Location` exits 64** instead of degrading as "offline" (Windows only;
+      the POSIX clients already ended on the status).
+  - **POSIX.** outputsink.hpp, main.cpp and registry.hpp changed: the WSL g++/cmake build + unit run is part of
+    the end gate.
+  - **Not touched:** sema, lower, the emitters and the plugins. No conformance program was added (floor pin 204).
