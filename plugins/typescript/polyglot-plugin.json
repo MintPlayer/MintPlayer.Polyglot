@@ -326,23 +326,33 @@
       ]
     },
     "Call": {
-      "tmpl": [
-        {
-          "fn": "ident",
-          "args": [
-            {
-              "get": "node.mangledCallee"
-            }
+      "case": {
+        "when": [
+          [
+            { "has": "node.hasCalleeExpr" },
+            { "tmpl": [ { "emitChild": "node.calleeExpr", "side": "recv" }, "(", { "map": "node.args", "sep": ", " }, ")" ] }
           ]
-        },
-        { "call": "typeArgsSuffix" },
-        "(",
-        {
-          "map": "node.args",
-          "sep": ", "
-        },
-        ")"
-      ]
+        ],
+        "else": {
+          "tmpl": [
+            {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.mangledCallee"
+                }
+              ]
+            },
+            { "call": "typeArgsSuffix" },
+            "(",
+            {
+              "map": "node.args",
+              "sep": ", "
+            },
+            ")"
+          ]
+        }
+      }
     },
     "Member": {
       "tmpl": [
@@ -4774,7 +4784,7 @@
       "u16.__pgParse": "(Number.parseInt($0, 10) & 0xffff)",
       "u32.__pgParse": "(Number.parseInt($0, 10) >>> 0)",
       "u64.__pgParse": "BigInt($0)",
-      "f32.__pgParse": "Number($0)",
+      "f32.__pgParse": "Math.fround(Number($0))",
       "f64.__pgParse": "Number($0)"
     }
   },

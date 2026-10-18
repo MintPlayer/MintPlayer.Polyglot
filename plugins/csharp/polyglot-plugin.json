@@ -262,6 +262,10 @@
         "strategy": "prefix",
         "with": "@"
       },
+      "mangle": {
+        "replace": "$",
+        "with": "_"
+      },
       "reserved": [
         "PolyglotExtensions",
         "__PgRt",
@@ -371,6 +375,18 @@
         {
           "case": {
             "when": [
+              [
+                { "eq": ["node.calleeKind", "lambda"] },
+                { "tmpl": [ "((", { "type": "node.calleeType" }, ")", { "emitChild": "node.calleeExpr", "side": "recv" }, ")" ] }
+              ],
+              [
+                { "has": "node.hasCalleeExpr" },
+                { "emitChild": "node.calleeExpr", "side": "recv" }
+              ],
+              [
+                { "has": "node.linkCallee" },
+                { "tmpl": [ { "get": "option.class" }, ".", { "fn": "mangleName", "args": [ { "fn": "ident", "args": [ { "get": "node.linkCallee" } ] } ] } ] }
+              ],
               [
                 {
                   "eq": [
@@ -1525,12 +1541,22 @@
         },
         " ",
         {
-          "fn": "ident",
-          "args": [
-            {
-              "get": "decl.name"
+          "case": {
+            "when": [
+              [
+                { "has": "decl.linkName" },
+                { "fn": "mangle", "args": [ { "fn": "ident", "args": [ { "get": "decl.linkName" } ] } ] }
+              ]
+            ],
+            "else": {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
             }
-          ]
+          }
         },
         {
           "fn": "generics"
@@ -3248,12 +3274,22 @@
         },
         " ",
         {
-          "fn": "ident",
-          "args": [
-            {
-              "get": "decl.name"
+          "case": {
+            "when": [
+              [
+                { "has": "decl.linkName" },
+                { "fn": "mangle", "args": [ { "fn": "ident", "args": [ { "get": "decl.linkName" } ] } ] }
+              ]
+            ],
+            "else": {
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "decl.name"
+                }
+              ]
             }
-          ]
+          }
         },
         {
           "fn": "generics"

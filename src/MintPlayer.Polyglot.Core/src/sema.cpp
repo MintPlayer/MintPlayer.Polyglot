@@ -1,9 +1,13 @@
 #include "mintplayer/polyglot/sema.hpp"
 #include "mintplayer/polyglot/flow.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
+#include <cstdio>
 #include <deque>
+#include <set>
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
@@ -202,6 +206,7 @@ struct MemberInfo {
     bool isStatic = false;        // a `static fn` member, called as `Type.method(...)`
     bool isOpen = false;          // `open`/`abstract` — overridable from a subclass (C#-convention `override`)
     bool isAsync = false;         // an `async` method — its call result is `Awaitable<ret>` (§4.7)
+    bool isRecordField = false;   // a record's positional field — immutable (P40 review r3 2(i))
     bool isReadOnly = false;      // a `let` field or a `const`: never assignable, except a `let` instance
                                   // field through `this` in a constructor of its own class (C# `readonly`)
     std::size_t required = 0;    // leading params with no default — the minimum a call must supply
@@ -230,6 +235,8 @@ struct FnSig {
     TypeRef receiver;                  // extensions only: the declared receiver type (for inference from it)
     bool isAsync = false;              // an `async fn` — its call result is `Awaitable<result>` (§4.7)
     SourcePos pos;                     // the declaration (its file id = its module: D16 overload visibility)
+    std::string mangled;               // the declaration's per-module mangled name (FunctionDecl::mangledName)
+    std::string linkName;              // the declaration's link name (FunctionDecl::linkName)
 };
 
 // The generic-param names bounded by the INumber marker — those whose inferred type argument must be numeric.
@@ -330,6 +337,11 @@ struct Local {
     bool nonNull = false;
     int assigns = 0;
     int lambdaDepth = 0;
+    // P40 review r3 (part 2): a local initialized with a constant and never read is C# CS0219 (a warning a
+    // warnings-as-errors consumer cannot build) — refused when its scope closes.
+    int reads = 0;
+    bool constInit = false;
+    SourcePos declPos{0, 0, 0};
 };
 
 class Checker {
@@ -363,6 +375,7 @@ public:
             inAsync_ = fn.isAsync;
             scopeStart_ = fn.namePos; scopeEnd_ = fn.bodyEnd; // locals here are in scope only within this fn
             pushGenerics(fn.generics);
+            checkCallSiteDefaults(fn.params, "function '" + fn.name + "'"); // P40 review r3 2(j)
             pushScope();
             for (const auto& p : fn.params) declare(p.name, p.type, false, p.pos);
             checkBlock(fn.body);
@@ -398,7 +411,9 @@ public:
         }
         for (auto& v : unit.values) { // type-check top-level const/let initializers (so their types propagate)
             if (!v.init) continue;
+            initDeclPos_ = v.pos; initDeclName_ = v.name;
             TypeRef it = checkExpr(*v.init);
+            initDeclPos_ = {0, 0, 0};
             if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
             else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
                 diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
@@ -419,6 +434,26 @@ private:
     std::unordered_set<std::string> enumNames_;
     std::unordered_set<std::string> recordNames_;                          // declared `record` names (P40 B4 key refusal)
     std::unordered_map<std::string, TypeRef> values_;          // top-level const/let
+    // P40 review r3 2(h): where each module value / static field is declared, and the declaration whose
+    // initializer is being checked (line 0 = none). TS/Python/PHP run initializers in declaration order, so a
+    // direct read of one declared LATER in the same file is refused (C# alone initializes statics lazily).
+    std::unordered_map<std::string, SourcePos> valueDeclPos_;  // value name -> decl pos
+    std::unordered_map<std::string, SourcePos> staticDeclPos_; // "Type.field" -> decl pos
+    std::unordered_map<std::string, SourcePos> typeDeclPos_;   // user type / union case name -> decl pos
+    SourcePos initDeclPos_{0, 0, 0};
+    std::string initDeclName_;
+    void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos) {
+        if (initDeclPos_.line == 0 || lambdaDepth_ > 0 || declPos.line == 0 || declPos.fileId != initDeclPos_.fileId) return;
+        if (declPos.line < initDeclPos_.line || (declPos.line == initDeclPos_.line && declPos.col < initDeclPos_.col)) return;
+        diags_.error(usePos, "the initializer of '" + initDeclName_ + "' reads '" + shown + "', which is declared later — "
+                             "TS, Python and PHP run initializers in declaration order (it would read an "
+                             "uninitialized value or fail); declare '" + shown + "' first");
+    }
+    // A type used (constructed, a static/enum case read, a static call) in an initializer: a class declared later
+    // does not exist yet on TS (ReferenceError) or Python (NameError) when the initializer runs.
+    void noteTypeUse(const std::string& name, SourcePos usePos) {
+        if (auto it = typeDeclPos_.find(name); it != typeDeclPos_.end()) checkInitOrder(it->second, name, usePos);
+    }
     std::unordered_map<std::string, FnSig> unionCtors_;        // union case name -> ctor sig
     std::unordered_map<std::string, std::string> unionCaseOwner_; // case name -> union type
     std::unordered_map<std::string, std::vector<std::string>> unionAllCases_; // union -> all case names
@@ -522,7 +557,28 @@ private:
 
     // ---- scopes ----
     void pushScope() { scopes_.emplace_back(); }
-    void popScope() { scopes_.pop_back(); }
+    void popScope() {
+        std::vector<std::pair<SourcePos, std::string>> unused;
+        for (const auto& [n, l] : scopes_.back())
+            if (l.constInit && l.reads == 0 && !n.empty() && n[0] != '_') unused.push_back({l.declPos, n});
+        std::sort(unused.begin(), unused.end(), [](const auto& a, const auto& b) {
+            return a.first.line != b.first.line ? a.first.line < b.first.line : a.first.col < b.first.col;
+        });
+        for (const auto& [pos, n] : unused)
+            diags_.error(pos, "'" + n + "' is set to a constant but never read — remove it (or prefix its name with "
+                              "'_'); C# reports it as an unused variable");
+        scopes_.pop_back();
+    }
+    static bool isConstExpr(const Expr* e) {
+        if (!e) return false;
+        switch (e->kind) {
+            case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::StringLit: case ExprKind::CharLit:
+            case ExprKind::BoolLit: case ExprKind::NullLit: return true;
+            case ExprKind::Unary: return isConstExpr(e->lhs.get());
+            case ExprKind::Binary: return e->text != "??" && isConstExpr(e->lhs.get()) && isConstExpr(e->rhs.get());
+            default: return false;
+        }
+    }
     void declare(const std::string& name, TypeRef type, bool isMutable, SourcePos pos) {
         auto& top = scopes_.back();
         if (top.count(name)) diags_.error(pos, "'" + name + "' is already declared in this scope");
@@ -843,7 +899,13 @@ private:
         }
         for (const auto& d : u.records) {
             TypeInfo ti; ti.generics = d.generics; ti.hasCtor = true; ti.ctorRequired = requiredCount(d.fields);
-            for (const auto& f : d.fields) { ti.ctorParams.push_back(f.type); ti.members.push_back({f.name, MemberKind::Field, {}, f.type}); }
+            for (const auto& f : d.fields) {
+                ti.ctorParams.push_back(f.type);
+                MemberInfo fi{f.name, MemberKind::Field, {}, f.type};
+                fi.isReadOnly = true; // P40 review r3 2(i): a record is immutable (SPEC); C# CS8852 on a write
+                fi.isRecordField = true;
+                ti.members.push_back(std::move(fi));
+            }
             addMembers(ti, d.members); collectBaseNames(d.bases, ti);
             types_[d.name] = std::move(ti);
         }
@@ -900,15 +962,54 @@ private:
                 }
             set.push_back(std::move(sig));
         }
-        for (auto& fn : u.functions) { // assign per-target names: overloaded functions mangle their params
-            if (!fn.actualTarget.empty()) { fn.mangledName = fn.name; continue; } // actuals reuse the expect name
+        // Assign per-target names: an overloaded function mangles its params. P40 review r3 (part 2): the overload
+        // set is the one the DECLARING module sees (its own + imported declarations, D16) — a library's exported
+        // name must not change because an unrelated module declares the same name. The link name (C#, one shared
+        // class) is the mangled one whenever another user module declares the name too.
+        std::unordered_map<std::string, std::set<std::string>> userOrigins; // name -> user modules declaring it
+        for (const auto& fn : u.functions)
+            if (fn.actualTarget.empty() && fn.originModule != "<prelude>") userOrigins[fn.name].insert(fn.originModule);
+        auto samePos = [](const SourcePos& a, const SourcePos& b) {
+            return a.line == b.line && a.col == b.col && a.fileId == b.fileId;
+        };
+        for (auto& fn : u.functions) {
             std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
-            fn.mangledName = mangleFn(fn.name, ps, fns_[fn.name].size() > 1);
+            const bool linkMangled = userOrigins[fn.name].size() > 1;
+            if (!fn.actualTarget.empty()) { // an actual reuses its expect's names
+                fn.mangledName = fn.name;
+                fn.linkName = linkMangled ? mangleFn(fn.name, ps, true) : fn.name;
+                continue;
+            }
+            auto& set = fns_[fn.name];
+            std::size_t visible = 0;
+            for (const auto& sig : set)
+                if (!modules_ || !modules_->visible || sig.pos.fileId == fn.pos.fileId ||
+                    modules_->visible(fn.pos.fileId, sig.pos.fileId, fn.name))
+                    ++visible;
+            fn.mangledName = mangleFn(fn.name, ps, visible > 1);
+            fn.linkName = linkMangled ? mangleFn(fn.name, ps, true) : fn.name;
+            for (auto& sig : set)
+                if (samePos(sig.pos, fn.pos)) { sig.mangled = fn.mangledName; sig.linkName = fn.linkName; }
         }
         for (const auto& v : u.values) {
             if (values_.count(v.name)) diags_.error(v.pos, "duplicate top-level '" + v.name + "'");
             values_[v.name] = v.hasType ? v.type : tUnknown();
+            valueDeclPos_[v.name] = v.pos;
         }
+        auto noteStatics = [&](const std::string& owner, const std::vector<Member>& ms) {
+            for (const auto& m : ms) {
+                if (m.kind != MemberKind::Field && m.kind != MemberKind::Const) continue;
+                bool st = m.kind == MemberKind::Const;
+                for (const auto& mod : m.modifiers) if (mod == "static") st = true;
+                if (st) staticDeclPos_[owner + "." + m.name] = m.pos;
+            }
+        };
+        for (const auto& d : u.classes) noteStatics(d.name, d.members);
+        for (const auto& d : u.records) noteStatics(d.name, d.members);
+        for (const auto& d : u.classes) if (!d.isExtern) typeDeclPos_[d.name] = d.pos;
+        for (const auto& d : u.records) typeDeclPos_[d.name] = d.pos;
+        for (const auto& d : u.enums) typeDeclPos_[d.name] = d.pos;
+        for (const auto& d : u.unions) { typeDeclPos_[d.name] = d.pos; for (const auto& c : d.cases) typeDeclPos_[c.name] = d.pos; }
         for (const auto& e : u.extensions) {
             std::string key = e.receiver.name + "." + e.name;
             if (extensions_.count(key)) diags_.error(e.pos, "duplicate extension '" + key + "'");
@@ -1153,7 +1254,29 @@ private:
             for (const auto& m : members) {
                 bool hasOverride = false;
                 for (const auto& mod : m.modifiers) if (mod == "override") hasOverride = true;
-                if (!hasOverride) continue;
+                if (!hasOverride) {
+                    // P40 review r3 2(f): redeclaring an inherited INSTANCE member without `override` is member
+                    // hiding — C# binds it non-virtually (CS0108 is only a warning: `Base`-typed access sees the
+                    // base member), while TS/Python/PHP override it. Refused, whatever the member kind.
+                    bool isStatic = false;
+                    for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
+                    if (isStatic || m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator) continue;
+                    for (const auto& b : bases) {
+                        if (b.kind != TypeRef::Kind::Named || b.name.empty() || interfaceNames_.count(b.name)) continue;
+                        MemberHit hit = findMemberOn(b, m.name);
+                        if (!hit.m || hit.m->isStatic || hit.m->kind == MemberKind::Constructor ||
+                            interfaceNames_.count(hit.owner))
+                            continue;
+                        const bool bothMethods = m.kind == MemberKind::Method && hit.m->kind == MemberKind::Method;
+                        diags_.error(m.namePos, "'" + m.name + "' redeclares a member inherited from '" + hit.owner + "' — " +
+                                                    (bothMethods && hit.m->isOpen
+                                                         ? std::string("mark it 'override'")
+                                                         : std::string("rename it; Polyglot has no member hiding (C# would "
+                                                                       "hide it non-virtually, the other targets override it)")));
+                        break;
+                    }
+                    continue;
+                }
                 bool inBaseClass = false, baseOpen = false, inInterface = false;
                 for (const auto& b : bases) {
                     if (b.kind != TypeRef::Kind::Named || b.name.empty()) continue;
@@ -1239,18 +1362,63 @@ private:
     // member's, whose template has no native default to fall back on) is re-evaluated in the caller's scope,
     // so it must mean the same thing there: a literal (optionally negated) or `null`. It is type-checked
     // against its parameter once, here; lowering re-lowers the checked expression at every call.
+    // A float constant expression (`1.0 / 60.0`, `-2.5 * 4.0`): folded at compile time so a default stays a plain
+    // literal on every target (a PHP default may not call a helper; Python would evaluate it once). Only `+ - * /`
+    // over float literals (and int literals inside them) fold; an infinity or NaN result does not.
+    static bool foldFloat(const Expr* e, double& v, bool& sawFloat) {
+        if (!e) return false;
+        if (e->kind == ExprKind::FloatLit) { sawFloat = true; v = std::strtod(e->text.c_str(), nullptr); return true; }
+        if (e->kind == ExprKind::IntLit) {
+            for (char c : e->text) if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+            v = std::strtod(e->text.c_str(), nullptr);
+            return true;
+        }
+        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldFloat(e->lhs.get(), v, sawFloat)) return false; v = -v; return true; }
+        if (e->kind == ExprKind::Binary && (e->text == "+" || e->text == "-" || e->text == "*" || e->text == "/")) {
+            double a, b;
+            if (!foldFloat(e->lhs.get(), a, sawFloat) || !foldFloat(e->rhs.get(), b, sawFloat)) return false;
+            v = e->text == "+" ? a + b : e->text == "-" ? a - b : e->text == "*" ? a * b : a / b;
+            return v == v && v - v == 0; // finite
+        }
+        return false;
+    }
+
     void checkCallSiteDefaults(std::vector<Param>& ps, const std::string& what) {
         for (auto& p : ps) {
             if (!p.hasDefault || !p.defaultValue) continue;
+            if (p.defaultValue->kind == ExprKind::Binary || p.defaultValue->kind == ExprKind::Unary) {
+                double fv = 0; bool sawFloat = false;
+                if (foldFloat(p.defaultValue.get(), fv, sawFloat) && sawFloat) {
+                    std::string txt;
+                    for (int prec = 15; prec <= 17; ++prec) { // the shortest text that round-trips the double
+                        char buf[64];
+                        std::snprintf(buf, sizeof buf, "%.*g", prec, std::fabs(fv));
+                        txt = buf;
+                        if (std::strtod(buf, nullptr) == std::fabs(fv)) break;
+                    }
+                    if (txt.find_first_of(".eE") == std::string::npos) txt += ".0";
+                    auto lit = std::make_unique<Expr>();
+                    lit->kind = ExprKind::FloatLit; lit->pos = p.defaultValue->pos; lit->text = txt;
+                    if (fv < 0) {
+                        auto neg = std::make_unique<Expr>();
+                        neg->kind = ExprKind::Unary; neg->text = "-"; neg->pos = lit->pos; neg->lhs = std::move(lit);
+                        p.defaultValue = std::move(neg);
+                    } else {
+                        p.defaultValue = std::move(lit);
+                    }
+                }
+            }
             const Expr* v = p.defaultValue.get();
             if (v->kind == ExprKind::Unary && v->text == "-" && v->lhs) v = v->lhs.get();
             const bool literal = v->kind == ExprKind::IntLit || v->kind == ExprKind::FloatLit ||
                                  v->kind == ExprKind::StringLit || v->kind == ExprKind::CharLit ||
-                                 v->kind == ExprKind::BoolLit || v->kind == ExprKind::NullLit;
+                                 v->kind == ExprKind::BoolLit || v->kind == ExprKind::NullLit ||
+                                 (v->kind == ExprKind::Member && v->lhs && v->lhs->kind == ExprKind::Name &&
+                                  enumNames_.count(v->lhs->text)); // an enum case is a constant on every target
             if (!literal) {
                 diags_.error(p.pos.line ? p.pos : p.defaultValue->pos,
-                             "the default of '" + p.name + "' in " + what + " must be a literal — it is filled in "
-                             "at each call, in the caller's scope");
+                             "the default of '" + p.name + "' in " + what + " must be a literal (or null) — "
+                             "C# and PHP accept only constants there, Python evaluates it once, and an extension fills it in at each call");
                 continue;
             }
             checkExpr(*p.defaultValue);
@@ -1287,10 +1455,12 @@ private:
         currentClass_ = typeName;
         const bool externType = externClassNames_.count(typeName) != 0;
         checkEqHashPair(typeName, members);
+        if (recordFields) checkCallSiteDefaults(*recordFields, "record '" + typeName + "'");
         for (auto& m : members) {
             pushGenerics(m.generics);
-            if ((externType || !m.bindings.empty()) &&
-                (m.kind == MemberKind::Method || m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator))
+            // P40 review r3 2(j): EVERY member's defaults (not only extern/bound ones) — they were never checked.
+            (void)externType;
+            if (m.kind == MemberKind::Method || m.kind == MemberKind::Constructor || m.kind == MemberKind::Operator)
                 checkCallSiteDefaults(m.params, "'" + typeName + "." + m.name + "'");
             if (m.kind == MemberKind::Operator) { // P37 C: conversion-operator declaration rules
                 if (m.name == "implicit")
@@ -1315,7 +1485,7 @@ private:
                 } else if (!isOperatorMemberName(m.name)) {
                     diags_.error(m.pos, "'" + m.name + "' is not an operator — an `operator fn` is one of the "
                                         "fixed names of SPEC §6.1 (plus, minus, times, div, rem, eq, hash, lt, le, "
-                                        "gt, ge, band, bor, bxor, shl, shr, neg, bnot, get, set, explicit)");
+                                        "gt, ge, band, bor, bxor, shl, shr, neg, bnot, get, set, explicit; `implicit` is recognized and refused)");
                 }
             }
             if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator || m.kind == MemberKind::Constructor) {
@@ -1350,8 +1520,10 @@ private:
                 bool isStatic = m.kind == MemberKind::Const;
                 for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
                 currentThis_ = isStatic ? tUnknown() : tNamed(typeName);
+                if (isStatic) { initDeclPos_ = m.pos; initDeclName_ = typeName + "." + m.name; }
                 pushScope();
                 checkExpr(*m.init);
+                initDeclPos_ = {0, 0, 0};
                 checkConvert(m.init, m.type, "initializer of field '" + m.name + "'");
                 popScope();
                 currentThis_ = tNamed(typeName);
@@ -1507,7 +1679,36 @@ private:
     // `f64`, and a mismatch is refused — before, the lambda was opaque (typed Unknown) and nothing converted:
     // C# CS0029, TS `[object Object]`. Every `return` of a block lambda (not of a lambda nested in it) counts.
     void convertLambdaResult(Expr& lam, const TypeRef& ret) {
-        if (isUnitT(ret) || !concreteType(ret)) return;
+        if (isUnitT(ret)) {
+            // P40 review r3 item 6: a lambda flowing into a `(…) => unit` slot produces no value. A block's
+            // `return 5` emitted C# CS8030 (an Action cannot return a value); an expression body that is not a
+            // call (`() => k + 1`) is not a statement, CS0201. A call body is fine — its result is discarded.
+            if (!lam.flag) {
+                const Expr* b = lam.lhs.get();
+                while (b && b->kind == ExprKind::Await) b = b->lhs.get();
+                if (b && b->kind != ExprKind::Call)
+                    diags_.error(lam.pos, "this lambda flows into a function type returning unit, so its body must "
+                                          "be a call or a block — a value expression would be computed and discarded");
+                return;
+            }
+            std::function<void(const std::vector<StmtPtr>&)> walkUnit = [&](const std::vector<StmtPtr>& body) {
+                for (const auto& s : body) {
+                    if (!s) continue;
+                    if (s->kind == StmtKind::Return && s->value)
+                        diags_.error(s->pos, "this lambda flows into a function type returning unit; 'return' takes no value");
+                    walkUnit(s->thenBody);
+                    walkUnit(s->elseBody);
+                    for (const auto& c : s->catches) walkUnit(c.body);
+                    walkUnit(s->finallyBody);
+                    for (const Expr* x : {s->value.get(), s->target.get()})
+                        if (x && x->kind == ExprKind::Match)
+                            for (const auto& arm : x->arms) walkUnit(arm.block);
+                }
+            };
+            walkUnit(lam.block);
+            return;
+        }
+        if (!concreteType(ret)) return;
         if (!lam.flag) {
             if (lam.lhs) checkConvert(lam.lhs, ret, "lambda result");
             return;
@@ -1529,6 +1730,32 @@ private:
             }
         };
         walk(lam.block);
+    }
+
+    // The value of a built-in compound assignment `t op= v` types exactly as the binary `t op v` would
+    // (P40 review r3): for most operators it converts into the slot, but a shift's COUNT is always an i32
+    // (the binary rule, G4) — converting it into an i64 slot emitted C# `h <<= 3L`, CS0019.
+    void checkCompoundValue(Stmt& s, const TypeRef& slot, const std::string& ctx) {
+        if (s.op == ">>>=") { // refused like the binary `>>>` (see checkBinary)
+            diags_.error(s.pos, "'>>>=' (unsigned shift) is not supported — the targets disagree on its result "
+                                "type; shift an unsigned value with '>>=' instead");
+            return;
+        }
+        if (s.op == "<<=" || s.op == ">>=") {
+            if (!slot.name.empty() && !(isSignedInt(slot.name) || isUnsignedInt(slot.name))) {
+                diags_.error(s.pos, "'" + s.op + "' expects an integer target, found " + showTy(slot));
+                return;
+            }
+            const TypeRef& vt = s.value->type;
+            if (vt.name != "i32" || vt.nullable) {
+                if ((isSignedInt(vt.name) || isUnsignedInt(vt.name)) && !vt.nullable)
+                    checkConvert(s.value, tNamed("i32"), "shift count");
+                else
+                    diags_.error(s.pos, "'" + s.op + "' expects an i32 shift count, found " + showTy(vt));
+            }
+            return;
+        }
+        checkConvert(s.value, slot, ctx);
     }
 
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
@@ -1769,6 +1996,7 @@ private:
                     diags_.error(s.namePos, "'" + s.name + "' was bound by an `is` test earlier in this block; "
                                             "pick another name (the emitted binding outlives the branch)");
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
+                if (Local* nl = lookupMut(s.name); nl && isConstExpr(s.value.get())) { nl->constInit = true; nl->declPos = s.namePos; }
                 break;
             }
             case StmtKind::Assign: {
@@ -1790,7 +2018,7 @@ private:
                         const bool userCompound = s.op != "=" && st->type.kind == TypeRef::Kind::Named &&
                                                   !st->type.name.empty() && knownType(st->type) &&
                                                   !isBuiltinType(st->type.name);
-                        if (!userCompound) checkConvert(s.value, st->type, "assignment to '" + nm + "'");
+                        if (!userCompound) checkCompoundValue(s, st->type, "assignment to '" + nm + "'");
                     } else if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
                         s.target->type = local->type; // stamp: the C7 compound rewrite keys on this
@@ -1802,6 +2030,7 @@ private:
                                                     "' may be null; narrow it first ('if " + nm + " != null') or assign a non-null value");
                         Local* ml = lookupMut(nm);
                         ml->assigns++;
+                        if (s.op != "=") ml->reads++; // a compound reads the target
                         ml->nonNull = false;
                         // P37 C7: a compound op on a USER type converts against the operator member's own
                         // signature (lenient, like binary resolution) — the rhs is the operator's operand,
@@ -1809,7 +2038,7 @@ private:
                         const bool userCompound = s.op != "=" && local->type.kind == TypeRef::Kind::Named &&
                                                   !local->type.name.empty() && knownType(local->type) &&
                                                   !isBuiltinType(local->type.name);
-                        if (!userCompound) checkConvert(s.value, local->type, "assignment to '" + nm + "'");
+                        if (!userCompound) checkCompoundValue(s, local->type, "assignment to '" + nm + "'");
                     }
                 } else if (s.target) {
                     const TypeRef tt = checkExpr(*s.target);
@@ -1845,7 +2074,7 @@ private:
                     // number to a BigInt, and `this.n += 1.5` on an i32 field reached the targets). On a user
                     // type the operator member's own signature governs instead (C7, as for locals).
                     if (s.op == "=" || (s.op != "??=" && !userTyped))
-                        checkConvert(s.value, tt, s.op == "=" ? "assignment" : "'" + s.op + "' assignment");
+                        checkCompoundValue(s, tt, s.op == "=" ? "assignment" : "'" + s.op + "' assignment");
                     if (s.op != "=" &&
                         (s.target->kind == ExprKind::Member || s.target->kind == ExprKind::Index) &&
                         (userTyped || userIndexer)) {
@@ -2567,6 +2796,11 @@ private:
     void checkMemberWritable(const MemberInfo& m, const std::string& owner, const std::string& shown,
                              bool viaThis, bool isStatic, SourcePos pos) {
         if (!m.isReadOnly) return;
+        if (m.isRecordField) {
+            diags_.error(pos, "cannot assign to record field '" + shown + "' — a record is immutable; build a "
+                              "changed copy with 'with { … }'");
+            return;
+        }
         if (m.kind == MemberKind::Const) {
             diags_.error(pos, "cannot assign to constant '" + shown + "'");
             return;
@@ -2585,6 +2819,7 @@ private:
     TypeRef checkName(Expr& e) {
         if (const Local* l = lookup(e.text)) {
             recordRef(e.pos, e.text, l->defId);
+            lookupMut(e.text)->reads++; // P40 review r3: CS0219 tracking
             if (isOptionType(l->type) && narrowedHere(*l)) { // an Option local proven present: the read
                 e.narrowedNonNull = true;                    // unwraps it (lowered like `o!`, SPEC §4.4)
                 e.castType = l->type;                        // the local's own (Option) type, for lowering
@@ -2602,10 +2837,17 @@ private:
         auto v = values_.find(e.text);
         if (v != values_.end()) {
             if (auto it = valueDefId_.find(e.text); it != valueDefId_.end()) recordRef(e.pos, e.text, it->second);
+            if (auto dp = valueDeclPos_.find(e.text); dp != valueDeclPos_.end()) checkInitOrder(dp->second, e.text, e.pos);
             return v->second;
         }
-        auto uc = unionCtors_.find(e.text); if (uc != unionCtors_.end() && uc->second.params.empty()) return uc->second.result;
-        if (const MemberInfo* m = enclosingStatic(e.text)) { e.staticOwner = currentClass_; return m->type; }
+        auto uc = unionCtors_.find(e.text);
+        if (uc != unionCtors_.end() && uc->second.params.empty()) { noteTypeUse(e.text, e.pos); return uc->second.result; }
+        if (const MemberInfo* m = enclosingStatic(e.text)) {
+            e.staticOwner = currentClass_;
+            if (auto dp = staticDeclPos_.find(currentClass_ + "." + e.text); dp != staticDeclPos_.end())
+                checkInitOrder(dp->second, currentClass_ + "." + e.text, e.pos);
+            return m->type;
+        }
         if (fns_.count(e.text) || typeNames_.count(e.text) || unionCtors_.count(e.text)) return tUnknown();
         diags_.error(e.pos, "undeclared name '" + e.text + "'");
         return tUnknown();
@@ -2726,6 +2968,20 @@ private:
             ExprPtr& side = isOptionType(lt) ? e.lhs : e.rhs;
             if (optionToNative(side, "'" + op + "' operand")) (isOptionType(lt) ? lt : rt) = side->type;
         }
+        // P40 review r3 (part 2): comparing a value that cannot be null with `null` is constant — C# warns
+        // CS0472 (`n == null` on an int), which a warnings-as-errors consumer cannot build.
+        if (op == "==" || op == "!=") {
+            // C#'s value types only (numbers, bool, char, enums): a reference type compared with null is legal
+            // everywhere (and `m == null` on a user type is the documented null test, M3).
+            auto neverNull = [&](const TypeRef& t) {
+                return !t.nullable && t.kind == TypeRef::Kind::Named &&
+                       ((isBuiltinType(t.name) && t.name != "unit" && t.name != "string") || enumNames_.count(t.name));
+            };
+            const bool lNull = e.lhs->kind == ExprKind::NullLit, rNull = e.rhs->kind == ExprKind::NullLit;
+            if ((rNull && neverNull(lt)) || (lNull && neverNull(rt)))
+                diags_.error(e.pos, "'" + op + " null' on a value of type '" + showTy(rNull ? lt : rt) +
+                                        "', which is never null here — the result is constant");
+        }
         Ty l = scalarTyOf(lt), r = scalarTyOf(rt);
         // P40 A4 (N1): only `==`, `!=` and `??` accept a maybe-null operand — every other operator would
         // diverge per target on null (C# lifts to null, JS coerces to 0/"null", Python/PHP throw or coerce).
@@ -2756,8 +3012,20 @@ private:
                 checkConvert(e.rhs, elem, "'??' fallback");
                 return elem;
             }
+            // P40 review r3 item 6: a left operand that cannot be null (a non-nullable type, or a nullable one
+            // narrowed by `!= null`) makes the fallback dead code — and C# rejects `x ?? 0` on an `int` (CS0019),
+            // TS on a literal (TS2869). Refused rather than emitted.
+            if (!lt.nullable &&
+                (lt.kind == TypeRef::Kind::Function ||
+                 (lt.kind == TypeRef::Kind::Named && !lt.name.empty() && lt.name != "null" && lt.name != "unit" &&
+                  !genericsInScope_.count(lt.name) && lt.name != "Option" &&
+                  (knownType(lt) || isBuiltinType(lt.name)))))
+                diags_.error(e.pos, "the left operand of '??' has type '" + showTy(lt) + "', which cannot be null "
+                                    "here, so the fallback is never used — remove the '??'");
             TypeRef res = lt; res.nullable = false; // native nullable: the left's type, made non-nullable
             if (res.name.empty() && res.kind == TypeRef::Kind::Named) res = rt;
+            // …unless the fallback may itself be null: `a ?? b ?? 0` chains through a nullable `b` (P40 review r3)
+            if (rt.nullable) res.nullable = true;
             return res;
         }
         // P37 C: a user-declared operator member resolves the op before any scalar rule (this is what
@@ -2784,6 +3052,13 @@ private:
         // Shifts are asymmetric (the C# rule, adopted for every target): the COUNT is a plain i32 — it
         // never reconciles with the shiftee (C# has no `long << long` / `uint << uint` operator), and
         // the result takes the SHIFTEE's type. (G4, wave 2.)
+        // P40 review r3 item 6: `>>>` reached the targets verbatim — a Python SyntaxError, a PHP parse error,
+        // and on TS `-8 >>> 0` is 4294967288 where C# gives -8. Refused (an unsigned type's `>>` is logical).
+        if (op == ">>>") {
+            diags_.error(e.pos, "'>>>' (unsigned shift) is not supported — the targets disagree on its result "
+                                "type; shift an unsigned value with '>>' instead");
+            return lt;
+        }
         if (op == "<<" || op == ">>") {
             if (!(isSignedInt(lt.name) || isUnsignedInt(lt.name))) {
                 diags_.error(e.pos, "'" + op + "' expects an integer left operand, found " + lt.name);
@@ -3023,12 +3298,15 @@ private:
 
     TypeRef checkMember(Expr& e) {
         // Enum case access: `EnumName.Case`.
-        if (e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text)) return tNamed(e.lhs->text);
+        if (e.lhs->kind == ExprKind::Name && enumNames_.count(e.lhs->text)) { noteTypeUse(e.lhs->text, e.pos); return tNamed(e.lhs->text); }
         // Static member access `Type.MEMBER` (e.g. `Math.PI` on the std.math extern class): the LHS is a
         // type name, so resolve the member on the type rather than evaluating the LHS as a value.
         if (e.lhs->kind == ExprKind::Name && types_.count(e.lhs->text)) {
+            noteTypeUse(e.lhs->text, e.pos);
             if (const MemberInfo* m = findMember(e.lhs->text, e.text)) {
                 if (auto it = memberDefId_.find(e.lhs->text + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
+                if (auto dp = staticDeclPos_.find(e.lhs->text + "." + e.text); dp != staticDeclPos_.end())
+                    checkInitOrder(dp->second, e.lhs->text + "." + e.text, e.pos);
                 TypeRef t = m->type; if (e.flag) t.nullable = true; return t;
             }
             diags_.error(e.pos, "type '" + e.lhs->text + "' has no member '" + e.text + "'");
@@ -3043,12 +3321,29 @@ private:
                 result = memberTypeOf(hit, hit.m->type, e.pos); // P40 slice 7: `Box<i32>.value` is i32, not T
                 if (auto it = memberDefId_.find(recv.name + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
             } else diags_.error(e.pos, "type '" + recv.name + "' has no member '" + e.text + "'");
+        } else if (recv.kind == TypeRef::Kind::Function) { // P40 review r3 item 6: was accepted, emitted verbatim
+            diags_.error(e.pos, "a function value of type '" + showTy(recv) + "' has no member '" + e.text + "'");
         }
         if (e.flag) result.nullable = true; // null-safe `?.`
         return result;
     }
 
     // `required` is the minimum arg count (params with no default); SIZE_MAX means "all params required".
+    // A call through a function value: the args convert into the function type's parameters and the call
+    // yields its return type. A maybe-null function value must be narrowed first; a value of a non-function
+    // type cannot be called. An Unknown callee (error recovery, an uninstantiated lambda param) stays lenient.
+    TypeRef callFunctionValue(const TypeRef& ft, const std::vector<TypeRef>& argTypes, Expr& e, const std::string& what) {
+        if (ft.kind == TypeRef::Kind::Function) {
+            if (ft.nullable)
+                diags_.error(e.pos, what + " has type '" + showTy(ft) + "', which may be null; narrow it first");
+            checkArgs(ft.args, argTypes, e.args, what, e.pos);
+            return ft.ret.empty() ? tUnknown() : ft.ret[0];
+        }
+        if (ft.kind == TypeRef::Kind::Named && !ft.name.empty() && (knownType(ft) || isBuiltinType(ft.name)))
+            diags_.error(e.pos, what + " has type '" + showTy(ft) + "', which is not a function and cannot be called");
+        return tUnknown();
+    }
+
     void checkArgs(const std::vector<TypeRef>& params, const std::vector<TypeRef>& argTypes,
                    std::vector<ExprPtr>& args, const std::string& what, SourcePos pos,
                    std::size_t required = static_cast<std::size_t>(-1)) {
@@ -3106,6 +3401,7 @@ private:
                     return tNamed(typeName);
                 }
                 if (types_.count(typeName)) {
+                    noteTypeUse(typeName, e.pos);
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
                         if (auto it = memberDefId_.find(typeName + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                         std::string what = "static method '" + typeName + "." + method + "'";
@@ -3164,6 +3460,12 @@ private:
             if (knownType(recv)) {
                 if (MemberHit hit = findMemberOn(recv, method); hit.m) {
                     const MemberInfo* m = hit.m;
+                    // P40 review r3 item 6: an operator member is reached through its operator, never by name —
+                    // C# emits `operator +`/`GetHashCode`/an indexer, so `m.plus(o)`/`m.hash()` is CS1061 there
+                    // (and an AttributeError on Python, where `hash` becomes `__hash__`).
+                    if (m->kind == MemberKind::Operator)
+                        diags_.error(e.pos, "'" + method + "' is an operator member of '" + hit.owner +
+                                                "'; use its operator instead of calling it by name");
                     if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                     // P40 slice 7: the class's type params come from the receiver (`Box<i32>.set(v: T)` takes
                     // an i32), then the method's own params are inferred from the args as for a free fn.
@@ -3203,7 +3505,25 @@ private:
                                         "' — is an import missing (e.g. \"std.strings\")? (PRD §3.B)");
             return tUnknown();
         }
-        if (e.lhs->kind != ExprKind::Name) { checkExpr(*e.lhs); return tUnknown(); }
+        // P40 review r3 2(a): any other callee is a function VALUE (`adder(1)(4)`, `fs[0](4)`, an IIFE) — its
+        // arguments check against the function type and the call yields its return type, like a named fn.
+        if (e.lhs->kind == ExprKind::Lambda) { // an immediately-invoked lambda: its type is spelled from its parts
+            checkExpr(*e.lhs);
+            const Expr& lam = *e.lhs;
+            bool typed = !lam.flag && lam.lhs && !lam.lhs->type.absent() && !lam.lhs->type.name.empty();
+            for (const auto& p : lam.params) typed = typed && !p.type.absent();
+            if (!typed) {
+                diags_.error(e.pos, "an immediately-invoked lambda needs typed parameters and an expression body "
+                                    "(C# spells its delegate type); bind it to a typed local first");
+                return tUnknown();
+            }
+            TypeRef ft; ft.kind = TypeRef::Kind::Function;
+            for (const auto& p : lam.params) ft.args.push_back(p.type);
+            ft.ret.push_back(lam.lhs->type);
+            e.lhs->type = ft;
+            return callFunctionValue(ft, argTypes, e, "this lambda");
+        }
+        if (e.lhs->kind != ExprKind::Name) return callFunctionValue(checkExpr(*e.lhs), argTypes, e, "this call");
 
         const std::string& name = e.lhs->text;
         // Call-syntax primitive cast `i32(x)` / `f64(n)`: the numeric scalars are extern-class prelude types
@@ -3243,11 +3563,13 @@ private:
                                         "' may be null; supply a fallback with '??' or assert with '!'");
             if (!isAwaitable(argTypes[0])) requirePrintable(argTypes[0], e.pos, false); // P40 A3 + D1
         }
-        if (const Local* l = lookup(name)) { // calling a function-valued local (lambda/delegate); lenient on args
+        if (const Local* l = lookup(name)) { // calling a function-valued local (lambda/delegate)
             recordRef(e.lhs->pos, name, l->defId);
-            return l->type.kind == TypeRef::Kind::Function && !l->type.ret.empty() ? l->type.ret[0] : tUnknown();
+            e.lhs->type = l->type;
+            return callFunctionValue(l->type, argTypes, e, "'" + name + "'");
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
+            noteTypeUse(name, e.pos);
             if (auto it = typeDefId_.find(name); it != typeDefId_.end()) recordRef(e.lhs->pos, name, it->second);
             // P40 slice 7: a generic type's construction binds its type params — from explicit args
             // (`Box<i32>(7)`), else inferred from the ctor args (`Box(7)` is Box<i32>, and the args are
@@ -3284,6 +3606,7 @@ private:
             return r;
         }
         if (auto uc = unionCtors_.find(name); uc != unionCtors_.end()) {
+            noteTypeUse(name, e.pos);
             checkArgs(uc->second.params, argTypes, e.args, "'" + name + "'", e.pos);
             return inferResult(uc->second.generics, uc->second.params, argTypes, uc->second.result); // Some(5) -> Option<i32>
         }
@@ -3337,7 +3660,8 @@ private:
             checkArgs(ps, argTypes, e.args, "'" + name + "'", e.pos, chosen->required);
             checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             checkGenericBounds(chosen->boundSpecs, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
-            e.overloadName = mangleFn(name, chosen->params, f->second.size() > 1); // == name unless overloaded
+            e.overloadName = chosen->mangled.empty() ? name : chosen->mangled; // the declaring module's name for it
+            e.linkName = chosen->linkName;
             TypeRef r = gen.empty() ? chosen->result : substGeneric(chosen->result, gen, binds);
             return chosen->isAsync ? awaitable(r) : r;
         }

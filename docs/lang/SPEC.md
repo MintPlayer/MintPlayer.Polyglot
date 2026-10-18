@@ -502,6 +502,33 @@ differently:
   a method, another receiver, a subclass or a lambda (C# `readonly`, CS0191). Inside a class, a static is
   named by its bare name for a write exactly as for a read: a local of that name first, then the enclosing
   class's static (`Counter = Counter + 1` is `K.Counter = K.Counter + 1`), compound operators included.
+  A **record field** is never assignable (*cannot assign to record field 'P.x'*; build a copy with `with`).
+- **`this` before `init` completes** (P40 review r3) — until every initializer-less field is assigned, `init`
+  may only assign fields: no read of an unassigned field, no method call or computed property on `this`, no
+  lambda capturing `this`, no passing `this` (Swift's two-phase rule). An instance field **initializer** may
+  not use `this` at all (initializers run before the constructor on C#/TS and inside it on Python/PHP). The
+  definite-assignment walk follows control flow exactly: a `while true` left by `break`, a do-while body and a
+  `finally` that assigns before an early `return` all count.
+- **Initialization order** (P40 review r3) — a `static` field or module `let`/`const` initializer may not
+  directly read a static or module value declared **later in the same file**, nor use (construct, read a static
+  of, call a static of) a class, record, enum or union declared later: TS, Python and PHP run initializers in
+  declaration order (C# alone initializes statics lazily). Reads inside a lambda are deferred and exempt; an
+  indirect read through a function call is not detected — keep initializers' callees free of later statics.
+- **Member hiding** — redeclaring an inherited instance member without `override` is refused (C# would hide it
+  non-virtually, TS/Python/PHP override it); an `open` method takes `override`, anything else is renamed.
+- **Default parameter values** are constants: a literal (optionally negated), `null`, an enum case, or a float
+  constant expression over `+ - * /`, which is folded to one literal (`dt: f64 = 1.0 / 60.0`). A call or any
+  other expression is refused — C# and PHP accept only constants there, and Python evaluates a default once.
+- **Warnings-as-errors shapes** — a constant `if`/`while` condition (`if true`, `while 1 == 1`; `while true`
+  itself is the infinite loop), a self-assignment `x = x`, `== null` on a non-nullable number, bool, char or
+  enum value, and a local set to a constant and never read are refused (C# CS0162 / CS1717 / CS0472 / CS0219). Prefix a deliberately
+  unused local with `_`.
+- **Function values and operators** — any callee expression may be called (`adder(1)(4)`, `fs[0](4)`, an
+  immediately-invoked lambda with typed parameters and an expression body); a function value has no members;
+  a lambda flowing into a `(…) => unit` slot must not produce a value (a block's `return v`, or an expression
+  body that is not a call). An `operator fn` is reached only through its operator, never called by name.
+  `??` needs a left operand that can be null (a non-nullable or narrowed one is refused — the fallback is dead
+  code, and C#/TS reject it). `>>>` and `>>>=` are refused: shift an unsigned value with `>>`.
 
 **Self-comparison is refused (B11).** Comparing a side-effect-free path with itself — `x == x`, `a >= a`,
 `E.A == E.A` — is constant except for NaN (C# CS1718). The NaN test is `Math.isNaN(x)` (std.math, `f64`;

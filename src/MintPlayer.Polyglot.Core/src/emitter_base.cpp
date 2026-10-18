@@ -150,6 +150,10 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.mangledCallee") return c.mangledCallee;
         if (path == "node.isFree")        return c.isFree ? "true" : "false";
         if (path == "node.args.count")    return std::to_string(c.args.size());
+        if (path == "node.linkCallee")    return c.linkCallee.empty() || c.linkCallee == c.callee ? std::string() : c.linkCallee; // P40 r3 2(e)
+        if (path == "node.linkOrMangledCallee") return !c.linkCallee.empty() && c.linkCallee != c.callee ? c.linkCallee : c.mangledCallee;
+        if (path == "node.hasCalleeExpr") return c.calleeExpr ? "true" : "";
+        if (path == "node.calleeKind")    return c.calleeExpr ? exprKindName(c.calleeExpr->kind) : "";
     }
     if (e_.kind == ir::ExprKind::Member) {
         const auto& m = static_cast<const ir::Member&>(e_);
@@ -370,6 +374,8 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
     }
     if (e_.kind == ir::ExprKind::MethodCall && path == "node.object")
         return static_cast<const ir::MethodCall&>(e_).object.get();
+    if (e_.kind == ir::ExprKind::Call && path == "node.calleeExpr")
+        return static_cast<const ir::Call&>(e_).calleeExpr.get();
     if (e_.kind == ir::ExprKind::MakeCase && path.rfind("node.fields.", 0) == 0) {
         // `node.fields.<i>` and `node.fields.<i>.value` both name the field's value expression.
         const auto& mc = static_cast<const ir::MakeCase&>(e_);
@@ -601,14 +607,21 @@ bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c) {
 bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
     if (side == "recv") return receiverNeedsParens(spec_, c);
     // "unary": a prefix operator's operand (see BackendSpec::wrapAtomRecvPrimary).
-    if (c.kind == ir::ExprKind::Int || c.kind == ir::ExprKind::Float || c.kind == ir::ExprKind::Unary ||
-        c.kind == ir::ExprKind::Cast)
-        return false;
+    // P40 review r3 2(b): a unary operand that is itself a unary — or a negative literal — is ALWAYS wrapped:
+    // `-(-x)` printed bare is `--x`, a pre-decrement (C# returned 2 for `-(-3)`; `--2.5` failed to compile).
+    if (c.kind == ir::ExprKind::Unary) return true;
+    if (c.kind == ir::ExprKind::Int) return !static_cast<const ir::IntLit&>(c).text.empty() &&
+                                            static_cast<const ir::IntLit&>(c).text[0] == '-';
+    if (c.kind == ir::ExprKind::Float) return !static_cast<const ir::FloatLit&>(c).text.empty() &&
+                                              static_cast<const ir::FloatLit&>(c).text[0] == '-';
+    if (c.kind == ir::ExprKind::Cast) return false;
     return receiverNeedsParens(spec_, c);
 }
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
     if (path == "node.type") return &e_.type;
+    if (path == "node.calleeType" && e_.kind == ir::ExprKind::Call && static_cast<const ir::Call&>(e_).calleeExpr)
+        return &static_cast<const ir::Call&>(e_).calleeExpr->type;
     if (path == "node.elem" && e_.kind == ir::ExprKind::ListLit)
         return &static_cast<const ir::ListLit&>(e_).elem;
     if (path.rfind("node.typeArgs.", 0) == 0) { // indexed into the node's kind-dispatched type-arg list
@@ -1256,6 +1269,9 @@ std::string FnDeclCtx::get(const std::string& path) const {
     }
     if (path == "decl.name")        return f_.name;
     if (path == "decl.mangledName") return f_.mangledName;
+    if (path == "decl.linkName") return f_.linkName.empty() || f_.linkName == f_.name ? std::string() : f_.linkName; // P40 r3 2(e)
+    if (path == "decl.linkOrEmitName") // a one-scope target WITHOUT native overloading (PHP): unique across the closure
+        return !f_.linkName.empty() && f_.linkName != f_.name ? f_.linkName : (f_.mangledName.empty() ? f_.name : f_.mangledName);
     if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
     // A std/core/lib prelude function (originModule "<prelude>"), emitted into EVERY module. On a target
     // with one global function namespace (PHP), that redeclares it across `require`d files — the plugin
@@ -1817,7 +1833,7 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     out_.clear();
     indent_ = 0;
     externMap_.clear();
-    tmp_ = 0;
+    tmp_ = m.tempsUsed; // P40 review r3 2(c): continue lowering's temp numbering (one allocator)
     requires_.clear();
     slotHit_ = false; // P40 §0: set by the Program rule's preludeSlot marker
     slotOffset_ = 0;
@@ -2076,7 +2092,24 @@ static std::string stripAbsentNormalize(const BackendSpec& spec, const std::stri
         if (c == '(' || c == '[' || c == '{') ++depth;
         if (c == ')' || c == ']' || c == '}') { if (--depth < 0) return tmpl; }
     }
-    return depth == 0 ? body : tmpl;
+    if (depth != 0) return tmpl;
+    // P40 review r3: the wrapper's parentheses also grouped the body. A body that is not a primary expression
+    // (an `extern` template `(c ? $0.a : $0.b ?? null)`) keeps a pair — bare, `c ? x.a : x.b ?? 0` would bind
+    // the fallback to the else arm only.
+    auto isIdent = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '$' || ch == '\\'; };
+    depth = 0;
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        const char c = body[i];
+        if (c == '"' || c == '\'') { for (++i; i < body.size() && body[i] != c; ++i) if (body[i] == '\\') ++i; continue; }
+        if (c == '(' || c == '[' || c == '{') { ++depth; continue; }
+        if (c == ')' || c == ']' || c == '}') { --depth; continue; }
+        if (depth > 0 || isIdent(c) || c == '.') continue;
+        if (c == '-' && i + 1 < body.size() && body[i + 1] == '>') { ++i; continue; }
+        if (c == ':' && i + 1 < body.size() && body[i + 1] == ':') { ++i; continue; }
+        if (c == '?' && i + 1 < body.size() && body[i + 1] == '.') { ++i; continue; }
+        return "(" + body + ")";
+    }
+    return body;
 }
 
 std::string EmitterBase::substBoundTemplate(const std::string& tmplIn, const ir::Bound& b) {

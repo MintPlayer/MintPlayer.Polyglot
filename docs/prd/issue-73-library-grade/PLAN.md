@@ -1295,3 +1295,49 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     programs agree on all four targets — the full corpus run, plus the restored `compound_assign` re-run); the floor
     leg; the library gate. The full tier and the POSIX leg are
     for the orchestrator. No `#ifdef`/platform code changed.
+- **2026-10-18 — review round 3, language half (gating 2, 3, 5, 6 + part 2 "Language"): as built.**
+  - **2(a) callee values.** Lowering dropped any callee that was not a name (`adder(10)(4)` emitted `(4)`). `ir::Call`
+    gained `calleeExpr` (`node.hasCalleeExpr`/`node.calleeKind`/`node.calleeExpr`, side "recv"); sema types the call
+    through the function type (args checked, its return type — calling a function-valued local is no longer lenient)
+    and refuses calling a non-function. C# casts an immediately-invoked lambda to its delegate type (`node.calleeType`);
+    an IIFE needs typed params and an expression body.
+  - **2(b)** a unary operand that is a unary or a negative literal is always parenthesized (`-(-x)`, never `--x`).
+  - **2(c)** one temp allocator: `ir::Module::tempsUsed` seeds the emitter's `fresh` counter after lowering's.
+  - **2(d)** when a compound's value is impure, every receiver/index part but literals, `this` and type names is hoisted
+    first (C#/JS order; Python/PHP evaluate the right side first).
+  - **2(e) + part-2 mangling.** Overload sets are the DECLARING module's visible set (a library keeps `check` when an
+    unrelated module adds one). A name declared by two user modules gets a signature link name (`linkName`) that the
+    one-scope targets use — C# (`decl.linkName`/`node.linkCallee`, `$`→`_` via a new C# `mangle`) and PHP
+    (`decl.linkOrEmitName`/`node.linkOrMangledCallee`). A named import of an overloaded function names every
+    overload's exported name (it named the source name: TS2305, Python ImportError — found while testing).
+  - **2(f)** member hiding refused; **2(i)** record fields read-only; **2(j)** every function/method/ctor/record default
+    is checked (they never were) and must be a constant — a float constant expression folds to one literal (fruitcake's
+    `1.0 / 60.0`). With literal-only defaults the capability walk has nothing to see.
+  - **2(g)** `this` before init: flow.cpp's FieldInit refuses a read of an unassigned field and any other `this` use until
+    all are assigned; a field initializer may not use `this`. **Part 2 DA:** `while true`+`break`, do-while and a
+    `finally` that assigns before an early return are now exact (break/continue states, a quiet finally pre-pass).
+  - **2(h)** a static/module initializer may not directly read a later static/module value or use a later type
+    (TS ReferenceError, Python NameError); reads inside lambdas are exempt; indirect reads via calls are documented.
+  - **3 (A1)** `markCoalesced` marks bounds through a nested `??`'s right operand and both `?:` arms; a stripped wrapper
+    whose body is not primary keeps its parentheses (the extern-template nit). `a ?? b` is nullable when `b` is.
+  - **5** Core `checkForTargets` compiles once per target and merges diagnostics; `polyglot check` passes the
+    configured targets (a 9-line CLI edit) — the expect-fn programs now fail check exactly as build.
+  - **6** refused: `??` on a non-null left operand, `>>>`/`>>>=`, a value-producing lambda into `() => unit`, an
+    operator fn called by name, member access on a function value. Fixed: an i64 compound shift count stays i32
+    (`checkCompoundValue`); PHP keywords match case-insensitively (`identifiers.caseInsensitive`) and the reserved
+    class names (`self`, `parent`, `int`, …) joined the list.
+  - **Part 2 language:** refused CS0162 constant conditions, CS1717 `x = x`, CS0472 `== null` on a never-null value,
+    CS0219 unused constant locals (`_` prefix opts out); CS1718 now sees a bare static (`count == K.count`). Numeric:
+    `f32.parse` rounds on TS (`Math.fround`), Python (`_pg_f32`) and PHP (`pack(g)`), so `1e39` is an infinity;
+    Python parses through `_pg_int` (no 4300-digit limit); PHP u64 above PHP_INT_MAX throws instead of clamping;
+    float `/` and `%` follow IEEE on Python (`_pg_fdiv`/`_pg_fmod`) and PHP (`fdiv`). The "not an operator" message
+    explains `implicit` (recognized, refused) rather than listing it.
+  - **Tests:** conformance `callee_values`, `compound_order`, `coalesce_chain`, `numeric_edges`, `ctor_flow`,
+    `overload_modules/` (each with `.expected`); 35 unit checks (every refusal by message, emissions, checkForTargets).
+  - **Not done:** the CLI/MSBuild/gates/docs items are the other half. A `polyglot check --watch` still uses the
+    reference target. Two modules declaring the same signature stay refused (as before) rather than link-mangled per
+    module.
+  - **Verified:** MSBuild build; the unit exe (all pass); `-Tier fast`; the floor, library (tsc 6.0.3), nullable and
+    refusals legs; conformance with the culture leg (146 programs agree on all four targets). Every reviewer probe
+    under `pg281_hC` is now either refused by name or compiles with zero C# warnings. The full tier and the POSIX
+    leg are for the orchestrator. No `#ifdef`/platform code changed.

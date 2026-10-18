@@ -59,6 +59,9 @@
       "pgU16": "_PG_ASTRAL = __import__('re').compile('[\\U00010000-\\U0010FFFF]')\n_PG_SURR = __import__('re').compile('[\\ud800-\\udfff]')\n_PG_U16_CACHE = {}\n_PG_U16_LAST = [None, None]\ndef _pg_u16_pair(m):\n    c = ord(m.group(0)) - 0x10000\n    return chr(0xD800 + (c >> 10)) + chr(0xDC00 + (c & 0x3FF))\ndef _pg_u16v(s):\n    # the UTF-16 view of a non-ASCII str: each astral code point expanded to its surrogate pair. A short\n    # string is just recomputed; a long one is cached (the last one, plus a small LRU), so indexing a long\n    # string in a loop is O(1) per call even when short strings are indexed in between.\n    last = _PG_U16_LAST\n    if last[0] is s:\n        return last[1]\n    if len(s) < 256:\n        return _PG_ASTRAL.sub(_pg_u16_pair, s)\n    cache = _PG_U16_CACHE\n    e = cache.pop(id(s), None)\n    if e is not None and e[0] is s:\n        v = e[1]\n    else:\n        v = _PG_ASTRAL.sub(_pg_u16_pair, s)\n        if len(cache) >= 8:\n            cache.pop(next(iter(cache)))\n    cache[id(s)] = (s, v)\n    last[0] = s\n    last[1] = v\n    return v\ndef _pg_len16(s):\n    return len(s) if s.isascii() else len(_pg_u16v(s))\ndef _pg_u16_char(s, i):\n    return s[i] if s.isascii() else _pg_u16v(s)[i]\ndef _pg_u16_cp(s, i):\n    if s.isascii():\n        return ord(s[i])\n    v = _pg_u16v(s)\n    c = ord(v[i])\n    if 0xD800 <= c <= 0xDBFF and i + 1 < len(v):\n        d = ord(v[i + 1])\n        if 0xDC00 <= d <= 0xDFFF:\n            return 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00)\n    return c\ndef _pg_u16_sub(s, a, b):\n    if s.isascii():\n        return s[a:b]\n    return _pg_u16_fix(_pg_u16v(s)[a:b])\ndef _pg_u16_find(s, n, f):\n    if s.isascii():\n        return s.find(n, f) if n.isascii() else -1\n    return _pg_u16v(s).find(n if n.isascii() else _pg_u16v(n), f)\ndef _pg_cmp16(a, b):\n    if not (a.isascii() and b.isascii()):\n        a = a.encode('utf-16-be', 'surrogatepass')\n        b = b.encode('utf-16-be', 'surrogatepass')\n    return -1 if a < b else (1 if a > b else 0)\ndef _pg_u16_fix(r):\n    # re-pair the surrogate halves of a UTF-16 view slice into the str's astral code points\n    return r.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'surrogatepass') if _PG_SURR.search(r) else r\ndef _pg_u16_lone(*xs):\n    # a str holding a surrogate code point (a lone half a substring split off, or halves joined by +) only\n    # matches like C#/TS in the UTF-16 view; without one, the code-point answer is the UTF-16 answer\n    for x in xs:\n        if not x.isascii() and _PG_SURR.search(x):\n            return True\n    return False\ndef _pg_u16_has(s, n):\n    return _pg_u16v(s).find(_pg_u16v(n)) >= 0 if _pg_u16_lone(s, n) else n in s\ndef _pg_u16_starts(s, p):\n    return _pg_u16v(s).startswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.startswith(p)\ndef _pg_u16_ends(s, p):\n    return _pg_u16v(s).endswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.endswith(p)\ndef _pg_u16_replace(s, n, r):\n    if _pg_u16_lone(s, n, r):\n        return _pg_u16_fix(_pg_u16v(s).replace(_pg_u16v(n), _pg_u16v(r)))\n    return s.replace(n, r)\ndef _pg_u16_split(s, sep):\n    if _pg_u16_lone(s, sep):\n        return [_pg_u16_fix(p) for p in _pg_u16v(s).split(_pg_u16v(sep))]\n    return s.split(sep)\n",
       "pgOut16": "def _pg_out16(s):\n    # stdout: re-pair adjacent surrogate halves, and print a lone one as U+FFFD (as C# and Node do)\n    return s if s.isascii() else s.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'replace')\n",
       "asyncEntry": "import asyncio\n",
+      "fdiv": "def _pg_fdiv(a, b):\n    # IEEE division like C#/JS: x/0.0 is an infinity, 0.0/0.0 NaN (Python raises ZeroDivisionError)\n    try:\n        return a / b\n    except ZeroDivisionError:\n        if a != a or a == 0:\n            return float(\"nan\")\n        return float(\"inf\") if (a > 0) == (__import__('math').copysign(1.0, b) > 0) else float(\"-inf\")\ndef _pg_fmod(a, b):\n    # C# % on doubles: NaN for a zero divisor or an infinite dividend (math.fmod raises ValueError there)\n    if b == 0 or a != a or b != b or a in (float(\"inf\"), float(\"-inf\")):\n        return float(\"nan\")\n    return __import__('math').fmod(a, b)\n",
+      "pgInt": "def _pg_int(s):\n    # the validated integer text, without the leading zeros that trip Python's 4300-digit int() limit\n    d = s.lstrip(\"+-\").lstrip(\"0\") or \"0\"\n    return -int(d) if s[:1] == \"-\" else int(d)\n",
+      "pgF32": "def _pg_f32(x):\n    # round a double to the nearest f32 (an out-of-range value becomes an infinity, as C# float.Parse does)\n    import ctypes\n    return ctypes.c_float(x).value\n",
       "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
       "pgFail": "def _pg_fail(at):\n    raise TypeError(\"null-assert failed (\" + at + \")\")\n",
       "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if not isinstance(x, float):\n        return str(x)\n    if x != x:\n        return \"NaN\"\n    if x in (float(\"inf\"), float(\"-inf\")):\n        return \"Infinity\" if x > 0 else \"-Infinity\"\n    if x == 0:\n        return \"0\"\n    s = repr(x)\n    neg = s[0] == \"-\"\n    if neg:\n        s = s[1:]\n    m, _, e = s.partition(\"e\")\n    i, _, f = m.partition(\".\")\n    d = (i + f).lstrip(\"0\")\n    n = len(i) + (int(e) if e else 0) - (len(i) + len(f) - len(d))\n    d = d.rstrip(\"0\")\n    k = len(d)\n    if k <= n <= 21:\n        r = d + \"0\" * (n - k)\n    elif 0 < n <= 21:\n        r = d[:n] + \".\" + d[n:]\n    elif -6 < n <= 0:\n        r = \"0.\" + \"0\" * -n + d\n    else:\n        r = d[0] + (\".\" + d[1:] if k > 1 else \"\") + \"e\" + (\"+\" if n >= 1 else \"-\") + str(abs(n - 1))\n    return \"-\" + r if neg else r\n",
@@ -173,6 +176,10 @@
         "self",
         "_pg_idiv",
         "_pg_irem",
+        "_pg_fdiv",
+        "_pg_fmod",
+        "_pg_int",
+        "_pg_f32",
         "__c*",
         "__o*",
         "__e",
@@ -262,27 +269,37 @@
       ]
     },
     "Call": {
-      "tmpl": [
-        {
-          "fn": "mangleName",
-          "args": [
+      "case": {
+        "when": [
+          [
+            { "has": "node.hasCalleeExpr" },
+            { "tmpl": [ { "emitChild": "node.calleeExpr", "side": "recv" }, "(", { "map": "node.args", "sep": ", " }, ")" ] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
             {
-              "fn": "ident",
+              "fn": "mangleName",
               "args": [
                 {
-                  "get": "node.mangledCallee"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.mangledCallee"
+                    }
+                  ]
                 }
               ]
-            }
+            },
+            "(",
+            {
+              "map": "node.args",
+              "sep": ", "
+            },
+            ")"
           ]
-        },
-        "(",
-        {
-          "map": "node.args",
-          "sep": ", "
-        },
-        ")"
-      ]
+        }
+      }
     },
     "Member": {
       "case": {
@@ -1385,7 +1402,8 @@
                         },
                         " import ",
                         {
-                          "get": "item.names"
+                          "fn": "mangle",
+                          "args": [ { "get": "item.names" } ]
                         }
                       ]
                     }
@@ -3652,7 +3670,8 @@
             },
             {
               "tmpl": [
-                "__import__('math').fmod(",
+                { "fn": "require", "args": ["fdiv"] },
+                "_pg_fmod(",
                 {
                   "emit": "node.lhs"
                 },
@@ -3663,6 +3682,10 @@
                 ")"
               ]
             }
+          ],
+          [
+            { "and": [ { "eq": ["node.typeIsFloat", "true"] }, { "eq": ["node.op", "/"] } ] },
+            { "tmpl": [ { "fn": "require", "args": ["fdiv"] }, "_pg_fdiv(", { "emit": "node.lhs" }, ", ", { "emit": "node.rhs" }, ")" ] }
           ],
           [
             {
@@ -4010,15 +4033,15 @@
       "Array.count": "len($this)",
       "__pgText.rawLen": "len($0)",
       "__pgText.rawCode": "ord($0[$1])",
-      "i8.__pgParse": "int($0)",
-      "i16.__pgParse": "int($0)",
-      "i32.__pgParse": "int($0)",
-      "i64.__pgParse": "int($0)",
-      "u8.__pgParse": "int($0)",
-      "u16.__pgParse": "int($0)",
-      "u32.__pgParse": "int($0)",
-      "u64.__pgParse": "int($0)",
-      "f32.__pgParse": "float($0)",
+      "i8.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "i16.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "i32.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "i64.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u8.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u16.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u32.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u64.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "f32.__pgParse": { "template": "_pg_f32(float($0))", "requires": ["pgF32"] },
       "f64.__pgParse": "float($0)"
     }
   },

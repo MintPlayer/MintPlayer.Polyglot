@@ -173,10 +173,15 @@ struct Extern : Expr { // `extern("…")`: raw target code emitted verbatim (the
 struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrinsic
     std::string callee;        // source name — C# uses this (native overloading)
     std::string mangledCallee; // resolved overload's per-target name — TS uses this (== callee if unique)
+    std::string linkCallee;    // P40 review r3 2(e): the resolved overload's link name (C#); empty = callee
     bool isPrint = false;
     bool isFree = false;       // a top-level free function (C# qualifies as `Program.callee`); not a local value
     std::vector<ExprPtr> args;
     std::vector<Type> typeArgs; // P40 A4: explicit call-site type args `f<T>(…)` (empty = inferred); `node.typeArgs`
+    // P40 review r3 2(a): a callee that is not a name — `adder(1)(4)`, `fs[0](4)`, `(if c {f} else {g})(4)`,
+    // an immediately-invoked lambda. Non-null = the callee value expression (callee/mangledCallee are empty);
+    // rules read `node.hasCalleeExpr` / `node.calleeKind` and emit it as `node.calleeExpr` (side "recv").
+    ExprPtr calleeExpr;
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
 };
 struct MethodCall : Expr { // `object.method(args)` — or a static call `Type.method(args)` when staticType set
@@ -510,6 +515,7 @@ struct Function {
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
+    std::string linkName;    // P40 review r3 2(e): the name in a one-scope link (C#); == name unless another module declares it
     std::vector<GenericParam> generics;
     std::vector<Param> params;
     Type returnType;
@@ -685,6 +691,10 @@ struct Module {
     // P40 A2: non-empty = lowering met an expression it cannot lower. `compile()` reports each as an internal
     // compiler error and writes nothing; the emitted placeholder (`__polyglot_unlowered_expr__`) never ships.
     std::vector<LoweringFailure> loweringFailures;
+    // P40 review r3 2(c): ONE temp-name allocator. Lowering numbers its desugaring temps (`__c0`, `__opt1`, …)
+    // from 0 to tempsUsed-1; the emitter's `fresh` rule temps start at tempsUsed, so a lowering temp and a
+    // plugin temp can never share a name (Python's `??` walrus `__cN` once rebound a compound's `__cN`).
+    int tempsUsed = 0;
     std::vector<std::string> attrImports; // P37 D Tier 1: verbatim import/using lines (deduped) for used attribute bindings
     std::vector<Enum> enums;
     std::vector<Union> unions;

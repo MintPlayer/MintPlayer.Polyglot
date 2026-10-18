@@ -211,6 +211,14 @@ struct LibConfig {
 EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver = nullptr,
                    const LibConfig& lib = {}, const std::string& entryPath = {});
 
+// `polyglot check` (P40 review r3 item 5): the full compile pipeline — front end, every target's capability
+// gate (an `expect fn` with no `actual` for a target), lowering — once per target in `targets`, with the
+// diagnostics merged (each distinct one once, in first-seen order). So check refuses exactly what a build
+// for those targets refuses. `code` is left empty; `ok` is true only when every target compiles.
+EmitResult checkForTargets(const std::string& source, const std::vector<BackendHandle>& targets,
+                           ModuleResolver* resolver = nullptr, const LibConfig& lib = {},
+                           const std::string& entryPath = {});
+
 // P40 §0 / S15 — phase 2 of the shared prelude. A multi-root project build compiles every root first (each
 // reports EmitResult::preludeReach), then calls this ONCE with the union: `code` is the one shared prelude
 // file, pruned to exactly what some root reaches. `ok` with an EMPTY `code` means no root reaches any prelude

@@ -1,6 +1,7 @@
 #include "mintplayer/polyglot/flow.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iterator>
 #include <optional>
 #include <set>
@@ -31,12 +32,40 @@ bool containsYield(const std::vector<StmtPtr>& body) {
 // A side-effect-free access path (`x`, `this`, `a.b.c`) — the only operand shape a self-comparison is judged on.
 bool pathText(const Expr* e, std::string& out) {
     if (!e) return false;
-    if (e->kind == ExprKind::Name) { out = e->text; return true; }
+    if (e->kind == ExprKind::Name) { // a bare static resolves to its owner (`count` inside K is `K.count`)
+        out = e->staticOwner.empty() ? e->text : e->staticOwner + "." + e->text;
+        return true;
+    }
     if (e->kind == ExprKind::This) { out = "this"; return true; }
     if (e->kind == ExprKind::Member && !e->flag && e->lhs) {
         std::string base;
         if (!pathText(e->lhs.get(), base)) return false;
         out = base + "." + e->text;
+        return true;
+    }
+    return false;
+}
+
+// A condition C# folds to a compile-time constant (P40 review r3, part 2): bool literals, `!`, `&&`/`||` over
+// constants, and a comparison of two numeric literals. C# then reports the dead branch (CS0162) — a warning a
+// warnings-as-errors consumer cannot build — so a constant `if`/`while` condition is refused at the source.
+bool constBool(const Expr* e, bool& v) {
+    if (!e) return false;
+    if (e->kind == ExprKind::BoolLit) { v = e->boolVal; return true; }
+    if (e->kind == ExprKind::Unary && e->text == "!") { bool x; if (!constBool(e->lhs.get(), x)) return false; v = !x; return true; }
+    if (e->kind == ExprKind::Binary && (e->text == "&&" || e->text == "||")) {
+        bool a, b;
+        if (!constBool(e->lhs.get(), a) || !constBool(e->rhs.get(), b)) return false;
+        v = e->text == "&&" ? (a && b) : (a || b);
+        return true;
+    }
+    if (e->kind == ExprKind::Binary && e->lhs && e->rhs &&
+        (e->lhs->kind == ExprKind::IntLit || e->lhs->kind == ExprKind::FloatLit) &&
+        (e->rhs->kind == ExprKind::IntLit || e->rhs->kind == ExprKind::FloatLit)) {
+        const std::string& op = e->text;
+        if (op != "==" && op != "!=" && op != "<" && op != "<=" && op != ">" && op != ">=") return false;
+        const double a = std::strtod(e->lhs->text.c_str(), nullptr), b = std::strtod(e->rhs->text.c_str(), nullptr);
+        v = op == "==" ? a == b : op == "!=" ? a != b : op == "<" ? a < b : op == "<=" ? a <= b : op == ">" ? a > b : a >= b;
         return true;
     }
     return false;
@@ -115,6 +144,19 @@ private:
     bool stmt(const Stmt& s) {
         expr(s.target.get());
         expr(s.value.get());
+        if (s.kind == StmtKind::Assign && s.op == "=") { // `x = x` (C# CS1717): a no-op, almost always a typo
+            std::string l, r;
+            if (pathText(s.target.get(), l) && pathText(s.value.get(), r) && l == r)
+                d_.error(s.pos, "'" + l + " = " + r + "' assigns a value to itself — it has no effect");
+        }
+        bool cv = false;
+        if (s.kind == StmtKind::If && constBool(s.value.get(), cv))
+            d_.error(s.value->pos, std::string("this 'if' condition is always ") + (cv ? "true" : "false") +
+                                   " — remove the dead branch (C# reports it as unreachable code)");
+        if (s.kind == StmtKind::While && !s.isDoWhile && constBool(s.value.get(), cv) &&
+            !(s.value->kind == ExprKind::BoolLit && cv))
+            d_.error(s.value->pos, std::string("this 'while' condition is always ") + (cv ? "true" : "false") +
+                                   (cv ? " — write 'while true'" : " — the loop never runs; remove it"));
         switch (s.kind) {
             case StmtKind::Return:
             case StmtKind::Throw:
@@ -183,6 +225,30 @@ private:
 // returned or threw), which is the identity of the meet.
 using Assigned = std::optional<std::set<std::string>>;
 
+// Does `this` occur anywhere in the expression (lambdas and statement-bodied arms included)?
+bool mentionsThis(const Expr* e);
+bool mentionsThis(const std::vector<StmtPtr>& b) {
+    for (const auto& s : b) {
+        if (!s) continue;
+        if (mentionsThis(s->target.get()) || mentionsThis(s->value.get()) || mentionsThis(s->thenBody) ||
+            mentionsThis(s->elseBody) || mentionsThis(s->finallyBody))
+            return true;
+        for (const auto& c : s->catches) if (mentionsThis(c.guard.get()) || mentionsThis(c.body)) return true;
+    }
+    return false;
+}
+bool mentionsThis(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == ExprKind::This) return true;
+    if (mentionsThis(e->lhs.get()) || mentionsThis(e->rhs.get()) || mentionsThis(e->extra.get()) || mentionsThis(e->block))
+        return true;
+    for (const auto& a : e->args) if (mentionsThis(a.get())) return true;
+    for (const auto& f : e->fields) if (mentionsThis(f.value.get())) return true;
+    for (const auto& a : e->arms)
+        if (mentionsThis(a.guard.get()) || mentionsThis(a.body.get()) || mentionsThis(a.block)) return true;
+    return false;
+}
+
 Assigned meet(const Assigned& a, const Assigned& b) {
     if (!a) return b;
     if (!b) return a;
@@ -221,7 +287,59 @@ private:
         return nullptr;
     }
 
+    // P40 review r3 2(g): until every field is assigned, `init` may only ASSIGN fields — a read of an unassigned
+    // field printed null/undefined (or raised AttributeError on Python), and a method call, a lambda capturing
+    // `this` or passing `this` along can read one indirectly (Swift's two-phase rule).
+    bool allAssigned(const std::set<std::string>& in) const {
+        for (const Member* m : required_) if (!in.count(m->name)) return false;
+        return true;
+    }
+    bool isRequired(const std::string& n) const {
+        for (const Member* m : required_) if (m->name == n) return true;
+        return false;
+    }
+    bool isField(const std::string& n) const {
+        for (const auto& m : c_.members) if (m.kind == MemberKind::Field && m.name == n) return true;
+        return false;
+    }
+    void earlyThis(SourcePos at, const std::set<std::string>& in) {
+        std::string pending;
+        for (const Member* m : required_) if (!in.count(m->name)) { pending = m->name; break; }
+        if (!quiet_) d_.error(at, "`init` of class '" + c_.name + "' uses 'this' before field '" + pending + "' is assigned — "
+                     "until every field is assigned, init may only assign them (no reads, method calls, "
+                     "lambdas capturing 'this', or passing 'this')");
+    }
+    void use(const Expr* e, const std::set<std::string>& in) {
+        if (!e) return;
+        if (e->kind == ExprKind::Member && e->lhs && e->lhs->kind == ExprKind::This) {
+            if (isRequired(e->text)) {
+                if (!in.count(e->text))
+                    if (!quiet_) d_.error(e->pos, "`init` of class '" + c_.name + "' reads field '" + e->text +
+                                         "' before assigning it — the targets read null, undefined or nothing");
+            } else if (!isField(e->text) && !allAssigned(in)) {
+                earlyThis(e->pos, in);
+            }
+            return;
+        }
+        if (e->kind == ExprKind::This) { if (!allAssigned(in)) earlyThis(e->pos, in); return; }
+        if (e->kind == ExprKind::Lambda) { if (!allAssigned(in) && mentionsThis(e)) earlyThis(e->pos, in); return; }
+        use(e->lhs.get(), in); use(e->rhs.get(), in); use(e->extra.get(), in);
+        for (const auto& a : e->args) use(a.get(), in);
+        for (const auto& f : e->fields) use(f.value.get(), in);
+        for (const auto& a : e->arms) { use(a.guard.get(), in); use(a.body.get(), in); useBlock(a.block, in); }
+    }
+    void useBlock(const std::vector<StmtPtr>& b, const std::set<std::string>& in) {
+        for (const auto& s : b) {
+            if (!s) continue;
+            use(s->target.get(), in); use(s->value.get(), in);
+            useBlock(s->thenBody, in); useBlock(s->elseBody, in); useBlock(s->finallyBody, in);
+            for (const auto& c : s->catches) { use(c.guard.get(), in); useBlock(c.body, in); }
+        }
+    }
+
     Assigned stmt(const Stmt& s, const std::set<std::string>& in) {
+        if (s.kind == StmtKind::Assign && thisField(s)) use(s.value.get(), in); // the target is a write
+        else { use(s.target.get(), in); use(s.value.get(), in); }
         switch (s.kind) {
             case StmtKind::Assign: {
                 std::set<std::string> out = in;
@@ -229,15 +347,22 @@ private:
                 return out;
             }
             case StmtKind::Return: {
+                // P40 review r3: an enclosing `finally` runs before the return completes — what it assigns counts.
+                std::set<std::string> have = in;
+                for (const auto& f : finallyAssigned_) have.insert(f.begin(), f.end());
                 for (const Member* m : required_)
-                    if (!in.count(m->name))
+                    if (!have.count(m->name) && !quiet_)
                         d_.error(s.pos, "`init` of class '" + c_.name + "' returns before field '" + m->name +
                                             "' is assigned — assign it before every early `return`");
                 return std::nullopt;
             }
             case StmtKind::Throw:
-            case StmtKind::Break:
-            case StmtKind::Continue:
+                return std::nullopt;
+            case StmtKind::Break: // the state flows to the end of the innermost loop
+                if (!breaks_.empty()) breaks_.back() = breaks_.back().has_value() ? meet(breaks_.back(), Assigned(in)) : Assigned(in);
+                return std::nullopt;
+            case StmtKind::Continue: // …or back to its condition
+                if (!continues_.empty()) continues_.back() = continues_.back().has_value() ? meet(continues_.back(), Assigned(in)) : Assigned(in);
                 return std::nullopt;
             case StmtKind::If: {
                 Assigned t = list(s.thenBody, in);
@@ -245,15 +370,37 @@ private:
                 return meet(t, e);
             }
             case StmtKind::While:
-            case StmtKind::For:
-                list(s.thenBody, in); // a loop body may run zero times; walked only for its early returns
+            case StmtKind::For: {
+                // P40 review r3: a `while true` loop is left only through a `break` (the meet of their states);
+                // a do-while body runs at least once. Any other loop body may run zero times.
+                breaks_.emplace_back(std::nullopt);
+                continues_.emplace_back(std::nullopt);
+                Assigned bodyEnd = list(s.thenBody, in);
+                Assigned brk = breaks_.back(), cont = continues_.back();
+                breaks_.pop_back();
+                continues_.pop_back();
+                const bool infinite = s.kind == StmtKind::While && !s.isDoWhile && s.value &&
+                                      s.value->kind == ExprKind::BoolLit && s.value->boolVal;
+                if (infinite) return brk;
+                if (s.kind == StmtKind::While && s.isDoWhile) return meet(meet(bodyEnd, cont), brk);
                 return in;
+            }
             case StmtKind::Use:
                 return list(s.thenBody, in);
             case StmtKind::Try: {
+                std::set<std::string> fin; // what the finally definitely assigns on its own
+                if (s.hasFinally) {
+                    const bool q = quiet_;
+                    quiet_ = true;
+                    Assigned f = list(s.finallyBody, std::set<std::string>{});
+                    quiet_ = q;
+                    if (f) fin = *f;
+                }
+                finallyAssigned_.push_back(fin);
                 // A catch may enter from any point of the body, so it starts from the state before the try.
                 Assigned out = list(s.thenBody, in);
                 for (const auto& c : s.catches) out = meet(out, list(c.body, in));
+                finallyAssigned_.pop_back();
                 if (s.hasFinally) {
                     Assigned f = list(s.finallyBody, in);
                     if (!f) return std::nullopt;
@@ -272,10 +419,24 @@ private:
     DiagnosticBag& d_;
     const ClassDecl& c_;
     const std::vector<const Member*>& required_;
+    bool quiet_ = false;                                   // computing a finally's own assignments: no reports
+    std::vector<Assigned> breaks_, continues_;              // per enclosing loop: the meet of break/continue states
+    std::vector<std::set<std::string>> finallyAssigned_;    // per enclosing try: what its finally assigns
 };
 
 void checkFieldsDefinitelyAssigned(const ClassDecl& c, DiagnosticBag& d) {
     if (c.isExtern) return;
+    // P40 review r3 2(g): an instance field initializer runs before the constructor body on some targets and
+    // inside it on others (Python/PHP), so `this` there reads fields in a target-dependent state (`let b =
+    // this.a + 1` printed 0 on TS, 1 on PHP, and was C# CS0027). Refused.
+    for (const auto& m : c.members) {
+        if (m.kind != MemberKind::Field || !m.init) continue;
+        bool isStatic = false;
+        for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
+        if (!isStatic && mentionsThis(m.init.get()))
+            d.error(m.init->pos, "the initializer of field '" + m.name + "' uses 'this' — field initializers run "
+                                 "before or inside the constructor depending on the target; assign it in init instead");
+    }
     std::vector<const Member*> required;
     for (const auto& m : c.members)
         if (m.kind == MemberKind::Field && !m.init && m.bindings.empty()) required.push_back(&m);

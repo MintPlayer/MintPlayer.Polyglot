@@ -423,6 +423,7 @@ public:
             f.pos = fn.namePos.fileId != 0 ? fn.namePos : fn.pos; // P38: the function-entry anchor
             f.name = fn.name;
             f.mangledName = fn.mangledName.empty() ? fn.name : fn.mangledName;
+            f.linkName = fn.linkName.empty() ? fn.name : fn.linkName;
             f.actualTarget = fn.actualTarget;
             f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
@@ -482,6 +483,7 @@ public:
             for (auto& c : m.classes) c.baseRoot = rootOf(c);
         }
         m.loweringFailures = std::move(failures_); // P40 A2 backstop: compile() turns these into an ICE
+        m.tempsUsed = tmpCounter_; // P40 review r3 2(c): the emitter's `fresh` counter continues from here
         return m;
     }
 
@@ -962,8 +964,10 @@ private:
                 auto b = std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
                 // P40 review A1: a bound left operand of `??` — `??` folds every absent form, so the emitter
                 // may drop the template's absent-value normalization there (BackendSpec::absentNormalize).
-                if (e.text == "??" && b->lhs && b->lhs->kind == ir::ExprKind::Bound)
-                    static_cast<ir::Bound&>(*b->lhs).coalesced = true;
+                // P40 review r3 item 3: not only a DIRECT left operand — tsc's "always nullish" check (TS2871)
+                // also looks through a nested `??`'s right operand and both arms of a conditional, so every
+                // bound whose value flows into this `??` left operand along those paths is marked.
+                if (e.text == "??" && b->lhs) markCoalesced(*b->lhs);
                 // Comparing against a null literal is a null TEST, never structural equality — don't
                 // route it to the record equals() (TS/PHP `.equals(null)` would read fields off null).
                 const bool rhsIsNullLit = e.rhs->kind == ExprKind::NullLit;
@@ -1075,6 +1079,15 @@ private:
                             appendDefaults(*p->second, e.args.size(), mc->args);
                     return mc;
                 }
+                if (e.lhs && e.lhs->kind != ExprKind::Name) {
+                    // P40 review r3 2(a): any other callee is a function VALUE — `adder(1)(4)`, `fs[0](4)`,
+                    // `(if c {f} else {g})(4)`, an immediately-invoked lambda. It used to lower to an empty
+                    // callee name, so `adder(10)(4)` emitted `(4)` and returned the argument.
+                    auto call = std::make_unique<ir::Call>(e.pos, e.type, "", /*isPrint=*/false);
+                    call->calleeExpr = expr(*e.lhs);
+                    for (const auto& a : e.args) call->args.push_back(expr(*a));
+                    return call;
+                }
                 std::string callee = (e.lhs && e.lhs->kind == ExprKind::Name) ? e.lhs->text : "";
                 if (!callee.empty() && typeNames_.count(callee)) { // record/class construction
                     if (auto it = ctorBindings_.find(callee); it != ctorBindings_.end()) { // bound ctor (extern class)
@@ -1102,6 +1115,7 @@ private:
                 auto call = std::make_unique<ir::Call>(e.pos, e.type, callee, /*isPrint=*/false); // print is now std.io.print, a normal free fn
                 call->isFree = freeFns_.count(callee) > 0; // a top-level fn (vs a function-valued local)
                 call->mangledCallee = e.overloadName.empty() ? callee : e.overloadName; // TS overload target
+                call->linkCallee = e.linkName; // C#: the one-scope link name (P40 review r3 2(e))
                 call->typeArgs = e.typeArgs; // P40 A4: explicit `f<T>(…)` survives (C# CS0411 otherwise)
                 for (const auto& a : e.args) call->args.push_back(expr(*a));
                 return call;
@@ -1326,6 +1340,27 @@ private:
         }
     }
 
+    // P40 review r3 item 3: mark every bound whose value flows straight into a `??` left operand — the operand
+    // itself, a nested `??`'s right side (its left side was marked when that `??` was lowered) and both arms
+    // of a conditional. `??` folds every absent form, so their absent-normalization (TS `?? null`) may go.
+    static void markCoalesced(ir::Expr& x) {
+        switch (x.kind) {
+            case ir::ExprKind::Bound: static_cast<ir::Bound&>(x).coalesced = true; break;
+            case ir::ExprKind::Binary: {
+                auto& b = static_cast<ir::Binary&>(x);
+                if (b.op == "??" && b.rhs) markCoalesced(*b.rhs);
+                break;
+            }
+            case ir::ExprKind::Cond: {
+                auto& c = static_cast<ir::Cond&>(x);
+                if (c.then) markCoalesced(*c.then);
+                if (c.els) markCoalesced(*c.els);
+                break;
+            }
+            default: break;
+        }
+    }
+
     // P40: may this surface expression be lowered twice (the write and the re-read of a compound target)
     // without changing behaviour? Names, `this`, literals, field reads off such a base, and built-in
     // arithmetic over them. A call, a computed property (getter), a bound std member, a user operator or
@@ -1367,9 +1402,22 @@ private:
         if ((t.kind == ExprKind::Member || t.kind == ExprKind::Index) && t.lhs) parts.push_back(t.lhs.get());
         if (t.kind == ExprKind::Index)
             for (const auto& a : t.args) parts.push_back(a.get());
+        // P40 review r3 2(d): C# and JS evaluate the target's receiver and indices BEFORE the value; Python and
+        // PHP evaluate an assignment's right side first. So when the value may have side effects (it could
+        // rebind `G.cur` or bump an index variable), every part that could change is hoisted too — only
+        // literals, `this` and type names (a static's owner) are immune.
+        const bool valueImpure = s.value && !rereadable(*s.value);
+        auto immune = [&](const Expr& p) {
+            switch (p.kind) {
+                case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::CharLit: case ExprKind::StringLit:
+                case ExprKind::BoolLit: case ExprKind::NullLit: case ExprKind::This: return true;
+                case ExprKind::Name: return typeNames_.count(p.text) > 0 || enumCases_.count(p.text) > 0;
+                default: return false;
+            }
+        };
         std::vector<const Expr*> hoisted;
         for (const Expr* p : parts) {
-            if (rereadable(*p)) continue;
+            if (rereadable(*p) && !(valueImpure && !immune(*p))) continue;
             std::string name = "__c" + std::to_string(tmpCounter_++);
             pendingStmts_.push_back(std::make_unique<ir::Let>(p->pos, name, false, p->type, expr(*p)));
             evalOnce_[p] = name;
@@ -1576,7 +1624,7 @@ struct CsScopeLegalizer {
             case K::AsCast: renameExpr(*static_cast<ir::AsCast&>(e).operand, o, n); break;
             case K::Binary: { auto& b = static_cast<ir::Binary&>(e); renameExpr(*b.lhs, o, n); renameExpr(*b.rhs, o, n); break; }
             case K::Cond: { auto& c = static_cast<ir::Cond&>(e); renameExpr(*c.cond, o, n); renameExpr(*c.then, o, n); renameExpr(*c.els, o, n); break; }
-            case K::Call: { auto& c = static_cast<ir::Call&>(e); for (auto& a : c.args) renameExpr(*a, o, n); break; }
+            case K::Call: { auto& c = static_cast<ir::Call&>(e); if (c.calleeExpr) renameExpr(*c.calleeExpr, o, n); for (auto& a : c.args) renameExpr(*a, o, n); break; }
             case K::MethodCall: { auto& mc = static_cast<ir::MethodCall&>(e); if (mc.object) renameExpr(*mc.object, o, n); for (auto& a : mc.args) renameExpr(*a, o, n); break; }
             case K::Member: { auto& m = static_cast<ir::Member&>(e); if (m.object) renameExpr(*m.object, o, n); break; }
             case K::Index: { auto& i = static_cast<ir::Index&>(e); if (i.receiver) renameExpr(*i.receiver, o, n); for (auto& x : i.indices) renameExpr(*x, o, n); break; }

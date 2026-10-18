@@ -207,6 +207,9 @@ struct BackendSpec {
     // `name_`) / "" = emit verbatim (TS escapes nothing). `mangle` repairs emitted names whose characters
     // the target forbids (Python: the overload marker `$` -> `_`, applied at every def and call site).
     std::unordered_set<std::string> keywords;
+    // P40 review r3 item 6: the target matches keywords and builtin function names case-INSENSITIVELY (PHP:
+    // a class `Finally` is the keyword `finally`, a fn `Count` redeclares `count`). The lists stay lowercase.
+    bool identifiersCaseInsensitive = false;
     std::string escapeStrategy; // "prefix" | "suffix" | "" (none)
     std::string escapeWith;
     std::string mangleFrom, mangleTo; // single-char emitted-name replacement ("" = none)
@@ -227,8 +230,14 @@ struct BackendSpec {
 };
 
 // A `.pg` identifier spelled for the target: keyword collisions escape per the spec's declared strategy.
+inline std::string specIdentKey(const BackendSpec& s, const std::string& n) {
+    if (!s.identifiersCaseInsensitive) return n;
+    std::string k = n;
+    for (char& c : k) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return k;
+}
 inline std::string specIdent(const BackendSpec& s, const std::string& n) {
-    if (s.keywords.count(n) == 0) return n;
+    if (s.keywords.count(specIdentKey(s, n)) == 0) return n;
     if (s.escapeStrategy == "prefix") return s.escapeWith + n;
     if (s.escapeStrategy == "suffix") return n + s.escapeWith;
     return n;
@@ -238,7 +247,7 @@ inline std::string specIdent(const BackendSpec& s, const std::string& n) {
 // the disambiguating suffix; every other name passes through. Applied ONLY at function-declaration and
 // free-call position — never to params/fields/locals — so it is a no-op on targets with no `fnBuiltins`.
 inline std::string specIdentFn(const BackendSpec& s, const std::string& n) {
-    if (s.fnBuiltins.count(n) == 0) return n;
+    if (s.fnBuiltins.count(specIdentKey(s, n)) == 0) return n;
     return n + s.fnBuiltinSuffix;
 }
 

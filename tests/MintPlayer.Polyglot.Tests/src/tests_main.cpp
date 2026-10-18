@@ -1618,7 +1618,7 @@ int main() {
                   "P40 s8: TS replaceAll is split/join (no `$$` replacement patterns); trimAscii is exactly TAB..CR + space");
             EmitResult rphp = compileStd(rest, findTarget("php"));
             check(rphp.ok && has(rphp.code, "function __pg_chr8($c)") && has(rphp.code, "__pg_chr8($cp)") &&
-                      has(rphp.code, "strcmp($a, $b)") && !has(rphp.code, "<=>") && has(rphp.code, "__pg_u16_split($self, $separator)") &&
+                      has(rphp.code, "strcmp($a, $b)") && !has(rphp.code, "<=>") && has(rphp.code, "__pg_u16_split($self_, $separator)") &&
                       has(rphp.code, "explode($sep, $s)"),
                   "P40 s8: PHP fromCodePoint via the UTF-8 encoder helper (requires), compareOrdinal via strcmp (never <=>); "
                   "split is explode unless a lone surrogate needs the UTF-16 view (review B2)");
@@ -1672,8 +1672,102 @@ int main() {
                 EmitResult ok = compile("import { aiOk, check } from \"./ai\"\nfn check(s: string): bool => s == \"01\"\n"
                                         "fn main() { let a = check(5)\n  let b = check(\"01\") }\n",
                                         findTarget("typescript"), &res);
-                check(ok.ok && has(ok.code, "check$i32(5)") && has(ok.code, "check$string(\"01\")"),
-                      "A8: an imported overload competes with the module's own");
+                // P40 review r3: names mangle per DECLARING module — ai sees one `check`, so it keeps `check`.
+                check(ok.ok && has(ok.code, "check(5)") && !has(ok.code, "check$i32") && has(ok.code, "check$string(\"01\")"),
+                      "A8: an imported overload competes with the module's own (per-module mangling)");
+                // C# links every module into one class: a name declared by two modules takes its signature link
+                // name there, so neither joins the other's native overload set (r3 2(e): show<T> vs show(i32)).
+                EmitResult cs = compile(leak.substr(0, leak.find("fn main")) + "fn main() { let b = check(\"x\") }\n",
+                                        findTarget("csharp"), &res);
+                check(cs.ok && has(cs.code, "PolyglotProgram.check_string(\"x\")") && has(cs.code, "bool check_string("),
+                      "r3 2(e): C# spells a cross-module name with its signature link name");
+            }
+            // P40 review r3: every shape `build` used to accept and then miscompile, diverge on, or fail to
+            // compile on a target is refused at the source now (each named in its message).
+            {
+                auto refusesR3 = [&](const std::string& src, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget("csharp"));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r3: " + label);
+                };
+                refusesR3("fn f(x: i32): i32 => x ?? 0\n", "cannot be null here", "'??' on a non-nullable left operand");
+                refusesR3("fn f(t: i32?): i32 {\n  if t != null {\n    return t ?? 0\n  }\n  return 0\n}\n",
+                          "cannot be null here", "'??' on a narrowed left operand");
+                refusesR3("record P(x: i32)\nfn f(): i32 {\n  var p = P(1)\n  p.x = 5\n  return p.x\n}\n",
+                          "cannot assign to record field 'P.x'", "a record field write (2i)");
+                refusesR3("open class B {\n  var name: string = \"b\"\n}\nclass D : B {\n  var name: string = \"d\"\n}\n",
+                          "redeclares a member inherited from 'B'", "member hiding (2f)");
+                refusesR3("open class B {\n  open fn who(): string => \"b\"\n}\nclass D : B {\n  fn who(): string => \"d\"\n}\n",
+                          "mark it 'override'", "an open method redeclared without override (2f)");
+                refusesR3("class P {\n  var name: string\n  constructor() {\n    let n = this.name\n    this.name = n\n  }\n}\n",
+                          "reads field 'name' before assigning it", "a field read before init assigns it (2g)");
+                refusesR3("class P {\n  var a: i32\n  constructor() {\n    let f = () => this.a\n    this.a = 1\n  }\n}\n",
+                          "uses 'this' before field 'a' is assigned", "a lambda capturing this before init completes (2g)");
+                refusesR3("class P {\n  let a: i32 = 1\n  let b: i32 = this.a + 1\n}\n",
+                          "the initializer of field 'b' uses 'this'", "this in a field initializer (2g)");
+                refusesR3("class A {\n  static let X: i32 = B.Y + 1\n}\nclass B {\n  static let Y: i32 = 2\n}\n",
+                          "reads 'B.Y', which is declared later", "a static initializer reading a later static (2h)");
+                refusesR3("class C {\n  static let P: i32 = C.Q + 1\n  static let Q: i32 = 2\n}\n",
+                          "reads 'C.Q', which is declared later", "a static reading a later static of its class (2h)");
+                refusesR3("class G {\n  static let b: Box = Box()\n}\nclass Box {\n  let v: i32 = 1\n}\n",
+                          "reads 'Box', which is declared later", "a static initializer constructing a later class (2h)");
+                refusesR3("let M: i32 = K + 1\nlet K: i32 = 2\n", "reads 'K', which is declared later",
+                          "a module value reading a later one (2h)");
+                refusesR3("fn sep(): string => \"/\"\nfn j(a: string, b: string = sep()): string => a + b\n",
+                          "must be a literal", "a non-constant default parameter (2j)");
+                refusesR3("fn f(a: i32): i32 => a >>> 1\n", "unsigned shift", "'>>>' (item 6)");
+                refusesR3("fn f(a: i32): i32 {\n  var x = a\n  x >>>= 1\n  return x\n}\n", "unsigned shift", "'>>>=' (item 6)");
+                refusesR3("fn run(f: () => unit) { f() }\nfn g() { run(() => {\n  return 5\n}) }\n",
+                          "'return' takes no value", "a value-returning block lambda into () => unit (item 6)");
+                refusesR3("fn run(f: () => unit) { f() }\nfn g(k: i32) { run(() => k + 1) }\n",
+                          "must be a call or a block", "a value expression lambda into () => unit (item 6)");
+                refusesR3("record M(c: i32) {\n  operator fn plus(o: M): M => M(this.c + o.c)\n}\nfn f(): M => M(1).plus(M(2))\n",
+                          "'plus' is an operator member of 'M'", "calling an operator fn by name (item 6)");
+                refusesR3("fn u(g: (i32) => i32): i32 => g.whatever\n", "has no member 'whatever'",
+                          "member access on a function value (item 6)");
+                refusesR3("fn f(n: i32): i32 => n(3)\n", "is not a function", "calling a non-function value");
+                refusesR3("fn f(): i32 => (() => {\n  return 1\n})()\n", "immediately-invoked lambda",
+                          "an untyped immediately-invoked block lambda");
+                refusesR3("fn f(): i32 {\n  if true {\n    return 1\n  }\n  return 2\n}\n", "condition is always true",
+                          "a constant if condition (CS0162)");
+                refusesR3("fn f(): i32 {\n  while 1 == 1 {\n    return 5\n  }\n  return 0\n}\n", "condition is always true",
+                          "a constant while condition (CS0162)");
+                refusesR3("fn f(x: i32): i32 {\n  var y = x\n  y = y\n  return y\n}\n", "assigns a value to itself",
+                          "a self-assignment (CS1717)");
+                refusesR3("class K {\n  static var count: i32 = 0\n  fn same(): bool => count == K.count\n}\n",
+                          "compares a value with itself", "a bare static compared with itself (CS1718)");
+                refusesR3("fn f(n: i32): bool => n == null\n", "never null here", "'== null' on an i32 (CS0472)");
+                refusesR3("fn f(): i32 {\n  let unused = 5\n  return 1\n}\n", "is set to a constant but never read",
+                          "an unused constant local (CS0219)");
+                // A float constant default folds to one literal (C#/PHP accept only constants there).
+                EmitResult fold = compileStd("fn g(dt: f64 = 1.0 / 60.0): f64 => dt\n", findTarget("php"));
+                check(fold.ok && has(fold.code, "0.016666666666666666"), "r3 2(j): a float constant default folds to a literal");
+                // 2(b): a unary operand that is a unary is parenthesized (`--x` is a pre-decrement).
+                EmitResult neg = compileStd("fn f(x: i32): i32 => -(-x)\n", findTarget("csharp"));
+                check(neg.ok && has(neg.code, "-(-x)") && !has(neg.code, "--x"), "r3 2(b): -(-x) keeps its parentheses");
+                // 2(a): a non-name callee is emitted; C# casts an immediately-invoked lambda to its delegate type.
+                EmitResult cur = compileStd("fn adder(k: i32): (i32) => i32 => (n: i32) => n + k\n"
+                                            "fn f(): i32 => adder(10)(4)\nfn g(): i32 => ((n: i32) => n * 2)(4)\n",
+                                            findTarget("csharp"));
+                check(cur.ok && has(cur.code, "PolyglotProgram.adder(10)(4)") && has(cur.code, "Func<int, int>)((int n) =>"),
+                      "r3 2(a): a curried call and an IIFE keep their callee on C#");
+                EmitResult curPhp = compileStd("fn adder(k: i32): (i32) => i32 => (n: i32) => n + k\nfn f(): i32 => adder(10)(4)\n",
+                                               findTarget("php"));
+                check(curPhp.ok && has(curPhp.code, "adder(10)(4)") && !has(curPhp.code, "$(4)"), "r3 2(a): PHP keeps the callee");
+                // item 6: PHP keywords match case-insensitively — a class `Finally` is escaped.
+                EmitResult kw = compileStd("class Finally {\n  let x: i32 = 1\n}\nfn f(): i32 => Finally().x\n", findTarget("php"));
+                check(kw.ok && has(kw.code, "class Finally_") && has(kw.code, "new Finally_("), "r3 item 6: PHP escapes a class named Finally");
+                // item 6: an i64 compound shift keeps an int count on C#.
+                EmitResult sh = compileStd("fn f(): i64 {\n  var h: i64 = 1i64\n  h <<= 3\n  return h\n}\n", findTarget("csharp"));
+                check(sh.ok && has(sh.code, "h <<= 3;") && !has(sh.code, "3L"), "r3 item 6: an i64 compound shift count stays i32");
+                // item 5: `check` runs every configured target's gate (an expect fn without that target's actual).
+                const std::string ex = "expect fn sep(): string\nactual(csharp) fn sep(): string => \"/\"\n"
+                                       "fn main() { let s = sep() }\n";
+                EmitResult chk = checkForTargets(ex, {findTarget("csharp"), findTarget("python")});
+                bool namesPy = false;
+                for (const auto& d : chk.diagnostics) if (has(d.message, "'python'")) namesPy = true;
+                check(!chk.ok && namesPy, "r3 item 5: checkForTargets refuses an expect fn with no actual for a target");
                 // A true duplicate across modules names both declarations.
                 MapModuleResolver dup{{"./date", "fn check(s: string): bool => s == \"x\"\n"}};
                 EmitResult d = compile("import { check } from \"./date\"\nfn check(s: string): bool => s == \"01\"\nfn main() { }\n",
@@ -2711,7 +2805,7 @@ int main() {
         acceptsStd("fn main() { var d: List<i32> = [] }\n", "issue#27 Bug1: empty list WITH annotation is accepted");
         acceptsStd("fn main() { let e = [1, 2, 3] }\n",     "issue#27 Bug1: non-empty list infers without annotation");
         acceptsStd("fn main() { var d = List<i32>() }\n",   "issue#27 Bug1: List<i32>() constructor infers without annotation");
-        acceptsStd("fn main() { var x: i32? = null }\n",    "issue#27 Bug1: null WITH annotation is accepted");
+        acceptsStd("fn f(): i32? { var x: i32? = null\n  return x }\n", "issue#27 Bug1: null WITH annotation is accepted");
     }
 
     // Issue #27 Bug 1 (Slice 2, emission) — for a type-erased construction or a bare `null`, the emitter puts
@@ -2725,7 +2819,7 @@ int main() {
               "issue#27 Bug1: inferred List<i32>() local carries its type on the declaration (TS)");
         // A null local keeps its declared (parenthesized nullable) type on TS.
         EmitResult tn = compileStd("class Node {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n"
-                                   "fn main() { var x: Node? = null\n  x = Node() }\n", findTarget("typescript"));
+                                   "fn f(): Node? { var x: Node? = null\n  x = Node()\n  return x }\n", findTarget("typescript"));
         check(tn.ok && has(tn.code, "let x: (Node | null) = null;") && !has(tn.code, "let x = null;"),
               "issue#27 Bug1: null local keeps its declared type on TS");
         // A non-empty literal local is unchanged — its type is inferable from the initializer (no annotation added).
@@ -4548,7 +4642,7 @@ int main() {
         EmitResult py = compileStd(prog, findTarget("python"));
         check(py.ok && has(py.code, "ord("), "issue#34: Python codePointAt -> ord()");
         EmitResult php = compileStd(prog, findTarget("php"));
-        check(php.ok && has(php.code, "__pg_u16_cp($self, $index)"),
+        check(php.ok && has(php.code, "__pg_u16_cp($self_, $index)"),
               "issue#34/P40 s8: PHP codePointAt -> the UTF-16 helper (iconv, no mbstring)");
         EmitResult castChar = compileStd("fn main() {\n  var c = 'A'\n  print((i32)c)\n}\n", findTarget("csharp"));
         check(!castChar.ok, "issue#34: (i32) on a char is rejected");

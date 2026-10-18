@@ -1487,8 +1487,16 @@ int runCheck(const std::vector<std::string>& args) {
         std::cerr << "polyglot: no full-coverage reference target is loaded (no plugins found?)\n";
         return 69;
     }
-    EmitResult result = compile(source, findTarget(ref->name()), &resolver, lib,
-                                fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
+    // P40 review r3 item 5: with a config, check runs every configured target's gate (Core checkForTargets) —
+    // an `expect fn` without that target's `actual` refuses here exactly as in build. The reference target
+    // stays the frontend gate when no configured target is loaded.
+    std::vector<BackendHandle> gate;
+    if (pc.found)
+        for (const auto& t : pc.targets)
+            if (BackendHandle h = findTarget(t); h.ok()) gate.push_back(h);
+    if (gate.empty()) gate.push_back(findTarget(ref->name()));
+    EmitResult result = checkForTargets(source, gate, &resolver, lib,
+                                        fs::weakly_canonical(input).string()); // P38: canonical entry, fileId 1
 
     if (json) {
         std::cout << diagnosticsToJson(result.diagnostics, &result.sources) << "\n";

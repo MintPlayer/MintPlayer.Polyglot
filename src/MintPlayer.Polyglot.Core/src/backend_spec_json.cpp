@@ -167,6 +167,8 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     if (ids.kind == json::Value::Kind::Object) {
         for (const json::Value& k : ids["keywords"].items())
             if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
+        if (ids["caseInsensitive"].kind == json::Value::Kind::Bool)
+            r.spec.identifiersCaseInsensitive = ids["caseInsensitive"].asBool();
         const json::Value& esc = ids["escape"];
         if (esc.kind == json::Value::Kind::Object) {
             r.spec.escapeStrategy = esc["strategy"].asString();
@@ -295,6 +297,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
         };
         if (!spec.reservedNames.empty()) ids += ",\"reserved\":" + arr(spec.reservedNames);
         if (!spec.globalNames.empty()) ids += ",\"globals\":" + arr(spec.globalNames);
+        if (spec.identifiersCaseInsensitive) ids += ",\"caseInsensitive\":true";
         if (!spec.fnBuiltins.empty()) {
             std::vector<std::string> fbs(spec.fnBuiltins.begin(), spec.fnBuiltins.end());
             std::sort(fbs.begin(), fbs.end()); // deterministic serialization

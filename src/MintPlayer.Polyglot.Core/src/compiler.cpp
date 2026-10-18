@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <tuple>
 #include <unordered_set>
 
 #include "mintplayer/polyglot/ast.hpp"
@@ -1245,6 +1246,7 @@ void injectStdOverlays(CompilationUnit& unit, const Backend& backend) {
         FunctionDecl a;
         a.name = f.name;
         a.mangledName = f.mangledName;
+        a.linkName = f.linkName;
         a.pos = f.pos;
         a.namePos = f.namePos;
         a.generics = f.generics;
@@ -1320,7 +1322,8 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
                                                   const std::map<std::string, std::string>& baseByCanon,
                                                   bool linksWithoutImports, bool crossDir,
                                                   const std::function<std::string(const std::string&)>& outDirOf,
-                                                  const std::map<std::string, std::string>& allNamesByCanon) {
+                                                  const std::map<std::string, std::string>& allNamesByCanon,
+                                                  const std::map<std::string, std::map<std::string, std::vector<std::string>>>& fnNamesByCanon) {
     std::vector<ir::ModuleImport> out;
     if (linksWithoutImports) return out; // modules link by compilation into one unit (plugin trait flag)
     auto it = graph.find(fileOrigin);
@@ -1336,8 +1339,16 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
         if (ri.isNamespace) { mi.isNamespace = true; mi.ns = ri.nsAlias; }
         else {
             std::string joined;
+            const auto overloads = fnNamesByCanon.find(ri.fromCanon);
             for (const auto& n : ri.names) {
                 if (!joined.empty()) joined += ", ";
+                const std::vector<std::string>* mangled = nullptr;
+                if (overloads != fnNamesByCanon.end())
+                    if (auto o = overloads->second.find(n.name); o != overloads->second.end()) mangled = &o->second;
+                if (mangled && n.alias.empty()) { // each overload under its exported name
+                    for (std::size_t k = 0; k < mangled->size(); ++k) { if (k) joined += ", "; joined += (*mangled)[k]; }
+                    continue;
+                }
                 joined += n.alias.empty() ? n.name : (n.name + " as " + n.alias);
             }
             mi.names = joined;
@@ -1538,6 +1549,12 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         // P40 B3: every name each user module emits (functions under their emitted, possibly mangled, name),
         // for the importers that import it bare. Read off the lowered module, so it is exactly what is emitted.
         std::map<std::string, std::string> allNamesByCanon;
+        // P40 review r3: a named import of an OVERLOADED function names every overload's emitted (mangled) name —
+        // `import { check } from "./ov"` used to name `check` while ov exported `check$i32` (TS2305, Python ImportError).
+        std::map<std::string, std::map<std::string, std::vector<std::string>>> fnNamesByCanon;
+        for (const auto& d : m.functions)
+            if (d.originModule != kPreludeOrigin && !d.originModule.empty() && !d.mangledName.empty() && d.mangledName != d.name)
+                fnNamesByCanon[d.originModule][d.name].push_back(d.mangledName);
         {
             std::map<std::string, std::set<std::string>> byOrigin;
             auto add = [&](const std::string& origin, const std::string& n) {
@@ -1584,7 +1601,8 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
             m.originBaseDir = lib.originBaseDir(importOrigin == kPreludeBasename ? std::string() : importOrigin);
         m.imports = buildImports(importGraph, importOrigin, baseByCanon,
                                  target.backend()->linksWithoutImports(),
-                                 target.backend()->crossDirImports(), lib.moduleOutputDir, allNamesByCanon);
+                                 target.backend()->crossDirImports(), lib.moduleOutputDir, allNamesByCanon,
+                                 fnNamesByCanon);
         if (!lib.originInfo) return target.backend()->emit(m);
         // P38: same as the single-file path, but each emitted FILE gets its own origin list — the caller
         // below stashes it on the matching ModuleFile.
@@ -1648,6 +1666,23 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
 EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver, const LibConfig& lib,
                    const std::string& entryPath) {
     return compileImpl(source, target, resolver, lib, entryPath, nullptr);
+}
+
+EmitResult checkForTargets(const std::string& source, const std::vector<BackendHandle>& targets,
+                           ModuleResolver* resolver, const LibConfig& lib, const std::string& entryPath) {
+    EmitResult merged;
+    merged.ok = true;
+    std::set<std::tuple<int, int, int, std::string>> seen;
+    bool first = true;
+    for (const BackendHandle& t : targets) {
+        EmitResult r = compileImpl(source, t, resolver, lib, entryPath, nullptr);
+        if (first) { merged.sources = r.sources; first = false; } // the file table is target-independent
+        if (!r.ok) merged.ok = false;
+        for (auto& d : r.diagnostics)
+            if (seen.insert({d.pos.fileId, d.pos.line, d.pos.col, d.message}).second)
+                merged.diagnostics.push_back(std::move(d));
+    }
+    return merged;
 }
 
 EmitResult compileSharedPrelude(const BackendHandle& target, const PreludeReach& unionReach, const LibConfig& lib) {

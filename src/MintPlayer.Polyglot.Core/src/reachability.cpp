@@ -239,6 +239,7 @@ private:
                 const auto& c = static_cast<const ir::Call&>(e);
                 mark(c.callee);
                 mark(c.mangledCallee);
+                if (c.calleeExpr) expr(*c.calleeExpr);
                 for (const auto& a : c.args) expr(*a);
                 for (const auto& t : c.typeArgs) type(t);
                 break;

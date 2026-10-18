@@ -298,6 +298,17 @@ that is a member of the file-local `__PgRt` class.
   name through `{"fn":"ident"}` — which your rules should do for **every** declared/referenced name.
 - `mangle`: single-character repair for emitted names the target's grammar forbids (Python maps the
   overload marker `$` → `_`); applied via `{"fn":"mangleName"}` / the decl-context `mangle`.
+- `caseInsensitive: true`: the target matches `keywords` and `functionBuiltins` regardless of case (PHP: a
+  class `Finally` is the keyword `finally`); list them lowercase.
+
+**Function names across modules (P40 review r3).** `decl.mangledName` / `node.mangledCallee` mangle only
+within the declaring module's visible overload set (a module-scoped target — TS, Python — uses them). A target
+that links every module's free functions into ONE scope reads the link name instead: `decl.linkName` /
+`node.linkCallee` (empty unless another user module declares the same name; then the signature-mangled name —
+C#, which keeps native overloading otherwise), or `decl.linkOrEmitName` / `node.linkOrMangledCallee` (the link
+name when set, else the mangled one — PHP, which has no overloading at all). A call whose callee is not a name
+(`adder(1)(4)`, an IIFE) sets `node.hasCalleeExpr`; emit `node.calleeExpr` with side `"recv"` (`node.calleeKind`
+names its kind, `{"type":"node.calleeType"}` renders its function type).
 - `reserved`: names your *generated* code claims (synthesized temps, scaffolding). A trailing `*`
   reserves a prefix family (`__w*`). A user identifier matching one is refused with a per-target
   diagnostic — this is what makes generated-name collisions loud instead of miscompiles.

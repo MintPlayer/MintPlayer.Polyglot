@@ -245,7 +245,7 @@ private:
             }
             case ExprKind::Call: {
                 const auto& c = static_cast<const Call&>(e);
-                repr = (c.isPrint ? "print" : c.callee) + "(";
+                repr = (c.calleeExpr ? "(" + expr(*c.calleeExpr) + ")" : c.isPrint ? "print" : c.callee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) repr += ", "; repr += expr(*c.args[i]); }
                 repr += ")";
                 break;
