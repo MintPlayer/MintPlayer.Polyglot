@@ -313,7 +313,7 @@ try {
         $r = Pg $d @("build", "--check")
         $names = @(Get-ChildItem (Join-Path $d "gen") | ForEach-Object Name)
         if ($caseInsensitive) {
-            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*Foo\.ts -> foo\.ts' -and $r.Out -cmatch 'git mv -f "gen/Foo\.ts" "gen/foo\.ts"' -and ($names -join ',') -ceq 'Foo.ts') "P40 review A3: --check reports the case-only rename (exit 3) with the git mv remedy, and renames nothing"
+            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*Foo\.ts -> foo\.ts' -and $r.Out -cmatch 'git -C "[A-Za-z]:/[^"]*/rv-a3/gen" mv -f -- "Foo\.ts" "foo\.ts"' -and ($names -join ',') -ceq 'Foo.ts') "P40 review A3: --check reports the case-only rename (exit 3) with the git mv remedy, and renames nothing"
         } else {
             Check ($r.Rc -eq 3 -and $r.Out -match 'would create .*foo\.ts' -and $r.Out -match 'would delete .*Foo\.ts') "P40 review A3: --check (case-sensitive fs) reports create + delete (exit 3)"
         }
@@ -722,7 +722,7 @@ try {
                 "P40 review r3 A3a: --check reports both case-only renames (exit $($r.Rc); was 1)"
             $r = Pg $c @("build")
             $names = @(Get-ChildItem (Join-Path $c "gen") | ForEach-Object Name | Sort-Object)
-            Check ($r.Rc -eq 0 -and ($names -join ',') -ceq 'foo.ts,foo.ts.map' -and $r.Out -cmatch 'git mv -f') `
+            Check ($r.Rc -eq 0 -and ($names -join ',') -ceq 'foo.ts,foo.ts.map' -and $r.Out -cmatch 'git -C "[^"]*" mv -f --') `
                 "P40 review r3 A3a: build renames the twin AND its map, and names the git mv remedy (exit $($r.Rc), gen: $($names -join ','))"
             Check ((Pg $c @("build")).Rc -eq 0 -and (Pg $c @("build", "--check")).Rc -eq 0) "P40 review r3 A3a: ... and later builds and --check stay green"
             # Gating 4c: a non-ASCII case change (towlower folded ASCII only).
@@ -863,10 +863,10 @@ try {
             $r = Pg $d @("build", "--check")
             # (A directory's git remedy restages the index: `git mv -f gen/Foo gen/foo` exits 128 on Windows for a
             # case-only DIRECTORY rename, before or after the disk rename.)
-            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*gen[\\/]Foo -> foo' -and $r.Out -cmatch 'git rm -r -q --cached ".*gen/Foo" && git add ".*gen/foo"' -and (Snapshot $d) -ceq $before) `
+            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*gen[\\/]Foo -> foo' -and $r.Out -cmatch 'git -C "[A-Za-z]:/[^"]*/rv4-a3d/gen" rm -r -q --cached -- "Foo" && git -C "[A-Za-z]:/[^"]*/rv4-a3d/gen" add -- "foo"' -and (Snapshot $d) -ceq $before) `
                 "P40 review r4 A3d: --check reports the directory case rename with the git restage hint (exit $($r.Rc); was 0), touching nothing"
             $r = Pg $d @("build")
-            Check ($r.Rc -eq 0 -and (@(Get-ChildItem (Join-Path $d "gen") -Name) -join ',') -ceq 'foo' -and (Test-Path (Join-Path $d "gen/foo/a.ts")) -and $r.Out -cmatch 'git rm -r -q --cached') `
+            Check ($r.Rc -eq 0 -and (@(Get-ChildItem (Join-Path $d "gen") -Name) -join ',') -ceq 'foo' -and (Test-Path (Join-Path $d "gen/foo/a.ts")) -and $r.Out -cmatch 'rm -r -q --cached -- "Foo"') `
                 "P40 review r4 A3d: build renames gen/Foo to gen/foo and names the git remedy (exit $($r.Rc))"
             Check ((Pg $d @("build", "--check")).Rc -eq 0) "P40 review r4 A3d: ... after which --check is clean"
             # G3: the output template's own spelling changes (Gen/ -> gen/).
@@ -883,7 +883,7 @@ try {
             Set-Content -LiteralPath (Join-Path $x "Gen/notes.txt") -Value "mine"
             Set-Content -LiteralPath (Join-Path $x "pgconfig.json") -Value '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}'
             $r = Pg $x @("build")
-            Check ($r.Rc -eq 1 -and $r.Out -match 'not Polyglot output' -and $r.Out -match 'git rm -r -q --cached' -and (@(Get-ChildItem $x -Directory -Name | Where-Object { $_ -ieq 'gen' }) -join ',') -ceq 'Gen') `
+            Check ($r.Rc -eq 1 -and $r.Out -match 'not Polyglot output' -and $r.Out -match 'rm -r -q --cached -- "Gen"' -and (@(Get-ChildItem $x -Directory -Name | Where-Object { $_ -ieq 'gen' }) -join ',') -ceq 'Gen') `
                 "P40 review r4 A3d: a directory with a foreign file is not renamed; the build refuses with the hint (exit $($r.Rc))"
             # The git remedy, run verbatim, fixes the commit (a directory rename on a core.ignorecase checkout).
             if (Get-Command git -ErrorAction SilentlyContinue) {
@@ -894,11 +894,11 @@ try {
                 & git @gq -C $gd init -q 2>&1 | Out-Null; & git @gq -C $gd add -A 2>&1 | Out-Null; & git @gq -C $gd commit -q -m one 2>&1 | Out-Null
                 & git @gq -C $gd mv src/Models src/m_tmp 2>&1 | Out-Null; & git @gq -C $gd mv src/m_tmp src/models 2>&1 | Out-Null
                 $r = Pg $gd @("build")
-                $m = [regex]::Match($r.Out, 'git rm -r -q --cached "([^"]*)" && git add "([^"]*)"')
+                $m = [regex]::Match($r.Out, 'git -C "[^"]*" rm -r -q --cached -- "[^"]*" && git -C "[^"]*" add -- "[^"]*"')
                 $hint = $m.Value
                 Push-Location $gd
                 try {
-                    if ($m.Success) { & git @gq rm -r -q --cached $m.Groups[1].Value 2>&1 | Out-Null; & git @gq add $m.Groups[2].Value 2>&1 | Out-Null }
+                    if ($m.Success) { Invoke-Expression "& { $hint } 2>&1 | Out-Null" } # verbatim (review r7: it is cwd-independent)
                     & git @gq add -A 2>&1 | Out-Null; & git @gq commit -q -m two 2>&1 | Out-Null
                     $files = (& git @gq ls-files 2>&1 | Out-String)
                 } finally { Pop-Location }
@@ -913,7 +913,7 @@ try {
             Pg $o (@("build", "Fold.pg") + $bargs) | Out-Null
             Move-Item (Join-Path $o "Fold.pg") (Join-Path $o "x.tmp"); Move-Item (Join-Path $o "x.tmp") (Join-Path $o "fold.pg")
             $r = Pg $o (@("build", "fold.pg") + $bargs)
-            Check ($r.Rc -eq 0 -and $r.Out -match 'case-only rename' -and $r.Out -notmatch 'git mv') "P40 review r4: a build-owned obj/ output is case-renamed without a git mv hint"
+            Check ($r.Rc -eq 0 -and $r.Out -match 'case-only rename' -and $r.Out -notmatch 'mv -f') "P40 review r4: a build-owned obj/ output is case-renamed without a git mv hint"
         }
 
         # Part 2: with a record present the refusal names the real remedy, and --adopt never takes over — not with
@@ -1076,6 +1076,32 @@ try {
         $h = New-Proj (Join-Path $work "rv5-h1-same") '{"targets":["typescript"],"include":[{"pattern":"a.pg","output":"gen/%(Filename)"},{"pattern":"b.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = $fnB }
         Check ((Pg $h @("build")).Rc -eq 0) "review r5 (gating 2): one directory spelling routed from two rules is accepted"
 
+        # review r7 (Spark p2\mg2.sh): a multi-group build without --out puts each group's unrouted output next to
+        # ITS OWN input — it used to land next to the run's first input (g2's c.cs in g1/, a false conflict with
+        # g1/c.pg). Within one group the sink stays the group's first input's folder (one project, one C# prelude).
+        $mg = Join-Path $work "rv7-mg"
+        New-Proj $mg $null @{ "g1/pgconfig.json" = '{"targets":["csharp"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}'; "g1/a.pg" = $fnA
+                             "g2/pgconfig.json" = '{"targets":["csharp"]}'; "g2/c.pg" = $fnB } | Out-Null
+        $r = Pg $mg @("build", "g1/a.pg", "g2/c.pg")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $mg "g1/gen/a.cs")) -and (Test-Path (Join-Path $mg "g2/c.cs")) -and -not (Test-Path (Join-Path $mg "g1/c.cs"))) `
+            "review r7: build g1/a.pg g2/c.pg writes g2's unrouted c.cs next to g2/c.pg (exit $($r.Rc))"
+        $mg = Join-Path $work "rv7-mg-clash"
+        New-Proj $mg $null @{ "g1/pgconfig.json" = '{"targets":["csharp"]}'; "g1/a.pg" = $fnA; "g1/c.pg" = $fnA.Replace("alpha", "gamma")
+                             "g2/pgconfig.json" = '{"targets":["csharp"]}'; "g2/c.pg" = $fnB } | Out-Null
+        $r = Pg $mg @("build", "g1/a.pg", "g1/c.pg", "g2/c.pg")
+        Check ($r.Rc -eq 0 -and $r.Out -notmatch 'conflicting output' -and (Test-Path (Join-Path $mg "g1/c.cs")) -and (Test-Path (Join-Path $mg "g2/c.cs"))) `
+            "review r7: g1/c.pg and g2/c.pg in one multi-group build each emit beside their own source, no false conflict (exit $($r.Rc))"
+        # ... and --out still collects every group's unrouted output in the one folder.
+        $r = Pg (Join-Path $work "rv7-mg") @("build", "g1/a.pg", "g2/c.pg", "--out", "flat")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $work "rv7-mg/flat/c.cs"))) "review r7: with --out, the unrouted output goes to --out (exit $($r.Rc))"
+        $mg = Join-Path $work "rv7-mg-one"
+        $pr = "import { print } from `"std.io`"`nfn main() {`n  print(1)`n}"
+        New-Proj $mg '{"targets":["csharp"]}' @{ "a.pg" = $pr; "sub/b.pg" = $pr.Replace("main", "helper") } | Out-Null
+        $r = Pg $mg @("build", "a.pg", "sub/b.pg")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $mg "b.cs")) -and (Test-Path (Join-Path $mg "__polyglot_prelude.cs")) -and
+               -not (Test-Path (Join-Path $mg "sub/__polyglot_prelude.cs"))) `
+            "review r7: inputs of ONE group in two folders keep one sink and one shared C# prelude (exit $($r.Rc))"
+
         if ($caseInsensitive) {
             # review r6 (gating 1, Spark i1\a3h.sh H4): a route that climbs out of the config folder and re-enters it
             # under another case (repo/Proj, `../proj/gen/…`) is compared from its CLIMBED root, so `proj` meets the
@@ -1094,6 +1120,58 @@ try {
             Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $x "gen/a.ts")) -and (Test-Path (Join-Path $x "gen/b.ts")) -and (Pg $x @("build", "--check")).Rc -eq 0) `
                 "review r6 (gating 1): ../Proj/gen/ (the folder's own spelling) beside gen/ builds and checks clean (exit $($r.Rc))"
 
+            # review r7 (Spark i1\a3h2.log F): H4 with the input TYPED in another case from the parent — `build proj/a.pg`.
+            # The config folder used to be spelled from the typed path, so `proj` was never compared: it wrote Proj/gen
+            # and exited 0. The config root (and every route root) is now spelled as the disk spells it.
+            $h4cfg = '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"../proj/gen/%(Filename)"}]}'
+            $x = New-Proj (Join-Path $work "rv7-a3h-typed/Proj") $h4cfg @{ "a.pg" = $fnA }
+            $parent = Join-Path $work "rv7-a3h-typed"
+            $rc = Pg $parent @("build", "proj/a.pg", "--check")
+            $rb = Pg $parent @("build", "proj/a.pg")
+            $rB = Pg $parent @("build", "PROJ/a.pg")
+            Check ($rc.Rc -eq 1 -and $rb.Rc -eq 1 -and $rB.Rc -eq 1 -and $rb.Out -cmatch "the directory '[^']*rv7-a3h-typed[\\/]Proj' differs from 'proj'" -and
+                   -not (Test-Path (Join-Path $x "gen")) -and (@(Get-ChildItem $parent -Name) -join ',') -ceq 'Proj') `
+                "review r7: H4 with the input typed 'proj/a.pg' / 'PROJ/a.pg' from the parent is refused like H4 (check $($rc.Rc), build $($rb.Rc), $($rB.Rc); was 3, 0), nothing written"
+            # Accepted neighbours: a plain gen/ route and the folder's own spelling (../Proj/gen/), input typed in either case.
+            $x = New-Proj (Join-Path $work "rv7-typed-plain/Proj") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+            $r = Pg (Join-Path $work "rv7-typed-plain") @("build", "proj/a.pg")
+            Check ($r.Rc -eq 0 -and $r.Out -cmatch '-> [^\r\n]*rv7-typed-plain[\\/]Proj[\\/]gen[\\/]a\.ts' -and (Pg (Join-Path $work "rv7-typed-plain") @("build", "proj/a.pg", "--check")).Rc -eq 0) `
+                "review r7: gen/ routed from an input typed 'proj/a.pg' builds into the disk's Proj/gen and checks clean (exit $($r.Rc))"
+            $x = New-Proj (Join-Path $work "rv7-typed-own/Proj") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"../Proj/gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+            $r = Pg (Join-Path $work "rv7-typed-own") @("build", "proj/a.pg")
+            Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $x "gen/a.ts")) -and (Pg $x @("build", "--check")).Rc -eq 0) `
+                "review r7: ../Proj/gen/ (the folder's own spelling) from an input typed 'proj/a.pg' builds (exit $($r.Rc))"
+
+            # review r7 (Spark i1\a3h3.sh): the H4 refusal's git hint, run VERBATIM after renaming Proj -> proj, from the
+            # repo root and from an unrelated folder, restages exactly the renamed folder. It used to be cwd-relative —
+            # `git rm -r -q --cached "." && …`: from the root it unstaged every tracked file, from elsewhere it failed.
+            if (Get-Command git -ErrorAction SilentlyContinue) {
+                $gq = @("-c", "user.name=gate", "-c", "user.email=gate@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=", "-c", "core.autocrlf=false")
+                $elsewhere = Join-Path $work "rv7-elsewhere"
+                New-Item -ItemType Directory -Force $elsewhere | Out-Null
+                foreach ($from in @("root", "elsewhere")) {
+                    $repoDir = Join-Path $work "rv7-h4hint-$from"
+                    $x = New-Proj (Join-Path $repoDir "Proj") $h4cfg @{ "a.pg" = $fnA }
+                    New-Proj $repoDir $null @{ "README.md" = "readme"; "other/x.txt" = "x" } | Out-Null
+                    & git @gq -C $repoDir init -q 2>&1 | Out-Null; & git @gq -C $repoDir add -A 2>&1 | Out-Null; & git @gq -C $repoDir commit -q -m one 2>&1 | Out-Null
+                    $r = Pg $x @("build")
+                    $m = [regex]::Match($r.Out, 'git -C "[^"]*" rm -r -q --cached -- "[^"]*" && git -C "[^"]*" add -- "[^"]*"')
+                    Move-Item (Join-Path $repoDir "Proj") (Join-Path $repoDir "p_tmp"); Move-Item (Join-Path $repoDir "p_tmp") (Join-Path $repoDir "proj")
+                    $hrc = -1
+                    Push-Location $(if ($from -eq "root") { $repoDir } else { $elsewhere })
+                    try { if ($m.Success) { Invoke-Expression "& { $($m.Value) } 2>&1 | Out-Null"; $hrc = $LASTEXITCODE } } finally { Pop-Location }
+                    $status = @(& git @gq -C $repoDir status --porcelain 2>&1)
+                    [string[]]$ls = @(& git @gq -C $repoDir ls-files 2>&1 | ForEach-Object { "$_" })
+                    [Array]::Sort($ls, [StringComparer]::Ordinal)
+                    $index = $ls -join ','
+                    $outside = @($status | Where-Object { $_ -cnotmatch '^\S+\s+"?(Proj|proj)/' -or $_ -cmatch '-> "?(?!proj/)' })
+                    Check ($r.Rc -eq 1 -and $m.Success -and $hrc -eq 0 -and $outside.Count -eq 0 -and $status.Count -gt 0 -and
+                           $index -ceq 'README.md,other/x.txt,proj/a.pg,proj/pgconfig.json') `
+                        "review r7: the H4 git hint run verbatim from $from (exit $hrc) restages only Proj -> proj (status: $($status -join ' | '); index: $index)"
+                }
+            }
+
+
             # Gating 1 (Spark h1\a3x.sh, a3x2.sh): a route that LEAVES the config folder compares its directories too.
             $x = New-Proj (Join-Path $work "rv5-a3x/proj") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"../web/gen/%(RecursiveDir)%(Filename)"}]}' @{ "src/Foo/a.pg" = $fnA; "src/Foo/b.pg" = $fnB }
             Pg $x @("build") | Out-Null
@@ -1102,7 +1180,7 @@ try {
             $r = Pg $x @("build", "--check")
             Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*web[\\/]gen[\\/]Foo -> foo') "review r5 (gating 1): --check reports ../web/gen/Foo -> foo (exit $($r.Rc); was 0)"
             $r = Pg $x @("build")
-            Check ($r.Rc -eq 0 -and (@(Get-ChildItem $web -Name) -join ',') -ceq 'foo' -and $r.Out -cmatch 'git rm -r -q --cached') "review r5 (gating 1): build renames ../web/gen/Foo to foo with the git hint (exit $($r.Rc))"
+            Check ($r.Rc -eq 0 -and (@(Get-ChildItem $web -Name) -join ',') -ceq 'foo' -and $r.Out -cmatch 'git -C "[^"]*/web/gen" rm -r -q --cached -- "Foo"') "review r5 (gating 1): build renames ../web/gen/Foo to foo with the git hint (exit $($r.Rc))"
             Check ((Pg $x @("build", "--check")).Rc -eq 0) "review r5 (gating 1): ... after which --check is clean"
             $x = New-Proj (Join-Path $work "rv5-a3x2/proj") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"../web/Gen/%(Filename)","owned":true}]}' @{ "a.pg" = $fnA }
             Pg $x @("build") | Out-Null
@@ -1128,7 +1206,7 @@ try {
                 $rc = Pg $d @("build", "--check")
                 $rb = Pg $d @("build")
                 $hints = [regex]::Matches($rb.Out, 'run: git ').Count
-                Check ($rc.Rc -eq 3 -and ([regex]::Matches($rc.Out, 'would rename')).Count -eq 1 -and $rc.Out -cmatch 'would rename .*gen[\\/]Foo -> foo' -and $rb.Rc -eq 0 -and $hints -eq 1 -and $rb.Out -cmatch 'run: git rm -r -q --cached "gen/Foo" && git add "gen/foo"') `
+                Check ($rc.Rc -eq 3 -and ([regex]::Matches($rc.Out, 'would rename')).Count -eq 1 -and $rc.Out -cmatch 'would rename .*gen[\\/]Foo -> foo' -and $rb.Rc -eq 0 -and $hints -eq 1 -and $rb.Out -cmatch 'run: git -C "[^"]*/gen" rm -r -q --cached -- "Foo" && git -C "[^"]*/gen" add -- "foo"') `
                     "review r5 ($($case.n)): a two-level rename reports one directory under --check and prints one hint (check $($rc.Rc), $hints hint(s); was 2)"
             }
         } else { Check $true "review r5 gating 1 / two-level hints (skipped: case-sensitive filesystem)" }

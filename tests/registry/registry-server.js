@@ -9,6 +9,7 @@
 //                                             byte-equality the gate asserts)
 //   @mintplayer/polyglot-target-pyfixture2  — the packument LIES about the tarball's integrity
 //                                             (supply-chain tamper: the CLI must refuse)
+//   @mintplayer/polyglot-target-status<NNN>  — answers HTTP <NNN> (P40 review r7: 502/503 = a network miss)
 //
 // Prints "READY <port>" once listening. The harness owns this process's lifetime (it Stop-Processes
 // it in its finally); a stdin-EOF self-exit was tried but is WRONG in non-interactive shells (CI, and
@@ -94,6 +95,13 @@ const server = http.createServer((req, res) => {
       res.setHeader('content-type', 'application/octet-stream');
       return res.end(f.tgz);
     }
+  }
+  // P40 review r7: `@mintplayer/polyglot-target-status<NNN>` answers HTTP <NNN> — a proxy with no upstream (502,
+  // 504) or an unavailable registry (503), which the CLI treats as a network miss, unlike a 404.
+  const st = /^\/@mintplayer\/polyglot-target-status(\d{3})$/.exec(path);
+  if (st) {
+    res.statusCode = Number(st[1]);
+    return res.end('{"error":"status ' + st[1] + '"}');
   }
   res.statusCode = 404;
   res.end('{"error":"Not found"}');

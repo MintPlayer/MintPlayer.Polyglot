@@ -4920,6 +4920,28 @@ int main() {
             check(!again.ok && again.networkMisses.empty(), "P40 review r6: ... also when replayed from the memo");
         }
 
+        // P40 review r7: the status classification every real client shares — a 5xx (a proxy with no upstream, an
+        // unavailable registry) is a network miss; a 4xx stays the registry's answer.
+        {
+            std::string e;
+            check(cli::httpStatusOutcome(502, "u", e).kind == cli::HttpOutcome::Kind::Transport && has(e, "status 502") &&
+                      cli::httpStatusOutcome(503, "u", e).kind == cli::HttpOutcome::Kind::Transport &&
+                      cli::httpStatusOutcome(504, "u", e).kind == cli::HttpOutcome::Kind::Transport,
+                  "P40 review r7: a registry/proxy 502/503/504 is a network miss (Transport)");
+            check(cli::httpStatusOutcome(404, "u", e).kind == cli::HttpOutcome::Kind::Response &&
+                      cli::httpStatusOutcome(403, "u", e).kind == cli::HttpOutcome::Kind::Response &&
+                      cli::httpStatusOutcome(301, "u", e).kind == cli::HttpOutcome::Kind::Response,
+                  "P40 review r7: a 4xx (or any other non-200 answer) stays the registry's answer (Response)");
+            cli::PgConfig pc503 = pc;
+            pc503.dependencies = {{"pydemo503", "^1.0.0"}};
+            const cli::HttpGet answers503 = [&](const std::string& url, const std::vector<std::string>&, std::string&,
+                                                std::string& err) -> cli::HttpOutcome {
+                return cli::httpStatusOutcome(503, url, err);
+            };
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc503, answers503, false, nullptr);
+            check(!r.ok && r.networkMisses.size() == 1, "P40 review r7: a registry 503 is a network miss, as offline is");
+        }
+
         // G37 (wave 2): a lock pin OUTSIDE an edited range re-resolves (online), and REFUSES offline —
         // never silently keeps the stale plugin.
         {

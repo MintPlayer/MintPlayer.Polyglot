@@ -1111,6 +1111,13 @@ int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs,
     }
 
     const bool flagRouted = !o.target.empty() && o.outDirGiven; // D7: explicit --target+--out bypasses rules
+    // P40 review r7: where an output no include rule routes lands — the --out folder, or else THIS GROUP's input
+    // folder (its first input's, entryDir). It used to be the first input of the whole RUN for every group:
+    // `build g1/a.pg g2/c.pg` wrote g2's `c.cs` into g1/ (and a g1/c.pg then "conflicted" with it). The default
+    // sink is per group, not per input: a group is one project, and its multi-file C# build shares ONE prelude
+    // (`__polyglot_prelude.cs`, keyed by output folder); a sink per input folder would emit one prelude per folder,
+    // and compiled together their `PolyglotProgram` members collide (CS0111).
+    const fs::path defaultSink = o.outDirGiven ? o.outDir : entryDir;
     auto newSection = [&](const BackendHandle& h) -> SectionOut& {
         SectionOut& s = run.sections.emplace_back();
         s.configFound = pc.found;
@@ -1126,7 +1133,7 @@ int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs,
         if (!readFile(firstInput, source)) { std::cerr << "polyglot: cannot open '" << firstInput.string() << "'\n"; return 66; }
         FileModuleResolver resolver(root, entryDir);
         for (const auto& t : targets)
-            ok &= emitOne(run, newSection(t.first), source, firstInput, o.outDir, t.first, t.second.c_str(),
+            ok &= emitOne(run, newSection(t.first), source, firstInput, defaultSink, t.first, t.second.c_str(),
                           &resolver, lib, pc, flagRouted, o.optionFlags);
         return ok ? 0 : 1;
     }
@@ -1162,7 +1169,7 @@ int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs,
         for (const auto& e : ins) {
             if (importedCanons.count(e.canon)) continue; // imported by another input — emitted in its closure
             FileModuleResolver r(root, dirOf(e.path));
-            targetOk &= emitOne(run, sec, e.source, e.path, o.outDir, t.first, t.second.c_str(), &r, lib, pc,
+            targetOk &= emitOne(run, sec, e.source, e.path, defaultSink, t.first, t.second.c_str(), &r, lib, pc,
                                 flagRouted, o.optionFlags, &prelude);
         }
         if (targetOk) targetOk = writeSharedPrelude(run, sec, prelude, t.first, lib);
@@ -1428,7 +1435,8 @@ int runBuild(const std::vector<std::string>& args) {
     }
     const fs::path firstInput = inputs.front();
     o.outDirGiven = !o.outDir.empty(); // D7: explicit --target + --out bypasses include rules
-    // P40 A5: the default sink is the input's directory, made absolute like every other directory here.
+    // P40 A5: the default sink is the input's directory, made absolute like every other directory here. (P40
+    // review r7: build resolves it per config group, buildGroup's defaultSink; this one is watch's single input's.)
     o.outDir = cli::absoluteDir(o.outDirGiven ? o.outDir
                                               : (firstInput.has_parent_path() ? firstInput.parent_path() : fs::path(".")));
     const bool flagRouted = !o.target.empty() && o.outDirGiven;

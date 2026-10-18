@@ -136,6 +136,24 @@ try {
                 ([regex]::Matches($outR, $depErr)).Count -eq 1 -and -not (Test-Path (Join-Path $projR "a.cs"))) `
             "review r6: a rule target whose dependency the registry refuses ($depErr) exits 64 'unknown target', the error printed once (exit $rcR; was 0, 'not verified' twice)"
     }
+    # review r7 (Spark i3\s5.sh): a 5xx is NOT the registry's answer about the package — a proxy with no upstream
+    # (502/504) or an unavailable registry (503) — so it is a network miss like a transport failure: the rule
+    # target degrades to "not verified" and the build still emits its configured target (it exited 64 at 6713b69).
+    foreach ($code in @("502", "503")) {
+        $dep = "status$code"
+        $projR = Join-Path $work "proj-rule-$dep"
+        New-Item -ItemType Directory -Force $projR | Out-Null
+        Set-Content (Join-Path $projR "a.pg") "fn a(): i32 => 1`n" -NoNewline
+        Set-Content (Join-Path $projR "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"dependencies`": { `"$dep`": `"^1.2.3`" }, " +
+            "`"include`": [ { `"pattern`": `"*.pg`", `"target`": `"$dep`", `"output`": `"gen/%(Filename)`" } ] }") -NoNewline
+        Push-Location $projR
+        $outR = & $Cli build 2>&1 | Out-String
+        $rcR = $LASTEXITCODE
+        Pop-Location
+        Assert ($rcR -eq 0 -and $outR -match "status $code" -and $outR -match 'not verified' -and
+                $outR -notmatch 'unknown target' -and (Test-Path (Join-Path $projR "a.cs"))) `
+            "review r7: a rule target whose registry answers $code (a network miss) degrades to 'not verified' and the build emits (exit $rcR; was 64 'unknown target')"
+    }
 
     # --- 6/7. --target override + the config-sourced refusal ---------------------------------------
     & $Cli build (Join-Path $proj "main.pg") --target csharp --out $proj *> $null

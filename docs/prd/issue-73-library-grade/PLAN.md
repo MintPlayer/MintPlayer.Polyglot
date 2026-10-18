@@ -1690,6 +1690,55 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     pass `g++ -std=c++20 -fsyntax-only` on WSL.
   - **Not touched (the language halves):** sema, lower, the emitters and the plugins' language arms. No
     conformance program was added, so the floor pin is unchanged.
+- **2026-10-18 — Review round 7 — CLI half** (Spark's re-verification of `6713b69`, part 2 "CLI"; none gating).
+  Every item was reproduced with the `6713b69` CLI first. The new cli-smoke checks ("review r7"), the updated hint
+  assertions and registry stage 5b's 502/503 cases fail there and pass here; every other pre-existing check passes
+  on both. Three unit checks pin the new status classification.
+  - **H4's git hint is cwd-independent.** `gitCaseRenameHint` named paths relative to the build's cwd, so the H4
+    refusal (built inside `Proj/`) printed `git rm -r -q --cached "." && git add "<abs>/proj"`: from the repo root it
+    unstaged every tracked file, from inside the renamed folder it exited 128. Every git remedy the CLI prints (the
+    file `mv`, the directory restage, in the build note, the `--check` drift line and the refusal) now runs in the
+    renamed entry's parent, spelled as on disk — `git -C "<abs parent>" mv -f -- "Foo.ts" "foo.ts"`,
+    `git -C "<abs parent>" rm -r -q --cached -- "Proj" && git -C "<abs parent>" add -- "proj"` — and names only the
+    two last components, which cannot escape that folder. The audit found no other printed command naming a path
+    (the record/move remedies are prose with absolute paths). cli-smoke runs the H4 hint verbatim from the repo root
+    and from an unrelated folder and asserts the status touches only `Proj/`→`proj/` and the index is exactly
+    `README.md, other/x.txt, proj/a.pg, proj/pgconfig.json`; the r4 directory-hint commit check runs it verbatim too.
+  - **H4 typed in another case is refused.** `loadPgConfig` spelled the config folder from the typed path, so
+    `build proj/a.pg` from the parent made `…/proj` both the config root and an input root, and the route
+    `../proj/gen/` stayed "inside" it under its own spelling: `proj` was never compared (wrote `Proj/gen`, exit 0).
+    New `diskSpelledDir` (pgconfig.hpp; the case-variant helpers moved there from outputsink.hpp unchanged) replaces
+    each existing component the filesystem matched only up to case by its on-disk entry (`onDiskCaseVariant`; a
+    short 8.3 alias or a missing component is kept as typed). It never lists a folder: the first cut used
+    `caseVariantIn(listDirNames(…))` and a build under %TEMP% (10^5 entries) went from ~0.5 s to ~9 s. Windows asks
+    `FindFirstFileW` for the one entry's stored name; POSIX lists only when the ASCII-case-flipped name opens the same
+    file (a case-insensitive volume, i.e. APFS), so Linux never lists. The config walk
+    starts from it, and `routeRoots` spells every root with it, so `proj` meets the disk's `Proj` and the H4 refusal
+    fires (`proj/a.pg`, `PROJ/a.pg`, `--check`; nothing written). Accepted and tested: `gen/…` and the folder's own
+    `../Proj/gen/…` from an input typed `proj/a.pg` build into `Proj/gen` and check clean. On a case-sensitive
+    filesystem nothing changes (an existing path is spelled exactly).
+  - **Multi-group builds without `--out`: each group's unrouted output lands beside its own input.** `runBuild`
+    set the default sink once, from the run's first input, and every group used it (`build g1/a.pg g2/c.pg` wrote
+    `g1/c.cs`; a `g1/c.pg` then "conflicted"). `buildGroup` now defaults to its own first input's folder. The sink is
+    per GROUP, not per input: a group is one project whose multi-file C# build shares one `__polyglot_prelude.cs`
+    keyed by output folder, and a sink per input folder (tried first) emitted one prelude per folder, whose
+    `PolyglotProgram` members collide when compiled together (CS0111). Pinned: the mg2 V1 and V6 shapes, `--out`
+    still collecting both groups, and one group across two folders keeping one sink and one prelude.
+  - **A registry or proxy 5xx is a network miss.** `httpStatusOutcome` (registry.hpp) classifies every non-200
+    status for WinHTTP, libcurl and the curl subprocess alike: 500–599 is `Transport` (a proxy with no upstream
+    answers 502/504, an unavailable registry 503 — nothing about the package), any other status stays `Response`. The
+    curl subprocess learns the status from a `--write-out '\n%{http_code}'` trailer (it could only see exit 22), and
+    a 5xx there no longer gets the "no libcurl and no curl binary" hint. So a rule target whose dependency answers
+    502/503 degrades to "not verified" again (exit 0, the configured target emitted), while a 404 and an integrity
+    mismatch stay exit 64 "unknown target". Registry stage 5b gained `status502`/`status503` packages (the fake
+    registry answers `@mintplayer/polyglot-target-status<NNN>` with that status); unit checks pin 502/503/504 as
+    `Transport`, 404/403/301 as `Response`, and a 503 resolve as a network miss.
+  - **Docs.** README: the git remedies are absolute and cwd-independent, the config folder is spelled as on disk,
+    the per-group default sink, and 5xx counts as a network miss.
+  - **POSIX.** registry.hpp (the curl subprocess) and pgconfig.hpp changed: main.cpp and tests_main.cpp pass
+    `g++ -std=c++20 -fsyntax-only` on WSL.
+  - **Not touched (the language halves):** sema, lower, the emitters and the plugins' language arms. No
+    conformance program was added, so the floor pin is unchanged.
 
 
 - **2026-10-18 — Review round 5 — nullability/functions half (gating 18–23 + part 2 "Language" bullets): as built.**
