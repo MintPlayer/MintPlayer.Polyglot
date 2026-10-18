@@ -122,6 +122,11 @@ polyglot lsp                                   # the language server (spawned by
 polyglot install <plugin-dir | npm-name>       # add a target plugin to the user cache
 ```
 
+An output no include rule routes goes to `--out`, or else next to its project's input: inputs are grouped by
+their nearest `pgconfig.json`, and each group's unrouted outputs land beside that group's first input
+(`build g1/a.pg g2/c.pg` writes `g1/a.cs` and `g2/c.cs`). One group is one project, so its multi-file C# build
+keeps one shared `__polyglot_prelude.cs`.
+
 `polyglot check` works offline: it never uses the network. A target whose plugin is a registry dependency
 that is not in the cache is reported as `not verified` and skipped, along with its `targetOptions` and the
 include rules that name it, so the check still exits 0. A misspelled target, or a broken `file:` plugin, is
@@ -131,9 +136,10 @@ target only in its manifest, so while one is uncached, every missing target that
 names degrades, and a typo among those goes unreported until the package is cached (`polyglot install`, or any
 build). The same holds in a build for an include rule's `"target"` that `targets` omits: a build that cannot
 fetch the providing dependency notes it and goes on, since only `--target` would build it. Only a **missing
-network** degrades (no connection, DNS, a timeout). A registry that answers — a 404 for an unpublished package,
-or a tarball failing its integrity check — is an error (exit 64) in every command, and each problem is printed
-once per build.
+network** degrades (no connection, DNS, a timeout, or a server error: a 5xx such as a proxy's 502/504 with no
+upstream or a registry's 503 says nothing about the package, so it counts as a network miss). A registry that
+answers about the package — a 404 for an unpublished package, any other 4xx, or a tarball failing its integrity
+check — is an error (exit 64) in every command, and each problem is printed once per build.
 
 `--watch` keeps the emitted outputs fresh: it rebuilds whenever the input, any transitively imported
 `.pg`, or `pgconfig.json` changes (all configured targets per rebuild). A failed rebuild prints the
@@ -362,19 +368,23 @@ polyglot build --only typescript            # refresh the twin (writes no C#)
 map) to the exact case, and `--check` reports it as `would rename`. On a case-insensitive checkout
 (`core.ignorecase=true`, the Windows and macOS default) `git add -A` does not stage a case-only change, so
 the commit would keep `gen/Foo.ts` and a case-sensitive clone's check would fail. Polyglot prints the
-remedy with the rename; run it before committing, e.g. `git mv -f gen/Foo.ts gen/foo.ts`. A **directory**
+remedy with the rename; run it before committing, e.g. `git -C "C:/src/app/gen" mv -f -- "Foo.ts" "foo.ts"`.
+Every printed git remedy names the renamed entry's folder as an absolute path (`git -C "<folder>"`) and only
+the old and new names inside it, so it does the same thing whatever folder you run it from. A **directory**
 the route creates is compared too (`gen/Foo/a.ts` after `src/Foo` became `src/foo` under
 `%(RecursiveDir)`, or an output template changed from `Gen/` to `gen/`): the build renames the directory
 when everything in it is Polyglot output, and otherwise refuses with the remedy. git cannot `git mv` a
 case-only directory rename on Windows, so that remedy restages the index instead:
-`git rm -r -q --cached "gen/Foo" && git add "gen/foo"`. Only the outermost renamed directory gets a hint
+`git -C "C:/src/app/gen" rm -r -q --cached -- "Foo" && git -C "C:/src/app/gen" add -- "foo"`. Only the outermost renamed directory gets a hint
 (and is the one `--check` names): its restage covers everything inside, including a renamed subdirectory or
 file. A route that leaves the config folder (`../web/gen/%(RecursiveDir)%(Filename)`) is compared from where it
 lands, the config folder's parent here, so `web/`, `gen/` and every folder `%(RecursiveDir)` adds are checked,
 and a local `--check` reports what a case-sensitive clone will. That holds when the route climbs back **into**
 the config folder under another case (`../proj/gen/%(Filename)` from `Proj/`): `proj` is compared too, and since
 `Proj/` holds your sources it is never renamed, so the build and `--check` refuse (exit 1) and name the
-directory; spell the template like the folder (`../Proj/gen/…`, or simply `gen/…`). An absolute template is compared only below its
+directory; spell the template like the folder (`../Proj/gen/…`, or simply `gen/…`). The config folder is
+spelled as the disk spells it, whatever case the input or the working directory was typed in, so
+`build proj/a.pg` from the parent is refused the same way. An absolute template is compared only below its
 literal folder: your own checkout path is never renamed. Two spellings of one folder or file in **one** build
 (`gen/a.ts` from one rule, `Gen/b.ts` from another) are a conflict (exit 1) that names both, on the first build
 and under `--check` too, because a case-insensitive filesystem merges them and a case-sensitive one keeps two.
