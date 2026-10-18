@@ -1,0 +1,16 @@
+// REFUSED (P40 review r6): part 2 - a value whose initializer reaches itself is a cycle; the message no longer suggests declaring it first. Spark l1_4g1.
+import "std.io"
+
+let v: K = K(2)
+class K {
+  static let base: i32 = v.n
+  var n: i32
+  constructor(n: i32) {
+    this.n = n
+  }
+}
+
+fn main() {
+  print(v.n)
+  print(K.base)
+}

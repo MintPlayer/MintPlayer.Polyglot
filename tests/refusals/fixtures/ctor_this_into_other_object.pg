@@ -1,0 +1,32 @@
+// REFUSED (P40 review r6): #5 'this' stored into another object, whose method then calls it. Spark l1_5l.
+import "std.io"
+
+class Holder {
+  var w: Base? = null
+  fn ping(): string {
+    let x = this.w
+    if x != null {
+      return x.describe()
+    }
+    return "none"
+  }
+}
+open class Base {
+  var label: string = ""
+  constructor(h: Holder) {
+    h.w = this
+    this.label = h.ping()
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  constructor() {
+    super(Holder())
+  }
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

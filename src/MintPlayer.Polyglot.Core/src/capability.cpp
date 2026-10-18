@@ -162,7 +162,11 @@ private:
             if (m.kind == MemberKind::Operator)
                 mark("operatorOverloading:" + operatorCategory(m.name), m.pos);
             if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
-            if (m.kind == MemberKind::Property && m.hasSetter) mark(Feature::PropertySetters, m.pos); // #39c
+            if (m.kind == MemberKind::Property && m.hasSetter) { // #39c
+                mark(Feature::PropertySetters, m.pos);
+                for (const auto& mod : m.modifiers) // review r6 (part 2)
+                    if (mod == "static") mark("propertySetters:static", m.pos);
+            }
             if (m.isAsync) mark(Feature::Async, m.pos);
             typeRef(m.type, m.pos);
             typeRef(m.returnType, m.pos);

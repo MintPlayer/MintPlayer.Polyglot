@@ -1,0 +1,19 @@
+// REFUSED (P40 review r6): #5 'this' passed to a lambda value that calls the open method. Spark l1_5e.
+import "std.io"
+
+open class Base {
+  var label: string = ""
+  constructor() {
+    let g = (w: Base) => w.describe()
+    this.label = g(this)
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

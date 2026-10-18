@@ -165,6 +165,10 @@ supported. Current keyed entries:
 - `operatorOverloading:{arithmetic,comparison,eq,indexers,conversion}` — graded operator support.
   PHP declares the umbrella `false` plus `:eq` and `:indexers` `"native"` (`->eq(...)`,
   `->get`/`->set`).
+- `propertySetters:static` — the setter of a STATIC computed property (P40 review r6). Native on C#/TS;
+  Python declares `false`: it emits a static computed property as a `@staticmethod` that every read calls
+  (`Cfg.level()` — a member template keys on `node.isProperty` + `node.staticType`), and a class-level
+  assignment would bypass any descriptor. PHP's `propertySetters: false` umbrella covers it.
 - `utf16Strings:index` — string INDEX operations (`len`/`charAt`/`codePointAt`/`substring`/`indexOf`) count
   UTF-16 code units (P40 B3). Native on C#/TS; Python and PHP declare `"emulated"` — their std bindings
   route through UTF-16 helper preludes (Python: `isascii()` fast path + a cached surrogate-expanded view;

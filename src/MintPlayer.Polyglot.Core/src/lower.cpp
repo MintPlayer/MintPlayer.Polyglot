@@ -568,6 +568,10 @@ private:
     }
     // Stamps a static Member with the facts of the class static field it names (no-op for anything else).
     void stampStaticField(ir::Member& m) const {
+        // Review r6 (part 2): a static computed property is a property access too — a target that emulates
+        // properties as methods (PHP; Python for a static one) calls it.
+        if (auto pit = propertyMembers_.find(m.staticType); pit != propertyMembers_.end() && pit->second.count(m.field))
+            m.isProperty = true;
         auto it = staticFields_.find(m.staticType + "." + m.field);
         if (it == staticFields_.end()) return;
         m.staticField = true;

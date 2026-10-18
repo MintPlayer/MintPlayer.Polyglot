@@ -160,6 +160,9 @@ const std::unordered_set<std::string>& capabilityVocabulary() {
         s.insert("utf16Strings:index");
         // P37 C6: graded operator support — PHP supports :eq/:indexers while refusing the rest; the bare
         // `operatorOverloading` stance umbrella-covers undeclared sub-keys.
+        // Review r6 (part 2): a STATIC computed property's setter — native on C#/TS; Python emits a static
+        // property as a static method (a class-level assignment would bypass any descriptor), so it refuses.
+        s.insert("propertySetters:static");
         s.insert("operatorOverloading:arithmetic");
         s.insert("operatorOverloading:comparison");
         s.insert("operatorOverloading:eq");
