@@ -1760,7 +1760,8 @@ private:
         const Expr& recv = *e.lhs->lhs;
         auto r = expr(recv);
         std::string v;
-        if (r->kind == ir::ExprKind::Var) v = static_cast<const ir::Var&>(*r).name;
+        if (r->kind == ir::ExprKind::Var && !static_cast<const ir::Var&>(*r).liveModuleRead)
+            v = static_cast<const ir::Var&>(*r).name;
         else {
             v = "__ns" + std::to_string(tmpCounter_++);
             out.push_back(std::make_unique<ir::Let>(recv.pos, v, false, recv.type, std::move(r)));
