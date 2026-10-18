@@ -1,0 +1,43 @@
+import "std.io"
+
+// P40 review r4, part 2 (language): numeric defaults, the `_` unused opt-out, literal match scrutinees.
+
+fn inv(x: f64 = -0.0): f64 => 1.0 / x              // a negative zero default keeps its sign
+fn f32d(x: f32 = 0.1f + 0.2f): f32 => x             // an f32 constant default folds in single precision
+fn f32e(x: f32 = 1.5f * 2.0f): f32 => x
+fn lo(x: i64 = -9223372036854775808i64): i64 => x  // the i64 minimum (PHP: PHP_INT_MIN, not a float)
+fn lo32(x: i32 = -2147483648): i32 => x
+
+enum Color { Red, Green }
+
+fn unusedLocals(): i32 {
+  let _x = 5                    // the documented `_` opt-out: never read, so it is not emitted (C# CS0219)
+  var _spare = "x"
+  let (a, _b) = (1, 2)
+  return a
+}
+
+fn literalMatch(): i32 => match "01" {  // a literal scrutinee (TS2367 under --strict before)
+  "1" => 1,
+  _ => 2,
+}
+
+fn numberMatch(): string => match 3 {
+  1 => "one",
+  _ => "other",
+}
+
+fn main() {
+  print(inv())
+  print(f32d())
+  print(f32e())
+  print(lo())
+  print(lo32())
+  print(unusedLocals())
+  print(literalMatch())
+  print(numberMatch())
+  let c = Color.Green
+  print(c == Color.Green)
+  let big: i64 = -9223372036854775808
+  print(big)
+}

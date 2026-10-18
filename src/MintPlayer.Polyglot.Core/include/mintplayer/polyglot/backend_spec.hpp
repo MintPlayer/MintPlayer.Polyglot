@@ -133,6 +133,16 @@ struct BackendSpec {
     // evaluated once, so the Binary rule's masking applies; the emitter folds the result back to `a op= b`
     // only where that rule rendered the plain infix form.
     bool nativeCompoundAssign = false;
+    // P40 review r4 item 17: the target has a native `t ??= v` (store only when `t` is null). Off (Python), lowering
+    // expands it to `if t == null { t = v }`, the target's receiver and indices evaluated once.
+    bool nativeCoalesceAssign = false;
+    // P40 review r4 items 18/21 — `exprStmt: { "discardPrefix", "parenIfStarts" }`. `discardPrefix` is written
+    // before an expression statement whose value is dropped and that is not an invocation/construction/await
+    // (ir::ExprStmt::discard): C# `_ = ` (it admits only statement expressions, CS0201). `parenIfStarts` lists the
+    // tokens an expression statement may not begin with, so one that prints starting with them is parenthesized:
+    // JS `{` (it would open a block — a union-case object literal). Both empty = nothing to do on this target.
+    std::string exprStmtDiscardPrefix;
+    std::vector<std::string> exprStmtParenIfStarts;
 
     // (`print` and `Math` used to live here as naming rules; they are now real std modules — std.io's
     // generic `print<T>` and the std.math `extern class` — bound per target via templates, so no naming
@@ -173,6 +183,10 @@ struct BackendSpec {
     // form alike — the emitter strips that wrapper, std and user `extern` templates alike (tsc >= 5.6 rejects
     // `(m.get(k) ?? null) ?? d` as TS2871 "always nullish"). Empty = no such wrapper on this target.
     std::string absentNormalizePrefix, absentNormalizeSuffix;
+    // P40 review r4 item 16 — `absentNormalize.foldedBy`: the consumers whose emitted form on this target folds
+    // every absent form alike, so a bound flowing straight into one may drop the wrapper. Known consumers:
+    // "coalesce" (`??`), "nullAssert" (`x!`), "nullSafe" (`?.`). Required (non-empty) with absentNormalize.
+    std::vector<std::string> absentFoldedBy;
 
     // Named lookup tables — the generic `{"fn":"table","args":[name, key]}` catalog entry (a missing key
     // answers ""). First occupant: TS's operator-overload method names (`"+"` -> `"plus"` — no TS operator

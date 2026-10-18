@@ -54,6 +54,7 @@
     "trueLit": "true",
     "falseLit": "false",
     "nullLit": "null",
+    "nativeCoalesceAssign": true,
     "literals": {
       "string": {
         "quote": "\"",
@@ -243,6 +244,19 @@
         "__pgm*",
         "__opt*",
         "__w*"
+      ],
+      "runtimeNames": [
+        "directory", "generator", "closure", "exception", "errorexception", "typeerror", "valueerror",
+        "arithmeticerror", "divisionbyzeroerror", "argumentcounterror", "assertionerror", "compileerror", "parseerror",
+        "unhandledmatcherror", "throwable", "traversable", "iterator", "iteratoraggregate", "arrayaccess", "countable",
+        "stringable", "serializable", "jsonserializable", "arrayobject", "arrayiterator", "stdclass", "datetime",
+        "datetimeimmutable", "datetimeinterface", "datetimezone", "dateinterval", "dateperiod", "weakmap",
+        "weakreference", "fiber", "attribute", "unitenum", "backedenum", "splstack", "splqueue", "splobjectstorage",
+        "spldoublylinkedlist", "splfixedarray", "splheap", "splminheap", "splmaxheap", "splpriorityqueue",
+        "splsubject", "splobserver", "emptyiterator", "internaliterator", "runtimeexception", "logicexception",
+        "invalidargumentexception", "domainexception", "lengthexception", "outofrangeexception",
+        "outofboundsexception", "overflowexception", "rangeexception", "underflowexception",
+        "unexpectedvalueexception", "badfunctioncallexception", "badmethodcallexception"
       ],
       "functionBuiltins": {
         "suffix": "_pg",
@@ -438,6 +452,10 @@
           "case": {
             "when": [
               [
+                { "eq": ["node.calleeKind", "member"] },
+                { "tmpl": ["(", { "emit": "node.calleeExpr" }, ")"] }
+              ],
+              [
                 { "has": "node.hasCalleeExpr" },
                 { "emitChild": "node.calleeExpr", "side": "recv" }
               ],
@@ -483,12 +501,12 @@
             }
           }
         },
-        "(",
         {
-          "map": "node.args",
-          "sep": ", "
-        },
-        ")"
+          "case": {
+            "when": [[ { "eq": ["node.isRef", "true"] }, "(...)" ]],
+            "else": { "tmpl": [ "(", { "map": "node.args", "sep": ", " }, ")" ] }
+          }
+        }
       ]
     },
     "Member": {
@@ -927,6 +945,10 @@
     "Unary": {
       "case": {
         "when": [
+          [
+            { "eq": ["node.negatesInt64Min", "true"] },
+            "PHP_INT_MIN"
+          ],
           [
             {
               "and": [

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -86,6 +87,21 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& u = static_cast<const ir::Unary&>(e_);
         if (path == "node.operandIsUserType") return u.operandIsUserType ? "true" : "false";
         if (path == "node.operandTypeName" && u.operand) return u.operand->type.name;
+        // P40 review r4 (part 2): `-9223372036854775808` — the i64 minimum, whose magnitude has no positive i64. A
+        // target that parses `-N` as the negation of a literal N (PHP: N is a float) spells it its own way.
+        if (path == "node.negatesInt64Min") {
+            if (u.op != "-" || !u.operand || u.operand->kind != ir::ExprKind::Int) return "false";
+            std::string d;
+            for (char c : static_cast<const ir::IntLit&>(*u.operand).text) {
+                if (c == '_') continue;
+                if (c == 'i' || c == 'u') break;
+                d += c;
+            }
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long v = std::strtoull(d.c_str(), &end, 0);
+            return errno != ERANGE && end != d.c_str() && *end == '\0' && v == 9223372036854775808ull ? "true" : "false";
+        }
         if (path == "node.hasUnaryOpMethod")
             return u.operandIsUserType && !specTable(spec_, "opMethod", "u" + u.op).empty() ? "true" : "false";
     }
@@ -149,6 +165,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.callee")        return c.callee;
         if (path == "node.mangledCallee") return c.mangledCallee;
         if (path == "node.isFree")        return c.isFree ? "true" : "false";
+        if (path == "node.isRef")         return c.isRef ? "true" : "false";
         if (path == "node.args.count")    return std::to_string(c.args.size());
         if (path == "node.linkCallee")    return c.linkCallee.empty() || c.linkCallee == c.callee ? std::string() : c.linkCallee; // P40 r3 2(e)
         if (path == "node.linkOrMangledCallee") return !c.linkCallee.empty() && c.linkCallee != c.callee ? c.linkCallee : c.mangledCallee;
@@ -249,6 +266,15 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.arms.count")  return std::to_string(m.arms.size());
         if (path == "node.hasCatchAll") return m.hasCatchAll ? "true" : "false";
         if (path == "node.isStatement") return m.isStatement ? "true" : "false"; // #52
+        // P40 review r4 (part 2): the scrutinee's scalar spelling on this target ("" unless a non-null scalar) — TS
+        // annotates its match temp with it, or a literal scrutinee (`match "01"`) keeps its literal type and every
+        // arm comparison is TS2367 "no overlap" under --strict.
+        if (path == "node.scrutineeScalar") {
+            const TypeRef& st = m.scrutinee->type;
+            if (st.kind != TypeRef::Kind::Named || st.nullable) return "";
+            auto it = spec_.scalarType.find(st.name);
+            return it == spec_.scalarType.end() ? std::string() : it->second;
+        }
         if (path.rfind("node.arms.", 0) == 0) { // node.arms.<i>.<rest>
             const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
             const std::size_t dot = path.find('.', 10);
@@ -530,6 +556,11 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     // specifier; a false positive (a ':' nested in a call or a string) costs only harmless parentheses.
     if (name == "parenIfContains" && args.size() >= 2)
         return args[1].find_first_of(args[0]) == std::string::npos ? args[1] : "(" + args[1] + ")";
+    // P40 review r4 item 21 — {"fn":"parenIfStarts","args":[<token>, <text>]}: parenthesize <text> when it begins
+    // with <token> (manifest data). TS uses it for an arrow's expression body: `() => {…}` would parse an object
+    // literal (a union-case construction) as a block.
+    if (name == "parenIfStarts" && args.size() >= 2)
+        return !args[0].empty() && args[1].compare(0, args[0].size(), args[0]) == 0 ? "(" + args[1] + ")" : args[1];
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);
@@ -2113,7 +2144,10 @@ static std::string stripAbsentNormalize(const BackendSpec& spec, const std::stri
 }
 
 std::string EmitterBase::substBoundTemplate(const std::string& tmplIn, const ir::Bound& b) {
-    const std::string tmpl = b.coalesced ? stripAbsentNormalize(spec(), tmplIn) : tmplIn;
+    const auto& folds = spec().absentFoldedBy;
+    const bool folded = !b.absentConsumer.empty() &&
+                        std::find(folds.begin(), folds.end(), b.absentConsumer) != folds.end();
+    const std::string tmpl = folded ? stripAbsentNormalize(spec(), tmplIn) : tmplIn;
     // A placeholder that the template uses as a member/index RECEIVER (`$this.Length`, `$0[i]`, PHP `$this->x`)
     // takes the spec's receiver parenthesization policy, exactly like a rule's `recv` operand: unwrapped,
     // `("a" + "1").len()` emitted `"a" + "1".Length` (a silent miscompile found by P40's escapes.pg).
@@ -2229,8 +2263,18 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             return;
         }
         case ir::StmtKind::ExprStmt:
-            line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + spec().stmtEnd);
+        {
+            // P40 review r4 items 18/21: a dropped non-statement value takes the target's discard form (C# `_ = `),
+            // and a statement that would begin with a token the target reads as something else is parenthesized
+            // (JS `{` opens a block). Both are manifest data (BackendSpec::exprStmt*).
+            const auto& es = static_cast<const ir::ExprStmt&>(s);
+            std::string text = emitExpr(*es.expr);
+            for (const auto& tok : spec().exprStmtParenIfStarts)
+                if (text.compare(0, tok.size(), tok) == 0) { text = "(" + text + ")"; break; }
+            if (es.discard) text = spec().exprStmtDiscardPrefix + text;
+            line(text + spec().stmtEnd);
             return;
+        }
         case ir::StmtKind::Let: {
             const auto& l = static_cast<const ir::Let&>(s);
             // `let (a, b) = t` destructuring is rendered by the per-target TupleLet rule (issue #39b).

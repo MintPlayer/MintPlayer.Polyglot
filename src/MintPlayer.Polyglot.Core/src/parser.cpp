@@ -1174,7 +1174,10 @@ private:
                 }
                 expect(TokKind::RParen, "')'");
                 e = std::move(call);
-            } else if (at(TokKind::LParen)) {
+            } else if (at(TokKind::LParen) && idx_ > 0 && peek().pos.line == toks_[idx_ - 1].pos.line) {
+                // P40 review r4: a call's `(` must start on the SAME LINE as its callee, like a subscript's `[`
+                // (below) — a next-line `(…)` is a new statement. Before, `print(a)` followed by a line starting
+                // `((x: i32) => print(x))(8)` was parsed as one call chain `print(a)(…)(8)`.
                 auto p = advance().pos;
                 auto call = mk(ExprKind::Call, p);
                 call->lhs = std::move(e);

@@ -102,6 +102,22 @@ bool literalFits64(const std::string& text, bool isUnsigned) {
     return isUnsigned || v <= 9223372036854775807ull;
 }
 
+// The magnitude of an integer literal (underscores and a width suffix dropped); ~0 when it does not parse or
+// overflows u64. P40 review r4: used to range-check a literal against the slot it flows into.
+unsigned long long literalMagnitude(const std::string& text) {
+    std::string d;
+    for (char c : text) {
+        if (c == '_') continue;
+        if ((c == 'i' || c == 'u') && !d.empty()) break; // the width suffix (hex digits never include i/u)
+        d += c;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long v = std::strtoull(d.c_str(), &end, 0);
+    if (errno == ERANGE || end == d.c_str() || *end != '\0') return ~0ull;
+    return v;
+}
+
 // Is `from -> to` an implicit, value-preserving widening (no precision loss, no sign surprise)? Everything
 // else (narrowing, i64->f64, signed->unsigned) requires an explicit cast. (SPEC §3.)
 bool isLosslessWiden(const TypeRef& from, const TypeRef& to) {
@@ -234,7 +250,8 @@ struct FnSig {
     std::vector<GenericParam> boundSpecs;   // the function's bounded type params (nominal bounds checked at the call)
     TypeRef receiver;                  // extensions only: the declared receiver type (for inference from it)
     bool isAsync = false;              // an `async fn` — its call result is `Awaitable<result>` (§4.7)
-    SourcePos pos;                     // the declaration (its file id = its module: D16 overload visibility)
+    bool isPrelude = false;            // declared by the core/std prelude (not referable as a value, r4 item 20)
+    SourcePos pos;                    // the declaration (its file id = its module: D16 overload visibility)
     std::string mangled;               // the declaration's per-module mangled name (FunctionDecl::mangledName)
     std::string linkName;              // the declaration's link name (FunctionDecl::linkName)
 };
@@ -342,6 +359,7 @@ struct Local {
     int reads = 0;
     bool constInit = false;
     SourcePos declPos{0, 0, 0};
+    Stmt* declStmt = nullptr; // the `let` that declared it (r4: an unread `_x = <const>` is dropped there)
 };
 
 class Checker {
@@ -559,8 +577,17 @@ private:
     void pushScope() { scopes_.emplace_back(); }
     void popScope() {
         std::vector<std::pair<SourcePos, std::string>> unused;
-        for (const auto& [n, l] : scopes_.back())
-            if (l.constInit && l.reads == 0 && !n.empty() && n[0] != '_') unused.push_back({l.declPos, n});
+        for (const auto& [n, l] : scopes_.back()) {
+            if (!l.constInit || l.reads != 0 || n.empty()) continue;
+            if (n[0] != '_') { unused.push_back({l.declPos, n}); continue; }
+            // P40 review r4 (part 2): the documented `_` opt-out. The declaration has no effect (its initializer is
+            // a constant), so it is dropped — C# would report the kept local as CS0219 under TreatWarningsAsErrors.
+            // A later assignment would then name an undeclared variable, so that shape is refused instead.
+            if (l.assigns == 0 && l.declStmt) l.declStmt->dropUnused = true;
+            else if (l.assigns != 0)
+                diags_.error(l.declPos, "'" + n + "' is assigned but never read — remove it; C# reports it as an "
+                                        "unused variable even with the '_' prefix");
+        }
         std::sort(unused.begin(), unused.end(), [](const auto& a, const auto& b) {
             return a.first.line != b.first.line ? a.first.line < b.first.line : a.first.col < b.first.col;
         });
@@ -569,13 +596,17 @@ private:
                               "'_'); C# reports it as an unused variable");
         scopes_.pop_back();
     }
-    static bool isConstExpr(const Expr* e) {
+    // A C# constant expression (what CS0219 calls "assigned a constant"): literals, and unary/binary/cast over
+    // them, plus an enum member (`Color.Red`) — P40 review r4 added the cast (`(i64)5`) and the enum member.
+    bool isConstExpr(const Expr* e) const {
         if (!e) return false;
         switch (e->kind) {
             case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::StringLit: case ExprKind::CharLit:
             case ExprKind::BoolLit: case ExprKind::NullLit: return true;
-            case ExprKind::Unary: return isConstExpr(e->lhs.get());
+            case ExprKind::Unary: case ExprKind::Cast: return isConstExpr(e->lhs.get());
             case ExprKind::Binary: return e->text != "??" && isConstExpr(e->lhs.get()) && isConstExpr(e->rhs.get());
+            case ExprKind::Member:
+                return e->lhs && e->lhs->kind == ExprKind::Name && enumNames_.count(e->lhs->text) && !lookup(e->lhs->text);
             default: return false;
         }
     }
@@ -942,6 +973,7 @@ private:
             FnSig sig; for (const auto& p : fn.params) sig.params.push_back(p.type); sig.result = fn.returnType;
             sig.required = requiredCount(fn.params);
             sig.isAsync = fn.isAsync;
+            sig.isPrelude = fn.originModule == "<prelude>";
             for (const auto& g : fn.generics) sig.generics.push_back(g.name);
             sig.numericParams = numericBounded(fn.generics);
             sig.boundSpecs = fn.generics;
@@ -1383,9 +1415,56 @@ private:
         return false;
     }
 
+    // P40 review r4 (part 2): an f32 constant expression (`0.1f + 0.2f`) — every float literal f32-suffixed — folds
+    // in single precision, each operation rounded to f32 as C# folds it, to an f32 literal. (The f64 fold below read
+    // `0.1f` as the double 0.1 and produced an f64 literal, refused as "f64 to f32".)
+    static bool foldF32(const Expr* e, float& v) {
+        if (!e) return false;
+        if (e->kind == ExprKind::FloatLit) {
+            if (floatLitType(e->text) != "f32") return false;
+            std::string d;
+            for (char c : e->text) if (c != '_') d += c;
+            if (d.size() >= 3 && d.compare(d.size() - 3, 3, "f32") == 0) d.resize(d.size() - 3);
+            else if (!d.empty() && d.back() == 'f') d.pop_back();
+            v = std::strtof(d.c_str(), nullptr);
+            return v == v && v - v == 0;
+        }
+        if (e->kind == ExprKind::Unary && e->text == "-") { if (!foldF32(e->lhs.get(), v)) return false; v = -v; return true; }
+        if (e->kind == ExprKind::Binary && (e->text == "+" || e->text == "-" || e->text == "*" || e->text == "/")) {
+            float a, b;
+            if (!foldF32(e->lhs.get(), a) || !foldF32(e->rhs.get(), b)) return false;
+            volatile float r = e->text == "+" ? a + b : e->text == "-" ? a - b : e->text == "*" ? a * b : a / b;
+            v = r;
+            return v == v && v - v == 0; // finite
+        }
+        return false;
+    }
+
     void checkCallSiteDefaults(std::vector<Param>& ps, const std::string& what) {
         for (auto& p : ps) {
             if (!p.hasDefault || !p.defaultValue) continue;
+            if (p.defaultValue->kind == ExprKind::Binary || p.defaultValue->kind == ExprKind::Unary) {
+                float f32v = 0;
+                if (p.defaultValue->kind == ExprKind::Binary && foldF32(p.defaultValue.get(), f32v)) {
+                    std::string txt;
+                    for (int prec = 6; prec <= 9; ++prec) { // the shortest text that round-trips the float
+                        char buf[64];
+                        std::snprintf(buf, sizeof buf, "%.*g", prec, static_cast<double>(std::fabs(f32v)));
+                        txt = buf;
+                        if (std::strtof(buf, nullptr) == std::fabs(f32v)) break;
+                    }
+                    if (txt.find_first_of(".eE") == std::string::npos) txt += ".0";
+                    auto lit = std::make_unique<Expr>();
+                    lit->kind = ExprKind::FloatLit; lit->pos = p.defaultValue->pos; lit->text = txt + "f";
+                    if (std::signbit(f32v)) {
+                        auto neg = std::make_unique<Expr>();
+                        neg->kind = ExprKind::Unary; neg->text = "-"; neg->pos = lit->pos; neg->lhs = std::move(lit);
+                        p.defaultValue = std::move(neg);
+                    } else {
+                        p.defaultValue = std::move(lit);
+                    }
+                }
+            }
             if (p.defaultValue->kind == ExprKind::Binary || p.defaultValue->kind == ExprKind::Unary) {
                 double fv = 0; bool sawFloat = false;
                 if (foldFloat(p.defaultValue.get(), fv, sawFloat) && sawFloat) {
@@ -1399,7 +1478,7 @@ private:
                     if (txt.find_first_of(".eE") == std::string::npos) txt += ".0";
                     auto lit = std::make_unique<Expr>();
                     lit->kind = ExprKind::FloatLit; lit->pos = p.defaultValue->pos; lit->text = txt;
-                    if (fv < 0) {
+                    if (std::signbit(fv)) { // r4: `-0.0` keeps its sign (`fv < 0` is false for it)
                         auto neg = std::make_unique<Expr>();
                         neg->kind = ExprKind::Unary; neg->text = "-"; neg->pos = lit->pos; neg->lhs = std::move(lit);
                         p.defaultValue = std::move(neg);
@@ -1689,6 +1768,9 @@ private:
                 if (b && b->kind != ExprKind::Call)
                     diags_.error(lam.pos, "this lambda flows into a function type returning unit, so its body must "
                                           "be a call or a block — a value expression would be computed and discarded");
+                // P40 review r4 item 18: a call body's value is discarded on every target — lowering spells a body
+                // that is not a real invocation there (a bound property read, a lookup) as a discarded statement.
+                lam.lambdaUnitResult = true;
                 return;
             }
             std::function<void(const std::vector<StmtPtr>&)> walkUnit = [&](const std::vector<StmtPtr>& body) {
@@ -1758,6 +1840,23 @@ private:
         checkConvert(s.value, slot, ctx);
     }
 
+    // P40 review r4 item 17: `t ??= v` assigns only when `t` is null. A target that cannot be null here (a non-null
+    // type, or a narrowed local) makes it dead — and C# rejects it (CS0019) — so it is refused like `??`. An
+    // optional generic's `T?` (an Option) has no native `??=`; the value converts into the nullable slot.
+    void checkCoalesceAssign(Stmt& s, const TypeRef& readType, const TypeRef& slot, const std::string& ctx) {
+        if (isOptionType(slot)) {
+            diags_.error(s.pos, "'??=' on a value of type '" + showTy(slot) + "' (a generic 'T?') is not supported — "
+                                "write 't = t ?? value'");
+            return;
+        }
+        if (!readType.nullable && nullRefusingSlot(readType)) {
+            diags_.error(s.pos, "the target of '??=' has type '" + showTy(readType) + "', which cannot be null here, "
+                                "so the value is never assigned — remove the '??='");
+            return;
+        }
+        checkConvert(s.value, slot, ctx);
+    }
+
     void checkConvert(ExprPtr& slot, const TypeRef& target, const std::string& ctx) {
         if (!slot) return;
         if (slot->kind == ExprKind::Lambda && target.kind == TypeRef::Kind::Function && !target.ret.empty()) {
@@ -1812,13 +1911,46 @@ private:
                      slot->lhs->kind == ExprKind::IntLit && target.name == "i64")
                 lit = slot->lhs.get();
             if (lit && lit->text.find_first_of("iu") == std::string::npos &&
-                literalFits64(lit->text, target.name == "u64")) {
+                (literalFits64(lit->text, target.name == "u64") ||
+                 (lit != slot.get() && literalMagnitude(lit->text) == 9223372036854775808ull))) { // r4: -2^63
                 lit->type = target;
                 slot->type = target;
                 return;
             }
         }
+        if (!intLiteralFits(*slot, target, ctx)) return;
         TypeRef from = slot->type;
+        // P40 review r4 item 14: a value that may be null flowing into a slot that may not — `fn f(x: i32?): i32
+        // => x`, `let w: i32 = x ?? y` with a nullable `y`, a bare `null` into an `i32`. Every target accepted
+        // it (C# CS0266/CS8629, TS2322) or returned `null` from an `i32` function. Flow narrowing is respected
+        // because a narrowed read is already typed non-null (checkName). A slot whose type is still open (a type
+        // parameter, an unresolved hole, `Iterable`) is left alone: its instantiation decides.
+        if (from.nullable && !target.nullable && nullRefusingSlot(target)) {
+            const std::string shown = (from.kind == TypeRef::Kind::Named && from.name.empty()) ? std::string("null")
+                                                                                                 : "'" + showTy(from) + "'";
+            diags_.error(slot->pos, "cannot convert " + shown + " to '" + showTy(target) + "' (" + ctx +
+                                        "): the value may be null; supply a fallback with '??', assert with '!', "
+                                        "narrow it first ('if x != null'), or declare the slot '" + showTy(target) + "?'");
+            return;
+        }
+        // P40 review r4 item 18: a function VALUE (a named function, a function-typed local) flowing into a function
+        // slot must have exactly that type — no target converts between delegate/function shapes the same way (C#
+        // has no `Func<int>` -> `Action` conversion, CS0407/CS1503; TS accepts it). Lambdas are handled above.
+        if (from.kind == TypeRef::Kind::Function && target.kind == TypeRef::Kind::Function &&
+            concreteType(from) && concreteType(target)) {
+            TypeRef f = from, t = target;
+            f.nullable = t.nullable = false;
+            if (showTy(f) != showTy(t)) {
+                const bool toUnit = !target.ret.empty() && isUnitT(target.ret[0]) &&
+                                    !(from.ret.empty() || isUnitT(from.ret[0]));
+                diags_.error(slot->pos, "cannot convert a function of type '" + showTy(f) + "' to '" + showTy(t) +
+                                            "' (" + ctx + ")" +
+                                            (toUnit ? ": it returns a value the slot would discard — pass a lambda "
+                                                      "that calls it ('(…) => f(…)')"
+                                                    : ": function types must match exactly"));
+                return;
+            }
+        }
         if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
         if (isNumericTypeName(from) && isNumericTypeName(target) && !sameNamedType(from, target)) {
             diags_.error(slot->pos, "cannot implicitly convert " + from.name + " to " + target.name +
@@ -1840,6 +1972,43 @@ private:
                                   : "";
             diags_.error(slot->pos, "cannot convert '" + from.name + "' to '" + target.name + "' (" + ctx + ")" + why);
         }
+    }
+
+    // P40 review r4 (part 2): an unsuffixed integer literal (optionally negated) is typed i32, so one outside the
+    // range of the ≤32-bit integer slot it flows into (`let v: i32 = 2147483648`, `x: i32 = 2147483648`) was
+    // accepted — C# then typed it `uint` (CS0266) while TS/Python/PHP held the out-of-range value. Refused here.
+    bool intLiteralFits(const Expr& slot, const TypeRef& target, const std::string& ctx) {
+        if (target.kind != TypeRef::Kind::Named || target.nullable) return true;
+        const bool sgn = isSignedInt(target.name), uns = isUnsignedInt(target.name);
+        const int w = numWidth(target.name);
+        if ((!sgn && !uns) || w == 0 || w > 32) return true;
+        const Expr* lit = &slot;
+        bool neg = false;
+        if (lit->kind == ExprKind::Unary && lit->text == "-" && lit->lhs) { neg = true; lit = lit->lhs.get(); }
+        if (lit->kind != ExprKind::IntLit || lit->text.find_first_of("iu") != std::string::npos) return true;
+        const unsigned long long mag = literalMagnitude(lit->text);
+        const unsigned long long maxPos = uns ? (1ull << w) - 1 : (1ull << (w - 1)) - 1;
+        const unsigned long long maxNeg = uns ? 0 : 1ull << (w - 1);
+        if (neg ? mag <= maxNeg : mag <= maxPos) return true;
+        diags_.error(slot.pos, "the integer literal " + std::string(neg ? "-" : "") + lit->text + " does not fit '" +
+                                   target.name + "' (" + ctx + "); give it a wider type (e.g. '" + lit->text + "i64')");
+        return false;
+    }
+
+    // A member that holds a value (a field, const or computed property) rather than a callable method.
+    static bool isValueMember(const MemberInfo& m) {
+        return m.kind == MemberKind::Field || m.kind == MemberKind::Const || m.kind == MemberKind::Property;
+    }
+
+    // A slot that refuses a may-be-null value (item 14): a function type, or a concrete named type (a scalar,
+    // a declared/std type) — never a type parameter, `unit`, `Option` (it converts), `Iterable` or a hole.
+    bool nullRefusingSlot(const TypeRef& t) const {
+        if (t.kind == TypeRef::Kind::Function) return true;
+        if (t.kind != TypeRef::Kind::Named || t.name.empty()) return false;
+        if (genericsInScope_.count(t.name) || t.name == "unit" || t.name == "Option" || t.name == "Iterable" ||
+            t.name == "null")
+            return false;
+        return scalarTyOf(t) != Ty::Unknown || knownType(t) || isBuiltinType(t.name);
     }
 
     // A named type declared in the program (class/record/interface/extern class) — the nominal-subtyping
@@ -1990,13 +2159,14 @@ private:
                     break;
                 }
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
+                else if (s.value && !intLiteralFits(*s.value, init, "initializer of '" + s.name + "'")) {}
                 else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
                     diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value));
                 if (!blockIsBindings_.empty() && blockIsBindings_.back().count(s.name))
                     diags_.error(s.namePos, "'" + s.name + "' was bound by an `is` test earlier in this block; "
                                             "pick another name (the emitted binding outlives the branch)");
                 declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
-                if (Local* nl = lookupMut(s.name); nl && isConstExpr(s.value.get())) { nl->constInit = true; nl->declPos = s.namePos; }
+                if (Local* nl = lookupMut(s.name); nl && isConstExpr(s.value.get())) { nl->constInit = true; nl->declPos = s.namePos; nl->declStmt = &s; }
                 break;
             }
             case StmtKind::Assign: {
@@ -2012,22 +2182,30 @@ private:
                         s.target->staticOwner = currentClass_;
                         s.target->type = st->type;
                         checkMemberWritable(*st, currentClass_, currentClass_ + "." + nm, /*viaThis=*/false, /*isStatic=*/true, s.pos);
-                        if (s.op != "=" && st->type.nullable)
-                            diags_.error(s.pos, "'" + s.op + "' target '" + nm + "' of type '" + showTy(st->type) +
-                                                    "' may be null; read it with '??' or '!' and assign the result");
-                        const bool userCompound = s.op != "=" && st->type.kind == TypeRef::Kind::Named &&
-                                                  !st->type.name.empty() && knownType(st->type) &&
-                                                  !isBuiltinType(st->type.name);
-                        if (!userCompound) checkCompoundValue(s, st->type, "assignment to '" + nm + "'");
+                        if (s.op == "??=") checkCoalesceAssign(s, st->type, st->type, "'??=' assignment to '" + nm + "'");
+                        else {
+                            if (s.op != "=" && st->type.nullable)
+                                diags_.error(s.pos, "'" + s.op + "' target '" + nm + "' of type '" + showTy(st->type) +
+                                                        "' may be null; read it with '??' or '!' and assign the result");
+                            const bool userCompound = s.op != "=" && st->type.kind == TypeRef::Kind::Named &&
+                                                      !st->type.name.empty() && knownType(st->type) &&
+                                                      !isBuiltinType(st->type.name);
+                            if (!userCompound) checkCompoundValue(s, st->type, "assignment to '" + nm + "'");
+                        }
                     } else if (!local) diags_.error(s.pos, "assignment to undeclared '" + nm + "'");
                     else {
                         s.target->type = local->type; // stamp: the C7 compound rewrite keys on this
                         if (!local->isMutable) diags_.error(s.pos, "cannot assign to immutable '" + nm + "' (declared with 'let')");
                         // P40 A4 (N1, S7 hole): a compound op reads the target — a nullable one must be
                         // narrowed first. Then any assignment ends the narrowing (D14).
-                        if (s.op != "=" && local->type.nullable && !narrowedHere(*local))
+                        if (s.op != "=" && s.op != "??=" && local->type.nullable && !narrowedHere(*local))
                             diags_.error(s.pos, "'" + s.op + "' target '" + nm + "' of type '" + showTy(local->type) +
                                                     "' may be null; narrow it first ('if " + nm + " != null') or assign a non-null value");
+                        if (s.op == "??=") {
+                            TypeRef readT = local->type;
+                            if (readT.nullable && narrowedHere(*local)) readT.nullable = false;
+                            checkCoalesceAssign(s, readT, local->type, "'??=' assignment to '" + nm + "'");
+                        }
                         Local* ml = lookupMut(nm);
                         ml->assigns++;
                         if (s.op != "=") ml->reads++; // a compound reads the target
@@ -2038,7 +2216,7 @@ private:
                         const bool userCompound = s.op != "=" && local->type.kind == TypeRef::Kind::Named &&
                                                   !local->type.name.empty() && knownType(local->type) &&
                                                   !isBuiltinType(local->type.name);
-                        if (!userCompound) checkCompoundValue(s, local->type, "assignment to '" + nm + "'");
+                        if (!userCompound && s.op != "??=") checkCompoundValue(s, local->type, "assignment to '" + nm + "'");
                     }
                 } else if (s.target) {
                     const TypeRef tt = checkExpr(*s.target);
@@ -2053,7 +2231,8 @@ private:
                                                     r.kind == ExprKind::This, hit.m->isStatic, s.pos);
                         }
                     }
-                    if (s.op != "=" && tt.nullable) // P40 A4 (N1, S7 hole): the compound op reads a maybe-null value
+                    if (s.op == "??=") checkCoalesceAssign(s, tt, tt, "'??=' assignment");
+                    else if (s.op != "=" && tt.nullable) // P40 A4 (N1, S7 hole): the compound op reads a maybe-null value
                         diags_.error(s.pos, "'" + s.op + "' target of type '" + showTy(tt) +
                                                 "' may be null; read it with '??' or '!' and assign the result");
                     // A field/element is a typed slot like a local: the value converts into it (widening,
@@ -2075,7 +2254,10 @@ private:
                     // type the operator member's own signature governs instead (C7, as for locals).
                     if (s.op == "=" || (s.op != "??=" && !userTyped))
                         checkCompoundValue(s, tt, s.op == "=" ? "assignment" : "'" + s.op + "' assignment");
-                    if (s.op != "=" &&
+                    if (s.op == "??=" && userIndexer) // the get/set pair has no conditional-store form
+                        diags_.error(s.pos, "'??=' through a user indexer is not supported — read it, test it for "
+                                            "null and assign explicitly");
+                    else if (s.op != "=" && !(s.op == "??=" && !userIndexer) &&
                         (s.target->kind == ExprKind::Member || s.target->kind == ExprKind::Index) &&
                         (userTyped || userIndexer)) {
                         const Expr* base = s.target->lhs.get();
@@ -2848,9 +3030,41 @@ private:
                 checkInitOrder(dp->second, currentClass_ + "." + e.text, e.pos);
             return m->type;
         }
-        if (fns_.count(e.text) || typeNames_.count(e.text) || unionCtors_.count(e.text)) return tUnknown();
+        if (auto f = fns_.find(e.text); f != fns_.end()) return checkFnRef(e, f->second);
+        if (typeNames_.count(e.text) || unionCtors_.count(e.text)) return tUnknown();
         diags_.error(e.pos, "undeclared name '" + e.text + "'");
         return tUnknown();
+    }
+
+    // P40 review r4 items 18/20: a top-level function used as a VALUE (`apply(five)`). It is typed as its function
+    // type — it was Unknown, so `run(five)` passed a value-returning fn into `() => unit` unchecked (C# CS0407) —
+    // and lowered to a function reference every target can spell (PHP needs `five(...)`; it printed `$five`). Only
+    // a single, non-generic user function without default parameters has one such type; anything else is refused
+    // with the lambda to write instead.
+    TypeRef checkFnRef(Expr& e, const std::vector<FnSig>& set) {
+        std::vector<const FnSig*> cands;
+        for (const auto& sig : set)
+            if (set.size() == 1 || !modules_ || !modules_->visible || modules_->visible(e.pos.fileId, sig.pos.fileId, e.text))
+                cands.push_back(&sig);
+        if (cands.empty()) for (const auto& sig : set) cands.push_back(&sig);
+        auto refuse = [&](const std::string& why) {
+            diags_.error(e.pos, "function '" + e.text + "' cannot be used as a value: " + why +
+                                " — pass a lambda that calls it instead ('(…) => " + e.text + "(…)')");
+            return tUnknown();
+        };
+        if (cands.size() != 1) return refuse("it is overloaded");
+        const FnSig& sig = *cands[0];
+        if (sig.isPrelude) return refuse("it is a std library function");
+        if (!sig.generics.empty()) return refuse("it is generic");
+        if (sig.required != sig.params.size()) return refuse("it has default parameters");
+        if (auto it = fnDefId_.find(e.text); it != fnDefId_.end()) recordRef(e.pos, e.text, it->second);
+        e.fnRef = true;
+        e.overloadName = sig.mangled.empty() ? e.text : sig.mangled;
+        e.linkName = sig.linkName;
+        TypeRef ft; ft.kind = TypeRef::Kind::Function;
+        ft.args = sig.params;
+        ft.ret.push_back(sig.isAsync ? awaitable(sig.result) : sig.result);
+        return ft;
     }
 
     TypeRef checkLambda(Expr& e) {
@@ -3402,6 +3616,14 @@ private:
                 }
                 if (types_.count(typeName)) {
                     noteTypeUse(typeName, e.pos);
+                    // P40 review r4: `K.g(4)` where `g` is a static FIELD of function type calls the field's value.
+                    if (const MemberInfo* m = findMember(typeName, method);
+                        m && m->isStatic && isValueMember(*m) && m->type.kind == TypeRef::Kind::Function) {
+                        TypeRef ft = checkExpr(*e.lhs); // the static field read (`K.g`), typed and stamped
+                        e.lhs->type = ft;
+                        e.calleeIsField = true;
+                        return callFunctionValue(ft, argTypes, e, "field '" + typeName + "." + method + "'");
+                    }
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
                         if (auto it = memberDefId_.find(typeName + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                         std::string what = "static method '" + typeName + "." + method + "'";
@@ -3460,6 +3682,16 @@ private:
             if (knownType(recv)) {
                 if (MemberHit hit = findMemberOn(recv, method); hit.m) {
                     const MemberInfo* m = hit.m;
+                    // P40 review r4: `h.f(4)` where `f` is a FIELD (or property) of function type calls its value
+                    // — it was checked as a method and refused as "method 'f' expects 0 argument(s)".
+                    if (isValueMember(*m) && m->type.kind == TypeRef::Kind::Function) {
+                        if (auto it = memberDefId_.find(recv.name + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
+                        TypeRef ft = memberTypeOf(hit, m->type, e.pos);
+                        if (e.lhs->flag) ft.nullable = true; // `h?.f(4)`: the value may be absent
+                        e.lhs->type = ft;
+                        e.calleeIsField = true;
+                        return callFunctionValue(ft, argTypes, e, "field '" + hit.owner + "." + method + "'");
+                    }
                     // P40 review r3 item 6: an operator member is reached through its operator, never by name —
                     // C# emits `operator +`/`GetHashCode`/an indexer, so `m.plus(o)`/`m.hash()` is CS1061 there
                     // (and an AttributeError on Python, where `hash` becomes `__hash__`).
@@ -3503,6 +3735,11 @@ private:
             else if (recv.kind == TypeRef::Kind::Named && scalarTyOf(recv) != Ty::Unknown)
                 diags_.error(e.pos, "no method '" + method + "' on '" + recv.name +
                                         "' — is an import missing (e.g. \"std.strings\")? (PRD §3.B)");
+            // P40 review r4 item 19: a method call on a function value (`g.toString()`) — like member access
+            // on one (r3 item 6). C# CS1061, a Python AttributeError, a PHP fatal; TS printed the source.
+            else if (recv.kind == TypeRef::Kind::Function)
+                diags_.error(e.pos, "a function value of type '" + showTy(recv) + "' has no method '" + method +
+                                        "' — call it ('f(…)') instead");
             return tUnknown();
         }
         // P40 review r3 2(a): any other callee is a function VALUE (`adder(1)(4)`, `fs[0](4)`, an IIFE) — its
@@ -3565,8 +3802,13 @@ private:
         }
         if (const Local* l = lookup(name)) { // calling a function-valued local (lambda/delegate)
             recordRef(e.lhs->pos, name, l->defId);
-            e.lhs->type = l->type;
-            return callFunctionValue(l->type, argTypes, e, "'" + name + "'");
+            lookupMut(name)->reads++;
+            // P40 review r4 item 15: a nullable function local proven non-null (`if cb != null { cb() }`) is
+            // called through its narrowed type, exactly like a narrowed read (checkName).
+            TypeRef ft = l->type;
+            if (ft.nullable && narrowedHere(*l)) ft.nullable = false;
+            e.lhs->type = ft;
+            return callFunctionValue(ft, argTypes, e, "'" + name + "'");
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
             noteTypeUse(name, e.pos);

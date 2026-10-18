@@ -123,6 +123,7 @@
       }
     },
     "expressionOnlyLambdas": true,
+    "nativeCoalesceAssign": false,
     "identifiers": {
       "keywords": [
         "False",
@@ -191,8 +192,10 @@
         "_PG_*",
         "__w*"
       ],
-      "globals": [
-        "str"
+      "runtimeNames": [
+        "abs", "chr", "float", "int", "isinstance", "iter", "len", "list", "max", "min", "next", "object", "ord",
+        "range", "repr", "round", "slice", "str", "super", "type", "Exception", "ValueError", "TypeError",
+        "math", "abc", "asyncio"
       ]
     }
   },
@@ -291,12 +294,12 @@
                 }
               ]
             },
-            "(",
             {
-              "map": "node.args",
-              "sep": ", "
-            },
-            ")"
+              "case": {
+                "when": [[ { "eq": ["node.isRef", "true"] }, "" ]],
+                "else": { "tmpl": [ "(", { "map": "node.args", "sep": ", " }, ")" ] }
+              }
+            }
           ]
         }
       }

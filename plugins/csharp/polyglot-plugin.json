@@ -139,6 +139,8 @@
     "linksWithoutImports": true,
     "forbidsShadowedLocals": true,
     "nativeCompoundAssign": true,
+    "nativeCoalesceAssign": true,
+    "exprStmt": { "discardPrefix": "_ = " },
     "literals": {
       "string": {
         "quote": "\"",
@@ -420,13 +422,12 @@
             }
           }
         },
-        { "call": "typeArgsSuffix" },
-        "(",
         {
-          "map": "node.args",
-          "sep": ", "
-        },
-        ")"
+          "case": {
+            "when": [[ { "eq": ["node.isRef", "true"] }, "" ]],
+            "else": { "tmpl": [ { "call": "typeArgsSuffix" }, "(", { "map": "node.args", "sep": ", " }, ")" ] }
+          }
+        }
       ]
     },
     "Member": {
@@ -3853,6 +3854,32 @@
     "Type": {
       "case": {
         "when": [
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "type.kind",
+                    "function"
+                  ]
+                },
+                {
+                  "eq": [
+                    "type.nullable",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                {
+                  "type": "type.base"
+                },
+                "?"
+              ]
+            }
+          ],
           [
             {
               "eq": [

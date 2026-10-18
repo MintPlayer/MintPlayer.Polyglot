@@ -1,0 +1,77 @@
+import "std.io"
+import "std.strings"
+import { List, Map } from "std.collections"
+
+// P40 review r4 items 18-21 + part 2: functions as values.
+
+fn run(f: () => unit) {
+  f()
+}
+
+fn apply(f: () => i32): i32 => f()
+fn twice(g: (i32) => i32, x: i32): i32 => g(g(x))
+fn five(): i32 => 5
+fn inc(n: i32): i32 => n + 1
+fn shout(s: string) {
+  print(s + "!")
+}
+fn each(xs: List<string>, f: (string) => unit) {
+  for x in xs {
+    f(x)
+  }
+}
+
+// 21: an expression-bodied lambda whose body is an object literal on TS (a union-case construction).
+fn get(f: () => Option<i32>): i32 => match f() {
+  Some(x) => x,
+  None => -1,
+}
+
+// Part 2: a function-typed FIELD (instance and static) called through its receiver.
+class Holder {
+  var f: (i32) => i32
+  constructor(f: (i32) => i32) {
+    this.f = f
+  }
+  fn viaThis(n: i32): i32 => this.f(n)
+  fn viaParens(n: i32): i32 => (this.f)(n)
+}
+
+class K {
+  static let g: (i32) => i32 = (n: i32) => n * 3
+}
+
+fn main() {
+  // 20: a named function passed as a value (PHP `five(...)`, not `$five`).
+  print(apply(five))
+  print(twice(inc, 3))
+  let words: List<string> = ["a", "b"]
+  each(words, shout)
+  let h = inc
+  print(h(41))
+
+  // 18: a unit lambda whose call-shaped body is not a statement expression on C# (a property, a lookup, a case).
+  let s = "abc"
+  let m = Map<string, i32>()
+  m.set("x", 1)
+  let k = 3
+  run(() => s.len())
+  run(() => m.get("x"))
+  run(() => Some(k))
+  run(() => print("unit call"))
+
+  print(get(() => Some(k)))
+  print(get(() => None))
+
+  let holder = Holder(inc)
+  print(holder.f(4))
+  print((holder.f)(9))
+  print(holder.viaThis(20))
+  print(holder.viaParens(30))
+  print(K.g(4))
+  print((K.g)(5))
+
+  // Part 2: a line that starts with `(` is a new statement, never a call on the previous line.
+  print("before")
+  ((x: i32) => print(x))(8)
+}

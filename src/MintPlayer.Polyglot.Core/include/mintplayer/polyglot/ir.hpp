@@ -176,6 +176,9 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     std::string linkCallee;    // P40 review r3 2(e): the resolved overload's link name (C#); empty = callee
     bool isPrint = false;
     bool isFree = false;       // a top-level free function (C# qualifies as `Program.callee`); not a local value
+    // P40 review r4 item 20: a REFERENCE to the function as a value (`apply(five)`), not a call — no args; rules
+    // read `node.isRef` (C#/TS/Python print the resolved name, PHP the first-class callable `five(...)`).
+    bool isRef = false;
     std::vector<ExprPtr> args;
     std::vector<Type> typeArgs; // P40 A4: explicit call-site type args `f<T>(…)` (empty = inferred); `node.typeArgs`
     // P40 review r3 2(a): a callee that is not a name — `adder(1)(4)`, `fs[0](4)`, `(if c {f} else {g})(4)`,
@@ -258,7 +261,11 @@ struct Bound : Expr {
     std::vector<ExprPtr> args;
     std::string tmpl; // the active target's template ("" only when the pre-lowering refusal was bypassed)
     std::vector<std::string> preludeKeys; // P40 §0: the binding's manifest prelude keys (see ir::Extern)
-    bool coalesced = false; // P40 review A1: the left operand of `??` (see BackendSpec::absentNormalize)
+    // P40 review A1 / r4 item 16: the absence-testing consumer this bound's value flows straight into —
+    // "coalesce" (`??` left operand), "nullAssert" (`x!`), "nullSafe" (a `?.` receiver), or "" (none). The
+    // emitter drops the template's absent normalization when the target lists that consumer as one that
+    // folds every absent form (BackendSpec::absentFoldedBy).
+    std::string absentConsumer;
     Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 
@@ -368,6 +375,10 @@ struct IndexAssign : Stmt {
 };
 struct ExprStmt : Stmt {
     ExprPtr expr;
+    // P40 review r4 item 18: the expression produces a value that is thrown away and is not an invocation,
+    // construction or await (`s.len()` bound to a property read, a map lookup, a union-case literal) — a target
+    // that admits only statement expressions spells it with its discard form (BackendSpec::exprStmtDiscardPrefix).
+    bool discard = false;
     ExprStmt(SourcePos p, ExprPtr e) : Stmt(StmtKind::ExprStmt, p), expr(std::move(e)) {}
 };
 struct If : Stmt {

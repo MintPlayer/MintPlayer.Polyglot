@@ -84,12 +84,12 @@
         "void"
       ],
       "globals": [
-        "console"
+        "console", "globalThis", "Math", "Number", "String", "BigInt", "Array", "Object", "JSON", "Promise", "Symbol"
       ]
     },
     "rethrow": "throw __e;",
     "preludes": {
-      "nullAssert": "function __pgNullAssert(at: string): never {\n    throw new TypeError(\"null-assert failed (\" + at + \")\");\n}\n"
+      "nullAssert": "function __pgNullAssert(at: string): never {\n    throw new globalThis.TypeError(\"null-assert failed (\" + at + \")\");\n}\n"
     },
     "tables": {
       "baseRootMembers": {
@@ -187,7 +187,9 @@
       "i64": "BigInt.asIntN(64, $x)",
       "u64": "BigInt.asUintN(64, $x)"
     },
-    "absentNormalize": { "prefix": "(", "suffix": " ?? null)" },
+    "absentNormalize": { "prefix": "(", "suffix": " ?? null)", "foldedBy": ["coalesce", "nullAssert", "nullSafe"] },
+    "nativeCoalesceAssign": true,
+    "exprStmt": { "parenIfStarts": ["{"] },
     "wrapAtom": {
       "recvPrimary": [
         "var",
@@ -343,13 +345,12 @@
                 }
               ]
             },
-            { "call": "typeArgsSuffix" },
-            "(",
             {
-              "map": "node.args",
-              "sep": ", "
-            },
-            ")"
+              "case": {
+                "when": [[ { "eq": ["node.isRef", "true"] }, "" ]],
+                "else": { "tmpl": [ { "call": "typeArgsSuffix" }, "(", { "map": "node.args", "sep": ", " }, ")" ] }
+              }
+            }
           ]
         }
       }
@@ -1236,7 +1237,14 @@
     },
     "Match": {
       "tmpl": [
-        "(() => { const _m = ",
+        "(() => { const _m",
+        {
+          "case": {
+            "when": [[ { "has": "node.scrutineeScalar" }, { "tmpl": [": ", { "get": "node.scrutineeScalar" }] } ]],
+            "else": ""
+          }
+        },
+        " = ",
         {
           "emit": "node.scrutinee"
         },
@@ -1647,7 +1655,8 @@
                   ]
                 },
                 {
-                  "emit": "node.body"
+                  "fn": "parenIfStarts",
+                  "args": ["{", { "emit": "node.body" }]
                 }
               ]
             ],
@@ -3902,6 +3911,33 @@
     "Type": {
       "case": {
         "when": [
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "type.kind",
+                    "function"
+                  ]
+                },
+                {
+                  "eq": [
+                    "type.nullable",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "((",
+                {
+                  "type": "type.base"
+                },
+                ") | null)"
+              ]
+            }
+          ],
           [
             {
               "eq": [

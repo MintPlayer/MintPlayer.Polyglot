@@ -1,0 +1,4 @@
+// REFUSED (P40 review r4 item 19): a method call on a function value — C# CS1061, a Python AttributeError, a PHP
+// fatal, and TS printed the function's source.
+fn adder(k: i32): (i32) => i32 => (n: i32) => n + k
+fn f(): string => adder(1).toString()
