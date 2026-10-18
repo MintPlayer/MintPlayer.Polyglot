@@ -1,0 +1,61 @@
+import "std.io"
+import "std.collections"
+
+// P40 review r6 (part 2): a generic `T?` (an Option at a use site, SPEC §4.4) compared with `null` is a presence
+// test. It was first converted to the native `T?` — a switch whose arms are `(T?)v` and `null` — which has no type
+// for an unconstrained C# `T` (CS8506 / CS0019); it now matches on the case directly. The neighbours stay
+// accepted: `T` instantiated with a nullable type explicitly, narrowed `T?` reads, `??` on a generic result.
+class Box<T> {
+  var v: T
+  constructor(v: T) {
+    this.v = v
+  }
+  fn get(): T => this.v
+}
+class Cache<T> {
+  var v: T? = null
+  fn getOr(d: T): T {
+    let cur = this.v
+    if cur != null {
+      return cur
+    }
+    return d
+  }
+  fn isEmpty(): bool {
+    let cur = this.v
+    return cur == null
+  }
+  fn put(x: T) {
+    this.v = x
+  }
+}
+
+fn id<T>(x: T): T => x
+fn pick<T>(a: T?, b: T): T {
+  if a != null {
+    return a
+  }
+  return b
+}
+fn maybe(k: i32): i32? => if k > 0 { k } else { null }
+
+fn main() {
+  let a: i32? = id<i32?>(null)
+  print(a ?? 1)
+  print(id<string?>(null) ?? "d")
+  let b = Box<string?>(null)
+  print(b.get() ?? "none")
+  let c = Cache<i32>()
+  print(c.isEmpty())
+  print(c.getOr(7))
+  c.put(3)
+  print(c.getOr(7))
+  print(c.isEmpty())
+  let cs = Cache<string>()
+  cs.put("s")
+  print(cs.getOr("t"))
+  print(pick<i32>(null, 5))
+  print(pick(maybe(2), 5))
+  let w = id(maybe(-1))
+  print(w ?? 6)
+}

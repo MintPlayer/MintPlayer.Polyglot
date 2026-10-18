@@ -1,0 +1,26 @@
+import "std.io"
+
+// P40 review r6 (part 2): a lambda's body is typed with its parameters' types — an unannotated parameter takes the
+// type of the function slot the lambda flows into, and a lambda with typed parameters and an expression body has a
+// function type of its own. Before, the body of `s => s + "!"` saw an unknown `s`, so PHP did not know `+` was a
+// concatenation (it emitted `+`: a TypeError), and an `i32` sum inside a lambda was not wrapped on overflow (TS,
+// Python and PHP printed 2147483648 where C# prints -2147483648). `let f = () => "x"` made `f()` unknown as well:
+// PHP kept `+` after the first `.` of `(() => "a")() + "|" + f()`. And a local lambda that shadows a top-level
+// function (`which`) is called through its value: C# called `PolyglotProgram.which()`, a silent wrong result.
+fn mapS(f: (string) => string): string => f("q")
+fn mapI(f: (i32) => i32): i32 => f(1073741824)
+fn which(): string => "top"
+
+fn main() {
+  print(mapS((s: string) => s + "?"))
+  print(mapS(s => s + "!"))
+  let f = () => "x"
+  let s = (() => "a")() + "|" + f() + "|" + "z"
+  print(s)
+  print(mapI(x => x * 2))
+  print(mapI(x => x + x))
+  let g = (n: i32) => n + 2147483647
+  print(g(1))
+  let which = () => "local"
+  print(which())
+}

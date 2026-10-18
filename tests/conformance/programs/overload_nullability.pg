@@ -1,0 +1,29 @@
+import "std.io"
+
+// P40 review r6 (part 2): in an overload set whose members differ only in nullability, a maybe-null argument binds
+// the NULLABLE member — it bound the first-declared `show(string)` (an equal lenient score) and was then refused as
+// a null into a non-null slot. `null` binds the nullable member too; a non-null argument keeps the non-null one,
+// and a value type (`i32` / `i32?`, distinct types on C# as well) resolves the same way.
+fn show(s: string): string => "plain:" + s
+fn show(s: string?): string => "maybe:" + (s ?? "none")
+
+fn num(n: i32): string => "int"
+fn num(n: i32?): string => "int?"
+
+fn mk(f: bool): string? => if f { "y" } else { null }
+fn mkn(f: bool): i32? => if f { 4 } else { null }
+
+fn main() {
+  print(show("x"))
+  let m: string? = mk(false)
+  print(show(m))
+  let k: string? = mk(true)
+  print(show(k))
+  print(show(null))
+  if k != null {
+    print(show(k))
+  }
+  print(num(1))
+  print(num(mkn(true)))
+  print(num(null))
+}

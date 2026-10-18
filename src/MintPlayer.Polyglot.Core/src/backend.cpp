@@ -109,6 +109,7 @@ public:
     const OriginMapping& originMapping() const override { return originMapping_; }
     const std::vector<std::string>& reservedIdentifiers() const override { return spec_.reservedNames; }
     const std::vector<std::string>& globalIdentifiers() const override { return spec_.globalNames; }
+    const std::unordered_map<std::string, std::string>& refusedClassNames() const override { return spec_.refusedClassNames; }
     const std::vector<TargetOptionDecl>& options() const override { return options_; }
 
 private:

@@ -188,6 +188,8 @@ std::string IrExprCtx::get(const std::string& path) const {
     if (e_.kind == ir::ExprKind::MethodCall) {
         const auto& mc = static_cast<const ir::MethodCall&>(e_);
         if (path == "node.method")      return mc.method;
+        // P40 review r6: an extension called as a free function, by its emitted name (ir::MethodCall::freeName)
+        if (path == "node.freeName")    return mc.freeName.empty() ? mc.method : mc.freeName;
         if (path == "node.staticType")  return mc.staticType;
         if (path == "node.isExtension") return mc.isExtension ? "true" : "false";
         if (path == "node.args.count")  return std::to_string(mc.args.size());
@@ -541,6 +543,11 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
     // P40 review r4 #10: a cast can print as anything — `(double)x`, `Number(x)`, or (an identity cast on TS/PHP)
     // its bare operand, so `-f64(-y)` printed `--y`, a pre-decrement. A prefix operator's cast operand is
     // therefore judged on its PRINTED text: wrapped unless that text is lexically primary.
+    // P40 review r6 (part 2): "operand" — an operand that more of the enclosing expression's own syntax FOLLOWS
+    // (Python's `<then> if c else e`, a match arm's value before its ` if `). A lambda body extends as far right as
+    // it can on every target, so there it is always parenthesized, as for a binary operand (r5 #21): Python printed
+    // `lambda : 1 if b else None` — a lambda returning `1 if b else None`, not a choice between two values.
+    if (side == "operand") return c->kind == ir::ExprKind::Lambda ? "(" + inner + ")" : inner;
     if (side == "unary" && c->kind == ir::ExprKind::Cast) return textIsPrimary(inner) ? inner : "(" + inner + ")";
     if (!side.empty() && wrapAtom(*c, side)) return "(" + inner + ")"; // "recv"/"unary": per-target policy
     return inner;
@@ -568,12 +575,6 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     // Table-template substitution — {"fn":"subst","args":[<table>, <key>, <expr>]}: look the template up,
     // fill its `$x` holes (identity when absent). The conversion rules' width-specific pieces live here.
     if (name == "subst" && args.size() >= 3) return specSubst(spec_, args[0], args[1], args[2]);
-    // Prelude requirement — {"fn":"require","args":[<key>]} records the key and emits nothing; the
-    // emitter prepends the matching prelude once after the walk (Python's `_pg_idiv` helpers).
-    if (name == "require") {
-        if (requires_ && !args.empty()) requires_->insert(args[0]);
-        return "";
-    }
     // P40 A6 — {"fn":"parenIfContains","args":[<chars>, <text>]}: parenthesize <text> when it contains any of
     // <chars> (manifest data). C# uses it for an interpolation hole, where a top-level ':' starts a format
     // specifier; a false positive (a ':' nested in a call or a string) costs only harmless parentheses.
@@ -801,6 +802,18 @@ std::string EnumDeclCtx::get(const std::string& path) const {
     }
     return "";
 }
+
+// P40 review r6 #10: every declaration-side context records a `require` through its hooks — the owning emitter's
+// prelude keys — exactly as an expression context does (EvalContext::requirePrelude; evalRule handles the fn).
+void EnumDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void UnionDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void InterfaceDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void MethodDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void RecordDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void ClassDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void FnDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void ModuleDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void StmtCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
 
 std::string EnumDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
@@ -1921,6 +1934,7 @@ protected:
         return it != externs_.end() ? it->second->typeTmpl : std::string();
     }
     std::string renderTypeRef(const TypeRef& t) const override { return owner_.renderType(t); }
+    void requirePrelude(const std::string& key) const override { owner_.requirePrelude(key); }
 
 private:
     const std::unordered_map<std::string, const ir::ExternType*>& externs_;
@@ -2436,14 +2450,21 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             // `var xs: List<Tree> = [...]` need the contextual type in TS or literal `tag`s widen to
             // string. declDiffers additionally catches non-explicit divergence, belt-and-braces.
             const bool declDiffers = l.init && !l.type.absent() && !sameTypeRef(l.type, l.init->type);
+            std::string init = emitExpr(*l.init);
             if (uninferable || declDiffers || (l.declExplicit && !l.type.absent())) {
                 std::string ty = renderType(l.type);
                 if (!ty.empty()) {
                     std::string typed = localDeclTyped(l.name, l.isMutable, ty);
                     if (!typed.empty()) decl = typed;
+                    // P40 review r6 (part 2): a target whose checker narrows a local to the type of its
+                    // initializer (tsc: `let x: T | null = null` IS `null` until an assignment it can see, so a
+                    // read after `x !== null` is `never`, TS2339) widens a `null` initializer back to the declared
+                    // type — manifest row `localNullInit.typed` (TS `$x as $T`); absent = the bare `null`.
+                    if (l.init->kind == ir::ExprKind::Null)
+                        if (std::string w = specSubstTX(spec(), "localNullInit", "typed", ty, init); !w.empty()) init = w;
                 }
             }
-            line(decl + " = " + emitExpr(*l.init) + spec().stmtEnd);
+            line(decl + " = " + init + spec().stmtEnd);
             return;
         }
 

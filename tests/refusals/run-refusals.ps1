@@ -121,6 +121,11 @@ $cases = [ordered]@{
     "nullsafe_call_nonnull.pg"  = @("cannot convert 'i32?' to 'i32' (initializer of 'w')")
     "infer_unit_type_arg.pg"    = @("cannot infer 'T' of 'apply' from a lambda that returns no value")
     "field_not_narrowed.pg"     = @("fields are not narrowed by a null test", "read it into a local first ('let v = this.name'")
+    # --- Review round 6 — records/names/python half (item 9 + part 2) ---
+    "infer_unit_fn_value.pg"    = @("cannot infer 'T' of 'apply' from a function value that returns no value")
+    "infer_unit_fn_local.pg"    = @("cannot infer 'T' of 'apply' from a function value that returns no value")
+    "fn_value_equality.pg"      = @("'==' on a function value is refused", "only a null test")
+    "nullable_numeric_narrow.pg" = @("cannot implicitly convert i64 to i32? (initializer of 'n')", "add an explicit cast '(i32)'")
     "nullable_member.pg"        = @("'.v' on a receiver of type 'Box?', which may be null", "use '?.v'")
     "record_in_hole.pg"         = @("cannot interpolate a value of type 'P'", "format the value explicitly")
     "list_in_hole.pg"           = @("cannot interpolate a value of type 'List<i32>'")

@@ -1,0 +1,9 @@
+import "std.io"
+
+// REFUSED (P40 review r6 #9): inferring `T = unit` from a `() => unit` LOCAL (CS0411 on C#).
+fn apply<T>(f: () => T): T => f()
+
+fn main() {
+  let g: () => unit = () => print("g")
+  apply(g)
+}

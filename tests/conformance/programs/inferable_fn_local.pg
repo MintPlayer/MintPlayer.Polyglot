@@ -1,0 +1,30 @@
+import "std.io"
+
+// P40 review r6 (part 2): `let cb = pick(flag)`, where `pick` returns `(() => unit)?`, was refused as un-inferable
+// with a list-shaped hint (`var cb: List<i32> = []`): a nullable function type with no parameters has no name and no
+// type arguments, which the "bare null" test took for the `null` placeholder. Its type is fully known.
+fn runIt(f: () => unit) {
+  f()
+}
+
+fn pick(flag: bool): (() => unit)? {
+  if flag {
+    return () => print("captured-inside")
+  }
+  return null
+}
+
+fn viaCapturedInside(flag: bool) {
+  let cb = pick(flag)
+  runIt(() => {
+    if cb != null {
+      cb()
+    }
+  })
+}
+
+fn main() {
+  viaCapturedInside(true)
+  viaCapturedInside(false)
+  print("done")
+}

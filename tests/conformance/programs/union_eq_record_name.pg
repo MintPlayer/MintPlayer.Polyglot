@@ -1,0 +1,35 @@
+import "std.io"
+
+// P40 review r6 #7: the TS union-equality helper (`__pgUnionEq`) spelled the TS lib type `Record<string, unknown>`
+// unqualified, so a user type named `Record` — a class here, an interface just as well — took its place: TS2315
+// ("Type 'Record' is not generic") as soon as any union was compared. The helper now writes the index-signature
+// type `{ [k: string]: unknown }`, and the manifest drift scan covers TS lib types in type positions.
+union Shape {
+  Circle(r: i32)
+  Square(s: i32)
+}
+
+class Record {
+  var id: i32 = 1
+}
+
+interface Keyed {
+  fn key(): string
+}
+
+class Row : Keyed {
+  fn key(): string => "k"
+}
+
+fn mk(f: bool): Shape? => if f { Circle(2) } else { null }
+
+fn main() {
+  let r = Record()
+  print(r.id)
+  print(Row().key())
+  print(Circle(1) == Circle(1))
+  print(Circle(1) == Square(1))
+  print(mk(true) == Circle(2))
+  print(mk(false) != Circle(2))
+  print(mk(false) == null)
+}

@@ -243,6 +243,7 @@ public:
     }
     std::string renderType(const std::string& p) const override { return base_.renderType(p); }
     std::string freshName(const std::string& p) const override { return base_.freshName(p); }
+    void requirePrelude(const std::string& k) const override { base_.requirePrelude(k); }
 
 private:
     const EvalContext& base_;
@@ -266,6 +267,7 @@ public:
     std::string renderType(const std::string& p) const override { return base_.renderType(p); }
     std::string resolvePath(const std::string& p) const override { return base_.resolvePath(p); }
     std::string freshName(const std::string& p) const override { return base_.freshName(p); }
+    void requirePrelude(const std::string& k) const override { base_.requirePrelude(k); }
 
 private:
     const EvalContext& base_;
@@ -343,6 +345,10 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
             std::vector<std::string> args;
             args.reserve(r.parts.size());
             for (const Rule& a : r.parts) args.push_back(evalRule(a, ctx, helpers, depth));
+            if (r.s == "require") { // P40 review r6 #10: one path for every context (EvalContext::requirePrelude)
+                if (!args.empty()) ctx.requirePrelude(args[0]);
+                return "";
+            }
             return ctx.builtin(r.s, args);
         }
         case Rule::Kind::Case:

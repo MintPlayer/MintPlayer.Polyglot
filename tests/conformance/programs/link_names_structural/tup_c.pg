@@ -1,0 +1,5 @@
+fn pairOf(p: (i32, i32)): i32 {
+  let (a, b) = p
+  return a + b
+}
+fn useTC(): i32 => pairOf((3, 4))

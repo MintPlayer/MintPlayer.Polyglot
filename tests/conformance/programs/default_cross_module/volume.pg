@@ -1,0 +1,6 @@
+// a record whose default is an enum case imported from a third module
+import { Tone } from "./tones"
+record Q(n: i32, t: Tone = Tone.Loud) {
+  fn loud(): bool => this.t == Tone.Loud
+}
+fn loudest(): bool => Q(9).loud()

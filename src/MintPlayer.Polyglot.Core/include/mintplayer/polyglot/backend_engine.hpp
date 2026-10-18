@@ -39,6 +39,12 @@ public:
     // Mint a fresh single-eval temporary name from the emitter's counter (a `{"fresh":…}` rule calls this
     // once, then exposes the name to its body under the declared alias). "" when the context has no counter.
     virtual std::string freshName(const std::string& /*prefix*/) const { return ""; }
+    // `{"fn":"require","args":[<key>]}` — record that the emitted file needs the manifest prelude `<key>`. P40
+    // review r6 #10: the interpreter handles `require` ITSELF (evalRule) and hands the key here, so every
+    // context — expression, statement, declaration, method, class, module, type, and the wrappers around them —
+    // records it through this one path (a decl context's own builtin() used to drop it: Python's
+    // `@builtins.staticmethod` emitted with no `import builtins`). Default: nowhere to record (a test mock).
+    virtual void requirePrelude(const std::string& /*key*/) const {}
     // Recurse into a child IR node at `path`, emitting it. `side` selects precedence parenthesization computed
     // by the CONTEXT (not the plugin): "" = plain, "l"/"r" = a binary operand (wrap by precedence+associativity),
     // "recv" = an atom receiver (wrap a binary/unary/cast). Keeping the paren algorithm in the context (fixed
@@ -104,6 +110,7 @@ public:
     std::string renderType(const std::string& p) const override { return base_.renderType(redirect(p)); }
     std::string resolvePath(const std::string& p) const override { return base_.resolvePath(redirect(p)); }
     std::string freshName(const std::string& p) const override { return base_.freshName(p); }
+    void requirePrelude(const std::string& k) const override { base_.requirePrelude(k); }
     std::string redirect(const std::string& p) const {
         if (p == "item") return prefix_;
         if (p.rfind("item.", 0) == 0) return prefix_ + p.substr(4); // "item.value" -> "<prefix>.value"

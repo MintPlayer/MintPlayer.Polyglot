@@ -1,0 +1,8 @@
+import "std.io"
+
+// REFUSED (P40 review r6, part 2): `==` on function values — C# has no equality for a lambda operand (CS0019) and
+// compares delegates by invocation list; TS/Python compare by identity, PHP closures by object equality.
+fn main() {
+  let k: () => i32 = () => 1
+  print(k == (() => 1))
+}

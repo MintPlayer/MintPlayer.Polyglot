@@ -1,0 +1,31 @@
+import "std.io"
+
+// P40 review r6 (part 2): a non-null number flowing into a NULLABLE wider slot widens to the slot's type, as it does
+// into the non-null slot. An `i32` into `i64?` reached TS as a plain number where a bigint was declared (TS2322, and
+// `BigInt.asIntN` then threw a TypeError); every path is covered — a local, an argument, a return, and each arm of
+// an `if`/`match` value (round 5 made arms convert one by one, which exposed it). `i32` into `f64?` widens too.
+fn takeL(x: i64?): i64 => x ?? 0i64
+fn ret(a: i32): i64? => a
+fn wide(c: bool, a: i32, b: i32): i64 => if c { a } else { b }
+fn wideN(c: bool, a: i32): i64? => if c { a } else { null }
+fn wideNM(k: i32, a: i32): i64? => match k { 1 => a, _ => null }
+fn wideFN(c: bool, a: i32): f64? => if c { a } else { null }
+
+fn main() {
+  let a = 4
+  let c = true
+  let x: i64? = a
+  print((x ?? 0i64) * 3000000000i64)
+  print(takeL(a) * 3000000000i64)
+  print((ret(a) ?? 0i64) * 3000000000i64)
+  let y: i64? = if c { a } else { null }
+  print((y ?? 0i64) * 3000000000i64)
+  print(takeL(if c { a } else { null }) * 3000000000i64)
+  print(wide(true, 5, 6) * 3000000000i64)
+  print((wideN(true, a) ?? 0i64) * 3000000000i64)
+  print(wideN(false, a) == null)
+  print((wideNM(1, a) ?? 0i64) * 3000000000i64)
+  print((wideFN(true, 3) ?? 0.0) / 2.0)
+  let z: f64? = a
+  print((z ?? 0.0) / 8.0)
+}

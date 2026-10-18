@@ -264,6 +264,10 @@ struct BackendSpec {
     // P40 review r5: builtin CLASS names of the target's single class namespace (PHP `Directory`, `Error`, …,
     // lowercase when identifiersCaseInsensitive). Escaped only in type-name position (`specIdentType`).
     std::unordered_set<std::string> classBuiltins;
+    // P40 review r6 (part 2): names a user CLASS or RECORD (what every target emits as a class) may not take on
+    // this target, each with the reason the diagnostic names — TS `Object`: a class named `Object` is TS2725
+    // under `--module nodenext`. Narrower than `globalNames`: a field, local or enum of that name is fine.
+    std::unordered_map<std::string, std::string> refusedClassNames;
 };
 
 // A `.pg` identifier spelled for the target: keyword collisions escape per the spec's declared strategy.

@@ -210,6 +210,11 @@ public:
         static const std::vector<std::string> kEmpty;
         return kEmpty;
     }
+    // P40 review r6: user class/record names refused on this target -> the reason (`identifiers.classNames`).
+    virtual const std::unordered_map<std::string, std::string>& refusedClassNames() const {
+        static const std::unordered_map<std::string, std::string> kEmpty;
+        return kEmpty;
+    }
     // The target's std overlay arms (P19 slice 9b): the FFI templates its plugin ships for the std
     // SKELETONS embedded in Core — keyed "<Class>.<member>" / "<Class>.type" / "<Class>.constructor" /
     // "<receiver>.<extension>" / "<expectFnName>", flattened across std modules. The compiler injects

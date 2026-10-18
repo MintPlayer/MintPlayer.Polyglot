@@ -662,6 +662,9 @@ void validateImportNames(const ImportDecl& imp, const CompilationUnit& mod, Diag
     for (const auto& i : mod.interfaces) exports.insert(i.name);
     for (const auto& v : mod.values)     exports.insert(v.name);
     for (const auto& f : mod.functions)  exports.insert(f.name);
+    // P40 review r6: an extension is imported by its name too — the D16 scope check asks for exactly that
+    // ("add it to `import { … }`"), and this list then refused the import ("has no export").
+    for (const auto& x : mod.extensions) exports.insert(x.name);
     for (const auto& n : imp.names)
         if (!exports.count(n.name)) diags.error(imp.pos, "module '" + imp.path + "' has no export '" + n.name + "'");
 }
@@ -1340,19 +1343,50 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
                                                   bool linksWithoutImports, bool crossDir,
                                                   const std::function<std::string(const std::string&)>& outDirOf,
                                                   const std::map<std::string, std::string>& allNamesByCanon,
-                                                  const std::map<std::string, std::map<std::string, std::vector<std::string>>>& fnNamesByCanon) {
+                                                  const std::map<std::string, std::map<std::string, std::vector<std::string>>>& fnNamesByCanon,
+                                                  const std::map<std::string, std::set<std::string>>& spelledRefs) {
     std::vector<ir::ModuleImport> out;
     if (linksWithoutImports) return out; // modules link by compilation into one unit (plugin trait flag)
+    static const std::vector<ResolvedImport> kNone;
     auto it = graph.find(fileOrigin);
-    if (it == graph.end()) return out;
+    const std::vector<ResolvedImport>& edges = it == graph.end() ? kNone : it->second;
     const std::string fromDir = (crossDir && outDirOf) ? outDirOf(fileOrigin) : std::string();
-    for (const auto& ri : it->second) {
+    auto pathTo = [&](const std::string& canon, const std::string& base) {
+        return crossDir ? relativeSpecifier(fromDir, outDirOf ? outDirOf(canon) : std::string(), base) : base;
+    };
+    // P40 review r6 #6: what this file's LOWERED code spells from another module but its source never imported
+    // (a record or function default filled in at this call site names the default's own types). Per module:
+    // the names still missing once the source imports are counted (a bare import already names them all).
+    std::map<std::string, std::vector<std::string>> missing;
+    for (const auto& [canon, names] : spelledRefs) {
+        if (!baseByCanon.count(canon)) continue;
+        std::set<std::string> bound;
+        bool bare = false;
+        const auto overloads = fnNamesByCanon.find(canon);
+        for (const auto& ri : edges) {
+            if (ri.fromCanon != canon) continue;
+            if (ri.names.empty()) bare = true;
+            for (const auto& n : ri.names) {
+                bound.insert(n.name);
+                if (overloads != fnNamesByCanon.end())
+                    if (auto o = overloads->second.find(n.name); o != overloads->second.end())
+                        bound.insert(o->second.begin(), o->second.end());
+            }
+        }
+        if (bare) continue;
+        for (const auto& n : names) if (!bound.count(n)) missing[canon].push_back(n);
+    }
+    auto appendMissing = [&](ir::ModuleImport& mi, const std::string& canon) {
+        auto ms = missing.find(canon);
+        if (ms == missing.end()) return;
+        for (const auto& n : ms->second) { if (!mi.names.empty()) mi.names += ", "; mi.names += n; }
+        missing.erase(ms);
+    };
+    for (const auto& ri : edges) {
         auto b = baseByCanon.find(ri.fromCanon);
         if (b == baseByCanon.end()) continue; // imported module contributed no emitted decls
         ir::ModuleImport mi;
-        mi.path = crossDir ? relativeSpecifier(fromDir, outDirOf ? outDirOf(ri.fromCanon) : std::string(),
-                                               b->second)
-                           : b->second;
+        mi.path = pathTo(ri.fromCanon, b->second);
         if (ri.isNamespace) { mi.isNamespace = true; mi.ns = ri.nsAlias; }
         else {
             std::string joined;
@@ -1374,7 +1408,16 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
             // undefined (Python NameError, TS TS2304).
             if (ri.names.empty())
                 if (auto an = allNamesByCanon.find(ri.fromCanon); an != allNamesByCanon.end()) mi.allNames = an->second;
+            if (!ri.names.empty()) appendMissing(mi, ri.fromCanon);
         }
+        out.push_back(std::move(mi));
+    }
+    // A module the source never imported at all (a transitive dependency's type, through a filled default).
+    const auto rest = missing;
+    for (const auto& entry : rest) {
+        ir::ModuleImport mi;
+        mi.path = pathTo(entry.first, baseByCanon.at(entry.first));
+        appendMissing(mi, entry.first);
         out.push_back(std::move(mi));
     }
     return out;
@@ -1572,6 +1615,9 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         for (const auto& d : m.functions)
             if (d.originModule != kPreludeOrigin && !d.originModule.empty() && !d.mangledName.empty() && d.mangledName != d.name)
                 fnNamesByCanon[d.originModule][d.name].push_back(d.mangledName);
+        for (const auto& d : m.extensions) // r6: an extension emitted under its free-function name (a shared name)
+            if (d.originModule != kPreludeOrigin && !d.originModule.empty() && !d.mangledName.empty() && d.mangledName != d.name)
+                fnNamesByCanon[d.originModule][d.name].push_back(d.mangledName);
         {
             std::map<std::string, std::set<std::string>> byOrigin;
             auto add = [&](const std::string& origin, const std::string& n) {
@@ -1583,7 +1629,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
             for (const auto& d : m.classes) add(d.originModule, d.name);
             for (const auto& d : m.interfaces) add(d.originModule, d.name);
             for (const auto& d : m.globals) add(d.originModule, d.name);
-            for (const auto& d : m.extensions) add(d.originModule, d.name);
+            for (const auto& d : m.extensions) add(d.originModule, d.mangledName.empty() ? d.name : d.mangledName);
             for (const auto& d : m.functions) add(d.originModule, d.mangledName.empty() ? d.name : d.mangledName);
             for (const auto& [origin, names] : byOrigin) {
                 std::string joined;
@@ -1606,6 +1652,10 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
                                      [&](const auto& d) { return !keep.count(d.originModule); }),
                       vec.end());
         };
+        // P40 review r6 #6: read before the partition drops the other modules' declarations.
+        const auto spelledRefs = target.backend()->linksWithoutImports()
+                                     ? std::map<std::string, std::set<std::string>>()
+                                     : crossModuleReferences(m, importOrigin);
         prune(m.enums); prune(m.unions); prune(m.records); prune(m.classes);
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         if (holdsPrelude) pruneUnreachablePrelude(m, holdsForOthers ? forcedReach : nullptr);
@@ -1619,7 +1669,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         m.imports = buildImports(importGraph, importOrigin, baseByCanon,
                                  target.backend()->linksWithoutImports(),
                                  target.backend()->crossDirImports(), lib.moduleOutputDir, allNamesByCanon,
-                                 fnNamesByCanon);
+                                 fnNamesByCanon, spelledRefs);
         if (!lib.originInfo) return target.backend()->emit(m);
         // P38: same as the single-file path, but each emitted FILE gets its own origin list — the caller
         // below stashes it on the matching ModuleFile.

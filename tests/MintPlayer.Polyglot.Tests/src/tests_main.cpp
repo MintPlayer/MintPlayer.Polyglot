@@ -2148,6 +2148,18 @@ int main() {
                     "next", "object", "oct", "open", "ord", "pow", "print", "property", "range", "repr", "reversed",
                     "round", "set", "setattr", "slice", "sorted", "staticmethod", "str", "sum", "tuple", "type", "vars",
                     "zip", "TypeError", "ValueError", "ZeroDivisionError", "KeyError", "IndexError", "StopIteration"};
+                // The TS lib's global types (lib.es*.d.ts). A template may spell one only if a user type can never
+                // take its name: it is in the identifier lists (refused), or it is a Polyglot core/std type of the same
+                // name (`tsPgTypes`) — a user type cannot redeclare those (`linkCoreModule`, the flat std namespace).
+                const std::set<std::string> tsLibTypes = {
+                    "Record", "Partial", "Required", "Readonly", "Pick", "Omit", "Exclude", "Extract", "NonNullable",
+                    "ReturnType", "Parameters", "InstanceType", "Awaited", "NoInfer", "ThisType", "Uppercase",
+                    "Lowercase", "Capitalize", "Uncapitalize", "PropertyKey", "ArrayLike", "Map", "Set", "WeakMap",
+                    "WeakSet", "Array", "ReadonlyArray", "Iterable", "Iterator", "IterableIterator", "Generator",
+                    "AsyncGenerator", "AsyncIterable", "AsyncIterator", "Promise", "PromiseLike", "Error", "TypeError",
+                    "RangeError", "Symbol", "Object", "Function", "Date", "RegExp", "BigInt", "Number", "String",
+                    "Boolean", "TemplateStringsArray"};
+                const std::set<std::string> tsPgTypes = {"Map", "Iterable", "Error"};
                 for (const char* t : {"csharp", "typescript", "python", "php"}) {
                     std::string text;
                     cli::readFile(cli::executablePath().parent_path() / "plugins" / t / "polyglot-plugin.json", text);
@@ -2212,6 +2224,11 @@ int main() {
                             const bool defined = i >= 4 && code.compare(i - 4, 4, "def ") == 0; // the template's own def
                             if (std::string(t) == "python" && pyBuiltins.count(name) && !defined)
                                 missing.insert(name + "(bare)");
+                            // P40 review r6 #7: a TS lib TYPE spelled unqualified in a type position (`as Record<…>`)
+                            // is shadowed by a user type of that name (TS2315) — calls alone did not cover it.
+                            if (std::string(t) == "typescript" && tsLibTypes.count(name) && !covered.count(name) &&
+                                !tsPgTypes.count(name))
+                                missing.insert(name + "(type)");
                             i = j;
                         }
                     }
@@ -2232,6 +2249,196 @@ int main() {
                 const bool pyOk = bp.ok && has(bp.code, "from ext import *");
                 check(tsOk, "P40 s8: a bare import of an extension-only module imports its names on TS (was TS2304)");
                 check(pyOk, "P40 s8: a bare import of an extension-only module star-imports on Python (was NameError)");
+            }
+            // P40 review r6 — records / names / python half: each fix by emission, each refusal by message, and the
+            // accepted neighbours. (Four-target behaviour: the conformance programs and the refusal fixtures.)
+            {
+                auto refusesR6 = [&](const std::string& src, const char* target, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r6: " + label);
+                };
+                auto acceptsR6 = [&](const std::string& src, const char* target, const std::string& label) {
+                    check(compileStd(src, findTarget(target)).ok, "r6: " + label);
+                };
+                auto emitsR6 = [&](const std::string& src, const char* target, std::initializer_list<const char*> frags,
+                                   std::initializer_list<const char*> absent, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool ok = r.ok;
+                    for (const char* f : frags) ok = ok && has(r.code, f);
+                    for (const char* f : absent) ok = ok && !has(r.code, f);
+                    check(ok, "r6: " + label);
+                };
+                // #6: a default filled in at a construction site in another module imports the default's own types.
+                {
+                    MapModuleResolver res{{"./paint", "enum Color { Red, Blue }\nrecord P(x: i32, c: Color = Color.Blue)\n"},
+                                          {"./tones", "enum Tone { Soft, Loud }\n"},
+                                          {"./vol", "import { Tone } from \"./tones\"\nrecord Q(n: i32, t: Tone = Tone.Loud)\n"}};
+                    const std::string prog = "import { P } from \"./paint\"\nimport { Q } from \"./vol\"\n"
+                                             "fn main() {\n  let p = P(1)\n  let q = Q(2)\n}\n";
+                    EmitResult t = compile(prog, findTarget("typescript"), &res);
+                    check(t.ok && has(t.code, "import { P, Color } from \"./paint\";") &&
+                              has(t.code, "import { Tone } from \"./tones\";"),
+                          "r6 #6: TS imports the types a filled-in default names (its own module's and a third module's)");
+                    EmitResult p = compile(prog, findTarget("python"), &res);
+                    check(p.ok && has(p.code, "from paint import P, Color") && has(p.code, "from tones import Tone"),
+                          "r6 #6: Python imports the types a filled-in default names");
+                    // a name already imported is not imported twice; an explicitly passed field needs no import
+                    const std::string both = "import { P, Color } from \"./paint\"\nfn main() {\n  let p = P(1, Color.Red)\n}\n";
+                    EmitResult t2 = compile(both, findTarget("typescript"), &res);
+                    check(t2.ok && has(t2.code, "import { P, Color } from \"./paint\";") && !has(t2.code, "Color, Color"),
+                          "r6 #6: a name the source already imports is not added again");
+                }
+                // #7: the TS union-equality helper spells no TS lib type a user type could shadow.
+                emitsR6("union S {\n  A(x: i32)\n  B\n}\nclass Record {\n  var id: i32 = 1\n}\nfn f(): bool => A(1) == A(1)\n",
+                        "typescript", {"{ [k: string]: unknown }"}, {"Record<"}, "#7 __pgUnionEq uses an index-signature type");
+                // #8: signature link names are structural, so differing erased signatures never share a name.
+                emitsR6("fn pairOf(p: (string, i32)): i32 => 1\nfn pairOf(p: (string?, i32)): i32 => 2\n", "csharp",
+                        {"pairOf____tuple__string__and__i32__end(", "pairOf____tuple__stringOrNull__and__i32__end("},
+                        {"pairOf__x("}, "#8 tuple parameters spell their elements (and nested nullability)");
+                emitsR6("fn runIt(f: (string) => i32): i32 => 1\nfn runIt(f: (string?) => i32): i32 => 2\n", "csharp",
+                        {"runIt____fn__string__to__i32__end(", "runIt____fn__stringOrNull__to__i32__end("}, {"runIt__x("},
+                        "#8 function-typed parameters spell their signature");
+                emitsR6("fn pairOf(p: (string, i32)): i32 => 1\nfn pairOf(p: (string?, i32)): i32 => 2\n", "php",
+                        {"function pairOf____tuple__string__and__i32__end(", "function pairOf____tuple__stringOrNull__and__i32__end("},
+                        {}, "#8 PHP's unique names differ for tuple parameters (one function namespace)");
+                emitsR6("class A_B {\n}\nclass A {\n}\nclass B {\n}\nfn f(x: A_B): i32 => 1\nfn f(x: A, y: B): i32 => 2\n",
+                        "typescript", {"function f$A$uB(", "function f$A_B("}, {}, "#8 a type name's own '_' cannot meet the parameter separator");
+                emitsR6("fn describe(s: string): string => s\nfn describe(s: string?): string => \"n\"\n", "csharp",
+                        {"describe__string(", "describe__stringOrNull("}, {}, "#8 the common forms keep their readable spelling");
+                // #9: T = unit from ANY function value that returns nothing; a value-returning one stays accepted.
+                refusesR6("fn apply<T>(f: () => T): T => f()\nfn hello() {\n}\nfn g() {\n  apply(hello)\n}\n", "csharp",
+                          "from a function value that returns no value", "#9 a named unit function binding T = unit is refused");
+                refusesR6("fn apply<T>(f: () => T): T => f()\nfn g() {\n  let h: () => unit = () => g()\n  apply(h)\n}\n",
+                          "csharp", "from a function value that returns no value", "#9 a () => unit local binding T = unit is refused");
+                acceptsR6("fn apply<T>(f: () => T): T => f()\nfn five(): i32 => 5\nfn g(): i32 => apply(five)\n", "csharp",
+                          "#9 a named value-returning function still infers T");
+                acceptsR6("fn apply<T>(f: () => T): T => f()\nfn g(): i32 {\n  let h: () => i32 = () => 4\n  return apply(h)\n}\n",
+                          "csharp", "#9 a value-returning function local still infers T");
+                acceptsR6("fn run(f: () => unit) {\n  f()\n}\nfn hello() {\n}\nfn g() {\n  run(hello)\n}\n", "csharp",
+                          "#9 a unit function into a non-generic () => unit slot is accepted");
+                // #10: every template context records its prelude requirement — each Python shape alone in a module.
+                const struct { const char* src; const char* shape; } pyShapes[] = {
+                    {"class Fmt {\n  static fn show(): string => \"s\"\n}\n", "@builtins.staticmethod"},
+                    {"class Box {\n  var v: string = \"p\"\n  let label: string => this.v\n}\n", "@builtins.property"},
+                    {"fn total(n: i32): i32 {\n  var s = 0\n  for i in 0..n {\n    s += i\n  }\n  return s\n}\n", "builtins.range("},
+                    {"class Oops : Error {\n  constructor(m: string) {\n    super(m)\n  }\n}\nfn g(k: i32): i32 {\n  try {\n    if k > 5 {\n"
+                     "      throw Oops(\"x\")\n    }\n  } catch (e: Oops) when (k > 0) {\n    return 1\n  }\n  return 0\n}\n",
+                     "builtins.isinstance(__e"},
+                };
+                for (const auto& sh : pyShapes) {
+                    EmitResult r = compileStd(sh.src, findTarget("python"));
+                    check(r.ok && has(r.code, sh.shape) && has(r.code, "import builtins\n"),
+                          std::string("r6 #10: a Python module using `builtins` only through ") + sh.shape + " imports it");
+                }
+                // ...and statically: every Python manifest string that spells `builtins.` sits in a rule that requires
+                // `pyBuiltins` (a template array holding the require), a binding that lists it, or a prelude that
+                // `preludeRequires` it.
+                {
+                    std::string text;
+                    cli::readFile(cli::executablePath().parent_path() / "plugins" / "python" / "polyglot-plugin.json", text);
+                    std::string err;
+                    const json::Value doc = json::parse(text, err);
+                    std::set<std::string> uncovered;
+                    auto isReq = [](const json::Value& v) {
+                        return v.kind == json::Value::Kind::Object && v["fn"].asString() == "require" &&
+                               !v["args"].items().empty() && v["args"].items()[0].asString() == "pyBuiltins";
+                    };
+                    std::function<void(const json::Value&, bool, const std::string&)> walk =
+                        [&](const json::Value& v, bool covered, const std::string& where) {
+                            if (v.kind == json::Value::Kind::String) {
+                                if (!covered && has(v.asString(), "builtins.")) uncovered.insert(where);
+                                return;
+                            }
+                            bool arrCovered = covered;
+                            for (const auto& a : v.items()) if (isReq(a)) arrCovered = true;
+                            for (const auto& a : v.items()) walk(a, arrCovered, where);
+                            bool objCovered = covered;
+                            for (const auto& r : v["requires"].items()) if (r.asString() == "pyBuiltins") objCovered = true;
+                            for (const auto& [k, m] : v.members) {
+                                if (k == "identifiers") continue;
+                                walk(m, objCovered, where.empty() ? k : where + "." + k);
+                            }
+                        };
+                    const json::Value& spec = doc["spec"].isNull() ? doc : doc["spec"];
+                    for (const auto& [k, m] : doc.members) {
+                        if (k == "spec" || k == "preludes") continue;
+                        walk(m, false, k);
+                    }
+                    for (const auto& [k, m] : spec.members) {
+                        if (k == "preludes" || k == "identifiers") continue;
+                        if (&spec != &doc) walk(m, false, "spec." + k);
+                    }
+                    const json::Value& preludes = spec["preludes"].isNull() ? doc["preludes"] : spec["preludes"];
+                    const json::Value& preqs = spec["preludeRequires"].isNull() ? doc["preludeRequires"] : spec["preludeRequires"];
+                    for (const auto& [k, m] : preludes.members) {
+                        bool req = k == "pyBuiltins";
+                        for (const auto& r : preqs[k].items()) if (r.asString() == "pyBuiltins") req = true;
+                        if (!req && m.kind == json::Value::Kind::String && has(m.asString(), "builtins.")) uncovered.insert("preludes." + k);
+                    }
+                    std::string list;
+                    for (const auto& u : uncovered) list += " " + u;
+                    check(err.empty() && uncovered.empty(),
+                          "r6 #10: every Python template spelling `builtins.` requires pyBuiltins (uncovered:" + list + ")");
+                }
+                // Part 2 — TS: a class named `Object` is refused (TS2725 under nodenext); its other bindings are fine.
+                refusesR6("class Object {\n  var v: i32 = 2\n}\n", "typescript", "class name 'Object' is refused on target 'typescript'",
+                          "a class named Object is refused on TS (TS2725)");
+                refusesR6("record Object(v: i32)\n", "typescript", "TS2725", "a record named Object is refused on TS");
+                acceptsR6("class Object {\n  var v: i32 = 2\n}\n", "csharp", "a class named Object stays accepted on C#");
+                acceptsR6("enum Object { A }\nclass H {\n  var Object: i32 = 1\n}\nclass Symbol {\n}\nfn f(): i32 {\n  let Object = 2\n  return Object\n}\n",
+                          "typescript", "an enum, field, local named Object and a class Symbol stay accepted on TS");
+                // Part 2 — TS: an extension sharing a name is emitted under its own free-function name.
+                emitsR6("extension fn i32.twice(): i32 => this * 2\nlet twice = 7\nfn f(): i32 => 3.twice() + twice\n",
+                        "typescript", {"function twice$i32(", "twice$i32(3)", "let twice"}, {"function twice("},
+                        "an extension named like a module value becomes twice$i32 on TS");
+                emitsR6("extension fn i32.twice(): i32 => this * 2\nlet twice = 7\nfn f(): i32 => 3.twice() + twice\n",
+                        "csharp", {"twice(this int self)", "3.twice()"}, {"twice__i32"}, "C# keeps the extension method's name");
+                emitsR6("extension fn i32.twice(): i32 => this * 2\nfn f(): i32 => 3.twice()\n", "typescript",
+                        {"function twice(", "twice(3)"}, {"$i32"}, "a lone extension keeps its plain name");
+                // Part 2 — TS: a `null` initializer is widened to the declared type (tsc narrows `let x: T | null = null`).
+                emitsR6("fn f(): string {\n  let t: string? = null\n  return t ?? \"n\"\n}\n", "typescript",
+                        {"const t: (string | null) = null as (string | null);"}, {}, "TS widens a null initializer");
+                emitsR6("fn f(): string {\n  let t: string? = null\n  return t ?? \"n\"\n}\n", "csharp", {"string? t = null;"},
+                        {" as "}, "C# keeps the bare null initializer");
+                // Part 2 — hints follow the slot kind; a nullable no-parameter function type is inferable.
+                acceptsR6("fn pick(): (() => unit)? => null\nfn f() {\n  let cb = pick()\n  if cb != null {\n    cb()\n  }\n}\n",
+                          "csharp", "let cb = pick() with a (() => unit)? result is inferable");
+                {
+                    EmitResult r = compileStd("fn f() {\n  var xs = []\n}\n", findTarget("csharp"));
+                    bool hint = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, "'var xs: List<i32> = []'")) hint = true;
+                    check(!r.ok && hint, "r6: an empty list literal's hint is a list annotation");
+                }
+                // Part 2 — i32 into a NULLABLE wider slot widens (TS BigInt); narrowing into one needs a cast.
+                emitsR6("fn f(a: i32): i64? => a\n", "typescript", {"BigInt(a)"}, {}, "an i32 into i64? widens on TS");
+                emitsR6("fn f(c: bool, a: i32): i64? => if c { a } else { null }\n", "typescript", {"BigInt(a)"}, {},
+                        "an i32 arm into an i64? return widens on TS");
+                refusesR6("fn f(b: i64): i32? => b\n", "csharp", "cannot implicitly convert i64 to i32?", "i64 into i32? needs a cast");
+                acceptsR6("fn f(): u8? => 5\nfn g(): i64? => 5\nfn h(): f64? => 1\n", "csharp", "literals into nullable numeric slots stay accepted");
+                // Part 2 — overloads differing only in nullability: a maybe-null argument binds the nullable member.
+                emitsR6("fn show(s: string): string => s\nfn show(s: string?): string => \"n\"\nfn mk(): string? => null\n"
+                        "fn f(): string => show(mk()) + show(null) + show(\"x\")\n", "typescript",
+                        {"show$stringOrNull(mk())", "show$stringOrNull(null)", "show$string(\"x\")"}, {}, "nullable arguments bind the nullable overload");
+                // Part 2 — `==` on function values is refused; the null test stays accepted.
+                refusesR6("fn f(): bool {\n  let k: () => i32 = () => 1\n  return k == (() => 1)\n}\n", "csharp",
+                          "'==' on a function value is refused", "== on function values is refused");
+                acceptsR6("fn pick(): (() => i32)? => null\nfn f(): bool {\n  let k = pick()\n  return k != null\n}\n", "csharp",
+                          "a function value's null test stays accepted");
+                // Part 2 — PHP concatenates operands the lambda's slot types as strings.
+                emitsR6("fn mapS(f: (string) => string): string => f(\"q\")\nfn g(): string => mapS(s => s + \"!\")\n", "php",
+                        {"$s . \"!\""}, {"$s + \"!\""}, "PHP concatenates a slot-typed lambda parameter");
+                emitsR6("fn g(): string {\n  let f = () => \"x\"\n  return f() + \"|\" + \"z\"\n}\n", "php", {"$f() . \"|\" . \"z\""}, {},
+                        "PHP concatenates a typed lambda local's result");
+                emitsR6("fn f(): string => \"top\"\nfn k(): string {\n  let f = () => \"loc\"\n  return f()\n}\n", "csharp",
+                        {"return f();"}, {"PolyglotProgram.f()"}, "a local lambda shadowing a function is called through its value");
+                // Part 2 — C#: a generic T? compared with null is a presence test (no `(T?)` switch arms: CS8506).
+                emitsR6("fn has<T>(a: T?): bool => a != null\n", "csharp", {"=> true", "=> false"}, {"(T?)"},
+                        "a generic T? null test matches on the case");
+                // Part 2 — Python parenthesizes a lambda operand of a conditional expression.
+                emitsR6("fn pick(b: bool): (() => i32)? => if b { () => 1 } else { null }\n", "python",
+                        {"((lambda : 1) if b else None)"}, {}, "Python wraps a lambda before ` if `");
             }
         }
 
@@ -3265,7 +3472,8 @@ int main() {
         // A null local keeps its declared (parenthesized nullable) type on TS.
         EmitResult tn = compileStd("class Node {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n"
                                    "fn f(): Node? { var x: Node? = null\n  x = Node()\n  return x }\n", findTarget("typescript"));
-        check(tn.ok && has(tn.code, "let x: (Node | null) = null;") && !has(tn.code, "let x = null;"),
+        // (P40 review r6: and the `null` initializer is widened back to it, or tsc narrows `x` to `null`)
+        check(tn.ok && has(tn.code, "let x: (Node | null) = null as (Node | null);") && !has(tn.code, "let x = null;"),
               "issue#27 Bug1: null local keeps its declared type on TS");
         // A non-empty literal local is unchanged — its type is inferable from the initializer (no annotation added).
         EmitResult te = compileStd("fn main() { let e = [1, 2, 3] }\n", findTarget("typescript"));

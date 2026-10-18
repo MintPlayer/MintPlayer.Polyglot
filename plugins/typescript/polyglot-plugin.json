@@ -85,11 +85,14 @@
       ],
       "globals": [
         "console", "globalThis", "Math", "Number", "String", "BigInt", "Array", "JSON", "Promise"
-      ]
+      ],
+      "classNames": {
+        "Object": "TS2725: a class named 'Object' is a compile error under --module nodenext (a field, local or enum of that name is fine)"
+      }
     },
     "rethrow": "throw __e;",
     "preludes": {
-      "unionEq": "function __pgUnionEq(a: unknown, b: unknown): boolean {\n    // a union value (a tagged object literal) compared as C# compares its generated case records (review r5): the\n    // same case with equal payloads, a record payload by its equals(), a nested union recursively, anything else (a\n    // class instance, a list) by reference. (Comparing serialized text matched class payloads by content and threw on a bigint.)\n    if (a === b) {\n        return true;\n    }\n    if (typeof a === \"number\" && typeof b === \"number\") {\n        return a !== a && b !== b;\n    }\n    if (typeof a !== \"object\" || typeof b !== \"object\" || a === null || b === null) {\n        return false;\n    }\n    const proto = globalThis.Object.getPrototypeOf(a);\n    if (proto !== globalThis.Object.getPrototypeOf(b)) {\n        return false;\n    }\n    if (proto === globalThis.Object.prototype) {\n        const ra = a as Record<string, unknown>, rb = b as Record<string, unknown>;\n        const ka = globalThis.Object.keys(ra);\n        if (ka.length !== globalThis.Object.keys(rb).length) {\n            return false;\n        }\n        for (const k of ka) {\n            if (!(k in rb) || !__pgUnionEq(ra[k], rb[k])) {\n                return false;\n            }\n        }\n        return true;\n    }\n    const eq = (a as { equals?: unknown }).equals;\n    return typeof eq === \"function\" && (eq as (o: unknown) => boolean).call(a, b);\n}\n",
+      "unionEq": "function __pgUnionEq(a: unknown, b: unknown): boolean {\n    // a union value (a tagged object literal) compared as C# compares its generated case records (review r5): the\n    // same case with equal payloads, a record payload by its equals(), a nested union recursively, anything else (a\n    // class instance, a list) by reference. (Comparing serialized text matched class payloads by content and threw on a bigint.)\n    if (a === b) {\n        return true;\n    }\n    if (typeof a === \"number\" && typeof b === \"number\") {\n        return a !== a && b !== b;\n    }\n    if (typeof a !== \"object\" || typeof b !== \"object\" || a === null || b === null) {\n        return false;\n    }\n    const proto = globalThis.Object.getPrototypeOf(a);\n    if (proto !== globalThis.Object.getPrototypeOf(b)) {\n        return false;\n    }\n    if (proto === globalThis.Object.prototype) {\n        const ra = a as { [k: string]: unknown }, rb = b as { [k: string]: unknown };\n        const ka = globalThis.Object.keys(ra);\n        if (ka.length !== globalThis.Object.keys(rb).length) {\n            return false;\n        }\n        for (const k of ka) {\n            if (!(k in rb) || !__pgUnionEq(ra[k], rb[k])) {\n                return false;\n            }\n        }\n        return true;\n    }\n    const eq = (a as { equals?: unknown }).equals;\n    return typeof eq === \"function\" && (eq as (o: unknown) => boolean).call(a, b);\n}\n",
       "nullAssert": "function __pgNullAssert(at: string): never {\n    throw new globalThis.TypeError(\"null-assert failed (\" + at + \")\");\n}\n"
     },
     "tables": {
@@ -125,6 +128,9 @@
       "localDeclTyped": {
         "mutable": "let $x: $T",
         "const": "const $x: $T"
+      },
+      "localNullInit": {
+        "typed": "$x as $T"
       },
       "yield": {
         "value": "yield $x;",
@@ -1157,14 +1163,7 @@
             },
             {
               "tmpl": [
-                {
-                  "fn": "ident",
-                  "args": [
-                    {
-                      "get": "node.method"
-                    }
-                  ]
-                },
+                { "fn": "mangleName", "args": [ { "fn": "ident", "args": [ { "get": "node.freeName" } ] } ] },
                 "(",
                 {
                   "emit": "node.object"
@@ -3412,7 +3411,7 @@
           "fn": "ident",
           "args": [
             {
-              "get": "decl.name"
+              "get": "decl.emitName"
             }
           ]
         },

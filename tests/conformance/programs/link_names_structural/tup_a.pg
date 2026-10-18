@@ -1,0 +1,6 @@
+import "std.strings"
+fn pairOf(p: (string, i32)): i32 {
+  let (s, n) = p
+  return n + s.len()
+}
+fn useTA(): i32 => pairOf(("x", 1))
