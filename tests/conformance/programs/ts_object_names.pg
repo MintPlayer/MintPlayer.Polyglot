@@ -1,0 +1,18 @@
+import "std.io"
+
+// P40 review r6 (part 2): only a CLASS (or record) named `Object` is refused on TS — TS2725 under `--module nodenext`
+// (round 5 had allowed it after measuring only `Symbol`, under the ng-spark flags). Every other binding of the name
+// stays accepted on every target: an enum, a field, and a `Symbol` local.
+enum Object { A, B }
+
+class Holder {
+  var Object: i32 = 3
+}
+
+fn pick(b: bool): Object => if b { Object.B } else { Object.A }
+
+fn main() {
+  let Symbol = 2
+  print(Holder().Object + Symbol)
+  print(pick(true) == Object.B)
+}

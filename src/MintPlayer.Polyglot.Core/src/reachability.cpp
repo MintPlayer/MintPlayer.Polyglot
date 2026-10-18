@@ -32,20 +32,22 @@ struct PreludeIndex {
     }
 };
 
-PreludeIndex buildIndex(const ir::Module& m) {
+// `in(origin)` picks the declarations indexed: the prelude's (reachability), or another user module's (r6 #6).
+template <class In>
+PreludeIndex buildIndex(const ir::Module& m, In in) {
     PreludeIndex ix;
     for (const auto& d : m.unions)
-        if (ir::isPreludeOrigin(d.originModule)) {
+        if (in(d.originModule)) {
             ix.unions[d.name].push_back(&d);
             for (const auto& c : d.cases) ix.caseToUnion[c.name] = d.name;
         }
-    for (const auto& d : m.records)    if (ir::isPreludeOrigin(d.originModule)) ix.records[d.name].push_back(&d);
-    for (const auto& d : m.classes)    if (ir::isPreludeOrigin(d.originModule)) ix.classes[d.name].push_back(&d);
-    for (const auto& d : m.interfaces) if (ir::isPreludeOrigin(d.originModule)) ix.interfaces[d.name].push_back(&d);
-    for (const auto& d : m.enums)      if (ir::isPreludeOrigin(d.originModule)) ix.enums[d.name].push_back(&d);
-    for (const auto& d : m.globals)    if (ir::isPreludeOrigin(d.originModule)) ix.globals[d.name].push_back(&d);
+    for (const auto& d : m.records)    if (in(d.originModule)) ix.records[d.name].push_back(&d);
+    for (const auto& d : m.classes)    if (in(d.originModule)) ix.classes[d.name].push_back(&d);
+    for (const auto& d : m.interfaces) if (in(d.originModule)) ix.interfaces[d.name].push_back(&d);
+    for (const auto& d : m.enums)      if (in(d.originModule)) ix.enums[d.name].push_back(&d);
+    for (const auto& d : m.globals)    if (in(d.originModule)) ix.globals[d.name].push_back(&d);
     auto fn = [&](const ir::Function& d) {
-        if (!ir::isPreludeOrigin(d.originModule)) return;
+        if (!in(d.originModule)) return;
         ix.functions[d.name].push_back(&d);
         if (!d.mangledName.empty() && d.mangledName != d.name) ix.functions[d.mangledName].push_back(&d);
     };
@@ -58,7 +60,10 @@ PreludeIndex buildIndex(const ir::Module& m) {
 
 class Walker {
 public:
-    explicit Walker(const PreludeIndex& ix) : ix_(ix) {}
+    // `spelledOnly` (P40 review r6 #6): mark only names the emitted code can SPELL — declared and resolved types
+    // at declaration positions, callees, constructions, static receivers, cases, patterns — not every
+    // expression's own type, and not the opaque target text (no user name hides in a std template).
+    explicit Walker(const PreludeIndex& ix, bool spelledOnly = false) : ix_(ix), spelledOnly_(spelledOnly) {}
 
     std::set<std::string> reached;
 
@@ -75,6 +80,7 @@ public:
 
     // The backstop: every identifier in opaque target text that names a prelude declaration (or case).
     void text(const std::string& s) {
+        if (spelledOnly_) return;
         std::size_t i = 0;
         while (i < s.size()) {
             const unsigned char ch = static_cast<unsigned char>(s[i]);
@@ -157,6 +163,7 @@ public:
 
 private:
     const PreludeIndex& ix_;
+    bool spelledOnly_ = false;
     std::deque<std::string> work_;
 
     void lines(const std::vector<std::string>& ls) { for (const auto& l : ls) text(l); }
@@ -204,7 +211,8 @@ private:
 
     void expr(const ir::Expr& e) {
         using K = ir::ExprKind;
-        type(e.type);
+        // (a lambda's own type is its signature, which a target may spell; any other expression's is inferred)
+        if (!spelledOnly_ || e.kind == K::Lambda || e.kind == K::Null) type(e.type);
         switch (e.kind) {
             case K::Int: case K::Float: case K::Bool: case K::Str: case K::Char: case K::Null: case K::This:
                 break;
@@ -422,8 +430,49 @@ private:
 
 } // namespace
 
+std::map<std::string, std::set<std::string>> crossModuleReferences(const ir::Module& m, const std::string& fileOrigin) {
+    auto other = [&](const std::string& o) { return o != fileOrigin && !ir::isPreludeOrigin(o); };
+    const PreludeIndex ix = buildIndex(m, other);
+    // Every indexed name -> (declaring module, the name its module emits it under). Modules merge into one flat
+    // namespace (§4.5), so a name names one declaration; overloads are told apart by their mangled names.
+    // Types and values are one flat namespace (§4.5); FUNCTIONS are not — two modules may each declare a `run` —
+    // so a name declared by more than one module (this file included) is ambiguous and is never added here.
+    std::unordered_map<std::string, std::pair<std::string, std::string>> owner;
+    std::unordered_map<std::string, std::set<std::string>> declaredIn; // name -> every user module declaring it
+    auto note = [&](const std::string& n, const std::string& origin, const std::string& emitted) {
+        if (ir::isPreludeOrigin(origin)) return;
+        declaredIn[n].insert(origin);
+        if (other(origin)) owner[n] = {origin, emitted};
+    };
+    auto own = [&](const auto& vec) { for (const auto& d : vec) note(d.name, d.originModule, d.name); };
+    own(m.unions); own(m.records); own(m.classes); own(m.interfaces); own(m.enums); own(m.globals);
+    auto ownFn = [&](const std::vector<ir::Function>& vec) {
+        for (const auto& d : vec) {
+            const std::string emitted = d.mangledName.empty() ? d.name : d.mangledName;
+            note(emitted, d.originModule, emitted);
+            if (emitted != d.name) note(d.name, d.originModule, std::string()); // a source name of overloads: none alone
+        }
+    };
+    ownFn(m.functions); ownFn(m.extensions);
+    for (const auto& [n, origins] : declaredIn)
+        if (origins.size() > 1) owner.erase(n);
+    Walker w(ix, /*spelledOnly=*/true);
+    for (const auto& d : m.unions)     if (d.originModule == fileOrigin) w.unionDecl(d);
+    for (const auto& d : m.records)    if (d.originModule == fileOrigin) w.record(d);
+    for (const auto& d : m.classes)    if (d.originModule == fileOrigin) w.klass(d);
+    for (const auto& d : m.interfaces) if (d.originModule == fileOrigin) w.iface(d);
+    for (const auto& d : m.globals)    if (d.originModule == fileOrigin) w.global(d);
+    for (const auto& d : m.functions)  if (d.originModule == fileOrigin) w.function(d);
+    for (const auto& d : m.extensions) if (d.originModule == fileOrigin) w.function(d);
+    std::map<std::string, std::set<std::string>> out; // (no drain: only what THIS file's code spells)
+    for (const auto& n : w.reached)
+        if (auto it = owner.find(n); it != owner.end() && !it->second.second.empty())
+            out[it->second.first].insert(it->second.second);
+    return out;
+}
+
 std::set<std::string> preludeReach(const ir::Module& m, const std::set<std::string>* forcedReach) {
-    const PreludeIndex ix = buildIndex(m);
+    const PreludeIndex ix = buildIndex(m, [](const std::string& o) { return ir::isPreludeOrigin(o); });
     Walker w(ix);
     if (forcedReach)
         for (const auto& n : *forcedReach) w.mark(n);

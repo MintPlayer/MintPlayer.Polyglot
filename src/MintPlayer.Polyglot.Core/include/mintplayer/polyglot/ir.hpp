@@ -201,6 +201,10 @@ struct MethodCall : Expr { // `object.method(args)` — or a static call `Type.m
     std::string staticType;    // non-empty = static call `staticType.method(args)` (object is null)
     std::vector<ExprPtr> args;
     bool isExtension = false; // resolved to an extension fn: C# keeps `obj.m(args)`, TS emits `m(obj, args)`
+    // P40 review r6: the extension's name as a FREE function (`node.freeName`), when its plain name is shared by
+    // another extension or by a top-level function, value or type — on a target where an extension is a free
+    // function in the module scope (TS/Python/PHP) both would be one name. Empty = `method`.
+    std::string freeName;
     MethodCall(SourcePos p, Type t, ExprPtr o, std::string m)
         : Expr(ExprKind::MethodCall, p, std::move(t)), object(std::move(o)), method(std::move(m)) {}
 };

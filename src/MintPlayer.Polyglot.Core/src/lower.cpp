@@ -127,6 +127,30 @@ public:
                 extEmitName_[e.receiver.name + "." + e.name] = "_pg_" + e.name;
                 freeFns_.insert("_pg_" + e.name);
             }
+        // P40 review r6 (part 2): where an extension is a free function in the module scope (TS/Python/PHP), a user
+        // extension whose name is also another extension's (`i32.twice` and `string.twice`) or a top-level
+        // function's, value's or type's (`let twice = 7`) would be a second declaration of that one name (TS
+        // "Identifier 'twice' has already been declared", a Python rebinding). Such an extension is emitted as a
+        // free function under `<name>$<Receiver>` (mangled per target like an overload: `twice__i32`); the
+        // targets with real extension methods keep the plain name (`node.method` / `decl.name`).
+        {
+            std::unordered_map<std::string, int> extCount;
+            std::unordered_set<std::string> taken;
+            for (const auto& e : unit.extensions)
+                if (e.bindings.empty() && !extEmitName_.count(e.receiver.name + "." + e.name)) ++extCount[e.name];
+            for (const auto& f : unit.functions) taken.insert(f.name);
+            for (const auto& v : unit.values) taken.insert(v.name);
+            for (const auto& c : unit.classes) taken.insert(c.name);
+            for (const auto& r : unit.records) taken.insert(r.name);
+            for (const auto& i : unit.interfaces) taken.insert(i.name);
+            for (const auto& en : unit.enums) taken.insert(en.name);
+            for (const auto& u : unit.unions) { taken.insert(u.name); for (const auto& c : u.cases) taken.insert(c.name); }
+            for (const auto& e : unit.extensions) {
+                const std::string key = e.receiver.name + "." + e.name;
+                if (!e.bindings.empty() || extEmitName_.count(key)) continue;
+                if (extCount[e.name] > 1 || taken.count(e.name)) extFreeName_[key] = e.name + "$" + e.receiver.name;
+            }
+        }
         // P40 B3: an `extern class` static with a .pg body (std `string.fromCodePoint`, a guard) is emitted as a
         // prelude free function `_pg_<Type>_<name>`; `Type.name(args)` calls it.
         for (const auto& c : unit.classes) {
@@ -397,6 +421,10 @@ public:
             const auto en = extEmitName_.find(ext.receiver.name + "." + ext.name);
             const bool stdGuard = en != extEmitName_.end(); // P40 review B10: a plain free function, not an extension
             if (stdGuard) { f.name = en->second; f.mangledName = en->second; }
+            // r6: a shared name — the free-function targets declare it under its own name (`decl.emitName`,
+            // `decl.uniqueName`); `decl.name` stays the extension method's name
+            if (auto fr = extFreeName_.find(ext.receiver.name + "." + ext.name); fr != extFreeName_.end())
+                f.mangledName = f.uniqueName = fr->second;
             f.isExtension = !stdGuard;
             f.generics = generics(ext.generics);
             f.returnType = ext.returnType;
@@ -543,6 +571,7 @@ private:
     std::unordered_map<std::string, const std::vector<Param>*> recordParams_; // record -> positional fields (defaults, r5 #11)
     std::unordered_map<std::string, const std::vector<Param>*> extParams_; // "Recv.method" -> extension params (defaults)
     std::unordered_map<std::string, std::string> extEmitName_;    // "Recv.method" -> emitted name (std .pg guards)
+    std::unordered_map<std::string, std::string> extFreeName_;    // "Recv.method" -> free-function name (r6: a shared name)
     std::unordered_map<std::string, std::string> staticRedirect_; // "Type.member" -> prelude free fn (extern static with a body)
     std::unordered_set<std::string> freeFns_;                                     // top-level function names
     std::unordered_set<std::string> typeNames_;
@@ -1020,6 +1049,20 @@ private:
                 // reusing the existing match machinery (no special-case in either emitter).
                 if (e.text == "??" && e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name == "Option")
                     return coalesceOption(e);
+                // P40 review r6 (part 2): a generic `T?` (an Option) compared with `null` is a PRESENCE test —
+                // `match o { Some(_) => true/false, None => false/true }`. Converting it to the native `T?` first
+                // spelled `(T?)v` / `null` arms, which have no common type for an unconstrained C# `T` (CS8506).
+                if ((e.text == "==" || e.text == "!=") &&
+                    (e.lhs->kind == ExprKind::NullLit || e.rhs->kind == ExprKind::NullLit)) {
+                    const Expr& other = e.lhs->kind == ExprKind::NullLit ? *e.rhs : *e.lhs;
+                    if (other.kind == ExprKind::Cast && other.lhs && isOptionType(other.lhs->type) &&
+                        !isOptionType(other.castType) && other.castType.nullable) {
+                        const bool present = e.text == "!=";
+                        return optionMatchOn(expr(*other.lhs), e.pos, e.type,
+                                             [&](const std::string&) { return std::make_unique<ir::BoolLit>(e.pos, e.type, present); },
+                                             [&] { return std::make_unique<ir::BoolLit>(e.pos, e.type, !present); });
+                    }
+                }
                 auto b = std::make_unique<ir::Binary>(e.pos, e.type, e.text, expr(*e.lhs), expr(*e.rhs));
                 // P40 review A1: a bound left operand of `??` — `??` folds every absent form, so the emitter
                 // may drop the template's absent-value normalization there (BackendSpec::absentNormalize).
@@ -1150,6 +1193,9 @@ private:
                         if (mc->isExtension)
                             if (auto en = extEmitName_.find(rt.name + "." + e.lhs->text); en != extEmitName_.end())
                                 mc->method = en->second;
+                        if (mc->isExtension)
+                            if (auto fr = extFreeName_.find(rt.name + "." + e.lhs->text); fr != extFreeName_.end())
+                                mc->freeName = fr->second;
                     }
                     for (const auto& a : e.args) mc->args.push_back(expr(*a));
                     if (mc->isExtension) // P40 slice 7: an extension's omitted defaults are filled at the call

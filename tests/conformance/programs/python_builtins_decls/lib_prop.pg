@@ -1,0 +1,4 @@
+class Box {
+  var v: string = "prop-ok"
+  let label: string => this.v
+}

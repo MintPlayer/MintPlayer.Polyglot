@@ -1,0 +1,36 @@
+import "std.io"
+import "std.strings"
+
+// P40 review r6 (part 2): tsc narrows a local to the type of its initializer, so `let t: string | null = null` IS
+// `null` until an assignment it can see — a read after `t !== null` was `never` (TS2339), for an assignment made
+// only on another path, inside a loop branch, or never. TS now widens a `null` initializer back to the declared type
+// (`null as string | null`, manifest `localNullInit`).
+fn findIn(xs: string[], w: string): string? {
+  var hit: string? = null
+  for x in xs {
+    if x == w {
+      hit = x
+    }
+  }
+  return hit
+}
+
+fn main() {
+  let t: string? = null
+  if t != null {
+    print(t.len())
+  } else {
+    print("t-null")
+  }
+  var u: string? = null
+  let w = findIn(["a", "bb"], "bb")
+  if w != null {
+    u = w
+  }
+  if u != null {
+    print(u.len())
+  }
+  var k: i32? = null
+  k = 4
+  print(k ?? 0)
+}

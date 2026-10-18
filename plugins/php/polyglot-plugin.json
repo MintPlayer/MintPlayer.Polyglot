@@ -620,14 +620,7 @@
             },
             {
               "tmpl": [
-                {
-                  "fn": "ident",
-                  "args": [
-                    {
-                      "get": "node.method"
-                    }
-                  ]
-                },
+                { "fn": "mangleName", "args": [ { "fn": "ident", "args": [ { "get": "node.freeName" } ] } ] },
                 "(",
                 {
                   "emit": "node.object"

@@ -249,6 +249,17 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
         } else if (rn.kind != json::Value::Kind::Null) {
             r.errors.push_back("backend spec: identifiers.renames must be an object of name -> spelling");
         }
+        // P40 review r6: class/record names refused on this target, each with its reason.
+        const json::Value& rc = ids["classNames"];
+        if (rc.kind == json::Value::Kind::Object) {
+            for (const auto& [k, v] : rc.members) {
+                if (v.kind != json::Value::Kind::String || v.asString().empty())
+                    r.errors.push_back("backend spec: identifiers.classNames['" + k + "'] must be a non-empty reason");
+                else r.spec.refusedClassNames[k] = v.asString();
+            }
+        } else if (rc.kind != json::Value::Kind::Null) {
+            r.errors.push_back("backend spec: identifiers.classNames must be an object of name -> reason");
+        }
         const json::Value& esc = ids["escape"];
         if (esc.kind == json::Value::Kind::Object) {
             r.spec.escapeStrategy = esc["strategy"].asString();
@@ -395,6 +406,15 @@ std::string backendSpecToJson(const BackendSpec& spec) {
             ids += ",\"renames\":{";
             for (std::size_t i = 0; i < ks.size(); ++i)
                 ids += (i ? "," : "") + json::quote(ks[i]) + ":" + json::quote(spec.renames.at(ks[i]));
+            ids += "}";
+        }
+        if (!spec.refusedClassNames.empty()) { // review r6
+            std::vector<std::string> ks;
+            for (const auto& [k, v] : spec.refusedClassNames) ks.push_back(k);
+            std::sort(ks.begin(), ks.end());
+            ids += ",\"classNames\":{";
+            for (std::size_t i = 0; i < ks.size(); ++i)
+                ids += (i ? "," : "") + json::quote(ks[i]) + ":" + json::quote(spec.refusedClassNames.at(ks[i]));
             ids += "}";
         }
         if (!spec.fnBuiltins.empty()) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <set>
 #include <string>
 
@@ -35,5 +36,11 @@ std::set<std::string> preludeReach(const ir::Module& m, const std::set<std::stri
 // Erase every prelude declaration of `m` that is not reachable (as `preludeReach` computes it). Returns the
 // reached set.
 std::set<std::string> pruneUnreachablePrelude(ir::Module& m, const std::set<std::string>* forcedReach = nullptr);
+
+// P40 review r6 #6 — the user declarations of OTHER modules that the code of `fileOrigin` (its declarations in the
+// lowered, not yet partitioned, `m`) spells, keyed by declaring module, each under the name that module emits it
+// as. Lowering can reference a name its source never imported (a record or function default filled in at a call
+// site in another module), so a target's imports are completed from this set, not only from the source graph.
+std::map<std::string, std::set<std::string>> crossModuleReferences(const ir::Module& m, const std::string& fileOrigin);
 
 } // namespace mintplayer::polyglot

@@ -56,6 +56,7 @@ public:
     std::string freshName(const std::string& prefix) const override {
         return fresh_ ? prefix + std::to_string((*fresh_)++) : std::string();
     }
+    void requirePrelude(const std::string& key) const override { if (requires_) requires_->insert(key); }
     // {"type":path}: resolve the TypeRef the path names, render it via the backend's (rule-driven) type
     // renderer. The shared part is path->TypeRef; the rendering is the per-target renderTypeRef.
     std::string renderType(const std::string& path) const override;
@@ -118,6 +119,7 @@ public:
     EnumDeclCtx(const ir::Enum& e, const DeclHooks& hooks) : e_(e), hooks_(hooks) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
 
 private:
     const ir::Enum& e_;
@@ -138,6 +140,9 @@ public:
     virtual std::string renderTypeRef(const TypeRef& t) const = 0;
     // Identifier repair reads the spec's `identifiers` block (keyword escape / emitted-name mangle) —
     // generic catalog entries, not per-backend code (P19 slice 6).
+    // P40 review r6 #10: where every declaration-side context's `require` lands (the owning emitter's prelude
+    // keys). The decl contexts forward to it; the default records nothing.
+    virtual void requirePrelude(const std::string& /*key*/) const {}
     std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
     std::string identType(const std::string& n) const { return specIdentType(specFn_(), n); } // review r5
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
@@ -162,6 +167,7 @@ public:
     UnionDeclCtx(const ir::Union& u, const DeclHooks& hooks) : u_(u), hooks_(hooks) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
 
 private:
@@ -180,6 +186,7 @@ public:
         : it_(it), hooks_(hooks), emit_(std::move(emit)) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
 
@@ -201,6 +208,7 @@ public:
     SourcePos declPos() const override { return m_.pos; } // P38: the method-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -226,6 +234,7 @@ public:
         : r_(r), hooks_(hooks), emit_(std::move(emit)), isRecord_(std::move(isRecordType)) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::unique_ptr<IrDeclCtx> memberCtx(const std::string& path, std::size_t index) const override;
 
@@ -250,6 +259,7 @@ public:
     ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn emit, TypePred isInterface = {});
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -279,6 +289,7 @@ public:
     SourcePos declPos() const override { return f_.pos; } // P38: the function-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -302,6 +313,7 @@ public:
                   TypePred isRecordType = {}, TypePred isInterface = {});
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     std::unique_ptr<IrDeclCtx> memberCtx(const std::string& path, std::size_t index) const override;
@@ -326,6 +338,7 @@ public:
         : s_(s), hooks_(hooks), emit_(std::move(emit)) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -542,6 +555,8 @@ public:
     // The target's type spelling: the "Type" rule evaluated against a type context whose extern-template
     // pick and recursion route back here.
     std::string renderType(const TypeRef& t) override;
+    // P40 review r6 #10: a type rule's `require` (the type context routes here).
+    void requirePrelude(const std::string& key) { requires_.insert(key); }
 
 private:
     const BackendSpec& spec() const override { return specFn_(); }
@@ -554,6 +569,7 @@ private:
     public:
         Hooks(SpecFn s, InterpretedEmitter& e) : DeclHooks(s), e_(e) {}
         std::string renderTypeRef(const TypeRef& t) const override { return e_.renderType(t); }
+        void requirePrelude(const std::string& key) const override { e_.requires_.insert(key); }
 
     private:
         InterpretedEmitter& e_;

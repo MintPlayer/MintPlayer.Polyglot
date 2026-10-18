@@ -1,0 +1,22 @@
+import "std.io"
+
+// P40 review r6 (part 2): where an extension is a free function in the module scope (TS, Python, PHP), an extension
+// sharing its name with a module value (`let twice`), a function, a type or another extension (`string.twice`) was a
+// second declaration of one name — TS "Identifier 'twice' has already been declared", a PHP redeclare fatal, a
+// Python rebinding that silently called the wrong one. Such an extension is emitted as `twice$i32` there (each `$`
+// spelled `__` on Python and PHP); C# keeps its extension method `twice`. A lone extension keeps its plain name.
+extension fn i32.twice(): i32 => this * 2
+extension fn string.twice(): string => this + this
+extension fn i32.half(): i32 => this / 2
+let twice = 7
+fn label(): string => "fn"
+extension fn i32.label(): string => "ext"
+
+fn main() {
+  print(3.twice())
+  print("ab".twice())
+  print(twice)
+  print(8.half())
+  print(label())
+  print(1.label())
+}

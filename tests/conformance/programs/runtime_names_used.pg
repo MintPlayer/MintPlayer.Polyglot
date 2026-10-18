@@ -1,5 +1,6 @@
 // P40 review r5 #16: each target's runtime-name list is what its templates and prelude actually reference unqualified.
-//  * TS: no template uses the `Symbol`/`Object` globals, so a user class may take those names (round 4 refused them);
+//  * TS: no template uses the `Symbol` global, so a user class may take that name (round 4 refused it); a CLASS named
+//    `Object` is refused (TS2725 under --module nodenext, review r6), but a field named `Object` is fine;
 //    the non-exhaustive-match guard throws `globalThis.Error`, so a local named `Error` cannot capture it (TS2351).
 //  * Python: the UTF-16 view cache calls the builtin `id` (and file I/O `open`) — a user `fn id` broke `s.len()`
 //    on a long non-ASCII string; both names are now escaped.
@@ -14,8 +15,8 @@ class Symbol {
     this.name = name
   }
 }
-class Object {
-  var id: i32 = 1
+class Holder {
+  var Object: i32 = 1
 }
 
 union Opt {
@@ -39,7 +40,7 @@ fn pick(o: Opt): i32 {
 
 fn main() {
   print(Symbol("x").name)
-  print(Object().id)
+  print(Holder().Object)
   var s = "\u{E9}"
   var i = 0
   while i < 300 {

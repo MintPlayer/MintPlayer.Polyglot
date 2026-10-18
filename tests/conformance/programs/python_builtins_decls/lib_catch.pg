@@ -1,0 +1,17 @@
+class Oops : Error {
+  let code: i32
+  constructor(message: string, code: i32) {
+    super(message)
+    this.code = code
+  }
+}
+
+fn guarded(code: i32): string {
+  try {
+    throw Oops("x", code)
+  } catch (e: Oops) when (e.code == 1) {
+    return "caught-one"
+  } catch (e: Oops) {
+    return "caught-other"
+  }
+}

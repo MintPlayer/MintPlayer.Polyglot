@@ -1,0 +1,7 @@
+// a record whose defaults are an enum case of this module and a string
+enum Color { Red, Blue }
+record P(x: i32, c: Color = Color.Blue, label: string = "p") {
+  fn isBlue(): bool => this.c == Color.Blue
+}
+// an extension default is filled in at the call site too
+extension fn i32.isRed(c: Color = Color.Red): bool => c == Color.Red && this > 0

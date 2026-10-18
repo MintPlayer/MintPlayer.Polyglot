@@ -355,6 +355,8 @@ public:
     // P40 review r4 (part 2): user names containing `__` — the compiler's own spelling space (lowering temps
     // `__c0`/`__opt1`, emitter temps, overload signature names `parse__string`), so no user name can collide.
     std::vector<std::pair<std::string, SourcePos>> compilerReserved;
+    // P40 review r6: the user's class and record names (each target emits them as classes).
+    std::vector<std::pair<std::string, SourcePos>> classNames;
 
     void run(const CompilationUnit& u) {
         for (const auto& f : u.functions) {
@@ -380,6 +382,7 @@ public:
         for (const auto& r : u.records) {
             prelude_ = ir::isPreludeOrigin(r.originModule);
             add(r.name, r.pos);
+            if (!prelude_) classNames.push_back({r.name, r.namePos.line ? r.namePos : r.pos});
             for (const auto& f : r.fields) add(f.name, r.pos);
             members(r.members);
         }
@@ -387,6 +390,7 @@ public:
             prelude_ = ir::isPreludeOrigin(d.originModule);
             if (d.isExtern) continue; // native-backed carrier — its names live on the target side
             add(d.name, d.pos);
+            if (!prelude_) classNames.push_back({d.name, d.namePos.line ? d.namePos : d.pos});
             members(d.members);
         }
         for (const auto& d : u.interfaces) {
@@ -489,6 +493,10 @@ void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
         if (reportedStd.insert(std::to_string(pos.fileId) + ":" + std::to_string(pos.line) + ":" + std::to_string(pos.col)).second)
             diags.error(pos, "identifier '" + name + "' contains '__', which is reserved for compiler-generated names "
                              "(temporaries like '__c0', overload names like 'parse__string'); rename it");
+    for (const auto& [name, pos] : nc.classNames)
+        if (auto it = backend.refusedClassNames().find(name); it != backend.refusedClassNames().end())
+            diags.error(pos, "class name '" + name + "' is refused on target '" + backend.name() + "' — " + it->second +
+                                 "; rename it or drop that target");
     for (const auto& [name, pos] : nc.names) {
         for (const auto& r : backend.reservedIdentifiers())
             if (matchesReserved(r, name))

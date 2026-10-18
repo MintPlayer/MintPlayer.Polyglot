@@ -52,7 +52,10 @@ bool uninferableInit(const Expr& value, const TypeRef& inferred) {
     }
     if (inferred.kind == TypeRef::Kind::Named && inferred.name == "List" &&
         (inferred.args.empty() || !typeFullyKnown(inferred.args[0]))) return true;   // `[]` -> List<unknown>
-    if (inferred.nullable && inferred.name.empty() && inferred.args.empty()) return true; // bare `null`
+    // bare `null` (P40 review r6: a NAMED placeholder — a nullable function type with no parameters, `(() => unit)?`,
+    // also has no name and no args, and `let cb = pick(flag)` was refused as un-inferable)
+    if (inferred.kind == TypeRef::Kind::Named && inferred.nullable && inferred.name.empty() && inferred.args.empty())
+        return true;
     return false;
 }
 
@@ -70,7 +73,7 @@ static bool yieldsLambda(const Expr& v) {
     }
 }
 
-std::string annotationHint(const std::string& name, const Expr& value) {
+std::string annotationHint(const std::string& name, const Expr& value, const TypeRef& inferred) {
     if (value.kind == ExprKind::Lambda)
         return "annotate the lambda's parameter types, e.g. '(x: i32) => …'";
     if (value.kind == ExprKind::NullLit)
@@ -78,7 +81,14 @@ std::string annotationHint(const std::string& name, const Expr& value) {
     // P40 review r5 (part 2): a function-valued initializer gets a function-typed example, not a list's.
     if (yieldsLambda(value))
         return "add an explicit function type annotation, e.g. 'let " + name + ": ((i32) => i32)? = …'";
-    return "add an explicit type annotation, e.g. 'var " + name + ": List<i32> = []'";
+    // P40 review r6 (part 2): the example follows the slot's own kind — a list only for a list.
+    const bool list = inferred.kind == TypeRef::Kind::Named && (inferred.name == "List" || inferred.name == "Array");
+    if (list) {
+        const std::string t = inferred.name == "Array" ? std::string("i32[]") : std::string("List<i32>");
+        return "add an explicit type annotation, e.g. 'var " + name + ": " + t + (inferred.nullable ? "?" : "") +
+               " = " + (value.kind == ExprKind::ListLit ? "[]" : "…") + "'";
+    }
+    return "add an explicit type annotation, e.g. 'var " + name + ": T? = …' (the type it holds)";
 }
 
 bool isNumeric(Ty t) { return t == Ty::I32 || t == Ty::F64; }
@@ -329,14 +339,42 @@ bool sameParamList(const std::vector<TypeRef>& a, const std::vector<TypeRef>& b)
 
 // A function's per-target name. C# keeps the source name (native overloading); TS needs a distinct name
 // per overload, so an overloaded function mangles its parameter types in: `describe$i32`, `add$i32_i32`.
+// P40 review r6 #8: a parameter type's spelling in a mangled name, STRUCTURAL so that two declarations whose
+// erased signatures differ never share a name (a tuple or function parameter spelled `x`, and `OrNull` only at
+// the top level, let `pairOf((i32, i32))` and `pairOf((i32, string))` both mangle to `pairOf$x` — CS0111). The
+// common forms stay readable (`i32`, `Shape`, `stringOrNull`); compound forms are bracketed by `$`-markers,
+// which no .pg name contains: `List$of$i32$end`, `Map$of$string$and$i32$end`, `$tuple$i32$and$string$end`,
+// `$fn$i32$to$bool$end` (`$fn$$to$unit$end` takes none). It reads back unambiguously — a name runs to the next
+// `$`, the markers follow `$` — so it is injective: a name's own `_` is `$u` (the `_` between parameters is then
+// the only `_`), and a name that itself ends in `OrNull` closes with `$n`.
+static std::string mangleTypeSpelling(const TypeRef& t) {
+    auto list = [](const std::vector<TypeRef>& ts) {
+        std::string s;
+        for (std::size_t i = 0; i < ts.size(); ++i) s += (i ? "$and$" : "") + mangleTypeSpelling(ts[i]);
+        return s;
+    };
+    std::string s;
+    if (t.kind == TypeRef::Kind::Tuple) {
+        s = "$tuple$" + list(t.args) + "$end";
+    } else if (t.kind == TypeRef::Kind::Function) {
+        s = "$fn$" + list(t.args) + "$to$" + (t.ret.empty() ? std::string("unit") : mangleTypeSpelling(t.ret[0])) + "$end";
+    } else {
+        const std::string& n = t.name.empty() ? std::string("x") : t.name;
+        for (char c : n) s += c == '_' ? std::string("$u") : std::string(1, c);
+        if (s.size() >= 6 && s.compare(s.size() - 6, 6, "OrNull") == 0) s += "$n";
+        if (!t.args.empty()) s += "$of$" + list(t.args) + "$end";
+    }
+    if (t.nullable) s += "OrNull"; // review r5 #13: `f(string)` and `f(string?)` get distinct names
+    return s;
+}
+
 std::string mangleFn(const std::string& name, const std::vector<TypeRef>& params, bool overloaded) {
     if (!overloaded) return name;
     std::string m = name + "$";
     if (params.empty()) return m + "unit";
     for (std::size_t i = 0; i < params.size(); ++i) {
         if (i) m += "_";
-        m += (params[i].kind == TypeRef::Kind::Named && !params[i].name.empty()) ? params[i].name : "x";
-        if (params[i].nullable) m += "OrNull"; // review r5 #13: `f(string)` and `f(string?)` get distinct names
+        m += mangleTypeSpelling(params[i]);
     }
     return m;
 }
@@ -345,24 +383,45 @@ std::string mangleFn(const std::string& name, const std::vector<TypeRef>& params
 // implicit widen (1 pt); a non-numeric (generic/user) parameter matches leniently. nullptr = no candidate.
 const FnSig* resolveOverload(const std::vector<FnSig>& set, const std::vector<TypeRef>& args) {
     if (set.size() == 1) return &set[0]; // not overloaded — arity/type errors are reported by checkArgs
-    const FnSig* best = nullptr;
-    int bestScore = -1;
-    for (const auto& sig : set) {
-        if (sig.params.size() != args.size()) continue;
-        int score = 0;
-        bool ok = true;
-        for (std::size_t i = 0; i < args.size(); ++i) {
-            const TypeRef& p = sig.params[i];
-            const TypeRef& a = args[i];
-            Ty sa = scalarTyOf(a);
-            if (sameNamedType(a, p) || (sa != Ty::Unknown && sa == scalarTyOf(p))) score += 2;
-            else if (isLosslessWiden(a, p)) score += 1;
-            else if (!isNumericTypeName(p)) score += 0; // generic/user/unknown parameter: lenient
-            else { ok = false; break; }
+    // P40 review r6 (part 2): nullability takes part. A maybe-null argument (a `T?` value, or `null`) cannot bind a
+    // parameter of a concrete non-null type, and it matches a nullable parameter of its own type exactly — so
+    // `show(m)` with `m: string?` picks `show(string?)`, where it used to bind `show(string)` (declared first, an
+    // equal lenient score) and then be refused as a null into a non-null slot. A non-null argument still prefers
+    // the non-null member (a nullable one is a widening, 1 pt).
+    auto concreteNonNull = [](const FnSig& sig, const TypeRef& p) {
+        if (p.nullable) return false;
+        if (p.kind != TypeRef::Kind::Named) return true; // a non-null tuple or function type
+        if (p.name.empty() || p.name == "Option" || p.name == "unit") return false;
+        return std::find(sig.generics.begin(), sig.generics.end(), p.name) == sig.generics.end();
+    };
+    auto pick = [&](bool strictNull) -> const FnSig* {
+        const FnSig* best = nullptr;
+        int bestScore = -1;
+        for (const auto& sig : set) {
+            if (sig.params.size() != args.size()) continue;
+            int score = 0;
+            bool ok = true;
+            for (std::size_t i = 0; i < args.size(); ++i) {
+                const TypeRef& p = sig.params[i];
+                const TypeRef& a = args[i];
+                Ty sa = scalarTyOf(a);
+                const bool nullLit = a.kind == TypeRef::Kind::Named && a.name.empty() && a.nullable;
+                if (strictNull && a.nullable && concreteNonNull(sig, p)) { ok = false; break; }
+                TypeRef ab = a, pb = p;
+                ab.nullable = pb.nullable = false;
+                if (strictNull && p.nullable && (nullLit || (a.nullable && sameNamedType(ab, pb)))) score += 2;
+                else if (sameNamedType(a, p) || (sa != Ty::Unknown && sa == scalarTyOf(p))) score += 2;
+                else if (isLosslessWiden(a, p)) score += 1;
+                else if (strictNull && p.nullable && !a.nullable && sameNamedType(ab, pb)) score += 1;
+                else if (!isNumericTypeName(p)) score += 0; // generic/user/unknown parameter: lenient
+                else { ok = false; break; }
+            }
+            if (ok && score > bestScore) { best = &sig; bestScore = score; }
         }
-        if (ok && score > bestScore) { best = &sig; bestScore = score; }
-    }
-    return best;
+        return best;
+    };
+    if (const FnSig* s = pick(true)) return s;
+    return pick(false); // none can take a maybe-null argument: bind as before, so checkArgs names the conversion
 }
 struct Local {
     TypeRef type;
@@ -423,7 +482,7 @@ public:
             initDeclPos_ = {0, 0, 0};
             if (v.hasType) checkConvert(v.init, v.type, "initializer of '" + v.name + "'");
             else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
-                diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
+                diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init, it));
             else if (concreteType(it)) values_[v.name] = it;
         }
 
@@ -2507,6 +2566,20 @@ private:
         if (!slot) return;
         if (slot->kind == ExprKind::Lambda && target.kind == TypeRef::Kind::Function && !target.ret.empty()) {
             if (!lambdaParamsMatch(*slot, target)) return;
+            // P40 review r6 (part 2): an unannotated parameter takes the slot's type, and the body is typed again
+            // with it — `mapS(s => s + "!")` typed `s + "!"` with an unknown `s`, so the `+` was not known to be a
+            // string concatenation (PHP emitted `+`: a TypeError). The parameter stays unannotated in the output
+            // (each target infers it from the same slot); only the body's types change.
+            std::vector<std::size_t> filled;
+            for (std::size_t j = 0; j < slot->params.size() && j < target.args.size(); ++j)
+                if (slot->params[j].type.absent() && concreteType(target.args[j])) {
+                    slot->params[j].type = target.args[j];
+                    filled.push_back(j);
+                }
+            if (!filled.empty()) {
+                checkLambda(*slot);
+                for (std::size_t j : filled) slot->params[j].type = TypeRef{};
+            }
             convertLambdaResult(*slot, target.ret[0]);
             return;
         }
@@ -2649,6 +2722,24 @@ private:
             }
         }
         if (isLosslessWiden(from, target)) { coerce(slot, target); return; }
+        // P40 review r6 (part 2): a non-null number into a NULLABLE wider slot widens to the slot's own type the
+        // same way (the value is present, so it is the plain conversion) — `let x: i64? = a` with an `i32 a` left
+        // TS holding a number where a bigint was declared (TS2322; `BigInt.asIntN` then threw a TypeError).
+        // A narrowing VALUE needs the cast it needs into the non-null slot (`i64` into `i32?`: C# CS0266, TS2322). A
+        // literal keeps the leniency it always had there (`fn f(): u8? => 5` compiles on every target).
+        if (target.nullable && !from.nullable && target.kind == TypeRef::Kind::Named) {
+            TypeRef base = target;
+            base.nullable = false;
+            if (isLosslessWiden(from, base)) { coerce(slot, base); return; }
+            const Expr* lit = slot.get();
+            if (lit->kind == ExprKind::Unary && lit->text == "-" && lit->lhs) lit = lit->lhs.get();
+            const bool literal = lit->kind == ExprKind::IntLit || lit->kind == ExprKind::FloatLit;
+            if (!literal && isNumericTypeName(from) && isNumericTypeName(base) && !sameNamedType(from, base)) {
+                diags_.error(slot->pos, "cannot implicitly convert " + from.name + " to " + showTy(target) + " (" +
+                                            ctx + "); add an explicit cast '(" + base.name + ")'");
+                return;
+            }
+        }
         if (isNumericTypeName(from) && isNumericTypeName(target) && !sameNamedType(from, target)) {
             diags_.error(slot->pos, "cannot implicitly convert " + from.name + " to " + target.name +
                                         " (" + ctx + "); add an explicit cast '(" + target.name + ")'");
@@ -2876,7 +2967,7 @@ private:
                 if (s.hasDeclType) { normalizeOptional(s.declType, genericsInScope_); resolveTypeRef(s.declType, s.pos); checkConvert(s.value, s.declType, "initializer of '" + s.name + "'"); }
                 else if (s.value && !intLiteralFits(*s.value, init, "initializer of '" + s.name + "'")) {}
                 else if (s.value && uninferableInit(*s.value, init)) // no annotation + un-inferable init: no target can reconstruct the type (issue #27)
-                    diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value));
+                    diags_.error(s.pos, "cannot infer the type of '" + s.name + "' from its initializer; " + annotationHint(s.name, *s.value, init));
                 if (!blockIsBindings_.empty() && blockIsBindings_.back().count(s.name))
                     diags_.error(s.namePos, "'" + s.name + "' was bound by an `is` test earlier in this block; "
                                             "pick another name (the emitted binding outlives the branch)");
@@ -3855,6 +3946,19 @@ private:
         popScope();
         if (topLevel) { --bodyDepth_; closureAssigned_ = std::move(savedClosureAssigned); }
         --lambdaDepth_;
+        // P40 review r6 (part 2): a lambda whose parameters are all typed and whose body is an expression has a
+        // type every target can spell (as an immediately-invoked one already did) — so `let f = () => "x"` makes
+        // `f()` a string, and PHP's `f() + "|"` is a concatenation (it emitted `+`: a TypeError).
+        if (!e.flag && e.lhs && !(e.lhs->type.kind == TypeRef::Kind::Named && e.lhs->type.name.empty())) {
+            TypeRef ft;
+            ft.kind = TypeRef::Kind::Function;
+            for (const auto& p : e.params) {
+                if (p.type.absent()) return tUnknown();
+                ft.args.push_back(p.type);
+            }
+            ft.ret.push_back(e.lhs->type);
+            return ft;
+        }
         return tUnknown();
     }
 
@@ -4017,6 +4121,19 @@ private:
         }
         TypeRef common;
         if (op == "==" || op == "!=") {
+            // P40 review r6 (part 2): function values have no portable equality — C# rejects a lambda operand
+            // (CS0019) and compares delegates by invocation list, TS/Python by identity, PHP closures by object
+            // equality. Only the null test (`cb == null`, `cb != null`) is defined.
+            const bool lNullLit = e.lhs->kind == ExprKind::NullLit, rNullLit = e.rhs->kind == ExprKind::NullLit;
+            auto fnValue = [](const Expr& x, const TypeRef& t) {
+                return x.kind == ExprKind::Lambda || t.kind == TypeRef::Kind::Function;
+            };
+            if (!lNullLit && !rNullLit && (fnValue(*e.lhs, lt) || fnValue(*e.rhs, rt))) {
+                diags_.error(e.pos, "'" + op + "' on a function value is refused — the targets disagree on function "
+                                    "equality (C# has none for a lambda: CS0019); only a null test ('f " + op +
+                                    " null') is defined");
+                return tNamed("bool");
+            }
             if (reconcileNumeric(e, lt, rt, common)) return tNamed("bool"); // widen the narrower, then compare
             if (l != Ty::Unknown && r != Ty::Unknown && l != r) diags_.error(e.pos, "'" + op + "' compares mismatched types " + tyName(l) + " and " + tyName(r));
             return tNamed("bool");
@@ -4611,6 +4728,9 @@ private:
             TypeRef ft = l->type;
             if (ft.nullable && narrowedHere(*l)) ft.nullable = false;
             e.lhs->type = ft;
+            // P40 review r6: a local that shadows a top-level function of the same name is called through its
+            // VALUE — lowering otherwise took the name for the free function (C# `PolyglotProgram.f()`).
+            if (fns_.count(name)) e.calleeIsField = true;
             return callFunctionValue(ft, argTypes, e, "'" + name + "'");
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
@@ -4711,7 +4831,7 @@ private:
                 bool allBound = viaBoundary;
                 for (const auto& g : chosen->generics) if (!binds.count(g)) allBound = false;
                 if (allBound) for (const auto& g : chosen->generics) e.typeArgs.push_back(binds[g]);
-                refuseUnitInference(*chosen, binds, e, name);
+                refuseUnitInference(*chosen, binds, e, name, argTypes);
             }
             std::vector<TypeRef> ps;
             for (const auto& p : chosen->params) ps.push_back(gen.empty() ? p : substGeneric(p, gen, binds));
@@ -4752,9 +4872,15 @@ private:
     // P40 review r5 item 22: `apply<T>(f: () => T)` called with a lambda that returns nothing would bind `T` to
     // unit — which no target can spell as a type argument (C# has no `Func<void>`: CS0411). TS/Python/PHP ran it,
     // C# did not compile. Refused when a type parameter is left unbound by every other argument and only such a
-    // lambda's result could bind it.
+    // lambda's result could bind it. P40 review r6 #9: not only a lambda literal — ANY argument whose function type
+    // returns unit (a named unit function, a `() => unit` local or field) binds it the same way.
     void refuseUnitInference(const FnSig& sig, const std::unordered_map<std::string, TypeRef>& binds, const Expr& e,
-                             const std::string& name) {
+                             const std::string& name, const std::vector<TypeRef>& argTypes) {
+        auto unitFnValue = [&](std::size_t i) {
+            if (i >= argTypes.size()) return false;
+            const TypeRef& a = argTypes[i];
+            return a.kind == TypeRef::Kind::Function && (a.ret.empty() || isUnitT(a.ret[0]));
+        };
         auto returnsNothing = [](const Expr& lam) {
             if (!lam.flag) return lam.lhs && lam.lhs->type.kind == TypeRef::Kind::Named && lam.lhs->type.name == "unit";
             std::function<bool(const std::vector<StmtPtr>&)> anyValue = [&](const std::vector<StmtPtr>& body) {
@@ -4776,11 +4902,14 @@ private:
             const std::string& g = p.ret[0].name;
             if (std::find(sig.generics.begin(), sig.generics.end(), g) == sig.generics.end()) continue;
             if (auto b = binds.find(g); b != binds.end() && !isUnitT(b->second)) continue;
-            if (!e.args[i] || e.args[i]->kind != ExprKind::Lambda || !returnsNothing(*e.args[i])) continue;
-            diags_.error(e.args[i]->pos, "cannot infer '" + g + "' of '" + name + "' from a lambda that returns no "
+            if (!e.args[i]) continue;
+            const bool lambda = e.args[i]->kind == ExprKind::Lambda;
+            if (lambda ? !returnsNothing(*e.args[i]) : !unitFnValue(i)) continue;
+            diags_.error(e.args[i]->pos, "cannot infer '" + g + "' of '" + name + "' from " +
+                                         (lambda ? "a lambda" : "a function value") + " that returns no "
                                          "value — a type parameter cannot stand for 'unit' (C# has no Func<void>); "
-                                         "return a value from the lambda, or give '" + name + "' a parameter of "
-                                         "a '(…) => unit' function type");
+                                         "return a value from " + (lambda ? "the lambda" : "it") + ", or give '" +
+                                         name + "' a parameter of a '(…) => unit' function type");
             return;
         }
     }
