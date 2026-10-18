@@ -134,6 +134,7 @@
       }
     },
     "expressionOnlyLambdas": true,
+    "unboundImports": ["union", "unionCase"],
     "nativeCoalesceAssign": false,
     "assignmentOrder": "valueFirst",
     "identifiers": {

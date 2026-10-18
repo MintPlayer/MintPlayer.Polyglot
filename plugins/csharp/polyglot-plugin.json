@@ -1889,19 +1889,24 @@
                             {
                               "indent": [
                                 {
-                                  "line": {
-                                    "tmpl": [
-                                      "var ",
-                                      {
-                                        "fn": "ident",
-                                        "args": [
+                                  "case": {
+                                    "when": [ [ { "eq": [ "decl.setterValueParam", "value" ] }, "" ] ],
+                                    "else": {
+                                      "line": {
+                                        "tmpl": [
+                                          "var ",
                                           {
-                                            "get": "decl.setterValueParam"
-                                          }
+                                            "fn": "ident",
+                                            "args": [
+                                              {
+                                                "get": "decl.setterValueParam"
+                                              }
+                                            ]
+                                          },
+                                          " = value;"
                                         ]
-                                      },
-                                      " = value;"
-                                    ]
+                                      }
+                                    }
                                   }
                                 },
                                 {

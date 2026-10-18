@@ -1991,3 +1991,65 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     `infer_unit_fn_value`, `infer_unit_fn_local`, `fn_value_equality`, `nullable_numeric_narrow`; unit block `r6`.
   - **Not touched (the other half):** the init-order check (setters, operators, indexers, lambdas), the constructor
     `this` rule, the cycle message, static computed properties.
+
+- **2026-10-18 — Review round 7 — language half** (Spark's re-verification of `6713b69`: gating 1 + part 2
+  "Language" and the p2hint2 docs item): as built. Every repro (`pg67_l1`, `pg67_l2`, `pg67_rg\rep`,
+  `pge43_l2\p2hint2`) was reproduced on the `6713b69` CLI first; each is now a conformance program or a refusal
+  fixture, with its legal neighbours pinned beside it.
+  - **Gating 1 [R] — a field reached through an alias, a local lambda or a method parameter.** `CtorThisRule`
+    tainted a field only from a syntactic pre-scan (a value mentioning `this`, or a non-parameter name), so
+    `this.cb = () => me.describe()`, `this.cb = () => f()` and `this.setCb(() => this.describe())` let a later
+    `this.cb()` through. Now `run()` first COLLECTS (nothing reported) every own field the construction stores a
+    DERIVED value into, on every path the rule follows (the store at `assign`, inside followed callees too), over
+    this class's constructors and its bases', repeated to a fixpoint; the old pre-scan stays as the conservative
+    cover for bodies outside construction. Fixtures `ctor_this_field_alias`/`_local`/`_param` (Spark
+    `r5_h_field*`, built clean and diverged on `6713b69`). Neighbours (conformance `ctor_this_field_paths`): all
+    three stores without a call, a field holding only a non-capturing lambda called in the constructor, another
+    object's function-typed property called without `this`, an own property returning a non-capturing lambda, and
+    a non-subclassable class doing the refused shape.
+  - **Function-typed property.** `f.show(this)` matched the property and ran its getter with no parameter bound,
+    never the function value it returns: now refused by name (*… passes 'this' as an argument to the function
+    value that the property 'show' returns, whose body is not known here*; fixture `ctor_this_property_fn`, Spark
+    `r5_h_propfn`). Found on the way: an OWN property call (`this.show()`, which sema marks `calleeIsField`) skipped
+    the getter, so a getter returning a lambda capturing `this` diverged too — now the getter (`m.init`) is
+    followed like any own member (fixture `ctor_this_own_property_fn`).
+  - **Item 4's three call shapes** (sema). A compound `op=` on a bare static field now notes the operator body
+    (`noteOperatorRun`, as the qualified target did); a bare static call notes `st:<Owner>.<name>`; a call whose
+    body is known records `callBodyKey_`, and `lambdaKeysOf(call)` yields `ret:<body key>` — the lambdas that body
+    returns (`noteReturnedLambdas` at each `return`, a method/extension expression body), resolved in the
+    `bodyCalls_` graph after all checking (so a callee declared later still counts; `ret:m:` follows overrides).
+    A module value bound to a call's result holds those keys too (`valueLambdaKeys_` now holds a list), and an
+    `if`/`match` arm or `??` operand yields every lambda it may. Fixtures `init_static_compound_reads_later`,
+    `init_bare_static_reads_later`, `init_returned_lambda_reads_later` (Spark `r4_cmps_v`, `r4_bst_v`,
+    `r4_ret_v`), `init_returned_lambda_value`, `init_returned_lambda_arm`; conformance `init_order_bare_static` (Spark `r4_bst_c` + a returned
+    lambda constructing a later class + a returned lambda only stored, reading a later value — legal) and
+    `init_order_static_compound` (Spark `r4_cmps_c`; pinned PHP refuser, arithmetic operators).
+  - **Extension names across modules.** `fnNamesByCanon` listed only the renamed extension, so `import { scale }`
+    dropped the plain value/function. A name that a module also emits under its plain name now lists it beside the
+    renamed spellings. Conformance `ext_name_import/` (Spark `p2extm` + `p2extm3`).
+  - **Type-only imports** (manifest data, validated at load). New spec keys `typeOnlyImports` (`union`,
+    `interface`: moved to the new `item.typeNames`, TS `import type { … }`) and `unboundImports` (`union`,
+    `unionCase`, `interface`: dropped). TS: `["union", "interface"]` + `["unionCase"]`; Python:
+    `unboundImports ["union", "unionCase"]` (an interface is an ABC and stays imported); C#/PHP import no names.
+    Found on the way: union CASE names (`import { Kind, Small, Big }`) failed TS2305 and a Python ImportError, and a
+    class implementing an IMPORTED interface emitted TS/PHP `extends` (the module's interface set was taken after
+    the file partition; `ir::Module::linkedInterfaceNames` now carries the closure's). Conformance
+    `type_only_import/` (Spark `umain`/`ulib`, plus a cross-module interface, a bare import of a union module, and
+    an import naming only a union); unit checks for the vocabulary and both manifests. The library barrel
+    (`stats.pg` importing `Shape`) now emits `import type { Shape }`.
+  - **Indexer `value`.** C#'s indexer `set` template re-declared `var value = value;`; it now skips the alias when
+    the parameter is named `value`, exactly like the property setter. Conformance `indexer_value_param`.
+  - **Interface methods with function-typed parameters.** `sameSigType` compared only named types; function (and
+    tuple) types now match structurally. Conformance `interface_fn_param`; fixture `iface_fn_param_mismatch`
+    (a different function type still does not implement it).
+  - **p2hint2.** Untyped lambdas as `if`/`match` arms of an un-annotated local are refused like a bare untyped
+    lambda (*cannot infer the type of 'f' … add an explicit function type annotation*; fixture
+    `infer_lambda_arms`); TYPED arms make the local take the arms' function type as its declared type, so C# gets a
+    target type (it was CS0173 on `var`). A `??` operand is not affected (the other operand types it). Conformance
+    `lambda_arms_typed` (typed arms, `match` arms, an annotated local, a return slot).
+  - **Corpus diff** (`6713b69` vs this half, the 196 programs × 4 targets): **0 emitted files changed**, identical
+    build status everywhere.
+  - **Tests:** conformance `ctor_this_field_paths`, `init_order_bare_static`, `init_order_static_compound`,
+    `indexer_value_param`, `interface_fn_param`, `lambda_arms_typed`, `ext_name_import/`, `type_only_import/` (8,
+    each with `.expected`; floor pin 196 → 204: 6 files + 2 directories); 12 refusal fixtures (block "Review round
+    7 — language half"); unit checks `r7:`.

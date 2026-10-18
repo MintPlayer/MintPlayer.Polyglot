@@ -188,6 +188,8 @@ pass on comes from `spec` properties instead:
 | `enumMemberOp` | `"."` | how a constant enum member spells (`Color.Red` vs PHP's `"::"`) |
 | `constArrayOpen` / `constArrayClose` | `"["` / `"]"` | constant array delimiters (C#: `"new[] {"` / `"}"`) |
 | `linksWithoutImports` | `false` | modules link by compilation into one unit — no import statements (C#) |
+| `typeOnlyImports` | `[]` | declaration kinds (`union`, `interface`) exported as a TYPE only: a named import moves them from `item.names`/`item.allNames` to `item.typeNames` (TS `import type { … }`). P40 review r7 |
+| `unboundImports` | `[]` | declaration kinds (`union`, `unionCase`, `interface`) not exported under their name at all: dropped from a named import (TS union cases; a Python union and its cases). P40 review r7 |
 | `forbidsShadowedLocals` | `false` | a nested-scope local may not reuse an outer local's name → the scope-legalization pass runs (C#, CS0136) |
 | `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
 | `exprStmt` | absent | `{"discardPrefix": "_ = ", "parenIfStarts": ["{"]}` (P40 review r4). `discardPrefix` is written before an expression statement whose value is dropped and that is not an invocation, construction or await (a bound property read such as `s.len()`, a map lookup, a union-case literal — also the body of such a lambda flowing into `(…) => unit`, which lowering turns into a one-statement block): C# admits only statement expressions (CS0201). `parenIfStarts` lists tokens an expression statement may not begin with; a statement printing so is parenthesized (JS `{`). |

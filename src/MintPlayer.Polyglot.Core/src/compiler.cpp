@@ -1344,8 +1344,35 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
                                                   const std::function<std::string(const std::string&)>& outDirOf,
                                                   const std::map<std::string, std::string>& allNamesByCanon,
                                                   const std::map<std::string, std::map<std::string, std::vector<std::string>>>& fnNamesByCanon,
-                                                  const std::map<std::string, std::set<std::string>>& spelledRefs) {
+                                                  const std::map<std::string, std::set<std::string>>& spelledRefs,
+                                                  const std::map<std::string, std::map<std::string, char>>& unboundByCanon) {
     std::vector<ir::ModuleImport> out;
+    // Review r7: a name the target emits with no runtime binding — importing it as a value is a run-time failure
+    // (Node: "does not provide an export named", Python ImportError) although tsc accepts it. A type-only one
+    // (manifest `typeOnlyImports`: a TS union or interface) moves out of `names`/`allNames` into `typeNames`; one
+    // with no export under that name at all (`unboundImports`: a union case, a Python union) is dropped.
+    auto splitTypeOnly = [&](ir::ModuleImport& mi, const std::string& canon) {
+        auto t = unboundByCanon.find(canon);
+        if (t == unboundByCanon.end() || mi.isNamespace) return;
+        auto split = [&](std::string& list) {
+            std::string keep;
+            for (std::size_t p = 0; p < list.size();) {
+                const std::size_t q = list.find(", ", p);
+                const std::string item = list.substr(p, q == std::string::npos ? std::string::npos : q - p);
+                auto how = t->second.find(item.substr(0, item.find(" as ")));
+                if (how == t->second.end() || how->second == 't') {
+                    std::string& dst = how == t->second.end() ? keep : mi.typeNames;
+                    if (!dst.empty()) dst += ", ";
+                    dst += item;
+                }
+                if (q == std::string::npos) break;
+                p = q + 2;
+            }
+            list = keep;
+        };
+        split(mi.names);
+        split(mi.allNames);
+    };
     if (linksWithoutImports) return out; // modules link by compilation into one unit (plugin trait flag)
     static const std::vector<ResolvedImport> kNone;
     auto it = graph.find(fileOrigin);
@@ -1409,6 +1436,7 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
             if (ri.names.empty())
                 if (auto an = allNamesByCanon.find(ri.fromCanon); an != allNamesByCanon.end()) mi.allNames = an->second;
             if (!ri.names.empty()) appendMissing(mi, ri.fromCanon);
+            splitTypeOnly(mi, ri.fromCanon);
         }
         out.push_back(std::move(mi));
     }
@@ -1418,6 +1446,7 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
         ir::ModuleImport mi;
         mi.path = pathTo(entry.first, baseByCanon.at(entry.first));
         appendMissing(mi, entry.first);
+        splitTypeOnly(mi, entry.first);
         out.push_back(std::move(mi));
     }
     return out;
@@ -1636,6 +1665,15 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
                 for (const auto& n : names) { if (!joined.empty()) joined += ", "; joined += n; }
                 allNamesByCanon[origin] = joined;
             }
+            // Review r7: a renamed extension shares its name with a declaration emitted under the PLAIN name (a
+            // module value, a function, a type) — a named import of that name brings in both.
+            for (auto& [origin, byName] : fnNamesByCanon) {
+                auto emitted = byOrigin.find(origin);
+                if (emitted == byOrigin.end()) continue;
+                for (auto& [name, spelled] : byName)
+                    if (emitted->second.count(name) && std::find(spelled.begin(), spelled.end(), name) == spelled.end())
+                        spelled.push_back(name);
+            }
         }
         // P40 §0: a file that holds the prelude on behalf of OTHER files too (the C# entry, or the split
         // prelude file) keeps the union of what every file of the closure reaches — computed over the whole
@@ -1656,6 +1694,22 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         const auto spelledRefs = target.backend()->linksWithoutImports()
                                      ? std::map<std::string, std::set<std::string>>()
                                      : crossModuleReferences(m, importOrigin);
+        // Review r7: per module, the declarations this target emits with no runtime binding (manifest data):
+        // name -> 't' (a type only: `typeNames`) or 'u' (no export under that name: dropped).
+        std::map<std::string, std::map<std::string, char>> unboundByCanon;
+        auto classify = [&](const std::vector<std::string>& kinds, char how) {
+            for (const std::string& kind : kinds) {
+                auto put = [&](const std::string& origin, const std::string& n) {
+                    if (origin != kPreludeOrigin && !origin.empty()) unboundByCanon[origin][n] = how;
+                };
+                if (kind == "union") for (const auto& d : m.unions) put(d.originModule, d.name);
+                else if (kind == "unionCase") { for (const auto& d : m.unions) for (const auto& c : d.cases) put(d.originModule, c.name); }
+                else if (kind == "interface") for (const auto& d : m.interfaces) put(d.originModule, d.name);
+            }
+        };
+        classify(target.backend()->typeOnlyImports(), 't');
+        classify(target.backend()->unboundImports(), 'u');
+        for (const auto& d : m.interfaces) m.linkedInterfaceNames.push_back(d.name); // review r7: before the partition
         prune(m.enums); prune(m.unions); prune(m.records); prune(m.classes);
         prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
         if (holdsPrelude) pruneUnreachablePrelude(m, holdsForOthers ? forcedReach : nullptr);
@@ -1669,7 +1723,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         m.imports = buildImports(importGraph, importOrigin, baseByCanon,
                                  target.backend()->linksWithoutImports(),
                                  target.backend()->crossDirImports(), lib.moduleOutputDir, allNamesByCanon,
-                                 fnNamesByCanon, spelledRefs);
+                                 fnNamesByCanon, spelledRefs, unboundByCanon);
         if (!lib.originInfo) return target.backend()->emit(m);
         // P38: same as the single-file path, but each emitted FILE gets its own origin list — the caller
         // below stashes it on the matching ModuleFile.

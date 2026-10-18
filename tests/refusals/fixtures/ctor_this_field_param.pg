@@ -1,0 +1,25 @@
+// P40 review r7 (gating 1) - Spark r5_h_fieldparam.
+import "std.io"
+
+// rule 5 MUST REFUSE: the constructor hands a lambda capturing `this` to its own NON-open method, which stores it in
+// the field; the constructor then CALLS the field (the lambda calls the overridable method)
+open class Base {
+  var cb: () => string = () => "none"
+  var label: string = ""
+  constructor() {
+    this.setCb(() => this.describe())
+    this.label = this.cb()
+  }
+  fn setCb(f: () => string) {
+    this.cb = f
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

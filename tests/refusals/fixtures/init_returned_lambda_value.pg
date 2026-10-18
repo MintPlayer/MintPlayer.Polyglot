@@ -1,0 +1,14 @@
+// P40 review r7 (part 2, item 4): a module value bound to the lambda a function returns, called by a later
+// initializer — the lambda reads a value declared after both.
+import "std.io"
+
+fn adder(): (i32) => i32 {
+  return (x: i32) => x + offset
+}
+let add = adder()
+let r: i32 = add(1)
+let offset: i32 = 100
+
+fn main() {
+  print(r)
+}

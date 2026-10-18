@@ -196,6 +196,8 @@
     },
     "absentNormalize": { "prefix": "(", "suffix": " ?? null)", "foldedBy": ["coalesce", "nullAssert", "nullSafe"] },
     "nativeCoalesceAssign": true,
+    "typeOnlyImports": ["union", "interface"],
+    "unboundImports": ["unionCase"],
     "assignmentOrder": "targetFirst",
     "exprStmt": { "parenIfStarts": ["{"] },
     "wrapAtom": {
@@ -3116,8 +3118,26 @@
         },
         {
           "mapDecl": "module.imports",
-          "each": {
-            "line": {
+          "each": { "seq": [
+          {
+            "case": {
+              "when": [
+                [
+                  { "not": { "eq": ["item.typeNames", ""] } },
+                  { "line": { "tmpl": ["import type { ", { "get": "item.typeNames" }, " } from \"", { "get": "item.path" }, "\";"] } }
+                ]
+              ]
+            }
+          },
+          { "case": {
+            "when": [
+              [
+                { "and": [ { "eq": ["item.names", ""] }, { "eq": ["item.allNames", ""] }, { "not": { "eq": ["item.typeNames", ""] } } ] },
+                { "seq": [] }
+              ]
+            ],
+            "else": {
+          "line": {
               "case": {
                 "when": [
                   [
@@ -3180,7 +3200,8 @@
                 }
               }
             }
-          }
+          } } }
+          ] }
         },
         {
           "mapOrder": "module.order",

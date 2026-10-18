@@ -5229,6 +5229,31 @@ int main() {
         err.clear();
         check(!validateBackend(head + "\"originMapping\":\"yes\"}", err) && has(err, "must be an object"),
               "P38 s3: a non-object originMapping refuses");
+        // Review round 7 — language half: the import-binding kinds are a closed, validated vocabulary.
+        {
+            auto anyError = [](const SpecLoadResult& r, const std::string& what) {
+                for (const auto& e : r.errors) if (e.find(what) != std::string::npos) return true;
+                return false;
+            };
+            SpecLoadResult bad = loadBackendSpec(R"({"name":"t","assignmentOrder":"targetFirst","typeOnlyImports":["record"]})");
+            check(!bad.ok && anyError(bad, "typeOnlyImports: unknown declaration kind 'record'"),
+                  "r7: an unknown typeOnlyImports kind refuses at load");
+            SpecLoadResult notArr = loadBackendSpec(R"({"name":"t","assignmentOrder":"targetFirst","unboundImports":"union"})");
+            check(!notArr.ok && anyError(notArr, "unboundImports must be an array"),
+                  "r7: a non-array unboundImports refuses at load");
+            SpecLoadResult good = loadBackendSpec(R"({"name":"t","assignmentOrder":"targetFirst","typeOnlyImports":["union"],"unboundImports":["unionCase"]})");
+            check(good.ok && good.spec.typeOnlyImports == std::vector<std::string>{"union"} &&
+                      good.spec.unboundImports == std::vector<std::string>{"unionCase"},
+                  "r7: the import-binding kinds load");
+        }
+        const Backend* tsb = findBackend("typescript");
+        const Backend* pyb = findBackend("python");
+        check(tsb && tsb->typeOnlyImports() == std::vector<std::string>{"union", "interface"} &&
+                  tsb->unboundImports() == std::vector<std::string>{"unionCase"},
+              "r7: TS imports a union/interface with `import type` and drops a union case's name");
+        check(pyb && pyb->typeOnlyImports().empty() &&
+                  pyb->unboundImports() == std::vector<std::string>{"union", "unionCase"},
+              "r7: Python drops a union's and a union case's name from an import (an interface is an ABC: imported)");
     }
 
     // ---- P38/issue #69 slice 8: Base64-VLQ + the v3 source map ------------------------------------

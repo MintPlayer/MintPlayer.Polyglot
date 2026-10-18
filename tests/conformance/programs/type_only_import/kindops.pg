@@ -1,0 +1,8 @@
+import { Kind, Small, Big } from "./kinds"
+
+fn kindName(k: Kind): string => match k {
+  Small => "small",
+  Big(size) => "big",
+}
+
+fn mkKind(): Kind => Big(7)

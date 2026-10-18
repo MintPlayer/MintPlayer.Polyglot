@@ -1,0 +1,3 @@
+// An extension sharing its name with a top-level function.
+fn label(): string => "fn"
+extension fn i32.label(): string => "ext"

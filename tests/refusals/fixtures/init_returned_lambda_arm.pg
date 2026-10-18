@@ -1,0 +1,15 @@
+// P40 review r7 (part 2, item 4): the lambda a function returns from an `if` ARM, called through a local by an
+// initializer — the lambda reads a value declared later.
+import "std.io"
+
+fn pick(b: bool): (i32) => i32 => if b { (x: i32) => x + late } else { (x: i32) => x }
+fn calc(): i32 {
+  let f = pick(true)
+  return f(1)
+}
+let r: i32 = calc()
+let late: i32 = 5
+
+fn main() {
+  print(r)
+}

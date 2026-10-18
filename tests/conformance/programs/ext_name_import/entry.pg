@@ -1,0 +1,13 @@
+// P40 review r7 (part 2): an extension that shares its name with a module VALUE or a top-level FUNCTION of another
+// module (Spark p2extm/p2extm3). A named import of that name brings in every declaration of it — the plain one
+// and the renamed extension — so both the plain use and the extension call resolve on every target.
+import "std.io"
+import { scale } from "./scales"
+import { label } from "./labels"
+
+fn main() {
+  print(4.scale())
+  print(scale)
+  print(label())
+  print(1.label())
+}

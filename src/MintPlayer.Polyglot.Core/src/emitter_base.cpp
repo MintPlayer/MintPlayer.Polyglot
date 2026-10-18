@@ -1520,6 +1520,7 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
         if (f == "path")        return m_.imports[i].path;
         if (f == "names")       return m_.imports[i].names;
         if (f == "allNames")    return m_.imports[i].allNames; // P40 B3: bare import -> every name
+        if (f == "typeNames")   return m_.imports[i].typeNames; // review r7: no runtime binding (typeOnlyImports)
         if (f == "isNamespace") return m_.imports[i].isNamespace ? "true" : "false";
         if (f == "ns")          return m_.imports[i].ns;
     }
@@ -2022,6 +2023,7 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     std::unordered_set<std::string> recordNames, interfaceNames;
     for (const auto& r : m.records) recordNames.insert(r.name);
     for (const auto& i : m.interfaces) interfaceNames.insert(i.name);
+    interfaceNames.insert(m.linkedInterfaceNames.begin(), m.linkedInterfaceNames.end()); // review r7: imported ones
     ModuleDeclCtx ctx(m, hooks_, [this](const ir::Expr& e) { return emitExpr(e); }, spec().name,
                       [&recordNames](const TypeRef& t) {
                           return t.kind == TypeRef::Kind::Named && recordNames.count(t.name) != 0;

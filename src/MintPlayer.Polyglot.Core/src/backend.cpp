@@ -95,6 +95,8 @@ public:
         return {spec_.trueLit, spec_.falseLit, spec_.enumMemberOp, spec_.constArrayOpen, spec_.constArrayClose};
     }
     bool linksWithoutImports() const override { return spec_.linksWithoutImports; }
+    std::vector<std::string> typeOnlyImports() const override { return spec_.typeOnlyImports; }
+    std::vector<std::string> unboundImports() const override { return spec_.unboundImports; }
     bool forbidsShadowedLocals() const override { return spec_.forbidsShadowedLocals; }
     bool expressionOnlyLambdas() const override { return spec_.expressionOnlyLambdas; }
     bool nativeCompoundAssign() const override { return spec_.nativeCompoundAssign; }

@@ -1,0 +1,15 @@
+// P40 review r7 (part 2, item 4) - Spark r4_bst_v.
+import "std.io"
+
+// rule 4: a static method the initializer calls calls a sibling static method by its BARE name; that body reads a
+// LATER VALUE (must be refused)
+class Calc {
+  static fn run(): i32 => helper() + 1
+  static fn helper(): i32 => base * 2
+}
+let v: i32 = Calc.run()
+let base: i32 = 5
+
+fn main() {
+  print(v)
+}
