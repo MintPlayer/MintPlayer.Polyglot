@@ -1,0 +1,16 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): `yield` of a maybe-null value from an `Iterable<i32>` (TS2322; Python raised
+// a TypeError on `t += None`).
+fn maybe(): i32? => null
+
+fn gen(): Iterable<i32> {
+  yield 1
+  yield maybe()
+}
+
+fn main() {
+  for x in gen() {
+    print(x)
+  }
+}

@@ -1,0 +1,128 @@
+import "std.io"
+import "std.collections"
+
+// P40 review r5 item 18: every slot a value flows into converts it — match/if arms one by one, `yield`, record
+// `with` fields, indices, tuple elements, generic type arguments, lambda parameters and type-parameter slots. These
+// are the ACCEPTED neighbours of the refused shapes (tests/refusals: nullable_match_arm, nullable_yield, ...):
+// narrowed reads, fallbacks, nullable slots, widening arms, nullable type arguments that match exactly.
+
+record P(x: i32, y: i32)
+record Q(s: string?, n: i32)
+
+class Box<T> {
+  var v: T
+  constructor(v: T) {
+    this.v = v
+  }
+  fn set(v: T) {
+    this.v = v
+  }
+}
+
+fn maybe(k: i32): i32? => if k > 0 { k } else { null }
+
+fn m1(k: i32): i32 {
+  let m = maybe(k)
+  let w: i32 = match k { 1 => m ?? 0, _ => 0 }
+  return w
+}
+fn m2(k: i32): i32? => match k { 1 => maybe(k), _ => 0 }
+fn m3(k: i32): f64 => match k { 1 => 1, _ => 2.5 }
+fn m4(k: i32): i32 {
+  let m = maybe(k)
+  if m != null {
+    return match k { 1 => m, _ => 7 }
+  }
+  return -1
+}
+fn m5(k: i32): i32? => match k { 1 => null, _ => 3 }
+fn i1(c: bool): f64 => if c { 1 } else { 2.5 }
+
+fn gen(n: i32): Iterable<i32> {
+  let m = maybe(n)
+  if m != null {
+    yield m
+  }
+  yield n
+}
+fn genN(): Iterable<i32?> {
+  yield null
+  yield 4
+}
+
+fn w1(p: P): P {
+  let m = maybe(3)
+  if m != null {
+    return p with { x = m }
+  }
+  return p with { y = 9 }
+}
+fn w2(q: Q): Q => q with { s = null }
+
+fn ix(xs: List<i32>): i32 {
+  let m = maybe(1)
+  if m != null {
+    return xs[m]
+  }
+  return xs[0]
+}
+
+fn t1(): (i32, i32?) {
+  return (maybe(1) ?? 0, maybe(-1))
+}
+fn t2(): (i64, i32) {
+  return (1, 2)
+}
+
+fn sum(xs: Iterable<i32>): i32 {
+  var t = 0
+  for x in xs {
+    t += x
+  }
+  return t
+}
+
+fn g1<T>(x: T?, d: T): T => x ?? d
+fn g2<T>(x: T): T? => null
+fn g3<T>(xs: List<T>): T => xs[0]
+
+fn mapN(f: (i32?) => i32): i32 => f(null)
+fn mapIt(f: (i32) => i32): i32 => f(3)
+
+fn main() {
+  print(m1(1))
+  print(m2(1) ?? -1)
+  print(m3(2))
+  print(m4(1))
+  print(m5(1) ?? -2)
+  print(i1(false))
+  print(sum(gen(2)))
+  var c = 0
+  for v in genN() {
+    c += v ?? 10
+  }
+  print(c)
+  print(w1(P(1, 2)).x)
+  print(w2(Q("a", 1)).s ?? "none")
+  let xs = List<i32>()
+  xs.add(10)
+  xs.add(20)
+  print(ix(xs))
+  let (a, b) = t1()
+  print(a + (b ?? 5))
+  let (c1, c2) = t2()
+  print(c1 + 1i64)
+  print(c2)
+  let lst: List<i32> = xs
+  print(sum(lst))
+  print(g1<i32>(null, 4))
+  print(g2<i32>(3) ?? 6)
+  print(g3(xs))
+  let bx = Box<i32?>(null)
+  bx.set(null)
+  print(bx.v ?? 8)
+  print(mapN((x: i32?) => (x ?? 0) + 1))
+  print(mapN(x => (x ?? 1) + 1))
+  print(mapIt((x: i32) => x + 1))
+  print(mapIt(x => x * 2))
+}

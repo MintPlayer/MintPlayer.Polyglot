@@ -1,0 +1,9 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): a one-parameter lambda where a two-parameter function type is expected (C#
+// CS1593; JS silently dropped the second argument).
+fn two(f: (i32, i32) => i32): i32 => f(3, 4)
+
+fn main() {
+  print(two((a: i32) => a))
+}

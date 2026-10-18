@@ -1,0 +1,16 @@
+import "std.io"
+import "std.collections"
+
+// REFUSED (P40 review r5 item 18): a maybe-null index (TS2538; a PHP null offset; a Python TypeError).
+fn maybe(): i32? => null
+
+fn at(xs: List<i32>): i32 {
+  let m = maybe()
+  return xs[m]
+}
+
+fn main() {
+  let xs = List<i32>()
+  xs.add(10)
+  print(at(xs))
+}

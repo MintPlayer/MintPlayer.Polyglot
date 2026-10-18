@@ -1,0 +1,119 @@
+import "std.io"
+import "std.collections"
+
+// P40 review r5 item 23: a plain `t = v` names its slot BEFORE the value runs, on every target. Python and PHP
+// evaluate the right side first (manifest `assignmentOrder: "valueFirst"`), so a value that bumps the index or
+// rebinds the receiver used to write the slot it left behind (`xs[j] = incJ()` stored at xs[1]). The parts the
+// value could change are evaluated into temps ahead of it there; C# and JS are unchanged. (The read-side and
+// compound forms are round-4 item 9's.)
+
+class Box {
+  var v: i32
+  constructor(v: i32) {
+    this.v = v
+  }
+  fn get(): i32 => this.v
+}
+
+class Acc {
+  var t: i32 = 0
+  fn add(n: i32) {
+    this.t = this.t + n
+  }
+}
+
+class Holder {
+  var b: Box = Box(0)
+}
+
+fn indices() {
+  var xs: List<i32> = [1, 2]
+  var i = 0
+  let incI: () => i32 = () => {
+    i = 1
+    return 10
+  }
+  let r = xs[i] + incI()
+  print(r)
+  var j = 0
+  let incJ: () => i32 = () => {
+    j = 1
+    return 5
+  }
+  xs[j] = incJ()
+  print(xs[0])
+  print(xs[1])
+  var k = 0
+  let incK: () => i32 = () => {
+    k = 1
+    return 7
+  }
+  xs[k] += incK()
+  print(xs[0])
+  print(xs[1])
+  var zs: List<i32> = [1, 2]
+  let swapZ: () => i32 = () => {
+    zs = [50, 60]
+    return 9
+  }
+  zs[0] = swapZ()
+  print(zs[0])
+  var idx = 0
+  let bumpIdx: () => i32 = () => {
+    idx = 1
+    return 0
+  }
+  let r6 = xs[idx] + xs[bumpIdx()]
+  print(r6)
+  let ys: List<i32> = [0, 0]
+  var n = 0
+  ys[n] = n + 4
+  print(ys[0])
+}
+
+fn receivers() {
+  var b = Box(1)
+  let swapB: () => i32 = () => {
+    b = Box(50)
+    return 2
+  }
+  let r = b.get() + swapB()
+  print(r)
+  var d = Box(1)
+  let swapD: () => i32 = () => {
+    d = Box(50)
+    return 7
+  }
+  d.v = swapD()
+  print(d.v)
+  var e = Box(1)
+  let swapE: () => i32 = () => {
+    e = Box(50)
+    return 7
+  }
+  e.v += swapE()
+  print(e.v)
+  var a = Acc()
+  let old = a
+  let swapA: () => i32 = () => {
+    a = Acc()
+    return 5
+  }
+  a.add(swapA())
+  print(old.t)
+  print(a.t)
+  let h = Holder()
+  let first = h.b
+  let swapH: () => i32 = () => {
+    h.b = Box(70)
+    return 3
+  }
+  h.b.v = swapH()
+  print(first.v)
+  print(h.b.v)
+}
+
+fn main() {
+  indices()
+  receivers()
+}

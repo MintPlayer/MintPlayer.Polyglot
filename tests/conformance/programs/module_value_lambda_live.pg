@@ -1,0 +1,49 @@
+import "std.io"
+
+// P40 review r5 (part 2): a lambda reads a module value when it RUNS, not when it is created (SPEC §5's exemption
+// for stored lambdas). PHP arrow functions capture by value at creation, so `cb` printed 1 and `adder` 0 there;
+// they now read the module value live (`$GLOBALS['later']`).
+
+let f5: i32 = fact(5)
+let ev: bool = isEven(10)
+let cb: () => i32 = () => later + 1
+let adder: () => i32 = makeAdder()
+let later: i32 = 5
+
+fn fact(n: i32): i32 {
+  if n <= 1 {
+    return 1
+  }
+  return n * fact(n - 1)
+}
+
+fn isEven(n: i32): bool {
+  if n == 0 {
+    return true
+  }
+  return isOdd(n - 1)
+}
+
+fn isOdd(n: i32): bool {
+  if n == 0 {
+    return false
+  }
+  return isEven(n - 1)
+}
+
+fn makeAdder(): () => i32 => () => later * 2
+
+fn blockReader(): () => i32 => () => {
+  let k = later + 10
+  return k
+}
+
+fn main() {
+  print(f5)
+  print(ev)
+  let c1 = cb
+  print(c1())
+  let a1 = adder
+  print(a1())
+  print(blockReader()())
+}

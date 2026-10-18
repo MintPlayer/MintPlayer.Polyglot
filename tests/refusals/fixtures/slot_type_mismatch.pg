@@ -1,0 +1,12 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): a `match` arm of the wrong type, into an `i32` slot. Only the last arm was
+// judged, so a string arm reached C# (CS0029) and TS (TS2322).
+fn pick(k: i32): i32 {
+  let w: i32 = match k { 1 => "one", _ => 2 }
+  return w
+}
+
+fn main() {
+  print(pick(2))
+}

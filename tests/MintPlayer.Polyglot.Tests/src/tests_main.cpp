@@ -1900,6 +1900,107 @@ int main() {
                 refusesR4("fn f(): i32 {\n  let v = 2147483648\n  return 0\n}\n", "does not fit 'i32'",
                           "an inferred i32 local refuses an out-of-range literal");
             }
+            // P40 review r5 — nullability / functions half: each refusal by message, each fix by emission; the accepted
+            // neighbours compile.
+            {
+                auto refusesR5 = [&](const std::string& src, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget("csharp"));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r5: " + label);
+                };
+                auto acceptsR5 = [&](const std::string& src, const std::string& label) {
+                    check(compileStd(src, findTarget("csharp")).ok, "r5: " + label);
+                };
+                auto emitsR5 = [&](const std::string& src, const char* target, std::initializer_list<const char*> frags,
+                                   std::initializer_list<const char*> absent, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool ok = r.ok;
+                    for (const char* f : frags) ok = ok && has(r.code, f);
+                    for (const char* f : absent) ok = ok && !has(r.code, f);
+                    check(ok, "r5: " + label);
+                };
+                // 18: every slot converts its value.
+                refusesR5("fn m(): i32? => null\nfn f(k: i32): i32 => match k {\n  1 => m(),\n  _ => 0,\n}\n",
+                          "the value may be null", "a nullable match arm into i32 (item 18)");
+                refusesR5("fn f(k: i32): i32 => match k {\n  1 => \"one\",\n  _ => 2,\n}\n", "expected i32, found string",
+                          "a mismatched match arm (item 18)");
+                refusesR5("fn f(c: bool): i32 => if c { 2 } else { \"x\" }\n", "expected i32, found string",
+                          "a mismatched if-expression branch (item 18)");
+                refusesR5("fn g(): Iterable<i32> {\n  yield null\n}\n", "(yielded value)", "yield null from Iterable<i32> (item 18)");
+                refusesR5("record P(x: i32)\nfn f(p: P): P => p with { x = \"s\" }\n", "(field 'x' of 'with')",
+                          "a mistyped with-field (item 18)");
+                refusesR5("import \"std.collections\"\nfn f(xs: List<i32>): i32 => xs[\"0\"]\n", "type mismatch (index)",
+                          "a string index (item 18)");
+                refusesR5("fn m(): i32? => null\nfn f(): (i32, i32) {\n  return (m(), 1)\n}\n", "the value may be null",
+                          "a nullable tuple element (item 18)");
+                refusesR5("import \"std.collections\"\nfn f(xs: List<i32?>): List<i32> => xs\n", "type arguments must match exactly",
+                          "List<i32?> into List<i32> (item 18)");
+                refusesR5("fn ap(f: (i32) => i32): i32 => f(3)\nfn g(): i32 => ap((x: string) => 1)\n",
+                          "lambda parameter 'x' is declared 'string'", "a mistyped lambda parameter (item 18)");
+                refusesR5("fn two(f: (i32, i32) => i32): i32 => f(3, 4)\nfn g(): i32 => two((a: i32) => a)\n",
+                          "this lambda takes 1 parameter(s)", "a lambda of the wrong arity (item 18)");
+                refusesR5("fn f<T>(x: T = null): T => x\n", "the type parameter 'T' may be a non-null type",
+                          "a null default for a T parameter (item 18)");
+                refusesR5("fn f<T>(x: T?): T => x\n", "the type parameter 'T' may be a non-null type",
+                          "a T? returned as T (item 18)");
+                acceptsR5("fn m(): i32? => null\nfn f(k: i32): i32? => match k {\n  1 => m(),\n  _ => 0,\n}\n",
+                          "a nullable match arm into i32? (item 18)");
+                acceptsR5("fn f(k: i32): f64 => match k {\n  1 => 1,\n  _ => 2.5,\n}\n", "an i32 arm widens into f64 (item 18)");
+                acceptsR5("fn m(): i32? => null\nfn f(): i32 {\n  let v = m()\n  if v != null {\n    return match 1 {\n"
+                          "      1 => v,\n      _ => 0,\n    }\n  }\n  return 0\n}\n", "a narrowed read in a match arm (item 18)");
+                acceptsR5("fn f<T>(x: T?, d: T): T => x ?? d\nfn g<T>(x: T): T? => null\n", "T? fallbacks and a T? slot (item 18)");
+                acceptsR5("import \"std.collections\"\nfn f(xs: List<i32?>): List<i32?> => xs\n", "matching nullable type args (item 18)");
+                acceptsR5("fn ap(f: (i32?) => i32): i32 => f(null)\nfn g(): i32 => ap(x => (x ?? 0) + 1)\n",
+                          "an unannotated lambda parameter takes the slot's type (item 18)");
+                // 19: a test inside a lambda narrows a captured parameter / let.
+                acceptsR5("fn t(s: string): string => s\nfn r(f: () => string): string => f()\n"
+                          "fn v(s: string?): string => r(() => {\n  if s != null {\n    return t(s)\n  }\n  return \"-\"\n})\n",
+                          "a captured parameter narrowed inside the lambda (item 19)");
+                refusesR5("fn t(s: string): string => s\nfn r(f: () => string): string => f()\n"
+                          "fn v(s: string?): string {\n  if s != null {\n    return r(() => t(s))\n  }\n  return \"-\"\n}\n",
+                          "the value may be null", "an OUTER narrowing still stops at the lambda (item 19)");
+                // 20: `?.` calls keep their `?.`, are typed nullable, and normalize TS's undefined.
+                const std::string ns = "class R {\n  var n: i32 = 1\n  fn run() {\n  }\n  fn v(): i32 => 3\n}\n"
+                                       "fn f(r: R?): i32 {\n  r?.run()\n  let a: i32? = r?.v()\n  let b: i32? = r?.n\n"
+                                       "  return (a ?? 0) + (b ?? 0)\n}\n";
+                emitsR5(ns, "csharp", {"if (r != null)", "switch { null => null"}, {}, "C# null-safe call forms (item 20)");
+                emitsR5(ns, "typescript", {"if (r !== null)", "(r?.n ?? null)"}, {}, "TS null-safe forms, undefined -> null (item 20)");
+                emitsR5(ns, "python", {"if (r is not None):"}, {}, "Python null-safe call statement (item 20)");
+                emitsR5(ns, "php", {"if ($r !== null)"}, {}, "PHP null-safe call statement (item 20)");
+                refusesR5("class R {\n  fn v(): i32 => 3\n}\nfn f(r: R?): i32 => r?.v()\n", "the value may be null",
+                          "r?.v() is nullable (item 20)");
+                // 21: a lambda operand keeps its parentheses.
+                emitsR5("fn f(cb: (() => i32)?): i32 {\n  let g: () => i32 = cb ?? (() => 9)\n  return g()\n}\n", "csharp",
+                        {"cb ?? (() => 9)"}, {}, "C# parenthesizes a lambda '??' operand (item 21)");
+                emitsR5("fn f(cb: (() => i32)?): i32 {\n  let g: () => i32 = cb ?? (() => 9)\n  return g()\n}\n", "typescript",
+                        {"cb ?? (() => 9)"}, {}, "TS parenthesizes a lambda '??' operand (item 21)");
+                // 22: T = unit inference.
+                refusesR5("fn ap<T>(f: () => T): T => f()\nfn u() {\n}\nfn g() {\n  ap(() => u())\n}\n",
+                          "cannot infer 'T' of 'ap' from a lambda that returns no value", "T inferred as unit (item 22)");
+                acceptsR5("fn ap<T>(f: () => T): T => f()\nfn g(): i32 => ap<i32>(() => 5)\n", "an explicit T (item 22)");
+                // 23: a plain assignment hoists the target's parts on a valueFirst target only.
+                const std::string vf = "import \"std.collections\"\nfn f() {\n  var xs: List<i32> = [1, 2]\n  var j = 0\n"
+                                       "  let inc: () => i32 = () => {\n    j = 1\n    return 5\n  }\n  xs[j] = inc()\n}\n";
+                emitsR5(vf, "php", {"$__c"}, {"$xs[$j] = $inc()"}, "PHP snapshots a rebindable index (item 23)");
+                emitsR5(vf, "python", {"__c"}, {"xs[j] = inc()"}, "Python snapshots a rebindable index (item 23)");
+                emitsR5(vf, "csharp", {"xs[j] = inc();"}, {"__c"}, "C# keeps the plain assignment (item 23)");
+                emitsR5("import \"std.collections\"\nfn g(): i32 => 1\nfn f(xs: List<i32>, i: i32) {\n  xs[i] = g()\n}\n",
+                        "php", {"$xs[$i] = g();"}, {"$__c"}, "PHP leaves a stable index in place (item 23)");
+                // Part 2.
+                refusesR5("class P {\n  var name: string? = null\n  fn g(): string {\n    if this.name != null {\n"
+                          "      return s(this.name)\n    }\n    return \"\"\n  }\n}\nfn s(x: string): string => x\n",
+                          "fields are not narrowed by a null test", "the field-narrowing rule is named");
+                acceptsR5("open class A {\n}\nclass D : A {\n}\nfn feed(f: (D) => i32): i32 => f(D())\n"
+                          "fn g(): i32 {\n  let h: (A) => i32 = (a: A) => 1\n  return feed(h)\n}\n",
+                          "a contravariant function value converts");
+                refusesR5("fn feed(f: (i32) => i32): i32 => f(1)\nfn g(): i32 {\n  let h: (i64) => i32 = (a: i64) => 1\n"
+                          "  return feed(h)\n}\n", "function types must match exactly", "scalar parameters stay exact");
+                emitsR5("let later: i32 = 5\nfn mk(): () => i32 => () => later * 2\n", "php", {"$GLOBALS['later']"}, {},
+                        "PHP reads a module value live inside a lambda");
+                refusesR5("fn f(): i32 {\n  let cb: () => unit = null\n  return 0\n}\n", "declare the slot '(() => unit)?'",
+                          "a nullable function slot hint is parenthesized");
+            }
             // A bare import of an extension-only module names its functions on TS and Python.
             {
                 MapModuleResolver res{{"./ext", "extension fn i32.twice(): i32 => this * 2\n"}};
