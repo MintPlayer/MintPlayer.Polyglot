@@ -174,6 +174,20 @@ Rule parseRuleInner(const json::Value& v, bool& ok, std::string& error) {
         r.s2 = v["rule"].asString();
         return r;
     }
+    if (v.has("mapOrder")) { // review r4 #7: run each declaration of the ORDER list at `mapOrder` with its kind's
+        r.kind = Rule::Kind::MapOrder; // rule: "kinds": { "<kind>": {"rule": <decl rule>} | {"each": <item rule>} }
+        r.s = v["mapOrder"].asString();
+        for (const auto& kv : v["kinds"].members) {
+            Rule k;
+            k.s = kv.first;
+            k.offset = kv.second.offset;
+            if (kv.second.has("rule")) { k.kind = Rule::Kind::MapMembers; k.s2 = kv.second["rule"].asString(); }
+            else if (kv.second.has("each")) { k.kind = Rule::Kind::MapDecl; k.parts.push_back(parseRule(kv.second["each"], ok, error)); }
+            else { ok = false; error = "mapOrder kind '" + kv.first + "' needs a 'rule' or an 'each'"; return r; }
+            r.parts.push_back(std::move(k));
+        }
+        return r;
+    }
     if (v.has("stmts")) { // emit the ir statement list at `path` through the shared statement walk
         r.kind = Rule::Kind::Stmts;
         r.s = v["stmts"].asString();

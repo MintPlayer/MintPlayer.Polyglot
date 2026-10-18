@@ -589,6 +589,7 @@ struct Method {
     std::vector<std::string> globalRefs;
 };
 struct Record { // an immutable data type (record)
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
@@ -602,6 +603,7 @@ struct EnumCase {
     long long value;
 };
 struct Enum {
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<EnumCase> cases;
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
@@ -615,6 +617,7 @@ struct UnionCase {
     std::vector<UnionCaseField> fields; // empty = payload-free case
 };
 struct Union {
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<GenericParam> generics; // `union Option<T> { … }`
     std::vector<UnionCase> cases;
@@ -633,6 +636,7 @@ struct ClassField {
     bool initIsLiteral = false;
 };
 struct Class { // a mutable reference type
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
@@ -658,6 +662,7 @@ struct Class { // a mutable reference type
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct Interface { // a contract: method signatures only (no bodies). C# `interface`, TS `interface`.
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;     // extended interfaces
@@ -665,6 +670,7 @@ struct Interface { // a contract: method signatures only (no bodies). C# `interf
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct Global { // a top-level `const`/`let` value
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     bool isConst = false;
     Type type;
@@ -738,5 +744,28 @@ struct Module {
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).
 std::string dump(const Module& m);
+
+// P40 review r4 #7: one top-level declaration, as a position in the module's per-kind lists. `kind` is one of
+// kDeclOrderKinds; `list` the module path of its list (`module.classes`); `index` its index in that list (for
+// functions, in the target-filtered `module.functions` view the caller passes).
+struct DeclRef {
+    std::string kind;
+    std::string list;
+    std::size_t index = 0;
+};
+// Every kind a declaration order holds — a plugin's `mapOrder` must name a rule for each (anti-silent-drop).
+inline const char* const kDeclOrderKinds[] = {"enum", "interface", "union", "record", "function", "extension",
+                                              "class", "global"};
+// The order in which a target that runs a module top to bottom (TS, Python, PHP) must emit its declarations.
+// Declarations with no eager dependency on user code come first, in kind order — enums (nothing), interfaces
+// (their base interfaces, base first), unions, records (interfaces; enum-case defaults), then functions and
+// extensions (Python evaluates a default — an enum case — when it defines the function, and an initializer may
+// call one). Classes and module values follow, INTERLEAVED in source order, because each runs code when it is
+// reached (static initializers, value initializers) and sema guarantees that code reads only what is declared
+// before it (SPEC §5 "Initialization order", through same-module calls too). The one forward edge sema allows
+// is a class's base declared later: such a class moves to just after its base. Prelude declarations come first
+// within their group. `functionIndices` is the target-filtered function view (an `actual` for another target
+// is not emitted).
+std::vector<DeclRef> declarationOrder(const Module& m, const std::vector<std::size_t>& functionIndices);
 
 } // namespace mintplayer::polyglot::ir

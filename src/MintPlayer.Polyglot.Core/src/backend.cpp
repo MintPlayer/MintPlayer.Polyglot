@@ -509,6 +509,31 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
             }
     }
 
+    // P40 review r4 #7 (anti-silent-drop): a `mapOrder` walks every top-level declaration, so it must give EVERY
+    // declaration kind a rule (a missing one would drop those declarations silently) and name no other kind.
+    {
+        std::string bad;
+        for (const auto& kv : rules)
+            forEachRule(kv.second, [&](const engine::Rule& r) {
+                if (r.kind != engine::Rule::Kind::MapOrder || !bad.empty()) return;
+                for (const char* k : ir::kDeclOrderKinds) {
+                    bool found = false;
+                    for (const auto& p : r.parts) if (p.s == k) found = true;
+                    if (!found) { bad = std::string("gives kind '") + k + "' no rule"; return; }
+                }
+                for (const auto& p : r.parts) {
+                    bool known = false;
+                    for (const char* k : ir::kDeclOrderKinds) if (p.s == k) known = true;
+                    if (!known) { bad = "names unknown kind '" + p.s + "'"; return; }
+                }
+            });
+        if (!bad.empty()) {
+            error = "plugin '" + name + "': a {\"mapOrder\":…} " + bad + " (every declaration kind needs one: enum, "
+                    "interface, union, record, function, extension, class, global)";
+            return nullptr;
+        }
+    }
+
     // P40 §0: prelude placement is data. The `Program` rule must carry exactly one `{"fn":"preludeSlot"}`
     // marker at an unconditional declaration position, and no other rule may carry one — each language
     // puts it where its helpers are legal (PHP after the namespace/use lines, C# after the usings).

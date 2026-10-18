@@ -380,7 +380,9 @@ public:
             checkCallSiteDefaults(fn.params, "function '" + fn.name + "'"); // P40 review r3 2(j)
             pushScope();
             for (const auto& p : fn.params) declare(p.name, p.type, false, p.pos);
+            bodyKey_ = fnBodyKey(fn.pos); // review r4 (part 2): record what this body reads for checkThroughCalls
             checkBlock(fn.body);
+            bodyKey_.clear();
             popScope();
             popGenerics(fn.generics);
             scopeStart_ = {}; scopeEnd_ = {};
@@ -388,6 +390,21 @@ public:
             inAsync_ = false;
             recordModel_ = false;
         }
+        // P40 review r4 #8: a record's body holds methods, operators and computed properties only. Every emitter
+        // dropped a body field (C# CS1061 / TS2339 / Python AttributeError / PHP null), static or not. Its state
+        // is its positional fields — they alone take part in equality, hashing and `with` on every target.
+        for (const auto& r : unit.records)
+            for (const auto& m : r.members) {
+                if (m.kind != MemberKind::Field && m.kind != MemberKind::Const) continue;
+                bool isStatic = m.kind == MemberKind::Const;
+                for (const auto& mod : m.modifiers) if (mod == "static") isStatic = true;
+                diags_.error(m.namePos.line ? m.namePos : m.pos,
+                             "record '" + r.name + "' declares " + (isStatic ? "a static field" : "a body field") + " '" +
+                                 m.name + "' — a record's state is its positional fields (they alone take part in "
+                                 "equality, hashing and `with`); " +
+                                 (isStatic ? "declare a module-level `let`/`const`, or a `static fn`"
+                                           : "make it a positional field (with a default), or a computed property"));
+            }
         for (std::size_t i = 0; i < unit.records.size(); ++i) {
             recordModel_ = model_ && req_ && i < req_->userRecords; // record refs inside user type bodies too
             checkTypeBody(unit.records[i].name, unit.records[i].generics, unit.records[i].members, &unit.records[i].fields);
@@ -421,6 +438,7 @@ public:
                 diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
         }
         assignLinkNames(unit);
+        checkThroughCalls(); // review r4 (part 2): what an initializer reads through the calls it makes
         // P40 review (A9/B11): reachability, missing returns, field definite assignment, self-comparison.
         checkFlow(unit, diags_);
     }
@@ -514,17 +532,88 @@ private:
     std::unordered_map<std::string, SourcePos> typeDeclPos_;   // user type / union case name -> decl pos
     SourcePos initDeclPos_{0, 0, 0};
     std::string initDeclName_;
-    void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos) {
-        if (initDeclPos_.line == 0 || lambdaDepth_ > 0 || declPos.line == 0 || declPos.fileId != initDeclPos_.fileId) return;
-        if (declPos.line < initDeclPos_.line || (declPos.line == initDeclPos_.line && declPos.col < initDeclPos_.col)) return;
-        diags_.error(usePos, "the initializer of '" + initDeclName_ + "' reads '" + shown + "', which is declared later — "
-                             "TS, Python and PHP run initializers in declaration order (it would read an "
-                             "uninitialized value or fail); declare '" + shown + "' first");
+    static bool posBefore(const SourcePos& a, const SourcePos& b) {
+        return a.line < b.line || (a.line == b.line && a.col < b.col);
+    }
+    // `via` non-empty: `shown` is the base class of the used class `via` (a class is defined after its bases).
+    void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos, const std::string& via = "") {
+        if (declPos.line == 0) return;
+        if (initDeclPos_.line == 0) {
+            // P40 review r4 (part 2): not in an initializer — inside a free function or static method body, the
+            // use is recorded, so an initializer that CALLS this body is checked against it (checkThroughCalls).
+            if (!bodyKey_.empty() && lambdaDepth_ <= initLambdaFloor_) bodyReads_[bodyKey_].push_back({declPos, shown, via});
+            return;
+        }
+        if (lambdaDepth_ > initLambdaFloor_ || declPos.fileId != initDeclPos_.fileId) return;
+        if (posBefore(declPos, initDeclPos_)) return;
+        diags_.error(usePos, initOrderMessage(initDeclName_, shown, via, ""));
+    }
+    static std::string initOrderMessage(const std::string& init, const std::string& shown, const std::string& via,
+                                        const std::string& callee) {
+        const std::string what = !via.empty() ? "uses '" + via + "', whose base class '" + shown + "' is declared later"
+                                 : callee.empty() ? "reads '" + shown + "', which is declared later"
+                                                  : "reads '" + shown + "', declared later";
+        return "the initializer of '" + init + "' " + (callee.empty() ? what : "calls '" + callee + "', which " + what) +
+               " — TS, Python and PHP run initializers in declaration order (it would read an uninitialized value "
+               "or fail; C# reads a default); declare '" + shown + "' first";
     }
     // A type used (constructed, a static/enum case read, a static call) in an initializer: a class declared later
-    // does not exist yet on TS (ReferenceError) or Python (NameError) when the initializer runs.
+    // does not exist yet on TS (ReferenceError) or Python (NameError) when the initializer runs — nor does a
+    // class whose base class is declared later (review r4 #7: a class is defined only after its bases).
     void noteTypeUse(const std::string& name, SourcePos usePos) {
         if (auto it = typeDeclPos_.find(name); it != typeDeclPos_.end()) checkInitOrder(it->second, name, usePos);
+        std::unordered_set<std::string> seen{name};
+        std::vector<std::string> work{name};
+        while (!work.empty()) {
+            const std::string n = work.back();
+            work.pop_back();
+            auto ti = types_.find(n);
+            if (ti == types_.end()) continue;
+            for (const auto& b : ti->second.bases) {
+                if (interfaceNames_.count(b) || !seen.insert(b).second) continue;
+                if (auto bp = typeDeclPos_.find(b); bp != typeDeclPos_.end()) checkInitOrder(bp->second, b, usePos, name);
+                work.push_back(b);
+            }
+        }
+    }
+    // P40 review r4 (part 2) — the through-call gap: an initializer that calls a same-module function or static
+    // method (or invokes a lambda in place) runs that body right then, so the body's reads count as the
+    // initializer's. Bodies are keyed `fn:<file>:<line>:<col>` (a free function's declaration) or
+    // `st:<Owner>.<method>`; lambdas inside them are deferred, except one invoked in place.
+    std::string bodyKey_;
+    int initLambdaFloor_ = 0; // lambda depth of an in-place-invoked lambda being checked (its body is not deferred)
+    struct BodyRead { SourcePos decl; std::string shown, via; };
+    std::unordered_map<std::string, std::vector<BodyRead>> bodyReads_;
+    std::unordered_map<std::string, std::set<std::string>> bodyCalls_;
+    struct InitCall { SourcePos initPos; std::string initName; SourcePos callPos; std::string callee, calleeShown; };
+    std::vector<InitCall> initCalls_;
+    static std::string fnBodyKey(const SourcePos& p) {
+        return "fn:" + std::to_string(p.fileId) + ":" + std::to_string(p.line) + ":" + std::to_string(p.col);
+    }
+    void noteDirectCall(const std::string& key, const std::string& shown, SourcePos callPos) {
+        if (lambdaDepth_ > initLambdaFloor_) return; // inside a lambda: runs whenever it is called
+        if (initDeclPos_.line != 0) initCalls_.push_back({initDeclPos_, initDeclName_, callPos, key, shown});
+        else if (!bodyKey_.empty()) bodyCalls_[bodyKey_].insert(key);
+    }
+    void checkThroughCalls() {
+        for (const auto& ic : initCalls_) {
+            std::set<std::string> seen{ic.callee};
+            std::vector<std::string> work{ic.callee};
+            bool reported = false;
+            while (!work.empty() && !reported) {
+                const std::string k = work.back();
+                work.pop_back();
+                if (auto r = bodyReads_.find(k); r != bodyReads_.end())
+                    for (const auto& rd : r->second)
+                        if (rd.decl.fileId == ic.initPos.fileId && !posBefore(rd.decl, ic.initPos)) {
+                            diags_.error(ic.callPos, initOrderMessage(ic.initName, rd.shown, rd.via, ic.calleeShown));
+                            reported = true;
+                            break;
+                        }
+                if (auto c = bodyCalls_.find(k); c != bodyCalls_.end())
+                    for (const auto& n : c->second) if (seen.insert(n).second) work.push_back(n);
+            }
+        }
     }
     std::unordered_map<std::string, FnSig> unionCtors_;        // union case name -> ctor sig
     std::unordered_map<std::string, std::string> unionCaseOwner_; // case name -> union type
@@ -1634,6 +1723,7 @@ private:
                 currentReturn_ = (m.kind == MemberKind::Constructor) ? namedType("unit") : m.returnType;
                 inAsync_ = m.isAsync;
                 inCtor_ = m.kind == MemberKind::Constructor;
+                if (isStatic && m.kind == MemberKind::Method) bodyKey_ = "st:" + typeName + "." + m.name; // review r4
                 scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
                 if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
@@ -1651,6 +1741,7 @@ private:
                 scopeStart_ = {}; scopeEnd_ = {};
                 inAsync_ = false;
                 inCtor_ = false;
+                bodyKey_.clear();
                 currentThis_ = tNamed(typeName);
             } else if ((m.kind == MemberKind::Field || m.kind == MemberKind::Const) && m.init) {
                 // P40 follow-up: a field initializer is an expression like any other — it was never checked, so it
@@ -3542,6 +3633,10 @@ private:
                 if (types_.count(typeName)) {
                     noteTypeUse(typeName, e.pos);
                     if (const MemberInfo* m = findMember(typeName, method); m && m->isStatic) {
+                        { // review r4 (part 2): a static call runs the declaring class's body right away
+                            MemberHit owner = findMemberOn(tNamed(typeName), method);
+                            noteDirectCall("st:" + (owner.m ? owner.owner : typeName) + "." + method, typeName + "." + method, e.pos);
+                        }
                         if (auto it = memberDefId_.find(typeName + "." + method); it != memberDefId_.end()) recordRef(e.lhs->pos, method, it->second);
                         std::string what = "static method '" + typeName + "." + method + "'";
                         checkArgs(m->params, argTypes, e.args, what, e.pos, m->required);
@@ -3647,7 +3742,12 @@ private:
         // P40 review r3 2(a): any other callee is a function VALUE (`adder(1)(4)`, `fs[0](4)`, an IIFE) — its
         // arguments check against the function type and the call yields its return type, like a named fn.
         if (e.lhs->kind == ExprKind::Lambda) { // an immediately-invoked lambda: its type is spelled from its parts
-            checkExpr(*e.lhs);
+            { // review r4 (part 2): it runs right here — inside an initializer its body is not deferred
+                const int floor = initLambdaFloor_;
+                if (lambdaDepth_ <= initLambdaFloor_) initLambdaFloor_ = lambdaDepth_ + 1;
+                checkExpr(*e.lhs);
+                initLambdaFloor_ = floor;
+            }
             const Expr& lam = *e.lhs;
             bool typed = !lam.flag && lam.lhs && !lam.lhs->type.absent() && !lam.lhs->type.name.empty();
             for (const auto& p : lam.params) typed = typed && !p.type.absent();
@@ -3812,6 +3912,7 @@ private:
             e.uniqueName = chosen->uniqueName;
             e.linkName = chosen->linkName; // provisional: assignLinkNames rewrites it once every call is resolved
             callSites_.push_back({&e, name, argTypes, chosen->pos});
+            noteDirectCall(fnBodyKey(chosen->pos), name, e.pos); // review r4 (part 2): the through-call gap
             TypeRef r = gen.empty() ? chosen->result : substGeneric(chosen->result, gen, binds);
             return chosen->isAsync ? awaitable(r) : r;
         }

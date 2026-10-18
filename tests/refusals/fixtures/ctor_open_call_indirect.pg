@@ -1,5 +1,7 @@
 // REFUSED (P40 review r4 #5): the overridable call is reached through a non-open helper the constructor
 // calls on `this` — the subclass override still runs before the subclass's field initializer.
+import "std.io"
+
 open class Base {
   constructor() {
     this.announce()

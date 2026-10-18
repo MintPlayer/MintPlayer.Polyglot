@@ -1,6 +1,7 @@
 // REFUSED (P40 review r4, part 2): `__` belongs to compiler-generated names. A user `__c0` met a lowering temp
 // of the same name (a TS SyntaxError "already declared"; PHP silently rebound it), and an overload's signature
 // name (`parse__string`) must never meet a user name either.
+import "std.io"
 import "std.collections"
 
 fn idx(): i32 => 1

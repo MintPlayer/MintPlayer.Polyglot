@@ -1,0 +1,13 @@
+// REFUSED (P40 review r4, part 2 — the through-call gap): a static initializer calling a static method that
+// reads a later static. C# printed 0, TS undefined, Python and PHP 5.
+import "std.io"
+
+class S {
+  static let a: i32 = S.seed()
+  static let b: i32 = 5
+  static fn seed(): i32 => S.b
+}
+
+fn main() {
+  print(S.a)
+}

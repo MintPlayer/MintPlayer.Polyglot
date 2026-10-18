@@ -1373,6 +1373,7 @@ ModuleDeclCtx::ModuleDeclCtx(const ir::Module& m, const DeclHooks& hooks, EmitFn
         if (f.actualTarget.empty() || f.actualTarget == target) fns_.push_back(i);
         if (entry_ < 0 && f.isEntry) entry_ = static_cast<int>(i);
     }
+    order_ = ir::declarationOrder(m_, fns_);
 }
 
 std::string ModuleDeclCtx::get(const std::string& path) const {
@@ -1385,6 +1386,7 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
     if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.order.count")      return std::to_string(order_.size()); // review r4 #7
     if (path == "module.userDecls.count") { // P40 B1: declarations of THIS file's own (non-prelude) code
         std::size_t n = 0;
         auto count = [&n](const auto& vec) {
@@ -1418,6 +1420,11 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
         if (f == "isConst") return m_.globals[i].isConst ? "true" : "false";
         if (f == "hasInit") return m_.globals[i].init ? "true" : "false";
         if (f == "isPrelude") return ir::isPreludeOrigin(m_.globals[i].originModule) ? "true" : "false"; // P40 §0
+    }
+    if (path.rfind("module.order.", 0) == 0 && splitIndexed(path, 13, i, f) && i < order_.size()) {
+        if (f == "kind")  return order_[i].kind;
+        if (f == "list")  return order_[i].list;
+        if (f == "index") return std::to_string(order_[i].index);
     }
     if (path.rfind("module.imports.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.imports.size()) {
         if (f == "path")        return m_.imports[i].path;
@@ -1704,6 +1711,38 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
                     OriginScope memberScope(*this, sub->declPos());
                     runDeclRule(it->second, *sub, *sub, helpers);
                 }
+            return;
+        }
+        case K::MapOrder: { // review r4 #7: each declaration of the order list through its kind's rule
+            int n = 0;
+            for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
+            for (int i = 0; i < n; ++i) {
+                const std::string at = r.s + "." + std::to_string(i);
+                const std::string kind = ctx.get(at + ".kind");
+                const std::string list = ctx.get(at + ".list");
+                const std::string idxText = ctx.get(at + ".index");
+                const std::size_t idx = idxText.empty() ? 0 : static_cast<std::size_t>(std::stoul(idxText));
+                const engine::Rule* k = nullptr;
+                for (const auto& p : r.parts) if (p.s == kind) k = &p;
+                if (!k) continue; // unreachable: the loader requires a rule for every kind
+                if (engine::TraceSink* sink = engine::traceSink()) sink->hit(k->srcId, k->offset);
+                if (k->kind == K::MapMembers) {
+                    if (!helpers) continue;
+                    auto it = helpers->find(k->s2);
+                    if (it == helpers->end()) continue;
+                    if (auto sub = root.memberCtx(list, idx)) { // as MapMembers: attribute lines, then the decl
+                        const std::string ac = sub->get("decl.attrLines.count");
+                        int an = 0;
+                        for (char c : ac) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
+                        for (int j = 0; j < an; ++j) lineHidden(sub->get("decl.attrLines." + std::to_string(j)));
+                        OriginScope memberScope(*this, sub->declPos());
+                        runDeclRule(it->second, *sub, *sub, helpers);
+                    }
+                } else if (k->kind == K::MapDecl && !k->parts.empty()) { // as MapDecl over the item's own list
+                    engine::ItemCtx item(ctx, ctx.resolvePath(list) + "." + std::to_string(idx), static_cast<int>(idx));
+                    runDeclRule(k->parts[0], item, root, helpers);
+                }
+            }
             return;
         }
         case K::Case:

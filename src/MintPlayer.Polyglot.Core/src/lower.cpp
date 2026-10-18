@@ -315,6 +315,7 @@ public:
         for (const auto& e : unit.enums) {
             ir::Enum ie;
             ie.name = e.name;
+            ie.pos = e.pos;
             long long next = 0;
             for (const auto& c : e.cases) { long long v = c.hasValue ? c.value : next; ie.cases.push_back({c.name, v}); next = v + 1; }
             ie.originModule = e.originModule;
@@ -323,6 +324,7 @@ public:
         for (const auto& u : unit.unions) {
             ir::Union iu;
             iu.name = u.name;
+            iu.pos = u.pos;
             iu.generics = generics(u.generics);
             iu.originModule = u.originModule;
             for (const auto& c : u.cases) {
@@ -339,6 +341,7 @@ public:
             if (r.isAttribute && !materialized_.count(r.name)) continue;
             ir::Record rec;
             rec.name = r.name;
+            rec.pos = r.pos;
             rec.attrLines = renderAttrLines(r.attributes);
             rec.generics = generics(r.generics);
             for (const auto& b : r.bases) rec.bases.push_back(b);
@@ -355,6 +358,7 @@ public:
         for (const auto& d : unit.interfaces) { // contracts: signatures only, emitted as `interface`
             ir::Interface ii;
             ii.name = d.name;
+            ii.pos = d.pos;
             ii.generics = generics(d.generics);
             for (const auto& b : d.bases) ii.bases.push_back(b);
             for (const auto& mem : d.members)
@@ -374,6 +378,7 @@ public:
         for (const auto& v : unit.values) { // top-level const/let
             ir::Global g;
             g.name = v.name;
+            g.pos = v.pos;
             g.isConst = v.isConst;
             g.type = v.hasType ? v.type : (v.init ? v.init->type : TypeRef{});
             if (v.init) g.init = expr(*v.init);
@@ -756,6 +761,7 @@ private:
     ir::Class lowerClass(const ClassDecl& c) {
         ir::Class ic;
         ic.name = c.name;
+        ic.pos = c.pos;
         ic.attrLines = renderAttrLines(c.attributes);
         ic.generics = generics(c.generics);
         ic.bases = c.bases;

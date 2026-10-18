@@ -1,5 +1,7 @@
 // REFUSED (P40 review r4 #5): a base constructor calling an overridable method runs the subclass override
 // before the subclass's fields are initialized (C# `button:`, TS `button:undefined`, Python AttributeError).
+import "std.io"
+
 open class Widget {
   var label: string
   constructor() {

@@ -309,6 +309,7 @@ private:
     TypePred isRecord_, isInterface_;
     std::vector<std::size_t> fns_; // actualTarget-filtered function indices
     int entry_ = -1;               // first isEntry function (unfiltered), -1 = none
+    std::vector<ir::DeclRef> order_; // review r4 #7: `module.order` (ir::declarationOrder over this view)
 };
 
 // The statement-scoped context a per-kind STATEMENT rule evaluates against (`stmt.*` reads — the For

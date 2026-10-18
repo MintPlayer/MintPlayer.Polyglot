@@ -187,6 +187,7 @@ pass on comes from `spec` properties instead:
 | `forbidsShadowedLocals` | `false` | a nested-scope local may not reuse an outer local's name → the scope-legalization pass runs (C#, CS0136) |
 | `expressionOnlyLambdas` | `false` | lambdas are expression-only → block lambdas hoist to local functions (Python) |
 | `nativeCompoundAssign` | `false` | a native `a op= b` on a built-in scalar slot means exactly `a = a op b` as the `Binary` rule renders it — same §3.C wrap, integer division and concatenation (C#, whose compound narrows back implicitly). Off, lowering expands each compound to `a = a op b`, evaluating the target's receiver and indices once (impure ones go to a temp), so the `Binary` rule's masking applies; the emitter folds it back to `a op= b` only where the rule rendered the plain infix `a op b` |
+| `operandSnapshot` | `""` | non-empty = the target reads a VARIABLE operand of a native binary operator (and the slot of a native compound) only when the operator executes, after its right operand ran (PHP). When a right operand may have side effects, lowering marks such a left operand and the emitter wraps it in this template — `{tmp}` a fresh temp, `{0}` the operand text (PHP: `(${tmp} = {0})`) — and an impure compound is never folded back to `op=`. Must spell both placeholders (review r4) |
 
 Capabilities also serve the **anti-silent-drop coverage contract** enforced at load time: every IR
 construct the compiler can produce must have a rule, *or* the plugin must declare its stance via the
@@ -380,6 +381,7 @@ Tests inside `case`/`when`: `{"eq": [path, value]}`, `{"has": path}` (non-empty)
 | `block` | Open a block with `head` (string rule), run `body` decl rules one level deeper, close per `blockStyle`. |
 | `mapDecl` | Run the `each` decl rule once per element of a list (paths on `item.…`). |
 | `mapMembers` | Run the **named** rule (`"rule"`) once per member of a list, each against its own decl context. `{"mapMembers": "decl.methods", "rule": "MethodDecl"}` |
+| `mapOrder` | Run every top-level declaration of `module.order` (the Core's dependency order — see SPEC §5 "Initialization order") with its kind's rule: `{"mapOrder": "module.order", "kinds": {"enum": {"rule": "EnumDecl"}, …, "global": {"each": <item rule over item.name/type/init>}}}`. Every kind — `enum`, `interface`, `union`, `record`, `function`, `extension`, `class`, `global` — needs an entry (load error otherwise). A target that runs a module top to bottom (TS, Python, PHP) uses it; a lazily initializing one (C#) may keep per-kind `mapMembers` |
 | `stmts` | Emit the IR statement list at a path through the shared statement walk. |
 | `seq` | Run decl rules in order. |
 | `indent` | Run decl rules one level deeper without a head/closer (manual joins — TS's `catch` chain). |
@@ -463,8 +465,8 @@ That's the whole catalog — 18 names. Any other `{"fn": …}` fails the load.
   extern-mapped types to `{"fn":"substExtern"}` and spell the rest (see PHP's four-line `Type`).
 
 `Program` is the whole-file scaffold. PHP's is a `seq`: a `<?php` line, the `require_once` imports,
-the `{"fn":"preludeSlot"}` marker, `mapMembers` over enums, records, classes, a `mapDecl` over
-globals, `mapMembers` over functions, and a guarded entry call.
+the `{"fn":"preludeSlot"}` marker, one `mapOrder` over `module.order` (every declaration, in dependency order),
+and a guarded entry call.
 
 **The prelude (P40).** Embedded std/core declarations (`Option`, the `std.io` functions, …) are
 *prelude* declarations, and only the ones the file's code **reaches** are emitted — a program that

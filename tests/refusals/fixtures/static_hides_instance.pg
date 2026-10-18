@@ -1,5 +1,7 @@
 // REFUSED (P40 review r4 #6): an instance method named like a base class's static method is a PHP fatal
 // ("Cannot make static method Base::label() non static"); Polyglot has no member hiding.
+import "std.io"
+
 open class Base {
   static fn label(): string => "base-static"
 }

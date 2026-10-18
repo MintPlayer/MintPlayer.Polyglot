@@ -1,0 +1,13 @@
+// REFUSED (P40 review r4, part 2 — the through-call gap): `a`'s initializer calls `seed`, which reads `b`,
+// declared later. C# printed 0, TS threw a ReferenceError, Python a NameError, PHP printed null.
+import "std.io"
+
+let a: i32 = seed()
+let b: i32 = 5
+fn seed(): i32 {
+  return b
+}
+
+fn main() {
+  print(a)
+}

@@ -1,0 +1,10 @@
+// REFUSED (P40 review r4, part 2): a lambda invoked in place runs inside the initializer — its body is not
+// deferred like a stored lambda's. C# printed 1, TS TS2448, Python NameError, PHP 1.
+import "std.io"
+
+let a: i32 = ((n: i32) => n + b)(1)
+let b: i32 = 5
+
+fn main() {
+  print(a)
+}
