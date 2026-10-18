@@ -143,6 +143,11 @@ struct BackendSpec {
     // P40 review r4 item 17: the target has a native `t ??= v` (store only when `t` is null). Off (Python), lowering
     // expands it to `if t == null { t = v }`, the target's receiver and indices evaluated once.
     bool nativeCoalesceAssign = false;
+    // P40 review r5 item 23 — `assignmentOrder` (required): "targetFirst" when a plain `t = v` evaluates the
+    // target's receiver and indices before the value (C#, JS), "valueFirst" when the value runs first (Python,
+    // PHP). On a valueFirst target, lowering hoists the target's parts into temps ahead of an impure value, so a
+    // value that rebinds the receiver or bumps an index (`xs[j] = incJ()`) writes the slot named before it ran.
+    bool assignValueFirst = false;
     // P40 review r4 items 18/21 — `exprStmt: { "discardPrefix", "parenIfStarts" }`. `discardPrefix` is written
     // before an expression statement whose value is dropped and that is not an invocation/construction/await
     // (ir::ExprStmt::discard): C# `_ = ` (it admits only statement expressions, CS0201). `parenIfStarts` lists the

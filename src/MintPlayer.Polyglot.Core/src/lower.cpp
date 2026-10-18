@@ -100,6 +100,7 @@ public:
             nativeCompound_ = b->nativeCompoundAssign();
             lateOperands_ = b->lateOperandReads();
             nativeCoalesceAssign_ = b->nativeCoalesceAssign();
+            assignValueFirst_ = b->assignValueFirst();
         }
         // Names that denote a constructible type, so `Name(args)` lowers to a construction, not a call.
         // (Error/Iterable arrive as core-prelude `extern class`es in unit.classes — no special-case here.)
@@ -524,6 +525,7 @@ private:
     bool nativeCompound_ = false;
     bool lateOperands_ = false; // review r4 #9: the target reads a variable operand when its operator runs
     bool nativeCoalesceAssign_ = false;
+    bool assignValueFirst_ = false; // review r5 #23: a plain `t = v` runs v before t's receiver/indices
     // P40: surface sub-expressions of a compound target that were hoisted into a temp — `expr()` lowers each
     // to that temp's Var, so the write side and the re-read side both see the single evaluation.
     std::unordered_map<const Expr*, std::string> evalOnce_;
@@ -900,6 +902,15 @@ private:
         if (!evalOnce_.empty())
             if (auto it = evalOnce_.find(&e); it != evalOnce_.end())
                 return std::make_unique<ir::Var>(e.pos, e.type, it->second);
+        // P40 review r5 item 20: the receiver of a `?.` call, already evaluated once and proven present — the
+        // narrowed read of its binding (C# unwraps a Nullable<T>; elsewhere the same-type conversion is bare).
+        if (!nsRecv_.empty())
+            if (auto it = nsRecv_.find(&e); it != nsRecv_.end()) {
+                TypeRef nn = e.type;
+                nn.nullable = false;
+                return std::make_unique<ir::Cast>(e.pos, nn, std::make_unique<ir::Var>(e.pos, e.type, it->second));
+            }
+        if (e.kind == ExprKind::Call && e.nullSafeCall && nsActive_ != &e) return nullSafeCallExpr(e);
         switch (e.kind) {
             case ExprKind::IntLit:    return std::make_unique<ir::IntLit>(e.pos, e.type, stripNumericSuffix(e.text));
             case ExprKind::FloatLit:  return std::make_unique<ir::FloatLit>(e.pos, e.type, stripNumericSuffix(e.text));
@@ -942,7 +953,11 @@ private:
                     stampStaticField(*m);
                     return m;
                 }
-                return std::make_unique<ir::Var>(e.pos, e.type, e.text);
+                {
+                    auto v = std::make_unique<ir::Var>(e.pos, e.type, e.text);
+                    v->liveModuleRead = e.liveModuleRead; // r5 (part 2)
+                    return v;
+                }
             case ExprKind::This: {
                 if (inExtension_) return std::make_unique<ir::Var>(e.pos, e.type, "self"); // receiver alias
                 auto t = std::make_unique<ir::This>(e.pos, e.type);
@@ -1042,8 +1057,10 @@ private:
                     if (auto arms = findBinding(e.lhs->type.name, e.text))
                         return makeBound(e.type, e.pos, e.lhs.get(), *arms, nullptr);
                 }
-                auto mem = std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, e.flag);
-                if (e.flag && mem->object) markAbsentConsumer(*mem->object, "nullSafe"); // a `?.` receiver
+                // r5 item 20: inside a lowered `h?.f(5)` the receiver is the proven-present binding — a plain read.
+                const bool nullSafe = e.flag && !nsRecv_.count(e.lhs.get());
+                auto mem = std::make_unique<ir::Member>(e.pos, e.type, expr(*e.lhs), e.text, nullSafe);
+                if (nullSafe && mem->object) markAbsentConsumer(*mem->object, "nullSafe"); // a `?.` receiver
                 if (e.lhs->type.kind == TypeRef::Kind::Named) { // is the accessed member a computed property?
                     auto pit = propertyMembers_.find(e.lhs->type.name);
                     if (pit != propertyMembers_.end() && pit->second.count(e.text)) mem->isProperty = true;
@@ -1056,6 +1073,11 @@ private:
                 auto lam = std::make_unique<ir::Lambda>(e.pos, e.type);
                 for (const auto& p : e.params) lam->params.push_back({p.name, p.type});
                 if (e.flag) { lam->exprBodied = false; lam->block = block(e.block); }
+                else if (e.lhs && e.lhs->kind == ExprKind::Call && e.lhs->nullSafeCall &&
+                         (e.lambdaUnitResult || isUnitOrEmpty(e.lhs->type))) {
+                    lam->exprBodied = false; // r5 item 20: `() => r?.run()` is the statement form, as a block
+                    lam->block = nullSafeCallStmts(*e.lhs);
+                }
                 else { lam->exprBodied = true; lam->body = expr(*e.lhs); }
                 // P40 review r4 item 18: an expression lambda flowing into `(…) => unit` whose body is not a
                 // statement expression (a bound property read, a lookup, a case literal) becomes a block holding
@@ -1252,10 +1274,12 @@ private:
                 if (s.op == "=" && s.target && s.target->kind == ExprKind::Index && s.target->lhs &&
                     s.target->lhs->type.kind == TypeRef::Kind::Named &&
                     indexerTypes_.count(s.target->lhs->type.name) != 0) {
+                    std::vector<const Expr*> hoisted = valueFirstHoist(s);
                     auto ia = std::make_unique<ir::IndexAssign>(s.pos);
                     ia->receiver = expr(*s.target->lhs);
                     for (const auto& a : s.target->args) ia->indices.push_back(expr(*a));
                     ia->value = expr(*s.value);
+                    for (const Expr* p : hoisted) evalOnce_.erase(p);
                     return ia;
                 }
                 // P37 C7: a compound op lowers to `target = <op>(target, value)` when the target is a
@@ -1295,9 +1319,22 @@ private:
                 if (!nativeCompound_ && s.op != "=" && s.op != "??=" && s.target)
                     return expandCompound(s);
                 if (!nativeCoalesceAssign_ && s.op == "??=" && s.target) return expandCoalesceAssign(s);
+                if (s.op == "=") {
+                    std::vector<const Expr*> hoisted = valueFirstHoist(s);
+                    auto target = expr(*s.target);
+                    for (const Expr* p : hoisted) evalOnce_.erase(p);
+                    return std::make_unique<ir::Assign>(s.pos, std::move(target), s.op, expr(*s.value));
+                }
                 return std::make_unique<ir::Assign>(s.pos, expr(*s.target), s.op, expr(*s.value));
             }
             case StmtKind::ExprStmt: {
+                if (s.value->kind == ExprKind::Call && s.value->nullSafeCall) { // r5 item 20: `r?.run()`
+                    auto parts = nullSafeCallStmts(*s.value);
+                    ir::StmtPtr last = std::move(parts.back());
+                    parts.pop_back();
+                    for (auto& p : parts) pendingStmts_.push_back(std::move(p));
+                    return last;
+                }
                 auto ev = expr(*s.value);
                 // A match whose value is discarded is a STATEMENT match (void/side-effecting arms) — C#
                 // must render a switch statement, not a switch expression (issue #52).
@@ -1399,6 +1436,9 @@ private:
     // invocation, construction or await, a statement-position match, or something that yields no value (unit, or a
     // type sema left open)? Anything else computes a value only to drop it, which C# refuses (CS0201) unless it is
     // spelled as a discard; ExprStmt::discard carries that fact to the emitter.
+    static bool isUnitOrEmpty(const TypeRef& t) {
+        return t.kind == TypeRef::Kind::Named && !t.nullable && (t.name == "unit" || t.name.empty());
+    }
     static bool isStatementExpr(const ir::Expr& x) {
         switch (x.kind) {
             case ir::ExprKind::Call: case ir::ExprKind::MethodCall: case ir::ExprKind::New: case ir::ExprKind::Await:
@@ -1420,6 +1460,11 @@ private:
             case ir::ExprKind::Bound: {
                 auto& b = static_cast<ir::Bound&>(x);
                 if (b.absentConsumer.empty()) b.absentConsumer = consumer;
+                break;
+            }
+            case ir::ExprKind::Member: { // r5 item 20: a `?.` read is an absent-producing value too
+                auto& m = static_cast<ir::Member&>(x);
+                if (m.nullSafe && m.absentConsumer.empty()) m.absentConsumer = consumer;
                 break;
             }
             case ir::ExprKind::Binary: {
@@ -1505,9 +1550,29 @@ private:
         return a;
     }
 
+    // P40 review r5 item 23: a plain `t = v` on a target that evaluates the value FIRST (BackendSpec::
+    // assignValueFirst — Python, PHP) wrote the slot as the value left it: `xs[j] = incJ()` stored at the bumped
+    // index, `d.v = swapD()` into the swapped object. When the value may have side effects, the target's receiver
+    // and indices are evaluated into temps ahead of it (hoistTargetParts — the r4 compound/`??=` rule), in source
+    // order. A pure value cannot observe the order, and a targetFirst target (C#, JS) is unchanged.
+    // Only a part the value could change is hoisted: a name no call can rebind (`callStable`: a `let`, a parameter,
+    // a `var` no lambda assigns) and the parts hoistTargetParts already treats as immune stay in place, so an
+    // ordinary `xs[i] = f(i)` is emitted unchanged.
+    std::vector<const Expr*> valueFirstHoist(const Stmt& s) {
+        if (!assignValueFirst_ || !s.target || !s.value || rereadable(*s.value)) return {};
+        if (s.target->kind != ExprKind::Member && s.target->kind != ExprKind::Index) return {};
+        auto stable = [](const Expr* p) { return p && p->kind == ExprKind::Name && p->callStable; };
+        bool any = false;
+        if (s.target->lhs && !stable(s.target->lhs.get())) any = true;
+        if (s.target->kind == ExprKind::Index)
+            for (const auto& a : s.target->args) if (!stable(a.get())) any = true;
+        if (!any) return {};
+        return hoistTargetParts(s, stable);
+    }
+
     // The receiver/index parts of a compound target that must be evaluated once into a temp (pushed to
     // pendingStmts_, recorded in evalOnce_ — the caller erases them after lowering its reads/writes).
-    std::vector<const Expr*> hoistTargetParts(const Stmt& s) {
+    std::vector<const Expr*> hoistTargetParts(const Stmt& s, const std::function<bool(const Expr*)>& alsoImmune = {}) {
         const Expr& t = *s.target;
         std::vector<const Expr*> parts; // the target's receiver, then its indices — source evaluation order
         if ((t.kind == ExprKind::Member || t.kind == ExprKind::Index) && t.lhs) parts.push_back(t.lhs.get());
@@ -1519,6 +1584,7 @@ private:
         // literals, `this` and type names (a static's owner) are immune.
         const bool valueImpure = s.value && !rereadable(*s.value);
         auto immune = [&](const Expr& p) {
+            if (alsoImmune && alsoImmune(&p)) return true;
             switch (p.kind) {
                 case ExprKind::IntLit: case ExprKind::FloatLit: case ExprKind::CharLit: case ExprKind::StringLit:
                 case ExprKind::BoolLit: case ExprKind::NullLit: case ExprKind::This: return true;
@@ -1650,6 +1716,67 @@ private:
         return expr(e);
     }
     std::vector<ir::StmtPtr> pendingStmts_; // hoisted by the CURRENT statement's lowering; flushed by block()
+
+    // ---- P40 review r5 item 20: `recv?.m(args)` on a maybe-null receiver ----
+    // The call itself is lowered by the ordinary paths (method, bound std member, extension, field value) with
+    // its receiver read through `nsRecv_` — a binding evaluated once and proven present — so every kind of call
+    // gets the same null-safe form, on every target, from existing IR (no new node, no plugin rule).
+    std::unordered_map<const Expr*, std::string> nsRecv_;
+    const Expr* nsActive_ = nullptr;
+    ir::ExprPtr lowerCallWithRecv(const Expr& call, const std::string& binding) {
+        const Expr* recv = call.lhs->lhs.get();
+        const Expr* savedActive = nsActive_;
+        nsRecv_[recv] = binding;
+        nsActive_ = &call;
+        auto body = expr(call);
+        nsActive_ = savedActive;
+        nsRecv_.erase(recv);
+        return body;
+    }
+    // As a value: `match recv { null => null, v => (T?)call(v) }`, typed `T?` — the receiver is evaluated once
+    // (every target's match binds it) and the present arm widens to the nullable so C#'s switch expression has
+    // a natural type (the native→Option conversion's shape, SPEC §4.4).
+    ir::ExprPtr nullSafeCallExpr(const Expr& e) {
+        const Expr& recv = *e.lhs->lhs;
+        std::string v = "__ns" + std::to_string(tmpCounter_++);
+        auto m = std::make_unique<ir::Match>(e.pos, e.type, expr(recv));
+        ir::MatchArm none;
+        none.pattern.kind = ir::PatternKind::Literal;
+        none.pattern.literal = std::make_unique<ir::NullLit>(e.pos, recv.type);
+        none.body = std::make_unique<ir::NullLit>(e.pos, e.type);
+        m->arms.push_back(std::move(none));
+        ir::MatchArm some;
+        some.pattern.kind = ir::PatternKind::Binding;
+        some.pattern.binding = v;
+        some.body = std::make_unique<ir::Cast>(e.pos, e.type, lowerCallWithRecv(e, v));
+        m->arms.push_back(std::move(some));
+        setHasCatchAll(*m);
+        return m;
+    }
+    // As a statement (its value, if any, discarded): `if recv != null { call(recv) }` — a receiver that is not a
+    // plain variable is evaluated once into a temp first. A match statement cannot hold a unit call on C#.
+    std::vector<ir::StmtPtr> nullSafeCallStmts(const Expr& e) {
+        std::vector<ir::StmtPtr> out;
+        const Expr& recv = *e.lhs->lhs;
+        auto r = expr(recv);
+        std::string v;
+        if (r->kind == ir::ExprKind::Var) v = static_cast<const ir::Var&>(*r).name;
+        else {
+            v = "__ns" + std::to_string(tmpCounter_++);
+            out.push_back(std::make_unique<ir::Let>(recv.pos, v, false, recv.type, std::move(r)));
+        }
+        auto test = std::make_unique<ir::Binary>(e.pos, namedType("bool"), "!=",
+                                                 std::make_unique<ir::Var>(e.pos, recv.type, v),
+                                                 std::make_unique<ir::NullLit>(e.pos, recv.type));
+        auto node = std::make_unique<ir::If>(e.pos, std::move(test));
+        auto call = lowerCallWithRecv(e, v);
+        const bool discard = !isStatementExpr(*call);
+        auto es = std::make_unique<ir::ExprStmt>(e.pos, std::move(call));
+        es->discard = discard;
+        node->thenBody.push_back(std::move(es));
+        out.push_back(std::move(node));
+        return out;
+    }
 };
 
 } // namespace

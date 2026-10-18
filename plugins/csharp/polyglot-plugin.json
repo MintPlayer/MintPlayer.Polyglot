@@ -140,6 +140,7 @@
     "forbidsShadowedLocals": true,
     "nativeCompoundAssign": true,
     "nativeCoalesceAssign": true,
+    "assignmentOrder": "targetFirst",
     "exprStmt": { "discardPrefix": "_ = " },
     "literals": {
       "string": {

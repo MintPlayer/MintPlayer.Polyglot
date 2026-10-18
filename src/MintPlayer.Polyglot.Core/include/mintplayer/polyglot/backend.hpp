@@ -150,6 +150,8 @@ public:
     virtual bool lateOperandReads() const { return false; }
     // A native `t ??= v` (BackendSpec::nativeCoalesceAssign); otherwise lowering expands it to an if-null store.
     virtual bool nativeCoalesceAssign() const { return false; }
+    // A plain `t = v` evaluates the value before the target's parts (BackendSpec::assignValueFirst, review r5 #23).
+    virtual bool assignValueFirst() const { return false; }
     // The emitted file's extension (plugin manifest `fileExtension`, e.g. ".cs") — the build driver is
     // target-agnostic; what a target's output is CALLED is its plugin's business.
     virtual std::string fileExtension() const { return ".txt"; }

@@ -124,6 +124,7 @@
     },
     "expressionOnlyLambdas": true,
     "nativeCoalesceAssign": false,
+    "assignmentOrder": "valueFirst",
     "identifiers": {
       "keywords": [
         "False",

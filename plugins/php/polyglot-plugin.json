@@ -56,6 +56,7 @@
     "falseLit": "false",
     "nullLit": "null",
     "nativeCoalesceAssign": true,
+    "assignmentOrder": "valueFirst",
     "literals": {
       "string": {
         "quote": "\"",
@@ -431,17 +432,27 @@
       ]
     },
     "Var": {
-      "tmpl": [
-        "$",
-        {
-          "fn": "ident",
-          "args": [
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.liveModuleRead", "true"] },
+            { "tmpl": ["$GLOBALS['", { "fn": "ident", "args": [ { "get": "node.name" } ] }, "']"] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "$",
             {
-              "get": "node.name"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.name"
+                }
+              ]
             }
           ]
         }
-      ]
+      }
     },
     "This": "$this",
     "Extern": {

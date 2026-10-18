@@ -88,6 +88,14 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
         return r;
     }
     r.spec.nativeCoalesceAssign  = doc["nativeCoalesceAssign"].asBool(false);
+    { // P40 review r5 item 23: required — a forgotten order would silently write a rebound slot (anti-silent-drop)
+        const json::Value& ao = doc["assignmentOrder"];
+        const std::string s = ao.kind == json::Value::Kind::String ? ao.asString() : std::string();
+        if (s == "targetFirst") r.spec.assignValueFirst = false;
+        else if (s == "valueFirst") r.spec.assignValueFirst = true;
+        else r.errors.push_back("backend spec: 'assignmentOrder' must be \"targetFirst\" (a plain assignment evaluates "
+                                "the target's receiver/indices before the value) or \"valueFirst\" (the value first)");
+    }
     { // P40 review r4 items 18/21
         const json::Value& es = doc["exprStmt"];
         if (es.kind == json::Value::Kind::Object) {
@@ -372,6 +380,7 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            std::string(",\"nativeCompoundAssign\":") + (spec.nativeCompoundAssign ? "true" : "false") +
            (spec.operandSnapshot.empty() ? std::string() : ",\"operandSnapshot\":" + json::quote(spec.operandSnapshot)) +
            std::string(",\"nativeCoalesceAssign\":") + (spec.nativeCoalesceAssign ? "true" : "false") +
+           std::string(",\"assignmentOrder\":") + (spec.assignValueFirst ? "\"valueFirst\"" : "\"targetFirst\"") +
            [&] {
                std::string o = ",\"exprStmt\":{\"discardPrefix\":" + json::quote(spec.exprStmtDiscardPrefix) + ",\"parenIfStarts\":[";
                for (std::size_t i = 0; i < spec.exprStmtParenIfStarts.size(); ++i) { if (i) o += ","; o += json::quote(spec.exprStmtParenIfStarts[i]); }

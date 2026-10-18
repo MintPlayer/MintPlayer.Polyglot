@@ -100,6 +100,7 @@ public:
     bool nativeCompoundAssign() const override { return spec_.nativeCompoundAssign; }
     bool lateOperandReads() const override { return !spec_.operandSnapshot.empty(); }
     bool nativeCoalesceAssign() const override { return spec_.nativeCoalesceAssign; }
+    bool assignValueFirst() const override { return spec_.assignValueFirst; }
     const std::unordered_map<std::string, StdBinding>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }

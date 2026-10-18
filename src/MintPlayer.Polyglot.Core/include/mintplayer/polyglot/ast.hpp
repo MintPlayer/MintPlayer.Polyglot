@@ -158,6 +158,15 @@ struct Expr {
     // concrete non-unit type, so every path of the block must `return` a value or `throw` (the flow pass checks
     // it, as for a function). Unset when the result type is unknown or unit.
     bool lambdaNeedsValue = false;
+    // Call (set by sema — P40 review r5 item 20): `recv?.m(args)` (a method, bound std member, extension or a
+    // function-typed field) on a MAYBE-NULL receiver. `type` is the result made nullable; lowering evaluates the
+    // receiver once and calls only when it is present (an `if` as a statement, a null-testing match as a value).
+    bool nullSafeCall = false;
+    // Name (set by sema — P40 review r5 item 23): no call can rebind this name — a `let`/parameter, or a `var`
+    // local no lambda assigns. Such a name needs no snapshot ahead of a side-effecting assigned value.
+    bool callStable = false;
+    // Name (set by sema — P40 review r5, part 2): a read of a MODULE value from inside a lambda (see ir::Var).
+    bool liveModuleRead = false;
 
     ExprPtr lhs;                // operand/object/left/callee/base/cond/scrutinee
     ExprPtr rhs;                // Binary/Range right | IfExpr then

@@ -189,6 +189,7 @@
     },
     "absentNormalize": { "prefix": "(", "suffix": " ?? null)", "foldedBy": ["coalesce", "nullAssert", "nullSafe"] },
     "nativeCoalesceAssign": true,
+    "assignmentOrder": "targetFirst",
     "exprStmt": { "parenIfStarts": ["{"] },
     "wrapAtom": {
       "recvPrimary": [
