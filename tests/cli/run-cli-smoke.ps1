@@ -984,6 +984,102 @@ try {
         Set-Content -LiteralPath (Join-Path $l "pgconfig.lock.json") -Value '{"lockfileVersion":1,"packages":{"@x/p":{"version":"1.0.0","resolved":"u","integrity":"sha512-a","integrity":"sha512-b"}}}'
         $r = Pg $l @("build", "a.pg")
         Check ($r.Rc -eq 64 -and $r.Out -match 'pgconfig\.lock\.json: malformed JSON: duplicate key') "P40 review r4: a lockfile with a duplicate key is refused by name (exit $($r.Rc))"
+
+        # ---- Review round 5 — CLI half --------------------------------------------------------------------------
+        # Gating 3 (Spark r1\rt.sh): an include rule's target that only an uncached registry dependency provides (and
+        # `targets` omits) is "not verified" — offline check AND a build that cannot reach the registry exit 0.
+        $oldCache = $env:POLYGLOT_CACHE; $oldReg = $env:POLYGLOT_REGISTRY
+        $env:POLYGLOT_CACHE = Join-Path $work "rv5-rt-cache"; $env:POLYGLOT_REGISTRY = "http://127.0.0.1:9/"
+        try {
+            foreach ($cfg in @('{"targets":["csharp"],"dependencies":{"nosuch":"^1.0.0"},"include":[{"pattern":"*.pg","target":"nosuch","output":"gen/%(Filename)"}]}',
+                               '{"targets":["csharp"],"dependencies":{"@acme/plugin":"^1.0.0"},"include":[{"pattern":"*.pg","target":"acme","output":"gen/%(Filename)"}]}')) {
+                $q = New-Proj (Join-Path $work ("rv5-rt-" + [guid]::NewGuid().ToString('N').Substring(0, 6))) $cfg @{ "a.pg" = $fnA }
+                $rc1 = Pg $q @("check", "a.pg")
+                $rb = Pg $q @("build")
+                Check ($rc1.Rc -eq 0 -and $rc1.Out -match 'include rule target\(s\) \w+ not verified' -and $rb.Rc -eq 0 -and (Test-Path (Join-Path $q "a.cs"))) `
+                    "review r5 (gating 3): an uncached dependency's rule target is not verified; offline check $($rc1.Rc), offline build $($rb.Rc) (was 64, 64), a.cs written"
+            }
+            # ... but a misspelled rule target beside the uncached dependency is still unknown.
+            $q = New-Proj (Join-Path $work "rv5-rt-typo") '{"targets":["csharp"],"dependencies":{"nosuch":"^1.0.0"},"include":[{"pattern":"*.pg","target":"typo","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+            $r = Pg $q @("check", "a.pg")
+            Check ($r.Rc -eq 64 -and $r.Out -match "unknown target 'typo'") "review r5 (gating 3): a misspelled rule target beside an uncached first-party dependency is still refused (exit $($r.Rc))"
+        } finally { $env:POLYGLOT_CACHE = $oldCache; $env:POLYGLOT_REGISTRY = $oldReg }
+
+        # Part 2: an include rule naming a bundled target `targets` omits never applies — refused; `--target` builds it.
+        $p = New-Proj (Join-Path $work "rv5-rule-unconfigured") '{"targets":["typescript"],"include":[{"pattern":"*.pg","target":"python","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+        $r = Pg $p @("build")
+        Check ($r.Rc -eq 64 -and $r.Out -match "names 'python', which this config does not build" -and -not (Test-Path (Join-Path $p "a.ts"))) "review r5: a rule naming the unconfigured 'python' is refused (exit $($r.Rc); was 0, a.ts next to the .pg)"
+        $r = Pg $p @("build", "a.pg", "--target", "python")
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $p "gen/a.py"))) "review r5: ... while --target python builds it through the rule (exit $($r.Rc))"
+        # ... and `"target": []` is refused like `"targets": []` (it used to mean "every target").
+        $p = New-Proj (Join-Path $work "rv5-rule-empty") '{"targets":["typescript"],"include":[{"pattern":"*.pg","target":[],"output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+        $r = Pg $p @("build")
+        Check ($r.Rc -eq 64 -and $r.Out -match '"target" is an empty list' -and -not (Test-Path (Join-Path $p "gen"))) "review r5: an include rule with `"target`": [] is refused (exit $($r.Rc); was 0)"
+
+        # Part 2: a failing build deletes nothing — not even an hour-old headed temp of an output it rewrote.
+        $sw = New-Proj (Join-Path $work "rv5-sweep-fail") '{"targets":["csharp"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+        Pg $sw @("build") | Out-Null
+        $tmp = Join-Path $sw "gen/a.cs.pgtmp.1.2.3"
+        Copy-Item (Join-Path $sw "gen/a.cs") $tmp; (Get-Item -LiteralPath $tmp).LastWriteTime = (Get-Date).AddHours(-1)
+        Set-Content -LiteralPath (Join-Path $sw "b.pg") -Value 'fn b(): i32 { return nope }'
+        $r = Pg $sw @("build")
+        Check ($r.Rc -eq 1 -and (Test-Path $tmp)) "review r5: an exit-1 build keeps the stale temp (exit $($r.Rc); it used to be swept)"
+        Remove-Item -LiteralPath (Join-Path $sw "b.pg")
+        $r = Pg $sw @("build")
+        Check ($r.Rc -eq 0 -and -not (Test-Path $tmp)) "review r5: ... and the next clean build sweeps it (exit $($r.Rc))"
+
+        # Gating 2 (Spark r1\h1.sh): two spellings of one directory in ONE run (gen/ and Gen/) — a conflict on the
+        # FIRST run, naming both spellings, under --check too; one spelling twice is fine.
+        $h = New-Proj (Join-Path $work "rv5-h1") '{"targets":["typescript"],"include":[{"pattern":"a.pg","output":"gen/%(Filename)"},{"pattern":"b.pg","output":"Gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = $fnB }
+        $rc = Pg $h @("build", "--check")
+        $rb = Pg $h @("build")
+        Check ($rc.Rc -eq 1 -and $rb.Rc -eq 1 -and $rb.Out -match "conflicting output spellings: .*'gen' and 'Gen' differ only by case" -and $rb.Out -notmatch 'different content') `
+            "review r5 (gating 2): gen/ and Gen/ in one run conflict on the first run (check $($rc.Rc), build $($rb.Rc); was 3, 0), naming both spellings"
+        $h = New-Proj (Join-Path $work "rv5-h1-file") '{"targets":["typescript"],"include":[{"pattern":"x/*.pg","output":"gen/%(Filename)"},{"pattern":"y/*.pg","output":"gen/%(Filename)"}]}' @{ "x/a.pg" = $fnA; "y/A.pg" = $fnB }
+        $r = Pg $h @("build")
+        Check ($r.Rc -eq 1 -and $r.Out -match "'a\.ts' and 'A\.ts' differ only by case") "review r5 (gating 2): gen/a.ts and gen/A.ts in one run conflict by spelling (exit $($r.Rc))"
+        $h = New-Proj (Join-Path $work "rv5-h1-same") '{"targets":["typescript"],"include":[{"pattern":"a.pg","output":"gen/%(Filename)"},{"pattern":"b.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = $fnB }
+        Check ((Pg $h @("build")).Rc -eq 0) "review r5 (gating 2): one directory spelling routed from two rules is accepted"
+
+        if ($caseInsensitive) {
+            # Gating 1 (Spark h1\a3x.sh, a3x2.sh): a route that LEAVES the config folder compares its directories too.
+            $x = New-Proj (Join-Path $work "rv5-a3x/proj") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"../web/gen/%(RecursiveDir)%(Filename)"}]}' @{ "src/Foo/a.pg" = $fnA; "src/Foo/b.pg" = $fnB }
+            Pg $x @("build") | Out-Null
+            Move-Item (Join-Path $x "src/Foo") (Join-Path $x "src/tmpdir"); Move-Item (Join-Path $x "src/tmpdir") (Join-Path $x "src/foo")
+            $web = Join-Path $work "rv5-a3x/web/gen"
+            $r = Pg $x @("build", "--check")
+            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*web[\\/]gen[\\/]Foo -> foo') "review r5 (gating 1): --check reports ../web/gen/Foo -> foo (exit $($r.Rc); was 0)"
+            $r = Pg $x @("build")
+            Check ($r.Rc -eq 0 -and (@(Get-ChildItem $web -Name) -join ',') -ceq 'foo' -and $r.Out -cmatch 'git rm -r -q --cached') "review r5 (gating 1): build renames ../web/gen/Foo to foo with the git hint (exit $($r.Rc))"
+            Check ((Pg $x @("build", "--check")).Rc -eq 0) "review r5 (gating 1): ... after which --check is clean"
+            $x = New-Proj (Join-Path $work "rv5-a3x2/proj") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"../web/Gen/%(Filename)","owned":true}]}' @{ "a.pg" = $fnA }
+            Pg $x @("build") | Out-Null
+            Set-Content -LiteralPath (Join-Path $x "pgconfig.json") -Value '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"../web/gen/%(Filename)","owned":true}]}'
+            $r = Pg $x @("build", "--check")
+            Check ($r.Rc -eq 3 -and $r.Out -cmatch 'would rename .*web[\\/]Gen -> gen') "review r5 (gating 1): a template change ../web/Gen/ -> ../web/gen/ is reported (exit $($r.Rc); was 0)"
+            $r = Pg $x @("build")
+            Check ($r.Rc -eq 0 -and (@(Get-ChildItem (Join-Path $work "rv5-a3x2/web") -Name) -join ',') -ceq 'gen') "review r5 (gating 1): ... and renamed (exit $($r.Rc))"
+            # ... while an absolute route's own literal folder (a checkout path) is never compared.
+            $abs = Join-Path $work "rv5-abs"
+            New-Item -ItemType Directory -Force (Join-Path $abs "Out") | Out-Null
+            $x = New-Proj (Join-Path $abs "proj") ('{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"' + ((Join-Path $abs "out") -replace '\\', '/') + '/%(Filename)"}]}') @{ "a.pg" = $fnA }
+            $r = Pg $x @("build")
+            Check ($r.Rc -eq 0 -and (@(Get-ChildItem $abs -Directory -Name | Where-Object { $_ -ieq 'out' }) -join ',') -ceq 'Out') "review r5 (gating 1): an absolute route's literal folder Out/ (spelled out/) is left alone (exit $($r.Rc))"
+
+            # Part 2 (Spark h1\c2g.sh G4/G5): a rename two levels deep prints ONE hint — the outermost directory's —
+            # and --check names only that directory.
+            foreach ($case in @(@{ n = "g4"; f = "src/Foo/Bar/x.pg"; to = @("src/Foo", "src/foo", "src/foo/Bar", "src/foo/bar") },
+                                @{ n = "g5"; f = "src/Foo/Bar.pg"; to = @("src/Foo", "src/foo", "src/foo/Bar.pg", "src/foo/bar.pg") })) {
+                $d = New-Proj (Join-Path $work "rv5-$($case.n)") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"gen/%(RecursiveDir)%(Filename)","owned":true}]}' @{ $case.f = $fnA }
+                Pg $d @("build") | Out-Null
+                for ($i = 0; $i -lt 4; $i += 2) { Move-Item (Join-Path $d $case.to[$i]) (Join-Path $d "tmp.x"); Move-Item (Join-Path $d "tmp.x") (Join-Path $d $case.to[$i + 1]) }
+                $rc = Pg $d @("build", "--check")
+                $rb = Pg $d @("build")
+                $hints = [regex]::Matches($rb.Out, 'run: git ').Count
+                Check ($rc.Rc -eq 3 -and ([regex]::Matches($rc.Out, 'would rename')).Count -eq 1 -and $rc.Out -cmatch 'would rename .*gen[\\/]Foo -> foo' -and $rb.Rc -eq 0 -and $hints -eq 1 -and $rb.Out -cmatch 'run: git rm -r -q --cached "gen/Foo" && git add "gen/foo"') `
+                    "review r5 ($($case.n)): a two-level rename reports one directory under --check and prints one hint (check $($rc.Rc), $hints hint(s); was 2)"
+            }
+        } else { Check $true "review r5 gating 1 / two-level hints (skipped: case-sensitive filesystem)" }
     }
 
     $g39Ok = (Test-G39 "counter" $false "counter" @("csharp", "typescript", "python", "php"))
