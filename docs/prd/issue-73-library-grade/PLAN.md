@@ -1411,3 +1411,53 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
   - **Cross-half interaction caught by the merge:** the CLI half's exact net9.0-set assertion in the floor leg
     met the language half's new `coalesce_chain` program (it chains `Map` lookups, so its C# needs
     `OrderedDictionary<K, V>`); `$expectedNet9` is now `[coalesce_chain, map]`.
+- **2026-10-18 — Review round 4 — CLI half** (Spark's re-verification of `f00dd24`: gating items 1-2, part 2
+  "CLI and MSBuild" and "Gates"). Every item was reproduced against the `f00dd24` CLI first; the new cli-smoke
+  block fails 25 checks there and passes here.
+  - **Gating 1 [R] — the stale-temp sweep is held to the deletion invariant.** `writeFile` no longer sweeps
+    anything: it serves every writer (outputs, maps, record, depfile, outputs list), so it cannot prove a leftover
+    is its own, and the round-3 sweep deleted any name merely containing `.pgtmp.` in the folder written —
+    `src/keep.pgtmp.txt`, `src/plan.pgcase.tmp`, even the source `notes.pgtmp.pg`. `OutputSink::sweepStaleTempsOf`
+    now removes, for each output THIS run produces (Write mode only), only `<output>.pgtmp.<n>.<n>.<n>`
+    (`isWriteTempOf`, the exact shape) and `<output>.pgcase.tmp` beside it, only when older than ten minutes,
+    and only when the temp proves itself exactly as the output would (its header line; a sidecar's temp names the
+    owner). `renameCaseOnly` names its temp after the NEW spelling so the sweep can tie it to its output. Temps
+    of the record/depfile/outputs list are not swept (they cannot carry a header; a crash leaves one orphan in
+    `.polyglot/` or `obj/`, which is harmless) — documented, not fixed.
+  - **Gating 2 [H] — A3 for directory components.** `OutputSink::alignDirectoryCase` compares every directory
+    the route adds below its root (the deepest of: each config folder, `--out`, each input's folder — so a user's
+    checkout or source folder is never renamed) with the disk. A component that exists only under another case is
+    renamed when everything in it is Polyglot output (any loaded target's header line, a recorded output, or a map
+    naming such a sibling) or is build-owned; otherwise the put is Refused with the remedy. `--check` reports
+    `would rename <dir> -> <name>` (exit 3). A directory already written into under the old spelling in the same
+    run is a conflict. The git remedy for a directory is `git rm -r -q --cached "<old>" && git add "<new>"`:
+    `git mv -f gen/Foo gen/foo` exits 128 on Windows ("renaming failed: Invalid argument") for a case-only
+    DIRECTORY rename, before and after the disk rename (verified); the file hint stays `git mv -f`. cli-smoke
+    covers `%(RecursiveDir)` (`src/Foo` -> `src/foo`), G3 (`Gen/` -> `gen/`), the foreign-file refusal, and runs
+    the printed remedy in a real repository (ls-files then has `gen/models/x.ts` only).
+  - **Part 2, CLI and MSBuild.** `outDir=$(PolyglotOutDir)` joins `_PolyglotInputsCache` (run-nuget pins it).
+    `--adopt` is blocked by ANY record of the project — also the discovery record when the run has explicit inputs
+    and no `--record`, and under `--watch` — and the overwrite refusal then says "delete the outputs record …" instead
+    of sending the user to `--adopt`. No git hint for a build-owned (obj/) output. Offline `check` degrades only the
+    targets an uncached registry dependency provides (`ResolveResult::networkMisses`, tracked per dependency): a
+    first-party package names its target; an uncached third-party package (whose target only its manifest names)
+    leaves every missing target that no first-party dependency names unverified — documented limitation. An
+    include rule's `"target"` must be non-blank and name a loaded target (`validateIncludeTargets`, like
+    targetOptions keys); `--target ""` is 64. `json::parse(text, error)` validates UTF-8 (no overlongs,
+    surrogates, > U+10FFFF) and refuses lone `\u` surrogates, so a CP1252 pgconfig exits 64 naming the file; a
+    record with a raw 0xE9 is "unreadable" (the existing Corrupt path: warned by name, treated as empty, nothing
+    deleted) rather than refused — the record is regenerable state, not configuration. Windows writes rename
+    with `FILE_RENAME_FLAG_POSIX_SEMANTICS` (`SetFileInformationByHandle`, `FileRenameInfoEx`), falling back to
+    `MoveFileEx` where unsupported; a reader sharing DELETE keeps the old bytes and no longer blocks. The owned
+    scan also skips a scope that lies inside a nested project (every folder from the scope up to the declaring
+    config). `pgconfig.lock.json` is parsed strictly with a validated shape; a malformed one refuses (64) on
+    build/check/install instead of being re-resolved and rewritten. The POSIX case-variant pick needs a name match
+    (ASCII case pairs, any non-ASCII pair) among the equivalent entries, and two candidates is ambiguous (nothing
+    renamed).
+  - **Part 2, Gates.** Floor — the canary compares severity too (`error CS0168,error CS9058`; `warning CS0168`
+    with TWAE off now fails it), and the corpus is pinned at >= 146 programs. cli-smoke — the held-output check uses
+    `FileShare.ReadWrite` and asserts the bytes the holder reads, plus a `ReadWrite|Delete` holder that is
+    replaced at once; the unit test holds with explicit `CreateFileW` sharing for both cases; the `pé日` gate adds
+    `日.pg`, so the record and that source map hold bytes >= 0x80, and a failed strict decode can no longer pass
+    through `$null | ConvertFrom-Json`; the UNC check matches the reason, now "is an absolute (UNC) path".
+    `numeric_edges` tests `(f64)f32.parse("1e39") > 1.0e300` (only an infinity passes).
