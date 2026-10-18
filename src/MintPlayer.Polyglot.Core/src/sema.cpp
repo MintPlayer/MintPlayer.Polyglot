@@ -379,6 +379,9 @@ struct Local {
     // reaches exactly the lambda body that tested it (an outer test never reaches into a lambda, but a test
     // inside the lambda narrows a captured param or `let` for the rest of that body).
     int narrowDepth = 0;
+    // Review r6 #4: the body keys of the lambdas this local was bound or assigned to — a call through it (or
+    // passing it as an argument) runs one of them, so the init-order rule follows them.
+    std::vector<std::string> lambdaKeys;
     // P40 review r3 (part 2): a local initialized with a constant and never read is C# CS0219 (a warning a
     // warnings-as-errors consumer cannot build) — refused when its scope closes.
     int reads = 0;
@@ -416,6 +419,8 @@ public:
         // Type-check top-level const/let initializers first, so their types propagate. Review r5 (part 2): BEFORE
         // the bodies, and an un-annotated value takes its initializer's type — every body read it as unknown, so
         // `d.hello() + " "` on `let d = Derived()` was an untyped `+` (PHP added the strings: a TypeError).
+        for (const auto& v : unit.values) // review r6 #4: a call through a module lambda value runs its body
+            if (v.init && v.init->kind == ExprKind::Lambda) valueLambdaKeys_[v.name] = lambdaBodyKey(*v.init);
         for (auto& v : unit.values) {
             if (!v.init) continue;
             initDeclPos_ = v.pos; initDeclName_ = v.name;
@@ -718,6 +723,14 @@ private:
     // what its own statics reach) ahead of the value. A static initializer keeps source order.
     std::string initClass_;
     std::unordered_set<std::string> userClassNames_; // non-extern user classes (the ones the emission order may move)
+    // Review r6 #3: is `name` a user type that ir::declarationOrder emits before every class and module value?
+    // That order interleaves only classes with values (by source position, a class moved ahead of a value that
+    // reaches it); every other declared type — an enum, record, union (and its cases) or interface — is placed
+    // first. So the hoisted set is exactly the declared types that are not classes (interfaces are not in
+    // typeDeclPos_: they run no code and are never order-checked).
+    bool hoistedType(const std::string& name) const {
+        return !name.empty() && typeDeclPos_.count(name) && !userClassNames_.count(name);
+    }
     static bool posBefore(const SourcePos& a, const SourcePos& b) {
         return a.line < b.line || (a.line == b.line && a.col < b.col);
     }
@@ -726,6 +739,9 @@ private:
     void checkInitOrder(const SourcePos& declPos, const std::string& shown, SourcePos usePos, const std::string& via = "",
                         const std::string& cls = "") {
         if (declPos.line == 0) return;
+        // Review r6 #3: a type the emission order hoists ahead of every class and value is defined before any
+        // initializer runs, wherever it is declared — reaching it is never an order problem.
+        if (hoistedType(cls)) return;
         if (initDeclPos_.line == 0) {
             // P40 review r4 (part 2): not in an initializer — inside a body (r5: any body an initializer can run —
             // a function, a static or instance method, a constructor, an extension), the use is recorded, so an
@@ -746,13 +762,25 @@ private:
         if (posBefore(declPos, initDeclPos_)) return;
         diags_.error(usePos, initOrderMessage(initDeclName_, shown, via, ""));
     }
+    static constexpr const char* kLambdaArg = "\x01lambda-arg"; // the `shown` of a lambda literal passed as an argument
+    static std::string callPhrase(const std::string& callee, bool uses) {
+        if (callee == kLambdaArg) return "runs a lambda passed as an argument";
+        return (uses ? "uses '" : "calls '") + callee + "'";
+    }
     static std::string initOrderMessage(const std::string& init, const std::string& shown, const std::string& via,
                                         const std::string& callee, bool uses = false) {
+        // Review r6 (part 2): a value that reaches ITSELF is a cycle — no declaration order can fix it.
+        if (via.empty() && shown == init)
+            return "the initializer of '" + init + "' " +
+                   (callee.empty() ? std::string("reads '") + init + "'"
+                                   : callPhrase(callee, uses) + ", which reads '" + init + "'") +
+                   " — '" + init + "' reads itself during its own initialization (TS, Python and PHP would read an "
+                   "uninitialized value or fail; C# reads a default); break the cycle";
         const std::string what = !via.empty() ? "uses '" + via + "', whose base class '" + shown + "' is declared later"
                                  : callee.empty() ? "reads '" + shown + "', which is declared later"
                                                   : "reads '" + shown + "', declared later";
         return "the initializer of '" + init + "' " +
-               (callee.empty() ? what : (uses ? "uses '" : "calls '") + callee + "', which " + what) +
+               (callee.empty() ? what : callPhrase(callee, uses) + ", which " + what) +
                " — TS, Python and PHP run initializers in declaration order (it would read an uninitialized value "
                "or fail; C# reads a default); declare '" + shown + "' first";
     }
@@ -807,9 +835,37 @@ private:
             if (!initClass_.empty()) bodyCalls_["cls:" + initClass_].insert(key); // r5 #4: defining the class runs it
         } else if (!bodyKey_.empty()) bodyCalls_[bodyKey_].insert(key);
     }
-    // The class whose body a key names (`st:`/`m:`/`ctor:`/`cls:`); "" for a free function or an extension.
+    // Review r6 #4: a user operator (`plus`, `eq`, `neg`, the indexer's `get`/`set`, `explicit`, …) runs its body
+    // where its operator is used — keyed like an instance method (`m:<Owner>.<name>`).
+    void noteOperatorRun(const TypeRef& t, const std::string& meth, SourcePos at) {
+        if (meth.empty() || t.kind != TypeRef::Kind::Named || t.name.empty() || !types_.count(t.name)) return;
+        if (MemberHit h = findMemberOn(t, meth); h.m && h.m->kind == MemberKind::Operator)
+            noteDirectCall("m:" + h.owner + "." + meth, t.name + "." + meth, at);
+    }
+    // Review r6 #4: a lambda's body key — `lam:<Class>@<file>:<line>:<col>`, the class it is written in ("" outside
+    // any class) first, so bodyOwner can tell code inside a class (which sees the class while its statics run).
+    std::string lambdaBodyKey(const Expr& lam) const {
+        return "lam:" + currentClass_ + "@" + std::to_string(lam.pos.fileId) + ":" + std::to_string(lam.pos.line) + ":" +
+               std::to_string(lam.pos.col);
+    }
+    // Review r6 #4: note a call to every lambda body a function value may hold when it is called or passed on — a
+    // lambda literal, a local bound to lambdas, or a module value whose initializer is a lambda.
+    std::vector<std::string> lambdaKeysOf(const Expr& v) const {
+        if (v.kind == ExprKind::Lambda) return {lambdaBodyKey(v)};
+        if (v.kind != ExprKind::Name) return {};
+        if (const Local* l = lookup(v.text)) return l->lambdaKeys;
+        if (auto it = valueLambdaKeys_.find(v.text); it != valueLambdaKeys_.end()) return {it->second};
+        return {};
+    }
+    void noteFunctionValueRun(const Expr& v, const std::string& shown, SourcePos at) {
+        for (const auto& k : lambdaKeysOf(v)) noteDirectCall(k, shown, at);
+    }
+    std::unordered_map<std::string, std::string> valueLambdaKeys_; // module value -> its lambda initializer's body key
+    // The class whose body a key names (`st:`/`m:`/`set:`/`ctor:`/`cls:`/`lam:`); "" for a free function or an
+    // extension.
     static std::string bodyOwner(const std::string& k) {
-        for (const char* p : {"st:", "m:"})
+        if (k.rfind("lam:", 0) == 0) return k.substr(4, k.find('@') - 4);
+        for (const char* p : {"st:", "m:", "set:"})
             if (k.rfind(p, 0) == 0) { std::string s = k.substr(std::strlen(p)); return s.substr(0, s.find('.')); }
         for (const char* p : {"ctor:", "cls:"})
             if (k.rfind(p, 0) == 0) return k.substr(std::strlen(p));
@@ -819,12 +875,13 @@ private:
     void forEachCallee(const std::string& k, const std::function<void(const std::string&)>& f) const {
         if (auto c = bodyCalls_.find(k); c != bodyCalls_.end())
             for (const auto& n : c->second) f(n);
-        if (k.rfind("m:", 0) == 0) {
-            const std::string owner = bodyOwner(k), name = k.substr(2 + owner.size() + 1);
+        for (const std::string pre : {"m:", "set:"}) { // review r6 #4: a setter's overrides too
+            if (k.rfind(pre, 0) != 0) continue;
+            const std::string owner = bodyOwner(k), name = k.substr(pre.size() + owner.size() + 1);
             for (const auto& [t, info] : types_) {
                 if (t == owner || !inheritsFrom(t, owner)) continue;
                 for (const auto& m : info.members)
-                    if (m.name == name && !m.isStatic) { f("m:" + t + "." + name); break; }
+                    if (m.name == name && !m.isStatic) { f(pre + t + "." + name); break; }
             }
         }
     }
@@ -860,8 +917,8 @@ private:
                         // r5 #12: code OUTSIDE a class cannot see the class while its static initializers run (TS
                         // binds the class name only after the class is defined: a ReferenceError).
                         if (!isValue && rd.cls == ic.initClass && bodyOwner(k) != ic.initClass) {
-                            diags_.error(ic.callPos, "the initializer of '" + ic.initName + "' calls '" + ic.calleeShown +
-                                                         "', which reads '" + rd.shown + "' while class '" + ic.initClass +
+                            diags_.error(ic.callPos, "the initializer of '" + ic.initName + "' " + callPhrase(ic.calleeShown, false) +
+                                                         ", which reads '" + rd.shown + "' while class '" + ic.initClass +
                                                          "' is still being defined — TS binds a class's name only after "
                                                          "its static initializers ran (a ReferenceError); read it directly "
                                                          "in the initializer, or make the helper a `static fn` of '" +
@@ -2111,7 +2168,8 @@ private:
                 inAsync_ = m.isAsync;
                 inCtor_ = m.kind == MemberKind::Constructor;
                 if (isStatic && m.kind == MemberKind::Method) bodyKey_ = "st:" + typeName + "." + m.name; // review r4
-                else if (m.kind == MemberKind::Method) bodyKey_ = "m:" + typeName + "." + m.name;         // review r5 #4
+                else if (m.kind == MemberKind::Method || m.kind == MemberKind::Operator) // review r5 #4 / r6 #4
+                    bodyKey_ = "m:" + typeName + "." + m.name;
                 else if (m.kind == MemberKind::Constructor) bodyKey_ = "ctor:" + typeName;              // review r5 #4
                 scopeStart_ = m.namePos; scopeEnd_ = m.bodyEnd; // method locals scoped to this member body
                 pushScope();
@@ -2175,7 +2233,9 @@ private:
                     pushScope();
                     if (recordFields) for (const auto& f : *recordFields) declare(f.name, f.type, false, f.pos);
                     declare(m.setterParam, m.type, false, m.pos);
+                    bodyKey_ = "set:" + typeName + "." + m.name; // review r6 #4: a setter runs where it is assigned
                     checkBlock(m.setterBody);
+                    bodyKey_.clear();
                     popScope();
                 }
             }
@@ -2880,7 +2940,11 @@ private:
                 if (!blockIsBindings_.empty() && blockIsBindings_.back().count(s.name))
                     diags_.error(s.namePos, "'" + s.name + "' was bound by an `is` test earlier in this block; "
                                             "pick another name (the emitted binding outlives the branch)");
-                declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
+                {
+                    std::vector<std::string> keys = s.value ? lambdaKeysOf(*s.value) : std::vector<std::string>{};
+                    declare(s.name, s.hasDeclType ? s.declType : init, s.isMutable, s.namePos);
+                    if (Local* nl = lookupMut(s.name)) nl->lambdaKeys = std::move(keys); // review r6 #4
+                }
                 if (Local* nl = lookupMut(s.name); nl && isConstExpr(s.value.get())) { nl->constInit = true; nl->declPos = s.namePos; nl->declStmt = &s; }
                 break;
             }
@@ -2922,6 +2986,10 @@ private:
                             checkCoalesceAssign(s, readT, local->type, "'??=' assignment to '" + nm + "'");
                         }
                         Local* ml = lookupMut(nm);
+                        if (s.value && s.op == "=") // review r6 #4: a call through it may run this lambda too
+                            for (auto& k : lambdaKeysOf(*s.value)) ml->lambdaKeys.push_back(std::move(k));
+                        if (s.op != "=" && s.op != "??=") // review r6 #4: a compound user operator runs its body
+                            noteOperatorRun(local->type, operatorMethod(s.op.substr(0, s.op.size() - 1)), s.pos);
                         ml->assigns++;
                         if (s.op != "=") ml->reads++; // a compound reads the target
                         else if (!isConstExpr(s.value.get())) ml->nonConstAssign = true; // review r5 #17: no CS0219
@@ -2936,15 +3004,27 @@ private:
                     }
                 } else if (s.target) {
                     const TypeRef tt = checkExpr(*s.target);
+                    // review r6 #4: a property setter, a user indexer's `set` and a compound user operator run their
+                    // bodies here
+                    auto noteSetter = [&](const MemberInfo* m, const std::string& owner) {
+                        if (m && m->kind == MemberKind::Property)
+                            noteDirectCall("set:" + owner + "." + s.target->text, owner + "." + s.target->text, s.pos);
+                    };
+                    if (s.target->kind == ExprKind::Index && s.target->lhs) noteOperatorRun(s.target->lhs->type, "set", s.pos);
+                    if (s.op != "=" && s.op != "??=") noteOperatorRun(tt, operatorMethod(s.op.substr(0, s.op.size() - 1)), s.pos);
                     if (s.target->kind == ExprKind::Member && s.target->lhs) { // `Type.f = …` / `recv.f = …`
                         const Expr& r = *s.target->lhs;
                         if (r.kind == ExprKind::Name && !enumNames_.count(r.text) && types_.count(r.text)) {
-                            if (const MemberInfo* m = findMember(r.text, s.target->text))
+                            if (const MemberInfo* m = findMember(r.text, s.target->text)) {
                                 checkMemberWritable(*m, r.text, r.text + "." + s.target->text, false, true, s.pos);
+                                noteSetter(m, r.text);
+                            }
                         } else if (knownType(r.type)) {
-                            if (MemberHit hit = findMemberOn(r.type, s.target->text); hit.m)
+                            if (MemberHit hit = findMemberOn(r.type, s.target->text); hit.m) {
                                 checkMemberWritable(*hit.m, hit.owner, hit.owner + "." + s.target->text,
                                                     r.kind == ExprKind::This, hit.m->isStatic, s.pos);
+                                noteSetter(hit.m, hit.owner);
+                            }
                         }
                     }
                     if (s.op == "??=") checkCoalesceAssign(s, tt, tt, "'??=' assignment");
@@ -3667,7 +3747,7 @@ private:
                 return tUnknown();
             case ExprKind::Call:      return nullSafeCallResult(e, checkCall(e));
             case ExprKind::Member:    return checkMember(e);
-            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); convertIndexArgs(e, recv); return elementType(recv); }
+            case ExprKind::Index:     { TypeRef recv = checkExpr(*e.lhs); for (auto& a : e.args) checkExpr(*a); checkIndexArity(e, recv); convertIndexArgs(e, recv); noteOperatorRun(recv, "get", e.pos); return elementType(recv); }
             case ExprKind::NullAssert:{
                 TypeRef t = checkExpr(*e.lhs);
                 if (t.kind == TypeRef::Kind::Named && t.name == "Option") // `opt!` (P40 D12): the element type
@@ -3789,6 +3869,8 @@ private:
             e.staticOwner = currentClass_;
             if (auto dp = staticDeclPos_.find(currentClass_ + "." + e.text); dp != staticDeclPos_.end())
                 checkInitOrder(dp->second, currentClass_ + "." + e.text, e.pos, "", currentClass_);
+            if (m->kind == MemberKind::Property) // review r6 #4: an unqualified static computed property's getter
+                noteDirectCall("m:" + currentClass_ + "." + e.text, currentClass_ + "." + e.text, e.pos);
             return m->type;
         }
         if (auto f = fns_.find(e.text); f != fns_.end()) return checkFnRef(e, f->second);
@@ -3832,6 +3914,22 @@ private:
 
     TypeRef checkLambda(Expr& e) {
         ++lambdaDepth_; // P40 D14: outer narrowings stop here; the lambda's own params/locals narrow inside it
+        // Review r6 #4: a deferred lambda body is its own body for the init-order rule — what it reads and calls is
+        // recorded under its key (lambdaBodyKey), and the code that RUNS it (a call through the local or module
+        // value bound to it, or a call it is passed to as an argument) notes a call to that key. One only stored
+        // is never run by an initializer, so its reads stay out of every initializer (SPEC §5). An in-place
+        // invocation keeps its body in the enclosing context (initLambdaFloor_).
+        const bool deferredBody = lambdaDepth_ > initLambdaFloor_;
+        const std::string savedBodyKey = bodyKey_, savedInitName = initDeclName_, savedInitClass = initClass_;
+        const SourcePos savedInitPos = initDeclPos_;
+        const int savedFloor = initLambdaFloor_;
+        if (deferredBody) {
+            bodyKey_ = lambdaBodyKey(e);
+            initDeclPos_ = {0, 0, 0};
+            initDeclName_.clear();
+            initClass_.clear();
+            initLambdaFloor_ = lambdaDepth_;
+        }
         std::unordered_set<std::string> savedClosureAssigned;
         const bool topLevel = bodyDepth_ == 0 && e.flag; // a lambda outside any body (a module initializer)
         if (topLevel) {
@@ -3854,6 +3952,13 @@ private:
         currentReturn_ = std::move(savedReturn);
         popScope();
         if (topLevel) { --bodyDepth_; closureAssigned_ = std::move(savedClosureAssigned); }
+        if (deferredBody) {
+            bodyKey_ = savedBodyKey;
+            initDeclPos_ = savedInitPos;
+            initDeclName_ = savedInitName;
+            initClass_ = savedInitClass;
+            initLambdaFloor_ = savedFloor;
+        }
         --lambdaDepth_;
         return tUnknown();
     }
@@ -3875,6 +3980,7 @@ private:
                 for (const auto& m : ti->members)
                     if (m.kind == MemberKind::Operator && m.name == "explicit" &&
                         m.type.kind == TypeRef::Kind::Named && m.type.name == e.castType.name) {
+                        noteOperatorRun(from, "explicit", e.pos); // review r6 #4
                         e.overloadName = conversionMethodName(e.castType.name);
                         return e.castType;
                     }
@@ -3913,6 +4019,7 @@ private:
             !isBuiltinType(ot.name) && ot.name != "unit") {
             const char* meth = e.text == "-" ? "neg" : e.text == "~" ? "bnot" : nullptr;
             if (meth) {
+                noteOperatorRun(ot, meth, e.pos); // review r6 #4
                 if (MemberHit h = findMemberOn(ot, meth); h.m) return memberTypeOf(h, h.m->type, e.pos); // P40 s7: substituted
                 diags_.error(e.pos, "type '" + ot.name + "' declares no 'operator fn " + meth +
                                         "' for unary '" + e.text + "'");
@@ -4012,6 +4119,7 @@ private:
         if (lt.kind == TypeRef::Kind::Named && !lt.name.empty() && knownType(lt) &&
             !isBuiltinType(lt.name) && lt.name != "unit") {
             const std::string meth = operatorMethod(op);
+            noteOperatorRun(lt, op == "!=" ? "eq" : meth, e.pos); // review r6 #4: the operator body runs here
             if (!meth.empty())
                 if (MemberHit h = findMemberOn(lt, meth); h.m) return memberTypeOf(h, h.m->type, e.pos); // P40 s7: substituted
         }
@@ -4284,6 +4392,8 @@ private:
                 if (auto it = memberDefId_.find(e.lhs->text + "." + e.text); it != memberDefId_.end()) recordRef(e.pos, e.text, it->second);
                 if (auto dp = staticDeclPos_.find(e.lhs->text + "." + e.text); dp != staticDeclPos_.end())
                     checkInitOrder(dp->second, e.lhs->text + "." + e.text, e.pos, "", e.lhs->text);
+                if (m->kind == MemberKind::Property) // review r6 #4: reading a static computed property runs its getter
+                    noteDirectCall("m:" + e.lhs->text + "." + e.text, e.lhs->text + "." + e.text, e.pos);
                 TypeRef t = m->type; if (e.flag) t.nullable = true; return t;
             }
             diags_.error(e.pos, "type '" + e.lhs->text + "' has no member '" + e.text + "'");
@@ -4386,6 +4496,8 @@ private:
             // review r5 (part 2): a function passed as an argument may run inside the call — follow its body
             if (a->kind == ExprKind::Name && a->fnRef && !fnRefSites_.empty() && fnRefSites_.back().ref == a.get())
                 noteDirectCall(fnBodyKey(fnRefSites_.back().decl), a->text, a->pos);
+            // review r6 #4: so may a lambda passed as an argument — a literal, or one a local or module value holds
+            else noteFunctionValueRun(*a, a->kind == ExprKind::Lambda ? kLambdaArg : a->text, a->pos);
         }
 
         if (e.lhs->kind == ExprKind::Member) {
@@ -4611,6 +4723,7 @@ private:
             TypeRef ft = l->type;
             if (ft.nullable && narrowedHere(*l)) ft.nullable = false;
             e.lhs->type = ft;
+            noteFunctionValueRun(*e.lhs, name, e.pos); // review r6 #4: the call runs the lambda the local holds
             return callFunctionValue(ft, argTypes, e, "'" + name + "'");
         }
         if (auto t = types_.find(name); t != types_.end()) { // construction
@@ -4743,6 +4856,7 @@ private:
             TypeRef ft = checkName(*e.lhs); // the read: init-order checks, references, the declared type
             e.lhs->type = ft;
             e.calleeIsField = true; // lowered through the callee value, like a function-typed field
+            noteFunctionValueRun(*e.lhs, name, e.pos); // review r6 #4: the call runs the module lambda's body
             return callFunctionValue(ft, argTypes, e, "'" + name + "'");
         }
         diags_.error(e.pos, "call to undeclared function '" + name + "'");
