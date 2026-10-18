@@ -168,7 +168,8 @@ struct ResolvedTargets {
 };
 // The targets bundled next to the executable (loadPluginsNextToExe), as opposed to ones a pgconfig dependency
 // provides: an include rule may name a dependency's target that `targets` omits (built through `--target`), but an
-// in-box target `targets` omits is configured nowhere, so a rule naming it never applies (P40 review r5).
+// in-box target `targets` omits is configured nowhere, so a rule naming it applies only to a `--target <t>` run
+// (P40 review r5; r6: a warning saying so, not a refusal).
 std::set<std::string> g_inBoxTargets;
 ResolvedTargets resolveConfiguredTargets(const PgConfig& pc, bool dryRun = false, bool offline = false) {
     static cli::ResolveState state;
@@ -262,7 +263,9 @@ int refuseInvalidConfig(const PgConfig& pc, bool dryRun = false, const cli::Targ
     std::set<std::string> ruleSkip = unverified;
     ruleSkip.insert(rt.ruleUnverified.begin(), rt.ruleUnverified.end());
     // P40 review r4: a rule's "target" names a target; r5: one this config builds
-    cli::validateIncludeTargets(pc, optErrors, ruleSkip, g_inBoxTargets, alsoBuilt);
+    std::vector<std::string> ruleWarnings;
+    cli::validateIncludeTargets(pc, optErrors, ruleWarnings, ruleSkip, g_inBoxTargets, alsoBuilt);
+    for (const auto& m : ruleWarnings) std::cerr << "polyglot: " << m << "\n";
     for (const auto& m : optErrors) std::cerr << "polyglot: " << m << "\n";
     return optErrors.empty() ? rc : 64;
 }
@@ -816,7 +819,9 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         cli::validateTargetOptions(pc, optionFlags, optErrors, unverified.empty() ? nullptr : &unverified);
         std::set<std::string> ruleSkip = unverified;
         ruleSkip.insert(rt.ruleUnverified.begin(), rt.ruleUnverified.end());
-        cli::validateIncludeTargets(pc, optErrors, ruleSkip, g_inBoxTargets, targetArg);
+        std::vector<std::string> ruleWarnings;
+        cli::validateIncludeTargets(pc, optErrors, ruleWarnings, ruleSkip, g_inBoxTargets, targetArg);
+        for (const auto& m : ruleWarnings) emitDiag(absInput.string() + "(1,1): " + m, Severity::Warning);
         for (const auto& m : optErrors) emitTopLevel(m);
         if (!optErrors.empty()) return c;
     }
@@ -1019,11 +1024,8 @@ struct BuildOpts {
 // Build one nearest-config group (P30 slice 7 / PRD D8): the whole per-config pipeline — flag/config
 // merging, dependency resolution, target-set selection, and the single- or multi-file (§4.5) emit,
 // with outputs routed through the group's `include` rules. Every file goes through the run's one sink.
+// The group's config was validated by runBuild (refuseInvalidConfig) before any group runs.
 int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs, const BuildOpts& o) {
-    // P40 review (A5): parse/shape errors, every declared target, every targetOptions layer — before anything
-    // is written, and whatever --target / --only would have skipped.
-    if (const int refused = refuseInvalidConfig(pc, run.dryRun(), o.optionFlags, false, o.target)) return refused;
-
     const fs::path firstInput = inputs.front();
     // P40 A5: absolute, so the resolver's default root and every relative specifier are cwd-independent.
     const fs::path entryDir = cli::absoluteDir(firstInput.has_parent_path() ? firstInput.parent_path() : fs::path("."));
@@ -1457,6 +1459,20 @@ int runBuild(const std::vector<std::string>& args) {
         g.second.push_back(in);
     }
 
+    // P40 review (A5) + r6 (gating 2): every group's config — parse/shape errors, every declared target, every
+    // targetOptions layer — is validated ONCE, here, before any path is computed from it (the route roots below)
+    // and before anything is written, whatever --target / --only would have skipped. Discovery validated its own
+    // config already (before reading its patterns); validating it again printed every dependency error and note
+    // twice per build.
+    {
+        const std::string validated = discovery && pc0.found ? cli::normalizedDirKey(pc0.dir) : std::string("\x01");
+        int refused = 0;
+        for (const auto& [key, group] : groups)
+            if (key != validated)
+                refused = worseExit(refused, refuseInvalidConfig(group.first, check, o.optionFlags, false, o.target));
+        if (refused) return refused;
+    }
+
     if (!discovery) { // D5: an owned folder is scanned only when the build discovered its own inputs
         bool anyOwned = false;
         for (const auto& [key, group] : groups)
@@ -1528,9 +1544,6 @@ int runBuild(const std::vector<std::string>& args) {
     // Rule 4 of the deletion invariant: any failed group means nothing is deleted and no record is rewritten.
     if (rc == 0 && (!recordPath.empty() || (discovery && !flagRouted)))
         rc = worseExit(rc, reconcileOutputs(run, recordPath, defaultRecord, discovery && !flagRouted ? &pc0 : nullptr));
-    // P40 review r5: the stale-temp sweep obeys rule 4 too — it runs only when every group (and the
-    // reconciliation) succeeded, never during a failing build.
-    if (rc == 0 && !check) run.sink.sweepStaleTemps();
     if (rc == 0 && !check && !depfileArg.empty() && !cli::writeDepfile(depfileArg, run.deps)) {
         std::cerr << "polyglot: cannot write the depfile '" << depfileArg.string() << "'\n";
         rc = worseExit(rc, 1);
@@ -1550,6 +1563,10 @@ int runBuild(const std::vector<std::string>& args) {
             rc = worseExit(rc, 1);
         }
     }
+    // P40 review r5: the stale-temp sweep obeys rule 4 too — it runs only when every group (and the
+    // reconciliation) succeeded, never during a failing build. r6: and last, after the depfile and outputs-list
+    // writes — a build whose depfile or list cannot be written exits 1, so it has not "succeeded" either.
+    if (rc == 0 && !check) run.sink.sweepStaleTemps();
 
     if (check) {
         for (const auto& line : run.sink.driftLines()) std::cout << line << "\n";

@@ -442,8 +442,14 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
             PgConfig pc;
             pc.found = true;
             pc.dir = d;
-            if (!jsonErr.empty()) pc.errors.push_back((d / "pgconfig.json").string() + ": malformed JSON: " + jsonErr);
-            else validatePgConfigShape(v, pc.errors); // P40 review (A5): a well-formed but invalid config refuses too
+            // P40 review r6 (gating 2): a malformed document is refused WHOLE — nothing is read from the partial
+            // value json::parse returns, so no path is ever built from a string it could not decode (a lone `\u`
+            // surrogate left bytes no path conversion accepts: a raw OS error 1113 instead of this diagnostic).
+            if (!jsonErr.empty()) {
+                pc.errors.push_back((d / "pgconfig.json").string() + ": malformed JSON: " + jsonErr);
+                return pc;
+            }
+            validatePgConfigShape(v, pc.errors); // P40 review (A5): a well-formed but invalid config refuses too
             std::string r = v["root"].asString();
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
@@ -594,13 +600,16 @@ inline void validateTargetOptions(const PgConfig& pc, const TargetOptionsByTarge
 // could not verify). A typo (`"typescrpt"`) made the rule never apply, so the TS output silently landed next to
 // the .pg. Checked against the loaded plugins, like targetOptions keys — not against `targets`, since a
 // `--target <t>` override may build a target the set does not list.
-// P40 review r5: and a target this config builds. A loaded target that `targets` omits is refused when it is
-// BUNDLED (`inBox`): nothing configures it, so the rule never applies and the output silently lands next to the .pg
+// P40 review r5: and a target this config builds. A loaded target that `targets` omits is flagged when it is
+// BUNDLED (`inBox`): nothing configures it, so the rule applies only to a `--target <t>` run
 // (`"python"` with `"targets": ["typescript"]`). A target a pgconfig dependency provides may be omitted from
 // `targets` — it is built through `--target`, which `alsoBuilt` names for this run. Without `targets` (every build
 // passes --target) a loaded target is enough.
+// P40 review r6: the bundled-target case is a WARNING (into `warnings`), not a refusal — `--target python` builds
+// any loaded target, so the rule does apply to those runs, and refusing blocked `build`, `--only` and `--target
+// csharp` runs that never build python. The warning names the one way the rule applies.
 inline void validateIncludeTargets(const PgConfig& pc, std::vector<std::string>& errors,
-                                   const std::set<std::string>& unverified = {},
+                                   std::vector<std::string>& warnings, const std::set<std::string>& unverified = {},
                                    const std::set<std::string>& inBox = {}, const std::string& alsoBuilt = {}) {
     if (!pc.found) return;
     for (const auto& r : pc.include)
@@ -616,11 +625,10 @@ inline void validateIncludeTargets(const PgConfig& pc, std::vector<std::string>&
             if (pc.targets.empty() || t == alsoBuilt || !inBox.count(t) ||
                 std::find(pc.targets.begin(), pc.targets.end(), t) != pc.targets.end())
                 continue;
-            std::string configured;
-            for (const auto& n : pc.targets) configured += (configured.empty() ? "" : ", ") + n;
-            errors.push_back("pgconfig.json include rule '" + r.pattern + "': \"target\" names '" + t +
-                             "', which this config does not build (\"targets\": " + configured +
-                             "), so the rule never applies; add '" + t + "' to \"targets\", or name a configured target");
+            const std::string w = "warning: pgconfig.json include rule '" + r.pattern + "' targets '" + t +
+                                  "', which no configured target or dependency provides; it applies only to runs with "
+                                  "--target " + t;
+            if (std::find(warnings.begin(), warnings.end(), w) == warnings.end()) warnings.push_back(w);
         }
 }
 
