@@ -130,7 +130,10 @@ still an error (exit 64). Which targets degrade depends on the package. A first-
 target only in its manifest, so while one is uncached, every missing target that no first-party dependency
 names degrades, and a typo among those goes unreported until the package is cached (`polyglot install`, or any
 build). The same holds in a build for an include rule's `"target"` that `targets` omits: a build that cannot
-fetch the providing dependency notes it and goes on, since only `--target` would build it.
+fetch the providing dependency notes it and goes on, since only `--target` would build it. Only a **missing
+network** degrades (no connection, DNS, a timeout). A registry that answers — a 404 for an unpublished package,
+or a tarball failing its integrity check — is an error (exit 64) in every command, and each problem is printed
+once per build.
 
 `--watch` keeps the emitted outputs fresh: it rebuilds whenever the input, any transitively imported
 `.pg`, or `pgconfig.json` changes (all configured targets per rebuild). A failed rebuild prints the
@@ -183,7 +186,8 @@ never is — a `.map` goes only with its owner, and a build with any failed grou
 exception. `--target` + `--out` deletes no stale output, and `--watch` deletes nothing at all. The one thing
 every other successful build also removes is Polyglot's own leftovers, under the same rule: an output's temp
 file from an interrupted run (exactly `<output>.pgtmp.<n>.<n>.<n>` or `<output>.pgcase.tmp`, next to an
-output this run writes, and older than ten minutes) is removed once the whole build has succeeded, when it
+output this run writes, and older than ten minutes) is removed once the whole build has succeeded (the last step,
+after the `--depfile` and `--outputs-list` writes: a build that cannot write either exits 1 and sweeps nothing), when it
 proves itself Polyglot's exactly as its output would. For an emitted file that means it carries the header line;
 for a source map's temp it means its `file` field names the owner. Nothing else in the folder is looked at.
 
@@ -251,11 +255,13 @@ namespace or class must agree across files that import each other (and across th
 that share the runtime prelude file) — a mismatch is refused rather than emitted unlinkable. The former
 top-level `"access"` key and `--access` flag are gone: use `targetOptions.csharp.access`.
 
-An include rule's `"target"` (one name or a list) must name a target this config builds. That is a target in
-`targets`, a target a `dependencies` plugin provides (built with `--target`), or the run's own `--target`. A
-bundled target that `targets` omits (`"python"` beside `"targets": ["typescript"]`) is refused, because the rule
-would never apply and the output would land next to the `.pg`. To apply a rule to every target, omit
-`"target"`. An empty list `[]` is refused, like `"targets": []`.
+An include rule's `"target"` (one name or a list) must name a loaded target: an unknown name (`"typescrpt"`) is
+refused. A target in `targets`, a target a `dependencies` plugin provides (built with `--target`), or the run's
+own `--target` is what such a rule is for. A bundled target that `targets` omits (`"python"` beside
+`"targets": ["typescript"]`) is built only by a run with `--target python`, so it gets a warning instead —
+`include rule '*.pg' targets 'python', which no configured target or dependency provides; it applies only to
+runs with --target python` — and every other run (`build`, `--only typescript`, `--target csharp`) goes on. To
+apply a rule to every target, omit `"target"`. An empty list `[]` is refused, like `"targets": []`.
 
 ## Targets are plugins
 
@@ -365,7 +371,10 @@ case-only directory rename on Windows, so that remedy restages the index instead
 (and is the one `--check` names): its restage covers everything inside, including a renamed subdirectory or
 file. A route that leaves the config folder (`../web/gen/%(RecursiveDir)%(Filename)`) is compared from where it
 lands, the config folder's parent here, so `web/`, `gen/` and every folder `%(RecursiveDir)` adds are checked,
-and a local `--check` reports what a case-sensitive clone will. An absolute template is compared only below its
+and a local `--check` reports what a case-sensitive clone will. That holds when the route climbs back **into**
+the config folder under another case (`../proj/gen/%(Filename)` from `Proj/`): `proj` is compared too, and since
+`Proj/` holds your sources it is never renamed, so the build and `--check` refuse (exit 1) and name the
+directory; spell the template like the folder (`../Proj/gen/…`, or simply `gen/…`). An absolute template is compared only below its
 literal folder: your own checkout path is never renamed. Two spellings of one folder or file in **one** build
 (`gen/a.ts` from one rule, `Gen/b.ts` from another) are a conflict (exit 1) that names both, on the first build
 and under `--check` too, because a case-insensitive filesystem merges them and a case-sensitive one keeps two.

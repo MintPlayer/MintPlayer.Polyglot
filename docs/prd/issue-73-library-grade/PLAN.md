@@ -1637,6 +1637,59 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     153 at net8.0 and 4 at net9.0) in tests/floor/run-floor.ps1. It is the one number to bump when a conformance
     program is added.
   - **Not touched (the language halves):** sema, lower, the emitters and the plugins' language arms.
+- **2026-10-18 — Review round 6 — CLI half** (Spark's re-verification of `e4360b3`: CLI gating items 1–2 and part 2
+  "CLI"). Every item was reproduced against the `e4360b3` CLI first. The new cli-smoke block ("Review round 6 — CLI
+  half"), the r6 checks added to the r5 blocks and two registry-gate assertions fail there and pass here, and every
+  pre-existing check passes on both. Four unit checks pin the HTTP classification (a 404 and an integrity mismatch are
+  not network misses, also from the memo; a transport failure still is).
+  - **Gating 1 [H] — a route that re-enters the config folder under another case is compared from its climbed
+    root.** `alignDirectoryCase` picked the deepest root containing the output, matching a root case-insensitively
+    on Windows. For config folder `repo/Proj` and template `../proj/gen/%(Filename)`, the config folder (matched
+    only up to case) beat the route's climbed root `repo`, so `proj` was never compared: local build and `--check`
+    exit 0, while a case-sensitive clone created a second `proj/` tree. A root now matches up to case only when no
+    root contains the output under its own spelling, so the climbed root wins and `proj` meets the disk's `Proj`.
+    `Proj` holds the user's sources, so the existing user-folder rule refuses it (exit 1, build and `--check`, the
+    directory named, nothing renamed or written), exactly like the `../../Apps/…` shape. Accepted and tested: the
+    folder's own spelling (`../Proj/gen/…`) beside a plain `gen/…` route into the same folder builds and checks
+    clean, and every r4/r5 A3 case (a3x, a3x2, the absolute template, G4/G5) is unchanged.
+  - **Gating 2 [R] — a lone `\u` surrogate in an output template exits 64 by name on every command form.**
+    `loadPgConfig` kept interpreting the partial value `json::parse` returns for a malformed document, and
+    `runBuild` computed the route roots (`includeRouteRoot`, `fs::path(lit)`) before `buildGroup` validated the
+    config, so explicit-input builds died on the undecodable bytes (OS error 1113, exit 1, no file named). Two
+    root-cause fixes: a malformed document is now refused WHOLE (`loadPgConfig` returns only the error, so no path
+    is ever built from its strings on any command path: build, watch, check, LSP, install), and `runBuild` validates
+    every group's config once, up front, before any path is computed from it and before anything is written
+    (`buildGroup` no longer re-validates). The audit of the other early `fs::path` constructions from config
+    strings: all of them (`pc.root`, `ownedScope`, the route roots, the record path) now run only on a document that
+    parsed, whose strings are valid UTF-8 (the strict parser refuses invalid UTF-8 and lone surrogates). Pinned by
+    15 smoke checks: three templates (`g\ud800n/…`, `../w\ud800b/…`, `gen/%(Filename)\udc00`) × `build`,
+    `build a.pg`, `--record`, `--target csharp --out o` and `check`.
+  - **Part 2 — a failed fetch the registry answered is an error, not a network miss.** `resolvePluginDependencies`
+    counted any dependency whose resolve had touched the HTTP seam as a network miss. `HttpGet` now returns an
+    `HttpOutcome` (`Ok`, `Transport` = no answer: no connection, DNS, timeout, no HTTP client; `Response` = the
+    server answered with a non-200 status). A plain `bool` converts (`false` = `Transport`), so test fakes stay
+    one-liners. WinHTTP and libcurl report a non-200 status as `Response`; the `curl` subprocess maps exit 22
+    (`--fail`) to `Response`. Only a `Transport` failure marks the dependency a network miss, so a 404, an
+    integrity mismatch, or a cache that cannot be written is an error again: `"target" names unknown target 'X'`,
+    exit 64 (the `c436aae` behaviour). A dead registry still degrades (cli-smoke `rv5-rt`, registry stage 2).
+  - **Part 2 — each dependency error and note prints once per build.** Discovery validated its config, then
+    `buildGroup` validated the same config again, replaying the memoized failure and the note. The single up-front
+    validation (gating 2) validates each group once and skips the discovery config it already checked.
+  - **Part 2 — a rule naming a bundled target `targets` omits is a warning.** `validateIncludeTargets` reported it
+    as an error ("the rule never applies"), which blocked `build`, `--only typescript` and `--target csharp` for a
+    project that builds python through `--target python`. It now emits one warning,
+    `include rule '*.pg' targets 'python', which no configured target or dependency provides; it applies only to
+    runs with --target python`, on build, check and watch (as a `(1,1): warning:` diagnostic), and the run goes on.
+    An unknown or case-variant name (`Python`, ` python`) and `"target": []` stay refused.
+  - **Part 2 — the temp sweep runs last.** It moved after the `--depfile` and `--outputs-list` writes, so a build
+    that cannot write either exits 1 without sweeping (Spark F4/F5). The record reconciliation still runs before
+    those writes, as in r5; only the sweep was in scope.
+  - **Docs.** README: a re-entering route spelled with another case is refused, the sweep runs after the depfile
+    and outputs-list writes, only a missing network degrades a dependency, and the rule-target warning.
+  - **POSIX.** `registry.hpp` now includes `<sys/wait.h>` for the curl exit status. main.cpp and tests_main.cpp
+    pass `g++ -std=c++20 -fsyntax-only` on WSL.
+  - **Not touched (the language halves):** sema, lower, the emitters and the plugins' language arms. No
+    conformance program was added, so the floor pin is unchanged.
 
 
 - **2026-10-18 — Review round 5 — nullability/functions half (gating 18–23 + part 2 "Language" bullets): as built.**

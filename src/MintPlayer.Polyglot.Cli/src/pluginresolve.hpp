@@ -216,7 +216,7 @@ inline bool resolvePluginDependency(const HttpGet& http, const std::string& npmN
 struct ResolveState {
     std::set<std::string> succeeded;
     std::map<std::string, std::string> failed; // key -> message (repeated verbatim, no re-network)
-    std::set<std::string> failedNetwork; // P40 review r5: the failed keys whose resolve needed the network
+    std::set<std::string> failedNetwork; // P40 review r5/r6: the failed keys whose resolve got no answer from the network
 };
 
 struct ResolveResult {
@@ -282,11 +282,15 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
 
         ResolvedPlugin rp;
         std::string err;
-        bool usedNetwork = false; // did resolving THIS dependency reach for the registry?
+        // P40 review r6: a network miss is a GET that got NO answer (no connection, DNS, timeout) — only that may
+        // degrade a target to "not verified". The registry answering 404, or a tarball failing its integrity
+        // check, is an answer: the dependency is an error, whatever reached for the network first.
+        bool noAnswer = false;
         const HttpGet tracked = [&](const std::string& url, const std::vector<std::string>& headers, std::string& body,
-                                    std::string& e) {
-            usedNetwork = true;
-            return http(url, headers, body, e);
+                                    std::string& e) -> HttpOutcome {
+            const HttpOutcome r = http(url, headers, body, e);
+            if (r.kind == HttpOutcome::Kind::Transport) noAnswer = true;
+            return r;
         };
         if (resolvePluginDependency(tracked, npmName, spec, pc.dir, lock, update, rp, err)) {
             if (rp.fetched) res.lockChanged = true;
@@ -294,9 +298,9 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
         } else {
             res.ok = false;
             res.messages.push_back(err);
-            if (usedNetwork) res.networkMisses.emplace_back(npmName, err);
+            if (noAnswer) res.networkMisses.emplace_back(npmName, err);
             if (state) state->failed[memoKey] = err;
-            if (state && usedNetwork) state->failedNetwork.insert(memoKey);
+            if (state && noAnswer) state->failedNetwork.insert(memoKey);
         }
     }
 

@@ -998,6 +998,9 @@ try {
                 $rb = Pg $q @("build")
                 Check ($rc1.Rc -eq 0 -and $rc1.Out -match 'include rule target\(s\) \w+ not verified' -and $rb.Rc -eq 0 -and (Test-Path (Join-Path $q "a.cs"))) `
                     "review r5 (gating 3): an uncached dependency's rule target is not verified; offline check $($rc1.Rc), offline build $($rb.Rc) (was 64, 64), a.cs written"
+                # review r6: once per build — discovery validated the config, then the group validated it again.
+                Check (([regex]::Matches($rb.Out, 'not verified')).Count -eq 1 -and ([regex]::Matches($rb.Out, '127\.0\.0\.1:9/')).Count -eq 1) `
+                    "review r6: the build prints the 'not verified' note and the dependency error once ($([regex]::Matches($rb.Out, 'not verified').Count) note(s); was 2)"
             }
             # ... but a misspelled rule target beside the uncached dependency is still unknown.
             $q = New-Proj (Join-Path $work "rv5-rt-typo") '{"targets":["csharp"],"dependencies":{"nosuch":"^1.0.0"},"include":[{"pattern":"*.pg","target":"typo","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
@@ -1005,12 +1008,17 @@ try {
             Check ($r.Rc -eq 64 -and $r.Out -match "unknown target 'typo'") "review r5 (gating 3): a misspelled rule target beside an uncached first-party dependency is still refused (exit $($r.Rc))"
         } finally { $env:POLYGLOT_CACHE = $oldCache; $env:POLYGLOT_REGISTRY = $oldReg }
 
-        # Part 2: an include rule naming a bundled target `targets` omits never applies — refused; `--target` builds it.
+        # Part 2 (r5) + review r6 (Spark p2\rtv.sh R1): an include rule naming a bundled target `targets` omits applies
+        # only to `--target python` runs — a WARNING saying so, never a refusal of the runs that do not build python.
         $p = New-Proj (Join-Path $work "rv5-rule-unconfigured") '{"targets":["typescript"],"include":[{"pattern":"*.pg","target":"python","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
-        $r = Pg $p @("build")
-        Check ($r.Rc -eq 64 -and $r.Out -match "names 'python', which this config does not build" -and -not (Test-Path (Join-Path $p "a.ts"))) "review r5: a rule naming the unconfigured 'python' is refused (exit $($r.Rc); was 0, a.ts next to the .pg)"
+        $warnRx = "warning: pgconfig\.json include rule '\*\.pg' targets 'python', which no configured target or dependency provides; it applies only to runs with --target python"
+        foreach ($av in @(@("build"), @("build", "--only", "typescript"), @("build", "a.pg", "--target", "csharp"), @("build", "--check"), @("check", "a.pg"))) {
+            $r = Pg $p $av
+            Check ($r.Rc -eq 0 -and $r.Out -match $warnRx -and ([regex]::Matches($r.Out, 'warning: pgconfig')).Count -eq 1) "review r6: '$($av -join ' ')' beside a rule naming the unconfigured 'python' warns once and runs (exit $($r.Rc); r5 refused it with 64)"
+        }
+        Check ((Test-Path (Join-Path $p "a.ts")) -and -not (Test-Path (Join-Path $p "gen"))) "review r6: ... the typescript build wrote a.ts (no rule applies to it), nothing under gen/"
         $r = Pg $p @("build", "a.pg", "--target", "python")
-        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $p "gen/a.py"))) "review r5: ... while --target python builds it through the rule (exit $($r.Rc))"
+        Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $p "gen/a.py")) -and $r.Out -notmatch 'warning: pgconfig') "review r5: ... while --target python builds it through the rule, without the warning (exit $($r.Rc))"
         # ... and `"target": []` is refused like `"targets": []` (it used to mean "every target").
         $p = New-Proj (Join-Path $work "rv5-rule-empty") '{"targets":["typescript"],"include":[{"pattern":"*.pg","target":[],"output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
         $r = Pg $p @("build")
@@ -1028,6 +1036,33 @@ try {
         $r = Pg $sw @("build")
         Check ($r.Rc -eq 0 -and -not (Test-Path $tmp)) "review r5: ... and the next clean build sweeps it (exit $($r.Rc))"
 
+        # ---- Review round 6 — CLI half --------------------------------------------------------------------------
+        # Gating 2 (Spark p2\surr.sh): a lone \u surrogate in an output template is refused by name (64) on EVERY
+        # command form. Explicit-input builds used to compute the route roots from the partial document before the
+        # config was validated, and died on the undecodable path (exit 1, a raw OS error 1113 naming no file).
+        foreach ($tmplOut in @('g\ud800n/%(Filename)', '../w\ud800b/%(Filename)', 'gen/%(Filename)\udc00')) {
+            $p = New-Proj (Join-Path $work ("rv6-surr-" + [guid]::NewGuid().ToString('N').Substring(0, 6))) ('{"targets":["csharp"],"include":[{"pattern":"*.pg","output":"' + $tmplOut + '"}]}') @{ "a.pg" = $fnA }
+            foreach ($av in @(@("build"), @("build", "a.pg"), @("build", "a.pg", "--record", "obj/r.json"), @("build", "a.pg", "--target", "csharp", "--out", "o"), @("check", "a.pg"))) {
+                $r = Pg $p $av
+                Check ($r.Rc -eq 64 -and $r.Out -match 'pgconfig\.json: malformed JSON: lone \\u surrogate' -and @(Get-ChildItem $p -Name).Count -eq 2) `
+                    "review r6 (gating 2): output '$tmplOut', '$($av -join ' ')' exits 64 naming the malformed pgconfig.json, nothing written (exit $($r.Rc); was 1)"
+            }
+        }
+
+        # Part 2 (Spark p2\swf.sh F4/F5): the stale-temp sweep runs LAST — a build whose depfile or outputs list cannot
+        # be written exits 1 and keeps the temp; the next fully successful build sweeps it.
+        foreach ($case in @(@{ n = "depfile"; flag = "--depfile"; msg = 'cannot write the depfile' }, @{ n = "list"; flag = "--outputs-list"; msg = 'cannot write the outputs list' })) {
+            $sw = New-Proj (Join-Path $work "rv6-sweep-$($case.n)") '{"targets":["csharp"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+            Pg $sw @("build", "a.pg", "--record", "obj/rec.json") | Out-Null
+            $tmp = Join-Path $sw "gen/a.cs.pgtmp.1.2.3"
+            Copy-Item (Join-Path $sw "gen/a.cs") $tmp; (Get-Item -LiteralPath $tmp).LastWriteTime = (Get-Date).AddHours(-1)
+            New-Item -ItemType Directory -Force (Join-Path $sw "obj/blocked") | Out-Null # a directory: the write fails
+            $r = Pg $sw @("build", "a.pg", "--record", "obj/rec.json", $case.flag, "obj/blocked")
+            Check ($r.Rc -eq 1 -and $r.Out -match $case.msg -and (Test-Path $tmp)) "review r6: a failed $($case.flag) write exits 1 and keeps the stale temp (exit $($r.Rc); it was swept first)"
+            $r = Pg $sw @("build", "a.pg", "--record", "obj/rec.json", $case.flag, "obj/ok.txt")
+            Check ($r.Rc -eq 0 -and -not (Test-Path $tmp)) "review r6: ... and the next successful build sweeps it (exit $($r.Rc))"
+        }
+
         # Gating 2 (Spark r1\h1.sh): two spellings of one directory in ONE run (gen/ and Gen/) — a conflict on the
         # FIRST run, naming both spellings, under --check too; one spelling twice is fine.
         $h = New-Proj (Join-Path $work "rv5-h1") '{"targets":["typescript"],"include":[{"pattern":"a.pg","output":"gen/%(Filename)"},{"pattern":"b.pg","output":"Gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = $fnB }
@@ -1042,6 +1077,23 @@ try {
         Check ((Pg $h @("build")).Rc -eq 0) "review r5 (gating 2): one directory spelling routed from two rules is accepted"
 
         if ($caseInsensitive) {
+            # review r6 (gating 1, Spark i1\a3h.sh H4): a route that climbs out of the config folder and re-enters it
+            # under another case (repo/Proj, `../proj/gen/…`) is compared from its CLIMBED root, so `proj` meets the
+            # disk's `Proj` — the user's project folder, never renamed: refused, under --check too, nothing written.
+            # (The config folder, matched only up to case, used to win, so `proj` was never compared: exit 0 locally,
+            # while a case-sensitive clone created a second `proj/` tree.)
+            $x = New-Proj (Join-Path $work "rv6-a3h/Proj") '{"targets":["typescript"],"include":[{"pattern":"*.pg","output":"../proj/gen/%(Filename)"}]}' @{ "a.pg" = $fnA }
+            $rc = Pg $x @("build", "--check")
+            $rb = Pg $x @("build", "a.pg")
+            Check ($rc.Rc -eq 1 -and $rb.Rc -eq 1 -and $rb.Out -cmatch "the directory '[^']*rv6-a3h[\\/]Proj' differs from 'proj'" -and $rb.Out -match 'not renamed' -and
+                   -not (Test-Path (Join-Path $x "gen")) -and (@(Get-ChildItem (Join-Path $work "rv6-a3h") -Name) -join ',') -ceq 'Proj') `
+                "review r6 (gating 1): ../proj/gen/ re-entering Proj/ is refused (check $($rc.Rc), build $($rb.Rc); was 0, 0), Proj/ untouched"
+            # ... while re-entering under the folder's own spelling, beside a plain gen/ route into the same folder, builds.
+            $x = New-Proj (Join-Path $work "rv6-a3h-same/Proj") '{"targets":["typescript"],"include":[{"pattern":"a.pg","output":"../Proj/gen/%(Filename)"},{"pattern":"b.pg","output":"gen/%(Filename)"}]}' @{ "a.pg" = $fnA; "b.pg" = $fnB }
+            $r = Pg $x @("build")
+            Check ($r.Rc -eq 0 -and (Test-Path (Join-Path $x "gen/a.ts")) -and (Test-Path (Join-Path $x "gen/b.ts")) -and (Pg $x @("build", "--check")).Rc -eq 0) `
+                "review r6 (gating 1): ../Proj/gen/ (the folder's own spelling) beside gen/ builds and checks clean (exit $($r.Rc))"
+
             # Gating 1 (Spark h1\a3x.sh, a3x2.sh): a route that LEAVES the config folder compares its directories too.
             $x = New-Proj (Join-Path $work "rv5-a3x/proj") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"../web/gen/%(RecursiveDir)%(Filename)"}]}' @{ "src/Foo/a.pg" = $fnA; "src/Foo/b.pg" = $fnB }
             Pg $x @("build") | Out-Null
