@@ -151,7 +151,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.isFree")        return c.isFree ? "true" : "false";
         if (path == "node.args.count")    return std::to_string(c.args.size());
         if (path == "node.linkCallee")    return c.linkCallee.empty() || c.linkCallee == c.callee ? std::string() : c.linkCallee; // P40 r3 2(e)
-        if (path == "node.linkOrMangledCallee") return !c.linkCallee.empty() && c.linkCallee != c.callee ? c.linkCallee : c.mangledCallee;
+        if (path == "node.uniqueCallee") return !c.uniqueCallee.empty() ? c.uniqueCallee : c.mangledCallee; // P40 r4 #13
         if (path == "node.hasCalleeExpr") return c.calleeExpr ? "true" : "";
         if (path == "node.calleeKind")    return c.calleeExpr ? exprKindName(c.calleeExpr->kind) : "";
     }
@@ -1291,8 +1291,8 @@ std::string FnDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")        return f_.name;
     if (path == "decl.mangledName") return f_.mangledName;
     if (path == "decl.linkName") return f_.linkName.empty() || f_.linkName == f_.name ? std::string() : f_.linkName; // P40 r3 2(e)
-    if (path == "decl.linkOrEmitName") // a one-scope target WITHOUT native overloading (PHP): unique across the closure
-        return !f_.linkName.empty() && f_.linkName != f_.name ? f_.linkName : (f_.mangledName.empty() ? f_.name : f_.mangledName);
+    if (path == "decl.uniqueName") // a one-scope target WITHOUT native overloading (PHP): unique across the closure
+        return !f_.uniqueName.empty() ? f_.uniqueName : (f_.mangledName.empty() ? f_.name : f_.mangledName);
     if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
     // A std/core/lib prelude function (originModule "<prelude>"), emitted into EVERY module. On a target
     // with one global function namespace (PHP), that redeclares it across `require`d files — the plugin

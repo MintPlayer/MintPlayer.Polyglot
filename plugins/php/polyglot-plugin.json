@@ -236,7 +236,7 @@
       },
       "mangle": {
         "replace": "$",
-        "with": "_"
+        "with": "__"
       },
       "reserved": [
         "__e",
@@ -454,7 +454,7 @@
                           "fn": "identFn",
                           "args": [
                             {
-                              "get": "node.linkOrMangledCallee"
+                              "get": "node.uniqueCallee"
                             }
                           ]
                         }
@@ -2789,7 +2789,7 @@
                   "fn": "identFn",
                   "args": [
                     {
-                      "get": "decl.linkOrEmitName"
+                      "get": "decl.uniqueName"
                     }
                   ]
                 }
@@ -2898,7 +2898,7 @@
                       "fn": "ident",
                       "args": [
                         {
-                          "get": "decl.linkOrEmitName"
+                          "get": "decl.uniqueName"
                         }
                       ]
                     },

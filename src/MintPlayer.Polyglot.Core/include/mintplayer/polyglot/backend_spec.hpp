@@ -384,12 +384,17 @@ inline std::string specQuoted(const BackendSpec& s, const std::string& ctx, cons
     return q + specLiteral(s, ctx, text) + q;
 }
 
-// An emitted name with the spec's forbidden-character replacement applied (identity when none declared).
+// An emitted name with the spec's forbidden-character replacement applied (identity when none declared). The
+// replacement is a whole string: `$` -> `__` makes an overload's signature name one no user identifier can
+// spell (SPEC §2 reserves `__`), so it can never collide with a user function (review r4 #13).
 inline std::string specMangle(const BackendSpec& s, const std::string& n) {
     if (s.mangleFrom.empty() || s.mangleTo.empty()) return n;
-    std::string out = n;
-    for (char& c : out)
-        if (c == s.mangleFrom[0]) c = s.mangleTo[0];
+    std::string out;
+    out.reserve(n.size());
+    for (char c : n) {
+        if (c == s.mangleFrom[0]) out += s.mangleTo;
+        else out += c;
+    }
     return out;
 }
 

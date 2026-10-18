@@ -237,6 +237,8 @@ struct FnSig {
     SourcePos pos;                     // the declaration (its file id = its module: D16 overload visibility)
     std::string mangled;               // the declaration's per-module mangled name (FunctionDecl::mangledName)
     std::string linkName;              // the declaration's link name (FunctionDecl::linkName)
+    std::string uniqueName;            // the declaration's unique name (FunctionDecl::uniqueName)
+    bool prelude = false;              // a std/prelude declaration (not part of the user's one-scope link)
 };
 
 // The generic-param names bounded by the INumber marker — those whose inferred type argument must be numeric.
@@ -418,11 +420,81 @@ public:
             else if (uninferableInit(*v.init, it)) // module-level binding with an un-inferable initializer (issue #27)
                 diags_.error(v.pos, "cannot infer the type of '" + v.name + "' from its initializer; " + annotationHint(v.name, *v.init));
         }
+        assignLinkNames(unit);
         // P40 review (A9/B11): reachability, missing returns, field definite assignment, self-comparison.
         checkFlow(unit, diags_);
     }
 
 private:
+    // P40 review r4 #12/#13: every resolved free-function call, for the link-name decision below.
+    struct CallSite {
+        Expr* call;
+        std::string name;
+        std::vector<TypeRef> args;
+        SourcePos chosen; // the declaration sema bound (its FnSig::pos)
+    };
+    std::vector<CallSite> callSites_;
+
+    // Could a target with native overloading (C#) consider `sig` applicable to these argument types? Answers
+    // "no" only when that is certain — an arity outside [required, all], or an argument that can never
+    // convert to its parameter (a string for a number, a bool for a string, unrelated user types, …). A type
+    // parameter accepts anything, so a generic overload is applicable wherever its arity fits.
+    bool mayApply(const FnSig& sig, const std::vector<TypeRef>& args) const {
+        if (args.size() < sig.required || args.size() > sig.params.size()) return false;
+        auto category = [&](const TypeRef& t) -> int { // 0 unknown/open, 1 numeric, 2 string, 3 bool, 4 char, 5 user
+            if (t.kind != TypeRef::Kind::Named || t.name.empty() || !t.args.empty()) return 0;
+            if (std::find(sig.generics.begin(), sig.generics.end(), t.name) != sig.generics.end()) return 0;
+            TypeRef base = t;
+            base.nullable = false; // `i32?` takes an i32 (and null)
+            if (isNumericTypeName(base)) return 1;
+            if (t.name == "string") return 2;
+            if (t.name == "bool") return 3;
+            if (t.name == "char") return 4;
+            if (types_.count(t.name) && !interfaceNames_.count(t.name)) return 5;
+            return 0;
+        };
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            const TypeRef& p = sig.params[i];
+            const TypeRef& a = args[i];
+            const int cp = category(p), ca = category(a);
+            if (cp == 0 || ca == 0) continue;
+            if (cp != ca) return false;
+            if (cp == 5 && a.name != p.name && !inheritsFrom(a.name, p.name)) return false;
+        }
+        return true;
+    }
+
+    // C# links every module's free functions into one class and resolves overloads natively. That agrees with
+    // sema only when sema's choice is the ONLY applicable same-named declaration at every call: C# prefers an
+    // exactly inferred generic over a conversion (`show<T>(Disk)` beats `show(Shape)`), and sees overloads of
+    // modules the caller never imported. A name with such a call gets signature link names on all of its
+    // declarations (`show__Shape`, `show__T`); every other name keeps its plain name — a library's C# API no
+    // longer changes because an unrelated module declares the same name with a different signature.
+    void assignLinkNames(CompilationUnit& u) {
+        std::set<std::string> clash;
+        for (const auto& cs : callSites_) {
+            auto f = fns_.find(cs.name);
+            if (f == fns_.end() || clash.count(cs.name)) continue;
+            int applicable = 0;
+            for (const auto& sig : f->second)
+                if (!sig.prelude && mayApply(sig, cs.args)) ++applicable;
+            if (applicable > 1) clash.insert(cs.name);
+        }
+        std::unordered_map<std::string, std::string> byPos; // declaration position -> its link name
+        auto key = [](const SourcePos& p) { return std::to_string(p.fileId) + ":" + std::to_string(p.line) + ":" + std::to_string(p.col); };
+        for (auto& fn : u.functions) {
+            std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
+            fn.linkName = clash.count(fn.name) ? mangleFn(fn.name, ps, true) : fn.name;
+            byPos[key(fn.pos)] = fn.linkName;
+        }
+        for (auto& [name, set] : fns_)
+            for (auto& sig : set)
+                if (auto it = byPos.find(key(sig.pos)); it != byPos.end())
+                    sig.linkName = it->second;
+        for (auto& cs : callSites_)
+            if (auto it = byPos.find(key(cs.chosen)); it != byPos.end())
+                cs.call->linkName = it->second;
+    }
     DiagnosticBag& diags_;
     std::unordered_set<const Expr*> allowedSupers_; // D6: the `super` callees of hoisted base-ctor calls
     std::unordered_map<std::string, std::vector<FnSig>> fns_; // name -> overload set
@@ -946,6 +1018,7 @@ private:
             sig.numericParams = numericBounded(fn.generics);
             sig.boundSpecs = fn.generics;
             sig.pos = fn.pos;
+            sig.prelude = fn.originModule == "<prelude>";
             auto& set = fns_[fn.name];
             for (const auto& existing : set)
                 if (sameParamList(existing.params, sig.params)) {
@@ -964,8 +1037,10 @@ private:
         }
         // Assign per-target names: an overloaded function mangles its params. P40 review r3 (part 2): the overload
         // set is the one the DECLARING module sees (its own + imported declarations, D16) — a library's exported
-        // name must not change because an unrelated module declares the same name. The link name (C#, one shared
-        // class) is the mangled one whenever another user module declares the name too.
+        // name must not change because an unrelated module declares the same name. The unique name (PHP, one
+        // function namespace, no overloading) is the mangled one whenever the program declares the name twice.
+        // The link name (C#, one shared class WITH native overloading) starts as the plain name and is mangled
+        // only on a real clash, decided once every call is resolved (assignLinkNames, review r4 #12/#13).
         std::unordered_map<std::string, std::set<std::string>> userOrigins; // name -> user modules declaring it
         for (const auto& fn : u.functions)
             if (fn.actualTarget.empty() && fn.originModule != "<prelude>") userOrigins[fn.name].insert(fn.originModule);
@@ -974,10 +1049,11 @@ private:
         };
         for (auto& fn : u.functions) {
             std::vector<TypeRef> ps; for (const auto& p : fn.params) ps.push_back(p.type);
-            const bool linkMangled = userOrigins[fn.name].size() > 1;
+            const bool crossModule = userOrigins[fn.name].size() > 1;
+            fn.linkName = fn.name;
             if (!fn.actualTarget.empty()) { // an actual reuses its expect's names
                 fn.mangledName = fn.name;
-                fn.linkName = linkMangled ? mangleFn(fn.name, ps, true) : fn.name;
+                fn.uniqueName = crossModule ? mangleFn(fn.name, ps, true) : fn.name;
                 continue;
             }
             auto& set = fns_[fn.name];
@@ -987,9 +1063,9 @@ private:
                     modules_->visible(fn.pos.fileId, sig.pos.fileId, fn.name))
                     ++visible;
             fn.mangledName = mangleFn(fn.name, ps, visible > 1);
-            fn.linkName = linkMangled ? mangleFn(fn.name, ps, true) : fn.name;
+            fn.uniqueName = crossModule ? mangleFn(fn.name, ps, true) : fn.mangledName;
             for (auto& sig : set)
-                if (samePos(sig.pos, fn.pos)) { sig.mangled = fn.mangledName; sig.linkName = fn.linkName; }
+                if (samePos(sig.pos, fn.pos)) { sig.mangled = fn.mangledName; sig.linkName = fn.linkName; sig.uniqueName = fn.uniqueName; }
         }
         for (const auto& v : u.values) {
             if (values_.count(v.name)) diags_.error(v.pos, "duplicate top-level '" + v.name + "'");
@@ -3685,6 +3761,15 @@ private:
                     if (modules_->visible(e.pos.fileId, sig.pos.fileId, name)) visibleSet.push_back(sig);
                 if (!visibleSet.empty()) candidates = &visibleSet;
             }
+            // P40 review r4 #12: an overload that can never take these arguments (a string for a `Shape`) does not
+            // compete — resolveOverload scores a user-typed parameter leniently, and `show("text")` bound
+            // `show(Shape)` beside an applicable `show<T>`. When none applies, the whole set stays (checkArgs
+            // then names the mismatch).
+            std::vector<FnSig> applicableSet;
+            if (candidates->size() > 1) {
+                for (const auto& sig : *candidates) if (mayApply(sig, argTypes)) applicableSet.push_back(sig);
+                if (!applicableSet.empty() && applicableSet.size() < candidates->size()) candidates = &applicableSet;
+            }
             const FnSig* chosen = resolveOverload(*candidates, argTypes);
             if (!chosen) { diags_.error(e.pos, "no overload of '" + name + "' matches the argument types"); return tUnknown(); }
             // Bind the type params first — from explicit `f<T>(…)` args (P40 A4, emitted) or inferred from the
@@ -3724,7 +3809,9 @@ private:
             checkNumericBounds(chosen->numericParams, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             checkGenericBounds(chosen->boundSpecs, chosen->generics, chosen->params, argTypes, "'" + name + "'", e.pos);
             e.overloadName = chosen->mangled.empty() ? name : chosen->mangled; // the declaring module's name for it
-            e.linkName = chosen->linkName;
+            e.uniqueName = chosen->uniqueName;
+            e.linkName = chosen->linkName; // provisional: assignLinkNames rewrites it once every call is resolved
+            callSites_.push_back({&e, name, argTypes, chosen->pos});
             TypeRef r = gen.empty() ? chosen->result : substGeneric(chosen->result, gen, binds);
             return chosen->isAsync ? awaitable(r) : r;
         }

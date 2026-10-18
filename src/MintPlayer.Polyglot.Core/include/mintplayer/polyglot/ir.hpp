@@ -177,6 +177,7 @@ struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrin
     std::string callee;        // source name — C# uses this (native overloading)
     std::string mangledCallee; // resolved overload's per-target name — TS uses this (== callee if unique)
     std::string linkCallee;    // P40 review r3 2(e): the resolved overload's link name (C#); empty = callee
+    std::string uniqueCallee;  // P40 review r4 #13: the resolved overload's unique name (PHP); empty = callee
     bool isPrint = false;
     bool isFree = false;       // a top-level free function (C# qualifies as `Program.callee`); not a local value
     std::vector<ExprPtr> args;
@@ -521,7 +522,8 @@ struct Function {
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
-    std::string linkName;    // P40 review r3 2(e): the name in a one-scope link (C#); == name unless another module declares it
+    std::string linkName;    // P40 review r3 2(e): the name in a one-scope link with overloading (C#); see FunctionDecl
+    std::string uniqueName;  // P40 review r4 #13: the name in a one-scope link without overloading (PHP)
     std::vector<GenericParam> generics;
     std::vector<Param> params;
     Type returnType;

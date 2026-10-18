@@ -127,6 +127,7 @@ $cases = [ordered]@{
     "static_hides_instance.pg"  = @("'label' redeclares the static member 'Base.label' as an instance member", "no member hiding")
     "static_hides_static.pg"    = @("'count' redeclares the static member 'B.count' as a static member", "CS0108")
     "default_non_finite.pg"     = @("the default of 'x' in function 'huge' is not a finite number")
+    "double_underscore_name.pg" = @("identifier '__c0' contains '__', which is reserved for compiler-generated names")
     "self_compare.pg"           = @("compares a value with itself", "Math.isNaN")
     "eq_without_hash.pg"        = @("'Money' declares a custom", "equal values must hash equally")
     "unknown_operator.pg"       = @("'frob' is not an operator")

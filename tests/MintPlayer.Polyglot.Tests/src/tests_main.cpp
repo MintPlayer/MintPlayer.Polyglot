@@ -1687,12 +1687,21 @@ int main() {
                 // P40 review r3: names mangle per DECLARING module — ai sees one `check`, so it keeps `check`.
                 check(ok.ok && has(ok.code, "check(5)") && !has(ok.code, "check$i32") && has(ok.code, "check$string(\"01\")"),
                       "A8: an imported overload competes with the module's own (per-module mangling)");
-                // C# links every module into one class: a name declared by two modules takes its signature link
-                // name there, so neither joins the other's native overload set (r3 2(e): show<T> vs show(i32)).
+                // C# links every module into one class. Review r4 #13: a name declared by two modules keeps its plain
+                // name when no call could bind both (`check("x")` can never take ai's `check(i32)`)…
                 EmitResult cs = compile(leak.substr(0, leak.find("fn main")) + "fn main() { let b = check(\"x\") }\n",
                                         findTarget("csharp"), &res);
-                check(cs.ok && has(cs.code, "PolyglotProgram.check_string(\"x\")") && has(cs.code, "bool check_string("),
-                      "r3 2(e): C# spells a cross-module name with its signature link name");
+                check(cs.ok && has(cs.code, "PolyglotProgram.check(\"x\")") && has(cs.code, "bool check(string") &&
+                          !has(cs.code, "check__"),
+                      "r4 #13: C# keeps a cross-module name plain without a real clash");
+                // …and takes `__`-joined signature link names on a real clash (r3 2(e): show<T> vs ai's show(i32)).
+                MapModuleResolver res2{{"./ai", "fn show(n: i32): string => \"ai\"\nfn aiShow(n: i32): string => show(n)\n"}};
+                EmitResult cs2 = compile("import { aiShow } from \"./ai\"\nfn show<T>(x: T): string => \"g\"\n"
+                                         "fn main() { let a = show(5)\n  let b = aiShow(5) }\n",
+                                         findTarget("csharp"), &res2);
+                check(cs2.ok && has(cs2.code, "PolyglotProgram.show__T(5)") && has(cs2.code, "string show__T<T>(") &&
+                          !has(cs2.code, "PolyglotProgram.show(5)"),
+                      "r3 2(e) / r4 #13: C# spells a clashing cross-module name with its signature link name");
             }
             // P40 review r3: every shape `build` used to accept and then miscompile, diverge on, or fail to
             // compile on a target is refused at the source now (each named in its message).
@@ -3472,8 +3481,17 @@ int main() {
               "P19: a C#-scaffolding type name ('PolyglotProgram') refuses on csharp");
         // Prefix families: `__w*` covers every lowering temp, not just one spelled-out name.
         EmitResult w = compile("fn main() {\n  let __w1 = 1\n  var y = __w1\n}\n", findTarget("csharp"));
-        check(!w.ok && has(w.diagnostics[0].message, "'__w1' is reserved"),
-              "P19: a reserved prefix family ('__w*') matches '__w1'");
+        bool wReserved = false, wCompiler = false;
+        for (const auto& d : w.diagnostics) {
+            if (has(d.message, "'__w1' is reserved")) wReserved = true;
+            if (has(d.message, "'__w1' contains '__', which is reserved for compiler-generated names")) wCompiler = true;
+        }
+        check(!w.ok && wReserved, "P19: a reserved prefix family ('__w*') matches '__w1'");
+        // P40 review r4 (part 2): `__` anywhere in a user name is the compiler's, on every target.
+        check(wCompiler, "r4: a user name containing '__' is refused language-wide");
+        EmitResult w2 = compile("fn parse__string(s: string): i32 => 1\nfn main() {}\n", findTarget("typescript"));
+        check(!w2.ok && has(w2.diagnostics[0].message, "'parse__string' contains '__'"),
+              "r4: an infix '__' (the overload signature-name spelling) is refused too");
         // Runtime globals get their own shadowing message.
         EmitResult g = compile("fn main() {\n  let console = 1\n  var y = console\n}\n", findTarget("typescript"));
         check(!g.ok && has(g.diagnostics[0].message, "'console' shadows a runtime global of target 'typescript'"),

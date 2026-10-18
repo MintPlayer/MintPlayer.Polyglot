@@ -427,6 +427,7 @@ public:
             f.name = fn.name;
             f.mangledName = fn.mangledName.empty() ? fn.name : fn.mangledName;
             f.linkName = fn.linkName.empty() ? fn.name : fn.linkName;
+            f.uniqueName = fn.uniqueName.empty() ? f.mangledName : fn.uniqueName;
             f.actualTarget = fn.actualTarget;
             f.generics = generics(fn.generics);
             f.returnType = fn.returnType;
@@ -1137,6 +1138,7 @@ private:
                 call->isFree = freeFns_.count(callee) > 0; // a top-level fn (vs a function-valued local)
                 call->mangledCallee = e.overloadName.empty() ? callee : e.overloadName; // TS overload target
                 call->linkCallee = e.linkName; // C#: the one-scope link name (P40 review r3 2(e))
+                call->uniqueCallee = e.uniqueName; // PHP: the one-scope unique name (P40 review r4 #13)
                 call->typeArgs = e.typeArgs; // P40 A4: explicit `f<T>(…)` survives (C# CS0411 otherwise)
                 for (const auto& a : e.args) call->args.push_back(expr(*a));
                 return call;

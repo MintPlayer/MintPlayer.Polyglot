@@ -163,6 +163,7 @@ struct Expr {
     TypeRef castType;              // Cast/Is/As: the target/tested type (operand is `lhs`; Is binding is `text`)
     std::string overloadName;      // Call: the resolved overload's mangled name (set by sema); empty = none
     std::string linkName;          // Call: the resolved overload's LINK name (FunctionDecl::linkName); empty = none
+    std::string uniqueName;        // Call: the resolved overload's UNIQUE name (FunctionDecl::uniqueName); empty = none
     std::string staticOwner;       // Name/Call: resolves to a static/const member of this enclosing class
                                    // (set by sema so lowering can qualify it as `Owner.member`); empty = none
     std::vector<std::string> preludeKeys; // Extern: manifest prelude keys the text needs (P40 §0 binding `requires`)
@@ -207,10 +208,15 @@ struct Stmt {
 struct FunctionDecl {
     std::string name;
     std::string mangledName;       // per-target name for overloads (set by sema); == name when not overloaded
-    // P40 review r3 2(e): the name for a target that links every module's free functions into ONE scope (C#'s
-    // PolyglotProgram): == name unless another user module declares the same name, then the always-mangled
-    // signature name — so a never-imported overload in another module cannot join the native overload set.
+    // P40 review r3 2(e) / r4 #12-#13: the name for a target that links every module's free functions into ONE
+    // scope WITH native overloading (C#'s PolyglotProgram): == name unless the program has a REAL clash — a
+    // call where a second same-named declaration of that one scope could also apply, so the target's own
+    // overload resolution might bind another overload than sema chose (a generic beside a specific one, or an
+    // overload from a module the caller never imported). Then the always-mangled signature name.
     std::string linkName;
+    // P40 review r4 #13: the name for a one-scope target WITHOUT overloading (PHP's function namespace): the
+    // signature name whenever the program declares the name more than once, else the name.
+    std::string uniqueName;
     SourcePos pos;                 // the `fn` keyword
     SourcePos namePos;             // the function-name identifier (where go-to-definition targets it; §4.8)
     std::vector<GenericParam> generics;

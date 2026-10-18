@@ -297,16 +297,21 @@ that is a member of the file-local `__PgRt` class.
   honest refusals (TypeScript does this for JS reserved words). Applied wherever a rule routes a
   name through `{"fn":"ident"}` — which your rules should do for **every** declared/referenced name.
 - `mangle`: single-character repair for emitted names the target's grammar forbids (Python maps the
-  overload marker `$` → `_`); applied via `{"fn":"mangleName"}` / the decl-context `mangle`.
+  overload marker `$` → `__`); applied via `{"fn":"mangleName"}` / the decl-context `mangle`.
 - `caseInsensitive: true`: the target matches `keywords` and `functionBuiltins` regardless of case (PHP: a
   class `Finally` is the keyword `finally`); list them lowercase.
 
 **Function names across modules (P40 review r3).** `decl.mangledName` / `node.mangledCallee` mangle only
 within the declaring module's visible overload set (a module-scoped target — TS, Python — uses them). A target
-that links every module's free functions into ONE scope reads the link name instead: `decl.linkName` /
-`node.linkCallee` (empty unless another user module declares the same name; then the signature-mangled name —
-C#, which keeps native overloading otherwise), or `decl.linkOrEmitName` / `node.linkOrMangledCallee` (the link
-name when set, else the mangled one — PHP, which has no overloading at all). A call whose callee is not a name
+that links every module's free functions into ONE scope reads a link name instead: `decl.linkName` /
+`node.linkCallee` for a target WITH native overloading (C#) — empty unless the program has a real clash for
+that name, i.e. some call where a second same-named declaration of the shared scope could also apply, so the
+target's own overload resolution might pick another overload than the checker did (a generic beside a specific
+overload, an overload from a module the caller never imported); then the signature-mangled name (review r4) —
+or `decl.uniqueName` / `node.uniqueCallee` for a target WITHOUT overloading (PHP): the signature-mangled name
+whenever the program declares the name more than once. A mangled name joins the parts with `$`, which the
+`mangle` block spells; spell it `__` where `$` is not an identifier character — no user identifier may contain
+`__` (SPEC §2), so a mangled name can never collide with a user's. A call whose callee is not a name
 (`adder(1)(4)`, an IIFE) sets `node.hasCalleeExpr`; emit `node.calleeExpr` with side `"recv"` (`node.calleeKind`
 names its kind, `{"type":"node.calleeType"}` renders its function type).
 - `reserved`: names your *generated* code claims (synthesized temps, scaffolding). A trailing `*`

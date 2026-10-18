@@ -169,7 +169,7 @@
       },
       "mangle": {
         "replace": "$",
-        "with": "_"
+        "with": "__"
       },
       "reserved": [
         "_m",

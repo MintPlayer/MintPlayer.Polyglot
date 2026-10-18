@@ -352,6 +352,9 @@ public:
     // P40 B3: user (non-prelude) declarations and references spelled with a std-reserved prefix (`__pg`, the
     // std primitives; `_pg_`, the emitted std guards) — a language rule, independent of the target.
     std::vector<std::pair<std::string, SourcePos>> stdReserved;
+    // P40 review r4 (part 2): user names containing `__` — the compiler's own spelling space (lowering temps
+    // `__c0`/`__opt1`, emitter temps, overload signature names `parse__string`), so no user name can collide.
+    std::vector<std::pair<std::string, SourcePos>> compilerReserved;
 
     void run(const CompilationUnit& u) {
         for (const auto& f : u.functions) {
@@ -408,12 +411,13 @@ private:
         if (n.empty()) return;
         names.push_back({n, pos});
         if (!prelude_ && stdPrefixed(n)) stdReserved.push_back({n, pos});
+        else if (!prelude_ && n.find("__") != std::string::npos) compilerReserved.push_back({n, pos});
     }
     void ref(const std::string& n, SourcePos pos) {
         if (!prelude_ && stdPrefixed(n)) stdReserved.push_back({n, pos});
     }
     void params(const std::vector<Param>& ps) {
-        for (const auto& p : ps) add(p.name, {});
+        for (const auto& p : ps) add(p.name, p.pos);
     }
     void members(const std::vector<Member>& ms) {
         for (const auto& m : ms) {
@@ -481,6 +485,10 @@ void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
         if (reportedStd.insert(std::to_string(pos.fileId) + ":" + std::to_string(pos.line) + ":" + std::to_string(pos.col)).second)
             diags.error(pos, "identifier '" + name + "' uses a prefix reserved for the Polyglot std library "
                              "('__pg' / '_pg_'); rename it");
+    for (const auto& [name, pos] : nc.compilerReserved)
+        if (reportedStd.insert(std::to_string(pos.fileId) + ":" + std::to_string(pos.line) + ":" + std::to_string(pos.col)).second)
+            diags.error(pos, "identifier '" + name + "' contains '__', which is reserved for compiler-generated names "
+                             "(temporaries like '__c0', overload names like 'parse__string'); rename it");
     for (const auto& [name, pos] : nc.names) {
         for (const auto& r : backend.reservedIdentifiers())
             if (matchesReserved(r, name))
