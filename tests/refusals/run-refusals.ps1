@@ -122,6 +122,7 @@ $cases = [ordered]@{
     "static_let_assign.pg"      = @("cannot assign to immutable static field 'Limits.Max'", "declare it 'static var'")
     "field_one_branch.pg"       = @("field 'name' of class 'Cfg' is not assigned on every path through init")
     "field_early_return.pg"     = @("returns before field 'b' is assigned")
+    "super_args_omitted.pg"     = @("the constructor of class 'D' must call", "the constructor of base class 'B' takes arguments")
     "ctor_open_call.pg"         = @("the constructor of class 'Widget' calls the overridable method 'describe' on 'this'")
     "ctor_open_call_indirect.pg" = @("the constructor of class 'Base' calls the overridable method 'describe' on 'this' (through 'announce')")
     "static_hides_instance.pg"  = @("'label' redeclares the static member 'Base.label' as an instance member", "no member hiding")

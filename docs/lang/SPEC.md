@@ -301,7 +301,8 @@ takes **no** `override`, and writing one there is an error (as is `override` wit
 
 **Construction runs the whole base chain** (P40 review r4) on every target: a subclass constructor calls
 the base constructor whether or not it writes `super(…)` (an omitted call is `super()`), and a subclass with
-no constructor still runs it — including a base whose only constructor work is a field initializer. An
+no constructor still runs it — including a base whose only constructor work is a field initializer. When the
+base constructor takes arguments, the subclass must declare a constructor that writes `super(…)`. An
 inherited field is therefore assigned before the subclass constructor's first statement and may be read
 there (`super(); this.y = this.x + 10`). A constructor may **not** call an overridable (`open`, `abstract`
 or `override`) method on `this`, directly or through other methods it calls on `this`: a subclass override

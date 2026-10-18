@@ -390,6 +390,35 @@ public:
             inAsync_ = false;
             recordModel_ = false;
         }
+        // P40 review r4 #3: a constructor always runs its base class's constructor — `super()` when none is written.
+        // When the base constructor needs arguments, an omitted call (or a missing constructor) is C# CS7036 and a
+        // TS error, so the subclass must write `super(…)`.
+        for (const auto& c : unit.classes) {
+            if (c.isExtern) continue;
+            for (const auto& b : c.bases) {
+                if (b.kind != TypeRef::Kind::Named || interfaceNames_.count(b.name) || externClassNames_.count(b.name)) continue;
+                auto bt = types_.find(b.name);
+                if (bt == types_.end() || !bt->second.hasCtor || bt->second.ctorRequired == 0) continue;
+                bool anyCtor = false;
+                for (const auto& m : c.members) {
+                    if (m.kind != MemberKind::Constructor) continue;
+                    anyCtor = true;
+                    bool calls = false;
+                    for (const auto& st : m.body)
+                        if (st->kind == StmtKind::ExprStmt && st->value && st->value->kind == ExprKind::Call &&
+                            st->value->lhs && st->value->lhs->kind == ExprKind::Super)
+                            calls = true;
+                    if (!calls)
+                        diags_.error(m.pos, "the constructor of class '" + c.name + "' must call `super(…)`: the "
+                                            "constructor of base class '" + b.name + "' takes arguments");
+                }
+                if (!anyCtor)
+                    diags_.error(c.namePos.line ? c.namePos : c.pos,
+                                 "class '" + c.name + "' needs a constructor that calls `super(…)`: the constructor of "
+                                 "base class '" + b.name + "' takes arguments");
+                break;
+            }
+        }
         // P40 review r4 #8: a record's body holds methods, operators and computed properties only. Every emitter
         // dropped a body field (C# CS1061 / TS2339 / Python AttributeError / PHP null), static or not. Its state
         // is its positional fields — they alone take part in equality, hashing and `with` on every target.
