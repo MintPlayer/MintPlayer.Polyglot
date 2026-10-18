@@ -119,8 +119,10 @@ TS `let`). `const` is a true compile-time scalar constant.
 
 The type annotation is **optional when the initializer determines the type** (`let x = 41`, `let e = [1,2,3]`,
 `var d = List<i32>()`) and **required when it does not**. An *un-inferable* initializer — an empty list
-literal `[]`, a bare `null`, or a lambda with un-annotated parameters — conveys no type for the compiler to
-reconstruct, so it must be annotated; otherwise it is a compile error (rather than a silent per-target
+literal `[]`, a bare `null`, or a lambda with un-annotated parameters (also as an arm of an `if`/`match`
+initializer, P40 review r7) — conveys no type for the compiler to reconstruct, so it must be annotated. When
+every lambda arm of such an `if`/`match` is typed, the local takes the arms' function type as its declared type
+(C# has no common type for lambda arms on `var`); otherwise it is a compile error (rather than a silent per-target
 guess). This is the same discipline Swift and Go enforce, and it guarantees every target is handed a
 concrete type:
 
@@ -378,7 +380,15 @@ value — *… passes 'this' as an argument to 'accept', whose body is not known
 collection, tuple, record or another object, storing it in another object or a module value (also inside a
 callee: *… stores 'this' (as 'p') in another object (through 'Probe')*), returning it, using it as an operand;
 and calling an own function-typed field that may hold a lambda capturing it (*… calls the field 'cb' (it may
-hold a lambda that captures 'this')*). The rule over-approximates on purpose: a callee that only **stores** the
+hold a lambda that captures 'this')*). A field "may hold" one when **any** value the construction stores into it
+— on any path the rule follows: an alias (`this.cb = () => me.describe()`), a local lambda (`this.cb = () =>
+f()`), or a non-open method's parameter (`this.setCb(() => this.describe())`), in this class's constructors or
+its bases' — is derived from the object (P40 review r7); storing it stays legal, only the call is refused, and a
+field that only ever holds a non-capturing lambda may be called. Calling a **function-typed computed property**
+runs the function value its getter returns, whose body is not statically known: passing `this` to it is refused
+(*… passes 'this' as an argument to the function value that the property 'show' returns, whose body is not
+known here*), and an own property's getter is checked like any own member (returning a lambda that captures
+`this` is refused). The rule over-approximates on purpose: a callee that only **stores** the
 lambda it is given (an event subscription, `bus.subscribe(() => this.refresh())`) is refused too, because the
 lambda then lives in an object the constructor could call into next (`bus.fire()`), and proving it does not
 would need whole-program aliasing. Subscribe after construction instead. A class nothing can derive from is
@@ -396,9 +406,11 @@ An **interface body holds bodiless, non-static method signatures only** — no f
 initializers, operators, or default method bodies (express field-like needs as a getter method). The
 checker **enforces conformance**: a class or record declaring `: I` must implement every method `I` (and
 its base interfaces) declares, with matching signatures — generic interfaces substitute their type args
-(`record Version : Comparable<Version>` must implement `compareTo(Version): i32`) — and a value of a
-class type converts to an interface type only when the class declares it implements it (nominal, not
-structural). Per-target lowering: C#/TS/PHP `interface` + implements clause; Python emits
+(`record Version : Comparable<Version>` must implement `compareTo(Version): i32`); a function-typed (or
+tuple-typed) parameter or result matches structurally (P40 review r7: `go(f: () => string)` never matched) —
+and a value of a class type converts to an interface type only when the class declares it implements it
+(nominal, not structural). Per-target lowering: C#/TS/PHP `interface` + implements clause (also for an
+interface imported from another module — P40 review r7: TS/PHP emitted `extends`); Python emits
 `class I(abc.ABC)` with `@abc.abstractmethod` stubs (nominal ABC, not a structural `Protocol`).
 
 Generic bounds use `<T: Bound>`, multiple via `<T: A & B>` (C# `where`; TS intersection /
@@ -619,10 +631,12 @@ differently:
   everything it **runs**: its own expression, and transitively every body it reaches — functions and static
   methods it calls, constructors (with the class's instance field initializers and the base constructor),
   instance methods (and every override of them), computed property getters **and setters**, user operators and
-  indexers (`a + b`, `a == b`, `-a`, `g[i]`, `g[i] = v`, a compound `a += b`, an explicit conversion), static
-  computed properties, extensions, a function **or lambda passed as an argument** (the callee may call it at
-  once), a lambda it invokes in place, a lambda **called through a local or a module value** bound to it, and the
-  static initializers of every class it uses (defining a class runs them).
+  indexers (`a + b`, `a == b`, `-a`, `g[i]`, `g[i] = v`, a compound `a += b` (also on a static field named bare
+  inside its class), an explicit conversion), static methods (also called by their bare name inside their class),
+  static computed properties, extensions, a function **or lambda passed as an argument** (the callee may call it
+  at once), a lambda it invokes in place, a lambda **called through a local or a module value** bound to it —
+  including a lambda a function **returned** (`let f = adder(); f(1)`, `let add = adder()`, P40 review r7) — and
+  the static initializers of every class it uses (defining a class runs them).
   - A **module value** may not reach a module value declared **at or after it in the same file** (*the
     initializer of 'a' calls 'seed', which reads 'b', declared later*; *… runs a lambda passed as an argument,
     which reads 'b', declared later*). A value whose initializer reaches **itself** is a cycle (*… uses 'K',
@@ -639,8 +653,9 @@ differently:
     class is defined. A `static fn` of the same class may (it sees the class's own binding), and so may a lambda
     written inside the class.
   - Exempt: a lambda that is only **stored** (in a field, a collection, a module value that is never called)
-    runs later, as do calls inside it; a function only stored as a value. A call through a local follows every
-    lambda bound or assigned to it; a call through a module value follows the lambda it is initialized with (a
+    runs later, as do calls inside it; a function only stored as a value (also the lambda a function returns,
+    while it is only stored). A call through a local follows every lambda bound or assigned to it (and every
+    lambda the call that produced it returns); a call through a module value follows the lambda it is initialized with (a
     `var` module value re-assigned inside a function is followed only into that initializer); a lambda that
     reaches a callee through a field or a collection is not followed (it is stored, not run, where the
     initializer hands it over).
@@ -838,7 +853,9 @@ class Grid<T> {
 ```
 
 Properties → C# properties / TS `get`/`set` accessors. Indexers → C# `this[…]` / TS `.get(…)`/`.set(…)`
-method calls (TS index signatures can't take multiple keys, so the call form is used uniformly).
+method calls (TS index signatures can't take multiple keys, so the call form is used uniformly). The value
+parameter of an indexer `set` (or a property setter) may be named `value`, as above: on C# it is then the
+accessor's own implicit `value` (P40 review r7 — it was re-declared, CS0136).
 
 A computed property may be **static** (`static let level: i32 => Cfg.base * 2`, P40 review r6): C# and TS emit
 a static property / static getter; Python and PHP emit a static method that every read calls (`Cfg.level()` /
@@ -863,7 +880,9 @@ An extension is imported by its name like a function (`import { shout } from "./
 free function in the module scope (TS, Python, PHP), one whose name is also another extension's (`i32.twice` and
 `string.twice`) or a top-level function's, value's or type's (`let twice = 7`) is emitted under
 `<name>$<Receiver>` (`twice$i32`; `twice__i32` on Python and PHP) — both would otherwise be one declaration
-(P40 review r6). C# keeps the extension method's own name; a lone extension keeps its plain name everywhere.
+(P40 review r6). C# keeps the extension method's own name; a lone extension keeps its plain name everywhere. A
+named import of such a name from another module (`import { twice } from "./m"`) brings in **every** declaration
+of it — the plain one and each renamed extension (P40 review r7).
 
 ### 6.4 Lambdas & closures
 
@@ -1177,7 +1196,11 @@ real target imports for every name (TS `import { … }`, Python `from x import *
 links. A target's imports are completed from what each file's **lowered** code references, not only from its
 source imports (P40 review r6): a record or extension default filled in at a call site in another module names the
 default's own types (`P(1)` becomes `P(1, Color.Blue)`), so `Color` — and a type a third module declares — is
-imported there too. Renaming (`as`) and namespace (`* as ns`) imports are refused (PRD §3.B, #39e). `expect`/`actual` (target-gated capabilities) and `extern` (the FFI hatch) are implemented as
+imported there too. A name with **no runtime binding** on a target is never imported as a value (P40 review
+r7; manifest `typeOnlyImports` / `unboundImports`): TS imports a union or interface with `import type { … }`
+and drops a union case's name (cases are constructed inline), Python drops a union's and its cases' names
+(tagged dicts) but imports an interface (an ABC); C# and PHP import no names. Importing one used to fail at run
+time (Python `ImportError`, Node "does not provide an export named"). Renaming (`as`) and namespace (`* as ns`) imports are refused (PRD §3.B, #39e). `expect`/`actual` (target-gated capabilities) and `extern` (the FFI hatch) are implemented as
 of P7.
 
 Platform/SDK/environment APIs (`window`, `System.Windows.Forms`, …) are **not** in the core language at
