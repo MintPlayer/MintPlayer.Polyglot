@@ -484,6 +484,7 @@ struct Param {
     // (space-joined: C# `[X] int p`, PHP `#[X] int $p`); empty on targets without parameter
     // annotations (gated by attributes:target.param) and for Tier 2 metadata.
     std::string attrInline;
+    std::vector<std::string> attrImports; // P41 D5: the import/using lines attrInline's bindings need (see Module::attrImports)
     // Capture analysis (P25 §4.18): this parameter is captured by a nested lambda; `needsCell` if that
     // capture needs a shared mutable binding (the param is assigned somewhere its closures can observe).
     bool captured = false;
@@ -543,6 +544,8 @@ struct Function {
     // attribution (the `fn foo() {` line registering a hit) would silently apply to methods only.
     SourcePos pos;
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
+    std::vector<std::string> attrImports; // P41 D5: the import/using lines those bindings need (see Module::attrImports)
+    int tempsUsed = 0; // P41 D1/D2: this body's lowering-temp count (see the BODY NODES comment above Module)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
     std::string linkName;    // P40 review r3 2(e): the name in a one-scope link with overloading (C#); see FunctionDecl
@@ -579,6 +582,10 @@ struct Method {
     // ClassField/Global need no equivalent: their `init` is an ir::Expr, which is already positioned.
     SourcePos pos;
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
+    std::vector<std::string> attrImports; // P41 D5: the import/using lines those bindings need (see Module::attrImports)
+    // P41 D1/D2: this body's lowering-temp count — one allocator covers the getter/exprBody, the accessor-block
+    // setter and the parameter defaults (see the BODY NODES comment above Module).
+    int tempsUsed = 0;
     // P37 C5: the owning type is a record. C#'s user-eq emission differs: a record's `==` already
     // routes through the strongly-typed Equals; a CLASS needs a synthesized operator ==/!= pair.
     bool ownerIsRecord = false;
@@ -615,6 +622,7 @@ struct Method {
 struct Record { // an immutable data type (record)
     SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
+    std::vector<std::string> attrImports; // P41 D5: the import/using lines those bindings need (see Module::attrImports)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;        // implemented interfaces
@@ -649,6 +657,8 @@ struct Union {
 };
 struct ClassField {
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (above the field)
+    std::vector<std::string> attrImports; // P41 D5: the import/using lines those bindings need (see Module::attrImports)
+    int tempsUsed = 0; // P41 D1/D2: the initializer's lowering-temp count (see the BODY NODES comment above Module)
     std::string name;
     bool isMutable = false;
     bool isStatic = false;  // a `const`/`static` member — accessed `Owner.name`, emitted `static`/`readonly`
@@ -662,6 +672,10 @@ struct ClassField {
 struct Class { // a mutable reference type
     SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
+    std::vector<std::string> attrImports; // P41 D5: the import/using lines those bindings need (see Module::attrImports)
+    // P41 D1/D2: the CONSTRUCTOR body's lowering-temp count (initParams defaults + superArgs + initBody); each
+    // field initializer is its own body (ClassField::tempsUsed). See the BODY NODES comment above Module.
+    int tempsUsed = 0;
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;        // base class and/or interfaces (single base drives `extends`/`: Base`)
@@ -701,6 +715,7 @@ struct Global { // a top-level `const`/`let` value
     bool isConst = false;
     Type type;
     ExprPtr init;
+    int tempsUsed = 0; // P41 D1/D2: the initializer's lowering-temp count (see the BODY NODES comment above Module)
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
     std::vector<std::string> needsClasses; // review r5 #4: classes the initializer reaches — emitted before it
 };
@@ -732,15 +747,26 @@ struct LoweringFailure {
     std::string kind; // the surface expression kind, e.g. "range"
 };
 
+// BODY NODES (P41 D1/D2/D3, issue #76). ONE temp-name allocator PER BODY: lowering numbers its desugaring temps
+// (`__c0`, `__opt1`, …) 0..tempsUsed-1 within a body; the emitter's `fresh` rule temps continue from tempsUsed
+// within the same body, so a lowering temp and a plugin temp never share a name (P40 review r3 2(c) — Python's
+// `??` walrus `__cN` once rebound a compound's `__cN`); bodies restart at 0 so a body's text depends only on its
+// own source (P41 D1/D2). A "body" is exactly a node carrying `tempsUsed`, for BOTH passes (the Lowerer resets
+// its counter at the node's entry and records it at exit; the emitter seeds its counters when it begins emitting
+// the node's code): Function (free / extension / extern-static redirect; params' defaults + body), Method
+// (params' defaults + body/exprBody + accessor-block setter), Class (the constructor: initParams defaults +
+// superArgs + initBody), ClassField (its initializer) and Global (its initializer). A lambda or local function
+// nested in a body is NOT a body — it shares the enclosing allocator (a nested scope redeclaring an enclosing
+// local is CS0136 on C#, and aliases on function-scoped Python/PHP). The sibling counters (`__pg_lam<N>`,
+// `<binding>__cs<N>`, `__pg_t<N>`, `__dw<N>`) restart on the same nodes (D3).
 struct Module {
     // P40 A2: non-empty = lowering met an expression it cannot lower. `compile()` reports each as an internal
     // compiler error and writes nothing; the emitted placeholder (`__polyglot_unlowered_expr__`) never ships.
     std::vector<LoweringFailure> loweringFailures;
-    // P40 review r3 2(c): ONE temp-name allocator. Lowering numbers its desugaring temps (`__c0`, `__opt1`, …)
-    // from 0 to tempsUsed-1; the emitter's `fresh` rule temps start at tempsUsed, so a lowering temp and a
-    // plugin temp can never share a name (Python's `??` walrus `__cN` once rebound a compound's `__cN`).
-    int tempsUsed = 0;
-    std::vector<std::string> attrImports; // P37 D Tier 1: verbatim import/using lines (deduped) for used attribute bindings
+    // P37 D Tier 1: verbatim import/using lines (deduped, first-use order) for the attribute bindings THIS
+    // file's declarations use. P41 D5: derived from the file's slice (the per-declaration `attrImports`), never
+    // collected over the whole closure — a file carries exactly the lines its own declarations need.
+    std::vector<std::string> attrImports;
     std::vector<Enum> enums;
     std::vector<Union> unions;
     std::vector<Record> records;

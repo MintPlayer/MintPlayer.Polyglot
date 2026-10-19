@@ -56,6 +56,9 @@
     <ClCompile Include="src\tests_p40_outputs.cpp">
       <Filter>Source Files\P40</Filter>
     </ClCompile>
+    <ClCompile Include="src\tests_p41_determinism.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\test_support.hpp">

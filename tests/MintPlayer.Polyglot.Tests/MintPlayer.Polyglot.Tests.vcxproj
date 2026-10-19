@@ -95,6 +95,7 @@
     <ClCompile Include="src\tests_routing_origin.cpp" />
     <ClCompile Include="src\tests_wave2_coverage.cpp" />
     <ClCompile Include="src\tests_p40_outputs.cpp" />
+    <ClCompile Include="src\tests_p41_determinism.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\test_support.hpp" />

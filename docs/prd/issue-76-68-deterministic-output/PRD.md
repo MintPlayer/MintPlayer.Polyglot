@@ -145,6 +145,15 @@ same shape as the P40 prelude reachability pass — instead of being collected d
 filtered. They cannot drift from the declarations they serve. Dedupe stays per file. The failure direction
 if a use site is missed is a loud consumer-side compile error, never a silent extra `using`.
 
+### 4.6b C# wrapper always `partial` — **D15** (found while verifying)
+
+The C# manifest emitted `static partial class PolyglotProgram` only when the module was `linked` (a multi-file
+closure) and `static class` otherwise, so a module compiled alone differed from the same module reached from a
+root by exactly that word — the one remaining way a module's text depended on the closure's shape. A
+`static partial class` with a single part is legal C#, so the wrapper (and `PolyglotExtensions`) is `partial`
+unconditionally; the manifest no longer reads `module.linked`. Same for the test pin and the harness comment
+that recorded the old flip.
+
 ### 4.6a Documented set-dependence — **D6**
 
 `docs/lang/SPEC.md` (or the determinism section of the PRD, wherever the §3.D text lives) gains a short

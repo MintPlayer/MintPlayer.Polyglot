@@ -265,7 +265,7 @@ void run_p40_manifest() {
             check(g.ok && g.code.find("namespace N;\nusing static Api;") != std::string::npos,
                   "P40 s2: `using static <class>` follows the namespace (resolves inside it)");
             EmitResult def = compile(prog, findTarget("csharp"));
-            check(def.ok && !has(def.code, "namespace ") && has(def.code, "static class PolyglotProgram"),
+            check(def.ok && !has(def.code, "namespace ") && has(def.code, "static partial class PolyglotProgram"),
                   "P40 s2: no options = no namespace and the PolyglotProgram wrapper (unchanged output)");
         }
 

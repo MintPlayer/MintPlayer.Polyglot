@@ -144,3 +144,17 @@ Push once; `ci.yml` is the gate. Read failures with `--log-failed`; fix only tha
 | D11 | #68 checks in `run-nuget.ps1` (eval set, add, delete → no CS2001/CS2002, design-time simulation) | locked |
 | D12 | **(Q8):** `nuget` + cli-smoke/refusals/lsp legs join `ci.yml`, under the 5-minute wall | locked |
 | D14 | **(Q9):** split `tests_main.cpp` + unoptimized test binary (root cause of the 11-min run); build-once fan-out matrix with `timeout-minutes: 5`; conformance in PR CI only if it fits | locked |
+| D15 | **(verification):** the C# wrapper and `PolyglotExtensions` are `partial` unconditionally — the `module.linked` condition made a module compiled alone differ from the same module via a root | built |
+
+## Build log (2026-10-19)
+
+- Spikes S1–S3, S5–S8 run; S4 answered by reading; S9 answered by inspection (the P40 review r5/r6 block: ~100
+  inlined lambda calls over brace-initialised literal tables in one 1348-line compound statement).
+- Slices 1–7 implemented. Local verification was the issue's repro on the rebuilt Debug CLI: all four targets
+  exit 0 with one `lib.<ext>` carrying `__end0`, `--check` exits 0, and each `lib.<ext>` is byte-identical to
+  the module compiled alone. The unit suite was compiled, not run (CI runs it).
+- One incident worth recording: after the Core refactor a two-module C# compile asserted "vector subscript out
+  of range" at a **valid** subscript. Cause: stale object files — the test-split agent's compile had built the
+  Core while `ir::Function` was mid-edit, and the incremental build kept objects with the old layout. A clean
+  rebuild fixed it. Side effect kept: in Debug builds the CLI routes C runtime assertions to stderr instead of
+  a dialog (a command-line compiler must never block on a message box).

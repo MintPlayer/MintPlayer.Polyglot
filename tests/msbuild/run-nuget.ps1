@@ -303,9 +303,10 @@ $staleFixture = {
     # P40 review (#75, D17 under MSBuild): with 3+ .pg files the surviving .cs files are byte-identical after
     # a delete, so nothing they contain changes. The transpile + item injection must therefore run BEFORE the
     # SDK hashes @(Compile) (_GenerateCompileDependencyCache), or CoreCompile is skipped as up to date and the
-    # stale DLL keeps the deleted function. The 2 -> 1 case above passed only because the survivor flips
-    # from `static partial class` to `static class`. Program.cs is NOT edited between builds here, so only a
-    # correct @(Compile) hash can make CoreCompile run.
+    # stale DLL keeps the deleted function. (Before P41 the 2 -> 1 case above passed only because the survivor
+    # flipped from `static partial class` to `static class`; the wrapper is now `partial` unconditionally, so a
+    # module's text never depends on how many files share the class — issue #76, D15.) Program.cs is NOT
+    # edited between builds here, so only a correct @(Compile) hash can make CoreCompile run.
     $flags = "System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic"
     $three = Join-Path $work "StaleThree"
     dotnet new console -o $three --framework net8.0 | Out-Null

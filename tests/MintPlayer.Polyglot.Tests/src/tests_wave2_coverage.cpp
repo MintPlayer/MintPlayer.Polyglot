@@ -227,6 +227,32 @@ void run_wave2_coverage() {
                           has(php.code, "$p->s = $p->s . \"z\";") && !has(php.code, "+= \"") &&
                           has(php.code, "$xs[$__c0] = (((($xs[$__c0] + 1)"),
                       "P40: PHP string compounds concatenate with `.` (a `+=` on a string is a TypeError)");
+                // P41 (issue #76) D1/D2: the `__c` allocator is PER BODY and shared with the plugin `fresh`
+                // temps — a second function of the same shape restarts at `__c0`/`__c1`, never `__c2`/`__c3`.
+                {
+                    const std::string two =
+                        "import { List } from \"std.collections\"\n"
+                        "class P {\n  var n: i32 = 0\n}\n"
+                        "fn at(i: i32): i32 => i\nfn pick(p: P): P => p\n"
+                        "fn f() {\n  var xs: List<i32> = [1, 2]\n  xs[at(0)] += 1\n  let p = P()\n  pick(p).n *= 2\n}\n"
+                        "fn g() {\n  var xs: List<i32> = [1, 2]\n  xs[at(0)] += 1\n  let p = P()\n  pick(p).n *= 2\n}\n";
+                    auto countOf = [](const std::string& hay, const std::string& needle) {
+                        std::size_t n = 0;
+                        for (std::size_t at = hay.find(needle); at != std::string::npos;
+                             at = hay.find(needle, at + needle.size())) ++n;
+                        return n;
+                    };
+                    EmitResult ts2 = compileStd(two, findTarget("typescript"));
+                    check(ts2.ok && countOf(ts2.code, "const __c0 = at(0);") == 2 &&
+                              countOf(ts2.code, "const __c1 = pick(p);") == 2 && !has(ts2.code, "__c2"),
+                          "P41 #76: sibling bodies restart the `__c` temps at 0 (TS)");
+                    EmitResult py2 = compileStd(two, findTarget("python"));
+                    check(py2.ok && countOf(py2.code, "__c0 = at(0)") == 2 && !has(py2.code, "__c2"),
+                          "P41 #76: sibling bodies restart the `__c` temps at 0 (Python, one allocator per body)");
+                    EmitResult php2 = compileStd(two, findTarget("php"));
+                    check(php2.ok && countOf(php2.code, "$__c0 = ") == 2 && !has(php2.code, "__c2"),
+                          "P41 #76: sibling bodies restart the `__c` temps at 0 (PHP)");
+                }
                 check(refused("class P {\n  var n: i32 = 0\n}\nfn main() {\n  let p = P()\n  p.n += 1.5\n}\n",
                               "cannot implicitly convert f64 to i32"),
                       "P40: a compound on a field converts its value into the slot (an f64 into an i32 field is refused)");

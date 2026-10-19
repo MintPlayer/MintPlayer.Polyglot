@@ -222,8 +222,10 @@ public:
 
     // P37 D Tier 1: render each pass-through attribute into its native annotation line for the ACTIVE
     // target — the arm's template IS the whole line, with $0…/$name substituted from the (constant) args;
-    // the arm's import line is accumulated once onto the module. Tier 2 attributes render nothing.
-    std::vector<std::string> renderAttrLines(const std::vector<AttrUse>& attrs) {
+    // the arm's import line is recorded on the DECLARATION (`imports`, deduped) — P41 D5: a file's import block
+    // is derived from the declarations its slice holds, never from the whole closure. Tier 2 attributes render
+    // nothing.
+    std::vector<std::string> renderAttrLines(const std::vector<AttrUse>& attrs, std::vector<std::string>* imports = nullptr) {
         std::vector<std::string> out;
         for (const auto& a : attrs) {
             auto it = externAttrMap_.find(a.name);
@@ -259,11 +261,9 @@ public:
             for (std::size_t i : order) substAll(line, "$" + d.params[i].name, values[i]);
             for (std::size_t i = 0; i < values.size(); ++i) substAll(line, "$" + std::to_string(i), values[i]);
             out.push_back(std::move(line));
-            if (!arm->importLine.empty()) {
-                bool dup = false;
-                for (const auto& l : attrImports_) if (l == arm->importLine) dup = true;
-                if (!dup) attrImports_.push_back(arm->importLine);
-            }
+            if (imports && !arm->importLine.empty() &&
+                std::find(imports->begin(), imports->end(), arm->importLine) == imports->end())
+                imports->push_back(arm->importLine);
         }
         return out;
     }
@@ -369,7 +369,7 @@ public:
             ir::Record rec;
             rec.name = r.name;
             rec.pos = r.pos;
-            rec.attrLines = renderAttrLines(r.attributes);
+            rec.attrLines = renderAttrLines(r.attributes, &rec.attrImports);
             rec.generics = generics(r.generics);
             for (const auto& b : r.bases) rec.bases.push_back(b);
             for (const auto& f : r.fields) rec.fields.push_back({f.name, f.type});
@@ -409,7 +409,9 @@ public:
             g.needsClasses = v.needsClasses; // review r5 #4
             g.isConst = v.isConst;
             g.type = v.hasType ? v.type : (v.init ? v.init->type : TypeRef{});
+            beginBody(); // P41 D1: a global's initializer is a body of its own
             if (v.init) g.init = expr(*v.init);
+            g.tempsUsed = endBody();
             g.originModule = v.originModule;
             m.globals.push_back(std::move(g));
         }
@@ -428,12 +430,14 @@ public:
             f.isExtension = !stdGuard;
             f.generics = generics(ext.generics);
             f.returnType = ext.returnType;
+            beginBody(); // P41 D1: params' defaults + body share one allocator, restarted per function
             f.params.push_back({"self", ext.receiver}); // the receiver becomes the leading `self` parameter
             for (const auto& p : ext.params) f.params.push_back(irParam(p));
             inExtension_ = true; // inside the body, `this` denotes the receiver -> lower to `self`
             if (ext.exprBody) { f.exprBodied = true; f.exprBody = expr(*ext.exprBody); }
             else f.body = block(ext.body);
             inExtension_ = false;
+            f.tempsUsed = endBody();
             f.originModule = ext.originModule;
             f.globalRefs = scanGlobalRefs(moduleGlobals_, ext.params, ext.body, ext.exprBody.get());
             if (stdGuard) m.functions.push_back(std::move(f));
@@ -450,8 +454,10 @@ public:
                 f.mangledName = rd->second;
                 f.generics = generics(mem.generics);
                 f.returnType = mem.returnType;
+                beginBody(); // P41 D1
                 for (const auto& p : mem.params) f.params.push_back(irParam(p));
                 f.body = block(mem.body);
+                f.tempsUsed = endBody();
                 f.originModule = c.originModule;
                 f.globalRefs = scanGlobalRefs(moduleGlobals_, mem.params, mem.body, mem.exprBody.get());
                 m.functions.push_back(std::move(f));
@@ -470,16 +476,17 @@ public:
             f.returnType = fn.returnType;
             f.isEntry = (fn.name == "main" && fn.params.empty());
             f.isAsync = fn.isAsync;
+            f.attrLines = renderAttrLines(fn.attributes, &f.attrImports);
+            beginBody(); // P41 D1: params' defaults + body share one allocator, restarted per function
             for (const auto& p : fn.params) f.params.push_back(irParam(p));
-            f.attrLines = renderAttrLines(fn.attributes);
             sawYield_ = false;
             f.body = block(fn.body);
             f.isIterator = sawYield_;
+            f.tempsUsed = endBody();
             f.originModule = fn.originModule;
             f.globalRefs = scanGlobalRefs(moduleGlobals_, fn.params, fn.body, nullptr);
             m.functions.push_back(std::move(f));
         }
-        m.attrImports = attrImports_; // P37 D Tier 1: verbatim import/using lines for used bindings
 
         // Stamp ir::Class.baseHasInit transitively now that every class/interface is lowered (issue #48).
         // A base contributes a chainable ctor when it is a user class with an `init` or an instance field
@@ -539,7 +546,6 @@ public:
             for (auto& c : m.classes) c.baseRoot = rootOf(c);
         }
         m.loweringFailures = std::move(failures_); // P40 A2 backstop: compile() turns these into an ICE
-        m.tempsUsed = tmpCounter_; // P40 review r3 2(c): the emitter's `fresh` counter continues from here
         return m;
     }
 
@@ -548,9 +554,14 @@ private:
     const CompilationUnit* unit_ = nullptr; // P37 D: Meta resolution re-reads decl attributes
     std::unordered_map<std::string, const ExternAttrDecl*> externAttrMap_; // Tier 1 bindings by name
     std::unordered_set<std::string> materialized_;  // Tier 2 attribute records some Meta query constructs
-    std::vector<std::string> attrImports_;          // Tier 1 import/using lines (deduped, verbatim)
     Backend::ConstSpelling spell_;                  // the active plugin's constant spellings (data, not names)
-    int tmpCounter_ = 0;        // fresh-name counter for desugared bindings (e.g. `??`-on-Option)
+    // P41 D1/D2 (issue #76): the fresh-name counter for desugared bindings (`__c`, `__opt`, `__end`, …) is ONE
+    // ALLOCATOR PER BODY — see the BODY NODES comment in ir.hpp. `beginBody()` at a body node's entry restarts
+    // it; `endBody()` at its exit yields the node's `tempsUsed`, which the emitter seeds its `fresh` counter
+    // from. Lambdas and local functions never call these: they share the enclosing body's allocator.
+    int tmpCounter_ = 0;
+    void beginBody() { tmpCounter_ = 0; }
+    int endBody() const { return tmpCounter_; }
     // P40: the target's native `a op= b` is faithful to its Binary rule (plugin trait); else compounds expand.
     bool nativeCompound_ = false;
     bool lateOperands_ = false; // review r4 #9: the target reads a variable operand when its operator runs
@@ -804,7 +815,7 @@ private:
         ic.pos = c.pos;
         ic.needsClasses = c.needsClasses; // review r5 #4
         for (const auto& mod : c.modifiers) if (mod == "abstract") ic.isAbstract = true; // review r5 #9
-        ic.attrLines = renderAttrLines(c.attributes);
+        ic.attrLines = renderAttrLines(c.attributes, &ic.attrImports);
         ic.generics = generics(c.generics);
         ic.bases = c.bases;
         for (const auto& mem : c.members) {
@@ -812,18 +823,21 @@ private:
                 case MemberKind::Field:
                 case MemberKind::Const: {
                     ir::ClassField f;
-                    f.attrLines = renderAttrLines(mem.attributes);
+                    f.attrLines = renderAttrLines(mem.attributes, &f.attrImports);
                     f.name = mem.name;
                     f.isMutable = mem.isMutable;
                     f.isStatic = mem.kind == MemberKind::Const;
                     for (const auto& mod : mem.modifiers) if (mod == "static") f.isStatic = true;
                     f.type = mem.type;
+                    beginBody(); // P41 D1: a field initializer is a body of its own
                     if (mem.init) { f.init = expr(*mem.init); f.initIsLiteral = isLiteralInit(*mem.init); }
+                    f.tempsUsed = endBody();
                     ic.fields.push_back(std::move(f));
                     break;
                 }
                 case MemberKind::Constructor:
                     ic.hasInit = true;
+                    beginBody(); // P41 D1: the constructor (params' defaults + superArgs + initBody) is one body
                     for (const auto& p : mem.params) ic.initParams.push_back(irParam(p));
                     // A `super(...)` call carries the base-ctor args; hoist it out of the body so each
                     // backend can place it idiomatically (C# `: base(...)`, TS leading `super(...);`).
@@ -837,6 +851,7 @@ private:
                         }
                         if (auto s = stmt(*st)) ic.initBody.push_back(std::move(s));
                     }
+                    ic.tempsUsed = endBody();
                     break;
                 case MemberKind::Method:
                 case MemberKind::Operator:
@@ -859,9 +874,11 @@ private:
 
     // Lower a parameter, carrying its optional `= default` (so emitters reproduce it in the signature
     // and callers may omit trailing defaulted arguments — both C# and TS support default parameters).
+    // P41 D5: the import lines a parameter's attribute bindings need ride on the ir::Param (`attrImports`); the
+    // slice pass reads them through the owning declaration.
     ir::Param irParam(const Param& p) {
         ir::Param ip{p.name, p.type, nullptr};
-        for (const std::string& l : renderAttrLines(p.attributes)) {
+        for (const std::string& l : renderAttrLines(p.attributes, &ip.attrImports)) {
             if (!ip.attrInline.empty()) ip.attrInline += " ";
             ip.attrInline += l;
         }
@@ -876,8 +893,9 @@ private:
         // (fileId 0), which the emitter reads as "no known origin" and renders as a hidden directive.
         im.pos = m.namePos.fileId != 0 ? m.namePos : m.pos;
         im.name = m.name;
-        im.attrLines = renderAttrLines(m.attributes);
+        im.attrLines = renderAttrLines(m.attributes, &im.attrImports);
         im.isAsync = m.isAsync;
+        beginBody(); // P41 D1: a member (params' defaults + getter/body + accessor setter) is one body
         for (const auto& mod : m.modifiers) {
             if (mod == "static") im.isStatic = true;
             else if (mod == "open") im.isVirtual = true;
@@ -899,6 +917,7 @@ private:
                 im.setterParamName = m.setterParam;
                 im.setterBody = block(m.setterBody);
             }
+            im.tempsUsed = endBody();
             return im;
         }
         im.kind = (m.kind == MemberKind::Operator) ? ir::MethodKind::Operator : ir::MethodKind::Method;
@@ -933,6 +952,7 @@ private:
         im.isIterator = sawYield_;
         if (opBody) inOperator_ = false;
         if (eqBody) inEqOperator_ = false;
+        im.tempsUsed = endBody();
         return im;
     }
 
@@ -1862,7 +1882,10 @@ struct CsScopeLegalizer {
             fixBody(c.initBody, paramNames(c.initParams));
         }
     }
+    // P41 D3 (issue #76): `<binding>__cs<N>` restarts per body — the renamed loop bindings live in that body
+    // only, so a body's text depends on its own source (same scope as the lowering temps, ir.hpp BODY NODES).
     void fixBody(std::vector<ir::StmtPtr>& body, std::unordered_set<std::string> declared) {
+        seq = 0;
         for (auto& s : body) collectLets(*s, declared);
         for (auto& s : body) renameFors(*s, declared);
     }

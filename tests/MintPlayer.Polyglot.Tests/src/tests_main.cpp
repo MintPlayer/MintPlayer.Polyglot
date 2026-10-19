@@ -38,6 +38,7 @@ int main() {
     run_routing_origin();
     run_wave2_coverage();
     run_p40_outputs();
+    run_p41_determinism();
 
     if (g_failures == 0) {
         std::cout << "\nAll tests passed.\n";

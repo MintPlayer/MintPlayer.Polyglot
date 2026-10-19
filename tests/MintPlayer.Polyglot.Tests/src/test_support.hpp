@@ -173,3 +173,4 @@ void run_p30_download();      // P30 slices 0-4
 void run_routing_origin();    // P30 slices 7-8, P38 s3/s8, issues #29 #33-#36
 void run_wave2_coverage();    // wave 2 (G42-G48), P39
 void run_p40_outputs();       // P40 slices 10-12
+void run_p41_determinism();   // P41 (issue #76) D5/D8: per-body temps, byte-identical modules across roots

@@ -1452,6 +1452,112 @@ static std::vector<ir::ModuleImport> buildImports(const ImportGraph& graph, cons
     return out;
 }
 
+// P41 D5 (issue #76): a file's Tier-1 attribute import/using lines, DERIVED from the declarations the file holds
+// (each declaration and parameter carries the lines its own bindings need — lower.cpp renderAttrLines), deduped
+// in first-use order. Never collected over the closure: a file carries exactly what its own declarations use,
+// and a missed use site fails loudly in the consumer's compiler rather than adding a silent extra import.
+static void deriveAttrImports(ir::Module& m) {
+    std::vector<std::string>& out = m.attrImports;
+    out.clear();
+    auto add = [&](const std::vector<std::string>& lines) {
+        for (const auto& l : lines)
+            if (std::find(out.begin(), out.end(), l) == out.end()) out.push_back(l);
+    };
+    auto params = [&](const std::vector<ir::Param>& ps) { for (const auto& p : ps) add(p.attrImports); };
+    auto method = [&](const ir::Method& mm) { add(mm.attrImports); params(mm.params); };
+    auto function = [&](const ir::Function& f) { add(f.attrImports); params(f.params); };
+    for (const auto& d : m.records) { add(d.attrImports); for (const auto& mm : d.methods) method(mm); }
+    for (const auto& d : m.classes) {
+        add(d.attrImports);
+        for (const auto& f : d.fields) add(f.attrImports);
+        params(d.initParams);
+        for (const auto& mm : d.methods) method(mm);
+    }
+    for (const auto& d : m.interfaces) for (const auto& mm : d.methods) method(mm);
+    for (const auto& d : m.extensions) function(d);
+    for (const auto& d : m.functions) function(d);
+}
+
+// P41 D13 (issue #76): ONE output file's view of the once-lowered module. The unit is lowered exactly once per
+// (compile, target); each emitted file is a slice of that module — the declarations whose `originModule` the
+// file keeps. The IR is move-only, and the prelude declarations are shared by every file of a per-file-prelude
+// target, so a slice BORROWS its declarations out of the whole module (recording each one's slot) and the
+// destructor returns them — the whole module is intact again for the next file. List order is preserved both
+// ways, so emission order is unchanged. (`ir::Method::pairedSetter` points into its class's `methods` buffer,
+// which a move carries along, so the pointer stays valid across the borrow.)
+class ModuleSlice {
+public:
+    ModuleSlice(ir::Module& whole, const std::set<std::string>& keep) : whole_(whole) {
+        auto kept = [&](const auto& d) { return keep.count(d.originModule) != 0; };
+        borrow(whole_.enums, module.enums, enums_, kept);
+        borrow(whole_.unions, module.unions, unions_, kept);
+        borrow(whole_.records, module.records, records_, kept);
+        borrow(whole_.classes, module.classes, classes_, kept);
+        borrow(whole_.interfaces, module.interfaces, interfaces_, kept);
+        borrow(whole_.globals, module.globals, globals_, kept);
+        borrow(whole_.extensions, module.extensions, extensions_, kept);
+        borrow(whole_.functions, module.functions, functions_, kept);
+    }
+    ModuleSlice(const ModuleSlice&) = delete;
+    ModuleSlice& operator=(const ModuleSlice&) = delete;
+    ~ModuleSlice() {
+        auto all = [](const auto&) { return true; };
+        release(whole_.enums, module.enums, enums_, all);
+        release(whole_.unions, module.unions, unions_, all);
+        release(whole_.records, module.records, records_, all);
+        release(whole_.classes, module.classes, classes_, all);
+        release(whole_.interfaces, module.interfaces, interfaces_, all);
+        release(whole_.globals, module.globals, globals_, all);
+        release(whole_.extensions, module.extensions, extensions_, all);
+        release(whole_.functions, module.functions, functions_, all);
+    }
+
+    // P40 §0 on the slice: return (now) every prelude declaration this file does not reach — the same predicate
+    // as `pruneUnreachablePrelude`, phrased as a give-back so the declarations survive for the next file.
+    // `forcedReach` names what is reached ELSEWHERE (a prelude held on behalf of other files).
+    void pruneUnreachablePrelude(const std::set<std::string>* forcedReach) {
+        const std::set<std::string> reached = preludeReach(module, forcedReach);
+        auto dropNamed = [&](const auto& d) { return ir::isPreludeOrigin(d.originModule) && !reached.count(d.name); };
+        auto dropFn = [&](const ir::Function& d) {
+            return ir::isPreludeOrigin(d.originModule) && !reached.count(d.name) &&
+                   (d.mangledName.empty() || !reached.count(d.mangledName));
+        };
+        release(whole_.enums, module.enums, enums_, dropNamed);
+        release(whole_.unions, module.unions, unions_, dropNamed);
+        release(whole_.records, module.records, records_, dropNamed);
+        release(whole_.classes, module.classes, classes_, dropNamed);
+        release(whole_.interfaces, module.interfaces, interfaces_, dropNamed);
+        release(whole_.globals, module.globals, globals_, dropNamed);
+        release(whole_.extensions, module.extensions, extensions_, dropFn);
+        release(whole_.functions, module.functions, functions_, dropFn);
+    }
+
+    ir::Module module; // the slice: this file's declarations; the per-file header fields are the caller's to fill
+
+private:
+    template <class T, class Pred>
+    static void borrow(std::vector<T>& from, std::vector<T>& to, std::vector<std::size_t>& at, Pred keep) {
+        for (std::size_t i = 0; i < from.size(); ++i)
+            if (keep(from[i])) { to.push_back(std::move(from[i])); at.push_back(i); }
+    }
+    // Return the entries of `to` that satisfy `back` to their recorded slots in `from`; the rest stay, compacted
+    // in order (so `at` stays parallel to `to`).
+    template <class T, class Pred>
+    static void release(std::vector<T>& from, std::vector<T>& to, std::vector<std::size_t>& at, Pred back) {
+        std::size_t w = 0;
+        for (std::size_t k = 0; k < to.size(); ++k) {
+            if (back(to[k])) { from[at[k]] = std::move(to[k]); continue; }
+            if (w != k) { to[w] = std::move(to[k]); at[w] = at[k]; }
+            ++w;
+        }
+        to.erase(to.begin() + static_cast<std::ptrdiff_t>(w), to.end());
+        at.erase(at.begin() + static_cast<std::ptrdiff_t>(w), at.end());
+    }
+
+    ir::Module& whole_;
+    std::vector<std::size_t> enums_, unions_, records_, classes_, interfaces_, globals_, extensions_, functions_;
+};
+
 // The one compile pipeline. `sharedOnly` (P40 §0, the shared prelude's phase 2) emits ONLY the prelude,
 // pruned to the union reach handed in; `source` then just links the std modules that union came from.
 static EmitResult compileImpl(const std::string& source, const BackendHandle& target, ModuleResolver* resolver,
@@ -1573,6 +1679,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         ir::Module module = lower(unit, target.name());
         if (loweringFailed(module)) { result.diagnostics = diags.items(); return result; }
         pruneUnreachablePrelude(module); // P40 §0: only the prelude this program reaches
+        deriveAttrImports(module);       // P41 D5: the import lines the kept declarations use
         module.options = optionsOf(""); // P40 B1: rules read `option.<name>` (defaults = byte-identical)
         module.originInfo = lib.originInfo;      // P38: off => byte-identical
         module.sourceFiles = result.sources.files;
@@ -1591,9 +1698,14 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         return result;
     }
 
-    // Partitioned emit: one file per user module + the entry (+ a shared prelude file for C# project builds),
-    // each re-lowered fresh (lowering is pure; the Lowerer needs the full type universe, so we lower the whole
-    // unit and then keep only this file's decls). Basenames must be unique across the closure (flat output).
+    // Partitioned emit (P41 D13, issue #76): one file per user module + the entry (+ a shared prelude file for
+    // C# project builds). The unit is lowered ONCE — the Lowerer needs the full type universe, and the
+    // flat-namespace features (overload mangling, extension disambiguation, prelude reach) are unit-wide by
+    // design (P40 D16) — and every output file is a SLICE of that one lowered module (ModuleSlice): the
+    // declarations whose originModule it keeps, nothing re-lowered. Basenames must be unique across the
+    // closure (flat output).
+    ir::Module whole = lower(unit, target.name());
+    if (loweringFailed(whole)) { result.diagnostics = diags.items(); return result; } // P40 A2: write nothing
     std::map<std::string, std::string> baseByCanon; // canon -> emitted basename
     std::set<std::string> seenBase;
     for (const auto& canon : userOrigins) {
@@ -1617,30 +1729,25 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
     // This is load-bearing for origins, not cosmetic: prelude prepending shifts every recorded origin
     // line, and Python — the only target declaring preludes — gains a source-map sink in this milestone.
     const bool preludeEverywhere = target.backend()->preludePerFile();
-    // Emit one file: re-lower the unit, keep only `keep`-origin decls, set link/access, resolve imports.
     // P38: the origin list produced by the most recent emitKeep() call, stashed onto the matching output
     // below. Each emitted file has its own line numbering, so origins cannot be accumulated across them.
     std::vector<OriginRecord> lastOrigins;
-    bool anyLoweringFailed = false; // P40 A2: set by emitKeep; the whole result is then withheld
-    auto withheld = [&]() {
-        result.code.clear();
-        result.modules.clear();
-        result.origins.clear();
-        result.diagnostics = diags.items();
-    };
-    // P40 §0: `forcedReach` names prelude declarations reached ELSEWHERE (the shared prelude's union across
-    // roots); null = compute it here.
-    auto emitKeep = [&](const std::set<std::string>& keep, const std::string& importOrigin,
-                        const std::set<std::string>* forcedReach = nullptr) -> std::string {
-        ir::Module m = lower(unit, target.name());
-        // Every file re-lowers the whole unit, so a failure repeats identically: report it once.
-        if (!anyLoweringFailed && loweringFailed(m)) anyLoweringFailed = true;
-        // P40 B3: every name each user module emits (functions under their emitted, possibly mangled, name),
-        // for the importers that import it bare. Read off the lowered module, so it is exactly what is emitted.
-        std::map<std::string, std::string> allNamesByCanon;
-        // P40 review r3: a named import of an OVERLOADED function names every overload's emitted (mangled) name —
-        // `import { check } from "./ov"` used to name `check` while ov exported `check$i32` (TS2305, Python ImportError).
-        std::map<std::string, std::map<std::string, std::vector<std::string>>> fnNamesByCanon;
+
+    // ---- Whole-module facts, read ONCE off `whole` (a slice only ever sees its own declarations) ----------
+    // P40 B3: every name each user module emits (functions under their emitted, possibly mangled, name),
+    // for the importers that import it bare. Read off the lowered module, so it is exactly what is emitted.
+    std::map<std::string, std::string> allNamesByCanon;
+    // P40 review r3: a named import of an OVERLOADED function names every overload's emitted (mangled) name —
+    // `import { check } from "./ov"` used to name `check` while ov exported `check$i32` (TS2305, Python ImportError).
+    std::map<std::string, std::map<std::string, std::vector<std::string>>> fnNamesByCanon;
+    // Review r7: per module, the declarations this target emits with no runtime binding (manifest data):
+    // name -> 't' (a type only: `typeNames`) or 'u' (no export under that name: dropped).
+    std::map<std::string, std::map<std::string, char>> unboundByCanon;
+    // Review r7: every interface name of the closure — a file keeps only its own declarations, but a class
+    // implementing an IMPORTED interface still needs TS/PHP `implements`.
+    std::vector<std::string> allInterfaceNames;
+    {
+        const ir::Module& m = whole;
         for (const auto& d : m.functions)
             if (d.originModule != kPreludeOrigin && !d.originModule.empty() && !d.mangledName.empty() && d.mangledName != d.name)
                 fnNamesByCanon[d.originModule][d.name].push_back(d.mangledName);
@@ -1675,28 +1782,6 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
                         spelled.push_back(name);
             }
         }
-        // P40 §0: a file that holds the prelude on behalf of OTHER files too (the C# entry, or the split
-        // prelude file) keeps the union of what every file of the closure reaches — computed over the whole
-        // module, before it is partitioned. A per-file-prelude target keeps only what THIS file reaches.
-        const bool holdsPrelude = keep.count(kPreludeOrigin) != 0;
-        const bool holdsForOthers = holdsPrelude && !preludeEverywhere;
-        std::set<std::string> closureReach;
-        if (holdsForOthers && !forcedReach) {
-            closureReach = preludeReach(m);
-            forcedReach = &closureReach;
-        }
-        auto prune = [&](auto& vec) {
-            vec.erase(std::remove_if(vec.begin(), vec.end(),
-                                     [&](const auto& d) { return !keep.count(d.originModule); }),
-                      vec.end());
-        };
-        // P40 review r6 #6: read before the partition drops the other modules' declarations.
-        const auto spelledRefs = target.backend()->linksWithoutImports()
-                                     ? std::map<std::string, std::set<std::string>>()
-                                     : crossModuleReferences(m, importOrigin);
-        // Review r7: per module, the declarations this target emits with no runtime binding (manifest data):
-        // name -> 't' (a type only: `typeNames`) or 'u' (no export under that name: dropped).
-        std::map<std::string, std::map<std::string, char>> unboundByCanon;
         auto classify = [&](const std::vector<std::string>& kinds, char how) {
             for (const std::string& kind : kinds) {
                 auto put = [&](const std::string& origin, const std::string& n) {
@@ -1709,10 +1794,34 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         };
         classify(target.backend()->typeOnlyImports(), 't');
         classify(target.backend()->unboundImports(), 'u');
-        for (const auto& d : m.interfaces) m.linkedInterfaceNames.push_back(d.name); // review r7: before the partition
-        prune(m.enums); prune(m.unions); prune(m.records); prune(m.classes);
-        prune(m.interfaces); prune(m.globals); prune(m.extensions); prune(m.functions);
-        if (holdsPrelude) pruneUnreachablePrelude(m, holdsForOthers ? forcedReach : nullptr);
+        for (const auto& d : m.interfaces) allInterfaceNames.push_back(d.name);
+    }
+    // P40 §0: what the whole closure reaches of the prelude — the union a file holding the prelude on behalf of
+    // OTHER files (the C# entry, or the split prelude file) keeps. Computed at most once, on demand.
+    std::optional<std::set<std::string>> closureReach;
+    auto wholeReach = [&]() -> const std::set<std::string>& {
+        if (!closureReach) closureReach = preludeReach(whole);
+        return *closureReach;
+    };
+
+    // Emit one file: slice `whole` to the `keep`-origin decls, set link/access, resolve imports, emit.
+    // P40 §0: `forcedReach` names prelude declarations reached ELSEWHERE (the shared prelude's union across
+    // roots); null = compute it here. A per-file-prelude target keeps only what THIS file reaches.
+    auto emitKeep = [&](const std::set<std::string>& keep, const std::string& importOrigin,
+                        const std::set<std::string>* forcedReach = nullptr) -> std::string {
+        const bool holdsPrelude = keep.count(kPreludeOrigin) != 0;
+        const bool holdsForOthers = holdsPrelude && !preludeEverywhere;
+        if (holdsForOthers && !forcedReach) forcedReach = &wholeReach();
+        // P40 review r6 #6: read off the WHOLE module — the other modules' declarations are what it resolves.
+        const auto spelledRefs = target.backend()->linksWithoutImports()
+                                     ? std::map<std::string, std::set<std::string>>()
+                                     : crossModuleReferences(whole, importOrigin);
+        ModuleSlice slice(whole, keep); // borrows this file's declarations; returns them when it goes out of scope
+        ir::Module& m = slice.module;
+        if (holdsPrelude) slice.pruneUnreachablePrelude(holdsForOthers ? forcedReach : nullptr);
+        m.externTypes = whole.externTypes;          // the target's extern spellings: every file consults them
+        m.linkedInterfaceNames = allInterfaceNames; // review r7
+        deriveAttrImports(m);                       // P41 D5: exactly the lines this file's declarations use
         m.linked = true;
         m.options = optionsOf(importOrigin); // the prelude file (importOrigin = its basename) takes the entry's
         m.originInfo = lib.originInfo;      // P38: off => byte-identical
@@ -1745,7 +1854,6 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         const std::set<std::string> unionReach(sharedOnly->names.begin(), sharedOnly->names.end());
         result.code = emitKeep({kPreludeOrigin}, kPreludeBasename, &unionReach);
         result.origins = lastOrigins;
-        if (anyLoweringFailed) { withheld(); return result; }
         result.diagnostics = diags.items(); // warnings reach the host on success too (P40 A1)
         result.ok = true;
         return result;
@@ -1763,7 +1871,7 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         // is this root's own share — correct on its own, and empty when the root reaches no prelude at all
         // (then no file should exist). The prelude is synthesized runtime text with no `.pg` origin — its
         // lines are hidden, so it stays root-independent (PRD §4.F / SP2).
-        const std::set<std::string> reach = preludeReach(lower(unit, target.name()));
+        const std::set<std::string> reach = wholeReach();
         result.preludeReach.names.assign(reach.begin(), reach.end());
         for (std::size_t fid = 1; fid < result.sources.files.size(); ++fid) {
             const std::string& f = result.sources.files[fid];
@@ -1778,7 +1886,6 @@ static EmitResult compileImpl(const std::string& source, const BackendHandle& ta
         pf.sharedPrelude = true;
         result.modules.push_back(std::move(pf));
     }
-    if (anyLoweringFailed) { withheld(); return result; }
     result.diagnostics = diags.items(); // warnings reach the host on success too (P40 A1)
     result.ok = true;
     return result;

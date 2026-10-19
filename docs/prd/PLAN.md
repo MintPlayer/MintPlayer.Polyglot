@@ -3609,7 +3609,12 @@ evidence in `ANALYSIS.md`, and slices, spikes and decisions D1–D17 in its `PLA
     pinning such a plugin exits 64 until the plugin is rebuilt. The in-box targets are unaffected.
   - `docs/plugin-authoring.md` lists every key and every load error.
 
-## P41 — Deterministic per-module output (#76) + IDE-visible generated sources (#68) + CI under 5 minutes — 📝 designed + grilled (2026-10-19; PRD `docs/prd/issue-76-68-deterministic-output/`, 5-agent investigation, 9-question grilling, D1–D14 locked)
+## P41 — Deterministic per-module output (#76) + IDE-visible generated sources (#68) + CI under 5 minutes — ✅ built (2026-10-19; PRD `docs/prd/issue-76-68-deterministic-output/`, 5-agent investigation, 9-question grilling, D1–D15; CI is the gate)
+
+- **Release notes.** Emitted compiler temporaries renumber (per body, from 0) — committed output changes once
+  on upgrade and is then stable. The C# wrapper is `static partial class` in every file, including single-file
+  programs (D15). Third-party plugin authors: `fresh` temps restart per body; no manifest key or schema change;
+  the C# manifest no longer reads `module.linked`. In Debug builds the CLI prints C runtime assertions to stderr.
 
 Spark's GS1 core shares one `.pg` module between several roots and gates CI on `build --check`. Lowering numbers its
 desugaring temporaries once per root closure (entry declarations first) and the partitioned emitter re-lowers the

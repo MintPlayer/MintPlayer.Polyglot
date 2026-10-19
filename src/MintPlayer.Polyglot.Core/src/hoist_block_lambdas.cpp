@@ -13,12 +13,12 @@ using namespace mintplayer::polyglot::ir;
 class Hoister {
 public:
     void run(Module& m) {
-        for (auto& f : m.functions)  if (!f.exprBodied) hoistStmts(f.body);
-        for (auto& f : m.extensions) if (!f.exprBodied) hoistStmts(f.body);
-        for (auto& r : m.records) for (auto& mm : r.methods) if (!mm.exprBodied) hoistStmts(mm.body);
+        for (auto& f : m.functions)  if (!f.exprBodied) hoistBody(f.body);
+        for (auto& f : m.extensions) if (!f.exprBodied) hoistBody(f.body);
+        for (auto& r : m.records) for (auto& mm : r.methods) if (!mm.exprBodied) hoistBody(mm.body);
         for (auto& c : m.classes) {
-            for (auto& mm : c.methods) if (!mm.exprBodied) hoistStmts(mm.body);
-            if (c.hasInit) hoistStmts(c.initBody);
+            for (auto& mm : c.methods) if (!mm.exprBodied) hoistBody(mm.body);
+            if (c.hasInit) hoistBody(c.initBody);
         }
     }
 
@@ -26,6 +26,14 @@ private:
     int counter_ = 0;
     // The `__`-prefix matches the existing lowering gensym convention (`__opt`/`__w`) the codebase reserves.
     std::string fresh() { return "__pg_lam" + std::to_string(counter_++); }
+
+    // P41 D3 (issue #76): `__pg_lam<N>` restarts per body. A hoisted def lands in the block of its use, so
+    // sibling bodies reusing N never meet; a body's text then depends on its own source only (same scope as the
+    // lowering temps — ir.hpp BODY NODES).
+    void hoistBody(std::vector<StmtPtr>& body) {
+        counter_ = 0;
+        hoistStmts(body);
+    }
 
     void hoistStmts(std::vector<StmtPtr>& stmts) {
         std::vector<StmtPtr> out;

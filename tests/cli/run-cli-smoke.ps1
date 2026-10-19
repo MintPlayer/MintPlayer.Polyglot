@@ -13,6 +13,9 @@
 # record (stale-output cleanup and the deletion invariant), the named `spark-ci-flow` test, and
 # origin-info byte-identity across two checkout roots.
 #
+# P41 (issues #76/#68) adds: per-module determinism — a module reached from two roots is emitted once and
+# identically, --check stays unmasked — and the PRD §5 conformance "module alone" acceptance loop.
+#
 # Usage:  pwsh tests/cli/run-cli-smoke.ps1   (build the solution first; see CLAUDE.md)
 
 param(
@@ -1326,6 +1329,95 @@ try {
                     "review r5 ($($case.n)): a two-level rename reports one directory under --check and prints one hint (check $($rc.Rc), $hints hint(s); was 2)"
             }
         } else { Check $true "review r5 gating 1 / two-level hints (skipped: case-sensitive filesystem)" }
+    }
+
+    # ---- P41 / issue #76 (D4 revised, D8): a module reached from two roots emits identically and is produced once -
+    # Temporaries are numbered per body, so `lib` is the same text whichever root reached it; the driver emits a
+    # (canonical module, target) pair once per build and the "conflicting output" refusal is reserved for two
+    # DIFFERENT sources routed to one path. The CLI prints no per-write line, so "produced once" is pinned
+    # through its observable consequences: exit 0 without a conflict, lib.<ext> equal to lib compiled ALONE,
+    # and — because a conflict exits 1 and would mask --check's drift code (spike S5) — --check 0 then 3.
+    & {
+        $libPg = "import `"std.strings`"`nfn countUnits(s: string): i32 {`n  var n = 0`n  for i in 0..s.len() { n = n + i }`n  return n`n}"
+        $aPg = "import `"std.strings`"`nimport { countUnits } from `"./lib`"`nfn fromA(s: string): i32 {`n  var t = 0`n  for i in 0..s.len() { t = t + i }`n  return t + countUnits(s)`n}"
+        $bPg = "import `"std.strings`"`nimport { countUnits } from `"./lib`"`nfn fromB(s: string): i32 {`n  var t = 0`n  for i in 0..s.len() { t = t + i }`n  for j in 0..s.len() { t = t + j }`n  return t + countUnits(s)`n}"
+        $cfg4 = '{"targets":["typescript","csharp","php","python"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)","owned":true}]}'
+        $d = New-Proj (Join-Path $work "p41-two-roots") $cfg4 @{ "lib.pg" = $libPg; "a.pg" = $aPg; "b.pg" = $bPg }
+        $r = Pg $d @("build")
+        Check ($r.Rc -eq 0 -and $r.Out -notmatch 'conflicting output') "P41 #76: the issue's three files build on four targets without a conflict (exit $($r.Rc))"
+        $libTs = Join-Path $d "gen/lib.ts"
+        $ts = if (Test-Path $libTs) { Get-Content -Raw $libTs } else { "" }
+        Check ((Test-Path $libTs) -and $ts -match '__end0' -and $ts -notmatch '__end1') "P41 #76: gen/lib.ts is written with __end0 (per-body numbering), never __end1"
+        $cs = Join-Path $d "gen/lib.cs"; $php = Join-Path $d "gen/lib.php"
+        Check ((Test-Path $cs) -and (Get-Content -Raw $cs) -match '__end0') "P41 #76: gen/lib.cs carries __end0"
+        Check ((Test-Path $php) -and (Get-Content -Raw $php) -match '\$__end0') "P41 #76: gen/lib.php carries `$__end0"
+        Check (Test-Path (Join-Path $d "gen/lib.py")) "P41 #76: gen/lib.py is written"
+        # lib compiled ALONE (its own project, no root) is byte-identical to the lib the two-root build produced.
+        $alone = New-Proj (Join-Path $work "p41-two-roots-alone") $cfg4 @{ "lib.pg" = $libPg }
+        $ra = Pg $alone @("build")
+        $same = $true
+        foreach ($ext in @("ts", "cs", "php", "py")) {
+            $x = Join-Path $d "gen/lib.$ext"; $y = Join-Path $alone "gen/lib.$ext"
+            if (-not ((Test-Path $x) -and (Test-Path $y) -and (Get-FileHash $x -Algorithm SHA256).Hash -eq (Get-FileHash $y -Algorithm SHA256).Hash)) { $same = $false; Write-Host "        lib.$ext differs (two roots vs alone)" }
+        }
+        Check ($ra.Rc -eq 0 -and $same) "P41 #76: lib.<ext> from the two-root build equals lib compiled alone, on all four targets"
+        # --check: quiet on the committed result (the conflict no longer masks it), drift reported as 3.
+        $r = Pg $d @("build", "--check")
+        Check ($r.Rc -eq 0 -and $r.Out -notmatch 'conflicting output') "P41 #76: build --check on the committed two-root result is quiet (exit $($r.Rc))"
+        Add-Content -LiteralPath $libTs -Value "// drift"
+        $r = Pg $d @("build", "--check")
+        Check ($r.Rc -eq 3 -and $r.Out -match 'would update .*lib\.ts' -and $r.Out -notmatch 'conflicting output') "P41 #76: ... and a drifted gen/lib.ts is reported as 3 (would update), not masked by a conflict (exit $($r.Rc))"
+
+        # The `!`-shift class (ANALYSIS A3): a root's own null-asserts allocate temporaries; before P41 they bumped
+        # the counter the imported module's body then continued from. lib must read the same from both roots.
+        $libN = "fn maybe(x: i32): i32? {`n  if x > 0 { return x }`n  return null`n}`nfn useIt(x: i32): i32 {`n  var n = 0`n  for i in 0..maybe(x)! { n = n + i }`n  return n`n}"
+        $aN = "import { useIt } from `"./lib`"`nfn fromA(x: i32): i32 {`n  return useIt(x)`n}"
+        $bN = "import { maybe, useIt } from `"./lib`"`nfn fromB(x: i32): i32 {`n  let p = maybe(x)!`n  let q = maybe(x + 1)!`n  return p + q + useIt(x)`n}"
+        $cfg2 = '{"targets":["typescript","csharp"],"include":[{"pattern":"*.pg","output":"gen/%(Filename)","owned":true}]}'
+        $n = New-Proj (Join-Path $work "p41-null-assert") $cfg2 @{ "lib.pg" = $libN; "a.pg" = $aN; "b.pg" = $bN }
+        $r = Pg $n @("build")
+        $nAlone = New-Proj (Join-Path $work "p41-null-assert-alone") $cfg2 @{ "lib.pg" = $libN }
+        $ra = Pg $nAlone @("build")
+        $same = $true
+        foreach ($ext in @("ts", "cs")) {
+            $x = Join-Path $n "gen/lib.$ext"; $y = Join-Path $nAlone "gen/lib.$ext"
+            if (-not ((Test-Path $x) -and (Test-Path $y) -and (Get-FileHash $x -Algorithm SHA256).Hash -eq (Get-FileHash $y -Algorithm SHA256).Hash)) { $same = $false; Write-Host "        lib.$ext differs (null-assert roots vs alone)" }
+        }
+        Check ($r.Rc -eq 0 -and $r.Out -notmatch 'conflicting output' -and $ra.Rc -eq 0 -and $same) `
+            "P41 #76: a root with its own maybe(x)! temporaries does not shift the imported lib (exit $($r.Rc), lib.ts/.cs equal to lib alone)"
+    }
+
+    # ---- P41 acceptance (PRD §5): every non-entry module of a multi-module conformance program equals the module
+    # compiled alone. One loop inside the smoke leg, typescript only (the numbering is target-independent IR).
+    # Bounded: a module that does not compile on its own (it needs a flag the loop cannot infer, or lives in a
+    # package subdirectory the whole-program build names differently) is counted as a skip, not a failure.
+    & {
+        $progRoot = Join-Path $repo "tests/conformance/programs"
+        $programs = @(Get-ChildItem $progRoot -Directory | Where-Object { Test-Path (Join-Path $_.FullName "entry.pg") })
+        if ($programs.Count -eq 0) {
+            Check $true "P41 acceptance: no multi-module conformance program exists (loop skipped)"
+        } else {
+            $compared = 0; $skipped = 0; $bad = @()
+            foreach ($prog in $programs) {
+                $case = Join-Path $work "p41-conf-$($prog.Name)"
+                New-Item -ItemType Directory -Force $case | Out-Null
+                Copy-Item -Recurse (Join-Path $prog.FullName "*") $case
+                Set-Content -LiteralPath (Join-Path $case "pgconfig.json") -Value '{ "targets": ["typescript"] }'
+                $whole = Join-Path $case "whole"
+                & $Cli build (Join-Path $case "entry.pg") --lib io --out $whole --root $case *> $null
+                if ($LASTEXITCODE -ne 0) { $skipped++; Write-Host "        $($prog.Name): whole-program build failed (skipped)"; continue }
+                foreach ($mod in Get-ChildItem $case -Filter "*.pg" -File | Where-Object { $_.Name -ne "entry.pg" }) {
+                    $aloneDir = Join-Path $case "alone-$($mod.BaseName)"
+                    & $Cli build $mod.FullName --lib io --out $aloneDir --root $case *> $null
+                    $inWhole = Join-Path $whole "$($mod.BaseName).ts"; $inAlone = Join-Path $aloneDir "$($mod.BaseName).ts"
+                    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $inWhole) -or -not (Test-Path $inAlone)) { $skipped++; continue }
+                    $compared++
+                    if ((Get-FileHash $inWhole -Algorithm SHA256).Hash -ne (Get-FileHash $inAlone -Algorithm SHA256).Hash) { $bad += "$($prog.Name)/$($mod.Name)" }
+                }
+            }
+            Check ($bad.Count -eq 0 -and $compared -gt 0) `
+                "P41 acceptance: $compared non-entry module(s) across $($programs.Count) conformance program(s) equal the module compiled alone ($skipped skipped$(if ($bad.Count) { '; differs: ' + ($bad -join ', ') }))"
+        }
     }
 
     $g39Ok = (Test-G39 "counter" $false "counter" @("csharp", "typescript", "python", "php"))
