@@ -143,6 +143,11 @@ public:
     // P40 review r6 #10: where every declaration-side context's `require` lands (the owning emitter's prelude
     // keys). The decl contexts forward to it; the default records nothing.
     virtual void requirePrelude(const std::string& /*key*/) const {}
+    // P41 D2/D3 (issue #76): a declaration context is about to emit the code of a BODY node (ir.hpp BODY NODES)
+    // whose lowering minted `tempsUsed` temps. The owning emitter seeds its per-body counters from it — the
+    // `fresh` temps continue the body's own sequence (one allocator per body), the bound-template `$tmp` and
+    // do-while counters restart. The default (a hooks object with no emitter) does nothing.
+    virtual void beginBody(int /*tempsUsed*/) const {}
     std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
     std::string identType(const std::string& n) const { return specIdentType(specFn_(), n); } // review r5
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
@@ -204,7 +209,9 @@ class MethodDeclCtx : public IrDeclCtx {
 public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
     MethodDeclCtx(const ir::Method& m, std::string owner, bool ownerIsPrelude, const DeclHooks& hooks, EmitFn emit)
-        : m_(m), owner_(std::move(owner)), ownerIsPrelude_(ownerIsPrelude), hooks_(hooks), emit_(std::move(emit)) {}
+        : m_(m), owner_(std::move(owner)), ownerIsPrelude_(ownerIsPrelude), hooks_(hooks), emit_(std::move(emit)) {
+        hooks_.beginBody(m_.tempsUsed); // P41 D2: a member's rule emits exactly this one body (params' defaults + bodies)
+    }
     SourcePos declPos() const override { return m_.pos; } // P38: the method-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
@@ -285,7 +292,9 @@ class FnDeclCtx : public IrDeclCtx {
 public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
     FnDeclCtx(const ir::Function& f, const DeclHooks& hooks, EmitFn emit)
-        : f_(f), hooks_(hooks), emit_(std::move(emit)) {}
+        : f_(f), hooks_(hooks), emit_(std::move(emit)) {
+        hooks_.beginBody(f_.tempsUsed); // P41 D2: a function's rule emits exactly this one body (params' defaults + body)
+    }
     SourcePos declPos() const override { return f_.pos; } // P38: the function-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
@@ -570,10 +579,21 @@ private:
         Hooks(SpecFn s, InterpretedEmitter& e) : DeclHooks(s), e_(e) {}
         std::string renderTypeRef(const TypeRef& t) const override { return e_.renderType(t); }
         void requirePrelude(const std::string& key) const override { e_.requires_.insert(key); }
+        void beginBody(int tempsUsed) const override { e_.beginBody(tempsUsed); }
 
     private:
         InterpretedEmitter& e_;
     };
+
+    // P41 D2/D3 (issue #76): seed the per-body counters at a body node's entry (ir.hpp BODY NODES). `fresh`
+    // temps continue the body's lowering sequence (ONE allocator per body, P40 review r3 2(c)); the bound-template
+    // `$tmp` (`__pg_t<N>`) and do-while flag (`__dw<N>`) counters restart, so every emitted name in a body is a
+    // function of that body alone.
+    void beginBody(int tempsUsed) {
+        tmp_ = tempsUsed;
+        boundTmpSeq_ = 0;
+        doWhileSeq_ = 0;
+    }
 
     SpecFn specFn_;
     const engine::RuleTable& rules_;

@@ -3017,23 +3017,7 @@
                     "head": {
                       "tmpl": [
                         { "call": "csAccess" },
-                        "static ",
-                        {
-                          "case": {
-                            "when": [
-                              [
-                                {
-                                  "eq": [
-                                    "module.linked",
-                                    "true"
-                                  ]
-                                },
-                                "partial "
-                              ]
-                            ],
-                            "else": ""
-                          }
-                        },
+                        "static partial ",
                         "class PolyglotExtensions"
                       ]
                     },
@@ -3114,23 +3098,7 @@
             "head": {
               "tmpl": [
                 { "call": "csAccess" },
-                "static ",
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "module.linked",
-                            "true"
-                          ]
-                        },
-                        "partial "
-                      ]
-                    ],
-                    "else": ""
-                  }
-                },
+                "static partial ",
                 "class ",
                 { "get": "option.class" }
               ]

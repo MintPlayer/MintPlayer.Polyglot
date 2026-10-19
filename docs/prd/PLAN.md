@@ -3608,3 +3608,34 @@ evidence in `ANALYSIS.md`, and slices, spikes and decisions D1–D17 in its `PLA
     with `missing required key 'assignmentOrder', which manifest schema 2 requires` (review r8), so a lockfile
     pinning such a plugin exits 64 until the plugin is rebuilt. The in-box targets are unaffected.
   - `docs/plugin-authoring.md` lists every key and every load error.
+
+## P41 — Deterministic per-module output (#76) + IDE-visible generated sources (#68) + CI under 5 minutes — ✅ built (2026-10-19; PRD `docs/prd/issue-76-68-deterministic-output/`, 5-agent investigation, 9-question grilling, D1–D15; CI is the gate)
+
+- **Release notes.** Emitted compiler temporaries renumber (per body, from 0) — committed output changes once
+  on upgrade and is then stable. The C# wrapper is `static partial class` in every file, including single-file
+  programs (D15). Third-party plugin authors: `fresh` temps restart per body; no manifest key or schema change;
+  the C# manifest no longer reads `module.linked`. In Debug builds the CLI prints C runtime assertions to stderr.
+
+Spark's GS1 core shares one `.pg` module between several roots and gates CI on `build --check`. Lowering numbers its
+desugaring temporaries once per root closure (entry declarations first) and the partitioned emitter re-lowers the
+whole closure per output file, so `lib.pg` says `__end0` alone, `__end1` via `a.pg`, `__end2` via `b.pg`, and the
+byte-exact output sink refuses the second copy. TS, C# and PHP fail; Python only passes because its range loop
+needs no temp. Design in `PRD.md`, evidence in `ANALYSIS.md`, slices, spikes S1–S8 and decisions D1–D12 in its `PLAN.md`.
+
+- **Widened to the class:** eleven numbered-name families share the counter (`__end`, `__nn`, `__as`, `__opt`, `__ns`,
+  `__w`, `__c`, plugin `fresh` temps, hoisted `__pg_lam`, C# `__cs`), plus a separate leak — Tier-1 attribute import
+  lines are collected over the whole closure and pasted into every emitted file.
+- **Fix shape (D1–D3, D13):** number per **body** (function/method/accessor/init; lambdas share the enclosing
+  allocator), move `tempsUsed` from the module to the body so the P40 one-allocator invariant holds per body, scope
+  the sibling counters the same way — and **lower each root's closure once**, slicing the lowered IR per output
+  file instead of re-lowering the whole closure per file (the structure that let the bug exist). The driver skips
+  a module already produced this build; "conflicting output" stays for genuinely different sources (D4).
+- **#68 folded in (D9–D11):** the issue's suggested fix (an evaluation-time folder glob) would regress P40 review 2b
+  and produce CS2001 on `.pg` deletion; P40 already moved the hook into `BeforeCompile`. Built regardless as
+  outputs-list-derived evaluation-time items that the target removes and re-adds; re-verification on the current
+  package is the acceptance test.
+- **CI under the 5-minute wall (D12, D14) — maintainer directive.** The 2026-10-19 master run took 11 min: the
+  Core compiled in 45 s, the single 6757-line `tests_main.cpp` TU took ~9.5 min at g++ -O2 (P40 added 3115 lines;
+  pre-P40 it took ~1 min). Fix: split the test TU + build the test binary unoptimized; `ci.yml` builds once and fans
+  out a matrix of leg jobs (unit/watch/registry, cli-smoke/refusals/lsp, nuget, conformance if it fits) from one
+  artifact, `timeout-minutes: 5` everywhere. The nuget and smoke legs run in no workflow today; they join here.

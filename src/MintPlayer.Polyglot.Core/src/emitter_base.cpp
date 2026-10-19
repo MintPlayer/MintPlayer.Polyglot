@@ -1077,8 +1077,13 @@ std::string MethodDeclCtx::emitChild(const std::string& path, const std::string&
 
 const std::vector<ir::StmtPtr>* MethodDeclCtx::stmtList(const std::string& path) const {
     if (path == "decl.body") return &m_.body;
-    if (path == "decl.setterBody" && m_.pairedSetter) return &m_.pairedSetter->body; // paired indexer set (#40)
-    if (path == "decl.propSetterBody") return &m_.setterBody; // accessor-block setter (#39c)
+    if (path == "decl.setterBody" && m_.pairedSetter) { // paired indexer set (#40)
+        // P41 D2: the paired setter is ANOTHER body node, emitted inside this getter's rule — its lowering temps
+        // are numbered from 0 under the setter, so the `fresh` counter continues from ITS count while it emits.
+        hooks_.beginBody(m_.pairedSetter->tempsUsed);
+        return &m_.pairedSetter->body;
+    }
+    if (path == "decl.propSetterBody") return &m_.setterBody; // accessor-block setter (#39c) — same body as the getter
     return nullptr;
 }
 
@@ -1327,23 +1332,36 @@ std::string ClassDeclCtx::emitChild(const std::string& path, const std::string&)
     if (!emit_) return "";
     std::size_t i = 0;
     std::string f;
-    if (path.rfind("decl.superArgs.", 0) == 0 && splitIndexed(path, 15, i, f) && i < c_.superArgs.size() && f.empty())
+    // P41 D2: a class holds SEVERAL body nodes (ir.hpp BODY NODES) — the constructor (superArgs, initParams
+    // defaults, initBody) and each field initializer — and its rule interleaves them with the members' own
+    // contexts, so each one re-seeds the per-body counters where its code starts.
+    auto fieldInit = [&](std::size_t fi) -> std::string {
+        hooks_.beginBody(c_.fields[fi].tempsUsed);
+        return emit_(*c_.fields[fi].init);
+    };
+    if (path.rfind("decl.superArgs.", 0) == 0 && splitIndexed(path, 15, i, f) && i < c_.superArgs.size() && f.empty()) {
+        hooks_.beginBody(c_.tempsUsed);
         return emit_(*c_.superArgs[i]);
+    }
     if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size() && f == "init")
-        return c_.fields[i].init ? emit_(*c_.fields[i].init) : "";
-    if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size() && f == "default")
+        return c_.fields[i].init ? fieldInit(i) : "";
+    if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size() && f == "default") {
+        hooks_.beginBody(c_.tempsUsed);
         return c_.initParams[i].defaultValue ? emit_(*c_.initParams[i].defaultValue) : "";
+    }
     if (path.rfind("decl.staticInitFields.", 0) == 0 && splitIndexed(path, 22, i, f) && i < staticInit_.size() && f == "init")
-        return emit_(*c_.fields[staticInit_[i]].init);
+        return fieldInit(staticInit_[i]);
     if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size() && f == "init")
-        return emit_(*c_.fields[instanceInit_[i]].init);
+        return fieldInit(instanceInit_[i]);
     if (path.rfind("decl.deferredInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < deferInit_.size() && f == "init")
-        return emit_(*c_.fields[deferInit_[i]].init); // review r5 #7
+        return fieldInit(deferInit_[i]); // review r5 #7
     return "";
 }
 
 const std::vector<ir::StmtPtr>* ClassDeclCtx::stmtList(const std::string& path) const {
-    return path == "decl.initBody" ? &c_.initBody : nullptr;
+    if (path != "decl.initBody") return nullptr;
+    hooks_.beginBody(c_.tempsUsed); // P41 D2: the constructor body node (see emitChild)
+    return &c_.initBody;
 }
 
 std::unique_ptr<IrDeclCtx> ClassDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
@@ -1546,8 +1564,10 @@ std::string ModuleDeclCtx::emitChild(const std::string& path, const std::string&
     if (!emit_) return "";
     std::size_t i = 0;
     std::string f;
-    if (path.rfind("module.globals.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.globals.size() && f == "init")
+    if (path.rfind("module.globals.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.globals.size() && f == "init") {
+        hooks_.beginBody(m_.globals[i].tempsUsed); // P41 D2: a global's initializer is a body node of its own
         return m_.globals[i].init ? emit_(*m_.globals[i].init) : "";
+    }
     return "";
 }
 
@@ -1996,7 +2016,11 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     out_.clear();
     indent_ = 0;
     externMap_.clear();
-    tmp_ = m.tempsUsed; // P40 review r3 2(c): continue lowering's temp numbering (one allocator)
+    // P41 D2/D3: the temp counters are PER BODY — every body node's context seeds them (beginBody) before its
+    // code emits; nothing outside a body may mint a temp, so the module-level values are never read.
+    tmp_ = 0;
+    boundTmpSeq_ = 0;
+    doWhileSeq_ = 0;
     requires_.clear();
     slotHit_ = false; // P40 §0: set by the Program rule's preludeSlot marker
     slotOffset_ = 0;

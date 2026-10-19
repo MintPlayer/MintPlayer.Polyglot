@@ -190,7 +190,8 @@ the esbuild-pattern npm CLI sibling), **P16d** (Visual Studio LSP client — bui
 **P20** (alternative input "skins" — designed, demand-gated). **P40** (issue #73 library-grade output) is
 merged (PR #75, approved by the Spark session after 10 review rounds; `docs/prd/issue-73-library-grade/`).
 
-**Next step:** issue #74; or finish P23 verification, or pick up the P22 tail.
+**Next step:** land P41 (issues #76 + #68 + the 5-minute CI wall, `docs/prd/issue-76-68-deterministic-output/`,
+built, PR open); then issue #74, P23 verification, or the P22 tail.
 
 To verify a build: `pwsh scripts/build-and-test.ps1` (build → unit tests → differential C#/TS/Python
 conformance), or the **`/build-and-test`** skill.

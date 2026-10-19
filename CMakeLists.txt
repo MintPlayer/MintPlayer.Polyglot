@@ -77,10 +77,14 @@ endif()
 # --- Tests: the in-process unit/golden suite -------------------------------------------------------------
 file(GLOB TESTS_SOURCES CONFIGURE_DEPENDS ${TESTS_DIR}/src/*.cpp)
 add_executable(polyglot-tests ${TESTS_SOURCES})
-target_include_directories(polyglot-tests PRIVATE ${CLI_DIR}/src)  # tests_main.cpp includes watch.hpp/exe_path.hpp
+target_include_directories(polyglot-tests PRIVATE ${CLI_DIR}/src)  # test_support.hpp includes watch.hpp/exe_path.hpp
 target_link_libraries(polyglot-tests PRIVATE polyglot-core)
 if(MSVC)
-  target_compile_options(polyglot-tests PRIVATE /bigobj)  # mirrors the .vcxproj: tests_main.cpp is one large TU (C1128)
+  target_compile_options(polyglot-tests PRIVATE /bigobj)  # mirrors the .vcxproj: the test TUs are large (C1128)
+else()
+  # P41 D14: the unit suite is one giant TU family; -O2 took 9.5 min in CI after P40 and tests do not need optimization.
+  # (Appended after CMAKE_CXX_FLAGS_RELEASE, so it overrides -O3; the `polyglot` CLI stays optimized.)
+  target_compile_options(polyglot-tests PRIVATE -O0)
 endif()
 
 # G45 (wave 2): the emitter's rule-interpreter recursion is stack-hungry; mirror the .vcxproj's 16 MB

@@ -11,7 +11,7 @@
 #include <map>
 #include <set>
 #include <optional>
-#include <set>
+#include <tuple>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -24,6 +24,9 @@
 
 #include <fcntl.h>
 #include <io.h>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 #endif
 
 #include "mintplayer/polyglot/arm_trace.hpp"
@@ -369,6 +372,12 @@ struct RunState {
     // lists, and reconcileOutputs deletes from it (P40 review, D21).
     cli::OutputsRecord prev;
     cli::RecordLoad prevLoad = cli::RecordLoad::Missing;
+    // P41 D4 (issue #76): the non-root modules this build has already produced, keyed by (canonical source path,
+    // target name, output path). A module's text is a function of its own source (P41 D1–D5), so the second
+    // root that reaches it would produce the identical file — the driver skips it before the sink instead of
+    // proving the bytes equal after the fact. Roots are never in this set (an entry file differs from the same
+    // module emitted as an import), and a different target or a different routed path is a different file.
+    std::set<std::tuple<std::string, std::string, std::string>> producedModules;
     bool dryRun() const { return sink.checking(); }
 };
 
@@ -388,9 +397,12 @@ std::vector<std::string> loadedHeaderLines() {
     return out;
 }
 
-// Put one file through the sink; a non-empty return is the diagnostic. Deduping across a multi-root
-// project build (§4.5) and across config groups (P40): identical content is written once, a genuine
-// content conflict (two modules or groups resolving to one output path) is a hard error, never a clobber.
+// Put one file through the sink; a non-empty return is the diagnostic. P41 D4 (issue #76): a module reached
+// from several roots is identical BY CONSTRUCTION (its text is a function of its own source) and the driver
+// produces it once (RunState::producedModules) — it never reaches the sink a second time. What the sink still
+// dedupes is byte-equal content from DIFFERENT producers; its "conflicting output" refusal is for its genuine
+// cases — two different sources routed to one output path, or the same path diverging under origin info —
+// and that is a hard error, never a clobber.
 std::string sinkPut(cli::OutputSink& sink, const fs::path& out, const std::string& content, bool originInfo,
                     const cli::OutputSink::Claim& claim = {}) {
     switch (sink.put(out, content, claim)) {
@@ -650,6 +662,12 @@ bool emitOne(RunState& run, SectionOut& sec, const std::string& source, const fs
             continue;
         }
         if (result.modules[i].sharedPrelude && result.modules[i].code.empty()) continue; // nothing reached
+        // P41 D4: a non-root module already produced for this target at this path in this build (reached from an
+        // earlier root) is skipped outright — identical by construction, so no second emit, sink put or write.
+        if (!result.modules[i].sharedPrelude &&
+            !run.producedModules.insert({result.modules[i].sourcePath, target.backend()->name(),
+                                         cli::outputKey(outs[i + 1])}).second)
+            continue;
         if (!writeOne(outs[i + 1], result.modules[i].code, result.modules[i].origins,
                       result.modules[i].sharedPrelude ? std::string("the prelude") : result.modules[i].sourcePath))
             return false;
@@ -1155,7 +1173,7 @@ int buildGroup(RunState& run, PgConfig& pc, const std::vector<fs::path>& inputs,
     // §4.5 multi-file project (e.g. the MSBuild NuGet globs every .pg): emit each linked module exactly once.
     // Read all inputs, canonicalize, and find the ROOTS — inputs not imported by another input. Compile only
     // roots (an imported-only library .pg is emitted within its importer's closure, never also as its own
-    // entry), deduping modules shared across roots by output path.
+    // entry); a module shared across roots is produced once (P41 D4, RunState::producedModules).
     // §4.5 / issue #14: a multi-file build is a C# PROJECT — hoist the shared prelude into one
     // __polyglot_prelude.cs. P40 §0: it is pruned to what is reached, so it is built in two phases — compile
     // every root (collecting their reach), then emit the one file from the union (writeSharedPrelude).
@@ -2530,6 +2548,15 @@ void loadPluginsNextToExe(const char* argv0) {
 static int run(const std::vector<std::string>& args, const char* argv0);
 
 int main(int argc, char** argv) {
+#if defined(_MSC_VER) && defined(_DEBUG)
+    // P41: a command-line compiler must never block on a dialog. The Debug CRT reports a failed assertion or
+    // a runtime error through a message box by default, which hangs an unattended run (a gate, CI, an agent)
+    // and hides the text; route both to stderr so the message lands in the log and the process exits.
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
     std::vector<std::string> args(argv + 1, argv + argc);
 
     // `--emit-arm-trace <file>`: plugin arm-coverage tracing (docs/prd/code-coverage-upload).
