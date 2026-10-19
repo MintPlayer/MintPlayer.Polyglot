@@ -1,0 +1,27 @@
+import "std.io"
+
+// P40 review r6 (part 2): a lambda as an operand that more of the expression follows is parenthesized. Python
+// printed `lambda : 1 if b else None` — ONE lambda returning `1 if b else None`, never `None` — so `pick(false)`
+// was a function, `??` kept it, and `nf5` printed `null` where C# prints 9. The same holds for a match arm's value
+// (Python's arms are a chain of `<value> if <test> else …`).
+fn orDefault<T>(x: T?, d: T): T => x ?? d
+fn pick(b: bool): (() => i32)? => if b { () => 1 } else { null }
+fn choose(k: i32): (() => i32)? => match k {
+  1 => () => 10,
+  2 => () => 20,
+  _ => null,
+}
+
+fn main() {
+  let f: (() => i32)? = null
+  let g = orDefault(f, () => 5)
+  print(g())
+  let h: (() => i32)? = pick(true)
+  if h != null {
+    print(h())
+  }
+  print((pick(false) ?? (() => 9))())
+  print((choose(1) ?? (() => 0))())
+  print((choose(2) ?? (() => 0))())
+  print((choose(3) ?? (() => 0))())
+}

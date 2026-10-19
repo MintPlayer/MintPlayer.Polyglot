@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "mintplayer/polyglot/backend.hpp" // kPluginSchemaVersion: a missing required key names the schema
 #include "mintplayer/polyglot/json.hpp"
 
 namespace mintplayer::polyglot {
@@ -20,7 +21,14 @@ void loadStringMap(const json::Value& obj, std::unordered_map<std::string, std::
 } // namespace
 
 SpecLoadResult loadBackendSpec(const std::string& json) {
-    return loadBackendSpec(json::parse(json));
+    std::string err;
+    json::Value doc = json::parse(json, err);
+    if (!err.empty()) {
+        SpecLoadResult r;
+        r.errors.push_back("backend spec: " + err);
+        return r;
+    }
+    return loadBackendSpec(doc);
 }
 
 SpecLoadResult loadBackendSpec(const json::Value& doc) {
@@ -41,6 +49,27 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     loadStringMap(doc["binaryOp"], r.spec.binaryOp);
     loadStringMap(doc["wrapInt"], r.spec.wrapInt);
     loadStringMap(doc["preludes"], r.spec.preludes);
+    { // review r5: prelude -> the preludes it needs; every name must be a declared prelude (anti-silent-drop)
+        const json::Value& pr = doc["preludeRequires"];
+        if (pr.kind == json::Value::Kind::Object) {
+            for (const auto& [k, v] : pr.members) {
+                if (!r.spec.preludes.count(k))
+                    r.errors.push_back("backend spec: preludeRequires names '" + k + "', which is not a declared prelude");
+                if (v.kind != json::Value::Kind::Array) {
+                    r.errors.push_back("backend spec: preludeRequires['" + k + "'] must be an array of prelude names");
+                    continue;
+                }
+                for (const auto& d : v.items()) {
+                    if (d.kind != json::Value::Kind::String || !r.spec.preludes.count(d.asString()))
+                        r.errors.push_back("backend spec: preludeRequires['" + k + "'] names '" + d.asString() +
+                                           "', which is not a declared prelude");
+                    else r.spec.preludeRequires[k].push_back(d.asString());
+                }
+            }
+        } else if (pr.kind != json::Value::Kind::Null) {
+            r.errors.push_back("backend spec: preludeRequires must be an object of prelude -> [prelude, ...]");
+        }
+    }
 
     for (const auto& kv : doc["delimited"].members) {
         const json::Value& d = kv.second;
@@ -73,9 +102,111 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
     r.spec.linksWithoutImports   = doc["linksWithoutImports"].asBool(false);
     r.spec.forbidsShadowedLocals = doc["forbidsShadowedLocals"].asBool(false);
     r.spec.expressionOnlyLambdas = doc["expressionOnlyLambdas"].asBool(false);
+    r.spec.nativeCompoundAssign  = doc["nativeCompoundAssign"].asBool(false);
+    r.spec.operandSnapshot       = doc["operandSnapshot"].asString();
+    if (!r.spec.operandSnapshot.empty() && (r.spec.operandSnapshot.find("{tmp}") == std::string::npos ||
+                                            r.spec.operandSnapshot.find("{0}") == std::string::npos)) {
+        r.errors.push_back("backend spec: 'operandSnapshot' must spell both '{tmp}' (the temp) and '{0}' (the operand)");
+        return r;
+    }
+    r.spec.nativeCoalesceAssign  = doc["nativeCoalesceAssign"].asBool(false);
+    { // P40 review r5 item 23: required — a forgotten order would silently write a rebound slot (anti-silent-drop)
+        const json::Value& ao = doc["assignmentOrder"];
+        const std::string s = ao.kind == json::Value::Kind::String ? ao.asString() : std::string();
+        // P40 review r8: a manifest built before the key existed (it has no `assignmentOrder` at all) hears which key
+        // is missing and which manifest schema requires it — a third-party author's first sight of the change.
+        if (s == "targetFirst") r.spec.assignValueFirst = false;
+        else if (s == "valueFirst") r.spec.assignValueFirst = true;
+        else if (ao.kind == json::Value::Kind::Null)
+            r.errors.push_back("backend spec: missing required key 'assignmentOrder', which manifest schema " +
+                               std::to_string(kPluginSchemaVersion) + " requires: \"targetFirst\" (a plain assignment "
+                               "evaluates the target's receiver/indices before the value) or \"valueFirst\" (the value "
+                               "first); the plugin was built for an earlier engine — add the key and rebuild it");
+        else r.errors.push_back("backend spec: 'assignmentOrder' must be \"targetFirst\" (a plain assignment evaluates "
+                                "the target's receiver/indices before the value) or \"valueFirst\" (the value first)");
+    }
+    { // P40 review r4 items 18/21
+        const json::Value& es = doc["exprStmt"];
+        if (es.kind == json::Value::Kind::Object) {
+            for (const auto& m : es.members)
+                if (m.first != "discardPrefix" && m.first != "parenIfStarts")
+                    r.errors.push_back("exprStmt: unknown key '" + m.first + "' (discardPrefix, parenIfStarts)");
+            r.spec.exprStmtDiscardPrefix = es["discardPrefix"].asString();
+            for (const json::Value& k : es["parenIfStarts"].items()) {
+                if (k.asString().empty()) r.errors.push_back("exprStmt.parenIfStarts: an empty token");
+                else r.spec.exprStmtParenIfStarts.push_back(k.asString());
+            }
+        } else if (es.kind != json::Value::Kind::Null) r.errors.push_back("exprStmt must be an object");
+    }
+    // P40 review r7: declaration kinds with no runtime binding on this target (validated: a typo would re-break imports)
+    auto importKinds = [&](const char* key, std::initializer_list<const char*> allowed, std::vector<std::string>& out) {
+        const json::Value& ti = doc[key];
+        if (ti.kind == json::Value::Kind::Array) {
+            for (const json::Value& k : ti.items()) {
+                const std::string s = k.asString();
+                bool ok = false;
+                std::string list;
+                for (const char* a : allowed) { ok = ok || s == a; list += (list.empty() ? "" : ", ") + std::string(a); }
+                if (!ok) r.errors.push_back(std::string(key) + ": unknown declaration kind '" + s + "' (" + list + ")");
+                else out.push_back(s);
+            }
+        } else if (ti.kind != json::Value::Kind::Null) r.errors.push_back(std::string(key) + " must be an array");
+    };
+    const std::size_t errorsBefore = r.errors.size();
+    importKinds("typeOnlyImports", {"union", "interface"}, r.spec.typeOnlyImports);
+    importKinds("unboundImports", {"union", "unionCase", "interface"}, r.spec.unboundImports);
+    if (r.errors.size() != errorsBefore) return r; // a load error (r.ok stays false)
 
-    for (const auto& kv : doc["escapes"].members)
-        if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.escapes[kv.first]);
+    // P40 A1: per-context literal spelling. Shape-checked here so a broken context never emits a literal the
+    // target misreads: every context names its quote, maps the backslash and that quote, and carries a
+    // code-point template able to spell any BMP character (the `\x$H2` form cannot carry U+2028).
+    if (doc.has("escapes")) {
+        r.errors.push_back("backend spec: 'escapes' was replaced by 'literals' (P40, manifest schema 2)");
+        return r;
+    }
+    const json::Value& lits = doc["literals"];
+    if (lits.kind != json::Value::Kind::Null && lits.kind != json::Value::Kind::Object) {
+        r.errors.push_back("backend spec: 'literals' must be an object of named contexts");
+        return r;
+    }
+    for (const auto& kv : lits.members) {
+        const std::string where = "backend spec: literals." + kv.first;
+        const json::Value& c = kv.second;
+        if (c.kind != json::Value::Kind::Object) { r.errors.push_back(where + " must be an object"); return r; }
+        for (const auto& m : c.members)
+            if (m.first != "quote" && m.first != "map" && m.first != "codepoint" && m.first != "astral") {
+                r.errors.push_back(where + ": unknown key '" + m.first + "' (quote, map, codepoint, astral)");
+                return r;
+            }
+        BackendSpec::LiteralContext lc;
+        lc.quote = c["quote"].asString();
+        loadStringMap(c["map"], lc.map);
+        lc.codepoint = c["codepoint"].asString();
+        lc.astral = c["astral"].asString();
+        if (lc.quote.empty()) { r.errors.push_back(where + " needs a 'quote'"); return r; }
+        if (!lc.map.count("\\") || !lc.map.count(lc.quote)) {
+            r.errors.push_back(where + ": 'map' must escape the backslash and the context's quote (" + lc.quote + ")");
+            return r;
+        }
+        auto holes = [](const std::string& t) {
+            int n = 0;
+            for (std::size_t p = 0; (p = t.find("$H", p)) != std::string::npos; p += 2) ++n;
+            return n;
+        };
+        const bool bmpOk = holes(lc.codepoint) == 1 && lc.codepoint.find("$H2") == std::string::npos;
+        if (!bmpOk) {
+            r.errors.push_back(where + " needs a 'codepoint' template with one $H4, $H8 or $H hole (one that can "
+                                       "spell any BMP character)");
+            return r;
+        }
+        if (!lc.astral.empty() && lc.astral != "surrogates" &&
+            (holes(lc.astral) != 1 || lc.astral.find("$H4") != std::string::npos ||
+             lc.astral.find("$H2") != std::string::npos)) {
+            r.errors.push_back(where + ": 'astral' is \"surrogates\" or a template with one $H8 or $H hole");
+            return r;
+        }
+        r.spec.literals[kv.first] = std::move(lc);
+    }
     for (const auto& kv : doc["tables"].members)
         if (kv.second.kind == json::Value::Kind::Object) loadStringMap(kv.second, r.spec.tables[kv.first]);
 
@@ -88,18 +219,73 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
             if (k.kind == json::Value::Kind::String) r.spec.genericsErase.insert(k.asString());
     }
 
+    const json::Value& an = doc["absentNormalize"]; // P40 review A1
+    if (an.kind == json::Value::Kind::Object) {
+        r.spec.absentNormalizePrefix = an["prefix"].asString();
+        r.spec.absentNormalizeSuffix = an["suffix"].asString();
+        if (r.spec.absentNormalizeSuffix.empty())
+            r.errors.push_back("absentNormalize needs a non-empty 'suffix'");
+        for (const json::Value& k : an["foldedBy"].items()) { // P40 review r4 item 16
+            const std::string s = k.asString();
+            if (s != "coalesce" && s != "nullAssert" && s != "nullSafe")
+                r.errors.push_back("absentNormalize.foldedBy: unknown consumer '" + s +
+                                   "' (known: coalesce, nullAssert, nullSafe)");
+            else r.spec.absentFoldedBy.push_back(s);
+        }
+        if (r.spec.absentFoldedBy.empty())
+            r.errors.push_back("absentNormalize needs a non-empty 'foldedBy' (the consumers that fold every absent "
+                               "form on this target: coalesce, nullAssert, nullSafe)");
+    }
+
     const json::Value& wa = doc["wrapAtom"];
     if (wa.kind == json::Value::Kind::Object) {
-        for (const json::Value& k : wa["recv"].items())
-            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomRecv.push_back(k.asString());
-        for (const json::Value& k : wa["unary"].items())
-            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomUnary.push_back(k.asString());
+        if (wa["recv"].kind != json::Value::Kind::Null) // P40 review A6: the opt-in wrap list became a primary list
+            r.errors.push_back("wrapAtom.recv was replaced by wrapAtom.recvPrimary (the kinds emitted as primary "
+                               "expressions; every other receiver is parenthesized)");
+        for (const json::Value& k : wa["recvPrimary"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.wrapAtomRecvPrimary.push_back(k.asString());
+        if (wa["unary"].kind != json::Value::Kind::Null) // P40 review A6: derived from recvPrimary now
+            r.errors.push_back("wrapAtom.unary was removed (a unary operand follows wrapAtom.recvPrimary)");
     }
 
     const json::Value& ids = doc["identifiers"];
     if (ids.kind == json::Value::Kind::Object) {
         for (const json::Value& k : ids["keywords"].items())
             if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
+        // P40 review r4 item 22: the runtime names the generated code refers to UNQUALIFIED in the scope a user
+        // name lives in (Python builtins such as `max`/`len`, JS globals such as `TypeError`/`Math`, PHP builtin
+        // classes in the global namespace). A user identifier spelling one is escaped exactly like a keyword, so
+        // it can neither shadow what the emitted code calls nor redeclare a builtin class.
+        for (const json::Value& k : ids["runtimeNames"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.keywords.insert(k.asString());
+        // P40 review r5: builtin class names, escaped only where a type name is spelled (specIdentType).
+        for (const json::Value& k : ids["classBuiltins"].items())
+            if (k.kind == json::Value::Kind::String) r.spec.classBuiltins.insert(k.asString());
+        if (ids["caseInsensitive"].kind == json::Value::Kind::Bool)
+            r.spec.identifiersCaseInsensitive = ids["caseInsensitive"].asBool();
+        // P40 review r5 #24: a user identifier the generated code would misread, respelled whole (C#: a user `_`
+        // is the discard `_ = …` the emitter writes for a dropped value; `@_` is still `_`, so it cannot escape).
+        const json::Value& rn = ids["renames"];
+        if (rn.kind == json::Value::Kind::Object) {
+            for (const auto& [k, v] : rn.members) {
+                if (v.kind != json::Value::Kind::String || v.asString().empty())
+                    r.errors.push_back("backend spec: identifiers.renames['" + k + "'] must be a non-empty string");
+                else r.spec.renames[k] = v.asString();
+            }
+        } else if (rn.kind != json::Value::Kind::Null) {
+            r.errors.push_back("backend spec: identifiers.renames must be an object of name -> spelling");
+        }
+        // P40 review r6: class/record names refused on this target, each with its reason.
+        const json::Value& rc = ids["classNames"];
+        if (rc.kind == json::Value::Kind::Object) {
+            for (const auto& [k, v] : rc.members) {
+                if (v.kind != json::Value::Kind::String || v.asString().empty())
+                    r.errors.push_back("backend spec: identifiers.classNames['" + k + "'] must be a non-empty reason");
+                else r.spec.refusedClassNames[k] = v.asString();
+            }
+        } else if (rc.kind != json::Value::Kind::Null) {
+            r.errors.push_back("backend spec: identifiers.classNames must be an object of name -> reason");
+        }
         const json::Value& esc = ids["escape"];
         if (esc.kind == json::Value::Kind::Object) {
             r.spec.escapeStrategy = esc["strategy"].asString();
@@ -122,7 +308,9 @@ SpecLoadResult loadBackendSpec(const json::Value& doc) {
         }
     }
 
-    r.ok = true;
+    // Anti-silent-drop: every check above that pushes an error without returning (an unknown exprStmt key, a
+    // bad assignmentOrder, …) still fails the load — a spec is either fully valid or not loaded.
+    r.ok = r.errors.empty();
     return r;
 }
 
@@ -164,14 +352,24 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     }
 
     std::string wa;
-    if (!spec.wrapAtomRecv.empty() || !spec.wrapAtomUnary.empty()) {
+    if (!spec.wrapAtomRecvPrimary.empty()) {
         auto arr = [](const std::vector<std::string>& v) {
             std::string o = "[";
             for (std::size_t i = 0; i < v.size(); ++i) { if (i) o += ","; o += json::quote(v[i]); }
             return o + "]";
         };
-        wa = ",\"wrapAtom\":{\"recv\":" + arr(spec.wrapAtomRecv) + ",\"unary\":" + arr(spec.wrapAtomUnary) + "}";
+        wa = ",\"wrapAtom\":{\"recvPrimary\":" + arr(spec.wrapAtomRecvPrimary) + "}";
     }
+
+    std::string an;
+    if (!spec.absentNormalizeSuffix.empty())
+        an = ",\"absentNormalize\":{\"prefix\":" + json::quote(spec.absentNormalizePrefix) +
+             ",\"suffix\":" + json::quote(spec.absentNormalizeSuffix) + ",\"foldedBy\":[" +
+             [&] {
+                 std::string o;
+                 for (std::size_t i = 0; i < spec.absentFoldedBy.size(); ++i) { if (i) o += ","; o += json::quote(spec.absentFoldedBy[i]); }
+                 return o;
+             }() + "]}";
 
     std::string tbls;
     if (!spec.tables.empty()) {
@@ -186,13 +384,18 @@ std::string backendSpecToJson(const BackendSpec& spec) {
     }
 
     std::string escs;
-    if (!spec.escapes.empty()) {
-        escs = ",\"escapes\":{";
-        bool firstMap = true;
-        for (const auto& kv : spec.escapes) {
-            if (!firstMap) escs += ",";
-            firstMap = false;
-            escs += json::quote(kv.first) + ":" + mapJson(kv.second);
+    if (!spec.literals.empty()) {
+        std::vector<std::string> names;
+        for (const auto& kv : spec.literals) names.push_back(kv.first);
+        std::sort(names.begin(), names.end()); // deterministic serialization
+        escs = ",\"literals\":{";
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            const auto& c = spec.literals.at(names[i]);
+            if (i) escs += ",";
+            escs += json::quote(names[i]) + ":{\"quote\":" + json::quote(c.quote) + ",\"map\":" + mapJson(c.map) +
+                    ",\"codepoint\":" + json::quote(c.codepoint);
+            if (!c.astral.empty()) escs += ",\"astral\":" + json::quote(c.astral);
+            escs += "}";
         }
         escs += "}";
     }
@@ -218,6 +421,30 @@ std::string backendSpecToJson(const BackendSpec& spec) {
         };
         if (!spec.reservedNames.empty()) ids += ",\"reserved\":" + arr(spec.reservedNames);
         if (!spec.globalNames.empty()) ids += ",\"globals\":" + arr(spec.globalNames);
+        if (spec.identifiersCaseInsensitive) ids += ",\"caseInsensitive\":true";
+        if (!spec.classBuiltins.empty()) { // review r5
+            std::vector<std::string> cb(spec.classBuiltins.begin(), spec.classBuiltins.end());
+            std::sort(cb.begin(), cb.end());
+            ids += ",\"classBuiltins\":" + arr(cb);
+        }
+        if (!spec.renames.empty()) { // review r5 #24
+            std::vector<std::string> ks;
+            for (const auto& [k, v] : spec.renames) ks.push_back(k);
+            std::sort(ks.begin(), ks.end()); // deterministic serialization
+            ids += ",\"renames\":{";
+            for (std::size_t i = 0; i < ks.size(); ++i)
+                ids += (i ? "," : "") + json::quote(ks[i]) + ":" + json::quote(spec.renames.at(ks[i]));
+            ids += "}";
+        }
+        if (!spec.refusedClassNames.empty()) { // review r6
+            std::vector<std::string> ks;
+            for (const auto& [k, v] : spec.refusedClassNames) ks.push_back(k);
+            std::sort(ks.begin(), ks.end());
+            ids += ",\"classNames\":{";
+            for (std::size_t i = 0; i < ks.size(); ++i)
+                ids += (i ? "," : "") + json::quote(ks[i]) + ":" + json::quote(spec.refusedClassNames.at(ks[i]));
+            ids += "}";
+        }
         if (!spec.fnBuiltins.empty()) {
             std::vector<std::string> fbs(spec.fnBuiltins.begin(), spec.fnBuiltins.end());
             std::sort(fbs.begin(), fbs.end()); // deterministic serialization
@@ -233,6 +460,20 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"binaryOp\":" + mapJson(spec.binaryOp) +
            ",\"wrapInt\":" + mapJson(spec.wrapInt) +
            ",\"preludes\":" + mapJson(spec.preludes) +
+           [&] { // review r5: deterministic serialization of preludeRequires (omitted when empty)
+               if (spec.preludeRequires.empty()) return std::string();
+               std::vector<std::string> ks;
+               for (const auto& [k, v] : spec.preludeRequires) ks.push_back(k);
+               std::sort(ks.begin(), ks.end());
+               std::string o = ",\"preludeRequires\":{";
+               for (std::size_t i = 0; i < ks.size(); ++i) {
+                   o += (i ? "," : "") + json::quote(ks[i]) + ":[";
+                   const auto& v = spec.preludeRequires.at(ks[i]);
+                   for (std::size_t j = 0; j < v.size(); ++j) o += (j ? "," : "") + json::quote(v[j]);
+                   o += "]";
+               }
+               return o + "}";
+           }() +
            ",\"delimited\":" + delim +
            ",\"blockStyle\":" + json::quote(bs) +
            ",\"stmtEnd\":" + json::quote(spec.stmtEnd) +
@@ -247,7 +488,27 @@ std::string backendSpecToJson(const BackendSpec& spec) {
            ",\"constArrayClose\":" + json::quote(spec.constArrayClose) +
            std::string(",\"linksWithoutImports\":") + (spec.linksWithoutImports ? "true" : "false") +
            std::string(",\"forbidsShadowedLocals\":") + (spec.forbidsShadowedLocals ? "true" : "false") +
-           std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") + gen + wa + tbls + escs + ids + "}";
+           std::string(",\"expressionOnlyLambdas\":") + (spec.expressionOnlyLambdas ? "true" : "false") +
+           std::string(",\"nativeCompoundAssign\":") + (spec.nativeCompoundAssign ? "true" : "false") +
+           (spec.operandSnapshot.empty() ? std::string() : ",\"operandSnapshot\":" + json::quote(spec.operandSnapshot)) +
+           std::string(",\"nativeCoalesceAssign\":") + (spec.nativeCoalesceAssign ? "true" : "false") +
+           std::string(",\"assignmentOrder\":") + (spec.assignValueFirst ? "\"valueFirst\"" : "\"targetFirst\"") +
+           [&] {
+               std::string o = ",\"exprStmt\":{\"discardPrefix\":" + json::quote(spec.exprStmtDiscardPrefix) + ",\"parenIfStarts\":[";
+               for (std::size_t i = 0; i < spec.exprStmtParenIfStarts.size(); ++i) { if (i) o += ","; o += json::quote(spec.exprStmtParenIfStarts[i]); }
+               return o + "]}";
+           }() +
+           [&] { // review r7 (each omitted when empty)
+               std::string o;
+               for (const auto& [key, v] : {std::pair<const char*, const std::vector<std::string>*>{"typeOnlyImports", &spec.typeOnlyImports},
+                                            {"unboundImports", &spec.unboundImports}}) {
+                   if (v->empty()) continue;
+                   o += ",\"" + std::string(key) + "\":[";
+                   for (std::size_t i = 0; i < v->size(); ++i) o += (i ? "," : "") + json::quote((*v)[i]);
+                   o += "]";
+               }
+               return o;
+           }() + gen + wa + an + tbls + escs + ids + "}";
 }
 
 } // namespace mintplayer::polyglot

@@ -1,0 +1,10 @@
+// REFUSED (P40 B4): a float cannot key a Map — NaN never equals itself and -0.0/0.0 collide on some
+// targets but not others. Only string and the integer scalars satisfy IMapKey.
+import "std.io"
+import "std.collections"
+
+fn main() {
+  let m = Map<f64, i32>()
+  m.set(1.5, 1)
+  print(m.count)
+}

@@ -1,0 +1,10 @@
+// REFUSED (P40 review r5 #10): a static is never dispatched virtually — `open static` was C# `static virtual` (CS0112).
+import "std.io"
+
+open class A {
+  open static fn make(): string => "A"
+}
+
+fn main() {
+  print(A.make())
+}

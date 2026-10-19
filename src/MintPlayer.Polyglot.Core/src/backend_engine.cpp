@@ -174,6 +174,20 @@ Rule parseRuleInner(const json::Value& v, bool& ok, std::string& error) {
         r.s2 = v["rule"].asString();
         return r;
     }
+    if (v.has("mapOrder")) { // review r4 #7: run each declaration of the ORDER list at `mapOrder` with its kind's
+        r.kind = Rule::Kind::MapOrder; // rule: "kinds": { "<kind>": {"rule": <decl rule>} | {"each": <item rule>} }
+        r.s = v["mapOrder"].asString();
+        for (const auto& kv : v["kinds"].members) {
+            Rule k;
+            k.s = kv.first;
+            k.offset = kv.second.offset;
+            if (kv.second.has("rule")) { k.kind = Rule::Kind::MapMembers; k.s2 = kv.second["rule"].asString(); }
+            else if (kv.second.has("each")) { k.kind = Rule::Kind::MapDecl; k.parts.push_back(parseRule(kv.second["each"], ok, error)); }
+            else { ok = false; error = "mapOrder kind '" + kv.first + "' needs a 'rule' or an 'each'"; return r; }
+            r.parts.push_back(std::move(k));
+        }
+        return r;
+    }
     if (v.has("stmts")) { // emit the ir statement list at `path` through the shared statement walk
         r.kind = Rule::Kind::Stmts;
         r.s = v["stmts"].asString();
@@ -229,6 +243,7 @@ public:
     }
     std::string renderType(const std::string& p) const override { return base_.renderType(p); }
     std::string freshName(const std::string& p) const override { return base_.freshName(p); }
+    void requirePrelude(const std::string& k) const override { base_.requirePrelude(k); }
 
 private:
     const EvalContext& base_;
@@ -252,6 +267,7 @@ public:
     std::string renderType(const std::string& p) const override { return base_.renderType(p); }
     std::string resolvePath(const std::string& p) const override { return base_.resolvePath(p); }
     std::string freshName(const std::string& p) const override { return base_.freshName(p); }
+    void requirePrelude(const std::string& k) const override { base_.requirePrelude(k); }
 
 private:
     const EvalContext& base_;
@@ -263,10 +279,23 @@ private:
 
 namespace {
 TraceSink* g_traceSink = nullptr;
+thread_local const OptionMap* g_activeOptions = nullptr; // P40 B1: the emitting module's resolved options
+
+// `option.<name>` paths answer from the active option map ("" when unset or not declared — the loader
+// refuses a rule naming an undeclared option, so "" here only means "no emit in progress").
+bool isOptionPath(const std::string& p) { return p.rfind(kOptionPathPrefix, 0) == 0; }
+std::string optionValue(const std::string& p) {
+    if (!g_activeOptions) return {};
+    auto it = g_activeOptions->find(p.substr(std::char_traits<char>::length(kOptionPathPrefix)));
+    return it == g_activeOptions->end() ? std::string() : it->second;
+}
 } // namespace
 
 void setTraceSink(TraceSink* sink) { g_traceSink = sink; }
 TraceSink* traceSink() { return g_traceSink; }
+
+ActiveOptionsScope::ActiveOptionsScope(const OptionMap* opts) : prev_(g_activeOptions) { g_activeOptions = opts; }
+ActiveOptionsScope::~ActiveOptionsScope() { g_activeOptions = prev_; }
 
 void indexTest(Test& t, int srcId, std::vector<std::size_t>& offsets) {
     t.srcId = srcId;
@@ -288,8 +317,8 @@ void indexRule(Rule& r, int srcId, std::vector<std::size_t>& offsets) {
 bool evalTest(const Test& t, const EvalContext& ctx) {
     if (g_traceSink) g_traceSink->hit(t.srcId, t.offset);
     switch (t.kind) {
-        case Test::Kind::Eq:  return ctx.get(t.path) == t.value;
-        case Test::Kind::Has: return ctx.has(t.path);
+        case Test::Kind::Eq:  return (isOptionPath(t.path) ? optionValue(t.path) : ctx.get(t.path)) == t.value;
+        case Test::Kind::Has: return isOptionPath(t.path) ? !optionValue(t.path).empty() : ctx.has(t.path);
         case Test::Kind::Not: return t.subs.empty() ? true : !evalTest(t.subs[0], ctx);
         case Test::Kind::And:
             for (const Test& s : t.subs) if (!evalTest(s, ctx)) return false;
@@ -305,7 +334,7 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
     if (g_traceSink) g_traceSink->hit(r.srcId, r.offset);
     switch (r.kind) {
         case Rule::Kind::Lit:  return r.s;
-        case Rule::Kind::Get:  return ctx.get(r.s);
+        case Rule::Kind::Get:  return isOptionPath(r.s) ? optionValue(r.s) : ctx.get(r.s);
         case Rule::Kind::Emit: return ctx.emitChild(r.s, r.side);
         case Rule::Kind::Tmpl: {
             std::string out;
@@ -316,6 +345,10 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
             std::vector<std::string> args;
             args.reserve(r.parts.size());
             for (const Rule& a : r.parts) args.push_back(evalRule(a, ctx, helpers, depth));
+            if (r.s == "require") { // P40 review r6 #10: one path for every context (EvalContext::requirePrelude)
+                if (!args.empty()) ctx.requirePrelude(args[0]);
+                return "";
+            }
             return ctx.builtin(r.s, args);
         }
         case Rule::Kind::Case:
@@ -379,6 +412,7 @@ std::string evalRule(const Rule& r, const EvalContext& ctx, const RuleTable* hel
             if (it == helpers->end()) return "<unknown-helper:" + r.s + ">";
             return evalRule(it->second, ctx, helpers, depth + 1);
         }
+        default: break; // explicit (P40 A2, /we4062): structural rules have no string value
     }
     return {};
 }

@@ -1,5 +1,7 @@
 #include "mintplayer/polyglot/capability.hpp"
+#include "mintplayer/polyglot/ir.hpp" // kPreludeOrigin
 
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -58,6 +60,7 @@ public:
             for (const auto& p : f.params) markAttrs(p.attributes, "param");
         }
         for (const auto& e : u.extensions) {
+            prelude_ = ir::isPreludeOrigin(e.originModule);
             mark(Feature::ExtensionMethods, e.pos);
             typeRef(e.receiver, e.pos);
             params(e.params);
@@ -66,15 +69,30 @@ public:
             expr(e.exprBody.get());
         }
         for (const auto& f : u.functions) {
+            prelude_ = ir::isPreludeOrigin(f.originModule);
             if (f.isAsync) mark(Feature::Async, f.pos);
             params(f.params);
             typeRef(f.returnType, f.pos);
             for (const auto& s : f.body) stmt(s.get());
         }
-        for (const auto& v : u.values) typeRef(v.type, v.pos);
-        for (const auto& d : u.records) { params(d.fields); typeBody(d.members); }
-        for (const auto& d : u.interfaces) typeBody(d.members);
+        // P40 review B5: a module value's INITIALIZER is code too — a portable call there (`let SEP = sep()`)
+        // must meet the same missing-`actual` / missing-binding refusals as one inside a function body.
+        for (const auto& v : u.values) {
+            prelude_ = ir::isPreludeOrigin(v.originModule);
+            typeRef(v.type, v.pos);
+            expr(v.init.get());
+        }
+        for (const auto& d : u.records) { prelude_ = ir::isPreludeOrigin(d.originModule); params(d.fields); typeBody(d.members); }
+        for (const auto& d : u.interfaces) { prelude_ = ir::isPreludeOrigin(d.originModule); typeBody(d.members); }
         for (const auto& d : u.classes) {
+            prelude_ = ir::isPreludeOrigin(d.originModule);
+            // P40 B3: an extern class's .pg-bodied statics (std `string.fromCodePoint`) are real code — walk
+            // them for the call/member-use records (missing bindings refuse), like any prelude body.
+            if (d.isExtern) {
+                for (const auto& m : d.members)
+                    for (const auto& s : m.body) stmt(s.get());
+                continue;
+            }
             // An `extern class` (e.g. the core prelude's Error/Iterable) is native-backed and not emitted —
             // its members are bound templates, not native properties/operators — so it requires no backend
             // feature support. Skipping it keeps an always-linked prelude from tripping a target's gating.
@@ -90,14 +108,21 @@ public:
                 }
             typeBody(d.members);
         }
+        prelude_ = false;
     }
 
 private:
+    // P40 B3: while walking a std/core/lib (prelude) declaration, feature marks are suppressed — the std
+    // library's own implementation is not the user's feature use (a warning pointing into `std.strings` is
+    // noise, and std is written within what every first-party target supports). Call and member-use records
+    // are still collected, so a target missing a primitive binding still refuses.
+    bool prelude_ = false;
     std::unordered_set<std::string> seen_; // capability keys — first use of each is the one reported
     std::unordered_set<std::string> interfaces_; // declared interface names (prescanned)
     std::unordered_set<std::string> externAttrNames_; // Tier 1 extern attribute names (prescanned)
 
     void mark(std::string key, SourcePos pos) {
+        if (prelude_) return;
         if (!seen_.insert(key).second) return;
         uses.push_back({std::move(key), pos});
     }
@@ -125,7 +150,7 @@ private:
     // `:eq` (structural equality) and `:indexers` (get/set) while refusing `:arithmetic`/`:comparison`/
     // `:conversion`. The bare `operatorOverloading` manifest stance umbrella-covers undeclared sub-keys.
     static std::string operatorCategory(const std::string& method) {
-        if (method == "eq") return "eq";
+        if (method == "eq" || method == "hash") return "eq"; // hash is eq's companion (P40 review A9)
         if (method == "lt" || method == "le" || method == "gt" || method == "ge") return "comparison";
         if (method == "get" || method == "set") return "indexers";
         if (method == "explicit" || method == "implicit") return "conversion";
@@ -137,7 +162,11 @@ private:
             if (m.kind == MemberKind::Operator)
                 mark("operatorOverloading:" + operatorCategory(m.name), m.pos);
             if (m.kind == MemberKind::Property) mark(Feature::Properties, m.pos);
-            if (m.kind == MemberKind::Property && m.hasSetter) mark(Feature::PropertySetters, m.pos); // #39c
+            if (m.kind == MemberKind::Property && m.hasSetter) { // #39c
+                mark(Feature::PropertySetters, m.pos);
+                for (const auto& mod : m.modifiers) // review r6 (part 2)
+                    if (mod == "static") mark("propertySetters:static", m.pos);
+            }
             if (m.isAsync) mark(Feature::Async, m.pos);
             typeRef(m.type, m.pos);
             typeRef(m.returnType, m.pos);
@@ -186,6 +215,14 @@ private:
             calls.push_back({e->lhs->text, e->pos}); // a free-function call `name(...)`
             memberUses.push_back({{e->lhs->text + ".constructor"}, e->pos}); // or a construction `Type(args)`
         }
+        // P40 B3 (D2/D15): a string INDEX operation — its indices count UTF-16 code units on every target. C#/TS
+        // strings are UTF-16 natively; a target holding code points (Python) or bytes (PHP) must emulate the
+        // unit through helpers or refuse, which its `utf16Strings:index` stance declares.
+        if (e->kind == ExprKind::Member && e->lhs && e->lhs->type.kind == TypeRef::Kind::Named &&
+            e->lhs->type.name == "string" && !e->lhs->type.nullable &&
+            (e->text == "len" || e->text == "charAt" || e->text == "codePointAt" || e->text == "substring" ||
+             e->text == "indexOf"))
+            mark("utf16Strings:index", e->pos);
         if (e->kind == ExprKind::Member && e->lhs) {
             std::vector<std::string> keys;
             if (e->lhs->type.kind == TypeRef::Kind::Named && !e->lhs->type.name.empty())
@@ -316,19 +353,30 @@ namespace {
 class NameCollector {
 public:
     std::vector<std::pair<std::string, SourcePos>> names;
+    // P40 B3: user (non-prelude) declarations and references spelled with a std-reserved prefix (`__pg`, the
+    // std primitives; `_pg_`, the emitted std guards) — a language rule, independent of the target.
+    std::vector<std::pair<std::string, SourcePos>> stdReserved;
+    // P40 review r4 (part 2): user names containing `__` — the compiler's own spelling space (lowering temps
+    // `__c0`/`__opt1`, emitter temps, overload signature names `parse__string`), so no user name can collide.
+    std::vector<std::pair<std::string, SourcePos>> compilerReserved;
+    // P40 review r6: the user's class and record names (each target emits them as classes).
+    std::vector<std::pair<std::string, SourcePos>> classNames;
 
     void run(const CompilationUnit& u) {
         for (const auto& f : u.functions) {
+            prelude_ = ir::isPreludeOrigin(f.originModule);
             add(f.name, f.namePos);
             params(f.params);
             for (const auto& s : f.body) stmt(s.get());
         }
-        for (const auto& v : u.values) add(v.name, v.namePos);
+        for (const auto& v : u.values) { prelude_ = ir::isPreludeOrigin(v.originModule); add(v.name, v.namePos); expr(v.init.get()); }
         for (const auto& e : u.enums) {
+            prelude_ = ir::isPreludeOrigin(e.originModule);
             add(e.name, e.pos);
             for (const auto& c : e.cases) add(c.name, e.pos);
         }
         for (const auto& un : u.unions) {
+            prelude_ = ir::isPreludeOrigin(un.originModule);
             add(un.name, un.pos);
             for (const auto& c : un.cases) {
                 add(c.name, un.pos);
@@ -336,33 +384,48 @@ public:
             }
         }
         for (const auto& r : u.records) {
+            prelude_ = ir::isPreludeOrigin(r.originModule);
             add(r.name, r.pos);
+            if (!prelude_) classNames.push_back({r.name, r.namePos.line ? r.namePos : r.pos});
             for (const auto& f : r.fields) add(f.name, r.pos);
             members(r.members);
         }
         for (const auto& d : u.classes) {
+            prelude_ = ir::isPreludeOrigin(d.originModule);
             if (d.isExtern) continue; // native-backed carrier — its names live on the target side
             add(d.name, d.pos);
+            if (!prelude_) classNames.push_back({d.name, d.namePos.line ? d.namePos : d.pos});
             members(d.members);
         }
         for (const auto& d : u.interfaces) {
+            prelude_ = ir::isPreludeOrigin(d.originModule);
             add(d.name, d.pos);
             members(d.members);
         }
         for (const auto& e : u.extensions) {
+            prelude_ = ir::isPreludeOrigin(e.originModule);
             add(e.name, e.pos);
             params(e.params);
             for (const auto& s : e.body) stmt(s.get());
             expr(e.exprBody.get());
         }
+        prelude_ = false;
     }
 
 private:
+    bool prelude_ = false;
+    static bool stdPrefixed(const std::string& n) { return n.rfind("__pg", 0) == 0 || n.rfind("_pg_", 0) == 0; }
     void add(const std::string& n, SourcePos pos) {
-        if (!n.empty()) names.push_back({n, pos});
+        if (n.empty()) return;
+        names.push_back({n, pos});
+        if (!prelude_ && stdPrefixed(n)) stdReserved.push_back({n, pos});
+        else if (!prelude_ && n.find("__") != std::string::npos) compilerReserved.push_back({n, pos});
+    }
+    void ref(const std::string& n, SourcePos pos) {
+        if (!prelude_ && stdPrefixed(n)) stdReserved.push_back({n, pos});
     }
     void params(const std::vector<Param>& ps) {
-        for (const auto& p : ps) add(p.name, {});
+        for (const auto& p : ps) add(p.name, p.pos);
     }
     void members(const std::vector<Member>& ms) {
         for (const auto& m : ms) {
@@ -394,6 +457,7 @@ private:
     }
     void expr(const Expr* e) {
         if (!e) return;
+        if (e->kind == ExprKind::Name || e->kind == ExprKind::Member) ref(e->text, e->pos); // P40 B3
         for (const auto& p : e->params) add(p.name, e->pos); // lambda params
         for (const auto& arm : e->arms) {                     // match binders
             pattern(arm.pattern);
@@ -420,9 +484,23 @@ bool matchesReserved(const std::string& entry, const std::string& name) {
 
 void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
                         const std::vector<std::pair<std::string, std::string>>& forbidden,
-                        DiagnosticBag& diags) {
+                        DiagnosticBag& diags,
+                        const std::vector<std::pair<std::string, std::string>>* optionReserved) {
     NameCollector nc;
     nc.run(unit);
+    std::set<std::string> reportedStd; // one diagnostic per site (a name is collected per use)
+    for (const auto& [name, pos] : nc.stdReserved)
+        if (reportedStd.insert(std::to_string(pos.fileId) + ":" + std::to_string(pos.line) + ":" + std::to_string(pos.col)).second)
+            diags.error(pos, "identifier '" + name + "' uses a prefix reserved for the Polyglot std library "
+                             "('__pg' / '_pg_'); rename it");
+    for (const auto& [name, pos] : nc.compilerReserved)
+        if (reportedStd.insert(std::to_string(pos.fileId) + ":" + std::to_string(pos.line) + ":" + std::to_string(pos.col)).second)
+            diags.error(pos, "identifier '" + name + "' contains '__', which is reserved for compiler-generated names "
+                             "(temporaries like '__c0', overload names like 'parse__string'); rename it");
+    for (const auto& [name, pos] : nc.classNames)
+        if (auto it = backend.refusedClassNames().find(name); it != backend.refusedClassNames().end())
+            diags.error(pos, "class name '" + name + "' is refused on target '" + backend.name() + "' — " + it->second +
+                                 "; rename it or drop that target");
     for (const auto& [name, pos] : nc.names) {
         for (const auto& r : backend.reservedIdentifiers())
             if (matchesReserved(r, name))
@@ -436,6 +514,12 @@ void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
             if ((tgt == "*" || tgt == backend.name()) && fname == name)
                 diags.error(pos, "identifier '" + name + "' is forbidden by pgconfig for target '" +
                                      backend.name() + "'");
+        if (optionReserved)
+            for (const auto& [opt, value] : *optionReserved)
+                if (value == name)
+                    diags.error(pos, "identifier '" + name + "' is reserved by target '" + backend.name() +
+                                         "' (its option '" + opt + "' names generated code '" + value +
+                                         "'); rename it or set " + backend.name() + "." + opt + " to another name");
     }
 }
 

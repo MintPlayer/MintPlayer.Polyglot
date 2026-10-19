@@ -1,0 +1,51 @@
+// P40 review r5 (coordinator follow-up): user names that spell a target builtin keep their names wherever no
+// collision is possible. Python output calls every builtin it needs qualified (`builtins.len`, `builtins.range`,
+// `builtins.isinstance`, …), so a field, method, parameter, local or function named `id`, `max`, `len`, `str`,
+// `range` or `isinstance` is emitted as written and cannot shadow what the output calls. PHP escapes a builtin
+// FUNCTION name only for a free function (`intdiv` → `intdiv_pg`) and a builtin CLASS name only for a class
+// (`Directory` → `Directory_`); fields, methods, parameters and locals keep their names. (The unit block `r5:`
+// asserts the emitted member names.)
+import "std.io"
+import "std.math"
+import "std.collections"
+
+class Item {
+  var id: i32 = 7
+  var max: i32 = 9
+  var len: i32 = 3
+  var str: string = "s"
+  var strpos: i32 = 11
+  var error: i32 = 13
+  fn intdiv(fmod: i32): i32 => fmod * 2
+  fn isinstance(range: i32): i32 => range + this.len
+}
+
+class Directory {
+  var n: i32 = 5
+}
+
+fn id(x: i32): i32 => x + 1000
+fn len(xs: List<i32>): i32 => xs.count * 10
+fn str(n: i32): string => "<${n}>"
+
+fn main() {
+  let it = Item()
+  print(it.id + it.max + it.len + it.strpos + it.error)
+  print(it.str)
+  print(it.intdiv(4))
+  print(it.isinstance(1))
+  print(Directory().n)
+  let xs: List<i32> = [1, 2, 3]
+  print(len(xs))
+  print(xs.count)
+  print(id(1))
+  print(str(5))
+  let range = 4
+  var total = 0
+  for i in 0..range {
+    total += i
+  }
+  print(total)
+  print(Math.max(range, it.max))
+  print("${it.len} and ${it.str}")
+}

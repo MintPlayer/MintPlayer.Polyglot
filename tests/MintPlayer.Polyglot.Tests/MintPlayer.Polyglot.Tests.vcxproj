@@ -34,9 +34,13 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <!-- P40 A2: a switch over an enum with no default must name every enumerator (exhaustive lowering). -->
+      <TreatSpecificWarningsAsErrors>4062;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- P40 review r10: tests_main.cpp is one large TU; it outgrew COFF's default section limit (C1128). -->
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(SolutionDir)src\MintPlayer.Polyglot.Core\include;$(SolutionDir)src\MintPlayer.Polyglot.Cli\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -50,11 +54,15 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <!-- P40 A2: a switch over an enum with no default must name every enumerator (exhaustive lowering). -->
+      <TreatSpecificWarningsAsErrors>4062;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- P40 review r10: tests_main.cpp is one large TU; it outgrew COFF's default section limit (C1128). -->
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(SolutionDir)src\MintPlayer.Polyglot.Core\include;$(SolutionDir)src\MintPlayer.Polyglot.Cli\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -69,6 +77,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\tests_main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- P40 review r3: the CLI's UTF-8 active code page — the suite exercises the same path code. -->
+    <Manifest Include="..\..\src\MintPlayer.Polyglot.Cli\utf8.manifest" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\MintPlayer.Polyglot.Core\MintPlayer.Polyglot.Core.vcxproj">

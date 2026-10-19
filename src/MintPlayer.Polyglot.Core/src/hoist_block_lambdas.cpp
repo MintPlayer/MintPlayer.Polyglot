@@ -91,9 +91,12 @@ private:
         case ExprKind::Unary:  hoistExpr(static_cast<Unary&>(*slot).operand, defs); break;
         case ExprKind::Await:  hoistExpr(static_cast<Await&>(*slot).operand, defs); break;
         case ExprKind::Cast:   hoistExpr(static_cast<Cast&>(*slot).operand, defs); break;
+        case ExprKind::NullAssert: hoistExpr(static_cast<NullAssert&>(*slot).operand, defs); break;
+        case ExprKind::IsTest: hoistExpr(static_cast<IsTest&>(*slot).operand, defs); break;
+        case ExprKind::AsCast: hoistExpr(static_cast<AsCast&>(*slot).operand, defs); break;
         case ExprKind::Binary: { auto& b = static_cast<Binary&>(*slot); hoistExpr(b.lhs, defs); hoistExpr(b.rhs, defs); break; }
         case ExprKind::Cond:   { auto& c = static_cast<Cond&>(*slot); hoistExpr(c.cond, defs); hoistExpr(c.then, defs); hoistExpr(c.els, defs); break; }
-        case ExprKind::Call:   for (auto& a : static_cast<Call&>(*slot).args) hoistExpr(a, defs); break;
+        case ExprKind::Call:   { auto& c = static_cast<Call&>(*slot); if (c.calleeExpr) hoistExpr(c.calleeExpr, defs); for (auto& a : c.args) hoistExpr(a, defs); break; }
         case ExprKind::MethodCall: { auto& mc = static_cast<MethodCall&>(*slot); if (mc.object) hoistExpr(mc.object, defs); for (auto& a : mc.args) hoistExpr(a, defs); break; }
         case ExprKind::Member: { auto& m = static_cast<Member&>(*slot); if (m.object) hoistExpr(m.object, defs); break; }
         case ExprKind::New:    for (auto& a : static_cast<New&>(*slot).args) hoistExpr(a, defs); break;

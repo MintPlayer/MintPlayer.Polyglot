@@ -37,26 +37,42 @@ struct LockEntry {
 struct Lockfile {
     bool found = false;
     std::map<std::string, LockEntry> packages; // npm package name -> pin (sorted = stable diffs)
+    std::string error; // non-empty: the file exists but is malformed (P40 review r4) — refuse, never re-resolve
 };
 
 inline std::filesystem::path lockfilePath(const std::filesystem::path& configDir) {
     return configDir / "pgconfig.lock.json";
 }
 
+// P40 review r4: parsed STRICTLY (json::parse with an error: a duplicate key, invalid UTF-8, a bad escape, a
+// truncated document) and its shape validated. The lockfile is a trust root — it pins the integrity every
+// download is checked against — so a lenient read (a duplicate key took the FIRST value, unlike npm/JS) must
+// not silently change what is pinned. A malformed lockfile sets `error`; the caller refuses (exit 64) rather than
+// re-resolving over it and rewriting it. An unknown future `lockfileVersion` is still ignored (re-resolve).
 inline Lockfile loadLockfile(const std::filesystem::path& configDir) {
+    using K = json::Value::Kind;
     Lockfile lf;
     std::string src;
     if (!readFile(lockfilePath(configDir), src)) return lf;
-    const json::Value v = json::parse(src);
-    if (v["lockfileVersion"].asInt() != 1) return lf; // unknown future version: ignore, re-resolve
-    lf.found = true;
-    for (const auto& kv : v["packages"].members) {
-        LockEntry e;
-        e.version = kv.second["version"].asString();
-        e.resolved = kv.second["resolved"].asString();
-        e.integrity = kv.second["integrity"].asString();
-        if (!e.version.empty()) lf.packages[kv.first] = std::move(e);
+    std::string jsonErr;
+    const json::Value v = json::parse(src, jsonErr);
+    if (!jsonErr.empty()) { lf.error = "malformed JSON: " + jsonErr; return lf; }
+    if (v.kind != K::Object || v["lockfileVersion"].kind != K::Number) {
+        lf.error = "not a pgconfig lockfile (expected an object with a numeric \"lockfileVersion\")";
+        return lf;
     }
+    if (v["lockfileVersion"].asInt() != 1) return lf; // unknown future version: ignore, re-resolve
+    if (v["packages"].kind != K::Object) { lf.error = "\"packages\" must be an object"; return lf; }
+    for (const auto& kv : v["packages"].members) {
+        const json::Value& p = kv.second;
+        if (p.kind != K::Object || p["version"].kind != K::String || p["resolved"].kind != K::String ||
+            p["integrity"].kind != K::String || p["version"].asString().empty()) {
+            lf.error = "packages." + kv.first + " must be an object with string \"version\", \"resolved\" and \"integrity\"";
+            return {false, {}, lf.error};
+        }
+        lf.packages[kv.first] = {p["version"].asString(), p["resolved"].asString(), p["integrity"].asString()};
+    }
+    lf.found = true;
     return lf;
 }
 

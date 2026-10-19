@@ -1,0 +1,18 @@
+import { Fmt } from "./lib_static"
+import { Box } from "./lib_prop"
+import { total, Acc } from "./lib_range"
+import { guarded } from "./lib_catch"
+import { print } from "std.io"
+
+// P40 review r6 #10: a Python module whose ONLY use of `builtins` is a statement or declaration template — a static
+// method (`@builtins.staticmethod`), a computed property (`@builtins.property`), a `for` over a range
+// (`builtins.range`), a guarded typed `catch` (`builtins.isinstance`) — got no `import builtins` (a NameError at
+// import or at the call): those templates' `require` was dropped by every context but the expression one. Each
+// library module here holds one such shape and nothing else that needs `builtins`.
+fn main() {
+  print(Fmt.show())
+  print(Box().label)
+  print("${total(4)}|${Acc().twice(3)}")
+  print(guarded(1))
+  print(guarded(2))
+}

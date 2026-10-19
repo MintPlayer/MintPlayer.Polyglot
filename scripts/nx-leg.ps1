@@ -40,7 +40,14 @@ switch ($Leg) {
     "registry"  { Invoke-Leg { & pwsh -NoProfile -File tests/registry/run-registry.ps1 -Cli $cli } }
     "samples"   { Invoke-Leg { & pwsh -NoProfile -File tests/samples/run-emit.ps1 -Cli $cli } }
     "nullable"  { Invoke-Leg { & pwsh -NoProfile -File tests/nullable/run-nullable.ps1 -Cli $cli } }
-    "coverage"  { Invoke-Leg { & pwsh -NoProfile -File tests/coverage/run-coverage.ps1 -Cli $cli } }
+    "floor"     { Invoke-Leg { & pwsh -NoProfile -File tests/floor/run-floor.ps1 -Cli $cli } }
+    "numfmt"    { Invoke-Leg { & pwsh -NoProfile -File tests/numfmt/run-numfmt.ps1 } }
+    "culture" {
+        # P40 A3 fast-tier synthetic culture (the full tier's four real cultures run inside "conformance").
+        $progs = (Get-Content tests/conformance/culture/fast-programs.txt -Raw).Trim()
+        Invoke-Leg { & pwsh -NoProfile -File tests/conformance/run-conformance.ps1 -Cli $cli -Targets csharp -Cultures pg-hostile -Only $progs }
+    }
+    "coverage"  {Invoke-Leg { & pwsh -NoProfile -File tests/coverage/run-coverage.ps1 -Cli $cli } }
     "conformance" {
         # One merged run: the C# oracle vs TS/Python/PHP, staging the pristine TS for the library check.
         Invoke-Leg { & pwsh -NoProfile -File tests/conformance/run-conformance.ps1 -Cli $cli -StagingOut .nx-libstage }

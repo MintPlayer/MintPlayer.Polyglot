@@ -19,6 +19,7 @@
 //                         NO_PROXY natively. Auth tokens are deliberately unsupported (public
 //                         packages only — documented refusal, not an oversight).
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -41,6 +42,7 @@
 #pragma comment(lib, "winhttp.lib")
 #else
 #include <dlfcn.h>
+#include <sys/wait.h> // WIFEXITED / WEXITSTATUS (curl's exit status from pclose)
 #endif
 
 #include "mintplayer/polyglot/json.hpp"
@@ -49,11 +51,40 @@
 
 namespace mintplayer::polyglot::cli {
 
+// The outcome of one GET. P40 review r6: a failure says WHETHER THE SERVER ANSWERED — `Transport` (no
+// connection, DNS, timeout, no HTTP client: the network is missing, so a registry dependency may degrade to
+// "not verified") vs `Response` (the registry answered with a non-200 status: a 404 is an error, never a
+// network miss). A plain bool converts (true = Ok, false = Transport), so a fake that only knows "served or
+// not" stays a one-liner.
+struct HttpOutcome {
+    enum class Kind { Ok, Transport, Response };
+    Kind kind;
+    HttpOutcome(bool ok) : kind(ok ? Kind::Ok : Kind::Transport) {}
+    HttpOutcome(Kind k) : kind(k) {}
+    explicit operator bool() const { return kind == Kind::Ok; }
+};
+
+// P40 review r7: the outcome of a non-200 final status. A 5xx is a network miss like a transport failure — a
+// proxy with no upstream answers 502/504, an overloaded registry 503, and none of them says anything about the
+// package — so a registry dependency degrades to "not verified" exactly as offline. A 4xx (404: no such package)
+// is the registry's answer, and stays an error. `err` is completed with the status and the URL.
+inline HttpOutcome httpStatusOutcome(long status, const std::string& url, std::string& err) {
+    err = "http: status " + std::to_string(status) + " for " + url;
+    if (status >= 500 && status <= 599) {
+        err += " (a server or proxy error: treated as a network miss)";
+        return HttpOutcome::Kind::Transport;
+    }
+    // P40 review r8: a final 3xx is a redirect the client did not follow (redirects are followed internally, so it
+    // carried no usable `Location`) — the server's malformed answer, an error like a 4xx.
+    if (status >= 300 && status <= 399) err += " (a redirect that cannot be followed: no Location header)";
+    return HttpOutcome::Kind::Response;
+}
+
 // GET `url` with extra request `headers` ("Name: value"), filling `body` (binary-safe).
-// Implementations return false with a human diagnostic in `err`; a non-200 final status is an
-// error (redirects are followed internally).
-using HttpGet = std::function<bool(const std::string& url, const std::vector<std::string>& headers,
-                                   std::string& body, std::string& err)>;
+// Implementations fail with a human diagnostic in `err`; a non-200 final status is a `Response`
+// failure (redirects are followed internally).
+using HttpGet = std::function<HttpOutcome(const std::string& url, const std::vector<std::string>& headers,
+                                          std::string& body, std::string& err)>;
 
 inline std::string envVar(const char* name) {
 #ifdef _WIN32
@@ -80,12 +111,12 @@ inline std::wstring widen(const std::string& s) {
 }
 } // namespace detail
 
-inline bool httpGetWinHttp(const std::string& url, const std::vector<std::string>& headers,
-                           std::string& body, std::string& err) {
+inline HttpOutcome httpGetWinHttp(const std::string& url, const std::vector<std::string>& headers,
+                                  std::string& body, std::string& err) {
     using detail::widen;
     auto fail = [&](const std::string& what) {
         err = "http: " + what + " (" + std::to_string(GetLastError()) + ") for " + url;
-        return false;
+        return HttpOutcome(HttpOutcome::Kind::Transport);
     };
 
     const std::wstring wurl = widen(url);
@@ -105,11 +136,11 @@ inline bool httpGetWinHttp(const std::string& url, const std::vector<std::string
     if (!con) { WinHttpCloseHandle(ses); return fail("connect failed"); }
     HINTERNET req = WinHttpOpenRequest(con, L"GET", path, nullptr, WINHTTP_NO_REFERER,
                                        WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
-    auto done = [&](bool ok) {
+    auto done = [&](HttpOutcome r) {
         if (req) WinHttpCloseHandle(req);
         WinHttpCloseHandle(con);
         WinHttpCloseHandle(ses);
-        return ok;
+        return r;
     };
     if (!req) return done(fail("open request failed"));
 
@@ -120,16 +151,23 @@ inline bool httpGetWinHttp(const std::string& url, const std::vector<std::string
         return done(fail("add headers failed"));
 
     if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(req, nullptr))
+        !WinHttpReceiveResponse(req, nullptr)) {
+        // P40 review r8: WinHTTP follows redirects itself and fails the request when it cannot (a 3xx with no
+        // `Location`, or one to a scheme it refuses). The server answered — with a redirect nobody can follow — so
+        // it is a `Response` error (exit 64) like any other non-200 answer, never "offline". libcurl and the curl
+        // subprocess end on the 3xx status itself, which httpStatusOutcome classifies the same way.
+        if (const DWORD e = GetLastError(); e == ERROR_WINHTTP_REDIRECT_FAILED) {
+            err = "http: the server answered a redirect that cannot be followed (no Location header, or a redirect "
+                  "to another scheme) (" + std::to_string(e) + ") for " + url;
+            return done(HttpOutcome(HttpOutcome::Kind::Response));
+        }
         return done(fail("request failed (offline? proxy?)"));
+    }
 
     DWORD status = 0, statusLen = sizeof status;
     WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusLen, WINHTTP_NO_HEADER_INDEX);
-    if (status != 200) {
-        err = "http: status " + std::to_string(status) + " for " + url;
-        return done(false);
-    }
+    if (status != 200) return done(httpStatusOutcome(static_cast<long>(status), url, err));
 
     for (;;) {
         DWORD avail = 0;
@@ -207,8 +245,8 @@ inline std::size_t curlWrite(const char* ptr, std::size_t size, std::size_t nmem
 
 } // namespace detail
 
-inline bool httpGetLibcurl(const std::string& url, const std::vector<std::string>& headers,
-                           std::string& body, std::string& err) {
+inline HttpOutcome httpGetLibcurl(const std::string& url, const std::vector<std::string>& headers,
+                                  std::string& body, std::string& err) {
     const auto& c = detail::Curl::get();
     if (!c.lib) { err = "http: libcurl not found"; return false; }
     void* h = c.init();
@@ -235,20 +273,21 @@ inline bool httpGetLibcurl(const std::string& url, const std::vector<std::string
         return false;
     }
     if (status != 200) {
-        err = "http: status " + std::to_string(status) + " for " + url;
         body.clear();
-        return false;
+        return httpStatusOutcome(status, url, err);
     }
     return true;
 }
 
-inline bool httpGetCurlSubprocess(const std::string& url, const std::vector<std::string>& headers,
-                                  std::string& body, std::string& err) {
+inline HttpOutcome httpGetCurlSubprocess(const std::string& url, const std::vector<std::string>& headers,
+                                         std::string& body, std::string& err, bool* answered = nullptr) {
     // Refuse anything that could escape single quotes — registry URLs/headers never contain them.
     for (const std::string& s : headers)
         if (s.find('\'') != std::string::npos) { err = "http: unsafe header"; return false; }
     if (url.find('\'') != std::string::npos) { err = "http: unsafe URL"; return false; }
-    std::string cmd = "curl --fail --silent --show-error --location --max-time 300";
+    // P40 review r7: `--write-out` appends "\n<final status>" after the body (also when `--fail` suppresses the
+    // body), so a 5xx can be told from a 4xx as the in-process clients do (httpStatusOutcome).
+    std::string cmd = "curl --fail --silent --show-error --location --max-time 300 --write-out '\\n%{http_code}'";
     for (const auto& h : headers) cmd += " -H '" + h + "'";
     cmd += " '" + url + "'";
     FILE* p = popen(cmd.c_str(), "r");
@@ -257,20 +296,46 @@ inline bool httpGetCurlSubprocess(const std::string& url, const std::vector<std:
     std::size_t n;
     while ((n = fread(buf, 1, sizeof buf, p)) > 0) body.append(buf, n);
     const int rc = pclose(p);
+    long status = 0;
+    if (const std::size_t nl = body.rfind('\n'); nl != std::string::npos) {
+        const std::string code = body.substr(nl + 1);
+        if (!code.empty() && code.size() <= 3 && std::all_of(code.begin(), code.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
+            status = std::stol(code);
+            body.resize(nl);
+        }
+    }
+    if (answered) *answered = status != 0; // curl ran and the server sent a status ("000" = none)
     if (rc != 0) {
+        body.clear();
+        // `--fail` makes curl exit 22 for an HTTP status >= 400: the server answered — with a 4xx (an error) or a
+        // 5xx (a network miss).
+        if (WIFEXITED(rc) && WEXITSTATUS(rc) == 22 && status >= 400) return httpStatusOutcome(status, url, err);
         err = "http: curl exited with status " + std::to_string(rc) + " for " + url;
+        return WIFEXITED(rc) && WEXITSTATUS(rc) == 22 ? HttpOutcome(HttpOutcome::Kind::Response) : HttpOutcome(false);
+    }
+    if (status == 0) { // no status trailer: the body cannot be told from it
+        err = "http: curl reported no final status for " + url;
         body.clear();
         return false;
+    }
+    if (status != 200) {
+        body.clear();
+        return httpStatusOutcome(status, url, err);
     }
     return true;
 }
 
 inline HttpGet defaultHttpGet() {
-    return [](const std::string& url, const std::vector<std::string>& headers,
-              std::string& body, std::string& err) {
+    return [](const std::string& url, const std::vector<std::string>& headers, std::string& body,
+              std::string& err) -> HttpOutcome {
         if (detail::Curl::get().lib) return httpGetLibcurl(url, headers, body, err);
         std::string subErr;
-        if (httpGetCurlSubprocess(url, headers, body, subErr)) return true;
+        bool answered = false;
+        const HttpOutcome sub = httpGetCurlSubprocess(url, headers, body, subErr, &answered);
+        if (sub || sub.kind == HttpOutcome::Kind::Response || answered) { // a 5xx is a network miss, curl is there
+            err = subErr;
+            return sub;
+        }
         err = subErr + "\n  (no libcurl and no curl binary — install one, use a `file:` dependency, "
                        "or pre-warm the plugin cache on a connected machine)";
         return false;

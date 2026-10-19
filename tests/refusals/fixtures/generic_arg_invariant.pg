@@ -1,0 +1,15 @@
+import "std.io"
+import "std.collections"
+
+// REFUSED (P40 review r5 item 18): a generic type is invariant — a `List<i32?>` is not a `List<i32>` (C# CS0029;
+// TS accepted it and then added 1 to a null).
+fn fill(): List<i32> {
+  let raw = List<i32?>()
+  raw.add(null)
+  let xs: List<i32> = raw
+  return xs
+}
+
+fn main() {
+  print(fill()[0])
+}

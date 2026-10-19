@@ -90,13 +90,30 @@
       "inputs": [
         "{workspaceRoot}/tests/conformance/**/*",
         "{workspaceRoot}/tests/library/**/*",
+        "{workspaceRoot}/docs/lang/samples/**/*",
         "{workspaceRoot}/scripts/lib/OracleCompile.ps1",
         "{workspaceRoot}/scripts/nx-leg.ps1",
         "compilerSources",
         "sharedGlobals",
         { "runtime": "python --version" },
         { "runtime": "php --version" },
-        { "runtime": "tsc --version" }
+        { "runtime": "node node_modules/typescript/bin/tsc --version" }
+      ],
+      "outputs": []
+    },
+    "culture": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 culture", "cwd": "{workspaceRoot}" },
+      "inputs": [
+        "{workspaceRoot}/tests/conformance/run-conformance.ps1",
+        "{workspaceRoot}/tests/conformance/culture/**/*",
+        "{workspaceRoot}/tests/conformance/programs/**/*",
+        "{workspaceRoot}/scripts/lib/OracleCompile.ps1",
+        "{workspaceRoot}/scripts/nx-leg.ps1",
+        "compilerSources",
+        "sharedGlobals"
       ],
       "outputs": []
     },
@@ -114,6 +131,21 @@
       "dependsOn": ["build"],
       "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 nullable", "cwd": "{workspaceRoot}" },
       "inputs": ["{workspaceRoot}/tests/nullable/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals"],
+      "outputs": []
+    },
+    "floor": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "dependsOn": ["build"],
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 floor", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/floor/**/*", "{workspaceRoot}/tests/conformance/programs/**/*", "{workspaceRoot}/scripts/nx-leg.ps1", "compilerSources", "sharedGlobals", { "runtime": "dotnet --version" }],
+      "outputs": []
+    },
+    "numfmt": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "options": { "command": "pwsh -NoProfile -File scripts/nx-leg.ps1 numfmt", "cwd": "{workspaceRoot}" },
+      "inputs": ["{workspaceRoot}/tests/numfmt/**/*", "{workspaceRoot}/plugins/**/*", "{workspaceRoot}/scripts/lib/OracleCompile.ps1", "{workspaceRoot}/scripts/nx-leg.ps1", "sharedGlobals"],
       "outputs": []
     },
     "coverage": {

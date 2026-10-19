@@ -20,6 +20,7 @@ fn main() {
   print(label(HttpCode.NotFound))    // missing
   print(label(HttpCode.Teapot))      // teapot
   print(label(HttpCode.Next))        // other
-  print(HttpCode.Ok == HttpCode.Ok)      // true
+  let ok = HttpCode.Ok
+  print(ok == HttpCode.Ok)               // true  (a constant self-comparison is refused)
   print(HttpCode.Ok == HttpCode.Teapot)  // false
 }

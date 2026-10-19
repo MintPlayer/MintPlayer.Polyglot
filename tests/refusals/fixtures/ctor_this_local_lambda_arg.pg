@@ -1,0 +1,21 @@
+// REFUSED (P40 review r6): #5 a lambda bound to a local and passed to a function that calls it runs the open method early. Spark l1_5b.
+import "std.io"
+
+fn run(f: () => string): string => f()
+
+open class Base {
+  var label: string = ""
+  constructor() {
+    let f = () => this.describe()
+    this.label = run(f)
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

@@ -1,0 +1,24 @@
+int 7
+null-assert failed (null_assert.pg:32:14)
+str abc
+null-assert failed (null_assert.pg:41:22)
+bool true
+null-assert failed (null_assert.pg:49:9)
+node 1
+null-assert failed (null_assert.pg:58:21)
+opt 42
+null-assert failed (null_assert.pg:66:29)
+tag
+5
+21
+31
+10
+1
+null-assert failed (null_assert.pg:112:23)
+2
+10
+-1
+6
+9
+true
+null

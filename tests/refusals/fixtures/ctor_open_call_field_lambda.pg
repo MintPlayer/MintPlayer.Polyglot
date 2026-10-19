@@ -1,0 +1,21 @@
+// REFUSED (P40 review r5 #5): a lambda stored in a field and then called in the constructor (a stored callback that is
+// never called during construction stays legal).
+import "std.io"
+
+open class W {
+  var cb: () => string = () => "none"
+  var label: string = ""
+  constructor() {
+    this.cb = () => this.describe()
+    this.label = this.cb()
+  }
+  open fn describe(): string => "w"
+}
+class B : W {
+  var extra: string = "X"
+  override fn describe(): string => "b" + this.extra
+}
+
+fn main() {
+  print(B().label)
+}

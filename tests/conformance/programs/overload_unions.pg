@@ -1,0 +1,28 @@
+// P40 review r5 #15: a union-typed parameter accepts only that union (and an enum only itself). Overload resolution
+// left unions uncategorized, so beside `kind<T>` and `kind(Animal)` it bound `kind(5)` and `kind(Dog())` to
+// `kind(s: Shape)` (C# CS1503, TS2345; Python and PHP printed "shape" every time).
+import "std.io"
+
+union Shape {
+  Circle(r: i32)
+  Square(s: i32)
+}
+enum Color { Red, Blue }
+
+open class Animal {
+}
+class Dog : Animal {
+}
+
+fn kind(s: Shape): string => "shape"
+fn kind(a: Animal): string => "animal"
+fn kind(c: Color): string => "color"
+fn kind<T>(x: T): string => "generic"
+
+fn main() {
+  print(kind(Circle(1)))
+  print(kind(Dog()))
+  print(kind(Color.Blue))
+  print(kind(5))
+  print(kind("text"))
+}

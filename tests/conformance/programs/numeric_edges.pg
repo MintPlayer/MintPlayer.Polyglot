@@ -1,0 +1,33 @@
+// P40 review r3 (part 2, numeric edges): `f32.parse` rounds to f32 on every target (TS/Python/PHP returned the
+// double, so `f32.parse("0.1") == 0.1f` was false there) and an out-of-range f32 text reads as an infinity;
+// a validated integer text with thousands of leading zeros parses (Python's 4300-digit int() limit raised, also
+// from tryParse); and float division/remainder by zero follow IEEE like C# and JS (Python raised
+// ZeroDivisionError/ValueError, PHP DivisionByZeroError).
+
+import { Math } from "std.math"
+
+fn zeros(n: i32): string {
+  var s = ""
+  var i = 0
+  while i < n {
+    s = s + "0"
+    i += 1
+  }
+  return s
+}
+
+fn main() {
+  print(f32.parse("0.1") == 0.1f)
+  print((f64)f32.parse("1e39") > 1.0e300) // an infinity: an unrounded 1e39 is far below 1e300 (P40 review r4)
+  print(i32.parse(zeros(5000) + "1"))
+  print(i32.tryParse(zeros(5000) + "7") ?? -1)
+  print(i64.parse("-" + zeros(4400) + "42"))
+  let z = 0.0
+  print(Math.isNaN(z / z))
+  print(1.0 / z > 1.0e308)
+  print(-1.0 / z < -1.0e308)
+  print(Math.isNaN(5.5 % z))
+  var d = 3.0
+  d /= z
+  print(d > 1.0e308)
+}

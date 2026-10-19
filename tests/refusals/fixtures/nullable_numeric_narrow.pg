@@ -1,0 +1,9 @@
+import "std.io"
+
+// REFUSED (P40 review r6, part 2): a narrowing conversion into a NULLABLE numeric slot needs a cast, exactly as into
+// the non-null slot (`i64` into `i32?` reached C# as CS0266).
+fn main() {
+  let big = 5i64
+  let n: i32? = big
+  print(n ?? 0)
+}

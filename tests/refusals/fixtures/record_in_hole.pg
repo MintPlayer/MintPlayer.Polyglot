@@ -1,0 +1,5 @@
+// REFUSED (P40 A3): a record in an interpolation hole — C# prints `P { x = 1 }`, TS `[object Object]`,
+// Python the dataclass repr and PHP fails. A hole accepts exactly what print accepts.
+record P(x: i32)
+
+fn show(p: P): string => "p=${p}"

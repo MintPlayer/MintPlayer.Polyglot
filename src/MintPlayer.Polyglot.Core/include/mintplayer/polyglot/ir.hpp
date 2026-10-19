@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,8 +22,14 @@ namespace mintplayer::polyglot::ir {
 
 using Type = TypeRef; // the IR reuses the resolved semantic type
 
+// The `originModule` sentinel for embedded std/core/lib declarations — the PRELUDE. Every declaration kind
+// carries `originModule`; templates read the fact as `decl.isPrelude` (P40 §0), and the reachability pass
+// (reachability.hpp) prunes prelude declarations that nothing reaches.
+inline constexpr const char kPreludeOrigin[] = "<prelude>";
+inline bool isPreludeOrigin(const std::string& origin) { return origin == kPreludeOrigin; }
+
 // ---- expressions ----
-enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With, IsTest, AsCast };
+enum class ExprKind { Int, Float, Bool, Str, Char, Null, Var, This, Unary, Await, Binary, Cast, Call, MethodCall, Member, New, MakeCase, Match, Lambda, Extern, Index, ListLit, Tuple, Bound, Interp, Cond, With, IsTest, AsCast, NullAssert };
 
 struct Expr {
     ExprKind kind;
@@ -73,6 +80,10 @@ struct Var : Expr { // reference to a local or parameter
     // is `needsCell`). A value-capture target (Python cell object) reads/writes through the cell; a
     // native-by-reference target (C#/TS) ignores it and emits the plain name. Node-local, like `lhsIsRecord`.
     bool throughCell = false;
+    // P40 review r5 (part 2): a read of a MODULE value inside a lambda. A lambda runs when it is called, so it
+    // must see the value as it is then; a target whose closures capture by value at creation (PHP arrow fns)
+    // reads it live through `node.liveModuleRead` (PHP `$GLOBALS['x']`). Elsewhere a plain name already is.
+    bool liveModuleRead = false;
     Var(SourcePos p, Type t, std::string n) : Expr(ExprKind::Var, p, std::move(t)), name(std::move(n)) {}
 };
 struct This : Expr {
@@ -109,6 +120,9 @@ struct Binary : Expr {
     // equality on every target (TS/Py/PHP call `.eq(...)`; C# emits the user eq as `override Equals`).
     bool lhsIsUnion = false;
     bool lhsHasUserEq = false;
+    // P40 review r4 #9: the left operand is a variable and the right operand may have side effects, on a
+    // target that reads a variable operand late (BackendSpec::operandSnapshot) — the emitter snapshots it.
+    bool snapshotLhs = false;
     Binary(SourcePos p, Type t, std::string o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::Binary, p, std::move(t)), op(std::move(o)), lhs(std::move(l)), rhs(std::move(r)) {}
 };
@@ -141,16 +155,44 @@ struct AsCast : Expr {
     AsCast(SourcePos p, Type t, ExprPtr o, Type ct)
         : Expr(ExprKind::AsCast, p, std::move(t)), operand(std::move(o)), castType(std::move(ct)) {}
 };
+// P40 A4: `x!` on a NULLABLE operand — the value when it is non-null, else a throw carrying the source site.
+// `type` is the operand's type made non-nullable. Every target evaluates `operand` once and the form is
+// valid as an assignment target (`box.next!.v += 1`). The site (`m.pg:L:C`) is Core-owned — rules read it
+// as `node.where` and the full text as `node.message`, so the message is identical on every target.
+// A null `operand` is the bare FAIL form (`isFail`): the None arm of a lowered `opt!` on `Option<T>` (D12)
+// — a throw in expression position, which every target spells natively (C# switch-arm throw, TS helper
+// call returning never, Python helper call, PHP throw expression). `!` on a NON-nullable operand never
+// reaches the IR (it lowers to the bare operand). Targets whose check re-reads the operand bind
+// `tempName` inline when it is not a simple variable (Python's walrus — the AsCast pattern).
+struct NullAssert : Expr {
+    ExprPtr operand; // null = the fail form
+    bool operandIsSimple = true;
+    std::string tempName; // set iff !operandIsSimple
+    NullAssert(SourcePos p, Type t, ExprPtr o) : Expr(ExprKind::NullAssert, p, std::move(t)), operand(std::move(o)) {}
+};
 struct Extern : Expr { // `extern("…")`: raw target code emitted verbatim (the FFI hatch)
     std::string code;
+    // P40 §0: manifest prelude keys this text needs (a std binding's `requires`); emitting it records them,
+    // so the helper lands in the file exactly when the text does. Empty for user-written `extern(...)`.
+    std::vector<std::string> preludeKeys;
     Extern(SourcePos p, Type t, std::string c) : Expr(ExprKind::Extern, p, std::move(t)), code(std::move(c)) {}
 };
 struct Call : Expr { // resolved direct call; `isPrint` marks the `print` intrinsic
     std::string callee;        // source name — C# uses this (native overloading)
     std::string mangledCallee; // resolved overload's per-target name — TS uses this (== callee if unique)
+    std::string linkCallee;    // P40 review r3 2(e): the resolved overload's link name (C#); empty = callee
+    std::string uniqueCallee;  // P40 review r4 #13: the resolved overload's unique name (PHP); empty = callee
     bool isPrint = false;
     bool isFree = false;       // a top-level free function (C# qualifies as `Program.callee`); not a local value
+    // P40 review r4 item 20: a REFERENCE to the function as a value (`apply(five)`), not a call — no args; rules
+    // read `node.isRef` (C#/TS/Python print the resolved name, PHP the first-class callable `five(...)`).
+    bool isRef = false;
     std::vector<ExprPtr> args;
+    std::vector<Type> typeArgs; // P40 A4: explicit call-site type args `f<T>(…)` (empty = inferred); `node.typeArgs`
+    // P40 review r3 2(a): a callee that is not a name — `adder(1)(4)`, `fs[0](4)`, `(if c {f} else {g})(4)`,
+    // an immediately-invoked lambda. Non-null = the callee value expression (callee/mangledCallee are empty);
+    // rules read `node.hasCalleeExpr` / `node.calleeKind` and emit it as `node.calleeExpr` (side "recv").
+    ExprPtr calleeExpr;
     Call(SourcePos p, Type t, std::string c, bool print) : Expr(ExprKind::Call, p, std::move(t)), callee(std::move(c)), isPrint(print) {}
 };
 struct MethodCall : Expr { // `object.method(args)` — or a static call `Type.method(args)` when staticType set
@@ -159,6 +201,10 @@ struct MethodCall : Expr { // `object.method(args)` — or a static call `Type.m
     std::string staticType;    // non-empty = static call `staticType.method(args)` (object is null)
     std::vector<ExprPtr> args;
     bool isExtension = false; // resolved to an extension fn: C# keeps `obj.m(args)`, TS emits `m(obj, args)`
+    // P40 review r6: the extension's name as a FREE function (`node.freeName`), when its plain name is shared by
+    // another extension or by a top-level function, value or type — on a target where an extension is a free
+    // function in the module scope (TS/Python/PHP) both would be one name. Empty = `method`.
+    std::string freeName;
     MethodCall(SourcePos p, Type t, ExprPtr o, std::string m)
         : Expr(ExprKind::MethodCall, p, std::move(t)), object(std::move(o)), method(std::move(m)) {}
 };
@@ -167,10 +213,20 @@ struct Member : Expr { // field / property access `object.field` — or a static
     std::string field;
     std::string staticType;    // non-empty = static access `staticType.field` (object is null)
     bool nullSafe = false;
+    // P40 review r5 item 20: a `?.` read yields the target's second absent form where it has one (JS
+    // `undefined`); the emitter wraps it in the spec's absentNormalize unless this consumer (see ir::Bound) folds
+    // every absent form on the target.
+    std::string absentConsumer;
     // The accessed member is a computed property (a getter). Native-property targets (C#/TS/Python) ignore
     // this and emit a plain field access; a target that emulates properties as methods (PHP) emits a call
     // `recv->field()`. A target-neutral fact stamped at lowering from the receiver type's members.
     bool isProperty = false;
+    // A static access that names a class's static FIELD (not an enum case or a method): its mutability and
+    // whether its initializer is a literal (ClassField::initIsLiteral). A target that stores constants and
+    // static variables differently (PHP `K::X` vs `K::$X`) picks the spelling from these.
+    bool staticField = false;
+    bool staticFieldMutable = false;
+    bool staticFieldInitIsLiteral = false;
     Member(SourcePos p, Type t, ExprPtr o, std::string f, bool ns)
         : Expr(ExprKind::Member, p, std::move(t)), object(std::move(o)), field(std::move(f)), nullSafe(ns) {}
 };
@@ -220,6 +276,12 @@ struct Bound : Expr {
     ExprPtr receiver;
     std::vector<ExprPtr> args;
     std::string tmpl; // the active target's template ("" only when the pre-lowering refusal was bypassed)
+    std::vector<std::string> preludeKeys; // P40 §0: the binding's manifest prelude keys (see ir::Extern)
+    // P40 review A1 / r4 item 16: the absence-testing consumer this bound's value flows straight into —
+    // "coalesce" (`??` left operand), "nullAssert" (`x!`), "nullSafe" (a `?.` receiver), or "" (none). The
+    // emitter drops the template's absent normalization when the target lists that consumer as one that
+    // folds every absent form (BackendSpec::absentFoldedBy).
+    std::string absentConsumer;
     Bound(SourcePos p, Type t) : Expr(ExprKind::Bound, p, std::move(t)) {}
 };
 
@@ -310,6 +372,13 @@ struct Assign : Stmt {
     // Capture analysis (P25 §4.18): the assignment target is a variable boxed into a shared cell — a
     // value-capture target writes through the cell (mirrors ir::Var.throughCell for the write side).
     bool targetThroughCell = false;
+    // P40: non-empty = lowering EXPANDED a source compound `t op= v` into this `t = t op v` (op "=", value a
+    // Binary whose lhs re-reads the target), so the Binary rule's §3.C masking/division/concat applies. The
+    // emitter folds it back to `t op= v` only when that rule rendered the plain infix `t op v`.
+    std::string compoundOp;
+    // P40 review r4 #9: never fold back to the native `op=` — its value may have side effects and the target
+    // reads a native compound's slot only after evaluating the value (BackendSpec::operandSnapshot).
+    bool keepExpanded = false;
     Assign(SourcePos p, ExprPtr t, std::string o, ExprPtr v)
         : Stmt(StmtKind::Assign, p), target(std::move(t)), op(std::move(o)), value(std::move(v)) {}
 };
@@ -325,6 +394,10 @@ struct IndexAssign : Stmt {
 };
 struct ExprStmt : Stmt {
     ExprPtr expr;
+    // P40 review r4 item 18: the expression produces a value that is thrown away and is not an invocation,
+    // construction or await (`s.len()` bound to a property read, a map lookup, a union-case literal) — a target
+    // that admits only statement expressions spells it with its discard form (BackendSpec::exprStmtDiscardPrefix).
+    bool discard = false;
     ExprStmt(SourcePos p, ExprPtr e) : Stmt(StmtKind::ExprStmt, p), expr(std::move(e)) {}
 };
 struct If : Stmt {
@@ -345,6 +418,14 @@ struct For : Stmt { // `for binding in <seq>`: either an integer range or an arb
     bool isRange = false;
     ExprPtr rangeStart, rangeEnd; // range form: bounds
     bool inclusive = false;       // range form: `..=` (true) vs `..` (false)
+    // P40 D7 — bounds are evaluated ONCE. `rangeEndSimple` (like With::baseIsSimple): the end bound cannot
+    // change, so the condition re-reads it (`i < n`, readable). Otherwise the rule hoists it into `rangeEndTemp`
+    // alongside the binding (C# `for (int i = s, __end0 = e; …)`, TS `let`, PHP comma init) and `rangeType` —
+    // the widened loop-variable type sema chose — spells the declaration where a target needs it.
+    bool rangeEndSimple = true;
+    bool inclusiveMayWrap = false; // P40 review B6: `..=` whose end may be the loop type's max (stmt.inclusiveMayWrap)
+    std::string rangeEndTemp;
+    Type rangeType;
     ExprPtr iterable;             // iterable form: the sequence expression
     std::vector<StmtPtr> body;
     // Capture analysis (P25 §4.18): the loop binding is captured by a lambda created in the body. `needsCell`
@@ -464,6 +545,8 @@ struct Function {
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::string mangledName; // per-target emitted name (TS); == name unless overloaded. C# uses `name`.
+    std::string linkName;    // P40 review r3 2(e): the name in a one-scope link with overloading (C#); see FunctionDecl
+    std::string uniqueName;  // P40 review r4 #13: the name in a one-scope link without overloading (PHP)
     std::vector<GenericParam> generics;
     std::vector<Param> params;
     Type returnType;
@@ -510,6 +593,7 @@ struct Method {
     bool isAsync = false;         // `async` method — return wrapped in Task/Promise/async def (§4.7)
     bool isVirtual = false;       // `open fn` — C# `virtual` (overridable); SPEC §grammar 210-213
     bool isOverride = false;      // `override fn` — C# `override` (replaces a base virtual)
+    bool isAbstract = false;      // `abstract fn` — no body; every target declares a real abstract member (review r5 #9)
     bool isIterator = false;      // body has a `yield` — C# `IEnumerable`, TS generator `*method()` (§4.x)
     ExprPtr exprBody;
     std::vector<StmtPtr> body;
@@ -529,6 +613,7 @@ struct Method {
     std::vector<std::string> globalRefs;
 };
 struct Record { // an immutable data type (record)
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
@@ -542,6 +627,7 @@ struct EnumCase {
     long long value;
 };
 struct Enum {
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<EnumCase> cases;
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
@@ -555,6 +641,7 @@ struct UnionCase {
     std::vector<UnionCaseField> fields; // empty = payload-free case
 };
 struct Union {
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<GenericParam> generics; // `union Option<T> { … }`
     std::vector<UnionCase> cases;
@@ -567,8 +654,13 @@ struct ClassField {
     bool isStatic = false;  // a `const`/`static` member — accessed `Owner.name`, emitted `static`/`readonly`
     Type type;
     ExprPtr init;   // optional field initializer (may be null)
+    // The initializer is a single literal (`7`, `-1.5`, `"s"`, `true`, `null`): a value every target can spell
+    // where only a compile-time constant is allowed. P40 follow-up: PHP's class `const` (and a static property's
+    // inline default) requires one — `const Y = f();` was a fatal error at load.
+    bool initIsLiteral = false;
 };
 struct Class { // a mutable reference type
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::vector<std::string> attrLines; // P37 D Tier 1: pre-rendered native annotation lines (verbatim, above the decl)
     std::string name;
     std::vector<GenericParam> generics;
@@ -578,17 +670,25 @@ struct Class { // a mutable reference type
     std::vector<Param> initParams;
     bool hasSuper = false;             // init calls `super(...)`: C# `: base(args)`, TS `super(args);`
     // Does an ANCESTOR have a real constructor to chain up to? True if a base (transitively) is a user
-    // class with an `init`, or a native/extern base (Error→`\Exception`, …) — which always has a ctor.
-    // False when the only bases are interfaces or user classes with no `init`. PHP gates its
-    // `parent::__construct(...)` on this: unlike C#/TS/Python, PHP has no implicit default base ctor, so a
-    // `super()` to an initless base is a fatal `Cannot call constructor` (issue #48).
+    // class with an `init` or an instance field initializer (both make it emit a constructor), or a
+    // native/extern base (Error→`\Exception`, …) — which always has a ctor. False when the only bases are
+    // interfaces or user classes with neither. PHP and Python gate their explicit base call on this, written
+    // `super()` or not: neither has an implicit base-ctor call, and PHP has no default base ctor, so a call
+    // to an initless base is a fatal `Cannot call constructor` (issue #48, review r4 #3).
     bool baseHasInit = false;
+    // P40 B2 (D10): the `.pg` name of the native/extern class at the root of the base chain (`Error` for
+    // `class B : A` with `class A : Error`), "" when the chain ends in user classes or interfaces only. A
+    // plugin's `baseRootMembers` table names that root's members, so a field shadowing one gets `override`.
+    std::string baseRoot;
     std::vector<ExprPtr> superArgs;    // the base-constructor arguments (hoisted out of initBody)
     std::vector<StmtPtr> initBody;
     std::vector<Method> methods;
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
+    std::vector<std::string> needsClasses; // review r5 #4: classes its static initializers reach (declarationOrder)
+    bool isAbstract = false;               // `abstract class` — never constructed; may declare abstract methods (r5 #9)
 };
 struct Interface { // a contract: method signatures only (no bodies). C# `interface`, TS `interface`.
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     std::vector<GenericParam> generics;
     std::vector<Type> bases;     // extended interfaces
@@ -596,11 +696,13 @@ struct Interface { // a contract: method signatures only (no bodies). C# `interf
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
 };
 struct Global { // a top-level `const`/`let` value
+    SourcePos pos;            // the declaration in the .pg (review r4 #7: the emission order follows source order)
     std::string name;
     bool isConst = false;
     Type type;
     ExprPtr init;
     std::string originModule; // module linking (§4.5): see ir::Function.originModule
+    std::vector<std::string> needsClasses; // review r5 #4: classes the initializer reaches — emitted before it
 };
 // A native-backed `extern class`: how its name spells on THE ACTIVE TARGET (`$0,$1,…` = the rendered type
 // args) — lowering picks the target's arm (P19 slice 9). Construction (`Type(args)` with `$T`/`$0…` ctor
@@ -616,11 +718,28 @@ struct ExternType {
 struct ModuleImport {
     std::string path;
     std::string names;
+    std::string allNames; // P40 B3: a bare `import "./mod"` — every name the module emits, joined (else empty)
+    // Review r7: the names of `names`/`allNames` that are TYPES ONLY on this target (manifest `typeOnlyImports`),
+    // split out of them — TS imports them with `import type`. (`unboundImports` names are dropped outright.)
+    std::string typeNames;
     bool isNamespace = false;
     std::string ns;
 };
 
+// P40 A2 backstop: a surface expression lowering had no rule for (sema should have refused it first).
+struct LoweringFailure {
+    SourcePos pos;
+    std::string kind; // the surface expression kind, e.g. "range"
+};
+
 struct Module {
+    // P40 A2: non-empty = lowering met an expression it cannot lower. `compile()` reports each as an internal
+    // compiler error and writes nothing; the emitted placeholder (`__polyglot_unlowered_expr__`) never ships.
+    std::vector<LoweringFailure> loweringFailures;
+    // P40 review r3 2(c): ONE temp-name allocator. Lowering numbers its desugaring temps (`__c0`, `__opt1`, …)
+    // from 0 to tempsUsed-1; the emitter's `fresh` rule temps start at tempsUsed, so a lowering temp and a
+    // plugin temp can never share a name (Python's `??` walrus `__cN` once rebound a compound's `__cN`).
+    int tempsUsed = 0;
     std::vector<std::string> attrImports; // P37 D Tier 1: verbatim import/using lines (deduped) for used attribute bindings
     std::vector<Enum> enums;
     std::vector<Union> unions;
@@ -633,7 +752,12 @@ struct Module {
     std::vector<ExternType> externTypes; // native-backed `extern class` type/ctor spellings (see ExternType)
     std::vector<ModuleImport> imports;   // §4.5: this file's cross-module imports (empty for single-file builds)
     bool linked = false;                 // §4.5: this is one file of a multi-module build (drives C# `partial`)
-    std::string access;                  // requested accessibility for emitted C# types ("public"/"internal"); "" = target default
+    // Review r7: every interface name of the whole closure — a file keeps only its own declarations, but a class
+    // implementing an IMPORTED interface still needs TS/PHP `implements` (it emitted `extends`).
+    std::vector<std::string> linkedInterfaceNames;
+    // P40 B1: this file's RESOLVED target options (every option the plugin manifest declares, defaults filled
+    // in, validated against its `pattern`). Rules read them as `option.<name>`; the Core never interprets them.
+    std::map<std::string, std::string> options;
     // P38/issue #69: emit origin information (LibConfig::originInfo). Off = every target emits
     // byte-for-byte as before. On = a target that declares `originMapping` records where each emitted line
     // came from; targets that declare nothing are unaffected. Deliberately named for the CONCEPT, not for
@@ -644,9 +768,37 @@ struct Module {
     // not an on-disk path — a logical "std.io", or the empty slot 0 — is exactly how the emitter
     // recognizes "no resolvable origin" and falls back to a hidden directive.
     std::vector<std::string> sourceFiles;
+    // P40 B7: the directory the HOST will write this file into, in the same canonical, forward-slashed form
+    // as `sourceFiles` (the host canonicalises both sides; the Core only compares them lexically and stays
+    // IO-free). When set, an origin path is emitted RELATIVE to it, so committed origin-info output is
+    // identical across checkouts. Empty, or a path on a different root (another drive), = absolute.
+    std::string originBaseDir;
 };
 
 // A stable, deterministic textual dump of the typed IR (for inspection and the P4 gate).
 std::string dump(const Module& m);
+
+// P40 review r4 #7: one top-level declaration, as a position in the module's per-kind lists. `kind` is one of
+// kDeclOrderKinds; `list` the module path of its list (`module.classes`); `index` its index in that list (for
+// functions, in the target-filtered `module.functions` view the caller passes).
+struct DeclRef {
+    std::string kind;
+    std::string list;
+    std::size_t index = 0;
+};
+// Every kind a declaration order holds — a plugin's `mapOrder` must name a rule for each (anti-silent-drop).
+inline const char* const kDeclOrderKinds[] = {"enum", "interface", "union", "record", "function", "extension",
+                                              "class", "global"};
+// The order in which a target that runs a module top to bottom (TS, Python, PHP) must emit its declarations.
+// Declarations with no eager dependency on user code come first, in kind order — enums (nothing), interfaces
+// (their base interfaces, base first), unions, records (interfaces; enum-case defaults), then functions and
+// extensions (Python evaluates a default — an enum case — when it defines the function, and an initializer may
+// call one). Classes and module values follow, INTERLEAVED in source order, because each runs code when it is
+// reached (static initializers, value initializers) and sema guarantees that code reads only what is declared
+// before it (SPEC §5 "Initialization order", through same-module calls too). The one forward edge sema allows
+// is a class's base declared later: such a class moves to just after its base. Prelude declarations come first
+// within their group. `functionIndices` is the target-filtered function view (an `actual` for another target
+// is not emitted).
+std::vector<DeclRef> declarationOrder(const Module& m, const std::vector<std::size_t>& functionIndices);
 
 } // namespace mintplayer::polyglot::ir

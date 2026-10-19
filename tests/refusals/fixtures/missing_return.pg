@@ -1,0 +1,9 @@
+// REFUSED (P40 review A9): a value-returning body whose end is reachable. C# (CS0161) and TS (TS2366)
+// refuse it; Python and PHP would silently return None/null.
+fn sign(x: i32): i32 {
+  if x > 0 { return 1 }
+  if x < 0 { return -1 }
+}
+fn main() {
+  print(sign(1))
+}

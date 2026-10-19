@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "typescript",
   "crossDirImports": true,
   "preludePerFile": true,
@@ -84,11 +84,24 @@
         "void"
       ],
       "globals": [
-        "console"
-      ]
+        "console", "globalThis", "Math", "Number", "String", "BigInt", "Array", "JSON", "Promise"
+      ],
+      "classNames": {
+        "Object": "TS2725: a class named 'Object' is a compile error under --module nodenext (a field, local or enum of that name is fine)"
+      }
     },
     "rethrow": "throw __e;",
+    "preludes": {
+      "unionEq": "function __pgUnionEq(a: unknown, b: unknown): boolean {\n    // a union value (a tagged object literal) compared as C# compares its generated case records (review r5): the\n    // same case with equal payloads, a record payload by its equals(), a nested union recursively, anything else (a\n    // class instance, a list) by reference. (Comparing serialized text matched class payloads by content and threw on a bigint.)\n    if (a === b) {\n        return true;\n    }\n    if (typeof a === \"number\" && typeof b === \"number\") {\n        return a !== a && b !== b;\n    }\n    if (typeof a !== \"object\" || typeof b !== \"object\" || a === null || b === null) {\n        return false;\n    }\n    const proto = globalThis.Object.getPrototypeOf(a);\n    if (proto !== globalThis.Object.getPrototypeOf(b)) {\n        return false;\n    }\n    if (proto === globalThis.Object.prototype) {\n        const ra = a as { [k: string]: unknown }, rb = b as { [k: string]: unknown };\n        const ka = globalThis.Object.keys(ra);\n        if (ka.length !== globalThis.Object.keys(rb).length) {\n            return false;\n        }\n        for (const k of ka) {\n            if (!(k in rb) || !__pgUnionEq(ra[k], rb[k])) {\n                return false;\n            }\n        }\n        return true;\n    }\n    const eq = (a as { equals?: unknown }).equals;\n    return typeof eq === \"function\" && (eq as (o: unknown) => boolean).call(a, b);\n}\n",
+      "nullAssert": "function __pgNullAssert(at: string): never {\n    throw new globalThis.TypeError(\"null-assert failed (\" + at + \")\");\n}\n"
+    },
     "tables": {
+      "baseRootMembers": {
+        "Error.cause": "true",
+        "Error.message": "true",
+        "Error.name": "true",
+        "Error.stack": "true"
+      },
       "opMethod": {
         "+": "plus",
         "-": "minus",
@@ -116,6 +129,9 @@
         "mutable": "let $x: $T",
         "const": "const $x: $T"
       },
+      "localNullInit": {
+        "typed": "$x as $T"
+      },
       "yield": {
         "value": "yield $x;",
         "empty": "return;"
@@ -129,11 +145,43 @@
         "u32": "BigInt.asUintN(32, $x)"
       }
     },
-    "escapes": {
+    "literals": {
+      "string": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      },
       "interp": {
-        "`": "\\`",
-        "\\": "\\\\",
-        "${": "\\${"
+        "quote": "`",
+        "map": {
+          "\\": "\\\\",
+          "`": "\\`",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "${": "\\${"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      },
+      "char": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
       }
     },
     "wrapInt": {
@@ -146,13 +194,31 @@
       "i64": "BigInt.asIntN(64, $x)",
       "u64": "BigInt.asUintN(64, $x)"
     },
+    "absentNormalize": { "prefix": "(", "suffix": " ?? null)", "foldedBy": ["coalesce", "nullAssert", "nullSafe"] },
+    "nativeCoalesceAssign": true,
+    "typeOnlyImports": ["union", "interface"],
+    "unboundImports": ["unionCase"],
+    "assignmentOrder": "targetFirst",
+    "exprStmt": { "parenIfStarts": ["{"] },
     "wrapAtom": {
-      "recv": [
-        "unary",
-        "binaryScalar"
-      ],
-      "unary": [
-        "binary"
+      "recvPrimary": [
+        "var",
+        "this",
+        "call",
+        "methodCall",
+        "member",
+        "index",
+        "str",
+        "char",
+        "bool",
+        "null",
+        "extern",
+        "nullAssert",
+        "listLit",
+        "tuple",
+        "interp",
+        "new",
+        "makeCase"
       ]
     },
     "generics": {
@@ -160,7 +226,8 @@
       "boundsIntro": " extends ",
       "boundsSep": " & ",
       "erase": [
-        "INumber"
+        "INumber",
+        "IMapKey"
       ]
     }
   },
@@ -181,7 +248,7 @@
       ]
     },
     "Float": {
-      "get": "node.text"
+      "get": "node.widenedText"
     },
     "Bool": {
       "case": {
@@ -207,16 +274,18 @@
       "get": "spec.nullLit"
     },
     "Str": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "string",
         {
           "get": "node.value"
         }
       ]
     },
     "Char": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "char",
         {
           "get": "node.value"
         }
@@ -269,22 +338,32 @@
       ]
     },
     "Call": {
-      "tmpl": [
-        {
-          "fn": "ident",
-          "args": [
+      "case": {
+        "when": [
+          [
+            { "has": "node.hasCalleeExpr" },
+            { "tmpl": [ { "emitChild": "node.calleeExpr", "side": "recv" }, "(", { "map": "node.args", "sep": ", " }, ")" ] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
             {
-              "get": "node.mangledCallee"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.mangledCallee"
+                }
+              ]
+            },
+            {
+              "case": {
+                "when": [[ { "eq": ["node.isRef", "true"] }, "" ]],
+                "else": { "tmpl": [ { "call": "typeArgsSuffix" }, "(", { "map": "node.args", "sep": ", " }, ")" ] }
+              }
             }
           ]
-        },
-        "(",
-        {
-          "map": "node.args",
-          "sep": ", "
-        },
-        ")"
-      ]
+        }
+      }
     },
     "Member": {
       "tmpl": [
@@ -578,13 +657,15 @@
       "tmpl": [
         "{ tag: ",
         {
-          "fn": "escapeString",
+          "fn": "quoted",
           "args": [
+            "string",
             {
               "get": "node.caseName"
             }
           ]
         },
+        " as const",
         {
           "map": "node.fields",
           "sep": "",
@@ -615,6 +696,26 @@
         " instanceof ",
         { "type": "node.testType" }
       ]
+    },
+    "NullAssert": {
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.isFail", "true"] },
+            { "tmpl": [{ "fn": "require", "args": ["nullAssert"] }, "__pgNullAssert(", { "fn": "quoted", "args": ["string", { "get": "node.where" }] }, ")"] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            { "fn": "require", "args": ["nullAssert"] },
+            "(",
+            { "emitChild": "node.operand", "side": "recv" },
+            " ?? __pgNullAssert(",
+            { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+            "))"
+          ]
+        }
+      }
     },
     "AsCast": {
       "case": {
@@ -1030,7 +1131,7 @@
             "lits": "node.chunks",
             "holes": "node.holes",
             "lit": {
-              "fn": "escape",
+              "fn": "literal",
               "args": [
                 "interp",
                 {
@@ -1064,14 +1165,7 @@
             },
             {
               "tmpl": [
-                {
-                  "fn": "ident",
-                  "args": [
-                    {
-                      "get": "node.method"
-                    }
-                  ]
-                },
+                { "fn": "mangleName", "args": [ { "fn": "ident", "args": [ { "get": "node.freeName" } ] } ] },
                 "(",
                 {
                   "emit": "node.object"
@@ -1146,7 +1240,14 @@
     },
     "Match": {
       "tmpl": [
-        "(() => { const _m = ",
+        "(() => { const _m",
+        {
+          "case": {
+            "when": [[ { "has": "node.scrutineeScalar" }, { "tmpl": [": ", { "get": "node.scrutineeScalar" }] } ]],
+            "else": ""
+          }
+        },
+        " = ",
         {
           "emit": "node.scrutinee"
         },
@@ -1196,8 +1297,9 @@
                     "tmpl": [
                       "if (_m.tag === ",
                       {
-                        "fn": "escapeString",
+                        "fn": "quoted",
                         "args": [
+                          "string",
                           {
                             "get": "item.pattern.ctorCase"
                           }
@@ -1499,7 +1601,7 @@
             }
           }
         },
-        "throw new Error(\"non-exhaustive match\"); })()"
+        "throw new globalThis.Error(\"non-exhaustive match\"); })()"
       ]
     },
     "Lambda": {
@@ -1556,7 +1658,8 @@
                   ]
                 },
                 {
-                  "emit": "node.body"
+                  "fn": "parenIfStarts",
+                  "args": ["{", { "emit": "node.body" }]
                 }
               ]
             ],
@@ -1578,7 +1681,10 @@
         {
           "line": {
             "tmpl": [
-              "export type ",
+              {
+                "call": "tsExport"
+              },
+              "type ",
               {
                 "fn": "ident",
                 "args": [
@@ -1594,7 +1700,10 @@
         {
           "line": {
             "tmpl": [
-              "export const ",
+              {
+                "call": "tsExport"
+              },
+              "const ",
               {
                 "fn": "ident",
                 "args": [
@@ -1696,7 +1805,8 @@
                   ]
                 },
                 "override "
-              ]
+              ],
+              [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ]
             ]
           }
         },
@@ -1873,6 +1983,7 @@
                   "block": {
                     "head": {
                       "tmpl": [
+                        { "case": { "when": [ [ { "eq": [ "decl.isStatic", "true" ] }, "static " ] ] } },
                         "get ",
                         {
                           "fn": "ident",
@@ -1934,6 +2045,7 @@
                           "block": {
                             "head": {
                               "tmpl": [
+                                { "case": { "when": [ [ { "eq": [ "decl.isStatic", "true" ] }, "static " ] ] } },
                                 "set ",
                                 {
                                   "fn": "ident",
@@ -2170,7 +2282,9 @@
             }
           ]
         ],
-        "else": {
+        "else": { "case": { "when": [
+          [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": { "tmpl": [ { "call": "tsMethodSig" }, ";" ] } } ]
+        ], "else": {
           "block": {
             "head": {
               "call": "tsMethodSig"
@@ -2206,12 +2320,15 @@
               }
             ]
           }
-        }
+        } } }
       }
     },
     "tsRecordHead": {
       "tmpl": [
-        "export class ",
+        {
+          "call": "tsExport"
+        },
+        "class ",
         {
           "fn": "ident",
           "args": [
@@ -2636,6 +2753,17 @@
                               [
                                 {
                                   "eq": [
+                                    "stmt.catchesDiverge",
+                                    "true"
+                                  ]
+                                },
+                                {
+                                  "line": "throw __e;"
+                                }
+                              ],
+                              [
+                                {
+                                  "eq": [
                                     "stmt.hasCatchAll",
                                     "false"
                                   ]
@@ -2803,6 +2931,19 @@
         }
       ]
     },
+    "rangeEndDecl": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "false" ] },
+                    { "tmpl": [ ", ", { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] }, " = ", { "emit": "stmt.rangeEnd" } ] } ] ],
+        "else": ""
+      }
+    },
+    "rangeEndRead": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "true" ] }, { "emit": "stmt.rangeEnd" } ] ],
+        "else": { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] }
+      }
+    },
     "ForStmt": {
       "case": {
         "when": [
@@ -2830,6 +2971,7 @@
                     {
                       "emit": "stmt.rangeStart"
                     },
+                    { "call": "rangeEndDecl" },
                     "; ",
                     {
                       "fn": "ident",
@@ -2855,9 +2997,7 @@
                         "else": " < "
                       }
                     },
-                    {
-                      "emit": "stmt.rangeEnd"
-                    },
+                    { "call": "rangeEndRead" },
                     "; ",
                     {
                       "fn": "ident",
@@ -2947,6 +3087,15 @@
     "Program": {
       "seq": [
         {
+          "line": "// <auto-generated/>"
+        },
+        {
+          "line": "// Generated by Polyglot. Do not edit: regenerate with `polyglot build`."
+        },
+        {
+          "fn": "preludeSlot"
+        },
+        {
           "case": {
             "when": [
               [
@@ -2969,8 +3118,26 @@
         },
         {
           "mapDecl": "module.imports",
-          "each": {
-            "line": {
+          "each": { "seq": [
+          {
+            "case": {
+              "when": [
+                [
+                  { "not": { "eq": ["item.typeNames", ""] } },
+                  { "line": { "tmpl": ["import type { ", { "get": "item.typeNames" }, " } from \"", { "get": "item.path" }, "\";"] } }
+                ]
+              ]
+            }
+          },
+          { "case": {
+            "when": [
+              [
+                { "and": [ { "eq": ["item.names", ""] }, { "eq": ["item.allNames", ""] }, { "not": { "eq": ["item.typeNames", ""] } } ] },
+                { "seq": [] }
+              ]
+            ],
+            "else": {
+          "line": {
               "case": {
                 "when": [
                   [
@@ -3016,6 +3183,10 @@
                         "\";"
                       ]
                     }
+                  ],
+                  [
+                    { "not": { "eq": ["item.allNames", ""] } },
+                    { "tmpl": ["import { ", { "get": "item.allNames" }, " } from \"", { "get": "item.path" }, "\";"] }
                   ]
                 ],
                 "else": {
@@ -3029,96 +3200,95 @@
                 }
               }
             }
-          }
+          } } }
+          ] }
         },
         {
-          "mapMembers": "module.enums",
-          "rule": "EnumDecl"
-        },
-        {
-          "mapMembers": "module.interfaces",
-          "rule": "InterfaceDecl"
-        },
-        {
-          "mapMembers": "module.unions",
-          "rule": "UnionDecl"
-        },
-        {
-          "mapMembers": "module.records",
-          "rule": "RecordDecl"
-        },
-        {
-          "mapMembers": "module.classes",
-          "rule": "ClassDecl"
-        },
-        {
-          "mapDecl": "module.globals",
-          "each": {
-            "line": {
-              "tmpl": [
-                "export ",
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.isConst",
-                            "true"
-                          ]
-                        },
-                        "const "
-                      ]
-                    ],
-                    "else": "let "
-                  }
-                },
-                {
-                  "fn": "ident",
-                  "args": [
+          "mapOrder": "module.order",
+          "kinds": {
+            "enum": { "rule": "EnumDecl" },
+            "interface": { "rule": "InterfaceDecl" },
+            "union": { "rule": "UnionDecl" },
+            "record": { "rule": "RecordDecl" },
+            "function": { "rule": "FunctionDecl" },
+            "extension": { "rule": "ExtensionDecl" },
+            "class": { "rule": "ClassDecl" },
+            "global": {
+              "each": {
+                "line": {
+                  "tmpl": [
                     {
-                      "get": "item.name"
-                    }
-                  ]
-                },
-                ": ",
-                {
-                  "type": "item.type"
-                },
-                {
-                  "case": {
-                    "when": [
-                      [
-                        {
-                          "eq": [
-                            "item.hasInit",
-                            "true"
-                          ]
-                        },
-                        {
-                          "tmpl": [
-                            " = ",
+                      "case": {
+                        "when": [
+                          [
                             {
-                              "emit": "item.init"
-                            }
+                              "eq": [
+                                "item.isPrelude",
+                                "true"
+                              ]
+                            },
+                            ""
                           ]
+                        ],
+                        "else": "export "
+                      }
+                    },
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.isConst",
+                                "true"
+                              ]
+                            },
+                            "const "
+                          ]
+                        ],
+                        "else": "let "
+                      }
+                    },
+                    {
+                      "fn": "ident",
+                      "args": [
+                        {
+                          "get": "item.name"
                         }
                       ]
-                    ]
-                  }
-                },
-                ";"
-              ]
+                    },
+                    ": ",
+                    {
+                      "type": "item.type"
+                    },
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.hasInit",
+                                "true"
+                              ]
+                            },
+                            {
+                              "tmpl": [
+                                " = ",
+                                {
+                                  "emit": "item.init"
+                                }
+                              ]
+                            }
+                          ]
+                        ]
+                      }
+                    },
+                    ";"
+                  ]
+                }
+              }
             }
           }
-        },
-        {
-          "mapMembers": "module.extensions",
-          "rule": "ExtensionDecl"
-        },
-        {
-          "mapMembers": "module.functions",
-          "rule": "FunctionDecl"
         },
         {
           "case": {
@@ -3143,12 +3313,35 @@
               ]
             ]
           }
+        },
+        {
+          "case": {
+            "when": [[{ "eq": ["module.userDecls.count", "0"] }, { "line": "export {};" }]]
+          }
         }
       ]
     },
+    "tsExport": {
+      "case": {
+        "when": [
+          [
+            {
+              "eq": [
+                "decl.isPrelude",
+                "true"
+              ]
+            },
+            ""
+          ]
+        ],
+        "else": "export "
+      }
+    },
     "tsFnSig": {
       "tmpl": [
-        "export ",
+        {
+          "call": "tsExport"
+        },
         {
           "case": {
             "when": [
@@ -3231,12 +3424,15 @@
     },
     "tsExtSig": {
       "tmpl": [
-        "export function ",
+        {
+          "call": "tsExport"
+        },
+        "function ",
         {
           "fn": "ident",
           "args": [
             {
-              "get": "decl.name"
+              "get": "decl.emitName"
             }
           ]
         },
@@ -3296,7 +3492,11 @@
     },
     "tsClassHead": {
       "tmpl": [
-        "export class ",
+        {
+          "call": "tsExport"
+        },
+        { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ] ] } },
+        "class ",
         {
           "fn": "ident",
           "args": [
@@ -3403,6 +3603,21 @@
                         ]
                       ],
                       "else": ""
+                    }
+                  },
+                  {
+                    "case": {
+                      "when": [
+                        [
+                          {
+                            "eq": [
+                              "item.shadowsBaseRoot",
+                              "true"
+                            ]
+                          },
+                          "override "
+                        ]
+                      ]
                     }
                   },
                   {
@@ -3520,7 +3735,10 @@
       "block": {
         "head": {
           "tmpl": [
-            "export interface ",
+            {
+              "call": "tsExport"
+            },
+            "interface ",
             {
               "fn": "ident",
               "args": [
@@ -3641,7 +3859,10 @@
     "UnionDecl": {
       "line": {
         "tmpl": [
-          "export type ",
+          {
+            "call": "tsExport"
+          },
+          "type ",
           {
             "fn": "ident",
             "args": [
@@ -3701,6 +3922,33 @@
     "Type": {
       "case": {
         "when": [
+          [
+            {
+              "and": [
+                {
+                  "eq": [
+                    "type.kind",
+                    "function"
+                  ]
+                },
+                {
+                  "eq": [
+                    "type.nullable",
+                    "true"
+                  ]
+                }
+              ]
+            },
+            {
+              "tmpl": [
+                "((",
+                {
+                  "type": "type.base"
+                },
+                ") | null)"
+              ]
+            }
+          ],
           [
             {
               "eq": [
@@ -3982,30 +4230,16 @@
                     },
                     {
                       "tmpl": [
-                        "JSON.stringify(",
-                        {
-                          "emit": "node.lhs"
-                        },
-                        ") === JSON.stringify(",
-                        {
-                          "emit": "node.rhs"
-                        },
-                        ")"
+                        { "fn": "require", "args": ["unionEq"] },
+                        "__pgUnionEq(", { "emit": "node.lhs" }, ", ", { "emit": "node.rhs" }, ")"
                       ]
                     }
                   ]
                 ],
                 "else": {
                   "tmpl": [
-                    "JSON.stringify(",
-                    {
-                      "emit": "node.lhs"
-                    },
-                    ") !== JSON.stringify(",
-                    {
-                      "emit": "node.rhs"
-                    },
-                    ")"
+                    { "fn": "require", "args": ["unionEq"] },
+                    "!__pgUnionEq(", { "emit": "node.lhs" }, ", ", { "emit": "node.rhs" }, ")"
                   ]
                 }
               }
@@ -4491,20 +4725,30 @@
       "List.add": "$this.push($0)",
       "List.clear": "$this.length = 0",
       "List.removeAll": "$this.splice(0, $this.length, ...$this.filter(__e => !(($0)(__e))))",
-      "List.removeAt": "$this.splice($0, 1)"
+      "List.removeAt": "$this.splice($0, 1)",
+      "Map.type": "Map<$0, $1>",
+      "Map.constructor": "new $T()",
+      "Map.count": "$this.size",
+      "Map.get": "($this.get($0) ?? null)",
+      "Map.set": "$this.set($0, $1)",
+      "Map.has": "$this.has($0)",
+      "Map.remove": "$this.delete($0)",
+      "Map.keys": "[...$this.keys()]",
+      "Map.values": "[...$this.values()]"
     },
     "std.io": {
       "print": "console.log(String(x))",
-      "readText": "process.getBuiltinModule('fs').readFileSync(path, 'utf8')",
-      "writeText": "process.getBuiltinModule('fs').writeFileSync(path, content)",
-      "appendText": "process.getBuiltinModule('fs').appendFileSync(path, content)",
-      "fileExists": "process.getBuiltinModule('fs').existsSync(path)",
-      "deleteFile": "process.getBuiltinModule('fs').unlinkSync(path)"
+      "readText": "globalThis.process.getBuiltinModule('fs').readFileSync(path, 'utf8')",
+      "writeText": "globalThis.process.getBuiltinModule('fs').writeFileSync(path, content)",
+      "appendText": "globalThis.process.getBuiltinModule('fs').appendFileSync(path, content)",
+      "fileExists": "globalThis.process.getBuiltinModule('fs').existsSync(path)",
+      "deleteFile": "globalThis.process.getBuiltinModule('fs').unlinkSync(path)"
     },
     "std.math": {
       "Math.PI": "Math.PI",
       "Math.E": "Math.E",
       "Math.sqrt": "Math.sqrt($0)",
+      "Math.isNaN": "Number.isNaN($0)",
       "Math.ln": "Math.log($0)",
       "Math.log": "Math.log($0)",
       "Math.log2": "Math.log2($0)",
@@ -4539,10 +4783,21 @@
       "string.len": "$this.length",
       "string.toUpper": "$this.toUpperCase()",
       "string.toLower": "$this.toLowerCase()",
-      "string.charAt": "$this.charAt($0)",
-      "string.codePointAt": "$this.codePointAt($0)!",
+      "string.toUpperAscii": "$this.replace(/[a-z]+/g, (__m) => __m.toUpperCase())",
+      "string.toLowerAscii": "$this.replace(/[A-Z]+/g, (__m) => __m.toLowerCase())",
       "string.codePoints": "Array.from($this)",
-      "string.toI32": "parseInt($this, 10)"
+      "string.startsWith": "$this.startsWith($0)",
+      "string.endsWith": "$this.endsWith($0)",
+      "string.contains": "$this.includes($0)",
+      "string.trimAscii": "$this.replace(/^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$/g, \"\")",
+      "compareOrdinal": "(a < b ? -1 : (a > b ? 1 : 0))",
+      "string.__pgCharAt": "$this.charAt($0)",
+      "string.__pgCodePointAt": "$this.codePointAt($0)!",
+      "string.__pgSubstring": "$this.substring($0, $1)",
+      "string.__pgIndexOf": "$this.indexOf($0, $1)",
+      "string.__pgReplaceAll": "$this.split($0).join($1)",
+      "string.__pgSplit": "$this.split($0)",
+      "string.__pgFromCodePoint": "String.fromCodePoint($0)"
     },
     "std.core": {
       "Error.type": "Error",
@@ -4552,17 +4807,20 @@
       "Array.type": "$0[]",
       "Array.constructor": "[]",
       "Array.count": "$this.length",
-      "i8.parse": "(Number.parseInt($0, 10) << 24 >> 24)",
-      "i16.parse": "(Number.parseInt($0, 10) << 16 >> 16)",
-      "i32.parse": "(Number.parseInt($0, 10) | 0)",
-      "i64.parse": "BigInt($0)",
-      "u8.parse": "(Number.parseInt($0, 10) & 0xff)",
-      "u16.parse": "(Number.parseInt($0, 10) & 0xffff)",
-      "u32.parse": "(Number.parseInt($0, 10) >>> 0)",
-      "u64.parse": "BigInt($0)",
-      "f32.parse": "Number($0)",
-      "f64.parse": "Number($0)"
+      "__pgText.rawLen": "$0.length",
+      "__pgText.rawCode": "$0.charCodeAt($1)",
+      "i8.__pgParse": "(Number.parseInt($0, 10) << 24 >> 24)",
+      "i16.__pgParse": "(Number.parseInt($0, 10) << 16 >> 16)",
+      "i32.__pgParse": "(Number.parseInt($0, 10) | 0)",
+      "i64.__pgParse": "BigInt($0)",
+      "u8.__pgParse": "(Number.parseInt($0, 10) & 0xff)",
+      "u16.__pgParse": "(Number.parseInt($0, 10) & 0xffff)",
+      "u32.__pgParse": "(Number.parseInt($0, 10) >>> 0)",
+      "u64.__pgParse": "BigInt($0)",
+      "f32.__pgParse": "Math.fround(Number($0))",
+      "f64.__pgParse": "Number($0)"
     }
   },
-  "fileExtension": ".ts"
+  "fileExtension": ".ts",
+  "lineComment": "//"
 }

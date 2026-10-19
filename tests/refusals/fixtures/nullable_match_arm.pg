@@ -1,0 +1,14 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): a nullable match ARM flowing into a non-null slot. The match used to take its
+// last arm's type (`i32`), so the `i32?` arm reached an `i32` return unchecked (C# CS0266, TS2322).
+fn maybe(): i32? => null
+
+fn pick(k: i32): i32 => match k {
+  1 => maybe(),
+  _ => 0,
+}
+
+fn main() {
+  print(pick(1))
+}

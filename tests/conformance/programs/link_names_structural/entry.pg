@@ -1,0 +1,22 @@
+import "std.io"
+import { useTA } from "./tup_a"
+import { useTB } from "./tup_b"
+import { useTC } from "./tup_c"
+import { useFA } from "./fun_a"
+import { useFB } from "./fun_b"
+import { useFC } from "./fun_c"
+
+// P40 review r6 #8: two declarations whose C# signatures are one (CS0111) get signature link names — and those
+// names must differ. A tuple or function parameter used to spell `x`, and `OrNull` was added only at the top
+// level, so `pairOf((string, i32))` / `pairOf((string?, i32))` both became `pairOf__x` (CS0111 again, a PHP
+// redeclare), as did `runIt((string) => i32)` / `runIt((string?) => i32)`. The mangled spelling is now structural
+// (`pairOf$$tuple$string$and$i32$end`, each `$` spelled `__` on C#), so it is injective over the erased signature;
+// the third `pairOf((i32, i32))` and `runIt((i32) => i32)` (different C# signatures) stay distinct too.
+fn main() {
+  print(useTA())
+  print(useTB())
+  print(useTC())
+  print(useFA())
+  print(useFB())
+  print(useFC())
+}

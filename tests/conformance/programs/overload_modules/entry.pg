@@ -1,0 +1,23 @@
+// P40 review r3 2(e) + part 2: overloads across modules.
+//  * C# links every module's free functions into one PolyglotProgram class, so `ai`'s never-imported
+//    `show(n: i32)` joined the entry's `show<T>` in C#'s native overload set and won `show(5)` there (TS called
+//    the generic). A name declared by two modules now takes its signature link name on C# (and PHP, whose
+//    functions are global too), so each module sees only its own.
+//  * Names mangle per DECLARING module: `ai` has one `check`, so it exports `check` whatever other modules
+//    declare (a library's exported name used to change when an unrelated module added a same-named function).
+//  * A named import of an overloaded function names every overload's exported name (`import { pick }` used
+//    to name `pick` while `ov` exported `pick$i32`/`pick$string`: TS2305, Python ImportError).
+import { aiShow, aiOk } from "./ai"
+import { pick } from "./ov"
+
+fn show<T>(x: T): string => "main-generic"
+fn check(s: string): bool => s == "01"
+
+fn main() {
+  print(show(5))
+  print(aiShow(5))
+  print(check("01"))
+  print(aiOk(5))
+  print(pick(1))
+  print(pick("a"))
+}

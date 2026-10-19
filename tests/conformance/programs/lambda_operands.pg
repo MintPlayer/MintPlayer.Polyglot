@@ -1,0 +1,36 @@
+import "std.io"
+
+// P40 review r5 items 21/22: a lambda as a binary operand keeps its parentheses on every target (`cb ?? (() => 9)`
+// printed `cb ?? () => 9`), and the accepted neighbours of the refused `T = unit` inference — a generic call whose
+// lambda returns a value, an explicit type argument, and a `() => unit` parameter.
+
+fn run(cb: (() => i32)?): i32 {
+  let f: () => i32 = cb ?? (() => 9)
+  return f()
+}
+
+fn pick(cb: ((i32) => i32)?, k: i32): i32 {
+  let f = cb ?? ((x: i32) => x + 100)
+  return f(k)
+}
+
+fn apply<T>(f: () => T): T => f()
+fn twice(f: () => unit) {
+  f()
+  f()
+}
+fn hello() {
+  print("hello")
+}
+
+fn main() {
+  print(run(null))
+  print(run(() => 4))
+  print(pick(null, 1))
+  print(pick((x: i32) => x * 3, 2))
+  print(apply<i32>(() => 5))
+  print(apply<string>(() => "s"))
+  twice(() => print("x"))
+  twice(hello)
+  print("end")
+}

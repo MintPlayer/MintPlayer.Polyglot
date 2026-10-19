@@ -106,7 +106,15 @@ a queryable tree); **bit-exact cross-target floating point** (see §3.D).
   hazard above, but with **no `BigInt` default** (the P26 Dart decision). The web 53-bit limit is the
   published relaxation; sub-64/unsigned widths mask via `& mask` on both legs (`fixedWidthIntegers = emulated`).
 - **float (32-bit) vs double:** default lets `float` ride a JS `double`; `Math.fround`-per-op strictness is
-  **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity.
+  **opt-in** (the Scala.js strict-floats tax) for code that needs single-precision rounding parity. This
+  relaxation covers f32 **arithmetic** only (P40 A3): an f32 *literal* denotes the nearest f32 on every target
+  (the Core hands double-holding targets its widened value), and f32 *text* is faithful — the exact value
+  widened to f64, printed under the f64 rule (`0.1f` prints `0.10000000149011612`).
+- **number text (P40 A3) is faithful, not relaxed:** integers print as invariant decimal and f64 as ECMAScript
+  `Number::toString` on all four targets (C# `__PgRt.Str`, exact Burger–Dybvig — never `"R"`; Python `repr`
+  digits; PHP `var_export` at `serialize_precision=-1`). `toUpper`/`toLower` are the published **best-effort**
+  tier (full Unicode on JS/Python, invariant simple mapping on C#, ASCII-only on PHP); `toUpperAscii`/
+  `toLowerAscii` are faithful.
 - **nullability:** normalize `null`/`undefined`; pick one and stick to it. **Nullable generics use a real
   `Option<T>` (✅ done 2026-06-30 — see PLAN P14c):** `T?` over an *unconstrained* type
   parameter has no faithful native emission — C# `null` is CS0403, `T?`+`default(T)` returns `0` for value
@@ -462,7 +470,7 @@ Two options were weighed (design-it-twice):
   byte-identical. *(The v0 plan shipped identity typing as a stopgap; this replaced it the same day.)*
 - **Backends (shared engine needs ZERO changes — async is signature-level, `await` is an expression).**
   - **C#**: signature gets an `async ` prefix and the return wraps to `Task<T>` (bare `Task` for `unit`);
-    `await e` → `await <atom(e)>`; entry — keep the InvariantCulture pin first (load-bearing §3.D), then
+    `await e` → `await <atom(e)>`; entry — (the InvariantCulture pin was removed by P40 A3: number text is culture-free by construction)
     `main().GetAwaiter().GetResult();` (**never `async void Main`**).
   - **TypeScript**: extend the `function*`/`function` signature choice to `async function`; return wraps to
     `Promise<T>` (`Promise<void>` for `unit`); `await e`; entry keeps a **floating `main();`** — NOT top-level
@@ -1529,6 +1537,32 @@ Full detail in [PLAN.md](PLAN.md). Summary:
   targets behind `mutableRefClasses=false` (mutable-OO is a semantic wall — possibly unlocked per-module by a
   new opt-in `pure`/immutable `.pg` marker, since the grammar is *not* frozen); **Zig refused** with a
   §3.B-style diagnostic (no closures at all). Slice plan: PLAN §P27.
+
+*From P28 on, each milestone carries its own PRD folder under `docs/prd/`; this roadmap lists them in
+brief, and PLAN.md holds the status lines and slice logs.*
+
+- **P28 — MSBuild incremental-transpile fix + `std.math` completeness.** 🚧 Slices 1–2 done; slice 3
+  cross-repo (§4.19, PLAN §P28).
+- **P29 — Explicit element types, `T[]` arrays, union-in-collection.** ✅ (issue #27,
+  `docs/prd/issue-27-explicit-typing/`).
+- **P30 — Build-time plugin auto-download from `pgconfig.json`.** ✅ (issue #30, §4.20,
+  `docs/prd/issue-30-plugin-autodownload/`).
+- **P31 — Interfaces made honest, hex lexing, char ordinal, PHP globals/list semantics.** ✅ (issues
+  #29 #33–#36, `docs/prd/issue-29-36-batch/`).
+- **P32 / P34 — E2E scenario coverage, waves 1 and 2.** ✅ (`docs/prd/e2e-scenario-coverage/`,
+  `docs/prd/e2e-coverage-wave2/`).
+- **P33 — Real-language source inputs.** 🚫 Investigated and declined (`docs/prd/source-languages/`).
+- **P35 — Gate speed-up (merged conformance runner, parallelism, NX cache).** ✅ (`docs/prd/gate-speedup/`).
+- **P36 — Open-issue sweep (#38–#57).** ✅ (`docs/prd/issue-sweep/`).
+- **P37 — Constructor rename, `is`/`as`, operators-complete, attributes.** ✅ (`docs/prd/p37-feature-batch/`).
+- **P38 — Origin attribution (`#line` for C#, v3 source map for TS).** ✅ Merged `90dace1` (issue #69,
+  `docs/prd/issue-69-source-attribution/`).
+- **P39 — Coverage attribution (`polyglot coverage remap`).** ✅ Merged `a603dba` (issue #71,
+  `docs/prd/issue-71-coverage-attribution/`).
+- **P40 — Library-grade output for a .NET library + Angular entry point.** ✅ Built (slices 1–13, D1–D20 accepted;
+  end gate + POSIX leg pending) (issue #73, `docs/prd/issue-73-library-grade/`). Covers escapes, range precedence, a throwing `!`, culture-free C#
+  and one number-to-text rule on all four targets, `targetOptions` namespaces, prelude reachability, an ordinal
+  string std, `Map<K,V>`, `build --check`, a build-time target filter, and relative `#line` paths.
 - **Stretch:** further targets as downloadable backends, source maps, a plugin registry + signing/trust
   infrastructure. (See PLAN Stretch.)
 

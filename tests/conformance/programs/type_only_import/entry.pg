@@ -1,0 +1,26 @@
+// P40 review r7 (part 2): importing a declaration with NO runtime binding on a target — a union (TS type alias,
+// Python tagged dicts) or a TS interface — from another module (Spark umain/ulib). TS imports those names with
+// `import type`, Python drops a union's name; an interface stays a value import on Python (an ABC the class
+// below subclasses), and the class `implements` it on TS/PHP (it emitted `extends` for an imported interface).
+// Also: a bare import of a module that declares a union, and an import naming ONLY a union.
+import { print } from "std.io"
+import { Shape, area, mk } from "./shapes"
+import { Runner } from "./runner"
+import "./tokens"
+import { Kind } from "./kinds"
+import { kindName, mkKind } from "./kindops"
+
+class Now : Runner {
+  fn go(): string => "ran"
+}
+
+fn main() {
+  let s: Shape = mk()
+  print(area(s))
+  let r: Runner = Now()
+  print(r.go())
+  let t: Tok = mkTok()
+  print(tokText(t))
+  let k: Kind = mkKind()
+  print(kindName(k))
+}

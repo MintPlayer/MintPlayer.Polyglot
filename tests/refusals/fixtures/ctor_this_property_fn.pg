@@ -1,0 +1,26 @@
+// P40 review r7 (part 2) - Spark r5_h_propfn.
+import "std.io"
+
+// rule 5 MUST REFUSE: the constructor passes `this` to a lambda VALUE obtained from another object's function-typed
+// computed property; the lambda calls the overridable method
+class Fmt {
+  let show: (Base) => string => (b: Base) => b.describe()
+}
+open class Base {
+  var label: string = ""
+  constructor(f: Fmt) {
+    this.label = f.show(this)
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  constructor() {
+    super(Fmt())
+  }
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

@@ -1,0 +1,42 @@
+// P40 review r7 (part 2, item 4) — call shapes whose bodies an initializer runs: a static method called by its BARE
+// name inside its class (Spark r4_bst_c), and a lambda a function RETURNS, called through a local. Each constructs a
+// class declared later, which the emission order places ahead of the value. A returned lambda that is only STORED
+// (never run while initializing) may read a later value, and a compound `+=` on a built-in static field runs no
+// user operator.
+import "std.io"
+
+class Calc {
+  static var count: i32 = 0
+  static fn run(): i32 => helper() + 1
+  static fn helper(): i32 {
+    count += 1
+    return Later().n * 2
+  }
+}
+let v: i32 = Calc.run()
+
+fn maker(): (i32) => i32 {
+  return (x: i32) => x + Later().n
+}
+fn viaLocal(): i32 {
+  let f = maker()
+  return f(1)
+}
+let w: i32 = viaLocal()
+
+fn adder(): (i32) => i32 {
+  return (x: i32) => x + offset
+}
+let add = adder()
+
+class Later {
+  var n: i32 = 5
+}
+let offset: i32 = 100
+
+fn main() {
+  print(v)
+  print(Calc.count)
+  print(w)
+  print(add(1))
+}

@@ -1,0 +1,9 @@
+// REFUSED (P40 B4): a bool cannot key a Map — Python's dict treats True as 1 and PHP coerces a bool key
+// to 0/1, so it would collide with integer keys.
+import "std.io"
+import "std.collections"
+
+fn main() {
+  let m = Map<bool, i32>()
+  print(m.count)
+}

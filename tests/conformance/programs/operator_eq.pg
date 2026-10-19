@@ -6,6 +6,7 @@
 
 record Money(cents: i32) {
   operator fn eq(other: Money): bool => this.cents % 100 == other.cents % 100
+  operator fn hash(): i32 => this.cents % 100   // required with eq: equal values hash equally
 }
 
 fn main() {

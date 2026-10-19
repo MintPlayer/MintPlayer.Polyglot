@@ -1,0 +1,2 @@
+fn util(n: i32): i32 => n + 1
+fn other(n: i32): i32 => util(n) * 10

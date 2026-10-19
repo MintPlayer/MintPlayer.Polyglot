@@ -1,0 +1,27 @@
+// P40 review r7 (part 2, item 4) — a compound `+=` on a STATIC field named bare inside its class runs the user
+// operator `plus`, whose body constructs a class declared later (Spark r4_cmps_c): the emission order places that
+// class ahead of the value. Pinned PHP refuser (operatorOverloading:arithmetic).
+import "std.io"
+
+class Acc {
+  var n: i32
+  constructor(n: i32) {
+    this.n = n
+  }
+  operator fn plus(o: Acc): Acc => Acc(this.n + o.n + Step().k)
+}
+class Bank {
+  static var total: Acc = Acc(1)
+  static fn deposit(): i32 {
+    total += Acc(2)
+    return total.n
+  }
+}
+let r: i32 = Bank.deposit()
+class Step {
+  var k: i32 = 10
+}
+
+fn main() {
+  print(r)
+}

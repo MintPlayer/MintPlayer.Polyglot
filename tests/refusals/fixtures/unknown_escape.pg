@@ -1,0 +1,3 @@
+// REFUSED (P40 A1): an escape outside the published set is an error at the backslash — never a silently
+// dropped backslash (pre-P40, "\q" compiled as "q" and "\u{1D}" as "u{1D}").
+fn path(): string => "C:\qux"

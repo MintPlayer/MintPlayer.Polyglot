@@ -1,0 +1,9 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): a lambda whose annotated parameter type differs from the function type it flows
+// into — here it would receive the `null` its `i32` parameter cannot hold (C# CS1661, TS2345, a Python TypeError).
+fn mapN(f: (i32?) => i32): i32 => f(null)
+
+fn main() {
+  print(mapN((x: i32) => x + 1))
+}

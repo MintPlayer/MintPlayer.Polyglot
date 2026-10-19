@@ -1,0 +1,20 @@
+// REFUSED (P40 review r5 #8): a statement before `super(…)` — the base constructor runs first on every target. C#
+// `: base(doubled)` was CS0103, TS2448, Python UnboundLocalError, PHP an undefined variable.
+import "std.io"
+
+open class Base {
+  var v: i32
+  constructor(v: i32) {
+    this.v = v
+  }
+}
+class Child : Base {
+  constructor(n: i32) {
+    let doubled = n * 2
+    super(doubled)
+  }
+}
+
+fn main() {
+  print(Child(2).v)
+}

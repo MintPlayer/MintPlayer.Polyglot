@@ -1,0 +1,26 @@
+// REFUSED (P40 review r5 #5): `this` passed to a static method of the class, which calls the open method on it.
+import "std.io"
+
+open class Widget {
+  var label: string
+  constructor() {
+    this.label = "w"
+    Widget.announce(this)
+  }
+  static fn announce(w: Widget) {
+    print(w.describe())
+  }
+  open fn describe(): string => "widget"
+}
+class Button : Widget {
+  let caption: string
+  constructor() {
+    super()
+    this.caption = "ok"
+  }
+  override fn describe(): string => "button:" + this.caption
+}
+
+fn main() {
+  print(Button().describe())
+}

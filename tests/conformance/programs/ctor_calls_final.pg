@@ -1,0 +1,89 @@
+// P40 review r5 #5/#6: the constructor check refuses only a call that can reach a subclass override early. A class
+// nothing derives from may call its own `override` or an inherited open method after its fields are set (round 4
+// refused both). In an open class, a callback stored (not called) during construction, `this` passed to a function
+// that only keeps it, a lambda that calls a non-open method, and another object's open method all stay legal.
+import "std.io"
+import "std.collections"
+
+open class Widget {
+  open fn render(): string => "widget"
+}
+class Button : Widget {
+  var label: string
+  constructor(l: string) {
+    super()
+    this.label = l
+    print(this.render())
+  }
+  override fn render(): string => "button:" + this.label
+}
+
+open class Base {
+  open fn kind(): string => "base"
+}
+class Leaf : Base {
+  var t: string
+  constructor() {
+    super()
+    this.t = ""
+    this.t = this.kind()
+  }
+}
+
+open class Panel {
+  var onClick: () => string = () => "none"
+  var other: string = "o"
+  constructor() {
+    this.onClick = () => this.describe()
+    let unused = () => this.describe()
+    keep(this)
+    this.helper()
+    let xs: List<i32> = [1, 2]
+    each(xs, (x: i32) => this.note(x))
+  }
+  fn helper() {
+    this.other = "h"
+  }
+  fn note(x: i32) {
+    this.other = this.other + "${x}"
+  }
+  open fn describe(): string => "panel"
+}
+fn each(xs: List<i32>, f: (i32) => unit) {
+  for x in xs {
+    f(x)
+  }
+}
+fn keep(p: Panel) {
+  print("kept")
+}
+class FancyPanel : Panel {
+  var extra: string = "X"
+  override fn describe(): string => "fancy" + this.extra
+}
+
+open class Peer {
+  var label: string = ""
+  constructor(peer: Peer?) {
+    if peer != null {
+      this.label = peer.describe()
+    }
+  }
+  open fn describe(): string => "peer"
+}
+class OtherPeer : Peer {
+  constructor() {
+    super(null)
+  }
+  override fn describe(): string => "other"
+}
+
+fn main() {
+  let b = Button("ok")
+  print(b.label)
+  print(Leaf().t)
+  let p = FancyPanel()
+  print(p.onClick())
+  print(p.other)
+  print(Peer(OtherPeer()).label)
+}

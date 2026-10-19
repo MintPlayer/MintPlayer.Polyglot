@@ -1,0 +1,16 @@
+// P40 review r7: a function-typed interface parameter still has to MATCH — an implementation taking a different
+// function type does not implement the method.
+import "std.io"
+
+interface Runner {
+  fn go(f: () => string): string
+}
+
+class Now : Runner {
+  fn go(f: () => i32): string => "x"
+}
+
+fn main() {
+  let r: Runner = Now()
+  print(r.go(() => "ok"))
+}

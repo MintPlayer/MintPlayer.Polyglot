@@ -1,0 +1,12 @@
+import "std.io"
+
+// REFUSED (P40 review r6 #9): inferring `T = unit` from a NAMED function that returns nothing — the same CS0411 as
+// a unit lambda (r5 item 22 refused only lambda literals).
+fn apply<T>(f: () => T): T => f()
+fn hello() {
+  print("hello")
+}
+
+fn main() {
+  apply(hello)
+}

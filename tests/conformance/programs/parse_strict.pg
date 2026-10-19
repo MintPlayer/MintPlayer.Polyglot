@@ -1,0 +1,83 @@
+// P40 review B3: one strict scalar text grammar on every target. An integer parse accepts exactly
+// `[+-]?[0-9]+` within the type's range; a float parse `[+-]?(digits[.digits*] | .digits)([eE][+-]?digits)?`.
+// Everything else throws the same Error from `parse` (and `toI32`) and is absent (`null`) from `tryParse` —
+// the natives used to disagree (`12a` -> C# throws / TS 12 / Py throws / PHP 12; `2147483648` -> TS wrapped).
+
+import "std.strings"
+import "std.collections"
+
+fn txt<T>(v: T): string => "${v}"
+
+fn show(label: string, f: () => string) {
+  try {
+    print(label + " = " + f())
+  } catch (e: Error) {
+    print(label + " threw: " + e.message)
+  }
+}
+
+fn opt32(v: i32?): string {
+  if v == null {
+    return "absent"
+  }
+  return "${v}"
+}
+
+fn optF(v: f64?): string {
+  if v == null {
+    return "absent"
+  }
+  return "${v}"
+}
+
+fn main() {
+  let bad: List<string> = ["", " 1", "1 ", "+", "-", "12a", "1e3", "0x1F", "1.0", "1_000", "--1", "+-1",
+                           "\u{FF11}", "2147483648", "-2147483649", "99999999999999999999"]
+  for s in bad {
+    show("i32.parse '" + s + "'", () => txt(i32.parse(s)))
+    show("toI32 '" + s + "'", () => txt(s.toI32()))
+    print("i32.tryParse '" + s + "' = " + opt32(i32.tryParse(s)))
+  }
+  let good: List<string> = ["0", "-0", "+7", "007", "-2147483648", "2147483647", "0000000000002147483647"]
+  for s in good {
+    show("i32.parse '" + s + "'", () => txt(i32.parse(s)))
+    print("i32.tryParse '" + s + "' = " + opt32(i32.tryParse(s)))
+  }
+
+  // the other integer widths: both bounds accepted, one past each rejected
+  show("i8 -128", () => txt(i8.parse("-128")))
+  show("i8 127", () => txt(i8.parse("127")))
+  show("i8 128", () => txt(i8.parse("128")))
+  show("i8 -129", () => txt(i8.parse("-129")))
+  show("i16 -32768", () => txt(i16.parse("-32768")))
+  show("i16 32768", () => txt(i16.parse("32768")))
+  show("u8 255", () => txt(u8.parse("255")))
+  show("u8 256", () => txt(u8.parse("256")))
+  show("u8 -0", () => txt(u8.parse("-0")))
+  show("u8 -1", () => txt(u8.parse("-1")))
+  show("u16 65535", () => txt(u16.parse("65535")))
+  show("u16 65536", () => txt(u16.parse("65536")))
+  show("u32 4294967295", () => txt(u32.parse("4294967295")))
+  show("u32 4294967296", () => txt(u32.parse("4294967296")))
+  show("i64 min", () => txt(i64.parse("-9223372036854775808")))
+  show("i64 max", () => txt(i64.parse("9223372036854775807")))
+  show("i64 max+1", () => txt(i64.parse("9223372036854775808")))
+  show("i64 min-1", () => txt(i64.parse("-9223372036854775809")))
+  show("u64 2^63-1", () => txt(u64.parse("9223372036854775807")))
+  show("u64 2^64", () => txt(u64.parse("18446744073709551616")))
+  show("u64 1e3", () => txt(u64.parse("1e3")))
+  print(i64.tryParse("12a") == null)
+  print(u64.tryParse("-1") == null)
+  print(i8.tryParse("-128") == null)
+
+  // floats: the strict grammar, overflow reads as an infinity everywhere
+  let floats: List<string> = ["1.5", "-0.25", "+.5", "5.", "1e3", "1E-2", "-1.5e+2", "1e400", "-1e400",
+                              "", ".", "e5", "1e", "1e+", "NaN", "Infinity", "inf", " 1.5", "0x10", "1_0", "1.5f"]
+  for s in floats {
+    show("f64.parse '" + s + "'", () => txt(f64.parse(s)))
+    print("f64.tryParse '" + s + "' = " + optF(f64.tryParse(s)))
+  }
+  show("f32.parse '2.5'", () => txt(f32.parse("2.5")))
+  show("f32.parse 'x'", () => txt(f32.parse("x")))
+  print(f32.tryParse("") == null)
+}

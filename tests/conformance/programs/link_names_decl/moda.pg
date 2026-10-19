@@ -1,0 +1,6 @@
+fn describe(s: string): string => "a:" + s
+fn same<T>(x: T): T => x
+fn five(): i32 => 5
+fn applyIt(f: () => i32): i32 => f()
+fn useFive(): i32 => applyIt(five)
+fn helperA(): i32 => 1

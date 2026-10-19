@@ -1,0 +1,8 @@
+// REFUSED (P40 review A9): a custom eq without a matching hash - equal values must hash equally
+// (C# GetHashCode, Python __hash__), and no compiler can derive the hash from an arbitrary eq.
+record Money(cents: i32) {
+  operator fn eq(o: Money): bool => this.cents % 100 == o.cents % 100
+}
+fn main() {
+  print(Money(1) == Money(101))
+}

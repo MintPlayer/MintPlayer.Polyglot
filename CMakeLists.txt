@@ -28,9 +28,11 @@ if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 
 if(MSVC)
-  add_compile_options(/W4 /permissive-)  # match the .vcxproj (WarningLevel=Level4, ConformanceMode=true)
+  # match the .vcxproj (WarningLevel=Level4, ConformanceMode=true, TreatSpecificWarningsAsErrors=4062)
+  add_compile_options(/W4 /permissive- /we4062)
 else()
-  add_compile_options(-Wall -Wextra)
+  # -Werror=switch mirrors /we4062 (P40 A2): an enum switch with no default must name every enumerator.
+  add_compile_options(-Wall -Wextra -Werror=switch)
 endif()
 
 set(REPO_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
@@ -77,6 +79,9 @@ file(GLOB TESTS_SOURCES CONFIGURE_DEPENDS ${TESTS_DIR}/src/*.cpp)
 add_executable(polyglot-tests ${TESTS_SOURCES})
 target_include_directories(polyglot-tests PRIVATE ${CLI_DIR}/src)  # tests_main.cpp includes watch.hpp/exe_path.hpp
 target_link_libraries(polyglot-tests PRIVATE polyglot-core)
+if(MSVC)
+  target_compile_options(polyglot-tests PRIVATE /bigobj)  # mirrors the .vcxproj: tests_main.cpp is one large TU (C1128)
+endif()
 
 # G45 (wave 2): the emitter's rule-interpreter recursion is stack-hungry; mirror the .vcxproj's 16 MB
 # StackReserveSize where the main-thread stack is link-settable. Linux keeps its 8 MB default (release
@@ -88,6 +93,14 @@ if(MSVC)
 elseif(APPLE)
   foreach(exe polyglot polyglot-tests)
     target_link_options(${exe} PRIVATE -Wl,-stack_size,0x1000000)
+  endforeach()
+endif()
+
+# P40 review r3: on Windows, embed the UTF-8 active-code-page manifest (the .vcxproj's <Manifest> item) so
+# every narrow path conversion is UTF-8. POSIX narrow strings are already UTF-8 bytes; nothing to do there.
+if(WIN32)
+  foreach(exe polyglot polyglot-tests)
+    target_sources(${exe} PRIVATE ${CLI_DIR}/utf8.manifest)
   endforeach()
 endif()
 

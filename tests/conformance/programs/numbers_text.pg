@@ -1,0 +1,76 @@
+// P40 A3 — the one stringification rule: integers as invariant decimal, f64 as ECMAScript
+// Number::toString (shortest round-trip digits; plain for 1e-7 <= |x| < 1e21, `e±N` otherwise; -0 -> 0;
+// NaN / Infinity / -Infinity), and f32 as its exact value widened to f64 under the same rule. The same text
+// through print, an interpolation hole and a type-parameter hole, on all four targets. Before P40, PHP printed
+// 0.1+0.2 as 0.3 and 1e20 as 1.0E+20, C# and Python wrote 1E+20 / 1e+20, and C# dropped the f32 suffix.
+
+fn show<T>(x: T): string => "<${x}>"
+
+fn main() {
+  print(0.1 + 0.2)                  // 0.30000000000000004
+  print(1.0 / 3.0)                  // 0.3333333333333333
+  print(1e21)                       // 1e+21
+  print(1e20)                       // 100000000000000000000
+  print(123456789012345680000.0)    // 123456789012345680000
+  print(1e16)                       // 10000000000000000
+  print(1e-7)                       // 1e-7
+  print(1.5e-7)                     // 1.5e-7
+  print(1e-6)                       // 0.000001
+  print(0.000123)                   // 0.000123
+  print(-0.0)                       // 0
+  print(5e-324)                     // 5e-324
+  print(1.7976931348623157e308)     // 1.7976931348623157e+308
+  print(2.2250738585072014e-308)    // 2.2250738585072014e-308
+  print(123.0)                      // 123
+  print(100.0)                      // 100
+  print(-2.5)                       // -2.5
+  print(123456789.125)              // 123456789.125
+  print(9007199254740993.0)         // 9007199254740992
+  print(4.35)                       // 4.35
+  print(0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5 * 0.5) // 2.9802322387695312e-8
+
+  let big = 1e308
+  let inf = big * 10.0
+  let nan = inf - inf
+  print(inf)                        // Infinity
+  print(0.0 - inf)                  // -Infinity
+  print(nan)                        // NaN
+
+  // f32: the nearest f32, widened to f64 — never the f32's own shortest digits
+  let a = 0.1f
+  let b: f32 = 16777217.0f
+  print(a)                          // 0.10000000149011612
+  print(b)                          // 16777216
+  print(2.5f)                       // 2.5
+  print(3.4e38f)                    // 3.3999999521443642e+38
+  print(1e-45f)                     // 1.401298464324817e-45
+
+  // integers: invariant decimal
+  let n = -5
+  let m: i64 = -9007199254740993
+  let s8 = (i8)(-128)
+  let u8v = (u8)(255)
+  let u32v = (u32)(4294967295)
+  print(n)                          // -5
+  print(-2147483647)                // -2147483647
+  print(m)                          // -9007199254740993
+  print(s8)                         // -128
+  print(u8v)                        // 255
+  print(u32v)                       // 4294967295
+
+  // the same rule in a hole, and in a type-parameter hole
+  print("${0.1 + 0.2}|${a}|${inf}|${nan}|${-0.0}|${1e21}|${1e-7}")
+  print("${n}|${m}|${s8}|${u32v}")
+  print(show(1e21))                 // <1e+21>
+  print(show(0.1f))                 // <0.10000000149011612>
+  print(show(-5))                   // <-5>
+  print(show(true))                 // <true>
+  print(show("s"))                  // <s>
+
+  // parse is culture-free and round-trips the rule
+  print(f64.parse("1e21"))          // 1e+21
+  print(f64.parse("-0"))            // 0
+  print(f64.parse("0.1") + f64.parse("0.2")) // 0.30000000000000004
+  print(i32.parse("-42"))           // -42
+  print(i64.parse("-9007199254740993")) // -9007199254740993
+}

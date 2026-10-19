@@ -1,0 +1,19 @@
+import "std.io"
+
+// REFUSED (P40 review r5, part 2): a FIELD is not narrowed by a null test (SPEC §4.3 — a call between the test and
+// the read may reassign it); the message names the rule and the two remedies.
+class Person {
+  var name: string? = null
+  fn greet(): string {
+    if this.name != null {
+      return shout(this.name)
+    }
+    return "anon"
+  }
+}
+
+fn shout(s: string): string => s + "!"
+
+fn main() {
+  print(Person().greet())
+}

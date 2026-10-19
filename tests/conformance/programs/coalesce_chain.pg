@@ -1,0 +1,32 @@
+// P40 review r3 item 3 (A1): a Map lookup's TS `(m.get(k) ?? null)` normalization must never sit where tsc's
+// "always nullish" check (TS2871, tsc >= 5.6) looks — not only as the direct left operand of `??`, but through a
+// nested `??`'s right operand and both arms of a conditional. `a ?? b` also stays nullable when `b` may be
+// null, so a chain types correctly. The library gate compiles this under tsc 6 with the ng-spark flags.
+
+import { Map } from "std.collections"
+
+fn p1(a: Map<string, i32>, b: Map<string, i32>, k: string): i32 => a.get(k) ?? b.get(k) ?? 0
+fn p2(a: Map<string, i32>, b: Map<string, i32>, k: string): i32 => (a.get(k) ?? b.get(k)) ?? 0
+fn p4(c: bool, m: Map<string, i32>, k: string): i32 => (if c { m.get(k) } else { null }) ?? 0
+fn p5(c: bool, m: Map<string, i32>, k: string): i32 => (if c { m.get(k) } else { m.get("z") }) ?? 7
+fn p7(x: i32?, m: Map<string, i32>, k: string): i32 => x ?? m.get(k) ?? 0
+fn p8(m: Map<string, i32>, k: string): i32? => m.get(k)
+fn p9(a: Map<string, i32>, b: Map<string, i32>, k: string): i32? => a.get(k) ?? b.get(k)
+
+fn main() {
+  let a = Map<string, i32>()
+  let b = Map<string, i32>()
+  a.set("x", 1)
+  b.set("y", 2)
+  print(p1(a, b, "x"))
+  print(p1(a, b, "y"))
+  print(p1(a, b, "q"))
+  print(p2(a, b, "y"))
+  print(p4(true, a, "x"))
+  print(p4(false, a, "x"))
+  print(p5(true, a, "q"))
+  print(p7(null, b, "y"))
+  print(p7(5, b, "y"))
+  print(p8(a, "q") ?? -1)
+  print(p9(a, b, "q") ?? -2)
+}

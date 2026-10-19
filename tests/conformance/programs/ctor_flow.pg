@@ -1,0 +1,62 @@
+// P40 review r3 (part 2): definite assignment through `init` follows the control flow exactly — a `while true`
+// left by `break`, a do-while body (runs once), and a `finally` that assigns before an early `return` all
+// count (they were refused as "may run zero times" / "returns before assigned"). A field read after it is
+// assigned is fine; before, it is refused (see the refusal fixtures). Also item 6: a class whose name is a PHP
+// keyword or reserved class name (`Finally`, `Parent`) is escaped there — PHP matches them
+// case-insensitively.
+
+class A {
+  var v: i32
+  constructor() {
+    while true {
+      this.v = 1
+      break
+    }
+  }
+}
+class B {
+  var v: i32
+  constructor() {
+    do {
+      this.v = 2
+    } while false
+  }
+}
+class C {
+  var v: i32
+  constructor(c: bool) {
+    try {
+      if c {
+        return
+      }
+    } finally {
+      this.v = 3
+    }
+  }
+}
+class D {
+  var a: i32
+  var b: i32
+  constructor() {
+    this.a = 4
+    this.b = this.a + 1
+    print(this.total())
+  }
+  fn total(): i32 => this.a + this.b
+}
+class Finally {
+  let x: i32 = 6
+}
+class Parent {
+  let y: i32 = 7
+}
+
+fn main() {
+  print(A().v)
+  print(B().v)
+  print(C(true).v)
+  print(C(false).v)
+  print(D().b)
+  print(Finally().x)
+  print(Parent().y)
+}

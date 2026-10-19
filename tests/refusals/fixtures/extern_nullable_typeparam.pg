@@ -1,0 +1,18 @@
+// REFUSED (P40 slice 7): an extern member's `V?` is a NATIVE nullable (its binding returns null), which
+// has no faithful form while V is still a type parameter — inside a generic function the read is refused.
+import "std.io"
+
+extern class Shelf<V> {
+  type {
+    actual(csharp) extern("global::System.Collections.Generic.Dictionary<string, $0>")
+  }
+  fn find(key: string): V? {
+    actual(csharp) extern("($this.TryGetValue($0, out var $tmp) ? $tmp : ($T)null)")
+  }
+}
+
+fn lookup<V>(s: Shelf<V>, k: string): bool => s.find(k) == null
+
+fn main() {
+  print(0)
+}

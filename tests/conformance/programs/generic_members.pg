@@ -1,0 +1,134 @@
+// P40 slice 7: generic member typing. A member of a generic class is typed with the RECEIVER's type
+// arguments — `Cell<string>.first(): V` is a string, `Box<i32>.get(): T?` an `Option<i32>` — for user and
+// extern classes, fields, methods, nullable returns, lambda params, inherited members and nested generics.
+// Before the fix every one of these read as a bare `V`: TS emitted `V.plus(f, "!")`, PHP `$f + "!"`, and C#
+// `Option<T>` (CS0246), while the build exited 0. Also: an extension's default parameters filled at the call
+// (bound and not), and the `$tmp` binding token (two bound `get`s in one statement on C#).
+import { List } from "std.collections"
+
+class Cell<V> {
+  var v: V
+  constructor(v: V) { this.v = v }
+  fn first(): V => this.v
+  fn apply(f: (V) => V): V => f(this.v)
+  fn swap(n: V): V {
+    let old = this.v
+    this.v = n
+    return old
+  }
+}
+
+class Box<T> {
+  var item: T
+  var present: bool
+  constructor(item: T, present: bool) {
+    this.item = item
+    this.present = present
+  }
+  fn get(): T? => if this.present { this.item } else { null }
+}
+
+open class Holder<T> {
+  var held: T
+  constructor(held: T) { this.held = held }
+  fn take(): T => this.held
+}
+
+class Tagged<T> : Holder<T> {
+  var label: string
+  constructor(held: T, label: string) {
+    super(held)
+    this.label = label
+  }
+}
+
+record Pair<A, B>(left: A, right: B)
+
+// A native-backed generic: its `V?` result is a native nullable once V is concrete (`int?` on C#).
+extern class Table<V> {
+  type {
+    actual(csharp) extern("global::System.Collections.Generic.Dictionary<string, $0>")
+    actual(typescript) extern("Map<string, $0>")
+    actual(python) extern("dict")
+    actual(php) extern("\\ArrayObject")
+  }
+  constructor() {
+    actual(csharp) extern("new $T()")
+    actual(typescript) extern("new Map()")
+    actual(python) extern("{}")
+    actual(php) extern("new \\ArrayObject([])")
+  }
+  fn put(key: string, value: V) {
+    actual(csharp) extern("$this[$0] = $1")
+    actual(typescript) extern("$this.set($0, $1)")
+    actual(python) extern("$this.__setitem__($0, $1)")
+    actual(php) extern("$this->offsetSet($0, $1)")
+  }
+  fn get(key: string): V? {
+    actual(csharp) extern("($this.TryGetValue($0, out var $tmp) ? $tmp : ($T)null)")
+    actual(typescript) extern("($this.get($0) ?? null)")
+    actual(python) extern("$this.get($0)")
+    actual(php) extern("($this->offsetExists($0) ? $this[$0] : null)")
+  }
+}
+
+// Extension defaults, filled in at the call: a bound extension (the template's `$1`) and a plain one.
+extension fn string.part(start: i32, len: i32 = 1): string {
+  actual(csharp) extern("$this.Substring($0, $1)")
+  actual(typescript) extern("$this.substring($0, $0 + $1)")
+  actual(python) extern("$this[$0:$0 + $1]")
+  actual(php) extern("substr($this, $0, $1)")
+}
+extension fn i32.plus(n: i32, extra: i32 = 100): i32 => this + n + extra
+
+fn main() {
+  // user generic: field, method, string concat and arithmetic on the substituted type
+  let s = Cell<string>("ab")
+  print(s.first() + "!")                    // ab!
+  print(s.v + "?")                          // ab?
+  let n = Cell(20)                          // inferred: Cell<i32>
+  print(n.first() * 2 + 1)                  // 41
+  print(n.v - 5)                            // 15
+  print(s.apply(x => x + x))                // abab (the lambda param is a string)
+  print(n.apply(x => x * 3))                // 60
+  print(s.swap("cd") + s.first())           // abcd
+  print("first=${s.first()}")               // first=cd
+
+  // nullable return of a type parameter: Option<i32> after substitution
+  let b = Box<i32>(7, true)
+  let none = Box<i32>(7, false)
+  print(b.get() ?? -1)                      // 7
+  print(none.get() ?? -1)                   // -1
+  print(b.item + 1)                         // 8
+
+  // inherited generic member through `Tagged<T> : Holder<T>`
+  let t = Tagged<string>("x", "lab")
+  print(t.take() + t.label)                   // xlab
+  print(Tagged(5, "n").held + 1)            // 6
+
+  // generic record + nested generics
+  let p = Pair<string, i32>("k", 3)
+  print(p.left + "=" + "${p.right + 1}")    // k=4
+  let nested = Cell<Cell<string>>(Cell<string>("in"))
+  print(nested.first().first() + "side")    // inside
+  var xs: List<i32> = [1, 2, 3]
+  let lc = Cell<List<i32>>(xs)
+  print(lc.first().count + 10)              // 13
+  print(lc.first()[2] * 5)                  // 15
+
+  // extern generic: native nullable result, two bound gets (two `$tmp`s) in one statement
+  let tab = Table<i32>()
+  tab.put("a", 1)
+  tab.put("b", 2)
+  print((tab.get("a") ?? 0) + (tab.get("b") ?? 0))   // 3
+  print(tab.get("zz") ?? -7)                         // -7
+  let names = Table<string>()
+  names.put("x", "ex")
+  print((names.get("x") ?? "?") + (names.get("y") ?? "!"))   // ex!
+
+  // extension defaults
+  print("hello".part(1))                    // e
+  print("hello".part(1, 3))                 // ell
+  print(5.plus(1))                          // 106
+  print(5.plus(1, 2))                       // 8
+}

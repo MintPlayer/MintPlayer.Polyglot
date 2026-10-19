@@ -1,0 +1,120 @@
+import "std.io"
+import "std.collections"
+
+// P40 review r4 #9: C#, JS and Python read a binary operator's left operand (and a compound's target) before
+// its right operand runs; PHP reads a variable operand only when the operator executes. Every slot kind, with
+// a right operand that writes the slot first: all four targets must print what C# prints.
+
+class Box {
+  var v: i32
+  constructor(v: i32) {
+    this.v = v
+  }
+}
+
+class Acc {
+  var total: f64 = 1.0
+  var big: i64 = 1i64
+  fn next(): f64 {
+    this.total = 100.0
+    return 1.0
+  }
+  fn step() {
+    this.total += this.next()
+  }
+}
+
+class S {
+  static var f: f64 = 1.0
+  static var l: i64 = 1i64
+  static var fs: List<f64> = List<f64>()
+  static var count: i32 = 0
+  static var s: string = "a"
+}
+
+fn bumpF(): f64 {
+  S.f = 100.0
+  return 1.0
+}
+
+fn bumpL(): i64 {
+  S.l = 100i64
+  return 1i64
+}
+
+fn bumpBig(a: Acc): i64 {
+  a.big = 100i64
+  return 1i64
+}
+
+fn setFs(): f64 {
+  S.fs[0] = 100.0
+  return 1.0
+}
+
+fn bumpCount(): i32 {
+  S.count = 50
+  return 1
+}
+
+fn t(): string {
+  S.s = "zzz"
+  return "b"
+}
+
+fn main() {
+  // fields, statics and elements (compounds kept expanded so the slot is fetched first)
+  S.f += bumpF()
+  print(S.f)
+  S.l += bumpL()
+  print(S.l)
+  let a = Acc()
+  a.big += bumpBig(a)
+  print(a.big)
+  a.step()
+  print(a.total)
+  S.fs.add(1.0)
+  S.fs[0] += setFs()
+  print(S.fs[0])
+  S.count += bumpCount()
+  print(S.count)
+  S.s += t()
+  print(S.s)
+
+  // locals rebound by a closure: compound, plain binary, string concat, comparison
+  var n = 4
+  let bump: () => i32 = () => {
+    n = 40
+    return 1
+  }
+  n += bump()
+  print(n)
+  var m = 4
+  let bumpM: () => i32 = () => {
+    m = 40
+    return 1
+  }
+  let r = m + bumpM()
+  print(r)
+  var s = "a"
+  let bumpS: () => string = () => {
+    s = "zzz"
+    return "b"
+  }
+  s += bumpS()
+  print(s)
+  var total = 1
+  let later = () => {
+    total = 50
+    return 1
+  }
+  let lt = total < later()
+  print(lt)
+  let b = Box(1)
+  let setB: () => i32 = () => {
+    b.v = 70
+    return 2
+  }
+  b.v += setB()
+  print(b.v)
+}

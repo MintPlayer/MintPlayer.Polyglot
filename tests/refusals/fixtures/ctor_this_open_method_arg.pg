@@ -1,0 +1,27 @@
+// REFUSED (P40 review r6): #5 'this' passed to another object's open method (an override may call it). Spark l1_5h.
+import "std.io"
+
+open class Visitor {
+  open fn visit(w: Base): string => "quiet"
+}
+class LoudVisitor : Visitor {
+  override fn visit(w: Base): string => "loud:" + w.describe()
+}
+open class Base {
+  var label: string = ""
+  constructor(v: Visitor) {
+    this.label = v.visit(this)
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  constructor() {
+    super(LoudVisitor())
+  }
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

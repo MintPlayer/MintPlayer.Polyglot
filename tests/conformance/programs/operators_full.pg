@@ -21,5 +21,6 @@ fn main() {
   print(a < b)           // false
   print(b <= a)          // true
   print(a > b)           // true
-  print(a >= a)          // true
+  let a2 = Money(250)
+  print(a >= a2)         // true  (equal operands; a self-comparison is refused)
 }

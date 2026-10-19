@@ -1,0 +1,11 @@
+union Tok {
+  Num(n: i32)
+  Word(w: string)
+}
+
+fn tokText(t: Tok): string => match t {
+  Num(n) => "num",
+  Word(w) => w,
+}
+
+fn mkTok(): Tok => Num(3)

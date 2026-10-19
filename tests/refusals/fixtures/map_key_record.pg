@@ -1,0 +1,11 @@
+// REFUSED (P40 B4): a record cannot key a Map — it compares structurally, but TS's Map and PHP arrays
+// cannot hash it structurally.
+import "std.io"
+import "std.collections"
+
+record Pt(x: i32, y: i32)
+
+fn main() {
+  let m = Map<Pt, i32>()
+  print(m.count)
+}

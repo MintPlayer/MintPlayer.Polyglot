@@ -1,0 +1,20 @@
+// REFUSED (P40 review r6): #5 'this' put into a list literal. Spark l1_5i.
+import "std.io"
+
+fn inspect(ws: Base[]): string => ws[0].describe()
+
+open class Base {
+  var label: string = ""
+  constructor() {
+    this.label = inspect([this])
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

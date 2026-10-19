@@ -22,10 +22,18 @@ namespace mintplayer::polyglot {
 
 // BlockStyle now lives in backend_spec.hpp — it is per-target Spec data (see BackendSpec::blockStyle).
 
+// P40 review A6 — the receiver parenthesization rule (see BackendSpec::wrapAtomRecvPrimary): true unless `c`
+// is emitted as a primary expression on this target. Shared by rule `recv` operands and bound FFI templates.
+const char* exprKindName(ir::ExprKind k);
+bool boundTemplateIsAtomic(const BackendSpec& spec, const ir::Bound& b);
+bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c);
+// Lexically a primary expression (identifier chars, brackets, member/scope punctuation only) — see .cpp.
+bool textIsPrimary(const std::string& t);
+
 // The shared EvalContext over an ir::Expr + a BackendSpec — the seam that plugs the P18 rule interpreter
 // into the real IR. Everything target-INDEPENDENT lives here: the path->IR mapping (`node.lhs`,
 // `node.args.<i>`, `node.fields.<i>.name`, `spec.delimited.…`, …), the binary-operand precedence policy
-// for `side:"l"/"r"`, and the spec-driven builtins (intSuffix / escapeString / opSpelling). A concrete
+// for `side:"l"/"r"`, and the spec-driven builtins (intSuffix / literal / quoted / opSpelling). A concrete
 // backend subclasses with only what genuinely differs per target: extra scalar reads (semantic predicates
 // its rules test), its own builtins (keyword escaping, type rendering, numeric faithfulness), and its
 // atom-wrapping policy (which `recv`/`unary` children need parens).
@@ -48,6 +56,7 @@ public:
     std::string freshName(const std::string& prefix) const override {
         return fresh_ ? prefix + std::to_string((*fresh_)++) : std::string();
     }
+    void requirePrelude(const std::string& key) const override { if (requires_) requires_->insert(key); }
     // {"type":path}: resolve the TypeRef the path names, render it via the backend's (rule-driven) type
     // renderer. The shared part is path->TypeRef; the rendering is the per-target renderTypeRef.
     std::string renderType(const std::string& path) const override;
@@ -110,6 +119,7 @@ public:
     EnumDeclCtx(const ir::Enum& e, const DeclHooks& hooks) : e_(e), hooks_(hooks) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
 
 private:
     const ir::Enum& e_;
@@ -130,20 +140,20 @@ public:
     virtual std::string renderTypeRef(const TypeRef& t) const = 0;
     // Identifier repair reads the spec's `identifiers` block (keyword escape / emitted-name mangle) —
     // generic catalog entries, not per-backend code (P19 slice 6).
+    // P40 review r6 #10: where every declaration-side context's `require` lands (the owning emitter's prelude
+    // keys). The decl contexts forward to it; the default records nothing.
+    virtual void requirePrelude(const std::string& /*key*/) const {}
     std::string ident(const std::string& n) const { return specIdent(specFn_(), n); }
+    std::string identType(const std::string& n) const { return specIdentType(specFn_(), n); } // review r5
     std::string mangle(const std::string& n) const { return specMangle(specFn_(), n); }
     // Free-function-position collision repair (PHP builtins); no-op where the spec declares no `fnBuiltins`.
     std::string identFn(const std::string& n) const { return specIdentFn(specFn_(), n); }
+    // A named `tables` row (P40 B2: `baseRootMembers`); "" when absent.
+    std::string table(const std::string& t, const std::string& k) const { return specTable(specFn_(), t, k); }
     // Generic-parameter spelling, driven by the spec's `generics` strategy (inline bounds / trailing
     // where-clauses / none) with marker-bound erasure (INumber). Bound types render through renderTypeRef.
     std::string generics(const std::vector<ir::GenericParam>& gs) const;
     std::string where(const std::vector<ir::GenericParam>& gs) const;
-
-    // Requested accessibility of emitted top-level declarations (LibConfig::access, set per-emit from
-    // ir::Module::access). `accessPrefix()` is the ready-to-emit modifier ("public "/"internal ") or "" for
-    // the target default — the `{"fn":"access"}` decl builtin returns it, so it is byte-identical when unset.
-    std::string access;
-    std::string accessPrefix() const { return access.empty() ? std::string() : access + " "; }
 
 protected:
     SpecFn specFn_;
@@ -157,6 +167,7 @@ public:
     UnionDeclCtx(const ir::Union& u, const DeclHooks& hooks) : u_(u), hooks_(hooks) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
 
 private:
@@ -175,6 +186,7 @@ public:
         : it_(it), hooks_(hooks), emit_(std::move(emit)) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
 
@@ -191,11 +203,12 @@ private:
 class MethodDeclCtx : public IrDeclCtx {
 public:
     using EmitFn = std::function<std::string(const ir::Expr&)>;
-    MethodDeclCtx(const ir::Method& m, std::string owner, const DeclHooks& hooks, EmitFn emit)
-        : m_(m), owner_(std::move(owner)), hooks_(hooks), emit_(std::move(emit)) {}
+    MethodDeclCtx(const ir::Method& m, std::string owner, bool ownerIsPrelude, const DeclHooks& hooks, EmitFn emit)
+        : m_(m), owner_(std::move(owner)), ownerIsPrelude_(ownerIsPrelude), hooks_(hooks), emit_(std::move(emit)) {}
     SourcePos declPos() const override { return m_.pos; } // P38: the method-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -203,6 +216,7 @@ public:
 private:
     const ir::Method& m_;
     std::string owner_;
+    bool ownerIsPrelude_ = false; // P40 §0: `decl.isPrelude` of a member is its owning type's
     const DeclHooks& hooks_;
     EmitFn emit_;
 };
@@ -220,6 +234,7 @@ public:
         : r_(r), hooks_(hooks), emit_(std::move(emit)), isRecord_(std::move(isRecordType)) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::unique_ptr<IrDeclCtx> memberCtx(const std::string& path, std::size_t index) const override;
 
@@ -244,6 +259,7 @@ public:
     ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn emit, TypePred isInterface = {});
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -254,6 +270,9 @@ private:
     const DeclHooks& hooks_;
     EmitFn emit_;
     std::vector<std::size_t> staticInit_, instanceInit_; // field indices with an initializer, by static-ness
+    // review r5 #7: instance fields whose initializer is not a literal, in a class whose base has a constructor —
+    // a target that runs field initializers BEFORE the base constructor (C#) assigns them after it instead.
+    std::vector<std::size_t> deferInit_;
     std::vector<std::size_t> ifaceBases_;                // base indices the predicate calls interfaces
     int extBase_ = -1;                                   // the last non-interface base index (-1 = none)
 };
@@ -270,6 +289,7 @@ public:
     SourcePos declPos() const override { return f_.pos; } // P38: the function-entry attribution point
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -293,6 +313,7 @@ public:
                   TypePred isRecordType = {}, TypePred isInterface = {});
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     std::unique_ptr<IrDeclCtx> memberCtx(const std::string& path, std::size_t index) const override;
@@ -304,6 +325,7 @@ private:
     TypePred isRecord_, isInterface_;
     std::vector<std::size_t> fns_; // actualTarget-filtered function indices
     int entry_ = -1;               // first isEntry function (unfiltered), -1 = none
+    std::vector<ir::DeclRef> order_; // review r4 #7: `module.order` (ir::declarationOrder over this view)
 };
 
 // The statement-scoped context a per-kind STATEMENT rule evaluates against (`stmt.*` reads — the For
@@ -316,6 +338,7 @@ public:
         : s_(s), hooks_(hooks), emit_(std::move(emit)) {}
     std::string get(const std::string& path) const override;
     std::string builtin(const std::string& name, const std::vector<std::string>& args) const override;
+    void requirePrelude(const std::string& key) const override; // r6 #10: forwards to the hooks
     std::string renderType(const std::string& path) const override;
     std::string emitChild(const std::string& path, const std::string& side) const override;
     const std::vector<ir::StmtPtr>* stmtList(const std::string& path) const override;
@@ -358,6 +381,18 @@ protected:
     std::string out_;
     int indent_ = 0;
     int doWhileSeq_ = 0; // fresh-name counter for the Python do-while emulation flag (#39a)
+    int boundTmpSeq_ = 0; // P40 slice 7: per-expansion unique names for a binding template's `$tmp` token
+
+    // ---- P40 §0: prelude placement -------------------------------------------------------------------
+    // The Program rule's `{"fn":"preludeSlot"}` marker records WHERE the manifest preludes go; they are
+    // spliced in there after the walk (only then is the set of required keys known). The loader guarantees
+    // exactly one unconditional marker, so `slotHit_` false only happens for a rule run outside emit().
+    // Optional marker args: [open, close] — literal text wrapped around the preludes when any are emitted
+    // (C# puts them in a file-local `file static class __PgRt`).
+    bool slotHit_ = false;
+    std::size_t slotOffset_ = 0; // byte offset into out_
+    int slotLine_ = 0;           // outLine_ at the marker (origin records past it shift down)
+    std::string slotOpen_, slotClose_;
 
     // ---- P38/issue #69: origin tracking -------------------------------------------------------------
     // Off unless the build asked for it AND the target's manifest declares an `originMapping`; when off,
@@ -369,6 +404,7 @@ protected:
     // unrelated `.pg` lines and get reported as covered, silently inflating the number.
     const OriginMapping* origin_ = nullptr;      // the target's declared mapping (null = record nothing)
     const std::vector<std::string>* sourceFiles_ = nullptr; // fileId -> path (index 0 = unknown)
+    std::string originBaseDir_; // P40 B7: ir::Module::originBaseDir of the module being emitted ("" = absolute)
     SourcePos curPos_{};        // origin of the construct currently being emitted
     bool posValid_ = false;     // false => this line has no known origin => hidden
     // Set while composing text that is NOT a fresh output line. `inlineBlock` flattens a statement body's
@@ -433,7 +469,8 @@ protected:
     std::string inlineBlock(const std::vector<ir::StmtPtr>& body);
 
     // Substitute a bound FFI template's placeholders: `$this` -> the receiver, `$T` -> the mapped type
-    // (ctor templates), `$0`…`$9` -> the args — each rendered through this emitter's own walk. One shared
+    // (ctor templates), `$0`…`$9` -> the args — each rendered through this emitter's own walk — and `$tmp` -> a
+    // name unique to this one expansion (`__pg_t1`, `__pg_t2`, …; P40 slice 7). One shared
     // implementation serves every backend (the three hand-written copies were byte-identical).
     std::string substBoundTemplate(const std::string& tmpl, const ir::Bound& b);
 
@@ -493,6 +530,10 @@ protected:
 
 public:
     virtual ~EmitterBase() = default;
+    // P40 A4: a source site `<file basename>:<line>:<col>` for runtime messages (the null-assert). The
+    // basename only — never a path — so emitted text is checkout-independent; `<input>` when the
+    // position has no file (synthesized code, an in-memory compile without a file table).
+    std::string sourceSite(const SourcePos& p) const;
 };
 
 // THE emitter (P19 slice 7d): every backend is this one class parameterized by pure data — its spec
@@ -514,6 +555,8 @@ public:
     // The target's type spelling: the "Type" rule evaluated against a type context whose extern-template
     // pick and recursion route back here.
     std::string renderType(const TypeRef& t) override;
+    // P40 review r6 #10: a type rule's `require` (the type context routes here).
+    void requirePrelude(const std::string& key) { requires_.insert(key); }
 
 private:
     const BackendSpec& spec() const override { return specFn_(); }
@@ -526,6 +569,7 @@ private:
     public:
         Hooks(SpecFn s, InterpretedEmitter& e) : DeclHooks(s), e_(e) {}
         std::string renderTypeRef(const TypeRef& t) const override { return e_.renderType(t); }
+        void requirePrelude(const std::string& key) const override { e_.requires_.insert(key); }
 
     private:
         InterpretedEmitter& e_;

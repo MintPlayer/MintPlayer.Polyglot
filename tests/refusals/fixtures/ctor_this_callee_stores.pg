@@ -1,0 +1,24 @@
+// REFUSED (P40 review r6): #5 the callee stores the object it receives: anything holding the Probe can reach the half-built object.
+import "std.io"
+
+class Probe {
+  var w: Panel? = null
+  constructor(p: Panel) {
+    this.w = p
+  }
+}
+open class Panel {
+  var probe: Probe? = null
+  constructor() {
+    this.probe = Probe(this)
+  }
+  open fn describe(): string => "panel"
+}
+class Fancy : Panel {
+  var extra: string = "X"
+  override fn describe(): string => "fancy" + this.extra
+}
+
+fn main() {
+  print(Fancy().describe())
+}

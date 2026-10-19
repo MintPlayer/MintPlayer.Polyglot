@@ -1,0 +1,3 @@
+// REFUSED (P40 A2): a range is only valid as a for-loop iterable. Pre-P40 `(0..n) - 1` type-checked as
+// `i32 - i32` and emitted the `__polyglot_unlowered_expr__` poison (a runtime-only failure on TS/Python/PHP).
+fn last(n: i32): i32 => (0..n) - 1

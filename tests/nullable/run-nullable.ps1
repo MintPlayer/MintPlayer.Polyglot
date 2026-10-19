@@ -33,13 +33,21 @@ if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] transpile to C# failed"; exit 1 }
 $cs = Get-Content (Join-Path $work "nullable_positions.cs") -Raw
 
 # 1. Every generated C# file self-declares its nullable context so the annotations are always valid.
-Check ($cs.TrimStart() -match '^#nullable enable') "generated C# begins with '#nullable enable'"
+#    (P40 B5: only the two generated-header comment lines may precede it.)
+Check ($cs.TrimStart() -match '^(//[^\n]*\n){0,2}#nullable enable') "generated C# begins with '#nullable enable' (after the generated header)"
 
 # 2. The `?` survives on nullable REFERENCE types in every declaration position.
 Check ($cs -match 'record Pair\(Box a, Box\? b\)') "record param keeps '?' (Box? b)"
 Check ($cs -match 'Box\? maybe')                    "field keeps '?' (Box? maybe)"
 Check ($cs -match 'Box\? get\(\)')                  "method return keeps '?' (Box? get())"
 Check ($cs -match 'Box\? x')                        "method param keeps '?' (Box? x)"
+
+# 2b. P40 A4: `!` is a checked assert that yields the NON-nullable type — on a reference field and on a
+#     Nullable<int> value alike — so the strict compile below stays warning-clean.
+Check ($cs -match 'Box forced = \(q\.b \?\? throw new global::System\.NullReferenceException\("null-assert failed \(nullable_positions\.pg:\d+:\d+\)"\)\);') `
+      "'!' on a nullable record field emits '?? throw' with the source site"
+Check ($cs -match 'int n = \(maybeN \?\? throw new global::System\.NullReferenceException\(') `
+      "'!' on an i32? emits '?? throw' (yields int, not int?)"
 
 # 3. A generated file compiles CLEAN under strict NRT (0 warnings) — proves annotations are self-consistent
 #    and the always-shipped std helpers (print<T>, …) are null-clean too. P35 slice 2: through the shared

@@ -1,0 +1,66 @@
+// P40 follow-up: a class names its own static fields by their bare name for a WRITE exactly as for a read.
+// `Counter = Counter + 1` inside a method of the class used to fail with "assignment to undeclared", although
+// the read `Counter` resolved. A bare write now resolves like the read — a local first, then a static of the
+// enclosing class — and lowers to the qualified access each target already writes (C#/TS/Python
+// `Tally.Counter`, PHP `Tally::$Counter`). Compound operators go the same way, wrap and concatenation included
+// (`compound_overflow` covers compounds in general). A local of the same name still shadows the static.
+
+class Tally {
+  static var Counter: i32 = 0
+  static var Log: string = ""
+  static var Big: i32 = 2000000000
+  static var Scale: f64 = 1.5
+  static let Step: i32 = 3
+  var own: i32 = 0
+
+  static fn bump(): i32 {
+    Counter = Counter + Step
+    Log = Log + "b"
+    return Counter
+  }
+
+  static fn compound() {
+    Counter += 10
+    Counter -= 1
+    Counter *= 2
+    Log += "c"                 // a string compound concatenates (PHP `.`)
+    Big += 2000000000          // wraps like i32 on every target
+    Scale *= 2.0
+  }
+
+  static fn shadowed(): i32 {
+    var Counter = 100          // a local shadows the static: neither the read nor the write touch it
+    Counter = Counter + 1
+    return Counter
+  }
+
+  static fn viaLambda(): i32 {
+    let add = (n: i32) => {
+      Counter = Counter + n
+      return Counter
+    }
+    return add(5)
+  }
+
+  fn instanceBump() {
+    Counter = Counter + 1      // a static by its bare name from an instance method
+    this.own = Counter
+  }
+}
+
+fn main() {
+  print(Tally.bump())
+  print(Tally.bump())
+  Tally.compound()
+  print(Tally.Counter)
+  print(Tally.Log)
+  print(Tally.Big)
+  print(Tally.Scale)
+  print(Tally.shadowed())
+  print(Tally.Counter)
+  print(Tally.viaLambda())
+  let t = Tally()
+  t.instanceBump()
+  print(t.own)
+  print(Tally.Counter)
+}

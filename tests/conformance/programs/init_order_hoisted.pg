@@ -1,0 +1,47 @@
+// P40 review r6 #3: a module value may reach an enum, a record or a union declared AFTER it — the emission order
+// places every enum, record, union and interface ahead of all classes and values, so none of them is an order
+// problem (round 5 refused all three with a reason that is false for these kinds). Spark repros l1_4i/j/k.
+import "std.io"
+
+class Light {
+  var color: Color
+  constructor() {
+    this.color = Color.Red
+  }
+}
+let light: Light = Light()
+enum Color { Red, Green }
+
+class Shop {
+  var stock: Item
+  constructor() {
+    this.stock = Item("apple")
+  }
+}
+let shop: Shop = Shop()
+record Item(name: string)
+
+class Factory {
+  fn make(): Shape => Circle(2.0)
+}
+let s: Shape = Factory().make()
+union Shape {
+  Circle(r: f64)
+  Square(side: f64)
+}
+
+let direct: Color = Color.Green
+enum Late { A, B }
+let early: Late = Late.B
+
+fn main() {
+  print(light.color == Color.Red)
+  print(shop.stock.name)
+  let d = match s {
+    Circle(r) => r,
+    Square(side) => side
+  }
+  print(d)
+  print(direct == Color.Green)
+  print(early == Late.B)
+}

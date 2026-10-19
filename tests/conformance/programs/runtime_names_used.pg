@@ -1,0 +1,66 @@
+// P40 review r5 #16: each target's runtime-name list is what its templates and prelude actually reference unqualified.
+//  * TS: no template uses the `Symbol` global, so a user class may take that name (round 4 refused it); a CLASS named
+//    `Object` is refused (TS2725 under --module nodenext, review r6), but a field named `Object` is fine;
+//    the non-exhaustive-match guard throws `globalThis.Error`, so a local named `Error` cannot capture it (TS2351).
+//  * Python: the UTF-16 view cache calls the builtin `id` (and file I/O `open`) — a user `fn id` broke `s.len()`
+//    on a long non-ASCII string; both names are now escaped.
+//  * PHP: the templates call `intdiv`, `fmod`, `strtolower`, `strpos`, … — a user function of that name was a
+//    "Cannot redeclare" fatal; each is now suffixed.
+import "std.io"
+import "std.strings"
+
+class Symbol {
+  var name: string
+  constructor(name: string) {
+    this.name = name
+  }
+}
+class Holder {
+  var Object: i32 = 1
+}
+
+union Opt {
+  Has(v: i32)
+  Nope
+}
+
+fn id(n: i32): i32 => n + 1000
+fn intdiv(a: i32, b: i32): i32 => a * 100 + b
+fn fmod(a: f64, b: f64): f64 => 99.0
+fn strtolower(s: string): string => "user"
+fn strpos(s: string): i32 => 42
+
+fn pick(o: Opt): i32 {
+  let Error = 5
+  return match o {
+    Has(v) => v + Error,
+    Nope => Error,
+  }
+}
+
+fn main() {
+  print(Symbol("x").name)
+  print(Holder().Object)
+  var s = "\u{E9}"
+  var i = 0
+  while i < 300 {
+    s = s + "x"
+    i = i + 1
+  }
+  print(s.len())
+  print(s.indexOf("x"))
+  print(id(1))
+  let a = 7
+  let b = 2
+  print(a / b)
+  let x = 7.5
+  let y = 2.0
+  print(x % y)
+  print("ABC".toLower())
+  print(intdiv(1, 2))
+  print(fmod(1.0, 2.0))
+  print(strtolower("Q"))
+  print(strpos("q"))
+  print(pick(Has(1)))
+  print(pick(Nope))
+}

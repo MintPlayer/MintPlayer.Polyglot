@@ -1,0 +1,25 @@
+// P40 review r6 (part 2): a STATIC computed property stays static on every target (it lost `static` everywhere:
+// C# CS0120, TS read undefined, Python printed a property object, PHP read an undefined constant). C#/TS emit a
+// static getter; Python and PHP emit a static method and call it at every read. Read qualified, unqualified inside
+// its class, from a static method, and through a block getter. Spark repro l1_4o.
+import "std.io"
+
+class Cfg {
+  static var base: i32 = 3
+  static let level: i32 => Cfg.base * 2
+  static let label: string {
+    get {
+      let n = level + 1
+      return "L${n}"
+    }
+  }
+  static fn report(): string => "${level}/${Cfg.label}"
+}
+
+fn main() {
+  print(Cfg.level)
+  Cfg.base = 5
+  print(Cfg.level)
+  print(Cfg.label)
+  print(Cfg.report())
+}

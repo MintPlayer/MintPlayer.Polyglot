@@ -1,0 +1,24 @@
+// REFUSED (P40 review r5 #5): `this` passed to another class's constructor, which calls the open method on it.
+import "std.io"
+
+class Probe {
+  var seen: string
+  constructor(w: W) {
+    this.seen = w.describe()
+  }
+}
+open class W {
+  var p: Probe? = null
+  constructor() {
+    this.p = Probe(this)
+  }
+  open fn describe(): string => "w"
+}
+class B : W {
+  var extra: string = "X"
+  override fn describe(): string => "b" + this.extra
+}
+
+fn main() {
+  print(B().describe())
+}

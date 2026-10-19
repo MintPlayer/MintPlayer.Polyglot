@@ -1,0 +1,65 @@
+import "std.io"
+
+// P40 review r5 item 19: a null test INSIDE a lambda narrows a captured parameter, `let` or `var` (one no lambda
+// assigns) for the rest of that lambda body (SPEC §4.3) — only an OUTER narrowing stops at the lambda.
+
+fn takeS(s: string): string => s
+fn runS(f: () => string): string => f()
+fn runIt(f: () => unit) {
+  f()
+}
+
+fn viaParam(s: string?): string => runS(() => {
+  if s != null {
+    return takeS(s)
+  }
+  return "none"
+})
+
+fn pick(flag: bool): (() => unit)? {
+  if flag {
+    return () => print("captured-inside")
+  }
+  return null
+}
+
+fn viaLet(flag: bool) {
+  let cb: (() => unit)? = pick(flag)
+  runIt(() => {
+    if cb != null {
+      cb()
+    }
+  })
+}
+
+fn viaVar(start: string?): string {
+  var cur = start
+  let read: () => string = () => {
+    if cur == null {
+      return "empty"
+    }
+    return takeS(cur)
+  }
+  let first = read()
+  cur = "later"
+  return first + "|" + read()
+}
+
+fn earlyExit(s: string?): string => runS(() => {
+  if s == null {
+    return "-"
+  }
+  return takeS(s) + "!"
+})
+
+fn main() {
+  print(viaParam("in"))
+  print(viaParam(null))
+  viaLet(true)
+  viaLet(false)
+  print(viaVar(null))
+  print(viaVar("a"))
+  print(earlyExit("x"))
+  print(earlyExit(null))
+  print("done")
+}

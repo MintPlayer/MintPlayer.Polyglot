@@ -1,0 +1,10 @@
+// REFUSED (P40 review r5 #9): an abstract class is never constructed (C# CS0144, TS2511, Python TypeError, PHP Error).
+import "std.io"
+
+abstract class S {
+  abstract fn a(): i32
+}
+
+fn main() {
+  print(S().a())
+}

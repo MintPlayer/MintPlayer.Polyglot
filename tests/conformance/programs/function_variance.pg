@@ -1,0 +1,41 @@
+import "std.io"
+
+// P40 review r5 (part 2): a function VALUE converts to a function type whose parameters are subtypes of its own
+// and whose result is a supertype of its own — for user classes and interfaces (C# delegate variance, TS
+// strictFunctionTypes; Python/PHP are untyped). A lambda's own annotated parameters must still match exactly.
+
+open class Animal {
+  open fn name(): string => "animal"
+}
+
+class Dog : Animal {
+  override fn name(): string => "dog"
+}
+
+interface Named {
+  fn label(): string
+}
+
+class Cat : Named {
+  fn label(): string => "cat"
+}
+
+fn feed(f: (Dog) => string): string => f(Dog())
+fn make(f: () => Animal): string => f().name()
+fn labelOf(f: (Cat) => string): string => f(Cat())
+fn visit(f: (Dog) => unit) {
+  f(Dog())
+}
+
+fn main() {
+  let anyName: (Animal) => string = (a: Animal) => a.name()
+  print(feed(anyName))
+  let mkDog: () => Dog = () => Dog()
+  print(make(mkDog))
+  let byLabel: (Named) => string = (n: Named) => n.label() + "!"
+  print(labelOf(byLabel))
+  let shout: (Animal) => unit = (a: Animal) => print(a.name() + "?")
+  visit(shout)
+  let exact: (Dog) => string = (d: Dog) => d.name() + "."
+  print(feed(exact))
+}

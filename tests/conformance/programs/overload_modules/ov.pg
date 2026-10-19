@@ -1,0 +1,2 @@
+fn pick(n: i32): string => "pick-int"
+fn pick(s: string): string => "pick-str"

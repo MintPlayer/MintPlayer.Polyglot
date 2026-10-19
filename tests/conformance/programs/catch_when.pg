@@ -34,9 +34,9 @@ fn classify(code: i32): string {
   } catch (e: OtherError) {
     return "other-kind"
   }
-  // Unreachable at runtime (every arm returns), but the guard-emulation if-chain is not flow-provable, so
-  // a trailing return is required for tsc.
-  return "unreachable"
+  // No trailing return: every arm returns, so one would be unreachable code (refused — C# CS0162). The TS
+  // guard-emulation chain ends in an unconditional `throw __e;` when no arm completes, so tsc proves the
+  // end unreachable too (P40 review A9).
 }
 
 // The inner try catches only OtherError (guarded), but an AppError is thrown — with no catch-all the
@@ -44,11 +44,9 @@ fn classify(code: i32): string {
 fn escapes(): string {
   try {
     throw AppError("esc", 9)
-    return "none"
   } catch (e: OtherError) when (e.message == "never") {
     return "inner-other"
   }
-  return "inner-fell-through"
 }
 
 fn main() {

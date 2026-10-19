@@ -1,0 +1,7 @@
+// REFUSED (P40 A4, S7 hole): a compound assignment reads its target — `n += 1` on a maybe-null `i32?`
+// is null-lifted on C# and coerces null to 0 on JS.
+fn bump(): i32 {
+  var n: i32? = null
+  n += 1
+  return n ?? 0
+}

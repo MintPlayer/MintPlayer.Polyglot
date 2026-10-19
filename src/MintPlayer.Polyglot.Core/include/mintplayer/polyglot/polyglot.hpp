@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -74,6 +75,17 @@ struct ModuleFile {
     std::string code;
     std::string sourcePath;
     std::vector<OriginRecord> origins; // P38: empty unless origin info was requested
+    // P40 §0: this is the hoisted shared prelude (`__polyglot_prelude`, LibConfig::sharedPrelude). Its `code`
+    // is this root's share only — empty when the root reaches no prelude. A host compiling several roots
+    // writes ONE file from compileSharedPrelude() over the union of their EmitResult::preludeReach instead.
+    bool sharedPrelude = false;
+};
+
+// P40 §0 / S15: which prelude declarations a compile reached, and which std modules it linked — the inputs
+// to the shared prelude's second phase. `names` holds declaration names (source and mangled spellings).
+struct PreludeReach {
+    std::vector<std::string> names;
+    std::vector<std::string> stdModules;
 };
 
 // Maps a SourcePos.fileId to the source it came from, so cross-module positions stay unambiguous after the
@@ -115,6 +127,13 @@ struct EmitResult {
     // build asked for origin info AND the target declares a mapping. The HOST turns these into a sidecar:
     // the Core never learns where a file is routed, so it cannot compute map-relative source paths itself.
     std::vector<OriginRecord> origins;
+    // P40 §0: populated when `modules` carries a shared prelude (ModuleFile::sharedPrelude) — what this root
+    // reaches, for the host's union across roots.
+    PreludeReach preludeReach;
+    // P40 B1: the ENTRY file's resolved target options (every declared option, defaults filled in). A host
+    // sharing one prelude file between roots compares these: roots that disagree on a closure-scoped option
+    // cannot share it (the prelude's types live in that namespace).
+    std::map<std::string, std::string> targetOptions;
 };
 
 // A module's source, as answered by a ModuleResolver. `canonicalPath` is the stable identity used for
@@ -151,16 +170,22 @@ struct LibConfig {
     // pgconfig `forbiddenIdentifiers` (P19 design note 7): (target-or-"*", name) pairs refused by checkReservedNames
     // when compiling for a matching target. Project policy, carried with the lib config for plumbing economy.
     std::vector<std::pair<std::string, std::string>> forbiddenIdentifiers;
-    // Requested accessibility of emitted top-level C# declarations ("public" / "internal"). Empty = the target
-    // default (C# modifier-less top-level types are `internal`), which keeps output byte-identical. Lets a
-    // consumer expose the generated types across assemblies without a hand-written public facade. C#-only
-    // (TS already `export`s everything; Python/PHP have no equivalent), carried with the lib config.
-    std::string access;
+    // P40 B1: the target options a consumer set (pgconfig `targetOptions`, an `include` rule's
+    // `targetOptions`, `--target-option`), as (target, file origin) -> option -> value. `origin` is "" for the
+    // entry file, else a module's canonical source path (the moduleOutputDir convention). The Core calls it
+    // once per emitted file with the ACTIVE target's name — a data lookup, like forbiddenIdentifiers; it
+    // never compares the name — then validates the answer against the plugin's declared `options` (unknown
+    // option / pattern mismatch refuse) and fills in the defaults. Unset = nothing set: every option takes
+    // its manifest default (byte-identical output).
+    std::function<std::map<std::string, std::string>(const std::string& target, const std::string& origin)>
+        targetOptions;
     // §4.5 / issue #14: this compile is one unit of a multi-file C# PROJECT build (the CLI sets it when given
     // 2+ inputs). When set, the C# backend hoists the shared runtime prelude (Option/Some/None + the
     // PolyglotProgram wrapper) into a single reserved `__polyglot_prelude` file instead of inlining it, so N
     // independent link roots don't each emit it (which collides as CS0101/CS8863 in one assembly). Off = the
     // single-file behavior (prelude inlined) — byte-identical. C#-only; TS/Python/PHP inline it per file safely.
+    // P40 §0: the prelude is pruned to what is reached, so roots no longer agree on its content — the host
+    // builds the one file in a second phase (compileSharedPrelude) from the union of every root's reach.
     bool sharedPrelude = false;
     // P38/issue #69: emit origin information so generated code can be attributed back to the `.pg` source
     // (a coverage run then reports against the `.pg`, with `.pg` line numbers). Opt-in — the CLI spells it
@@ -169,6 +194,11 @@ struct LibConfig {
     // target emits byte-for-byte as before. A build whose targets ALL lack `originMapping` refuses rather
     // than silently doing nothing.
     bool originInfo = false;
+    // P40 B7: routes a module ORIGIN ("" = the entry file — and the prelude, which follows it — else its
+    // canonical source path) to the CANONICAL directory its emitted file is written into. Origin paths are
+    // then emitted relative to that directory (ir::Module::originBaseDir), so committed origin-info output
+    // does not depend on where the repository is checked out. Unset = absolute paths.
+    std::function<std::string(const std::string& origin)> originBaseDir;
 };
 
 // Compile Polyglot source text to a single target. Runs lex -> parse -> (link imported + lib modules) ->
@@ -180,6 +210,20 @@ struct LibConfig {
 // path when the caller has one; empty keeps the historical behaviour of an unnamed entry ("<entry>").
 EmitResult compile(const std::string& source, const BackendHandle& target, ModuleResolver* resolver = nullptr,
                    const LibConfig& lib = {}, const std::string& entryPath = {});
+
+// `polyglot check` (P40 review r3 item 5): the full compile pipeline — front end, every target's capability
+// gate (an `expect fn` with no `actual` for a target), lowering — once per target in `targets`, with the
+// diagnostics merged (each distinct one once, in first-seen order). So check refuses exactly what a build
+// for those targets refuses. `code` is left empty; `ok` is true only when every target compiles.
+EmitResult checkForTargets(const std::string& source, const std::vector<BackendHandle>& targets,
+                           ModuleResolver* resolver = nullptr, const LibConfig& lib = {},
+                           const std::string& entryPath = {});
+
+// P40 §0 / S15 — phase 2 of the shared prelude. A multi-root project build compiles every root first (each
+// reports EmitResult::preludeReach), then calls this ONCE with the union: `code` is the one shared prelude
+// file, pruned to exactly what some root reaches. `ok` with an EMPTY `code` means no root reaches any prelude
+// declaration — the host then writes no prelude file (and removes a stale one).
+EmitResult compileSharedPrelude(const BackendHandle& target, const PreludeReach& unionReach, const LibConfig& lib = {});
 
 // Re-print source as canonical Polyglot (lex -> parse -> pretty-print). On success `code` holds the
 // formatted source. This is the parser-fidelity surface (P3): running it twice is idempotent.

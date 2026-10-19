@@ -1,0 +1,12 @@
+// REFUSED (P40 B4): a Map is not directly for-iterable (the natives yield keys, pairs or values);
+// iterate a snapshot instead — keys() or values().
+import "std.io"
+import "std.collections"
+
+fn main() {
+  let m = Map<string, i32>()
+  m.set("a", 1)
+  for k in m {
+    print(k)
+  }
+}

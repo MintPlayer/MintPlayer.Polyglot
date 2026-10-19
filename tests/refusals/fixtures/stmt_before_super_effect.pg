@@ -1,0 +1,22 @@
+// REFUSED (P40 review r5 #8): a side effect written before `super()` silently ran after it on all four targets.
+import "std.io"
+
+class Log {
+  static var s: string = ""
+}
+open class Base {
+  constructor() {
+    Log.s = Log.s + "B"
+  }
+}
+class Child : Base {
+  constructor() {
+    Log.s = Log.s + "c"
+    super()
+  }
+}
+
+fn main() {
+  let c = Child()
+  print(Log.s)
+}

@@ -34,6 +34,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <!-- P40 A2: a switch over an enum with no default must name every enumerator (exhaustive lowering). -->
+      <TreatSpecificWarningsAsErrors>4062;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
@@ -45,6 +47,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <!-- P40 A2: a switch over an enum with no default must name every enumerator (exhaustive lowering). -->
+      <TreatSpecificWarningsAsErrors>4062;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
@@ -86,6 +90,9 @@
     <ClInclude Include="include\mintplayer\polyglot\capability.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\coverage.hpp" />
     <ClInclude Include="include\mintplayer\polyglot\sourcemap.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\reachability.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\unicode.hpp" />
+    <ClInclude Include="include\mintplayer\polyglot\flow.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\polyglot.cpp" />
@@ -107,6 +114,8 @@
     <ClCompile Include="src\json.cpp" />
     <ClCompile Include="src\coverage.cpp" />
     <ClCompile Include="src\sourcemap.cpp" />
+    <ClCompile Include="src\reachability.cpp" />
+    <ClCompile Include="src\flow.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

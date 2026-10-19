@@ -1,0 +1,7 @@
+// REFUSED (P40 D16): an import makes names visible only to the module that writes it. std.strings imports
+// std.collections for split's List<string>, but that does not hand `List` to this module.
+import "std.strings"
+
+fn main() {
+  let parts: List<string> = "a,b".split(",")
+}

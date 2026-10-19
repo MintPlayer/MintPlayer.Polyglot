@@ -2,8 +2,12 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <thread>
+#include <chrono>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -30,6 +34,7 @@
 #include "mintplayer/polyglot/lower.hpp"
 #include "mintplayer/polyglot/parser.hpp"
 #include "mintplayer/polyglot/pg_printer.hpp"
+#include "mintplayer/polyglot/reachability.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 #include "mintplayer/polyglot/sema.hpp"
 
@@ -38,6 +43,7 @@
 
 #include "inflate.hpp"  // P30 slice 0: the auto-download primitives (same include path as watch.hpp)
 #include "lockfile.hpp" // P30 slice 2: the pgconfig.lock.json pin + the versioned plugin cache
+#include "outputsink.hpp" // P40 B5 + D17: the one writer, the outputs record, owned scopes
 #include "pgconfig.hpp"
 #include "plugincache.hpp"
 #include "pluginresolve.hpp" // P30 slice 3: the auto-download pipeline
@@ -304,10 +310,13 @@ int main() {
         check(has(cs.code, "public static int add(int a, int b)"), "C#: function signature mapped");
         // print is now std.io's generic `print<T>` (capability mechanism): its csharp `actual` body is the
         // Console.WriteLine, and the call site is a normal free-function call (PolyglotProgram.print(...)).
-        check(has(cs.code, "global::System.Console.WriteLine(x is bool"), "C#: std.io print body -> Console.WriteLine (bool-lowercasing)");
+        check(has(cs.code, "global::System.Console.WriteLine(__PgRt.Show(x))") &&
+                  has(cs.code, "internal static string Show(object? x)"),
+              "C#: std.io print body -> Console.WriteLine(__PgRt.Show(x)) (P40 A3: the one rule)");
         check(has(cs.code, "PolyglotProgram.print(PolyglotProgram.add(sum, 100))"), "C#: print call site -> PolyglotProgram.print");
-        check(has(cs.code, "static void Main() {") && has(cs.code, "InvariantCulture") && has(cs.code, "main(); }"),
-              "C#: main entry point emitted (with invariant-culture pin)");
+        // P40 A3: no culture guard — library and program code are identical, and __PgRt is culture-free.
+        check(has(cs.code, "static void Main() { main(); }") && !has(cs.code, "CurrentCulture"),
+              "C#: main entry point emitted (no culture guard)");
     }
 
     // TypeScript emission (golden substrings).
@@ -380,13 +389,17 @@ int main() {
     check(importSpecifiers("import { a } from \"nn\"\nimport { b } from \"std.io\"\nfn f() {}\n") == std::vector<std::string>{"nn"},
           "issue#11 1.B: importSpecifiers returns non-std imports only");
 
-    // Access modifier — `--access public` (LibConfig::access) prefixes emitted C# types + wrappers; the
-    // default (empty) keeps C#'s modifier-less `internal` (byte-identical).
+    // Access modifier — targetOptions.csharp.access (P40 B1/D9; was LibConfig::access) prefixes emitted C#
+    // types + wrappers; the default (empty) keeps C#'s modifier-less `internal` (byte-identical).
     {
-        LibConfig pub; pub.access = "public";
+        LibConfig pub;
+        pub.targetOptions = [](const std::string& t, const std::string&) {
+            return t == "csharp" ? std::map<std::string, std::string>{{"access", "public"}}
+                                 : std::map<std::string, std::string>{};
+        };
         EmitResult r = compile("record Point(x: i32, y: i32)\nfn origin(): Point => Point(0, 0)\n", findTarget("csharp"), nullptr, pub);
         check(r.ok && has(r.code, "public record Point") && has(r.code, "public static class PolyglotProgram"),
-              "issue#11 access: --access public emits public types + wrapper");
+              "issue#11 access: csharp.access=public emits public types + wrapper");
         EmitResult def = compile("record Point(x: i32, y: i32)\n", findTarget("csharp"));
         check(def.ok && !has(def.code, "public record Point"), "issue#11 access: default is internal (no public modifier)");
     }
@@ -394,8 +407,10 @@ int main() {
     // Issue #14 — a multi-file C# PROJECT build (LibConfig::sharedPrelude) hoists the runtime prelude
     // (Option/Some/None + wrapper) into a separate `__polyglot_prelude` module so N independent roots don't
     // each emit it (CS0101/CS8863). The default (sharedPrelude=false) inlines it -> byte-identical.
+    // P40 §0 changed what "the prelude" means here: only REACHED prelude declarations are emitted, so the
+    // program has to use Option for Option to appear at all.
     {
-        const char* src = "fn fa(): i32 { return 1 }\n";
+        const char* src = "fn fa(): Option<i32> { return Some(1) }\n";
         LibConfig proj; proj.sharedPrelude = true;
         EmitResult r = compile(src, findTarget("csharp"), nullptr, proj);
         check(r.ok, "issue#14: C# project build compiles");
@@ -403,15 +418,2110 @@ int main() {
         check(has(r.code, "static partial class PolyglotProgram"), "issue#14: entry wrapper is `partial` (mergeable)");
         bool preludeFile = false;
         for (const auto& mf : r.modules)
-            if (mf.basename == "__polyglot_prelude" && has(mf.code, "record Option")) preludeFile = true;
-        check(preludeFile, "issue#14: the prelude (Option) is emitted once into __polyglot_prelude");
-        // Default (single-file) still inlines the prelude — byte-identical.
+            if (mf.basename == "__polyglot_prelude" && mf.sharedPrelude && has(mf.code, "record Option"))
+                preludeFile = true;
+        check(preludeFile, "issue#14: a reached prelude (Option) is emitted once into __polyglot_prelude");
+        bool reportsOption = false;
+        for (const auto& n : r.preludeReach.names) reportsOption = reportsOption || n == "Option";
+        check(reportsOption, "P40 s1: a shared-prelude root reports the prelude names it reaches");
+        // Default (single-file) still inlines the REACHED prelude.
         EmitResult def = compile(src, findTarget("csharp"));
         check(def.ok && has(def.code, "record Option") && def.modules.empty(),
-              "issue#14: default (non-project) build still inlines the prelude (unchanged)");
+              "issue#14: default (non-project) build inlines the reached prelude");
         // C#-only: a TS project build keeps the prelude per-file (no shared file).
         EmitResult ts = compile(src, findTarget("typescript"), nullptr, proj);
         check(ts.ok && ts.modules.empty(), "issue#14: sharedPrelude is a no-op for non-C# targets");
+        // P40 s1: a program that never touches Option emits no Option at all — and a project root that
+        // reaches nothing reports an empty shared prelude (the host then writes no file).
+        EmitResult none = compile("fn fb(): i32 { return 1 }\n", findTarget("csharp"));
+        check(none.ok && !has(none.code, "Option"), "P40 s1: an unreached prelude Option is not emitted");
+        EmitResult noneProj = compile("fn fb(): i32 { return 1 }\n", findTarget("csharp"), nullptr, proj);
+        bool emptyShare = false;
+        for (const auto& mf : noneProj.modules) emptyShare = emptyShare || (mf.sharedPrelude && mf.code.empty());
+        check(noneProj.ok && emptyShare && noneProj.preludeReach.names.empty(),
+              "P40 s1: a root reaching no prelude has an empty shared-prelude share");
+    }
+
+    // ---- P40 slice 1: manifest schema 2, binding `requires`, the preludeSlot marker, reachability ---------
+    {
+        auto manifestOf = [](const char* target) {
+            std::string m;
+            cli::readFile(cli::executablePath().parent_path() / "plugins" / target / "polyglot-plugin.json", m);
+            return m;
+        };
+        auto replaceAll = [](std::string s, const std::string& from, const std::string& to) {
+            for (std::size_t at = 0; (at = s.find(from, at)) != std::string::npos; at += to.size())
+                s.replace(at, from.size(), to);
+            return s;
+        };
+        auto replaceOnce = [](std::string s, const std::string& from, const std::string& to, bool& found) {
+            const std::size_t at = s.find(from);
+            found = at != std::string::npos;
+            if (found) s.replace(at, from.size(), to);
+            return s;
+        };
+        auto renamed = [&](const char* target, const std::string& newName) {
+            return replaceAll(manifestOf(target), std::string("\"name\": \"") + target + "\"",
+                              "\"name\": \"" + newName + "\"");
+        };
+        const std::string py = renamed("python", "p40py");
+        bool f = false;
+
+        // Schema: the Core validates the field it never read before — schema 1, a missing schema and an
+        // unknown version are all refused, naming the version this compiler reads.
+        std::string err;
+        check(validateBackend(py, err), "P40 s1: the in-box (schema 2) manifest validates");
+        std::string s1 = replaceOnce(py, "\"schema\": 2", "\"schema\": 1", f);
+        err.clear();
+        check(f && !validateBackend(s1, err) && has(err, "schema (1)") && has(err, "reads schema 2"),
+              "P40 s1: a schema-1 manifest is refused, naming the expected schema");
+        std::string s0 = replaceOnce(py, "\"schema\": 2,", "", f);
+        err.clear();
+        check(f && !validateBackend(s0, err) && has(err, "schema (missing)"),
+              "P40 s1: a manifest without a schema is refused");
+        std::string s3 = replaceOnce(py, "\"schema\": 2", "\"schema\": 3", f);
+        err.clear();
+        check(f && !validateBackend(s3, err) && has(err, "schema (3)"),
+              "P40 s1: an unknown (newer) schema is refused");
+
+        // preludeSlot: required, exactly once, unconditional, Program only.
+        std::string noSlot = replaceOnce(py, "\"fn\": \"preludeSlot\"", "\"fn\": \"ident\"", f);
+        err.clear();
+        check(f && !validateBackend(noSlot, err) && has(err, "preludeSlot") && has(err, "found 0"),
+              "P40 s1: a Program rule without a preludeSlot marker is refused");
+        std::string twoSlots = replaceOnce(py, "\"fn\": \"ident\"", "\"fn\": \"preludeSlot\"", f);
+        err.clear();
+        check(f && !validateBackend(twoSlots, err) && has(err, "exactly one"),
+              "P40 s1: a second preludeSlot marker (anywhere) is refused");
+
+        // Binding `requires`: every key must be a declared prelude; object form needs a string template;
+        // a type spelling cannot carry requirements.
+        const std::string sqrtArm = "\"Math.sqrt\": \"__import__('math').sqrt($0)\"";
+        std::string badReq = replaceOnce(py, sqrtArm,
+                                         "\"Math.sqrt\": { \"template\": \"x($0)\", \"requires\": [\"nope\"] }", f);
+        err.clear();
+        check(f && !validateBackend(badReq, err) && has(err, "requires 'nope'") && has(err, "not a declared prelude"),
+              "P40 s1: a binding requiring an undeclared prelude is refused (anti-silent-drop)");
+        std::string noTmpl = replaceOnce(py, sqrtArm, "\"Math.sqrt\": { \"requires\": [] }", f);
+        err.clear();
+        check(f && !validateBackend(noTmpl, err) && has(err, "string 'template'"),
+              "P40 s1: an object binding without a template is refused");
+        std::string typeReq = replaceOnce(py, "\"List.type\": \"list\"",
+                                          "\"List.type\": { \"template\": \"list\", \"requires\": [\"fstr\"] }", f);
+        err.clear();
+        check(f && !validateBackend(typeReq, err) && has(err, "type spelling"),
+              "P40 s1: `requires` on a type spelling is refused (nothing would record it)");
+        std::string badRuleReq = replaceOnce(py, "\"idiv\": \"def _pg_idiv", "\"idivX\": \"def _pg_idiv", f);
+        err.clear();
+        check(f && !validateBackend(badRuleReq, err) && has(err, "\"require\"") && has(err, "'idiv'"),
+              "P40 s1: a rule-level {\"fn\":\"require\"} naming an undeclared prelude is refused");
+
+        // A binding that requires a helper pulls it in — through a member binding (Bound) and through a
+        // synthesized expect-fn actual (Extern) — and ONLY where something calls it.
+        std::string pyReq = replaceOnce(py, sqrtArm,
+                                        "\"Math.sqrt\": { \"template\": \"_pg_sq($0)\", \"requires\": [\"sq\"] }", f);
+        pyReq = replaceOnce(pyReq, "\"readText\": \"__import__('pathlib').Path(path).read_text()\"",
+                            "\"readText\": { \"template\": \"_pg_rd(path)\", \"requires\": [\"rd\"] }", f);
+        pyReq = replaceOnce(pyReq, "\"preludes\": {",
+                            "\"preludes\": { \"sq\": \"def _pg_sq(x):\\n    return x ** 0.5\\n\", "
+                            "\"rd\": \"def _pg_rd(p):\\n    return p\\n\",", f);
+        err.clear();
+        check(f && loadBackend(pyReq, err), "P40 s1: a manifest using the binding object form loads");
+        BackendHandle pyr = findTarget("p40py");
+        EmitResult sq = compile("import { Math } from \"std.math\"\nfn root(): f64 => Math.sqrt(4.0)\n", pyr);
+        check(sq.ok && has(sq.code, "def _pg_sq(x):") && has(sq.code, "_pg_sq(4.0)") && !has(sq.code, "def _pg_rd"),
+              "P40 s1: a member binding's `requires` emits its helper (and only that one)");
+        check(sq.ok && sq.code.find("def _pg_sq") < sq.code.find("def root"),
+              "P40 s1: Python's preludeSlot sits at the top of the file");
+        EmitResult rd = compile("import { print, readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n", pyr);
+        check(rd.ok && has(rd.code, "def _pg_rd(p):") && !has(rd.code, "def _pg_sq"),
+              "P40 s1: an expect-fn actual's `requires` emits its helper via the kept prelude function");
+        EmitResult neither = compile("fn root(): i32 => 1\n", pyr);
+        check(neither.ok && !has(neither.code, "_pg_sq") && !has(neither.code, "_pg_rd") &&
+                  !has(neither.code, "def readText"),
+              "P40 s1: an unreached binding emits no helper, and an unreached std fn is pruned");
+
+        // C#: manifest helpers land in the file-local `file static class __PgRt`, after the usings.
+        std::string cs = renamed("csharp", "p40cs");
+        cs = replaceOnce(cs, "\"Math.sqrt\": \"global::System.Math.Sqrt($0)\"",
+                         "\"Math.sqrt\": { \"template\": \"__PgRt.Sq($0)\", \"requires\": [\"sq\"] }", f);
+        cs = replaceOnce(cs, "\"preludes\": {",
+                         "\"preludes\": { \"sq\": \"    internal static double Sq(double x) => "
+                         "global::System.Math.Sqrt(x);\\n\",", f);
+        err.clear();
+        check(f && loadBackend(cs, err), "P40 s1: a C# manifest with a declared prelude loads");
+        EmitResult csq = compile("import { Math } from \"std.math\"\nfn root(): f64 => Math.sqrt(4.0)\n",
+                                 findTarget("p40cs"));
+        const std::size_t pgrt = csq.code.find("file static class __PgRt\n{\n    internal static double Sq(");
+        check(csq.ok && pgrt != std::string::npos && has(csq.code, "__PgRt.Sq(4.0)"),
+              "P40 s1: C# helpers are wrapped in the slot's `file static class __PgRt`");
+        check(csq.ok && csq.code.find("#nullable enable") < pgrt && pgrt < csq.code.find("class PolyglotProgram"),
+              "P40 s1: C#'s preludeSlot sits after the usings, before the first declaration");
+        EmitResult cnone = compile("fn root(): i32 => 1\n", findTarget("p40cs"));
+        check(cnone.ok && !has(cnone.code, "__PgRt"), "P40 s1: no helper required -> no __PgRt class at all");
+
+        // PHP: the slot follows `<?php` (and the require_once lines); prelude functions are guarded by a
+        // NAMESPACE-qualified function_exists, so a same-named global function cannot shadow them (S12).
+        std::string php = renamed("php", "p40php");
+        php = replaceOnce(php, "\"Math.sqrt\": \"sqrt($0)\"",
+                          "\"Math.sqrt\": { \"template\": \"__pg_sq($0)\", \"requires\": [\"sq\"] }", f);
+        php = replaceOnce(php, "\"preludes\": {",
+                          "\"preludes\": { \"sq\": \"function __pg_sq($x) { return sqrt($x); }\\n\",", f);
+        err.clear();
+        check(f && loadBackend(php, err), "P40 s1: a PHP manifest with a declared prelude loads");
+        EmitResult psq = compile("import { Math } from \"std.math\"\nfn root(): f64 => Math.sqrt(4.0)\n",
+                                 findTarget("p40php"));
+        const std::size_t ph = psq.code.find("function __pg_sq(");
+        check(psq.ok && ph != std::string::npos && psq.code.find("<?php") < ph &&
+                  ph < psq.code.find("function root"),
+              "P40 s1: PHP's preludeSlot follows <?php, before the declarations");
+        EmitResult pio = compile("import { print, readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n",
+                                 findTarget("php"));
+        check(pio.ok && has(pio.code, "function_exists(__NAMESPACE__.'\\\\readText')"),
+              "P40 s1: PHP prelude functions are guarded by a namespace-qualified function_exists");
+
+        // TS: prelude declarations are module-local — never exported — while user declarations still are.
+        EmitResult tsio = compile("import { print, readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n",
+                                  findTarget("typescript"));
+        check(tsio.ok && has(tsio.code, "function readText(") && !has(tsio.code, "export function readText(") &&
+                  has(tsio.code, "export function main("),
+              "P40 s1: TS prelude declarations are not exported; user declarations are");
+        EmitResult tsOpt = compile("fn f(): Option<i32> => None\n", findTarget("typescript"));
+        check(tsOpt.ok && has(tsOpt.code, "type Option") && !has(tsOpt.code, "export type Option"),
+              "P40 s1: a reached prelude union (via a bare case) is emitted, unexported");
+
+        // Reachability on a hand-built module: user -> A -> B -> U (transitive), C unreached; a forced name
+        // keeps an otherwise-unreached declaration (the shared prelude's union across roots).
+        auto fnDecl = [](const std::string& name, const std::string& origin, const std::string& calls,
+                         const std::string& returns) {
+            ir::Function fn;
+            fn.name = fn.mangledName = name;
+            fn.originModule = origin;
+            fn.returnType = namedType(returns.empty() ? "unit" : returns);
+            if (!calls.empty())
+                fn.body.push_back(std::make_unique<ir::ExprStmt>(
+                    SourcePos{}, std::make_unique<ir::Call>(SourcePos{}, namedType("unit"), calls, false)));
+            return fn;
+        };
+        auto buildModule = [&]() {
+            ir::Module m;
+            m.functions.push_back(fnDecl("userMain", "", "A", ""));
+            m.functions.push_back(fnDecl("A", ir::kPreludeOrigin, "B", ""));
+            m.functions.push_back(fnDecl("B", ir::kPreludeOrigin, "", "U"));
+            m.functions.push_back(fnDecl("C", ir::kPreludeOrigin, "", "V"));
+            ir::Union u; u.name = "U"; u.originModule = ir::kPreludeOrigin; m.unions.push_back(std::move(u));
+            ir::Union v; v.name = "V"; v.originModule = ir::kPreludeOrigin; m.unions.push_back(std::move(v));
+            return m;
+        };
+        ir::Module rm = buildModule();
+        const std::set<std::string> reach = preludeReach(rm);
+        check(reach.count("A") && reach.count("B") && reach.count("U") && !reach.count("C") && !reach.count("V"),
+              "P40 s1: reachability is transitive through prelude declarations (A -> B -> U), C/V unreached");
+        pruneUnreachablePrelude(rm);
+        check(rm.functions.size() == 3 && rm.unions.size() == 1 && rm.unions[0].name == "U",
+              "P40 s1: pruning erases exactly the unreached prelude declarations, never user ones");
+        ir::Module forced = buildModule();
+        const std::set<std::string> extra{"C"};
+        pruneUnreachablePrelude(forced, &extra);
+        check(forced.functions.size() == 4 && forced.unions.size() == 2,
+              "P40 s1: a forced name (reached by another root) is kept, with what IT reaches (C -> V)");
+        // The backstop: a prelude name spelled only inside opaque extern text still keeps it alive.
+        ir::Module ext;
+        ir::Function uf = fnDecl("userMain", "", "", "");
+        uf.body.push_back(std::make_unique<ir::ExprStmt>(
+            SourcePos{}, std::make_unique<ir::Extern>(SourcePos{}, namedType("unit"), "C();")));
+        ext.functions.push_back(std::move(uf));
+        ext.functions.push_back(fnDecl("C", ir::kPreludeOrigin, "", ""));
+        check(preludeReach(ext).count("C"), "P40 s1: the extern-text identifier scan keeps a referenced prelude decl");
+    }
+
+    // ---- P40 slice 2: target options (manifest `options`, pgconfig/CLI targetOptions), namespaces + classes --
+    {
+        using OptMap = std::map<std::string, std::string>;
+        // A LibConfig answering `opts` for `target` (every file), nothing for any other target.
+        auto optsFor = [](const std::string& target, OptMap opts) {
+            LibConfig l;
+            l.targetOptions = [target, opts](const std::string& t, const std::string&) {
+                return t == target ? opts : OptMap{};
+            };
+            return l;
+        };
+        const char* prog = "import { print } from \"std.io\"\nrecord Point(x: i32, y: i32)\n"
+                           "fn find(): Option<i32> => Some(1)\nfn main() { print(find() ?? 0) }\n";
+
+        // Resolution: defaults fill in, an unknown option and a pattern mismatch refuse (naming the fix).
+        {
+            OptMap res;
+            std::string err;
+            check(resolveTargetOptions(*findBackend("csharp"), {}, res, err) && res["class"] == "PolyglotProgram" &&
+                      res["namespace"].empty() && res["access"].empty(),
+                  "P40 s2: unset options resolve to the manifest defaults");
+            check(!resolveTargetOptions(*findBackend("csharp"), {{"nmspace", "X"}}, res, err) &&
+                      has(err, "unknown target option 'csharp.nmspace'") && has(err, "namespace, class, access"),
+                  "P40 s2: an unknown option is refused, listing the declared ones");
+            check(!resolveTargetOptions(*findBackend("csharp"), {{"access", "private"}}, res, err) &&
+                      has(err, "invalid value 'private'"),
+                  "P40 s2: a value failing the option's pattern is refused");
+            check(!resolveTargetOptions(*findBackend("csharp"), {{"namespace", "My..Lib"}}, res, err),
+                  "P40 s2: a malformed namespace is refused");
+            check(!resolveTargetOptions(*findBackend("typescript"), {{"namespace", "X"}}, res, err) &&
+                      has(err, "declares no options"),
+                  "P40 s2: a target declaring no options refuses any");
+            EmitResult bad = compile(prog, findTarget("csharp"), nullptr, optsFor("csharp", {{"access", "nope"}}));
+            check(!bad.ok && !bad.diagnostics.empty() && has(bad.diagnostics[0].message, "csharp.access"),
+                  "P40 s2: compile() refuses an invalid option with a diagnostic");
+        }
+
+        // P40 review B11: csharp.entryPoint=false drops the `Main` an entry file gets (CS7022/CS0017 in an app
+        // that owns its entry point); the default keeps it.
+        {
+            EmitResult on = compile(prog, findTarget("csharp"), nullptr, optsFor("csharp", {}));
+            EmitResult off = compile(prog, findTarget("csharp"), nullptr, optsFor("csharp", {{"entryPoint", "false"}}));
+            check(on.ok && has(on.code, "static void Main()") && off.ok && !has(off.code, "static void Main()") &&
+                      has(off.code, "void main()"),
+                  "P40 B11: csharp.entryPoint=false omits Main, keeps main()");
+        }
+
+        // C#: file-scoped namespace before the usings, the configured wrapper class, access, internal helpers.
+        {
+            EmitResult r = compile(prog, findTarget("csharp"), nullptr,
+                                   optsFor("csharp", {{"namespace", "My.Lib"}, {"class", "Api"}, {"access", "public"}}));
+            // The two generated-header lines (P40 B5) come first; the namespace follows #nullable.
+            check(r.ok && r.code.find("// <auto-generated/>\n// Generated by Polyglot. Do not edit: regenerate with "
+                                      "`polyglot build`.\n#nullable enable\nnamespace My.Lib;\n") == 0,
+                  "P40 s2: C# namespace is a file-scoped declaration right after #nullable");
+            check(r.ok && has(r.code, "public static class Api") && has(r.code, "Api.print(") && has(r.code, "Api.find()") &&
+                      !has(r.code, "PolyglotProgram"),
+                  "P40 s2: C# `class` renames the wrapper and every qualified call");
+            check(r.ok && has(r.code, "public abstract record Option<T>") && has(r.code, "public record Point"),
+                  "P40 s2: prelude types in the namespace follow `access`");
+            check(r.ok && has(r.code, "internal static void print<T>") && has(r.code, "public static Option<int> find()"),
+                  "P40 s2: prelude helper functions stay internal under access=public");
+            EmitResult g = compile("let LIMIT: i32 = 3\nfn f(): i32 => LIMIT\n", findTarget("csharp"), nullptr,
+                                   optsFor("csharp", {{"namespace", "N"}, {"class", "Api"}}));
+            check(g.ok && g.code.find("namespace N;\nusing static Api;") != std::string::npos,
+                  "P40 s2: `using static <class>` follows the namespace (resolves inside it)");
+            EmitResult def = compile(prog, findTarget("csharp"));
+            check(def.ok && !has(def.code, "namespace ") && has(def.code, "static class PolyglotProgram"),
+                  "P40 s2: no options = no namespace and the PolyglotProgram wrapper (unchanged output)");
+        }
+
+        // The wrapper class is emitted only when it has members.
+        {
+            EmitResult types = compile("record Point(x: i32, y: i32)\nenum Color { Red, Green }\n", findTarget("csharp"));
+            check(types.ok && !has(types.code, "PolyglotProgram") && has(types.code, "record Point"),
+                  "P40 s2: a C# file with no functions/globals emits no empty wrapper class");
+            check(types.ok && types.code.back() == '\n' && types.code.find("\n\n\n") == std::string::npos,
+                  "P40 s2: dropping the wrapper leaves no dangling blank lines");
+        }
+
+        // `reserve`: the configured wrapper name is claimed like an identifiers.reserved entry.
+        {
+            EmitResult clash = compile("record Api(x: i32)\n", findTarget("csharp"), nullptr,
+                                       optsFor("csharp", {{"class", "Api"}}));
+            check(!clash.ok && !clash.diagnostics.empty() && has(clash.diagnostics[0].message, "'Api' is reserved") &&
+                      has(clash.diagnostics[0].message, "option 'class'"),
+                  "P40 s2: a user identifier spelled like the configured class is refused");
+            EmitResult dflt = compile("record PolyglotProgram(x: i32)\n", findTarget("csharp"));
+            check(!dflt.ok, "P40 s2: the DEFAULT class name stays reserved (via the option default)");
+            EmitResult freed = compile("record PolyglotProgram(x: i32)\n", findTarget("csharp"), nullptr,
+                                       optsFor("csharp", {{"class", "Api"}}));
+            check(freed.ok, "P40 s2: renaming the wrapper frees the old name");
+        }
+
+        // Closure consistency: a closure-scoped option must agree across files that import each other.
+        {
+            MapModuleResolver res({{"lib", "fn twice(x: i32): i32 => x * 2\n"}});
+            LibConfig split;
+            split.targetOptions = [](const std::string& t, const std::string& origin) {
+                if (t != "csharp") return OptMap{};
+                return origin.empty() ? OptMap{{"namespace", "A"}} : OptMap{{"namespace", "B"}};
+            };
+            EmitResult r = compile("import { twice } from \"lib\"\nfn f(): i32 => twice(2)\n", findTarget("csharp"),
+                                   &res, split, "entry.pg");
+            check(!r.ok && !r.diagnostics.empty() && has(r.diagnostics[0].message, "must agree across one import closure") &&
+                      has(r.diagnostics[0].message, "csharp.namespace"),
+                  "P40 s2: files of one closure resolving different namespaces are refused");
+            EmitResult same = compile("import { twice } from \"lib\"\nfn f(): i32 => twice(2)\n", findTarget("csharp"),
+                                      &res, optsFor("csharp", {{"namespace", "A"}}), "entry.pg");
+            check(same.ok && same.modules.size() == 1 && has(same.code, "namespace A;") &&
+                      has(same.modules[0].code, "namespace A;"),
+                  "P40 s2: an agreeing closure puts every emitted file in the namespace");
+        }
+
+        // PHP: `namespace X;` right after <?php, before the prelude slot (the guarded helpers follow it).
+        {
+            EmitResult p = compile("import { print, readText } from \"std.io\"\nfn main() { print(readText(\"a\")) }\n",
+                                   findTarget("php"), nullptr, optsFor("php", {{"namespace", "My\\Lib"}}));
+            const std::size_t ns = p.code.find("<?php\n// <auto-generated/>\n// Generated by Polyglot. Do not edit: "
+                                               "regenerate with `polyglot build`.\nnamespace My\\Lib;\n");
+            check(p.ok && ns == 0 && p.code.find("function_exists(__NAMESPACE__") > ns,
+                  "P40 s2: PHP namespace follows <?php and precedes the guarded prelude");
+        }
+
+        // TS: a file whose declarations are all (unexported) prelude stays an ES module.
+        {
+            EmitResult empty = compile("import { readText } from \"std.io\"\n", findTarget("typescript"));
+            check(empty.ok && has(empty.code, "export {};"), "P40 s2: a TS file with no exports emits `export {};`");
+            EmitResult some = compile("fn f(): i32 => 1\n", findTarget("typescript"));
+            check(some.ok && !has(some.code, "export {};"), "P40 s2: a TS file with exports emits no `export {};`");
+        }
+
+        // Loader: the options block is validated, and a rule may only read declared options.
+        {
+            auto manifest = [](const char* target) {
+                std::string m;
+                cli::readFile(cli::executablePath().parent_path() / "plugins" / target / "polyglot-plugin.json", m);
+                // The swaps below spell multi-line fragments with "\n"; a CRLF checkout (core.autocrlf) must not
+                // make them silently miss.
+                m.erase(std::remove(m.begin(), m.end(), '\r'), m.end());
+                return m;
+            };
+            auto swap = [](std::string s, const std::string& from, const std::string& to) {
+                const std::size_t at = s.find(from);
+                if (at != std::string::npos) s.replace(at, from.size(), to);
+                return s;
+            };
+            std::string err;
+            std::string php = manifest("php"); // renamed everywhere (top-level + spec.name must agree)
+            for (std::size_t at = 0; (at = php.find("\"name\": \"php\"", at)) != std::string::npos;)
+                php.replace(at, 13, "\"name\": \"p40s2php\"");
+            check(!validateBackend(swap(php, "\"namespace\": {\n      \"default\": \"\",",
+                                        "\"namespace\": {\n      \"default\": \"\", \"colour\": \"x\","), err) &&
+                      has(err, "unknown key 'colour'"),
+                  "P40 s2: an unknown key in an option declaration is refused");
+            check(!validateBackend(swap(php, "\"default\": \"\",", "\"default\": \"a-b\","), err) &&
+                      has(err, "does not match its own pattern"),
+                  "P40 s2: a default failing its own pattern is refused");
+            check(!validateBackend(swap(php, "\"scope\": \"closure\"", "\"scope\": \"file\""), err) &&
+                      has(err, "'scope' must be"),
+                  "P40 s2: an unknown scope is refused");
+            check(!validateBackend(swap(php, "\"get\": \"option.namespace\"", "\"get\": \"option.nmspace\""), err) &&
+                      has(err, "option.nmspace"),
+                  "P40 s2: a rule reading an undeclared option is refused");
+            check(!validateBackend(swap(php, "\"pattern\": \"^(", "\"pattern\": \"^(("), err) &&
+                      has(err, "not a valid regular expression"),
+                  "P40 s2: an uncompilable pattern is refused");
+        }
+
+        // CLI layering: project < include rule < --target-option; flags parse; validation names the layer.
+        {
+            namespace fs = std::filesystem;
+            const fs::path proj = (fs::temp_directory_path() / "p40-s2-opts" / "proj").lexically_normal();
+            cli::PgConfig pc;
+            pc.found = true;
+            pc.dir = proj;
+            pc.targetOptions["csharp"] = {{"namespace", "Proj"}, {"access", "public"}};
+            cli::IncludeRule rule{"libs/**/*.pg", {}, "gen/%(Filename)"};
+            rule.targetOptions["csharp"] = {{"namespace", "Proj.Libs"}};
+            pc.include.push_back(rule);
+            cli::TargetOptionsByTarget flags;
+            std::string err;
+            check(cli::parseTargetOptionFlag("csharp.class=Api", flags, err) && flags["csharp"]["class"] == "Api",
+                  "P40 s2: --target-option <target>.<name>=<value> parses");
+            check(cli::parseTargetOptionFlag("csharp.namespace=A.B=C", flags, err) && flags["csharp"]["namespace"] == "A.B=C",
+                  "P40 s2: --target-option keeps everything after the first '=' as the value");
+            check(!cli::parseTargetOptionFlag("csharp=x", flags, err) && !cli::parseTargetOptionFlag("namespace", flags, err),
+                  "P40 s2: a malformed --target-option is refused");
+            const auto top = cli::fileTargetOptions(pc, {}, proj / "main.pg", "csharp");
+            const auto lib = cli::fileTargetOptions(pc, {}, proj / "libs/x/strings.pg", "csharp");
+            check(top.at("namespace") == "Proj" && lib.at("namespace") == "Proj.Libs" && lib.at("access") == "public",
+                  "P40 s2: an include rule's targetOptions overlay the project level for the files it matches");
+            cli::TargetOptionsByTarget f2;
+            f2["csharp"]["namespace"] = "Flag";
+            check(cli::fileTargetOptions(pc, f2, proj / "libs/x/strings.pg", "csharp").at("namespace") == "Flag",
+                  "P40 s2: --target-option wins over every pgconfig layer");
+            check(cli::fileTargetOptions(pc, {}, proj / "main.pg", "php").empty(),
+                  "P40 s2: another target's options never leak (a lookup by target name)");
+            std::vector<std::string> errs;
+            cli::PgConfig badPc = pc;
+            badPc.targetOptions["csharpp"] = {{"namespace", "X"}};
+            badPc.include[0].targetOptions["csharp"] = {{"klass", "X"}};
+            cli::validateTargetOptions(badPc, {}, errs);
+            check(errs.size() == 2 && has(errs[0] + errs[1], "unknown target 'csharpp'") &&
+                      has(errs[0] + errs[1], "include rule 'libs/**/*.pg'"),
+                  "P40 s2: config validation names the unknown target and the offending include rule");
+
+            // pgconfig parsing: targetOptions shape errors and the removed top-level `access` are refused.
+            const fs::path base = fs::temp_directory_path() / "polyglot-p40-s2-cfg";
+            fs::create_directories(base);
+            cli::writeFile(base / "pgconfig.json",
+                           "{ \"access\": \"public\", \"targetOptions\": { \"csharp\": { \"namespace\": 3 } },"
+                           " \"include\": [ { \"pattern\": \"*.pg\", \"output\": \"%(Filename)\","
+                           " \"targetOptions\": { \"php\": { \"namespace\": \"R\" } } } ] }");
+            const cli::PgConfig parsed = cli::loadPgConfig(base);
+            bool accessRefused = false, shapeRefused = false;
+            for (const auto& e : parsed.errors) {
+                accessRefused = accessRefused || has(e, "top-level \"access\" was removed");
+                shapeRefused = shapeRefused || has(e, "targetOptions.csharp.namespace must be a string");
+            }
+            check(accessRefused && shapeRefused && parsed.include.size() == 1 &&
+                      parsed.include[0].targetOptions.at("php").at("namespace") == "R",
+                  "P40 s2: pgconfig parses rule targetOptions and refuses a bad shape and the old top-level access");
+            fs::remove_all(base);
+        }
+    }
+
+    // ---- P40 slice 3: escapes — one decoder, char validation, per-target `literals`, fmt inverse, JSON -------
+    {
+        // Lex one literal; return its decoded text and the diagnostics.
+        struct Lexed { std::string text; std::vector<Diagnostic> diags; int errors = 0; int warnings = 0; };
+        auto lexOne = [](const std::string& src) {
+            DiagnosticBag d;
+            auto toks = lex(src, d);
+            Lexed l;
+            if (!toks.empty()) l.text = toks[0].text;
+            l.diags = d.items();
+            for (const auto& x : l.diags) (x.severity == Severity::Error ? l.errors : l.warnings)++;
+            return l;
+        };
+        auto errAt = [](const Lexed& l, int col, const std::string& frag) {
+            for (const auto& x : l.diags)
+                if (x.severity == Severity::Error && x.pos.col == col && has(x.message, frag)) return true;
+            return false;
+        };
+
+        // The decode table: every accepted escape, in one literal.
+        std::string want = "\n\t\r";
+        want += '\0';
+        want += "\\\"'$A\xF0\x9F\x98\x80";
+        Lexed all = lexOne("\"\\n\\t\\r\\0\\\\\\\"\\'\\$\\u{41}\\u{1F600}\"");
+        check(all.errors == 0 && all.text == want, "P40 s3: decode table (\\n \\t \\r \\0 \\\\ \\\" \\' \\$ \\u{41} \\u{1F600})");
+        check(lexOne("\"\\u{00001D}\"").text == "\x1D" && lexOne("\"\\u{1d}\"").text == "\x1D",
+              "P40 s3: \\u{} takes 1-6 hex digits, either case");
+        check(lexOne("\"\\${y}\"").text == "${y}", "P40 s3: \\${ is a literal ${, not a hole");
+
+        // Every refused escape is an error AT THE BACKSLASH (col 4 in "ab\…").
+        Lexed q = lexOne("\"ab\\qc\" x");
+        check(q.errors == 1 && errAt(q, 4, "unknown escape sequence `\\q`") && errAt(q, 4, "valid escapes are"),
+              "P40 s3: unknown escape -> one error at the backslash naming the valid set");
+        check(errAt(lexOne("\"ab\\u0041\""), 4, "write the code point in braces"),
+              "P40 s3: \\uXXXX refused with the guiding message");
+        check(errAt(lexOne("\"ab\\x41\""), 4, "`\\u{HH}`"), "P40 s3: \\xHH refused with the guiding message");
+        check(errAt(lexOne("\"ab\\u{}\""), 4, "malformed") && errAt(lexOne("\"ab\\u{1234567}\""), 4, "malformed") &&
+                  errAt(lexOne("\"ab\\u{41\""), 4, "malformed"),
+              "P40 s3: empty / 7-digit / unclosed \\u{} are malformed");
+        check(errAt(lexOne("\"ab\\u{110000}\""), 4, "beyond U+10FFFF"), "P40 s3: \\u{110000} is out of range");
+        check(errAt(lexOne("\"ab\\u{D83D}\""), 4, "surrogate"), "P40 s3: a surrogate \\u{} is refused (PHP would write WTF-8)");
+        check(errAt(lexOne("\"ab\xFF\""), 4, "invalid UTF-8"), "P40 s3: invalid UTF-8 in a literal is an error");
+        check(errAt(lexOne("'\xC3'"), 2, "invalid UTF-8"), "P40 s3: invalid UTF-8 in a char literal is an error");
+
+        // Char literals: exactly one character that fits one UTF-16 code unit.
+        check(errAt(lexOne("''"), 1, "empty char literal"), "P40 s3: an empty char literal is an error");
+        check(errAt(lexOne("'ab'"), 1, "more than one character"), "P40 s3: a multi-character char literal is an error");
+        check(errAt(lexOne("'\\u{1F600}'"), 1, "one UTF-16 code unit"), "P40 s3: an astral char literal is an error");
+        Lexed ca = lexOne("'\\u{41}'");
+        check(ca.errors == 0 && ca.warnings == 0 && ca.text == "A", "P40 s3: '\\u{41}' is the char A");
+        Lexed ce = lexOne("'\\u{E9}'");
+        check(ce.errors == 0 && ce.warnings == 0 && ce.text == "\xC3\xA9", "P40 s3/s8: '\\u{E9}' decodes, no warning (UTF-16 faithful everywhere)");
+        check(lexOne("'\\''").text == "'" && lexOne("'\"'").text == "\"" && lexOne("'\\\"'").text == "\"",
+              "P40 s3: quotes in chars, escaped or not");
+
+        // P40 s8: non-ASCII text is faithful on every target now — no warning, decoded or raw.
+        Lexed w = lexOne("\"caf\\u{E9} \\u{E8}\"");
+        check(w.errors == 0 && w.warnings == 0, "P40 s8: a decoded non-ASCII escape no longer warns");
+        check(lexOne("\"plain \\u{7F}\"").warnings == 0, "P40 s3: ASCII escapes do not warn");
+        {
+            EmitResult ok = compile("extension fn i32.twice(): i32 => this * 2\n", findTarget("php"));
+            bool warned = false;
+            for (const auto& d : ok.diagnostics) warned = warned || (d.severity == Severity::Warning && has(d.message, "emulates extensionMethods"));
+            check(ok.ok && warned, "P40 s3: a SUCCESSFUL compile still reports its warnings to the host");
+        }
+
+        // Emission: per-target goldens of the literal text. The Core picks WHICH characters escape (C0, DEL,
+        // C1 incl. U+0085 NEL, U+2028); printable non-ASCII (é, 😀) passes through; PHP escapes `$`.
+        const std::string body = "fn s(): string => \"a\\u{1D}\\u{85}\\u{2028}\\u{E9}$x\\u{1F600}\\u{0}1\"\n";
+        auto emitted = [&](const char* target) { return compile(body, findTarget(target)).code; };
+        check(has(emitted("csharp"), "\"a\\u001D\\u0085\\u2028\xC3\xA9$x\xF0\x9F\x98\x80\\u00001\""),
+              "P40 s3: C# literal golden (\\u$H4, raw printable non-ASCII, NUL never \\0)");
+        check(has(emitted("typescript"), "\"a\\u{1D}\\u{85}\\u{2028}\xC3\xA9$x\xF0\x9F\x98\x80\\u{0}1\""),
+              "P40 s3: TS literal golden (\\u{$H})");
+        check(has(emitted("python"), "\"a\\u001D\\u0085\\u2028\xC3\xA9$x\xF0\x9F\x98\x80\\u00001\""),
+              "P40 s3: Python literal golden (\\u$H4)");
+        check(has(emitted("php"), "\"a\\u{1D}\\u{85}\\u{2028}\xC3\xA9\\$x\xF0\x9F\x98\x80\\u{0}1\""),
+              "P40 s3: PHP literal golden ($ -> \\$, the \"cost $x\" miscompile)");
+        check(compile("fn s(): string => \"plain ascii \\\"q\\\" \\\\ \\n\"\n", findTarget("csharp")).code.find(
+                  "\"plain ascii \\\"q\\\" \\\\ \\n\"") != std::string::npos,
+              "P40 s3: plain ASCII literals are byte-identical to the pre-P40 output");
+        const std::string interp = "fn f(x: i32): string => \"{${x}}`$\\u{2028}\"\n";
+        check(has(compile(interp, findTarget("csharp")).code, "$\"{{{__PgRt.Str(x)}}}`$\\u2028\""),
+              "P40 s3: C# interp context doubles braces and escapes U+2028");
+        check(has(compile(interp, findTarget("typescript")).code, "`{${x}}\\`$\\u{2028}`"),
+              "P40 s3: TS interp context escapes the backtick");
+        check(has(compile(interp, findTarget("php")).code, "\"}`\\$\\u{2028}\""),
+              "P40 s3: PHP interp chunks escape $");
+        check(has(compile("fn c(): char => '\\''\n", findTarget("csharp")).code, "'\\''") &&
+                  has(compile("fn c(): char => '\\u{1D}'\n", findTarget("csharp")).code, "'\\u001D'"),
+              "P40 s3: C# char context (quote ', \\u$H4)");
+
+        // A bound template's receiver placeholder takes the receiver parenthesization policy (found by
+        // escapes.pg: `("a\0" + "1").len()` emitted `"a\u0000" + "1".Length` on C# and TS).
+        {
+            const char* lp = "import \"std.strings\"\nfn n(): i32 => (\"a\" + \"b\").len()\n";
+            check(has(compileStd(lp, findTarget("csharp")).code, "(\"a\" + \"b\").Length") &&
+                      has(compileStd(lp, findTarget("typescript")).code, "(\"a\" + \"b\").length"),
+                  "P40 s3: a binary receiver of a bound member template is parenthesized");
+        }
+
+        // The astral template, and the "surrogates" default.
+        auto specOf = [](const char* target) {
+            std::string m;
+            cli::readFile(cli::executablePath().parent_path() / "plugins" / target / "polyglot-plugin.json", m);
+            return loadBackendSpec(json::parse(m)["spec"]);
+        };
+        SpecLoadResult cs = specOf("csharp"), ts = specOf("typescript"), py = specOf("python"), php = specOf("php");
+        check(cs.ok && ts.ok && py.ok && php.ok, "P40 s3: the four in-box specs load");
+        check(specCodepointEscape(cs.spec.literals.at("string"), 0x1F600) == "\\U0001F600" &&
+                  specCodepointEscape(ts.spec.literals.at("string"), 0x1F600) == "\\u{1F600}" &&
+                  specCodepointEscape(py.spec.literals.at("string"), 0x1F600) == "\\U0001F600" &&
+                  specCodepointEscape(php.spec.literals.at("string"), 0x1F600) == "\\u{1F600}",
+              "P40 s3: astral templates (C#/Python \\U$H8, TS/PHP \\u{$H})");
+        check(specCodepointEscape(cs.spec.literals.at("char"), 0x1F600) == "\\uD83D\\uDE00",
+              "P40 s3: no astral template = UTF-16 surrogate halves through `codepoint`");
+
+        // Serializer round-trip of the literals block.
+        SpecLoadResult back = loadBackendSpec(backendSpecToJson(php.spec));
+        bool same = back.ok && back.spec.literals.size() == php.spec.literals.size();
+        for (const auto& kv : php.spec.literals) {
+            auto it = back.spec.literals.find(kv.first);
+            same = same && it != back.spec.literals.end() && it->second.quote == kv.second.quote &&
+                   it->second.map == kv.second.map && it->second.codepoint == kv.second.codepoint &&
+                   it->second.astral == kv.second.astral;
+        }
+        check(same, "P40 s3: spec.literals round-trips through backendSpecToJson");
+
+        // Loader refusals (anti-silent-drop): codepoint required, string context required, a rule naming an
+        // undeclared context, the retired `escapes` block, a map not escaping its quote.
+        std::string csm;
+        cli::readFile(cli::executablePath().parent_path() / "plugins" / "csharp" / "polyglot-plugin.json", csm);
+        auto refused = [&](const std::string& from, const std::string& to, const std::string& frag) {
+            const std::size_t at = csm.find(from);
+            if (at == std::string::npos) return false;
+            std::string m = csm;
+            m.replace(at, from.size(), to);
+            std::string err;
+            return !validateBackend(m, err) && has(err, frag);
+        };
+        check(refused("\"codepoint\": \"\\\\u$H4\",", "", "needs a 'codepoint'"),
+              "P40 s3: a literal context without a codepoint template is refused");
+        check(refused("\"codepoint\": \"\\\\u$H4\"", "\"codepoint\": \"\\\\x$H2\"", "needs a 'codepoint'"),
+              "P40 s3: a \\x$H2 codepoint template (cannot spell U+2028) is refused");
+        check(refused("\"string\": {", "\"strung\": {", "'string' context"),
+              "P40 s3: a manifest without a string literal context is refused");
+        check(refused("\"interp\",", "\"interpx\",", "'interpx'"), // (the first `"interp",` is a literal context use;
+                                                                     //  wrapAtom.recvPrimary spells it last, comma-free)
+              "P40 s3: a rule naming an undeclared literal context is refused");
+        check(refused("\"literals\": {", "\"escapes\": {}, \"literals\": {", "replaced by 'literals'"),
+              "P40 s3: the retired `escapes` block is refused, naming its replacement");
+        check(refused("\"\\\"\": \"\\\\\\\"\",", "", "must escape the backslash and the context's quote"),
+              "P40 s3: a context whose map does not escape its quote is refused");
+
+        // `polyglot fmt` is the exact inverse of the lexer: `\${`, `\0`, `\u{…}` for non-printables, raw é.
+        std::string fsrc = "fn f(x: i32): string => \"a\\${b} \\u{1D}\\0\\u{2028} \\u{E9} \\$ ${x}\"\n"
+                           "fn c(): char => '\\u{0}'\n";
+        EmitResult f1 = format(fsrc);
+        EmitResult f2 = format(f1.code);
+        check(f1.ok && f2.ok && f1.code == f2.code, "P40 s3: fmt is idempotent over escapes");
+        check(has(f1.code, "\"a\\${b} \\u{1D}\\0\\u{2028} \xC3\xA9 $ ${x}\"") && has(f1.code, "'\\0'"),
+              "P40 s3: fmt prints \\${, \\0, \\u{H} for non-printables and raw printable non-ASCII");
+        auto lits = [](const std::string& src) {
+            DiagnosticBag d;
+            std::vector<std::string> out;
+            for (const auto& t : lex(src, d))
+                if (t.kind == TokKind::InterpStart || t.kind == TokKind::InterpEnd || t.kind == TokKind::StringLit ||
+                    t.kind == TokKind::CharLit)
+                    out.push_back(t.text);
+            return out;
+        };
+        check(lits(fsrc) == lits(f1.code), "P40 s3: fmt output re-lexes to the same decoded literal values");
+
+        // The Core JSON reader: an escape JSON does not define is an error, never a silently dropped backslash.
+        std::string jerr;
+        json::Value jv = json::parse("{\"lib\":\"Libs\\Alpha\"}", jerr);
+        check(has(jerr, "invalid escape '\\A'") && jv["lib"].asString() == "Libs\\Alpha",
+              "P40 s3: JSON `\"Libs\\Alpha\"` is a parse error (and never reads as LibsAlpha)");
+        jerr.clear();
+        json::parse("{\"a\":\"x\\\\y\\u0041\\n\"}", jerr);
+        check(jerr.empty(), "P40 s3: valid JSON escapes report no error");
+        jerr.clear();
+        json::parse("{\"a\":\"\\u00G1\"}", jerr);
+        check(has(jerr, "hex digits"), "P40 s3: a malformed JSON \\u escape is an error");
+
+        // P40 review (A5): STRUCTURAL malformations are errors too — `{` used to parse as an empty object with no
+        // error, so a truncated pgconfig.json was silently ignored and the build exited 0.
+        bool allRefused = true;
+        for (const char* bad : {"{", "", "   ", "{\"a\":1", "{\"a\" 1}", "{\"a\":1,}", "[1,]", "[1 2]", "{\"a\":tru}",
+                                "{\"a\":01}", "{\"a\":1.}", "{\"a\":+1}", "{\"a\":\"x}", "{} x", "{\"a\":1}}", "{a:1}"}) {
+            jerr.clear();
+            json::parse(bad, jerr);
+            if (jerr.empty()) { allRefused = false; std::cerr << "    not refused: '" << bad << "'\n"; }
+        }
+        check(allRefused, "P40 review A5: structurally malformed JSON reports an error (truncation, separators, literals, numbers, trailing content)");
+        bool allAccepted = true;
+        for (const char* good : {"{}", "[]", " {\"a\": [1, -2.5e+3, 0, true, false, null, \"s\"], \"b\": {}} \n",
+                                 "\xEF\xBB\xBF{\"targets\": [\"csharp\"]}", "0", "\"x\""}) {
+            jerr.clear();
+            json::parse(good, jerr);
+            if (!jerr.empty()) { allAccepted = false; std::cerr << "    refused: '" << good << "': " << jerr << "\n"; }
+        }
+        check(allAccepted, "P40 review A5: well-formed JSON (incl. a UTF-8 BOM) reports no error");
+        jerr.clear();
+        check(json::parse("\xEF\xBB\xBF{\"targets\": [\"csharp\"]}", jerr)["targets"].items().size() == 1,
+              "P40 review A5: a BOM-prefixed document parses to its value (it used to read as a number 0)");
+    }
+
+    // P40 slice 4 (A2) — Rust-style range precedence, evaluate-once bounds, the super refusal, the parser
+    // progress guard, and the lowering backstop.
+    {
+        auto parseSrc = [](const std::string& src, DiagnosticBag& d) { return parse(lex(src, d), d); };
+        auto firstErr = [](const EmitResult& r) { return r.diagnostics.empty() ? std::string() : r.diagnostics[0].message; };
+
+        // Parse shapes: the range is the loosest binary form, so every binary bound stays inside it.
+        auto iterOf = [&](const std::string& bound, DiagnosticBag& d) -> CompilationUnit {
+            return parseSrc("fn f(n: i32, a: i32?) {\n  for i in " + bound + " { }\n}\n", d);
+        };
+        struct Shape { const char* src; const char* lhs; const char* rhs; bool inclusive; };
+        const Shape shapes[] = {
+            {"0..n - 1", "IntLit", "-", false}, {"-2..2", "-", "IntLit", false},
+            {"0..=n * 2", "IntLit", "*", true}, {"i + 1..n", "+", "Name", false},
+            {"0..a ?? 3", "IntLit", "??", false},
+        };
+        for (const auto& sh : shapes) {
+            DiagnosticBag d;
+            CompilationUnit u = iterOf(sh.src, d);
+            const Expr* r = (!d.hasErrors() && !u.functions.empty() && !u.functions[0].body.empty())
+                                ? u.functions[0].body[0]->value.get() : nullptr;
+            auto tag = [](const Expr& e) -> std::string {
+                if (e.kind == ExprKind::Binary || e.kind == ExprKind::Unary) return e.text;
+                return e.kind == ExprKind::IntLit ? "IntLit" : e.kind == ExprKind::Name ? "Name" : "?";
+            };
+            check(r && r->kind == ExprKind::Range && tag(*r->lhs) == sh.lhs && tag(*r->rhs) == sh.rhs &&
+                      r->flag == sh.inclusive,
+                  std::string("P40 s4: `") + sh.src + "` parses as one range with binary bounds");
+        }
+        {
+            DiagnosticBag d;
+            parseSrc("fn f() {\n  for i in 0..1..2 { }\n}\n", d);
+            check(d.hasErrors() && has(d.items()[0].message, "ranges do not chain"), "P40 s4: ranges do not chain");
+        }
+
+        // S8: the throw arm used to hang the parser forever; now one targeted error (and the parse ends).
+        {
+            DiagnosticBag d;
+            parseSrc("union O { Ok(v: i32), Fail }\nfn f(o: O): i32 => match o {\n  Ok(v) => v,\n  Fail => throw Error(\"x\")\n}\n", d);
+            check(d.items().size() == 1 && has(d.items()[0].message, "'throw' is a statement"),
+                  "P40 s4: a throw match arm is one diagnostic, not a parser hang");
+            DiagnosticBag d2;
+            parseSrc("enum E { 1 }\nunion U { 2 }\n", d2);
+            check(d2.hasErrors(), "P40 s4: enum/union case loops have a progress guard (no hang)");
+        }
+
+        // The formatter stops parenthesizing binary bounds, and stays idempotent.
+        {
+            const std::string src = "fn f(n: i32, a: i32?) {\n  for j in (n + 1)..n { }\n  for i in (0 - 2)..=(n * 2) { }\n"
+                                    "  for k in 0..(a ?? 5) { }\n}\n";
+            EmitResult f1 = format(src);
+            EmitResult f2 = format(f1.code);
+            check(f1.ok && has(f1.code, "for j in n + 1..n") && has(f1.code, "for i in 0 - 2..=n * 2") &&
+                      has(f1.code, "for k in 0..a ?? 5"),
+                  "P40 s4: fmt prints range bounds without parentheses");
+            check(f2.ok && f1.code == f2.code, "P40 s4: fmt is idempotent over ranges");
+        }
+
+        // Sema: a range outside a for iterable, float bounds, incompatible bounds, and the super refusal.
+        EmitResult op = compile("fn f(n: i32): i32 => (0..n) - 1\n", findTarget("csharp"));
+        check(!op.ok && op.diagnostics.size() == 1 && has(firstErr(op), "a range ('a..b') is only valid as a for-loop iterable"),
+              "P40 s4: a range operand is one error (no cascade)");
+        EmitResult lt = compile("fn f() {\n  let r = 0..5\n}\n", findTarget("csharp"));
+        check(!lt.ok && has(firstErr(lt), "only valid as a for-loop iterable"), "P40 s4: a range in a let is an error");
+        EmitResult fl = compile("fn f() {\n  var n = 0\n  for x in 1.5..3 { n += 1 }\n}\n", findTarget("csharp"));
+        check(!fl.ok && has(firstErr(fl), "range bounds must be integers (got f64)"), "P40 s4: float range bounds are an error");
+        EmitResult mix = compile("fn f(a: i64, b: u64) {\n  for i in a..b { }\n}\n", findTarget("csharp"));
+        check(!mix.ok && has(firstErr(mix), "incompatible types i64 and u64"), "P40 s4: an incompatible bound pair is an error");
+        EmitResult sm = compile("open class A {\n  open fn g(): i32 => 1\n}\nclass B : A {\n  override fn g(): i32 => super.g() + 1\n}\n",
+                                findTarget("csharp"));
+        check(!sm.ok && has(firstErr(sm), "'super' is only supported as a base-constructor call"), "P40 s4: super.m() is refused (D6)");
+        EmitResult sc = compileStd("class E2 : Error {\n  constructor() {\n    super(\"x\")\n  }\n}\n", findTarget("csharp"));
+        check(sc.ok, "P40 s4: the hoisted base-constructor super(...) stays legal");
+
+        // Widening + D7: the i32 start widens to the i64 end; a non-simple end is hoisted with the spelled type.
+        const char* wide = "fn f(a: i64, b: i64): i64 {\n  var s: i64 = 0\n  for k in 0..a + b { s += k }\n"
+                           "  for j in 0..a { s += j }\n  return s\n}\n";
+        EmitResult wcs = compile(wide, findTarget("csharp"));
+        check(wcs.ok && has(wcs.code, "for (long k = ") && has(wcs.code, ", __end0 = a + b; k < __end0; k++)"),
+              "P40 s4: C# hoists a non-simple end into a multi-declarator with the widened (long) type");
+        check(wcs.ok && has(wcs.code, "for (var j = ") && has(wcs.code, "; j < a; j++)"),
+              "P40 s4: a parameter end stays readable (re-read, not hoisted)");
+        EmitResult wts = compile(wide, findTarget("typescript"));
+        check(wts.ok && has(wts.code, "for (let k = BigInt(0), __end0 = BigInt.asIntN(64, a + b); k < __end0; k++)"),
+              "P40 s4: TS hoists with `let` (same shape)");
+        EmitResult wphp = compile(wide, findTarget("php"));
+        check(wphp.ok && has(wphp.code, ", $__end0 = $a + $b; $k < $__end0; $k++)"), "P40 s4: PHP hoists with a comma init");
+        const char* mut = "fn f(): i32 {\n  var m = 3\n  var c = 0\n  for i in 0..m { m += 1\n c += 1 }\n  return c\n}\n";
+        EmitResult mcs = compile(mut, findTarget("csharp"));
+        check(mcs.ok && has(mcs.code, "__end0 = m;"), "P40 s4: a mutable-local end is hoisted (evaluated once)");
+
+        // The backstop: lowering records an expression it has no rule for (sema refuses these first, so the
+        // AST is fed to lower() directly), and compile() would turn the record into an ICE.
+        {
+            DiagnosticBag d;
+            CompilationUnit u = parseSrc("fn f() {\n  let r = 0..5\n  let s = super\n}\n", d);
+            ir::Module m = lower(u, "csharp");
+            check(m.loweringFailures.size() == 2 && m.loweringFailures[0].kind == "range" &&
+                      m.loweringFailures[1].kind == "super" && m.loweringFailures[0].pos.line == 2,
+                  "P40 s4: lowering records each unlowerable expression with its kind and position");
+            DiagnosticBag d2;
+            ir::Module ok = lower(parseSrc("fn f(n: i32) {\n  for i in 0..n { }\n}\n", d2), "csharp");
+            check(ok.loweringFailures.empty(), "P40 s4: a for-iterable range lowers without a failure");
+        }
+    }
+
+    // P40 slice 5 (A4) — the checked null-assert, the nullable operand rules (N1–N3 + the S7 holes), null
+    // flow-narrowing (D14), `opt!` (D12), PHP `\Throwable` (D13) and explicit call type args.
+    {
+        auto firstErr = [](const EmitResult& r) { return r.diagnostics.empty() ? std::string() : r.diagnostics[0].message; };
+        auto irOf = [](const char* src, bool& ok) {
+            DiagnosticBag d;
+            auto unit = parse(lex(src, d), d);
+            mintplayer::polyglot::check(unit, d);
+            ok = !d.hasErrors();
+            return ir::dump(lower(unit, "csharp"));
+        };
+        auto typeErr = [&](const char* src) { // the first diagnostic of a csharp compile ("" = it compiled)
+            EmitResult r = compileStd(src, findTarget("csharp"));
+            return r.ok ? std::string() : firstErr(r);
+        };
+        bool ok = false;
+        std::string i1 = irOf("fn f(n: i32?): i32 => n!\n", ok);
+        check(ok && has(i1, "n:i32?!"), "P40 s5: `!` on a nullable operand lowers to ir::NullAssert");
+        std::string i2 = irOf("fn f(n: i32): i32 => n!\n", ok);
+        check(ok && !has(i2, "!") && !has(i2, "(i32)"), "P40 s5: `!` on a non-nullable operand is the bare operand");
+        std::string i3 = irOf("fn f(n: i32?): i32 {\n  if n != null { return n + 1 }\n  return 0\n}\n", ok);
+        check(ok && has(i3, "(i32)n:i32?"), "P40 s5: a narrowed read converts the nullable variable (no NullAssert)");
+        std::string i4 = irOf("fn f(n: i32?): i32 {\n  if n != null { return n! }\n  return 0\n}\n", ok);
+        check(ok && !has(i4, "!:"), "P40 s5: `!` on a narrowed variable lowers to the bare (converted) operand");
+
+        // Emission: every target, the Core-owned site, helpers only when reached.
+        EmitResult ecs = compileStd("fn f(n: i32?): i32 => n!\n", findTarget("csharp"));
+        check(ecs.ok && has(ecs.code, "(n ?? throw new global::System.NullReferenceException(\"null-assert failed (<entry>:1:24)\"))"),
+              "P40 s5: C# emits `(x ?? throw new NullReferenceException(\"null-assert failed (m.pg:L:C)\"))`");
+        EmitResult ets = compileStd("fn f(n: i32?): i32 => n!\n", findTarget("typescript"));
+        check(ets.ok && has(ets.code, "(n ?? __pgNullAssert(\"") && has(ets.code, "\nfunction __pgNullAssert(at: string): never {") &&
+                  !has(ets.code, "export function __pgNullAssert"),
+              "P40 s5: TS emits `x ?? __pgNullAssert(site)` with a module-local never-helper");
+        EmitResult ets0 = compileStd("fn f(n: i32): i32 => n + 1\n", findTarget("typescript"));
+        check(ets0.ok && !has(ets0.code, "__pgNullAssert"), "P40 s5: the TS helper is emitted only when a `!` reaches it");
+        EmitResult epy = compileStd("fn f(n: i32?): i32 => n!\nfn g(xs: List<i32?>): i32 => xs[0]!\n", findTarget("python"));
+        check(epy.ok && has(epy.code, "(n if n is not None else _pg_fail(\"") && has(epy.code, ":= xs[0]) is not None else _pg_fail(") &&
+                  has(epy.code, "def _pg_fail(at):"),
+              "P40 s5: Python inlines the check — a name directly, any other operand through a walrus (S9)");
+        EmitResult ephp = compileStd("fn f(n: i32?): i32 => n!\n", findTarget("php"));
+        check(ephp.ok && has(ephp.code, "__pg_nn($n, \"") && has(ephp.code, "function_exists(__NAMESPACE__.'\\\\__pg_nn')") &&
+                  has(ephp.code, "throw new \\UnexpectedValueException("),
+              "P40 s5: PHP calls the namespace-guarded `__pg_nn` helper");
+        EmitResult eopt = compileStd("fn pick<T>(c: bool, v: T): T? => if c { v } else { null }\nfn f(): i32 => pick(true, 1)!\n",
+                                     findTarget("csharp"));
+        check(eopt.ok && has(eopt.code, "None<int> _ => throw new global::System.NullReferenceException(\"null-assert failed ("),
+              "P40 s5: `opt!` on Option<T> lowers to a match whose None arm throws (D12)");
+        EmitResult eta = compileStd("fn failT<T>(m: string): T {\n  throw Error(m)\n}\nfn g(): i32 => failT<i32>(\"x\")\n",
+                                    findTarget("csharp"));
+        check(eta.ok && has(eta.code, "failT<int>(\"x\")"), "P40 s5: C# keeps explicit call-site type arguments (no CS0411)");
+        EmitResult ecatch = compileStd("fn g() {}\nfn f() {\n  try {\n    g()\n  } catch (e: Error) {\n    g()\n  }\n}\n", findTarget("php"));
+        check(ecatch.ok && has(ecatch.code, "catch (\\Throwable $__e)"), "P40 s5: PHP `catch (e: Error)` widens to \\Throwable (D13)");
+
+        // N1–N3 and the S7 holes.
+        check(has(typeErr("fn f(n: string?): string => \"a\" + n\n"), "'+' operand of type 'string?' may be null; supply a fallback with '??' or assert with '!'"),
+              "P40 s5: N1 refuses a nullable '+' operand with the PRD wording");
+        check(typeErr("fn f(n: i32?): bool => n == null || n != 3\n").empty(), "P40 s5: N1 exempts ==, != (and narrows `||`'s right side)");
+        check(has(typeErr("fn f(n: i32?): string => \"${n}\"\n"), "interpolation hole of type 'i32?' may be null"), "P40 s5: N2 refuses a nullable interpolation hole");
+        check(has(typeErr("fn f(n: i32?) { print(n) }\n"), "print argument of type 'i32?' may be null"), "P40 s5: N2 refuses a nullable print argument");
+        check(has(typeErr("fn f<T>(x: T): string => \"v\" + x\n"), "'string + T' concatenates a type parameter"), "P40 s5: N3 refuses string + T");
+        check(has(typeErr("fn f(): i32 {\n  var n: i32? = 1\n  n += 1\n  return 0\n}\n"), "'+=' target 'n' of type 'i32?' may be null"),
+              "P40 s5: a compound assignment on a nullable target is refused");
+        check(has(typeErr("fn f(b: bool?): bool {\n  if b && true { return true }\n  return false\n}\n"), "of type 'bool?' may be null"),
+              "P40 s5: a bool? operand of && in a condition is refused");
+        check(has(typeErr("fn f(b: bool?): i32 {\n  while b { }\n  return 0\n}\n"), "'while' condition of type 'bool?' may be null"),
+              "P40 s5: requireBool refuses a bool? condition");
+        check(has(typeErr("fn f(c: bool): i32 => (if c { 1 } else { null }) + 1\n"), "'+' operand of type 'i32?'"),
+              "P40 s5: an if-expression with a null branch is typed nullable");
+        check(has(typeErr("class B {\n  var v: i32\n  constructor(v: i32) { this.v = v }\n  fn get(): i32 => this.v\n}\nfn f(b: B?): i32 => b.get()\n"),
+                  "'.get' on a receiver of type 'B?', which may be null"),
+              "P40 s5: a method call on a nullable receiver is refused");
+        check(typeErr("class B {\n  var v: i32\n  constructor(v: i32) { this.v = v }\n}\nfn f(b: B?): i32 => b?.v ?? 0\n").empty(),
+              "P40 s5: '?.' on a nullable receiver stays legal");
+
+        // Narrowing scopes (D14).
+        check(typeErr("fn f(n: i32?): i32 {\n  if n == null { return 0 }\n  return n + 1\n}\n").empty(), "P40 s5: an early exit narrows the rest of the block");
+        check(typeErr("fn f(n: i32?): i32 {\n  if n == null { return 1 } else { return n + 1 }\n}\n").empty(), "P40 s5: `== null` narrows the else-branch");
+        check(typeErr("fn f(n: i32?): bool => n != null && n > 0\n").empty(), "P40 s5: `x != null && …` narrows the right operand");
+        check(typeErr("fn f(n: i32?): i32 => if n != null { n * 2 } else { 0 }\n").empty(), "P40 s5: an if-expression narrows its branch");
+        check(!typeErr("fn f(n: i32?, c: bool): i32 {\n  if c {\n    if n == null { return 0 }\n  }\n  return n + 1\n}\n").empty(),
+              "P40 s5: an early exit's narrowing ends with its own block");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  if n != null {\n    n = null\n    return n + 1\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: narrowing ends at an assignment");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  if n != null {\n    if n != null { n = null }\n    return n + 1\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: an assignment inside a nested narrowed region is not undone at its exit");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  if n != null {\n    while true {\n      let k = n + 1\n      n = null\n    }\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: a loop that assigns the variable is not narrowed anywhere in it (back edge)");
+        check(typeErr("class Nd {\n  var v: i32\n  var next: Nd?\n  constructor(v: i32) {\n    this.v = v\n    this.next = null\n  }\n}\n"
+                      "fn sum(h: Nd?): i32 {\n  var s = 0\n  var c: Nd? = h\n  while c != null {\n    s += c.v\n    c = c.next\n  }\n  return s\n}\n").empty(),
+              "P40 s5: a while condition narrows the body up to the assignment");
+        check(!typeErr("fn f(n: i32?): i32 {\n  if n != null {\n    let g = () => n + 1\n    return g()\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: narrowing does not reach into a lambda");
+        check(!typeErr("fn f(): i32 {\n  var n: i32? = 1\n  let clear = () => { n = null }\n  if n != null {\n    clear()\n    return n + 1\n  }\n  return 0\n}\n").empty(),
+              "P40 s5: a mutable local a closure assigns is never narrowed");
+
+        // ---- P40 slice 6 (A3 + A6): one stringification rule, culture-free C# ----
+        {
+            auto cstr = [](const std::string& src, const BackendHandle& t) {
+                return compile(src, t, nullptr, LibConfig{{"io", "math", "collections", "strings"}});
+            };
+            const std::string holes =
+                "fn f<T>(n: i32, d: f64, s: string, c: bool, ch: char, t: T): string => "
+                "\"${n}|${d}|${s}|${c}|${ch}|${t}|${if c { \"a:b\" } else { s }}|${if c { 1 } else { 2 }}\"\n";
+            EmitResult cs = compileStd(holes, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "{__PgRt.Str(n)}|{__PgRt.Str(d)}|{s}|{(c ? \"true\" : \"false\")}|{ch}|{__PgRt.Show(t)}"),
+                  "P40 s6: C# holes — int/float via __PgRt.Str, string/char bare, bool spelled, T via __PgRt.Show");
+            check(cs.ok && has(cs.code, "{((c ? \"a:b\" : s))}") && has(cs.code, "{__PgRt.Str((c ? 1 : 2))}"),
+                  "P40 s6: A6 — a string hole holding ':' is parenthesized (parenIfContains); a Str(...) call needs none");
+            check(cs.ok && has(cs.code, "file static class __PgRt") && has(cs.code, "internal static string Str(double x)") &&
+                      has(cs.code, "global::System.Numerics.BigInteger") && !has(cs.code, "ToString(\"R\""),
+                  "P40 s6: C# Str(double) is the exact Burger–Dybvig helper, never \"R\"");
+            EmitResult onlyInt = compileStd("fn f(n: i32): string => \"${n}\"\n", findTarget("csharp"));
+            check(onlyInt.ok && has(onlyInt.code, "internal static string Str(int x)") &&
+                      !has(onlyInt.code, "Str(double x)") && !has(onlyInt.code, "Show("),
+                  "P40 s6: an int-only hole reaches only the integer helpers");
+            EmitResult lit = compileStd("fn f(): f32 => 0.1f\nfn g(): f32 => 2.5f\n", findTarget("csharp"));
+            check(lit.ok && has(lit.code, "return 0.1f;") && has(lit.code, "return 2.5f;"),
+                  "P40 s6: the C# f32 literal keeps its F suffix (S13: was CS0664)");
+            EmitResult tlit = compileStd("fn f(): f32 => 0.1f\nfn g(): f32 => 2.5f\nfn h(): f64 => 0.1\n", findTarget("typescript"));
+            check(tlit.ok && has(tlit.code, "return 0.10000000149011612;") && has(tlit.code, "return 2.5;") &&
+                      has(tlit.code, "return 0.1;"),
+                  "P40 s6: a double-holding target gets the f32 literal's widened value (exact ones keep their text)");
+            EmitResult plit = compileStd("fn f(): f32 => 16777217.0f\n", findTarget("python"));
+            check(plit.ok && has(plit.code, "return 16777216.0"), "P40 s6: a widened integral f32 stays a float literal");
+            EmitResult parse = cstr("fn f(s: string): i32 => i32.parse(s) + s.toI32()\nfn g(s: string): f64 => f64.parse(s)\n",
+                                          findTarget("csharp"));
+            check(parse.ok && has(parse.code, "int.Parse(s, global::System.Globalization.NumberStyles.Integer, global::System.Globalization.CultureInfo.InvariantCulture)") &&
+                      has(parse.code, "double.Parse(s, global::System.Globalization.NumberStyles.Float, global::System.Globalization.CultureInfo.InvariantCulture)") &&
+                      !has(parse.code, "AllowLeadingSign"),
+                  "P40 s6: C# parse/toI32 are NumberStyles.Integer/Float + InvariantCulture");
+            EmitResult tsI32 = cstr("fn f(s: string): i32 => s.toI32()\n", findTarget("typescript"));
+            check(tsI32.ok && has(tsI32.code, "(Number.parseInt(s, 10) | 0)"), "P40 s6: TS toI32 truncates to i32, like i32.parse");
+            EmitResult py = compileStd("fn main() { print(1.5) }\n", findTarget("python"));
+            check(py.ok && has(py.code, "__import__('builtins').print(_pg_out16(_pg_str(x)))") && !has(py.code, "__builtins__"),
+                  "P40 s6: the Python print helper works in an imported module (no __builtins__.print)");
+            EmitResult php = compileStd("fn f(n: i32, d: f64, s: string): string => \"${n}${d}${s}\"\nfn main() { print(1.5) }\n",
+                                        findTarget("php"));
+            check(php.ok && has(php.code, " . ($n) . ") && has(php.code, " . __pg_str($d) . ") && has(php.code, " . ($s) . ") &&
+                      has(php.code, "echo __pg_str($x)") && has(php.code, "ini_set('serialize_precision', '-1')") &&
+                      has(php.code, "function_exists(__NAMESPACE__.'\\\\__pg_str')"),
+                  "P40 s6: PHP floats print through the namespace-guarded __pg_str (immune to precision ini)");
+            const std::string asc = "fn f(s: string): string => s.toUpperAscii() + s.toLowerAscii()\n";
+            EmitResult acs = cstr(asc, findTarget("csharp"));
+            check(acs.ok && has(acs.code, "__PgRt.UpperAscii(s) + __PgRt.LowerAscii(s)") && has(acs.code, "UpperAscii(string s)"),
+                  "P40 s6: C# toUpperAscii/toLowerAscii are an __PgRt loop");
+            check(has(cstr(asc, findTarget("typescript")).code, "s.replace(/[a-z]+/g, (__m) => __m.toUpperCase())"),
+                  "P40 s6: TS toUpperAscii is a regex replace");
+            check(has(cstr(asc, findTarget("python")).code, "s.translate(_PG_UPPER)"), "P40 s6: Python toUpperAscii is translate");
+            check(has(cstr(asc, findTarget("php")).code, "strtr($s, 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')"),
+                  "P40 s6: PHP toUpperAscii is strtr");
+            check(has(cstr("fn f(s: string): string => s.toUpper()\n", findTarget("csharp")).code, "s.ToUpperInvariant()"),
+                  "P40 s6: C# toUpper is ToUpperInvariant");
+
+            // The printable guard: a hole accepts exactly what print accepts; enums are refused (D1).
+            check(has(typeErr("record P(x: i32)\nfn f(p: P): string => \"${p}\"\n"), "cannot interpolate a value of type 'P'"),
+                  "P40 s6: a record in a hole is refused");
+            check(has(typeErr("fn f(xs: List<i32>): string => \"${xs}\"\n"), "cannot interpolate a value of type 'List<i32>'"),
+                  "P40 s6: a list in a hole is refused");
+            check(has(typeErr("enum C { A, B }\nfn f(c: C): string => \"${c}\"\n"), "an enum has no portable text"),
+                  "P40 s6: an enum in a hole is refused (D1)");
+            check(has(typeErr("enum C { A, B }\nfn f(c: C) { print(c) }\n"), "print cannot print a value of type 'C'"),
+                  "P40 s6: print of an enum is refused (D1)");
+            check(has(typeErr("record P(x: i32)\nfn f(p: P) { print(p) }\n"), "print cannot print a value of type 'P'"),
+                  "P40 s6: print of a record is refused (it used to slip through as an 'unknown' scalar)");
+            check(typeErr("fn f<T>(t: T, c: char, b: u8, x: f32): string => \"${t}${c}${b}${x}\"\n").empty(),
+                  "P40 s6: type parameters, char and every numeric scalar stay printable");
+
+            // TS (D10 follow-ups): `as const` tags; `override` on a field shadowing the native root's member.
+            const std::string err2 = "class A : Error {\n  constructor(m: string) { super(m) }\n}\n"
+                                     "class B : A {\n  let cause: string\n  let extra: string\n"
+                                     "  constructor(m: string) {\n    super(m)\n    this.cause = m\n    this.extra = m\n  }\n}\n"
+                                     "class C {\n  let cause: string\n  constructor(m: string) { this.cause = m }\n}\n";
+            EmitResult ets = compileStd(err2, findTarget("typescript"));
+            check(ets.ok && has(ets.code, "override cause: string;") && !has(ets.code, "override extra") &&
+                      ets.code.find("override cause") == ets.code.rfind("override cause"),
+                  "P40 s6: TS `override` on a field shadowing Error.cause through a user base — only there");
+        }
+
+        // ---- P40 slice 7: generics prerequisites (generic member typing, class bounds, extension defaults, $tmp) ----
+        {
+            const std::string cell =
+                "class Cell<V> {\n  var v: V\n  constructor(v: V) { this.v = v }\n  fn first(): V => this.v\n"
+                "  fn put(n: V) { this.v = n }\n  fn apply(f: (V) => V): V => f(this.v)\n}\n";
+            const std::string box =
+                "class Box<T> {\n  var item: T\n  constructor(item: T) { this.item = item }\n  fn get(): T? => this.item\n}\n";
+            // Substitution from the receiver: a method result, a field, a lambda param.
+            const std::string concat = cell + "fn f(c: Cell<string>): string => c.first() + c.v + c.apply(s => s + \"?\")\n";
+            EmitResult ts = compileStd(concat, findTarget("typescript"));
+            check(ts.ok && has(ts.code, "c.first() + c.v + c.apply((s: string) => s + \"?\")") && !has(ts.code, "V.plus"),
+                  "P40 s7: Cell<string>.first()/.v/lambda param type as string on TS (was `V.plus(f, \"!\")`)");
+            EmitResult php = compileStd(concat, findTarget("php"));
+            check(php.ok && has(php.code, "$c->first() . $c->v . ") && has(php.code, "$s . \"?\""),
+                  "P40 s7: PHP concatenates a substituted string with `.` (was `$f + \"!\"`, a TypeError)");
+            EmitResult arith = compileStd(cell + "fn f(c: Cell<i32>): i32 => c.first() * 2 + c.v\n", findTarget("typescript"));
+            check(arith.ok && has(arith.code, "Math.imul(c.first(), 2)") && !has(arith.code, "V.times"),
+                  "P40 s7: arithmetic on a substituted i32 uses the i32 rules (Math.imul), not a user operator");
+            // `T?` of a user generic is an Option of the ARGUMENT after substitution (the body's representation).
+            EmitResult opt = compileStd(box + "fn f(b: Box<i32>): i32 => b.get() ?? 0\n", findTarget("csharp"));
+            check(opt.ok && has(opt.code, "Some<int>(var") && has(opt.code, "None<int> _"),
+                  "P40 s7: Box<i32>.get(): T? is Option<i32> at the call (was Option<T>, CS0246)");
+            // Inferred construction type args are recorded, so C# (no ctor inference) spells them.
+            EmitResult inf = compileStd(cell + "fn f(): i32 {\n  let c = Cell(3)\n  return c.first() + 1\n}\n", findTarget("csharp"));
+            check(inf.ok && has(inf.code, "new Cell<int>(3)"), "P40 s7: `Cell(3)` infers Cell<i32> and C# spells `new Cell<int>(3)`");
+            // Params are substituted too: a wrong argument to an instantiated method is a Polyglot error.
+            check(has(typeErr((cell + "fn f(c: Cell<i32>) { c.put(\"s\") }\n").c_str()), "argument 1 of method 'put'"),
+                  "P40 s7: Cell<i32>.put(\"s\") is refused (the param is i32 after substitution)");
+            check(has(typeErr((box + "fn f() { let b = Box<i32>(\"s\") }\n").c_str()), "argument 1 of 'Box'"),
+                  "P40 s7: construction args are checked against the instantiated ctor params");
+            // Through a generic base.
+            const std::string inh = "open class H<T> {\n  var held: T\n  constructor(held: T) { this.held = held }\n"
+                                    "  fn take(): T => this.held\n}\nclass D<U> : H<List<U>> {\n"
+                                    "  constructor(h: List<U>) { super(h) }\n}\nfn f(d: D<string>): i32 => d.take().count + 1\n";
+            EmitResult ih = compileStd(inh, findTarget("typescript"));
+            check(ih.ok && has(ih.code, "(d.take().length + 1 | 0)"),
+                  "P40 s7: a member inherited through `D<U> : H<List<U>>` substitutes T = List<string>");
+            // Extern generic: `V?` is a native nullable once V is concrete; refused while V is a type parameter.
+            const std::string shelf =
+                "extern class Shelf<V> {\n  type { actual(csharp) extern(\"global::System.Collections.Generic.Dictionary<string, $0>\") }\n"
+                "  fn find(k: string): V? { actual(csharp) extern(\"($this.TryGetValue($0, out var $tmp) ? $tmp : ($T)null)\") }\n"
+                "  fn at(i: i32 = 7): V { actual(csharp) extern(\"$this.ElementAt($0).Value\") }\n}\n";
+            EmitResult sh = compileStd(shelf + "fn f(s: Shelf<i32>): i32 => (s.find(\"a\") ?? 0) + (s.find(\"b\") ?? 0)\n",
+                                       findTarget("csharp"));
+            check(sh.ok && has(sh.code, "(s.TryGetValue(\"a\", out var __pg_t1) ? __pg_t1 : (int?)null)") &&
+                      has(sh.code, "(s.TryGetValue(\"b\", out var __pg_t2) ? __pg_t2 : (int?)null)"),
+                  "P40 s7: extern V? -> native int?; `$tmp` is one fresh name per expansion (no CS0128/CS0136)");
+            check(has(typeErr((shelf + "fn g<V>(s: Shelf<V>): bool => s.find(\"a\") == null\n").c_str()),
+                      "'Shelf.find' yields 'V?' while 'V' is still a type parameter"),
+                  "P40 s7: an extern `V?` read with V unresolved is refused (no faithful native form)");
+            // ---- P40: the T?-representation boundary (SPEC §4.4) — Option<X> <-> native X? converts in every position ----
+            {
+                const std::string slot = box + "class Slot<T> {\n  fn take(x: T?): bool => match x { Some(_) => true, None => false }\n}\n"
+                                               "fn echo<T>(x: T?): T? => x\n";
+                EmitResult letCs = compileStd(slot + "fn f(b: Box<string>): string? {\n  let n: string? = b.get()\n  return n\n}\n",
+                                              findTarget("csharp"));
+                check(letCs.ok && has(letCs.code, "string? n = b.get() switch { Some<string>(var") &&
+                          has(letCs.code, "=> (string?)(__opt") && has(letCs.code, "None<string> _ => null"),
+                      "P40 boundary: `let n: string? = box.get()` unwraps the Option (was CS0029 Option<string> -> string?)");
+                EmitResult letTs = compileStd(slot + "fn f(b: Box<string>): string? {\n  let n: string? = b.get()\n  return n\n}\n",
+                                              findTarget("typescript"));
+                check(letTs.ok && !has(letTs.code, "const n: (string | null) = b.get();") && has(letTs.code, "_m.tag === \"Some\""),
+                      "P40 boundary: TS no longer stores the {tag:\"Some\"} object in a string local ([object Object])");
+                EmitResult ret = compileStd(slot + "fn f(b: Box<i32>): i32? => b.get()\n", findTarget("csharp"));
+                check(ret.ok && has(ret.code, "=> (int?)(__opt"), "P40 boundary: a return into a native i32? converts");
+                EmitResult rev = compileStd(slot + "fn f(s: Slot<string>, n: string?): bool => s.take(n)\n", findTarget("csharp"));
+                check(rev.ok && has(rev.code, "n switch { null => (Option<string>)(new None<string>()), var __opt") &&
+                          !has(rev.code, "new Some<string>(n)"),
+                      "P40 boundary: a native string? into a T? param is None for null, never Some(null)");
+                EmitResult tinf = compileStd(slot + "fn f(n: string?): string? => echo(n)\n", findTarget("csharp"));
+                check(tinf.ok && has(tinf.code, "new Some<string>((string)(") && !has(tinf.code, "new None<T>()"),
+                      "P40 boundary: echo(n: string?) binds T = string (not string?) and converts at the call");
+                EmitResult eq = compileStd(slot + "fn f(b: Box<string>): bool => b.get() == null\n", findTarget("typescript"));
+                check(eq.ok && !has(eq.code, "b.get() === null"),
+                      "P40 boundary: `box.get() == null` is an absence test (was a constant-false reference test)");
+                EmitResult nar = compileStd(slot + "fn f(b: Box<string>): string {\n  let o = b.get()\n  if o != null { return o }\n  return \"\"\n}\n",
+                                            findTarget("csharp"));
+                check(nar.ok && has(nar.code, "return o switch { Some<string>(var"),
+                      "P40 boundary: an Option local narrowed by `!= null` reads as the unwrapped element");
+                EmitResult fld = compileStd(slot + "class K {\n  var item: string?\n  constructor(b: Box<string>) { this.item = b.get() }\n}\n",
+                                            findTarget("csharp"));
+                check(fld.ok && has(fld.code, "this.item = b.get() switch"),
+                      "P40 boundary: a field assignment converts too (member targets skipped checkConvert)");
+                EmitResult arr = compileStd("fn first<T>(xs: T[]): T? => if xs.count > 0 { xs[0] } else { null }\n"
+                                            "fn f(): i32 => first([4, 5]) ?? 0\n", findTarget("csharp"));
+                check(arr.ok && has(arr.code, "new int[] { 4, 5 }"),
+                      "P40 boundary: a generic call's args convert into the INSTANTIATED params (was `new T[]`)");
+                check(has(typeErr((slot + "fn f(b: Box<string>) { let x: string = b.get() }\n").c_str()),
+                          "cannot convert 'Option<string>' to 'string'"),
+                      "P40 boundary: an Option into a non-nullable slot is refused (it may be absent)");
+                check(has(typeErr((slot + "fn f(b: Box<string?>): string? => b.get()\n").c_str()), "its element is itself nullable"),
+                      "P40 boundary: Option<string?> -> string? is refused (Some(null) and None would merge)");
+                const std::string nullPat = "fn f(z: i32?): string => match z { null => \"n\", _ => \"v\" }\n";
+                EmitResult tphp = compileStd(nullPat, findTarget("php"));
+                check(tphp.ok && has(tphp.code, "$_m === null"), "P40 boundary: PHP spells a null pattern `=== null` (`0 == null` is true)");
+                EmitResult py = compileStd(nullPat, findTarget("python"));
+                check(py.ok && has(py.code, "_m is None"), "P40 boundary: Python spells a null pattern `is None`");
+            }
+            EmitResult bd = compileStd(shelf + "fn f(s: Shelf<i32>): i32 => s.at()\n", findTarget("csharp"));
+            check(bd.ok && has(bd.code, "s.ElementAt(7).Value"), "P40 s7: a bound member's omitted default fills its `$0`");
+            // Class type-parameter bounds (SP-B3-S3), explicit / inferred / annotated; nominal bounds too.
+            const std::string nb = "class NumBox<T: INumber> {\n  var n: T\n  constructor(n: T) { this.n = n }\n}\n";
+            check(has(typeErr((nb + "fn f() { let b = NumBox<string>(\"x\") }\n").c_str()),
+                      "type argument 'string' of 'NumBox' does not satisfy the bound 'T: INumber'"),
+                  "P40 s7: an explicit class type arg violating INumber is refused");
+            check(has(typeErr((nb + "fn f() { let b = NumBox(\"x\") }\n").c_str()), "does not satisfy the bound 'T: INumber'"),
+                  "P40 s7: an inferred class type arg violating INumber is refused");
+            check(has(typeErr((nb + "fn f(b: NumBox<bool>) {}\n").c_str()), "type argument 'bool' of 'NumBox'"),
+                  "P40 s7: an annotation violating a class bound is refused");
+            check(typeErr((nb + "fn f(b: NumBox<f64>): NumBox<i64> => NumBox(5i64)\nfn g<T: INumber>(x: T): NumBox<T> => NumBox<T>(x)\n").c_str()).empty(),
+                  "P40 s7: numeric args and a forwarded in-scope type param satisfy the bound");
+            const std::string rk = "interface Ranked {\n  fn rank(): i32\n}\nrecord R(v: i32) : Ranked {\n  fn rank(): i32 => this.v\n}\n"
+                                   "class Ladder<T: Ranked> {\n  var top: T\n  constructor(top: T) { this.top = top }\n}\n";
+            check(typeErr((rk + "fn f(l: Ladder<R>): i32 => l.top.rank()\n").c_str()).empty(),
+                  "P40 s7: an implementing record satisfies an interface bound (and `l.top` is an R)");
+            check(has(typeErr((rk + "fn f(l: Ladder<string>) {}\n").c_str()), "does not satisfy the bound 'T: Ranked'"),
+                  "P40 s7: a non-implementing type violates an interface bound");
+            check(has(typeErr((rk + "fn best<T: Ranked>(a: T): T => a\nfn f(): i32 => best(3)\n").c_str()),
+                      "type argument 'i32' does not satisfy the bound 'T: Ranked'"),
+                  "P40 s7: a generic FUNCTION's nominal bound is checked on the inferred argument too");
+            // Extension default parameters, filled at the call (bound and plain).
+            const std::string ext =
+                "extension fn string.part(start: i32, len: i32 = 1): string { actual(csharp) extern(\"$this.Substring($0, $1)\") "
+                "actual(typescript) extern(\"$this.substring($0, $0 + $1)\") }\n"
+                "extension fn i32.plus(n: i32, extra: i32 = 100): i32 => this + n + extra\n"
+                "fn f(): string => \"hello\".part(1) + \"hello\".part(1, 3)\nfn g(): i32 => 5.plus(1) + 5.plus(1, 2)\n";
+            EmitResult ec = compileStd(ext, findTarget("csharp"));
+            check(ec.ok && has(ec.code, "\"hello\".Substring(1, 1) + \"hello\".Substring(1, 3)") &&
+                      has(ec.code, "5.plus(1, 100) + 5.plus(1, 2)"),
+                  "P40 s7: extension defaults are filled at the call — the bound template's `$1` and a plain call");
+            EmitResult et = compileStd(ext, findTarget("typescript"));
+            check(et.ok && has(et.code, "\"hello\".substring(1, 1 + 1)"), "P40 s7: the filled default reaches the TS template");
+            check(has(typeErr("let k = 3\nextension fn i32.sh(by: i32 = k): i32 => this + by\n"), "must be a literal"),
+                  "P40 s7: a non-literal extension default is refused (it would be evaluated in the caller's scope)");
+            check(has(typeErr("extension fn i32.sh(a: i32, by: i32 = 1): i32 => this + by\nfn f(): i32 => 1.sh()\n"),
+                      "expects 1-2 argument(s), got 0"),
+                  "P40 s7: an extension still requires its non-default params");
+            // The printable guard now judges substituted member reads, and a never-bound type parameter.
+            check(has(typeErr((cell + "record P(x: i32)\nfn f(c: Cell<P>) { print(c.first()) }\n").c_str()),
+                      "print cannot print a value of type 'P'"),
+                  "P40 s7: print of a substituted member read of record type is refused");
+            check(has(typeErr((cell + "fn f(c: Cell) { print(c.first()) }\n").c_str()), "its type parameter was never bound"),
+                  "P40 s7: print of a member read whose type parameter was never bound is refused (was not judged)");
+            check(typeErr((cell + "fn f(c: Cell<i64>) { print(c.first())\n  print(\"${c.v}\") }\n").c_str()).empty(),
+                  "P40 s7: a substituted numeric member read stays printable");
+        }
+
+        // ---- P40 slice 8: the ordinal string std (B3), index units (D2/D15), module scoping (D16) ----
+        {
+            auto warnsOn = [](const EmitResult& r, const std::string& what) {
+                for (const auto& d : r.diagnostics) if (d.severity == Severity::Warning && has(d.message, what)) return true;
+                return false;
+            };
+            // C# binds the ORDINAL overloads — never the culture-sensitive IndexOf/StartsWith/EndsWith.
+            const std::string ord = "import \"std.strings\"\nfn f(s: string): bool => s.startsWith(\"a\") && s.endsWith(\"b\")\n"
+                                    "fn g(s: string): i32 => s.indexOf(\"x\") + compareOrdinal(s, \"y\")\n";
+            EmitResult cs = compileStd(ord, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "s.StartsWith(\"a\", global::System.StringComparison.Ordinal)") &&
+                      has(cs.code, "s.EndsWith(\"b\", global::System.StringComparison.Ordinal)") &&
+                      has(cs.code, "self.IndexOf(needle, from, global::System.StringComparison.Ordinal)") &&
+                      has(cs.code, "global::System.Math.Sign(string.CompareOrdinal(a, b))"),
+                  "P40 s8: C# std.strings binds the StringComparison.Ordinal overloads (+ CompareOrdinal)");
+            check(cs.ok && !has(cs.code, "StartsWith(\"a\")") && !has(cs.code, "EndsWith(\"b\")") &&
+                      !has(cs.code, "CurrentCulture") && !has(cs.code, "IndexOf(needle, from)"),
+                  "P40 s8: no culture-sensitive C# string overload is emitted");
+            {   // the pin over the WHOLE manifest: every C# std.strings search/compare call names Ordinal.
+                // P40 review (B9): this used to slice the text from `"std.strings": {` to the FIRST `}` — the end
+                // of the first nested object — so the templates after it were never checked (vacuous). Now the
+                // manifest is parsed and EVERY string value under every "std.strings" object is walked; each call
+                // is checked up to its own matching ')'; and the pin must see the calls it exists for.
+                std::string m;
+                cli::readFile(cli::executablePath().parent_path() / "plugins" / "csharp" / "polyglot-plugin.json", m);
+                std::string jerr;
+                const json::Value doc = json::parse(m, jerr);
+                std::vector<const json::Value*> sections;
+                std::function<void(const json::Value&)> findSections = [&](const json::Value& v) {
+                    for (const auto& [k, sub] : v.members) {
+                        if (k == "std.strings" && sub.kind == json::Value::Kind::Object) sections.push_back(&sub);
+                        findSections(sub);
+                    }
+                    for (const auto& e : v.items()) findSections(e);
+                };
+                findSections(doc);
+                int calls = 0;
+                bool allOrdinal = jerr.empty() && !sections.empty();
+                std::function<void(const json::Value&)> walk = [&](const json::Value& v) {
+                    if (v.kind == json::Value::Kind::String) {
+                        const std::string& s = v.asString();
+                        for (const char* call : {".IndexOf(", ".StartsWith(", ".EndsWith(", ".LastIndexOf("})
+                            for (std::size_t at = s.find(call); at != std::string::npos; at = s.find(call, at + 1)) {
+                                ++calls;
+                                std::size_t k = s.find('(', at), depth = 0, end = std::string::npos;
+                                for (; k < s.size(); ++k) {
+                                    if (s[k] == '(') ++depth;
+                                    else if (s[k] == ')' && --depth == 0) { end = k; break; }
+                                }
+                                const std::string args = s.substr(at, end == std::string::npos ? std::string::npos : end - at);
+                                if (args.find("StringComparison.Ordinal") == std::string::npos) allOrdinal = false;
+                            }
+                        // P40 review r3: the pin checked 4 method names. The other culture-sensitive .NET string
+                        // members have no Ordinal overload to require, so they must not appear at all (the
+                        // Invariant/Ordinal spellings — ToUpperInvariant, CompareOrdinal — are what std uses).
+                        for (const char* banned : {".ToUpper(", ".ToLower(", ".CompareTo(", "string.Compare(", "String.Compare(",
+                                                   ".ToString(\"N", "double.Parse(", "float.Parse(", ".ToUpper()", ".ToLower()"})
+                            if (s.find(banned) != std::string::npos) {
+                                allOrdinal = false;
+                                std::cerr << "    culture-sensitive '" << banned << "' in std.strings: " << s << "\n";
+                            }
+                    }
+                    for (const auto& [k, sub] : v.members) walk(sub);
+                    for (const auto& e : v.items()) walk(e);
+                };
+                for (const json::Value* sec : sections) walk(*sec);
+                check(allOrdinal && calls >= 3,
+                      "P40 s8: every C# std.strings IndexOf/StartsWith/EndsWith template passes StringComparison.Ordinal "
+                      "(whole manifest, " + std::to_string(calls) + " call(s) checked)");
+            }
+            // Guards are written once in .pg: one message on every target; emitted as `_pg_<name>`.
+            const std::string at = "import \"std.strings\"\nfn f(s: string): string => s.charAt(1) + s.substring(0, 1)\n";
+            bool sameMsg = true;
+            for (const char* t : {"csharp", "typescript", "python", "php"}) {
+                EmitResult r = compileStd(at, findTarget(t));
+                sameMsg = sameMsg && r.ok && has(r.code, "charAt: index ") && has(r.code, " is out of range for length ") &&
+                          has(r.code, "_pg_charAt") && has(r.code, "substring: range [");
+            }
+            check(sameMsg, "P40 s8: the charAt/substring guards (and their messages) come from the one .pg source on all 4");
+            EmitResult tsAt = compileStd(at, findTarget("typescript"));
+            check(tsAt.ok && has(tsAt.code, "function _pg_charAt(self: string, index: number): string") &&
+                      !has(tsAt.code, "export function _pg_charAt") && has(tsAt.code, "self.charAt(index)"),
+                  "P40 s8: TS emits the guard as a module-local function over the unchecked primitive");
+            EmitResult csAt = compileStd(at, findTarget("csharp"));
+            check(csAt.ok && has(csAt.code, "internal static string _pg_charAt(string self, int index)") &&
+                      has(csAt.code, "PolyglotProgram._pg_charAt(s, 1)") && !has(csAt.code, "this string") &&
+                      !has(csAt.code, "PolyglotExtensions"),
+                  "P40 review B10: C# emits the guard as a plain internal static method, not a `this string` "
+                  "extension an InternalsVisibleTo assembly would see on every string");
+            EmitResult lenOnly = compileStd("import \"std.strings\"\nfn f(s: string): i32 => s.len()\n", findTarget("typescript"));
+            check(lenOnly.ok && !has(lenOnly.code, "_pg_charAt") && !has(lenOnly.code, "_pg_split"),
+                  "P40 s8: unused guards are pruned (reachability)");
+            // A user function sharing a guard's plain name cannot collide with it on a free-function target.
+            EmitResult col = compileStd("import \"std.strings\"\nfn charAt(n: i32): i32 => n\nfn f(s: string): string => s.charAt(charAt(0))\n",
+                                        findTarget("python"));
+            check(col.ok && has(col.code, "def charAt(n):") && has(col.code, "def _pg_charAt(self, index):") &&
+                      has(col.code, "_pg_charAt(s, charAt(0))"),
+                  "P40 s8: a user `fn charAt` and the std guard coexist on Python (the guard is `_pg_charAt`)");
+            // The std-reserved prefixes are refused in user code (declarations and references).
+            check(has(typeErr("import \"std.strings\"\nfn f(s: string): string => s.__pgCharAt(0)\n"),
+                      "'__pgCharAt' uses a prefix reserved for the Polyglot std library"),
+                  "P40 s8: a user call of an unchecked `__pg` primitive is refused");
+            check(has(typeErr("fn __pgMine(): i32 => 1\n"), "uses a prefix reserved for the Polyglot std library"),
+                  "P40 s8: a user `__pg`-prefixed declaration is refused");
+            // Index units: Python and PHP go through UTF-16 helpers; C#/TS are native.
+            EmitResult py = compileStd("import \"std.strings\"\nfn f(s: string): i32 => s.len() + s.indexOf(\"b\")\n", findTarget("python"));
+            check(py.ok && has(py.code, "_pg_len16(s)") && has(py.code, "def _pg_u16v(s):") && has(py.code, "s.isascii()") &&
+                      has(py.code, "_pg_u16_find(self, needle, from_)"),
+                  "P40 s8: Python len/indexOf count UTF-16 units (isascii fast path, cached surrogate-expanded view)");
+            check(warnsOn(py, "emulates utf16Strings:index"), "P40 s8: Python declares utf16Strings:index emulated (faithful via helpers)");
+            EmitResult php = compileStd("import \"std.strings\"\nfn f(s: string): i32 => s.len()\n", findTarget("php"));
+            check(php.ok && has(php.code, "__pg_len16($s)") && has(php.code, "iconv('UTF-8', 'UTF-16LE'") &&
+                      has(php.code, "function_exists('iconv')") && warnsOn(php, "emulates utf16Strings:index"),
+                  "P40 s8: PHP len counts UTF-16 units through the iconv helper (with a named ext-iconv error)");
+            EmitResult csLen = compileStd("import \"std.strings\"\nfn f(s: string): i32 => s.len()\n", findTarget("csharp"));
+            check(csLen.ok && has(csLen.code, "s.Length") && !warnsOn(csLen, "utf16Strings"), "P40 s8: C# len is native (no warning)");
+            EmitResult noIdx = compileStd("fn main() { print(1) }\n", findTarget("python"));
+            check(noIdx.ok && !has(noIdx.code, "_pg_u16v") && has(noIdx.code, "def _pg_out16(s):"),
+                  "P40 s8: no index op -> no UTF-16 helper; Python print maps lone surrogates (U+FFFD)");
+            // The rest of the surface, per target.
+            const std::string rest = "import \"std.strings\"\nfn f(s: string): string => s.replaceAll(\"$\", \"$$\") + s.trimAscii()\n"
+                                     "fn g(s: string): i32 => s.split(\",\").count\nfn h(): string => string.fromCodePoint(233)\n"
+                                     "fn k(a: string): i32 => compareOrdinal(a, \"1e1\")\n";
+            EmitResult rts = compileStd(rest, findTarget("typescript"));
+            check(rts.ok && has(rts.code, "self.split(needle).join(replacement)") && has(rts.code, "String.fromCodePoint(cp)") &&
+                      has(rts.code, "s.replace(/^[\\t\\n\\v\\f\\r ]+|[\\t\\n\\v\\f\\r ]+$/g, \"\")"),
+                  "P40 s8: TS replaceAll is split/join (no `$$` replacement patterns); trimAscii is exactly TAB..CR + space");
+            EmitResult rphp = compileStd(rest, findTarget("php"));
+            check(rphp.ok && has(rphp.code, "function __pg_chr8($c)") && has(rphp.code, "__pg_chr8($cp)") &&
+                      has(rphp.code, "strcmp($a, $b)") && !has(rphp.code, "<=>") && has(rphp.code, "__pg_u16_split($self_, $separator)") &&
+                      has(rphp.code, "explode($sep, $s)"),
+                  "P40 s8: PHP fromCodePoint via the UTF-8 encoder helper (requires), compareOrdinal via strcmp (never <=>); "
+                  "split is explode unless a lone surrogate needs the UTF-16 view (review B2)");
+            EmitResult rcs = compileStd(rest, findTarget("csharp"));
+            check(rcs.ok && has(rcs.code, "internal static string _pg_string_fromCodePoint(int cp)") &&
+                      has(rcs.code, "is not a Unicode scalar value") && has(rcs.code, "char.ConvertFromUtf32(cp)"),
+                  "P40 s8: string.fromCodePoint is a .pg guard emitted as a prelude function over the primitive");
+            EmitResult rpy = compileStd(rest, findTarget("python"));
+            check(rpy.ok && has(rpy.code, "s.strip(\"\\t\\n\\x0b\\x0c\\r \")"), "P40 s8: Python trimAscii strips exactly TAB..CR + space (not GS)");
+
+            // D16: an import makes names visible only to the module that writes it.
+            check(has(firstErr(compile("import \"std.strings\"\nfn f(): i32 {\n  let xs: List<string> = \"a,b\".split(\",\")\n  return xs.count\n}\n",
+                                       findTarget("csharp"))),
+                      "'List' is declared in module 'std.collections', which this module does not import"),
+                  "P40 s8 (D16): std.strings' own import of std.collections does not leak `List` to the user");
+            {
+                // P40 review B10: the D16 diagnostic points at the offending type name (3:11), not the statement (3:3).
+                EmitResult r = compile("import \"std.strings\"\nfn f(): i32 {\n  let xs: List<string> = \"a,b\".split(\",\")\n  return xs.count\n}\n",
+                                       findTarget("csharp"));
+                check(!r.diagnostics.empty() && r.diagnostics[0].pos.line == 3 && r.diagnostics[0].pos.col == 11,
+                      "P40 review B10 (D16): the not-imported diagnostic's column is the type name's");
+            }
+            check(compile("import \"std.strings\"\nfn f(): i32 => \"a,b\".split(\",\").count\n", findTarget("csharp")).ok,
+                  "P40 s8 (S18): split's List<string> is usable without naming List (no collections import)");
+            check(compile("import \"std.strings\"\nimport \"std.collections\"\nfn f(): i32 {\n  let xs: List<string> = \"a\".split(\",\")\n  return xs.count\n}\n",
+                          findTarget("csharp")).ok,
+                  "P40 s8 (D16): naming List with its own import compiles");
+            {
+                MapModuleResolver res{{"./a", "import { mid } from \"./b\"\nfn top(): i32 => mid()\n"},
+                                      {"./b", "fn mid(): i32 => 1\nfn deep(): i32 => 2\n"}};
+                EmitResult tr = compile("import { top } from \"./a\"\nfn main() { let x = top() + mid() }\n",
+                                        findTarget("csharp"), &res);
+                check(!tr.ok && has(firstErr(tr), "'mid' is declared in module './b', which this module does not import"),
+                      "P40 s8 (D16): a user module's transitive import is not visible to the importer");
+                EmitResult sel = compile("import { top } from \"./a\"\nimport { mid } from \"./b\"\nfn main() { let x = deep() }\n",
+                                         findTarget("csharp"), &res);
+                check(!sel.ok && has(firstErr(sel), "'deep' is declared in './b' but not imported"),
+                      "P40 s8 (D16): a name a selective import does not list is refused");
+            }
+            // P40 review A8 (D16): overload resolution only considers the overloads the calling module can see.
+            {
+                MapModuleResolver res{{"./ai", "fn check(n: i32): bool => n > 0\nfn aiOk(n: i32): bool => check(n)\n"}};
+                const std::string leak = "import { aiOk } from \"./ai\"\nfn check(s: string): bool => s == \"01\"\n"
+                                         "fn main() { let b = check(5) }\n";
+                for (const char* t : {"csharp", "typescript"}) {
+                    EmitResult r = compile(leak, findTarget(t), &res);
+                    check(!r.ok && has(firstErr(r), "argument 1 of 'check'"),
+                          std::string("A8: a never-imported overload does not win the call (refused, not bound) on ") + t);
+                }
+                // Imported, it competes: check(5) binds ai's i32 overload, check("01") the local one.
+                EmitResult ok = compile("import { aiOk, check } from \"./ai\"\nfn check(s: string): bool => s == \"01\"\n"
+                                        "fn main() { let a = check(5)\n  let b = check(\"01\") }\n",
+                                        findTarget("typescript"), &res);
+                // P40 review r3: names mangle per DECLARING module — ai sees one `check`, so it keeps `check`.
+                check(ok.ok && has(ok.code, "check(5)") && !has(ok.code, "check$i32") && has(ok.code, "check$string(\"01\")"),
+                      "A8: an imported overload competes with the module's own (per-module mangling)");
+                // C# links every module into one class. Review r4 #13: a name declared by two modules keeps its plain
+                // name when no call could bind both (`check("x")` can never take ai's `check(i32)`)…
+                EmitResult cs = compile(leak.substr(0, leak.find("fn main")) + "fn main() { let b = check(\"x\") }\n",
+                                        findTarget("csharp"), &res);
+                check(cs.ok && has(cs.code, "PolyglotProgram.check(\"x\")") && has(cs.code, "bool check(string") &&
+                          !has(cs.code, "check__"),
+                      "r4 #13: C# keeps a cross-module name plain without a real clash");
+                // …and takes `__`-joined signature link names on a real clash (r3 2(e): show<T> vs ai's show(i32)).
+                MapModuleResolver res2{{"./ai", "fn show(n: i32): string => \"ai\"\nfn aiShow(n: i32): string => show(n)\n"}};
+                EmitResult cs2 = compile("import { aiShow } from \"./ai\"\nfn show<T>(x: T): string => \"g\"\n"
+                                         "fn main() { let a = show(5)\n  let b = aiShow(5) }\n",
+                                         findTarget("csharp"), &res2);
+                check(cs2.ok && has(cs2.code, "PolyglotProgram.show__T(5)") && has(cs2.code, "string show__T<T>(") &&
+                          !has(cs2.code, "PolyglotProgram.show(5)"),
+                      "r3 2(e) / r4 #13: C# spells a clashing cross-module name with its signature link name");
+            }
+            // P40 review r3: every shape `build` used to accept and then miscompile, diverge on, or fail to
+            // compile on a target is refused at the source now (each named in its message).
+            {
+                auto refusesR3 = [&](const std::string& src, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget("csharp"));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r3: " + label);
+                };
+                refusesR3("fn f(x: i32): i32 => x ?? 0\n", "cannot be null here", "'??' on a non-nullable left operand");
+                refusesR3("fn f(t: i32?): i32 {\n  if t != null {\n    return t ?? 0\n  }\n  return 0\n}\n",
+                          "cannot be null here", "'??' on a narrowed left operand");
+                refusesR3("record P(x: i32)\nfn f(): i32 {\n  var p = P(1)\n  p.x = 5\n  return p.x\n}\n",
+                          "cannot assign to record field 'P.x'", "a record field write (2i)");
+                refusesR3("open class B {\n  var name: string = \"b\"\n}\nclass D : B {\n  var name: string = \"d\"\n}\n",
+                          "redeclares a member inherited from 'B'", "member hiding (2f)");
+                refusesR3("open class B {\n  open fn who(): string => \"b\"\n}\nclass D : B {\n  fn who(): string => \"d\"\n}\n",
+                          "mark it 'override'", "an open method redeclared without override (2f)");
+                refusesR3("class P {\n  var name: string\n  constructor() {\n    let n = this.name\n    this.name = n\n  }\n}\n",
+                          "reads field 'name' before assigning it", "a field read before init assigns it (2g)");
+                refusesR3("class P {\n  var a: i32\n  constructor() {\n    let f = () => this.a\n    this.a = 1\n  }\n}\n",
+                          "uses 'this' before field 'a' is assigned", "a lambda capturing this before init completes (2g)");
+                refusesR3("class P {\n  let a: i32 = 1\n  let b: i32 = this.a + 1\n}\n",
+                          "the initializer of field 'b' uses 'this'", "this in a field initializer (2g)");
+                refusesR3("class A {\n  static let X: i32 = B.Y + 1\n}\nclass B {\n  static let Y: i32 = 2\n}\n",
+                          "reads 'B.Y', which is declared later", "a static initializer reading a later static (2h)");
+                refusesR3("class C {\n  static let P: i32 = C.Q + 1\n  static let Q: i32 = 2\n}\n",
+                          "reads 'C.Q', which is declared later", "a static reading a later static of its class (2h)");
+                refusesR3("class G {\n  static let b: Box = Box()\n}\nclass Box {\n  let v: i32 = 1\n}\n",
+                          "reads 'Box', which is declared later", "a static initializer constructing a later class (2h)");
+                refusesR3("let M: i32 = K + 1\nlet K: i32 = 2\n", "reads 'K', which is declared later",
+                          "a module value reading a later one (2h)");
+                refusesR3("fn sep(): string => \"/\"\nfn j(a: string, b: string = sep()): string => a + b\n",
+                          "must be a literal", "a non-constant default parameter (2j)");
+                refusesR3("fn f(a: i32): i32 => a >>> 1\n", "unsigned shift", "'>>>' (item 6)");
+                refusesR3("fn f(a: i32): i32 {\n  var x = a\n  x >>>= 1\n  return x\n}\n", "unsigned shift", "'>>>=' (item 6)");
+                refusesR3("fn run(f: () => unit) { f() }\nfn g() { run(() => {\n  return 5\n}) }\n",
+                          "'return' takes no value", "a value-returning block lambda into () => unit (item 6)");
+                refusesR3("fn run(f: () => unit) { f() }\nfn g(k: i32) { run(() => k + 1) }\n",
+                          "must be a call or a block", "a value expression lambda into () => unit (item 6)");
+                refusesR3("record M(c: i32) {\n  operator fn plus(o: M): M => M(this.c + o.c)\n}\nfn f(): M => M(1).plus(M(2))\n",
+                          "'plus' is an operator member of 'M'", "calling an operator fn by name (item 6)");
+                refusesR3("fn u(g: (i32) => i32): i32 => g.whatever\n", "has no member 'whatever'",
+                          "member access on a function value (item 6)");
+                refusesR3("fn f(n: i32): i32 => n(3)\n", "is not a function", "calling a non-function value");
+                refusesR3("fn f(): i32 => (() => {\n  return 1\n})()\n", "immediately-invoked lambda",
+                          "an untyped immediately-invoked block lambda");
+                refusesR3("fn f(): i32 {\n  if true {\n    return 1\n  }\n  return 2\n}\n", "condition is always true",
+                          "a constant if condition (CS0162)");
+                refusesR3("fn f(): i32 {\n  while 1 == 1 {\n    return 5\n  }\n  return 0\n}\n", "condition is always true",
+                          "a constant while condition (CS0162)");
+                refusesR3("fn f(x: i32): i32 {\n  var y = x\n  y = y\n  return y\n}\n", "assigns a value to itself",
+                          "a self-assignment (CS1717)");
+                refusesR3("class K {\n  static var count: i32 = 0\n  fn same(): bool => count == K.count\n}\n",
+                          "compares a value with itself", "a bare static compared with itself (CS1718)");
+                refusesR3("fn f(n: i32): bool => n == null\n", "never null here", "'== null' on an i32 (CS0472)");
+                refusesR3("fn f(): i32 {\n  let unused = 5\n  return 1\n}\n", "is set to a constant but never read",
+                          "an unused constant local (CS0219)");
+                // A float constant default folds to one literal (C#/PHP accept only constants there).
+                EmitResult fold = compileStd("fn g(dt: f64 = 1.0 / 60.0): f64 => dt\n", findTarget("php"));
+                check(fold.ok && has(fold.code, "0.016666666666666666"), "r3 2(j): a float constant default folds to a literal");
+                // 2(b): a unary operand that is a unary is parenthesized (`--x` is a pre-decrement).
+                EmitResult neg = compileStd("fn f(x: i32): i32 => -(-x)\n", findTarget("csharp"));
+                check(neg.ok && has(neg.code, "-(-x)") && !has(neg.code, "--x"), "r3 2(b): -(-x) keeps its parentheses");
+                // 2(a): a non-name callee is emitted; C# casts an immediately-invoked lambda to its delegate type.
+                EmitResult cur = compileStd("fn adder(k: i32): (i32) => i32 => (n: i32) => n + k\n"
+                                            "fn f(): i32 => adder(10)(4)\nfn g(): i32 => ((n: i32) => n * 2)(4)\n",
+                                            findTarget("csharp"));
+                check(cur.ok && has(cur.code, "PolyglotProgram.adder(10)(4)") && has(cur.code, "Func<int, int>)((int n) =>"),
+                      "r3 2(a): a curried call and an IIFE keep their callee on C#");
+                EmitResult curPhp = compileStd("fn adder(k: i32): (i32) => i32 => (n: i32) => n + k\nfn f(): i32 => adder(10)(4)\n",
+                                               findTarget("php"));
+                check(curPhp.ok && has(curPhp.code, "adder(10)(4)") && !has(curPhp.code, "$(4)"), "r3 2(a): PHP keeps the callee");
+                // item 6: PHP keywords match case-insensitively — a class `Finally` is escaped.
+                EmitResult kw = compileStd("class Finally {\n  let x: i32 = 1\n}\nfn f(): i32 => Finally().x\n", findTarget("php"));
+                check(kw.ok && has(kw.code, "class Finally_") && has(kw.code, "new Finally_("), "r3 item 6: PHP escapes a class named Finally");
+                // item 6: an i64 compound shift keeps an int count on C#.
+                EmitResult sh = compileStd("fn f(): i64 {\n  var h: i64 = 1i64\n  h <<= 3\n  return h\n}\n", findTarget("csharp"));
+                check(sh.ok && has(sh.code, "h <<= 3;") && !has(sh.code, "3L"), "r3 item 6: an i64 compound shift count stays i32");
+                // item 5: `check` runs every configured target's gate (an expect fn without that target's actual).
+                const std::string ex = "expect fn sep(): string\nactual(csharp) fn sep(): string => \"/\"\n"
+                                       "fn main() { let s = sep() }\n";
+                EmitResult chk = checkForTargets(ex, {findTarget("csharp"), findTarget("python")});
+                bool namesPy = false;
+                for (const auto& d : chk.diagnostics) if (has(d.message, "'python'")) namesPy = true;
+                check(!chk.ok && namesPy, "r3 item 5: checkForTargets refuses an expect fn with no actual for a target");
+                // A true duplicate across modules names both declarations.
+                MapModuleResolver dup{{"./date", "fn check(s: string): bool => s == \"x\"\n"}};
+                EmitResult d = compile("import { check } from \"./date\"\nfn check(s: string): bool => s == \"01\"\nfn main() { }\n",
+                                       findTarget("csharp"), &dup);
+                bool both = false;
+                for (const auto& dg : d.diagnostics)
+                    if (has(dg.message, "duplicate function 'check'") && has(dg.message, "module")) both = true;
+                check(!d.ok && both, "A8: the cross-module duplicate-overload error names both modules");
+            }
+            // P40 review r4 — nullability / functions / names half: each refusal by message, each fix by emission.
+            {
+                auto refusesR4 = [&](const std::string& src, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget("csharp"));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r4: " + label);
+                };
+                auto emitsR4 = [&](const std::string& src, const char* target, std::initializer_list<const char*> frags,
+                                   std::initializer_list<const char*> absent, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool ok = r.ok;
+                    for (const char* f : frags) ok = ok && has(r.code, f);
+                    for (const char* f : absent) ok = ok && !has(r.code, f);
+                    check(ok, "r4: " + label);
+                };
+                // 14: nullable -> non-null is refused; narrowing still converts.
+                refusesR4("fn f(x: i32?): i32 => x\n", "the value may be null", "a nullable return into i32 (item 14)");
+                refusesR4("fn f(x: i32?, y: i32?): i32 {\n  let w: i32 = x ?? y\n  return w\n}\n", "the value may be null",
+                          "'x ?? y' with a nullable fallback into i32 (item 14)");
+                refusesR4("fn f(): i32 {\n  let n: i32 = null\n  return n\n}\n", "cannot convert null to 'i32'",
+                          "a null literal into i32 (item 14)");
+                refusesR4("fn g(n: i32): i32 => n\nfn f(x: i32?): i32 => g(x)\n", "the value may be null",
+                          "a nullable argument into an i32 parameter (item 14)");
+                check(compileStd("fn f(x: i32?): i32 {\n  if x != null {\n    return x\n  }\n  return 0\n}\n",
+                                 findTarget("csharp")).ok,
+                      "r4: a narrowed nullable converts to i32 (item 14)");
+                // 15: a narrowed nullable function value is callable; nullable function types are spelled nullable.
+                const std::string cb = "fn run(cb: (() => unit)?) {\n  if cb != null {\n    cb()\n  }\n}\n"
+                                       "fn ap(f: ((i32) => i32)?): i32 => f!(1)\n";
+                emitsR4(cb, "csharp", {"global::System.Action? cb", "global::System.Func<int, int>? f"}, {},
+                        "C# spells a nullable function type with '?' (item 15)");
+                emitsR4(cb, "typescript", {"cb: ((() => void) | null)", "f: (((arg0: number) => number) | null)"}, {},
+                        "TS parenthesizes a nullable function type (item 15)");
+                // 16: `m.get(k)!` drops the absent-normalization (TS2871).
+                emitsR4("import \"std.collections\"\nfn g(m: Map<string, i32>, k: string): i32 => m.get(k)!\n", "typescript",
+                        {"m.get(k) ?? __pgNullAssert("}, {"?? null) ??"}, "TS m.get(k)! has no inner '?? null' (item 16)");
+                // 17: `??=` — refused on a non-null target, native on C#, lowered on Python.
+                refusesR4("fn f(): i32 {\n  var y: i32 = 1\n  y ??= 5\n  return y\n}\n", "which cannot be null here",
+                          "'??=' on a non-null target (item 17)");
+                const std::string ca = "fn f(): i32 {\n  var y: i32? = null\n  y ??= 5\n  return y ?? 0\n}\n";
+                emitsR4(ca, "csharp", {"y ??= 5;"}, {}, "C# keeps a native '??=' (item 17)");
+                emitsR4(ca, "python", {"if (y is None):"}, {"??="}, "Python lowers '??=' to an if-null store (item 17)");
+                // 18: a value-returning named function into `() => unit` is refused; a non-statement unit body discards.
+                refusesR4("fn run(f: () => unit) { f() }\nfn five(): i32 => 5\nfn g() { run(five) }\n",
+                          "it returns a value the slot would discard", "a value-returning fn into () => unit (item 18)");
+                emitsR4("import \"std.strings\"\nfn run(f: () => unit) { f() }\nfn g(s: string) { run(() => s.len()) }\n",
+                        "csharp", {"() => { _ = s.Length; }"}, {}, "C# discards a property-read unit body (item 18)");
+                emitsR4("import \"std.strings\"\nfn g(s: string) {\n  s.len()\n}\n", "csharp", {"_ = s.Length;"}, {},
+                        "C# discards a property-read expression statement (item 18)");
+                // 19: a method call on a function value.
+                refusesR4("fn adder(k: i32): (i32) => i32 => (n: i32) => n + k\nfn f(): string => adder(1).toString()\n",
+                          "has no method 'toString'", "a method call on a function value (item 19)");
+                // 20: a named function passed as a value is a callable on PHP.
+                emitsR4("fn apply(f: () => i32): i32 => f()\nfn five(): i32 => 5\nfn g(): i32 => apply(five)\n", "php",
+                        {"apply(five(...))"}, {"$five"}, "PHP passes a named function as a first-class callable (item 20)");
+                refusesR4("fn apply(f: (i32) => i32): i32 => f(1)\nfn o(n: i32): i32 => n\nfn o(s: string): i32 => 0\n"
+                          "fn g(): i32 => apply(o)\n", "it is overloaded", "an overloaded function as a value (item 20)");
+                // 21: an arrow body that prints starting with `{` is parenthesized on TS.
+                emitsR4("fn get(f: () => Option<i32>): i32 => match f() {\n  Some(x) => x,\n  None => -1,\n}\n"
+                        "fn g(k: i32): i32 => get(() => Some(k))\n", "typescript", {"get(() => ({"}, {"get(() => {"},
+                        "TS parenthesizes an object-literal arrow body (item 21)");
+                // 22: runtime names — Python/PHP escape, TS refuses an unqualifiable global, TS qualifies TypeError.
+                // (r5: Python no longer escapes it — the output calls `builtins.max`, so the user name stays as written.)
+                emitsR4("import \"std.math\"\nfn max(a: i32, b: i32): i32 => a\nfn g(): i32 => max(1, 2) + Math.max(3, 4)\n", "python",
+                        {"def max(", "max(1, 2)", "builtins.max(3, 4)", "import builtins"}, {"max_"},
+                        "Python keeps a user fn named like a builtin and calls the builtin qualified (item 22, r5)");
+                emitsR4("class Directory {\n  let n: i32 = 1\n}\nfn g(): i32 => Directory().n\n", "php",
+                        {"class Directory_", "new Directory_("}, {}, "PHP escapes a class named like a builtin class (item 22)");
+                emitsR4("fn g(x: i32?): i32 => x!\n", "typescript", {"throw new globalThis.TypeError("}, {},
+                        "TS null-assert throws globalThis.TypeError (item 22)");
+                {
+                    EmitResult r = compileStd("class Math {\n  let n: i32 = 1\n}\n", findTarget("typescript"));
+                    check(!r.ok && has(firstErr(r), "'Math' shadows a runtime global of target 'typescript'"),
+                          "r4: TS refuses a class shadowing a runtime global it cannot qualify (item 22)");
+                }
+                // Part 2 (language).
+                emitsR4("fn f(): i32 {\n  let _x = 5\n  return 1\n}\n", "csharp", {}, {"_x"},
+                        "an unread '_x = <const>' is not emitted (CS0219)");
+                refusesR4("fn f(): i32 {\n  var _x = 5\n  _x = 6\n  return 1\n}\n", "is assigned but never read",
+                          "an assigned-but-unread '_x' (CS0219)");
+                refusesR4("enum Color { Red, Green }\nfn f(): i32 {\n  let c = Color.Red\n  return 1\n}\n",
+                          "is set to a constant but never read", "an unused enum-member local (CS0219)");
+                refusesR4("fn f(): i32 {\n  let y = (i64)5\n  return 1\n}\n", "is set to a constant but never read",
+                          "an unused cast-constant local (CS0219)");
+                refusesR4("fn f(): i32 {\n  if \"a\" == \"a\" {\n    return 1\n  }\n  return 2\n}\n", "condition is always true",
+                          "a string-literal constant condition (CS0162)");
+                refusesR4("fn f(): i32 {\n  if 1 + 1 == 3 {\n    return 1\n  }\n  return 2\n}\n", "condition is always false",
+                          "an arithmetic constant condition (CS0162)");
+                emitsR4("class H {\n  var f: (i32) => i32 = (x: i32) => x * 3\n}\nfn g(): i32 => H().f(4)\n", "php",
+                        {"(new H())->f)(4)"}, {}, "a function-typed field is called through its value (PHP parenthesizes)");
+                emitsR4("fn f(): i32 {\n  let a = 1\n  ((x: i32) => x)(8)\n  return a\n}\n", "csharp", {"var a = 1;"}, {"1((", "1("},
+                        "a line starting with '(' is a new statement");
+                emitsR4("fn f(): i32 => match \"01\" {\n  \"1\" => 1,\n  _ => 2,\n}\n", "typescript", {"const _m: string = \"01\""},
+                        {}, "TS annotates a scalar match temp (TS2367)");
+                emitsR4("fn inv(x: f64 = -0.0): f64 => x\n", "csharp", {"= -0.0"}, {}, "a -0.0 default keeps its sign");
+                emitsR4("fn d(x: f32 = 0.1f + 0.2f): f32 => x\n", "csharp", {"= 0.3f"}, {}, "an f32 constant default folds to f32");
+                emitsR4("fn lo(x: i64 = -9223372036854775808i64): i64 => x\n", "php", {"$x = PHP_INT_MIN"}, {},
+                        "PHP spells the i64 minimum PHP_INT_MIN");
+                refusesR4("fn f(): i32 {\n  let v: i32 = 2147483648\n  return v\n}\n", "does not fit 'i32'",
+                          "an i32 slot refuses an out-of-range literal");
+                refusesR4("fn f(): i32 {\n  let v = 2147483648\n  return 0\n}\n", "does not fit 'i32'",
+                          "an inferred i32 local refuses an out-of-range literal");
+            }
+            // Review round 6 — init-order/constructors half: a static computed property keeps `static` on every target
+            // (its four-target behaviour is pinned by conformance static_computed_property), and a static property
+            // SETTER refuses on Python by its capability key (a class-level assignment bypasses any descriptor).
+            {
+                const std::string sp = "class Cfg {\n  static var raw: i32 = 1\n  static var level: i32 {\n"
+                                       "    get => Cfg.raw * 2\n    set(v) { Cfg.raw = v }\n  }\n}\n"
+                                       "fn f(): i32 {\n  Cfg.level = 4\n  return Cfg.level\n}\n";
+                EmitResult py = compileStd(sp, findTarget("python"));
+                bool named = false;
+                for (const auto& d : py.diagnostics) if (has(d.message, "does not support propertySetters:static")) named = true;
+                check(!py.ok && named, "r6: a static property setter refuses on Python (propertySetters:static)");
+                EmitResult cs = compileStd(sp, findTarget("csharp"));
+                check(cs.ok && has(cs.code, "public static int level {"), "r6: C# emits a static property with its setter");
+                EmitResult ts = compileStd(sp, findTarget("typescript"));
+                check(ts.ok && has(ts.code, "static get level()") && has(ts.code, "static set level("),
+                      "r6: TS emits a static getter and setter");
+                const std::string gp = "class Cfg {\n  static let level: i32 => 3\n}\nfn f(): i32 => Cfg.level\n";
+                EmitResult pyg = compileStd(gp, findTarget("python"));
+                check(pyg.ok && has(pyg.code, "Cfg.level()") && !has(pyg.code, "@builtins.property"),
+                      "r6: Python emits a static property as a static method and calls it");
+                EmitResult phg = compileStd(gp, findTarget("php"));
+                check(phg.ok && has(phg.code, "Cfg::level()"), "r6: PHP calls a static property's getter");
+            }
+            // P40 review r5 — nullability / functions half: each refusal by message, each fix by emission; the accepted
+            // neighbours compile.
+            // P40 review r5 — classes / construction / names / overloads half: each refusal by message, each fix by
+            // emission. (The four-target behaviour is pinned by the conformance programs and refusal fixtures.)
+            {
+                auto refusesR5 = [&](const std::string& src, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget("csharp"));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r5: " + label);
+                };
+                auto acceptsR5 = [&](const std::string& src, const std::string& label) {
+                    check(compileStd(src, findTarget("csharp")).ok, "r5: " + label);
+                };
+                auto emitsR5 = [&](const std::string& src, const char* target, std::initializer_list<const char*> frags,
+                                   std::initializer_list<const char*> absent, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool ok = r.ok;
+                    for (const char* f : frags) ok = ok && has(r.code, f);
+                    for (const char* f : absent) ok = ok && !has(r.code, f);
+                    check(ok, "r5: " + label);
+                };
+                // 18: every slot converts its value.
+                refusesR5("fn m(): i32? => null\nfn f(k: i32): i32 => match k {\n  1 => m(),\n  _ => 0,\n}\n",
+                          "the value may be null", "a nullable match arm into i32 (item 18)");
+                refusesR5("fn f(k: i32): i32 => match k {\n  1 => \"one\",\n  _ => 2,\n}\n", "expected i32, found string",
+                          "a mismatched match arm (item 18)");
+                refusesR5("fn f(c: bool): i32 => if c { 2 } else { \"x\" }\n", "expected i32, found string",
+                          "a mismatched if-expression branch (item 18)");
+                refusesR5("fn g(): Iterable<i32> {\n  yield null\n}\n", "(yielded value)", "yield null from Iterable<i32> (item 18)");
+                refusesR5("record P(x: i32)\nfn f(p: P): P => p with { x = \"s\" }\n", "(field 'x' of 'with')",
+                          "a mistyped with-field (item 18)");
+                refusesR5("import \"std.collections\"\nfn f(xs: List<i32>): i32 => xs[\"0\"]\n", "type mismatch (index)",
+                          "a string index (item 18)");
+                refusesR5("fn m(): i32? => null\nfn f(): (i32, i32) {\n  return (m(), 1)\n}\n", "the value may be null",
+                          "a nullable tuple element (item 18)");
+                refusesR5("import \"std.collections\"\nfn f(xs: List<i32?>): List<i32> => xs\n", "type arguments must match exactly",
+                          "List<i32?> into List<i32> (item 18)");
+                refusesR5("fn ap(f: (i32) => i32): i32 => f(3)\nfn g(): i32 => ap((x: string) => 1)\n",
+                          "lambda parameter 'x' is declared 'string'", "a mistyped lambda parameter (item 18)");
+                refusesR5("fn two(f: (i32, i32) => i32): i32 => f(3, 4)\nfn g(): i32 => two((a: i32) => a)\n",
+                          "this lambda takes 1 parameter(s)", "a lambda of the wrong arity (item 18)");
+                refusesR5("fn f<T>(x: T = null): T => x\n", "the type parameter 'T' may be a non-null type",
+                          "a null default for a T parameter (item 18)");
+                refusesR5("fn f<T>(x: T?): T => x\n", "the type parameter 'T' may be a non-null type",
+                          "a T? returned as T (item 18)");
+                acceptsR5("fn m(): i32? => null\nfn f(k: i32): i32? => match k {\n  1 => m(),\n  _ => 0,\n}\n",
+                          "a nullable match arm into i32? (item 18)");
+                acceptsR5("fn f(k: i32): f64 => match k {\n  1 => 1,\n  _ => 2.5,\n}\n", "an i32 arm widens into f64 (item 18)");
+                acceptsR5("fn m(): i32? => null\nfn f(): i32 {\n  let v = m()\n  if v != null {\n    return match 1 {\n"
+                          "      1 => v,\n      _ => 0,\n    }\n  }\n  return 0\n}\n", "a narrowed read in a match arm (item 18)");
+                acceptsR5("fn f<T>(x: T?, d: T): T => x ?? d\nfn g<T>(x: T): T? => null\n", "T? fallbacks and a T? slot (item 18)");
+                acceptsR5("import \"std.collections\"\nfn f(xs: List<i32?>): List<i32?> => xs\n", "matching nullable type args (item 18)");
+                acceptsR5("fn ap(f: (i32?) => i32): i32 => f(null)\nfn g(): i32 => ap(x => (x ?? 0) + 1)\n",
+                          "an unannotated lambda parameter takes the slot's type (item 18)");
+                // 19: a test inside a lambda narrows a captured parameter / let.
+                acceptsR5("fn t(s: string): string => s\nfn r(f: () => string): string => f()\n"
+                          "fn v(s: string?): string => r(() => {\n  if s != null {\n    return t(s)\n  }\n  return \"-\"\n})\n",
+                          "a captured parameter narrowed inside the lambda (item 19)");
+                refusesR5("fn t(s: string): string => s\nfn r(f: () => string): string => f()\n"
+                          "fn v(s: string?): string {\n  if s != null {\n    return r(() => t(s))\n  }\n  return \"-\"\n}\n",
+                          "the value may be null", "an OUTER narrowing still stops at the lambda (item 19)");
+                // 20: `?.` calls keep their `?.`, are typed nullable, and normalize TS's undefined.
+                const std::string ns = "class R {\n  var n: i32 = 1\n  fn run() {\n  }\n  fn v(): i32 => 3\n}\n"
+                                       "fn f(r: R?): i32 {\n  r?.run()\n  let a: i32? = r?.v()\n  let b: i32? = r?.n\n"
+                                       "  return (a ?? 0) + (b ?? 0)\n}\n";
+                emitsR5(ns, "csharp", {"if (r != null)", "switch { null => null"}, {}, "C# null-safe call forms (item 20)");
+                emitsR5(ns, "typescript", {"if (r !== null)", "(r?.n ?? null)"}, {}, "TS null-safe forms, undefined -> null (item 20)");
+                emitsR5(ns, "python", {"if (r is not None):"}, {}, "Python null-safe call statement (item 20)");
+                emitsR5(ns, "php", {"if ($r !== null)"}, {}, "PHP null-safe call statement (item 20)");
+                refusesR5("class R {\n  fn v(): i32 => 3\n}\nfn f(r: R?): i32 => r?.v()\n", "the value may be null",
+                          "r?.v() is nullable (item 20)");
+                // 21: a lambda operand keeps its parentheses.
+                emitsR5("fn f(cb: (() => i32)?): i32 {\n  let g: () => i32 = cb ?? (() => 9)\n  return g()\n}\n", "csharp",
+                        {"cb ?? (() => 9)"}, {}, "C# parenthesizes a lambda '??' operand (item 21)");
+                emitsR5("fn f(cb: (() => i32)?): i32 {\n  let g: () => i32 = cb ?? (() => 9)\n  return g()\n}\n", "typescript",
+                        {"cb ?? (() => 9)"}, {}, "TS parenthesizes a lambda '??' operand (item 21)");
+                // 22: T = unit inference.
+                refusesR5("fn ap<T>(f: () => T): T => f()\nfn u() {\n}\nfn g() {\n  ap(() => u())\n}\n",
+                          "cannot infer 'T' of 'ap' from a lambda that returns no value", "T inferred as unit (item 22)");
+                acceptsR5("fn ap<T>(f: () => T): T => f()\nfn g(): i32 => ap<i32>(() => 5)\n", "an explicit T (item 22)");
+                // 23: a plain assignment hoists the target's parts on a valueFirst target only.
+                const std::string vf = "import \"std.collections\"\nfn f() {\n  var xs: List<i32> = [1, 2]\n  var j = 0\n"
+                                       "  let inc: () => i32 = () => {\n    j = 1\n    return 5\n  }\n  xs[j] = inc()\n}\n";
+                emitsR5(vf, "php", {"$__c"}, {"$xs[$j] = $inc()"}, "PHP snapshots a rebindable index (item 23)");
+                emitsR5(vf, "python", {"__c"}, {"xs[j] = inc()"}, "Python snapshots a rebindable index (item 23)");
+                emitsR5(vf, "csharp", {"xs[j] = inc();"}, {"__c"}, "C# keeps the plain assignment (item 23)");
+                emitsR5("import \"std.collections\"\nfn g(): i32 => 1\nfn f(xs: List<i32>, i: i32) {\n  xs[i] = g()\n}\n",
+                        "php", {"$xs[$i] = g();"}, {"$__c"}, "PHP leaves a stable index in place (item 23)");
+                // Part 2.
+                refusesR5("class P {\n  var name: string? = null\n  fn g(): string {\n    if this.name != null {\n"
+                          "      return s(this.name)\n    }\n    return \"\"\n  }\n}\nfn s(x: string): string => x\n",
+                          "fields are not narrowed by a null test", "the field-narrowing rule is named");
+                acceptsR5("open class A {\n}\nclass D : A {\n}\nfn feed(f: (D) => i32): i32 => f(D())\n"
+                          "fn g(): i32 {\n  let h: (A) => i32 = (a: A) => 1\n  return feed(h)\n}\n",
+                          "a contravariant function value converts");
+                refusesR5("fn feed(f: (i32) => i32): i32 => f(1)\nfn g(): i32 {\n  let h: (i64) => i32 = (a: i64) => 1\n"
+                          "  return feed(h)\n}\n", "function types must match exactly", "scalar parameters stay exact");
+                emitsR5("let later: i32 = 5\nfn mk(): () => i32 => () => later * 2\n", "php", {"$GLOBALS['later']"}, {},
+                        "PHP reads a module value live inside a lambda");
+                refusesR5("fn f(): i32 {\n  let cb: () => unit = null\n  return 0\n}\n", "declare the slot '(() => unit)?'",
+                          "a nullable function slot hint is parenthesized");
+                // #4: a class a module value reaches is defined before the value.
+                {
+                    const std::string o1 = "class Shop {\n  var stock: Item\n  constructor() {\n    this.stock = Item()\n  }\n}\n"
+                                           "let shop: Shop = Shop()\nclass Item {\n  var n: i32 = 1\n}\n";
+                    EmitResult r = compileStd(o1, findTarget("typescript"));
+                    const auto item = r.code.find("class Item"), val = r.code.find("let shop");
+                    check(r.ok && item != std::string::npos && val != std::string::npos && item < val,
+                          "r5: TS defines a class a module value reaches through a constructor before the value (#4)");
+                }
+                refusesR5("class Shop {\n  var n: i32\n  constructor() {\n    this.n = later\n  }\n}\n"
+                          "let shop: Shop = Shop()\nlet later: i32 = 4\n",
+                          "calls 'Shop', which reads 'later', declared later", "a later value read through a constructor (#4)");
+                refusesR5("class Config {\n  static let base: string = \"/api\"\n  static let users: string = join(\"u\")\n}\n"
+                          "fn join(p: string): string => Config.base + p\n",
+                          "while class 'Config' is still being defined", "a static initializer reaching its class from outside (#12)");
+                // #5/#6: lambdas and escapes are followed; a class nothing derives from is not checked.
+                refusesR5("open class B {\n  var l: string = \"\"\n  constructor() {\n    this.l = (() => this.d())()\n  }\n"
+                          "  open fn d(): string => \"b\"\n}\n",
+                          "(through a lambda)", "an open call through an in-place lambda in a constructor (#5)");
+                refusesR5("fn show(w: W): string => w.d()\nopen class W {\n  var l: string = \"\"\n  constructor() {\n"
+                          "    this.l = show(this)\n  }\n  open fn d(): string => \"w\"\n}\n",
+                          "(through 'show')", "'this' passed to a function that calls an open method (#5)");
+                check(compileStd("open class W {\n  open fn r(): string => \"w\"\n}\nclass B : W {\n  var l: string\n"
+                                 "  constructor() {\n    super()\n    this.l = \"\"\n    this.l = this.r()\n  }\n"
+                                 "  override fn r(): string => \"b\"\n}\n", findTarget("csharp")).ok,
+                      "r5: a class nothing derives from may call its own override in its constructor (#6)");
+                // #7: C# assigns a subclass's non-literal field initializers after the base call.
+                emitsR5("fn n(): i32 => 1\nopen class A {\n  var a: i32 = n()\n}\nclass B : A {\n  var b: i32 = n()\n  var c: i32 = 3\n}\n",
+                        "csharp", {"public int b;", "public int c = 3;", "this.b = PolyglotProgram.n();"}, {},
+                        "C# defers a subclass's non-literal field initializer into its constructor (#7)");
+                // #8, #10
+                refusesR5("open class A {\n  constructor(v: i32) {\n  }\n}\nclass B : A {\n  constructor(n: i32) {\n"
+                          "    let d = n * 2\n    super(d)\n  }\n}\n", "a statement before", "a statement before super(...) (#8)");
+                refusesR5("open class A {\n  open static fn m(): i32 => 1\n}\n", "cannot be 'open'", "open on a static (#10)");
+                // #9: real abstract members.
+                {
+                    const std::string ab = "abstract class S {\n  abstract fn a(): i32\n}\nclass T : S {\n  override fn a(): i32 => 4\n}\n";
+                    emitsR5(ab, "csharp", {"abstract class S", "public abstract int a();", "public override int a()"}, {},
+                            "C# emits an abstract class and method (#9)");
+                    emitsR5(ab, "typescript", {"abstract class S", "abstract a(): number;"}, {}, "TS emits abstract members (#9)");
+                    emitsR5(ab, "python", {"class S(_PG_abc.ABC):", "@_PG_abc.abstractmethod", "import abc as _PG_abc"}, {},
+                            "Python emits an abc.ABC class with @abc.abstractmethod (#9)");
+                    emitsR5(ab, "php", {"abstract class S", "abstract public function a();"}, {}, "PHP emits abstract members (#9)");
+                    refusesR5("abstract class S {\n  abstract fn a(): i32\n}\nfn f(): i32 => S().a()\n",
+                              "cannot construct abstract class 'S'", "constructing an abstract class (#9)");
+                }
+                // #11: omitted record defaults are filled at the construction.
+                emitsR5("record P(x: i32, y: i32 = 5)\nfn f(): i32 => P(1).y\n", "csharp", {"new P(1, 5)"}, {},
+                        "an omitted record default is filled at the construction (#11)");
+                // #13/#14 (one module): declarations alone decide a clash; a lone declaration keeps its name.
+                emitsR5("fn same<T>(x: T): T => x\nfn same<U>(x: U, y: i32): U => x\nfn f(): i32 => 1\n", "csharp", {"same<T>(", "same<U>("},
+                        {"same__"}, "two declarations with different C# signatures keep plain names (#13)");
+                emitsR5("fn d(s: string): string => s\nfn d(s: string?): string => \"n\"\nfn f(): string => d(\"a\")\n", "csharp",
+                        {"d__string(string s)", "d__stringOrNull(string? s)"}, {}, "string / string? declarations get distinct link names (#13)");
+                // #15
+                refusesR5("union Shape {\n  Circle(r: i32)\n  Square(s: i32)\n}\nfn kind(s: Shape): i32 => 1\nfn f(): i32 => kind(5)\n",
+                          "cannot convert 'i32' to 'Shape'", "an i32 into a union parameter (#15)");
+                // #16
+                emitsR5("fn id(n: i32): i32 => n\nfn f(): i32 => id(1)\n", "python", {"def id("}, {"id_"},
+                        "Python keeps a user fn 'id' (the output calls builtins.id) (#16)");
+                emitsR5("class Box {\n  var id: i32 = 1\n  var len: i32 = 2\n  var str: string = \"s\"\n  fn max(x: i32): i32 => x\n}\n"
+                        "fn f(b: Box): i32 => b.id + b.len + b.max(3)\n", "python", {"self.id = 1", "self.len = 2", "self.str = \"s\"",
+                        "def max(self, x):", "b.id + b.len"}, {"id_", "len_", "str_", "max_"},
+                        "Python keeps fields/methods named like builtins (r5)");
+                emitsR5("class Box {\n  var strpos: i32 = 1\n  var error: i32 = 2\n  fn intdiv(fmod: i32): i32 => fmod\n}\n"
+                        "class Directory {\n  var n: i32 = 1\n}\nfn f(b: Box): i32 => b.strpos + b.intdiv(2) + Directory().n\n", "php",
+                        {"$strpos", "$error", "function intdiv($fmod)", "->intdiv(2)", "class Directory_", "new Directory_("},
+                        {"strpos_pg", "error_", "intdiv_pg", "fmod_pg"},
+                        "PHP escapes a builtin class name only as a class, a builtin function name only as a free function (r5)");
+                emitsR5("fn intdiv(a: i32, b: i32): i32 => a\nfn f(): i32 => intdiv(1, 2)\n", "php", {"function intdiv_pg("}, {},
+                        "PHP suffixes a user fn named like a builtin its templates call (#16)");
+                emitsR5("class Symbol {\n  var n: i32 = 1\n}\nfn f(): i32 => Symbol().n\n", "typescript", {"class Symbol"}, {},
+                        "TS accepts a class named Symbol (no template uses the global) (#16)");
+                refusesR5("class Error {\n  var v: i32 = 1\n}\n", "redeclares the std core type 'Error'", "a user class Error (#16)");
+                // #17, #24
+                check(compileStd("fn c(): i32 => 4\nfn f() {\n  var _last = 0\n  _last = c()\n}\n", findTarget("csharp")).ok,
+                      "r5: a '_' local later assigned a call result is accepted (#17)");
+                emitsR5("fn f() {\n  let g = () => {\n    let _w = 4\n  }\n  g()\n}\n", "python", {"pass"}, {},
+                        "Python gives an elided-only local def a 'pass' (#17)");
+                emitsR5("import \"std.strings\"\nfn f(_: bool, s: string): bool {\n  s.len()\n  return _\n}\n", "csharp",
+                        {"bool __u", "_ = s.Length;", "return __u;"}, {}, "C# respells a user '_' so the discard cannot bind it (#24)");
+                // Part 2.
+                refusesR5("fn five(): i32 => 5\nfn f() {\n  five\n}\n", "names a function but does not call it",
+                          "a bare function name as a statement");
+                emitsR5("class point {\n  var x: i32 = 1\n}\n", "csharp", {"#pragma warning disable CS8981"}, {},
+                        "C# disables CS8981 for an all-lowercase type name");
+                emitsR5("class Point {\n  var x: i32 = 1\n}\n", "csharp", {}, {"CS8981"},
+                        "C# emits no CS8981 pragma without an all-lowercase type name");
+                check(compileStd("let twice: (i32) => i32 = (x: i32) => x * 2\nfn f(): i32 => twice(4)\n", findTarget("csharp")).ok,
+                      "r5: a module value of function type is callable by name");
+                {
+                    const std::string ue = "record Pt(x: i32)\nunion S {\n  Dot(at: Pt)\n  E\n}\nfn f(): bool => Dot(Pt(1)) == Dot(Pt(1))\n";
+                    emitsR5(ue, "typescript", {"function __pgUnionEq(", "__pgUnionEq("}, {"JSON.stringify"},
+                            "TS compares union values through __pgUnionEq (not JSON.stringify)");
+                    emitsR5(ue, "php", {"function __pg_ueq(", "__pg_ueq("}, {}, "PHP compares union values through __pg_ueq");
+                }
+            }
+            // P40 review r5 #16: each target's runtime-name lists cover every identifier its templates and prelude
+            // reference unqualified (a call `x(`, `new X`, or the head of `X.` / `X::`) — so a user name can never shadow
+            // what the generated code calls, and the lists cannot drift again. Comments and string literals are skipped;
+            // the allowlist holds names the templates DECLARE themselves (helper locals, the runtime class's own helpers,
+            // a record's `equals`), contextual keywords, and `main` (the user's own entry function).
+            {
+                const std::map<std::string, std::set<std::string>> allow = {
+                    {"csharp", {"Equals", "GetHashCode", "ReferenceEquals", "LowerAscii", "UpperAscii", "Show", "Str",
+                                "a", "dg", "digits", "fm", "s", "sb", "x", "global", "var", "when", "main"}},
+                    {"typescript", {"as", "catch", "for", "if", "super", "constructor", "ka"}},
+                    {"python", {"a", "b", "d", "m", "n", "r", "s", "x", "cache", "ctypes", "super"}},
+                    {"php", {"equals"}},
+                };
+                // Python: the output qualifies every builtin it uses (`builtins.len`, the `builtins` module itself the one
+                // escaped name), so a user `fn max`, field `id` or param `len` keeps its name. No builtin may appear bare —
+                // called, passed (`isinstance(x, bool)`) or as a decorator — except `super` (a .pg keyword: never a user
+                // name, and zero-argument `super()` must be spelled bare).
+                const std::set<std::string> pyBuiltins = {
+                    "abs", "all", "any", "bin", "bool", "bytearray", "bytes", "callable", "chr", "classmethod", "complex",
+                    "dict", "dir", "divmod", "enumerate", "filter", "float", "format", "frozenset", "getattr", "hasattr",
+                    "hash", "hex", "id", "int", "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min",
+                    "next", "object", "oct", "open", "ord", "pow", "print", "property", "range", "repr", "reversed",
+                    "round", "set", "setattr", "slice", "sorted", "staticmethod", "str", "sum", "tuple", "type", "vars",
+                    "zip", "TypeError", "ValueError", "ZeroDivisionError", "KeyError", "IndexError", "StopIteration"};
+                // The TS lib's global types (lib.es*.d.ts). A template may spell one only if a user type can never
+                // take its name: it is in the identifier lists (refused), or it is a Polyglot core/std type of the same
+                // name (`tsPgTypes`) — a user type cannot redeclare those (`linkCoreModule`, the flat std namespace).
+                const std::set<std::string> tsLibTypes = {
+                    "Record", "Partial", "Required", "Readonly", "Pick", "Omit", "Exclude", "Extract", "NonNullable",
+                    "ReturnType", "Parameters", "InstanceType", "Awaited", "NoInfer", "ThisType", "Uppercase",
+                    "Lowercase", "Capitalize", "Uncapitalize", "PropertyKey", "ArrayLike", "Map", "Set", "WeakMap",
+                    "WeakSet", "Array", "ReadonlyArray", "Iterable", "Iterator", "IterableIterator", "Generator",
+                    "AsyncGenerator", "AsyncIterable", "AsyncIterator", "Promise", "PromiseLike", "Error", "TypeError",
+                    "RangeError", "Symbol", "Object", "Function", "Date", "RegExp", "BigInt", "Number", "String",
+                    "Boolean", "TemplateStringsArray"};
+                const std::set<std::string> tsPgTypes = {"Map", "Iterable", "Error"};
+                for (const char* t : {"csharp", "typescript", "python", "php"}) {
+                    std::string text;
+                    cli::readFile(cli::executablePath().parent_path() / "plugins" / t / "polyglot-plugin.json", text);
+                    std::string err;
+                    const json::Value doc = json::parse(text, err);
+                    const json::Value& ids = doc["spec"]["identifiers"].isNull() ? doc["identifiers"] : doc["spec"]["identifiers"];
+                    const bool ci = ids["caseInsensitive"].asBool();
+                    auto key = [&](std::string n) {
+                        if (ci) for (char& c : n) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                        return n;
+                    };
+                    std::set<std::string> covered;
+                    for (const char* list : {"keywords", "reserved", "runtimeNames", "globals", "classBuiltins"})
+                        for (const auto& v : ids[list].items()) covered.insert(key(v.asString()));
+                    for (const auto& v : ids["functionBuiltins"]["names"].items()) covered.insert(key(v.asString()));
+                    std::vector<std::string> strings;
+                    std::function<void(const json::Value&)> walk = [&](const json::Value& v) {
+                        if (v.kind == json::Value::Kind::String) strings.push_back(v.asString());
+                        for (const auto& a : v.items()) walk(a);
+                        for (const auto& [k, m] : v.members) if (k != "identifiers") walk(m);
+                    };
+                    walk(doc);
+                    auto idc = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+                    std::set<std::string> missing;
+                    for (std::string s : strings) {
+                        bool path = !s.empty();
+                        for (char c : s) if (!(idc(c) || c == '.' || c == '#')) path = false;
+                        if (path) continue; // a template path (`decl.name`), not code
+                        std::string code; // comments and string literals removed
+                        for (std::size_t i = 0; i < s.size(); ++i) {
+                            const bool lineStart = i == 0 || s[i - 1] == '\n' || s[i - 1] == ' ';
+                            if (lineStart && (s.compare(i, 3, "// ") == 0 || s.compare(i, 2, "# ") == 0)) {
+                                while (i < s.size() && s[i] != '\n') ++i;
+                                code += '\n';
+                                continue;
+                            }
+                            if (s[i] == '"' || s[i] == '\'') {
+                                const char q = s[i];
+                                for (++i; i < s.size() && s[i] != q; ++i) if (s[i] == '\\') ++i;
+                                code += " \"\" ";
+                                continue;
+                            }
+                            code += s[i];
+                        }
+                        for (std::size_t i = 0; i < code.size(); ++i) {
+                            if (!(std::isalpha(static_cast<unsigned char>(code[i])) || code[i] == '_')) continue;
+                            if (i > 0 && (idc(code[i - 1]) || code[i - 1] == '$' || code[i - 1] == '.' || code[i - 1] == '>' ||
+                                          code[i - 1] == ':' || code[i - 1] == '\\')) {
+                                while (i < code.size() && idc(code[i])) ++i;
+                                continue;
+                            }
+                            std::size_t j = i;
+                            while (j < code.size() && idc(code[j])) ++j;
+                            const std::string name = code.substr(i, j - i);
+                            std::size_t k = j;
+                            while (k < code.size() && code[k] == ' ') ++k;
+                            const bool use = k < code.size() &&
+                                             (code[k] == '(' || code.compare(k, 2, "::") == 0 ||
+                                              (code[k] == '.' && k + 1 < code.size() && std::isalpha(static_cast<unsigned char>(code[k + 1]))));
+                            if (use && name[0] != '_' && name != "new" && !covered.count(key(name)) && !allow.at(t).count(name))
+                                missing.insert(name);
+                            const bool defined = i >= 4 && code.compare(i - 4, 4, "def ") == 0; // the template's own def
+                            if (std::string(t) == "python" && pyBuiltins.count(name) && !defined)
+                                missing.insert(name + "(bare)");
+                            // P40 review r6 #7: a TS lib TYPE spelled unqualified in a type position (`as Record<…>`)
+                            // is shadowed by a user type of that name (TS2315) — calls alone did not cover it.
+                            if (std::string(t) == "typescript" && tsLibTypes.count(name) && !covered.count(name) &&
+                                !tsPgTypes.count(name))
+                                missing.insert(name + "(type)");
+                            i = j;
+                        }
+                    }
+                    std::string list;
+                    for (const auto& m : missing) list += " " + m;
+                    check(err.empty() && missing.empty(),
+                          std::string("r5: every unqualified runtime reference in the ") + t +
+                              " manifest is in its identifier lists (uncovered:" + list + ")");
+                }
+            }
+            // A bare import of an extension-only module names its functions on TS and Python.
+            {
+                MapModuleResolver res{{"./ext", "extension fn i32.twice(): i32 => this * 2\n"}};
+                const std::string prog = "import \"./ext\"\nfn main() { let x = 4.twice() }\n";
+                EmitResult bt = compile(prog, findTarget("typescript"), &res);
+                const bool tsOk = bt.ok && has(bt.code, "import { twice } from \"./ext\";") && has(bt.code, "twice(4)");
+                EmitResult bp = compile(prog, findTarget("python"), &res);
+                const bool pyOk = bp.ok && has(bp.code, "from ext import *");
+                check(tsOk, "P40 s8: a bare import of an extension-only module imports its names on TS (was TS2304)");
+                check(pyOk, "P40 s8: a bare import of an extension-only module star-imports on Python (was NameError)");
+            }
+            // P40 review r6 — records / names / python half: each fix by emission, each refusal by message, and the
+            // accepted neighbours. (Four-target behaviour: the conformance programs and the refusal fixtures.)
+            {
+                auto refusesR6 = [&](const std::string& src, const char* target, const char* frag, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool named = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, frag)) named = true;
+                    check(!r.ok && named, "r6: " + label);
+                };
+                auto acceptsR6 = [&](const std::string& src, const char* target, const std::string& label) {
+                    check(compileStd(src, findTarget(target)).ok, "r6: " + label);
+                };
+                auto emitsR6 = [&](const std::string& src, const char* target, std::initializer_list<const char*> frags,
+                                   std::initializer_list<const char*> absent, const std::string& label) {
+                    EmitResult r = compileStd(src, findTarget(target));
+                    bool ok = r.ok;
+                    for (const char* f : frags) ok = ok && has(r.code, f);
+                    for (const char* f : absent) ok = ok && !has(r.code, f);
+                    check(ok, "r6: " + label);
+                };
+                // #6: a default filled in at a construction site in another module imports the default's own types.
+                {
+                    MapModuleResolver res{{"./paint", "enum Color { Red, Blue }\nrecord P(x: i32, c: Color = Color.Blue)\n"},
+                                          {"./tones", "enum Tone { Soft, Loud }\n"},
+                                          {"./vol", "import { Tone } from \"./tones\"\nrecord Q(n: i32, t: Tone = Tone.Loud)\n"}};
+                    const std::string prog = "import { P } from \"./paint\"\nimport { Q } from \"./vol\"\n"
+                                             "fn main() {\n  let p = P(1)\n  let q = Q(2)\n}\n";
+                    EmitResult t = compile(prog, findTarget("typescript"), &res);
+                    check(t.ok && has(t.code, "import { P, Color } from \"./paint\";") &&
+                              has(t.code, "import { Tone } from \"./tones\";"),
+                          "r6 #6: TS imports the types a filled-in default names (its own module's and a third module's)");
+                    EmitResult p = compile(prog, findTarget("python"), &res);
+                    check(p.ok && has(p.code, "from paint import P, Color") && has(p.code, "from tones import Tone"),
+                          "r6 #6: Python imports the types a filled-in default names");
+                    // a name already imported is not imported twice; an explicitly passed field needs no import
+                    const std::string both = "import { P, Color } from \"./paint\"\nfn main() {\n  let p = P(1, Color.Red)\n}\n";
+                    EmitResult t2 = compile(both, findTarget("typescript"), &res);
+                    check(t2.ok && has(t2.code, "import { P, Color } from \"./paint\";") && !has(t2.code, "Color, Color"),
+                          "r6 #6: a name the source already imports is not added again");
+                }
+                // #7: the TS union-equality helper spells no TS lib type a user type could shadow.
+                emitsR6("union S {\n  A(x: i32)\n  B\n}\nclass Record {\n  var id: i32 = 1\n}\nfn f(): bool => A(1) == A(1)\n",
+                        "typescript", {"{ [k: string]: unknown }"}, {"Record<"}, "#7 __pgUnionEq uses an index-signature type");
+                // #8: signature link names are structural, so differing erased signatures never share a name.
+                emitsR6("fn pairOf(p: (string, i32)): i32 => 1\nfn pairOf(p: (string?, i32)): i32 => 2\n", "csharp",
+                        {"pairOf____tuple__string__and__i32__end(", "pairOf____tuple__stringOrNull__and__i32__end("},
+                        {"pairOf__x("}, "#8 tuple parameters spell their elements (and nested nullability)");
+                emitsR6("fn runIt(f: (string) => i32): i32 => 1\nfn runIt(f: (string?) => i32): i32 => 2\n", "csharp",
+                        {"runIt____fn__string__to__i32__end(", "runIt____fn__stringOrNull__to__i32__end("}, {"runIt__x("},
+                        "#8 function-typed parameters spell their signature");
+                emitsR6("fn pairOf(p: (string, i32)): i32 => 1\nfn pairOf(p: (string?, i32)): i32 => 2\n", "php",
+                        {"function pairOf____tuple__string__and__i32__end(", "function pairOf____tuple__stringOrNull__and__i32__end("},
+                        {}, "#8 PHP's unique names differ for tuple parameters (one function namespace)");
+                emitsR6("class A_B {\n}\nclass A {\n}\nclass B {\n}\nfn f(x: A_B): i32 => 1\nfn f(x: A, y: B): i32 => 2\n",
+                        "typescript", {"function f$A$uB(", "function f$A_B("}, {}, "#8 a type name's own '_' cannot meet the parameter separator");
+                emitsR6("fn describe(s: string): string => s\nfn describe(s: string?): string => \"n\"\n", "csharp",
+                        {"describe__string(", "describe__stringOrNull("}, {}, "#8 the common forms keep their readable spelling");
+                // #9: T = unit from ANY function value that returns nothing; a value-returning one stays accepted.
+                refusesR6("fn apply<T>(f: () => T): T => f()\nfn hello() {\n}\nfn g() {\n  apply(hello)\n}\n", "csharp",
+                          "from a function value that returns no value", "#9 a named unit function binding T = unit is refused");
+                refusesR6("fn apply<T>(f: () => T): T => f()\nfn g() {\n  let h: () => unit = () => g()\n  apply(h)\n}\n",
+                          "csharp", "from a function value that returns no value", "#9 a () => unit local binding T = unit is refused");
+                acceptsR6("fn apply<T>(f: () => T): T => f()\nfn five(): i32 => 5\nfn g(): i32 => apply(five)\n", "csharp",
+                          "#9 a named value-returning function still infers T");
+                acceptsR6("fn apply<T>(f: () => T): T => f()\nfn g(): i32 {\n  let h: () => i32 = () => 4\n  return apply(h)\n}\n",
+                          "csharp", "#9 a value-returning function local still infers T");
+                acceptsR6("fn run(f: () => unit) {\n  f()\n}\nfn hello() {\n}\nfn g() {\n  run(hello)\n}\n", "csharp",
+                          "#9 a unit function into a non-generic () => unit slot is accepted");
+                // #10: every template context records its prelude requirement — each Python shape alone in a module.
+                const struct { const char* src; const char* shape; } pyShapes[] = {
+                    {"class Fmt {\n  static fn show(): string => \"s\"\n}\n", "@builtins.staticmethod"},
+                    {"class Box {\n  var v: string = \"p\"\n  let label: string => this.v\n}\n", "@builtins.property"},
+                    {"fn total(n: i32): i32 {\n  var s = 0\n  for i in 0..n {\n    s += i\n  }\n  return s\n}\n", "builtins.range("},
+                    {"class Oops : Error {\n  constructor(m: string) {\n    super(m)\n  }\n}\nfn g(k: i32): i32 {\n  try {\n    if k > 5 {\n"
+                     "      throw Oops(\"x\")\n    }\n  } catch (e: Oops) when (k > 0) {\n    return 1\n  }\n  return 0\n}\n",
+                     "builtins.isinstance(__e"},
+                };
+                for (const auto& sh : pyShapes) {
+                    EmitResult r = compileStd(sh.src, findTarget("python"));
+                    check(r.ok && has(r.code, sh.shape) && has(r.code, "import builtins\n"),
+                          std::string("r6 #10: a Python module using `builtins` only through ") + sh.shape + " imports it");
+                }
+                // ...and statically: every Python manifest string that spells `builtins.` sits in a rule that requires
+                // `pyBuiltins` (a template array holding the require), a binding that lists it, or a prelude that
+                // `preludeRequires` it.
+                {
+                    std::string text;
+                    cli::readFile(cli::executablePath().parent_path() / "plugins" / "python" / "polyglot-plugin.json", text);
+                    std::string err;
+                    const json::Value doc = json::parse(text, err);
+                    std::set<std::string> uncovered;
+                    auto isReq = [](const json::Value& v) {
+                        return v.kind == json::Value::Kind::Object && v["fn"].asString() == "require" &&
+                               !v["args"].items().empty() && v["args"].items()[0].asString() == "pyBuiltins";
+                    };
+                    std::function<void(const json::Value&, bool, const std::string&)> walk =
+                        [&](const json::Value& v, bool covered, const std::string& where) {
+                            if (v.kind == json::Value::Kind::String) {
+                                if (!covered && has(v.asString(), "builtins.")) uncovered.insert(where);
+                                return;
+                            }
+                            bool arrCovered = covered;
+                            for (const auto& a : v.items()) if (isReq(a)) arrCovered = true;
+                            for (const auto& a : v.items()) walk(a, arrCovered, where);
+                            bool objCovered = covered;
+                            for (const auto& r : v["requires"].items()) if (r.asString() == "pyBuiltins") objCovered = true;
+                            for (const auto& [k, m] : v.members) {
+                                if (k == "identifiers") continue;
+                                walk(m, objCovered, where.empty() ? k : where + "." + k);
+                            }
+                        };
+                    const json::Value& spec = doc["spec"].isNull() ? doc : doc["spec"];
+                    for (const auto& [k, m] : doc.members) {
+                        if (k == "spec" || k == "preludes") continue;
+                        walk(m, false, k);
+                    }
+                    for (const auto& [k, m] : spec.members) {
+                        if (k == "preludes" || k == "identifiers") continue;
+                        if (&spec != &doc) walk(m, false, "spec." + k);
+                    }
+                    const json::Value& preludes = spec["preludes"].isNull() ? doc["preludes"] : spec["preludes"];
+                    const json::Value& preqs = spec["preludeRequires"].isNull() ? doc["preludeRequires"] : spec["preludeRequires"];
+                    for (const auto& [k, m] : preludes.members) {
+                        bool req = k == "pyBuiltins";
+                        for (const auto& r : preqs[k].items()) if (r.asString() == "pyBuiltins") req = true;
+                        if (!req && m.kind == json::Value::Kind::String && has(m.asString(), "builtins.")) uncovered.insert("preludes." + k);
+                    }
+                    std::string list;
+                    for (const auto& u : uncovered) list += " " + u;
+                    check(err.empty() && uncovered.empty(),
+                          "r6 #10: every Python template spelling `builtins.` requires pyBuiltins (uncovered:" + list + ")");
+                }
+                // Part 2 — TS: a class named `Object` is refused (TS2725 under nodenext); its other bindings are fine.
+                refusesR6("class Object {\n  var v: i32 = 2\n}\n", "typescript", "class name 'Object' is refused on target 'typescript'",
+                          "a class named Object is refused on TS (TS2725)");
+                refusesR6("record Object(v: i32)\n", "typescript", "TS2725", "a record named Object is refused on TS");
+                acceptsR6("class Object {\n  var v: i32 = 2\n}\n", "csharp", "a class named Object stays accepted on C#");
+                acceptsR6("enum Object { A }\nclass H {\n  var Object: i32 = 1\n}\nclass Symbol {\n}\nfn f(): i32 {\n  let Object = 2\n  return Object\n}\n",
+                          "typescript", "an enum, field, local named Object and a class Symbol stay accepted on TS");
+                // Part 2 — TS: an extension sharing a name is emitted under its own free-function name.
+                emitsR6("extension fn i32.twice(): i32 => this * 2\nlet twice = 7\nfn f(): i32 => 3.twice() + twice\n",
+                        "typescript", {"function twice$i32(", "twice$i32(3)", "let twice"}, {"function twice("},
+                        "an extension named like a module value becomes twice$i32 on TS");
+                emitsR6("extension fn i32.twice(): i32 => this * 2\nlet twice = 7\nfn f(): i32 => 3.twice() + twice\n",
+                        "csharp", {"twice(this int self)", "3.twice()"}, {"twice__i32"}, "C# keeps the extension method's name");
+                emitsR6("extension fn i32.twice(): i32 => this * 2\nfn f(): i32 => 3.twice()\n", "typescript",
+                        {"function twice(", "twice(3)"}, {"$i32"}, "a lone extension keeps its plain name");
+                // Part 2 — TS: a `null` initializer is widened to the declared type (tsc narrows `let x: T | null = null`).
+                emitsR6("fn f(): string {\n  let t: string? = null\n  return t ?? \"n\"\n}\n", "typescript",
+                        {"const t: (string | null) = null as (string | null);"}, {}, "TS widens a null initializer");
+                emitsR6("fn f(): string {\n  let t: string? = null\n  return t ?? \"n\"\n}\n", "csharp", {"string? t = null;"},
+                        {" as "}, "C# keeps the bare null initializer");
+                // Part 2 — hints follow the slot kind; a nullable no-parameter function type is inferable.
+                acceptsR6("fn pick(): (() => unit)? => null\nfn f() {\n  let cb = pick()\n  if cb != null {\n    cb()\n  }\n}\n",
+                          "csharp", "let cb = pick() with a (() => unit)? result is inferable");
+                {
+                    EmitResult r = compileStd("fn f() {\n  var xs = []\n}\n", findTarget("csharp"));
+                    bool hint = false;
+                    for (const auto& d : r.diagnostics) if (has(d.message, "'var xs: List<i32> = []'")) hint = true;
+                    check(!r.ok && hint, "r6: an empty list literal's hint is a list annotation");
+                }
+                // Part 2 — i32 into a NULLABLE wider slot widens (TS BigInt); narrowing into one needs a cast.
+                emitsR6("fn f(a: i32): i64? => a\n", "typescript", {"BigInt(a)"}, {}, "an i32 into i64? widens on TS");
+                emitsR6("fn f(c: bool, a: i32): i64? => if c { a } else { null }\n", "typescript", {"BigInt(a)"}, {},
+                        "an i32 arm into an i64? return widens on TS");
+                refusesR6("fn f(b: i64): i32? => b\n", "csharp", "cannot implicitly convert i64 to i32?", "i64 into i32? needs a cast");
+                acceptsR6("fn f(): u8? => 5\nfn g(): i64? => 5\nfn h(): f64? => 1\n", "csharp", "literals into nullable numeric slots stay accepted");
+                // Part 2 — overloads differing only in nullability: a maybe-null argument binds the nullable member.
+                emitsR6("fn show(s: string): string => s\nfn show(s: string?): string => \"n\"\nfn mk(): string? => null\n"
+                        "fn f(): string => show(mk()) + show(null) + show(\"x\")\n", "typescript",
+                        {"show$stringOrNull(mk())", "show$stringOrNull(null)", "show$string(\"x\")"}, {}, "nullable arguments bind the nullable overload");
+                // Part 2 — `==` on function values is refused; the null test stays accepted.
+                refusesR6("fn f(): bool {\n  let k: () => i32 = () => 1\n  return k == (() => 1)\n}\n", "csharp",
+                          "'==' on a function value is refused", "== on function values is refused");
+                acceptsR6("fn pick(): (() => i32)? => null\nfn f(): bool {\n  let k = pick()\n  return k != null\n}\n", "csharp",
+                          "a function value's null test stays accepted");
+                // Part 2 — PHP concatenates operands the lambda's slot types as strings.
+                emitsR6("fn mapS(f: (string) => string): string => f(\"q\")\nfn g(): string => mapS(s => s + \"!\")\n", "php",
+                        {"$s . \"!\""}, {"$s + \"!\""}, "PHP concatenates a slot-typed lambda parameter");
+                emitsR6("fn g(): string {\n  let f = () => \"x\"\n  return f() + \"|\" + \"z\"\n}\n", "php", {"$f() . \"|\" . \"z\""}, {},
+                        "PHP concatenates a typed lambda local's result");
+                emitsR6("fn f(): string => \"top\"\nfn k(): string {\n  let f = () => \"loc\"\n  return f()\n}\n", "csharp",
+                        {"return f();"}, {"PolyglotProgram.f()"}, "a local lambda shadowing a function is called through its value");
+                // Part 2 — C#: a generic T? compared with null is a presence test (no `(T?)` switch arms: CS8506).
+                emitsR6("fn has<T>(a: T?): bool => a != null\n", "csharp", {"=> true", "=> false"}, {"(T?)"},
+                        "a generic T? null test matches on the case");
+                // Part 2 — Python parenthesizes a lambda operand of a conditional expression.
+                emitsR6("fn pick(b: bool): (() => i32)? => if b { () => 1 } else { null }\n", "python",
+                        {"((lambda : 1) if b else None)"}, {}, "Python wraps a lambda before ` if `");
+            }
+        }
+
+        // ---- P40 slice 9: Map<K, V> (B4) — the IMapKey bound, non-nullable V, snapshots, the four bindings ----
+        {
+            // Keys: string and the integer scalars only; every refusal names its reason.
+            for (const char* k : {"string", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"})
+                check(typeErr((std::string("fn f(m: Map<") + k + ", i32>): i32 => m.count\n").c_str()).empty(),
+                      std::string("P40 s9: '") + k + "' satisfies IMapKey");
+            const struct { const char* key; const char* why; } refused[] = {
+                {"f64", "floating-point keys are refused"}, {"f32", "floating-point keys are refused"},
+                {"bool", "bool keys are refused"},          {"char", "char keys are refused"},
+                {"P", "record keys are refused"},           {"C", "class and interface keys are refused"},
+                {"string?", "a nullable key is refused"},   {"List<i32>", "only 'string' and the integer scalars"},
+                {"E", "only 'string' and the integer scalars"},
+            };
+            for (const auto& r : refused) {
+                const std::string src = std::string("record P(x: i32)\nclass C {\n  var x: i32 = 0\n}\nenum E { A }\n"
+                                                    "fn f() { let m = Map<") + r.key + ", i32>() }\n";
+                const std::string e = typeErr(src.c_str());
+                check(has(e, "does not satisfy the bound 'K: IMapKey'") && has(e, r.why),
+                      std::string("P40 s9: Map<") + r.key + ", _> is refused with its reason");
+            }
+            check(has(typeErr("record P(x: i32)\nfn f(m: Map<P, i32>) {}\n"), "record keys are refused"),
+                  "P40 s9: the key bound is checked on an annotation too");
+            check(typeErr("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\nfn g(m: Map<u8, bool>): i32 => f(m)\n").empty(),
+                  "P40 s9: a generic forwarding its own IMapKey-bounded K is accepted");
+            // V must not be nullable — pointing at `has`.
+            const std::string nv = typeErr("fn f() { let m = Map<string, i32?>() }\n");
+            check(has(nv, "type argument 'i32?' for 'V' of 'Map' must not be nullable") && has(nv, "'Map.has'"),
+                  "P40 s9: a nullable V is refused, pointing at Map.has");
+            // Not directly for-iterable — pointing at the snapshots.
+            const std::string it = typeErr("fn f(m: Map<string, i32>) {\n  for k in m {\n  }\n}\n");
+            check(has(it, "'Map<string, i32>' is not iterable") && has(it, "'.keys()' or '.values()'"),
+                  "P40 s9: `for k in m` is refused, pointing at keys()/values()");
+            check(typeErr("fn f(m: Map<string, i32>): i32 {\n  var n = 0\n  for k in m.keys() {\n    n = n + 1\n  }\n"
+                          "  for v in m.values() {\n    n = n + v\n  }\n  return n\n}\n").empty(),
+                  "P40 s9: the snapshots iterate (keys() is List<K>, values() is List<V>)");
+
+            // The bindings.
+            const std::string use = "fn f(m: Map<string, i32>): i32 => (m.get(\"a\") ?? 0) + (m.get(\"b\") ?? 0)\n"
+                                    "fn g(m: Map<string, i32>): bool => m.remove(\"a\")\n"
+                                    "fn h(m: Map<string, i32>): List<string> => m.keys()\n"
+                                    "fn mk(): Map<string, i32> => Map<string, i32>()\n"
+                                    "fn s(m: Map<string, i32>) { m.set(\"k\", 1) }\n";
+            EmitResult cs = compileStd(use, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "global::System.Collections.Generic.OrderedDictionary<string, int>") &&
+                      has(cs.code, "(m.TryGetValue(\"a\", out var __pg_t1) ? __pg_t1 : (int?)null)") &&
+                      has(cs.code, "(m.TryGetValue(\"b\", out var __pg_t2) ? __pg_t2 : (int?)null)") &&
+                      has(cs.code, "new global::System.Collections.Generic.List<string>(m.Keys)") &&
+                      has(cs.code, "m.Remove(\"a\")"),
+                  "P40 s9: C# OrderedDictionary, typed else-arm, unique temps, List snapshot");
+            EmitResult csg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("csharp"));
+            check(csg.ok && has(csg.code, "where K : notnull"), "P40 s9: C# spells the IMapKey bound `where K : notnull`");
+            EmitResult ts = compileStd(use + "fn n(m: Map<string, i32>): i32? => m.get(\"a\")\n", findTarget("typescript"));
+            check(ts.ok && has(ts.code, "(m.get(\"a\") ?? null)") && has(ts.code, "[...m.keys()]") &&
+                      has(ts.code, "new Map<string, number>()") && has(ts.code, "m.delete(\"a\")"),
+                  "P40 s9: TS Map, `?? null`, spread snapshot");
+            // P40 review A1: as the left operand of `??` the normalization is dropped — tsc >= 5.6 rejects
+            // `(m.get(k) ?? null) ?? d` as TS2871 (always nullish).
+            check(has(ts.code, "(m.get(\"a\") ?? 0)") && !has(ts.code, "?? null) ??"),
+                  "A1: TS `m.get(k) ?? d` emits no inner `?? null` (spec absentNormalize)");
+            EmitResult tsg = compileStd("fn f<K: IMapKey, V>(m: Map<K, V>): i32 => m.count\n", findTarget("typescript"));
+            check(tsg.ok && !has(tsg.code, "IMapKey"), "P40 s9: TS erases the IMapKey bound");
+            EmitResult py = compileStd(use, findTarget("python"));
+            check(py.ok && has(py.code, "(m.pop(\"a\", _PG_ABSENT) is not _PG_ABSENT)") && has(py.code, "_PG_ABSENT = builtins.object()") &&
+                      has(py.code, "builtins.list(m.keys())"),
+                  "P40 s9: Python dict, remove via a dedicated pop sentinel, list snapshot");
+            EmitResult pyNo = compileStd("fn f(m: Map<string, i32>): i32 => m.count\n", findTarget("python"));
+            check(pyNo.ok && !has(pyNo.code, "_PG_ABSENT"), "P40 s9: the Python sentinel is emitted only when remove is used");
+            EmitResult php = compileStd(use, findTarget("php"));
+            check(php.ok && has(php.code, "new \\ArrayObject([])") && has(php.code, "__pg_mget($m, \"a\")") &&
+                      has(php.code, "__pg_mkeys($m)") && has(php.code, "$m[__pg_mk(\"k\")] = 1") &&
+                      has(php.code, "is_int($k) ? $k : \"s\" . $k") && has(php.code, "substr($k, 1)"),
+                  "P40 s9: PHP \\ArrayObject with prefixed string keys, decoded by keys()");
+            EmitResult phpEq = compileStd("fn f(a: string, b: string): bool => a == b && a != \"01\"\n", findTarget("php"));
+            check(phpEq.ok && has(phpEq.code, "$a === $b") && has(phpEq.code, "$a !== \"01\""),
+                  "P40 s9: PHP string equality is strict (`\"01\" == \"1\"` is true under ==)");
+            // Records holding a Map compare by reference (Python would otherwise compare dicts by value).
+            EmitResult rec = compileStd("record H(m: Map<string, i32>, n: i32)\n", findTarget("python"));
+            check(rec.ok && has(rec.code, "self.m is other.m") && has(rec.code, "self.n == other.n"),
+                  "P40 s9: a record's Map field compares by reference on Python, like List");
+        }
     }
 
     // P4 — name / type resolution across the declaration surface.
@@ -580,6 +2690,17 @@ int main() {
         check(compileStd("expect fn unused(): i32\nactual(csharp) fn unused(): i32 => 1\nfn main() { print(1) }\n",
                          findTarget("python")).ok,
               "P9-V: an unused portable fn missing this target's actual is not refused");
+        // P40 review B5: the same call from a module value's INITIALIZER (`let SEP = sep()`) is refused too —
+        // it used to build with exit 0 and fail at runtime (Python NameError / PHP undefined function).
+        const char* topLet = "expect fn sep(): string\nactual(csharp) fn sep(): string => \"/\"\n"
+                             "actual(typescript) fn sep(): string => \"/\"\nlet SEP = sep()\nfn main() { print(SEP) }\n";
+        for (const char* t : {"python", "php"}) {
+            EmitResult r = compileStd(topLet, findTarget(t));
+            bool namedTop = false;
+            for (const auto& d : r.diagnostics) if (has(d.message, "no 'actual'") && has(d.message, t)) namedTop = true;
+            check(!r.ok && namedTop, std::string("B5: a portable call in a module initializer is refused on ") + t);
+        }
+        check(compileStd(topLet, findTarget("typescript")).ok, "B5: the module-initializer call compiles where the actual exists");
     }
     // P19 (1) — Python's two genuine target limits refuse out loud. Both previously emitted a silent
     // sentinel string (`__py_unsupported_block_lambda__` / `__py_unsupported_expr__`) into "valid" output —
@@ -1208,7 +3329,7 @@ int main() {
               "P14: generic union — C# record hierarchy + typed construction + typed pattern");
         EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "type Box<T> = { tag: \"Full\"; value: T } | { tag: \"Empty\" }")
-                    && has(ts.code, "{ tag: \"Full\", value: 5 }"),
+                    && has(ts.code, "{ tag: \"Full\" as const, value: 5 }"),
               "P14: generic union — TS tagged union + construction");
     }
 
@@ -1225,7 +3346,7 @@ int main() {
         check(cs.ok && has(cs.code, "new Some<int>(v)") && has(cs.code, "new None<int>()"),
               "P14: core Option — Some/None construct in C# (None typed from context)");
         EmitResult ts = compileStd(prog, findTarget("typescript"));
-        check(ts.ok && has(ts.code, "{ tag: \"Some\", value: v }") && has(ts.code, "{ tag: \"None\" }"),
+        check(ts.ok && has(ts.code, "{ tag: \"Some\" as const, value: v }") && has(ts.code, "{ tag: \"None\" as const }"),
               "P14: core Option — Some/None construct in TS");
     }
 
@@ -1336,7 +3457,7 @@ int main() {
         acceptsStd("fn main() { var d: List<i32> = [] }\n", "issue#27 Bug1: empty list WITH annotation is accepted");
         acceptsStd("fn main() { let e = [1, 2, 3] }\n",     "issue#27 Bug1: non-empty list infers without annotation");
         acceptsStd("fn main() { var d = List<i32>() }\n",   "issue#27 Bug1: List<i32>() constructor infers without annotation");
-        acceptsStd("fn main() { var x: i32? = null }\n",    "issue#27 Bug1: null WITH annotation is accepted");
+        acceptsStd("fn f(): i32? { var x: i32? = null\n  return x }\n", "issue#27 Bug1: null WITH annotation is accepted");
     }
 
     // Issue #27 Bug 1 (Slice 2, emission) — for a type-erased construction or a bare `null`, the emitter puts
@@ -1350,8 +3471,9 @@ int main() {
               "issue#27 Bug1: inferred List<i32>() local carries its type on the declaration (TS)");
         // A null local keeps its declared (parenthesized nullable) type on TS.
         EmitResult tn = compileStd("class Node {\n  var v: i32\n  constructor() { this.v = 0 }\n}\n"
-                                   "fn main() { var x: Node? = null\n  x = Node() }\n", findTarget("typescript"));
-        check(tn.ok && has(tn.code, "let x: (Node | null) = null;") && !has(tn.code, "let x = null;"),
+                                   "fn f(): Node? { var x: Node? = null\n  x = Node()\n  return x }\n", findTarget("typescript"));
+        // (P40 review r6: and the `null` initializer is widened back to it, or tsc narrows `x` to `null`)
+        check(tn.ok && has(tn.code, "let x: (Node | null) = null as (Node | null);") && !has(tn.code, "let x = null;"),
               "issue#27 Bug1: null local keeps its declared type on TS");
         // A non-empty literal local is unchanged — its type is inferable from the initializer (no annotation added).
         EmitResult te = compileStd("fn main() { let e = [1, 2, 3] }\n", findTarget("typescript"));
@@ -1417,8 +3539,8 @@ int main() {
             "fn shout(s: string): string => s.toUpper()\n"
             "fn main() {}\n";
         EmitResult cs = compileStd(prog, findTarget("csharp"));
-        check(cs.ok && has(cs.code, "s.ToUpper()") && !has(cs.code, "s.toUpper()"),
-              "P14b: bound string extension -> C# .ToUpper()");
+        check(cs.ok && has(cs.code, "s.ToUpperInvariant()") && !has(cs.code, "s.toUpper()"),
+              "P14b: bound string extension -> C# .ToUpperInvariant() (P40 A3: culture-free)");
         EmitResult ts = compileStd(prog, findTarget("typescript"));
         check(ts.ok && has(ts.code, "s.toUpperCase()"), "P14b: bound string extension -> JS .toUpperCase()");
     }
@@ -1458,7 +3580,7 @@ int main() {
         const char* js = R"({ "name":"demo", "scalarType":{"i32":"int"}, "intSuffix":{"i64":"L"},
             "binaryOp":{"==":"==="}, "delimited":{"tuple":{"open":"[","sep":", ","close":"]"}},
             "blockStyle":"colonIndent", "stmtEnd":"", "throwKeyword":"raise",
-            "trueLit":"True","falseLit":"False","nullLit":"None" })";
+            "trueLit":"True","falseLit":"False","nullLit":"None", "assignmentOrder":"targetFirst" })";
         SpecLoadResult r = loadBackendSpec(js);
         check(r.ok && r.spec.name == "demo" && r.spec.scalarType.at("i32") == "int" &&
               r.spec.binOp("==") == "===" && r.spec.blockStyle == BlockStyle::ColonIndent &&
@@ -1469,6 +3591,10 @@ int main() {
         // Missing name / unknown blockStyle fail loudly (never a silent bad spec).
         check(!loadBackendSpec(R"({"scalarType":{}})").ok, "P18: spec without 'name' is rejected");
         check(!loadBackendSpec(R"({"name":"x","blockStyle":"squiggly"})").ok, "P18: unknown blockStyle is rejected");
+        // P40 review r7: an error pushed without an early return still fails the load (it used to be dropped).
+        check(!loadBackendSpec(R"({"name":"x"})").ok, "r7: a spec without the required 'assignmentOrder' is rejected");
+        check(!loadBackendSpec(R"({"name":"x","assignmentOrder":"targetFirst","exprStmt":{"bogus":1}})").ok,
+              "r7: an unknown exprStmt key fails the load");
 
         // Round-trip: serialize → parse → equal struct.
         SpecLoadResult back = loadBackendSpec(backendSpecToJson(r.spec));
@@ -1614,23 +3740,32 @@ int main() {
               "P19: loadBackend rejects a duplicate name");
         // A minimal artifact missing nearly every rule: the coverage contract must name the first gap
         // (a construct with no rule and no declared stance).
-        check(!loadBackend(R"({"name":"stubby",
-                              "spec":{"name":"stubby"},"rules":{"Program":"x","Type":"x"}})", err) &&
+        check(!loadBackend(R"({"schema":2,"name":"stubby",
+                              "spec":{"name":"stubby","assignmentOrder":"targetFirst"},"rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "anti-silent-drop"),
               "P19: loadBackend refuses a plugin with undeclared coverage gaps");
         // A "native" capability claim with no rule behind it is also a lie the loader catches.
-        check(!loadBackend(R"({"name":"stubby2","spec":{"name":"stubby2"},
+        check(!loadBackend(R"({"schema":2,"name":"stubby2","spec":{"name":"stubby2","assignmentOrder":"targetFirst"},
                               "capabilities":{"patternMatching":"native"},
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "no rule"),
               "P19: loadBackend refuses coverage gaps regardless of claims");
+        // Review round 8: a schema-2 manifest from before `assignmentOrder` existed names the missing key and the
+        // schema that requires it (it used to say only "must be targetFirst or valueFirst").
+        check(!loadBackend(R"({"schema":2,"name":"olden","spec":{"name":"olden"},"rules":{"Program":"x","Type":"x"}})", err) &&
+                  has(err, "plugin 'olden'") && has(err, "missing required key 'assignmentOrder'") &&
+                  has(err, "manifest schema " + std::to_string(kPluginSchemaVersion) + " requires"),
+              "review r8: a manifest without 'assignmentOrder' fails naming the key and the manifest schema it expects");
+        check(!loadBackend(R"({"schema":2,"name":"olden2","spec":{"name":"olden2","assignmentOrder":"sideways"},"rules":{"Program":"x","Type":"x"}})", err) &&
+                  has(err, "'assignmentOrder' must be") && !has(err, "missing required key"),
+              "review r8: ... while a present but invalid value keeps the value diagnostic");
     }
 
     // ---- P37 slice 0: keyed capability vocabulary (closed + load-validated, umbrella fallback) ----------
     {
         // An unknown capability key is a LOAD error — never a silently-defaulted-to-native typo.
         std::string err;
-        check(!loadBackend(R"({"name":"stubby3","spec":{"name":"stubby3"},
+        check(!loadBackend(R"({"schema":2,"name":"stubby3","spec":{"name":"stubby3","assignmentOrder":"targetFirst"},
                               "capabilities":{"operatorOverloadng":"native"},
                               "rules":{"Program":"x","Type":"x"}})", err) &&
                   has(err, "unknown capability key 'operatorOverloadng'"),
@@ -1738,6 +3873,7 @@ int main() {
         const char* vec = "class Vec {\n  var x: i32\n  constructor(x: i32) { this.x = x }\n"
                           "  operator fn plus(o: Vec): Vec => Vec(this.x + o.x)\n"
                           "  operator fn eq(o: Vec): bool => this.x == o.x\n"
+                          "  operator fn hash(): i32 => this.x\n"
                           "  operator fn neg(): Vec => Vec(0 - this.x)\n"
                           "  operator fn band(o: Vec): Vec => Vec(this.x & o.x)\n}\n";
         // C5: TS moves to static-on-type; C#/Python stay native.
@@ -1792,7 +3928,8 @@ int main() {
 
         // C6: PHP gains :eq (+:indexers) while :arithmetic stays refused.
         std::string eqOnly = "class M {\n  var c: i32\n  constructor(c: i32) { this.c = c }\n"
-                             "  operator fn eq(o: M): bool => this.c == o.c\n}\n"
+                             "  operator fn eq(o: M): bool => this.c == o.c\n"
+                             "  operator fn hash(): i32 => this.c\n}\n"
                              "fn main() { print(M(1) == M(1)) }\n";
         EmitResult phpEq = compileStd(eqOnly, findTarget("php"));
         check(phpEq.ok && has(phpEq.code, "->eq("), "P37 s3 (C6): PHP supports user eq (->eq call)");
@@ -1979,15 +4116,27 @@ int main() {
               "P19: the same name compiles fine on a target that doesn't reserve it");
         EmitResult py = compile("fn _pg_idiv(a: i32, b: i32): i32 {\n  return a\n}\nfn main() {}\n",
                                 findTarget("python"));
-        check(!py.ok && has(py.diagnostics[0].message, "'_pg_idiv' is reserved by target 'python'"),
-              "P19: a python-runtime-helper fn name refuses on python");
+        check(!py.ok && has(py.diagnostics[0].message, "'_pg_idiv' uses a prefix reserved for the Polyglot std library"),
+              "P19/P40 s8: a `_pg_` runtime-helper fn name refuses (std-reserved prefix, every target)");
+        EmitResult pyU = compile("fn main() {\n  let _PG_UPPER = 1\n}\n", findTarget("python"));
+        check(!pyU.ok && has(pyU.diagnostics[0].message, "'_PG_UPPER' is reserved by target 'python'"),
+              "P19/P40 s8: a Python prelude table name (`_PG_*`) refuses on python");
         EmitResult cs = compile("record PolyglotProgram(x: i32)\nfn main() {}\n", findTarget("csharp"));
         check(!cs.ok && has(cs.diagnostics[0].message, "'PolyglotProgram' is reserved by target 'csharp'"),
               "P19: a C#-scaffolding type name ('PolyglotProgram') refuses on csharp");
         // Prefix families: `__w*` covers every lowering temp, not just one spelled-out name.
         EmitResult w = compile("fn main() {\n  let __w1 = 1\n  var y = __w1\n}\n", findTarget("csharp"));
-        check(!w.ok && has(w.diagnostics[0].message, "'__w1' is reserved"),
-              "P19: a reserved prefix family ('__w*') matches '__w1'");
+        bool wReserved = false, wCompiler = false;
+        for (const auto& d : w.diagnostics) {
+            if (has(d.message, "'__w1' is reserved")) wReserved = true;
+            if (has(d.message, "'__w1' contains '__', which is reserved for compiler-generated names")) wCompiler = true;
+        }
+        check(!w.ok && wReserved, "P19: a reserved prefix family ('__w*') matches '__w1'");
+        // P40 review r4 (part 2): `__` anywhere in a user name is the compiler's, on every target.
+        check(wCompiler, "r4: a user name containing '__' is refused language-wide");
+        EmitResult w2 = compile("fn parse__string(s: string): i32 => 1\nfn main() {}\n", findTarget("typescript"));
+        check(!w2.ok && has(w2.diagnostics[0].message, "'parse__string' contains '__'"),
+              "r4: an infix '__' (the overload signature-name spelling) is refused too");
         // Runtime globals get their own shadowing message.
         EmitResult g = compile("fn main() {\n  let console = 1\n  var y = console\n}\n", findTarget("typescript"));
         check(!g.ok && has(g.diagnostics[0].message, "'console' shadows a runtime global of target 'typescript'"),
@@ -2298,7 +4447,7 @@ int main() {
         const std::string endMark(1024, '\0');
 
         // A plain npm-shaped archive: dir + manifest under package/.
-        const std::string manifest = "{ \"schema\": 1, \"name\": \"demo\" }";
+        const std::string manifest = "{ \"schema\": 2, \"name\": \"demo\" }";
         std::string ar = hdr("package/", 0, '5') +
                          hdr("package/polyglot-plugin.json", manifest.size(), '0') + pad512(manifest) + endMark;
         std::vector<cli::TarEntry> es;
@@ -2546,7 +4695,7 @@ int main() {
         setenv("POLYGLOT_CACHE", cache.string().c_str(), 1);
 #endif
         const std::string name = "@mintplayer/polyglot-target-python";
-        const std::string manifest = "{ \"schema\": 1, \"name\": \"python\" }";
+        const std::string manifest = "{ \"schema\": 2, \"name\": \"python\" }";
         std::string err, loaded;
 
         check(!cli::cacheLoad(name, "0.3.1", "", loaded, err) && has(err, "no entry"),
@@ -2563,7 +4712,7 @@ int main() {
 
         // Tamper with the cached manifest on disk: the re-hash refuses it.
         cli::writeFile(cache / "@mintplayer" / "polyglot-target-python" / "0.3.1" / "polyglot-plugin.json",
-                       "{ \"schema\": 1, \"name\": \"python\", \"evil\": true }");
+                       "{ \"schema\": 2, \"name\": \"python\", \"evil\": true }");
         check(!cli::cacheLoad(name, "0.3.1", "sha512-abc", loaded, err) && has(err, "hash mismatch"),
               "P30 s2: a tampered cache entry reads as absent-with-reason");
         // And a fresh store over the refused entry heals it.
@@ -2729,6 +4878,8 @@ int main() {
             const cli::ResolveResult r = cli::resolvePluginDependencies(pc3, fake, false, &st);
             check(!r.ok && r.messages.size() == 1 && has(r.messages[0], "integrity mismatch"),
                   "P30 s3: a tarball failing its SRI check is refused with the mismatch named");
+            check(r.networkMisses.empty(),
+                  "P40 review r6: a tarball failing its SRI check is an error, never a network miss (it was 'not verified')");
             std::string m, err;
             check(!cli::cacheLoad(pkg3, "3.0.0", "", m, err) && findBackend("pydemo3") == nullptr,
                   "P30 s3: nothing is cached or registered from a refused tarball");
@@ -2760,6 +4911,48 @@ int main() {
             const cli::ResolveResult r = cli::resolvePluginDependencies(pc5, fake, false, &st);
             check(!r.ok && has(r.messages[0], "offline (test)"),
                   "P30 s3: offline-with-no-lock surfaces the transport diagnostic");
+            check(r.networkMisses.size() == 1,
+                  "P40 review r6: a GET that got no answer (transport failure) is a network miss");
+        }
+
+        // P40 review r6: the registry ANSWERING with a non-200 status (a 404 for an unpublished package) is an
+        // answer, not a missing network — an error, never degraded to "not verified".
+        {
+            cli::PgConfig pc404 = pc;
+            pc404.dependencies = {{"pydemo404", "^1.0.0"}};
+            const cli::HttpGet answers404 = [&](const std::string& url, const std::vector<std::string>&, std::string&,
+                                                std::string& err) -> cli::HttpOutcome {
+                err = "http: status 404 for " + url;
+                return cli::HttpOutcome::Kind::Response;
+            };
+            cli::ResolveState st;
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc404, answers404, false, &st);
+            check(!r.ok && has(r.messages[0], "status 404") && r.networkMisses.empty(),
+                  "P40 review r6: a registry 404 is a dependency error, not a network miss");
+            const cli::ResolveResult again = cli::resolvePluginDependencies(pc404, answers404, false, &st);
+            check(!again.ok && again.networkMisses.empty(), "P40 review r6: ... also when replayed from the memo");
+        }
+
+        // P40 review r7: the status classification every real client shares — a 5xx (a proxy with no upstream, an
+        // unavailable registry) is a network miss; a 4xx stays the registry's answer.
+        {
+            std::string e;
+            check(cli::httpStatusOutcome(502, "u", e).kind == cli::HttpOutcome::Kind::Transport && has(e, "status 502") &&
+                      cli::httpStatusOutcome(503, "u", e).kind == cli::HttpOutcome::Kind::Transport &&
+                      cli::httpStatusOutcome(504, "u", e).kind == cli::HttpOutcome::Kind::Transport,
+                  "P40 review r7: a registry/proxy 502/503/504 is a network miss (Transport)");
+            check(cli::httpStatusOutcome(404, "u", e).kind == cli::HttpOutcome::Kind::Response &&
+                      cli::httpStatusOutcome(403, "u", e).kind == cli::HttpOutcome::Kind::Response &&
+                      cli::httpStatusOutcome(301, "u", e).kind == cli::HttpOutcome::Kind::Response,
+                  "P40 review r7: a 4xx (or any other non-200 answer) stays the registry's answer (Response)");
+            cli::PgConfig pc503 = pc;
+            pc503.dependencies = {{"pydemo503", "^1.0.0"}};
+            const cli::HttpGet answers503 = [&](const std::string& url, const std::vector<std::string>&, std::string&,
+                                                std::string& err) -> cli::HttpOutcome {
+                return cli::httpStatusOutcome(503, url, err);
+            };
+            const cli::ResolveResult r = cli::resolvePluginDependencies(pc503, answers503, false, nullptr);
+            check(!r.ok && r.networkMisses.size() == 1, "P40 review r7: a registry 503 is a network miss, as offline is");
         }
 
         // G37 (wave 2): a lock pin OUTSIDE an edited range re-resolves (online), and REFUSES offline —
@@ -2992,6 +5185,19 @@ int main() {
         const cli::PgConfig bad = cli::loadPgConfig(base);
         check(!bad.errors.empty() && has(bad.errors[0], "pattern") && has(bad.errors[0], "output"),
               "P30 s7: an include rule missing pattern/output is a manifest error, not a silent no-op");
+        // Review round 5 — CLI half: `"target": []` is refused (it read as "every target"), like `"targets": []`.
+        cli::writeFile(base / "pgconfig.json", "{ \"include\": [ { \"pattern\": \"*.pg\", \"target\": [], \"output\": \"gen/%(Filename)\" } ] }");
+        const cli::PgConfig emptyTarget = cli::loadPgConfig(base);
+        check(emptyTarget.errors.size() == 1 && has(emptyTarget.errors[0], "\"target\" is an empty list"),
+              "review r5: an include rule's \"target\": [] is a config error");
+        // Review round 5 (gating 1): where a route starts — the config folder climbed by the template's leading `..`.
+        const fs::path cfgDir = cli::absoluteDir(base / "proj");
+        check(cli::includeRouteRoot(cfgDir, "gen/%(Filename)").empty() && cli::includeRouteRoot(cfgDir, "%(Filename)").empty(),
+              "review r5: a route inside the config folder starts at the config folder (no extra root)");
+        check(cli::includeRouteRoot(cfgDir, "../web/gen/%(RecursiveDir)%(Filename)") == cli::absoluteDir(base) &&
+                  cli::includeRouteRoot(cfgDir, "..\\..\\x/%(Filename)") == cli::absoluteDir(base / "..") &&
+                  cli::includeRouteRoot(cfgDir, "gen/../../web/Gen/%(Filename)") == cli::absoluteDir(base),
+              "review r5: a route leaving the config folder starts where its leading `..` segments land");
         fs::remove_all(base, ec);
     }
 
@@ -3023,7 +5229,7 @@ int main() {
         // The vocabulary is CLOSED: an unknown style is a plugin LOAD ERROR, never a silent default —
         // that is what makes version skew loud (the `blockStyle` precedent).
         const std::string head =
-            "{\"schema\":1,\"name\":\"t\",\"spec\":{\"name\":\"t\"},"
+            "{\"schema\":2,\"name\":\"t\",\"spec\":{\"name\":\"t\",\"assignmentOrder\":\"targetFirst\"},"
             "\"rules\":{\"Program\":{\"line\":\"\"},\"Type\":{\"line\":\"\"}},";
         std::string err;
         check(!validateBackend(head + "\"originMapping\":{\"style\":\"dwarf\"}}", err) &&
@@ -3036,6 +5242,31 @@ int main() {
         err.clear();
         check(!validateBackend(head + "\"originMapping\":\"yes\"}", err) && has(err, "must be an object"),
               "P38 s3: a non-object originMapping refuses");
+        // Review round 7 — language half: the import-binding kinds are a closed, validated vocabulary.
+        {
+            auto anyError = [](const SpecLoadResult& r, const std::string& what) {
+                for (const auto& e : r.errors) if (e.find(what) != std::string::npos) return true;
+                return false;
+            };
+            SpecLoadResult bad = loadBackendSpec(R"({"name":"t","assignmentOrder":"targetFirst","typeOnlyImports":["record"]})");
+            check(!bad.ok && anyError(bad, "typeOnlyImports: unknown declaration kind 'record'"),
+                  "r7: an unknown typeOnlyImports kind refuses at load");
+            SpecLoadResult notArr = loadBackendSpec(R"({"name":"t","assignmentOrder":"targetFirst","unboundImports":"union"})");
+            check(!notArr.ok && anyError(notArr, "unboundImports must be an array"),
+                  "r7: a non-array unboundImports refuses at load");
+            SpecLoadResult good = loadBackendSpec(R"({"name":"t","assignmentOrder":"targetFirst","typeOnlyImports":["union"],"unboundImports":["unionCase"]})");
+            check(good.ok && good.spec.typeOnlyImports == std::vector<std::string>{"union"} &&
+                      good.spec.unboundImports == std::vector<std::string>{"unionCase"},
+                  "r7: the import-binding kinds load");
+        }
+        const Backend* tsb = findBackend("typescript");
+        const Backend* pyb = findBackend("python");
+        check(tsb && tsb->typeOnlyImports() == std::vector<std::string>{"union", "interface"} &&
+                  tsb->unboundImports() == std::vector<std::string>{"unionCase"},
+              "r7: TS imports a union/interface with `import type` and drops a union case's name");
+        check(pyb && pyb->typeOnlyImports().empty() &&
+                  pyb->unboundImports() == std::vector<std::string>{"union", "unionCase"},
+              "r7: Python drops a union's and a union case's name from an import (an interface is an ABC: imported)");
     }
 
     // ---- P38/issue #69 slice 8: Base64-VLQ + the v3 source map ------------------------------------
@@ -3163,11 +5394,13 @@ int main() {
         EmitResult cs = compileStd(prog, findTarget("csharp"));
         check(cs.ok && has(cs.code, "char.ConvertToUtf32("), "issue#34: C# codePointAt -> char.ConvertToUtf32");
         EmitResult ts = compileStd(prog, findTarget("typescript"));
-        check(ts.ok && has(ts.code, ".codePointAt(0)!"), "issue#34: TS codePointAt -> .codePointAt()!");
+        check(ts.ok && has(ts.code, "_pg_codePointAt(\"A\", 0)") && has(ts.code, "self.codePointAt(index)!"),
+              "issue#34/P40 s8: TS codePointAt -> the _pg_codePointAt guard over .codePointAt()!");
         EmitResult py = compileStd(prog, findTarget("python"));
         check(py.ok && has(py.code, "ord("), "issue#34: Python codePointAt -> ord()");
         EmitResult php = compileStd(prog, findTarget("php"));
-        check(php.ok && has(php.code, "ord(substr("), "issue#34: PHP codePointAt -> ord(substr()) (byte-consistent, no mbstring)");
+        check(php.ok && has(php.code, "__pg_u16_cp($self_, $index)"),
+              "issue#34/P40 s8: PHP codePointAt -> the UTF-16 helper (iconv, no mbstring)");
         EmitResult castChar = compileStd("fn main() {\n  var c = 'A'\n  print((i32)c)\n}\n", findTarget("csharp"));
         check(!castChar.ok, "issue#34: (i32) on a char is rejected");
         bool named = false;
@@ -3274,8 +5507,8 @@ int main() {
         // Python: the interface exists as an abc.ABC class, so the implements clause resolves at import.
         EmitResult py = compileStd(iface +
             "class Net : IPgNet {\n  fn forward(x: i32): i32 => x + 1\n}\nfn main() {}\n", findTarget("python"));
-        check(py.ok && has(py.code, "import abc") && has(py.code, "class IPgNet(abc.ABC):") &&
-                  has(py.code, "@abc.abstractmethod") && has(py.code, "class Net(IPgNet):"),
+        check(py.ok && has(py.code, "import abc as _PG_abc") && has(py.code, "class IPgNet(_PG_abc.ABC):") &&
+                  has(py.code, "@_PG_abc.abstractmethod") && has(py.code, "class Net(IPgNet):"),
               "issue#29: Python emits the interface as an abc.ABC base");
         // #38 (issue #29 follow-up): a typed match binding IS now a runtime type test on a concrete class —
         // it compiles and emits a C# declaration pattern (`Disk d`), not a fake first-arm-always-wins.
@@ -3360,6 +5593,221 @@ int main() {
             "class C {\n  var x: i32\n  constructor(x: i32) { this.x = x }\n  fn get(): i32 => this.x\n}\nfn main() { print(C(3).get()) }\n",
             findTarget("csharp"));
         check(initOk.ok, "G11: field assigned in init passes");
+
+        // P40 review A9: definite assignment is per PATH through init, not "somewhere in init".
+        {
+            auto cls = [](const std::string& ctorBody) {
+                return "class C {\n  let x: i32\n  constructor(f: bool) {\n" + ctorBody +
+                       "  }\n}\nfn main() { print(C(true).x) }\n";
+            };
+            auto refusedWith = [&](const std::string& body, const std::string& frag) {
+                EmitResult r = compileStd(cls(body), findTarget("csharp"));
+                return !r.ok && !r.diagnostics.empty() && has(r.diagnostics[0].message, frag);
+            };
+            auto okWith = [&](const std::string& body) { return compileStd(cls(body), findTarget("csharp")).ok; };
+            check(refusedWith("    if f { this.x = 1 }\n", "not assigned on every path through init"),
+                  "P40 A9: a field assigned on one if-branch only is refused");
+            check(refusedWith("    if f { return }\n    this.x = 1\n", "returns before field 'x' is assigned"),
+                  "P40 A9: an early return before the assignment is refused (at the return)");
+            check(refusedWith("    while f { this.x = 1 }\n", "not assigned on every path through init"),
+                  "P40 A9: an assignment only inside a loop body is not definite");
+            check(okWith("    if f { this.x = 1 } else { this.x = 2 }\n"),
+                  "P40 A9: a field assigned on both branches passes");
+            check(okWith("    if f { throw Error(\"no\") }\n    this.x = 1\n"),
+                  "P40 A9: a throwing branch needs no assignment");
+            check(okWith("    this.x = 1\n    if f { return }\n"),
+                  "P40 A9: an early return after the assignment passes");
+            check(okWith("    try { this.x = 1 } finally { print(0) }\n"),
+                  "P40 A9: an assignment completing a try body passes");
+        }
+
+        // P40 review A9/B11: missing returns, unreachable code, self-comparison — one flow pass (flow.cpp).
+        {
+            auto refused = [](const std::string& src, const std::string& frag) {
+                EmitResult r = compileStd(src, findTarget("csharp"));
+                return !r.ok && !r.diagnostics.empty() && has(r.diagnostics[0].message, frag);
+            };
+            auto ok = [](const std::string& src) { return compileStd(src, findTarget("csharp")).ok; };
+            check(refused("fn f(x: i32): i32 {\n  if x > 0 { return 1 }\n}\nfn main() { print(f(1)) }\n",
+                          "can reach the end of its body without returning a value"),
+                  "P40 A9: a value-returning body with a reachable end is refused");
+            check(ok("fn f(x: i32): i32 {\n  if x > 0 { return 1 } else { return 2 }\n}\nfn main() { print(f(1)) }\n"),
+                  "P40 A9: if/else that both return needs no trailing return");
+            check(ok("fn f(x: i32): i32 {\n  while true {\n    if x > 0 { return x }\n  }\n}\nfn main() { print(f(1)) }\n"),
+                  "P40 A9: `while true` without break never completes (no trailing return)");
+            check(refused("fn f(x: i32): i32 {\n  while true {\n    if x > 0 { break }\n  }\n}\nfn main() { print(f(1)) }\n",
+                          "without returning a value"),
+                  "P40 A9: a `break` out of `while true` makes its end reachable");
+            check(ok("fn f(x: i32): string {\n  try {\n    if x > 0 { throw Error(\"a\") }\n    return \"n\"\n"
+                     "  } catch (e: Error) when (x > 5) {\n    return \"big\"\n  } catch (e: Error) {\n    return \"c\"\n  }\n}\n"
+                     "fn main() { print(f(1)) }\n"),
+                  "P40 A9: a try whose body and catches all return needs no trailing return");
+            // P40 follow-up: the same rule for a block lambda whose result (from the function type it flows into)
+            // is a value; a unit-result block lambda, or one whose every path returns/throws, passes.
+            const std::string applyFn = "fn apply(f: (i32) => i32, x: i32): i32 => f(x)\nfn run(f: (i32) => unit) { f(1) }\n";
+            check(refused(applyFn + "fn main() {\n  print(apply((n) => {\n    if n > 0 { return n }\n  }, 3))\n}\n",
+                          "this lambda can reach the end of its body without returning a value"),
+                  "P40 follow-up: a value-result block lambda with a reachable end is refused");
+            check(ok(applyFn + "fn main() {\n  print(apply((n) => {\n    if n > 0 { return n }\n    throw Error(\"neg\")\n  }, 3))\n}\n"),
+                  "P40 follow-up: a block lambda that returns or throws on every path passes");
+            check(ok(applyFn + "fn main() {\n  run((n) => {\n    if n > 0 { print(n) }\n  })\n}\n"),
+                  "P40 follow-up: a unit-result block lambda needs no return");
+            {
+                // P40 follow-up: PHP class statics. Only a literal-initialized `static let` is a `const`; any other
+                // static is a static property (`K::$x`), a non-literal initializer assigned right after the class.
+                EmitResult php = compileStd("fn seed(): i32 => 42\nclass K {\n  static let A: i32 = 7\n  static let B: i32 = seed()\n"
+                                            "  static var C: i32 = 1\n}\nfn main() {\n  K.C = K.C + K.B\n  print(K.A + K.C)\n}\n",
+                                            findTarget("php"));
+                check(php.ok && has(php.code, "const A = 7;") && has(php.code, "public static $B;") &&
+                          !has(php.code, "const B") && has(php.code, "public static $C = 1;") &&
+                          has(php.code, "K::$B = seed();") && has(php.code, "K::$C = ") && has(php.code, "K::A + K::$C"),
+                      "P40 follow-up: PHP `static let Y = f()` is a static property assigned after the class, not `const Y = f();`");
+            }
+            {
+                // P40 follow-up: a bare-name WRITE to a class static resolves like the read, in static and instance
+                // methods, and lowers to the qualified access on every target; compound ops too.
+                const std::string src = "class K {\n  static var C: i32 = 1\n  static fn up() {\n    C = C + 1\n    C += 2\n  }\n"
+                                        "  fn inst() { C = C * 3 }\n}\nfn main() {\n  K.up()\n  K().inst()\n  print(K.C)\n}\n";
+                EmitResult cs = compileStd(src, findTarget("csharp"));
+                EmitResult ts = compileStd(src, findTarget("typescript"));
+                EmitResult py = compileStd(src, findTarget("python"));
+                EmitResult php = compileStd(src, findTarget("php"));
+                check(cs.ok && has(cs.code, "K.C = K.C + 1;") && has(cs.code, "K.C += 2;") && has(cs.code, "K.C = K.C * 3;"),
+                      "P40 follow-up: C# bare static write `C = C + 1` lowers to the static access");
+                check(ts.ok && has(ts.code, "K.C = (K.C + 1 | 0);") && has(ts.code, "K.C = (K.C + 2 | 0);"),
+                      "P40 follow-up: TS bare static write lowers to `K.C`");
+                check(py.ok && has(py.code, "K.C = ((((K.C + 1)") && has(py.code, "K.C = ((((K.C + 2)"),
+                      "P40 follow-up: Python bare static write lowers to `K.C`");
+                check(php.ok && has(php.code, "K::$C = ((((K::$C + 1)") && has(php.code, "K::$C = ((((K::$C + 2)"),
+                      "P40 follow-up: PHP bare static write lowers to the static property `K::$C`");
+                // A local of the same name shadows the static for the write as for the read.
+                EmitResult sh = compileStd("class K {\n  static var C: i32 = 1\n  static fn f(): i32 {\n    var C = 5\n    C = C + 1\n"
+                                           "    return C\n  }\n}\nfn main() { print(K.f()) }\n", findTarget("csharp"));
+                check(sh.ok && has(sh.code, "C = C + 1;") && !has(sh.code, "K.C = "),
+                      "P40 follow-up: a local shadows a static of the same name for a bare write");
+                // Immutable members: `static let` (bare or qualified), `const`, a `let` field outside its own `init`.
+                check(refused("class K {\n  static let M: i32 = 7\n  static fn f() { M = M + 1 }\n}\nfn main() { K.f() }\n",
+                              "cannot assign to immutable static field 'K.M' (declared with 'static let')"),
+                      "P40 follow-up: a bare write to a `static let` is refused");
+                check(refused("class K {\n  static let M: i32 = 7\n}\nfn main() { K.M += 1 }\n",
+                              "cannot assign to immutable static field 'K.M'"),
+                      "P40 follow-up: a qualified write to a `static let` is refused (C# CS0198, a PHP const)");
+                check(refused("class K {\n  let y: i32 = 1\n  fn f() { this.y = 2 }\n}\nfn main() { K().f() }\n",
+                              "cannot assign to immutable field 'K.y' (declared with 'let') outside a constructor of 'K'"),
+                      "P40 follow-up: a `let` field written outside a constructor is refused (C# readonly, CS0191)");
+                check(refused("class K {\n  let y: i32 = 1\n}\nfn main() {\n  let k = K()\n  k.y = 2\n}\n",
+                              "cannot assign to immutable field 'K.y'"),
+                      "P40 follow-up: a `let` field written through another receiver is refused");
+                check(ok("class K {\n  let y: i32\n  constructor(v: i32) { this.y = v }\n}\nfn main() { print(K(3).y) }\n"),
+                      "P40 follow-up: a `let` field is assigned through `this` in its own constructor");
+                check(refused("class K {\n  let y: i32 = 0\n  constructor(v: i32) {\n    let f = () => { this.y = v }\n    f()\n  }\n}\n"
+                              "fn main() { print(K(3).y) }\n", "cannot assign to immutable field 'K.y'"),
+                      "P40 follow-up: a `let` field cannot be assigned from a lambda inside a constructor (C# CS1673/CS0191)");
+            }
+            {
+                // P40: a compound `t op= v` is the binary op plus a store. C# keeps its native compound (the
+                // `nativeCompoundAssign` trait — it narrows back implicitly); TS/Python/PHP expand it so the
+                // Binary rule's §3.C wrap, integer division and concatenation apply, with an impure
+                // receiver/index evaluated once into a temp, and fold back to `op=` where the rule is plain.
+                const std::string src =
+                    "import { List } from \"std.collections\"\n"
+                    "class P {\n  var n: i32 = 0\n  var big: i64 = 0\n  var s: string = \"\"\n}\n"
+                    "fn at(i: i32): i32 => i\nfn pick(p: P): P => p\n"
+                    "fn main() {\n  var a: i32 = 1\n  a += 2\n  a /= 2\n  var w: i64 = 1i64\n  w += 2i64\n"
+                    "  var b: u8 = 1u8\n  b -= 2u8\n  var f: f64 = 1.0\n  f += 0.5\n  var t = \"x\"\n  t += \"y\"\n"
+                    "  var xs: List<i32> = [1, 2]\n  xs[at(0)] += 1\n  let p = P()\n  pick(p).n *= 2\n  p.big += 1\n"
+                    "  p.s += \"z\"\n  print(a)\n  print(w)\n  print(b)\n  print(f)\n  print(t)\n  print(xs[0])\n}\n";
+                EmitResult cs = compileStd(src, findTarget("csharp"));
+                EmitResult ts = compileStd(src, findTarget("typescript"));
+                EmitResult py = compileStd(src, findTarget("python"));
+                EmitResult php = compileStd(src, findTarget("php"));
+                check(cs.ok && has(cs.code, "a += 2;") && has(cs.code, "a /= 2;") && has(cs.code, "b -= 2;") &&
+                          has(cs.code, ".at(0)] += 1;") && has(cs.code, ".pick(p).n *= 2;") && has(cs.code, "t += \"y\";") &&
+                          has(cs.code, "p.big += 1L;") &&
+                          !has(cs.code, "__c"),
+                      "P40: C# keeps native compounds (nativeCompoundAssign) — no expansion, no temps");
+                check(ts.ok && has(ts.code, "a = (a + 2 | 0);") && has(ts.code, "a = (a / 2 | 0);") &&
+                          has(ts.code, "w = BigInt.asIntN(64, w + 2n);") && has(ts.code, "b = (b - 2 & 0xff);") &&
+                          has(ts.code, "f += 0.5;") && has(ts.code, "t += \"y\";") && has(ts.code, "p.s += \"z\";") &&
+                          has(ts.code, "p.big = BigInt.asIntN(64, p.big + 1n);"),
+                      "P40: TS integer compounds wrap like the binary op; float/string compounds fold back to `op=`");
+                check(ts.ok && has(ts.code, "const __c0 = at(0);") && has(ts.code, "xs[__c0] = (xs[__c0] + 1 | 0);") &&
+                          has(ts.code, "const __c1 = pick(p);") && has(ts.code, "__c1.n = Math.imul(__c1.n, 2);"),
+                      "P40: an impure index/receiver of a compound target is evaluated once into a temp");
+                check(py.ok && has(py.code, "a = ((((a + 2)") && has(py.code, "_pg_idiv(a, 2)") &&
+                          has(py.code, "b = ((b - 2) & 0xff)") && has(py.code, "t += \"y\"") &&
+                          has(py.code, "xs[__c0] = ((((xs[__c0] + 1)"),
+                      "P40: Python integer compounds wrap and floor-free divide like the binary op");
+                check(php.ok && has(php.code, "$a = (((($a + 2)") && has(php.code, "$t = $t . \"y\";") &&
+                          has(php.code, "$p->s = $p->s . \"z\";") && !has(php.code, "+= \"") &&
+                          has(php.code, "$xs[$__c0] = (((($xs[$__c0] + 1)"),
+                      "P40: PHP string compounds concatenate with `.` (a `+=` on a string is a TypeError)");
+                check(refused("class P {\n  var n: i32 = 0\n}\nfn main() {\n  let p = P()\n  p.n += 1.5\n}\n",
+                              "cannot implicitly convert f64 to i32"),
+                      "P40: a compound on a field converts its value into the slot (an f64 into an i32 field is refused)");
+            }
+            check(refused("fn f(): i32 {\n  throw Error(\"x\")\n  return 1\n}\nfn main() { print(f()) }\n", "unreachable code"),
+                  "P40 B11: a statement after `throw` is refused as unreachable");
+            check(refused("fn f(x: i32) {\n  for i in 0..x {\n    continue\n    print(i)\n  }\n}\nfn main() { f(1) }\n",
+                          "unreachable code"),
+                  "P40 B11: a statement after `continue` is refused as unreachable");
+            check(refused("fn f(x: f64): bool => x != x\nfn main() { print(f(1.0)) }\n", "compares a value with itself"),
+                  "P40 B11: `x != x` is refused (Math.isNaN is the NaN test)");
+            check(refused("enum E { A, B }\nfn main() { print(E.A == E.A) }\n", "compares a value with itself"),
+                  "P40 B11: a constant enum self-comparison is refused");
+            check(ok("import { Math } from \"std.math\"\nfn main() { print(Math.isNaN(0.0 / 0.0)) }\n"),
+                  "P40 B11: std.math gains Math.isNaN");
+            // TS: a guarded catch chain whose arms all diverge ends in an unconditional rethrow (tsc TS2366).
+            EmitResult ts = compileStd("fn f(x: i32): string {\n  try {\n    return \"n\"\n  } catch (e: Error) when (x > 5) {\n"
+                                       "    return \"big\"\n  }\n}\nfn main() { print(f(1)) }\n", findTarget("typescript"));
+            check(ts.ok && has(ts.code, "        throw __e;\n") && !has(ts.code, "if (!__handled) { throw __e; }"),
+                  "P40 A9: TS guarded catches that all diverge end in `throw __e;`");
+        }
+
+        // P40 review A9: a custom eq comes with an author hash; C# Equals(T?) + GetHashCode, Python __hash__.
+        {
+            const char* money = "record Money(cents: i32) {\n  operator fn eq(o: Money): bool => this.cents % 100 == o.cents % 100\n"
+                                "  operator fn hash(): i32 => this.cents % 100\n}\n"
+                                "fn main() { print(Money(1) == Money(101)) }\n";
+            EmitResult cs = compileStd(money, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "public virtual bool Equals(Money? o) => o is not null && (") &&
+                      has(cs.code, "public override int GetHashCode() => this.cents % 100;"),
+                  "P40 A9: C# record eq takes Money? and the author hash is GetHashCode");
+            EmitResult py = compileStd(money, findTarget("python"));
+            check(py.ok && has(py.code, "def __hash__(self)"), "P40 A9: Python emits the author hash as __hash__");
+            EmitResult ts = compileStd(money, findTarget("typescript"));
+            check(ts.ok && has(ts.code, "hash(): number {") && has(ts.code, "this.cents"),
+                  "P40 A9: TS hash is an instance method over `this`");
+            const char* cls = "class B {\n  var v: i32\n  constructor(v: i32) { this.v = v }\n"
+                              "  operator fn eq(o: B): bool => this.v == o.v\n  operator fn hash(): i32 => this.v\n}\n"
+                              "fn main() { print(B(1) == B(1)) }\n";
+            EmitResult csc = compileStd(cls, findTarget("csharp"));
+            check(csc.ok && has(csc.code, "operator ==(B? a, B? b)") && has(csc.code, "operator !=(B? a, B? b)") &&
+                      !has(csc.code, "GetHashCode() => 0"),
+                  "P40 A9: C# class == / != take nullable operands; no constant hash");
+            EmitResult noHash = compileStd("record M(c: i32) {\n  operator fn eq(o: M): bool => this.c == o.c\n}\nfn main() { }\n",
+                                           findTarget("csharp"));
+            check(!noHash.ok && has(noHash.diagnostics[0].message, "operator fn hash(): i32"),
+                  "P40 A9: a custom eq without a hash is refused");
+            EmitResult noEq = compileStd("record M(c: i32) {\n  operator fn hash(): i32 => this.c\n}\nfn main() { }\n",
+                                         findTarget("csharp"));
+            check(!noEq.ok && has(noEq.diagnostics[0].message, "needs a custom"), "P40 A9: a hash without an eq is refused");
+            EmitResult badOp = compileStd("record M(c: i32) {\n  operator fn frob(o: M): M => M(1)\n}\nfn main() { }\n",
+                                          findTarget("csharp"));
+            check(!badOp.ok && has(badOp.diagnostics[0].message, "is not an operator"),
+                  "P40 A9: an unknown operator name is refused (it emitted `operator frob`)");
+        }
+
+        // P40 review A9: an unused catch binding (or `_`) is dropped — C# `catch (T)`, no CS0168.
+        {
+            const char* src = "class Boom : Error {\n  constructor() { super(\"b\") }\n}\n"
+                              "fn main() {\n  try { throw Boom() } catch (e: Boom) { print(1) }\n"
+                              "  try { throw Boom() } catch (_: Boom) { print(2) }\n"
+                              "  try { throw Boom() } catch (e: Boom) { print(e.message) }\n}\n";
+            EmitResult cs = compileStd(src, findTarget("csharp"));
+            check(cs.ok && has(cs.code, "catch (Boom)\n") && !has(cs.code, "catch (Boom _)") && has(cs.code, "catch (Boom e)"),
+                  "P40 A9: unused catch bindings are dropped, a used one kept");
+        }
 
         // Slice-1 fix pins: PHP strict equality + record equals routing.
         EmitResult phpEq = compileStd("fn same(a: string, b: string): bool => a == b\nfn main() { print(same(\"a\", \"b\")) }\n", findTarget("php"));
@@ -3668,6 +6116,636 @@ int main() {
             check(py.ok() && py.backend()->preludePerFile() && !py.backend()->sharedPreludeFile(),
                   "P39: python declares preludePerFile");
         }
+    }
+
+    // ================= P40 slices 10-12: generated header, outputs record, config walk, relative origins =================
+    {
+        namespace fs = std::filesystem;
+        // --- B5: every in-box plugin emits BOTH header lines, within the first 5 lines (the ownership scan's
+        // window), in entry, module and prelude files — with and without origin info (C# interleaves #line).
+        auto headerOk = [](const std::string& code) {
+            std::istringstream is(code);
+            std::string ln;
+            bool autoGen = false, ours = false;
+            for (int i = 0; i < 5 && std::getline(is, ln); ++i) {
+                autoGen = autoGen || has(ln, "<auto-generated/>");
+                ours = ours || has(ln, "Generated by Polyglot. Do not edit: regenerate with `polyglot build`.");
+            }
+            return autoGen && ours;
+        };
+        for (const char* t : {"csharp", "typescript", "python", "php"}) {
+            for (bool origins : {false, true}) {
+                const BackendHandle h = findTarget(t);
+                MapModuleResolver res({{"./util", "fn area(w: i32, h: i32): i32 { return w * h }\n"}});
+                LibConfig lib{{"io"}};
+                lib.sharedPrelude = true;
+                lib.originInfo = origins;
+                const EmitResult r = compile("import { area } from \"./util\"\n"
+                                             "fn fa(): Option<i32> { return Some(area(2, 3)) }\n",
+                                             h, &res, lib, "/w/main.pg");
+                bool ok = r.ok && headerOk(r.code), sawModule = false, preludeOk = true;
+                for (const auto& m : r.modules) {
+                    if (m.sharedPrelude) { preludeOk = preludeOk && (m.code.empty() || headerOk(m.code)); continue; }
+                    sawModule = true;
+                    ok = ok && headerOk(m.code);
+                }
+                if (h.backend()->sharedPreludeFile()) { // the phase-2 prelude file (P40 §0) is a Program too
+                    const EmitResult p = compileSharedPrelude(h, r.preludeReach, lib);
+                    preludeOk = preludeOk && p.ok && !p.code.empty() && headerOk(p.code);
+                }
+                check(ok && sawModule && preludeOk, std::string("P40 B5: ") + t + " emits both header lines in entry, module and prelude files" +
+                                                        (origins ? " (origin info on)" : ""));
+            }
+        }
+        // PHP: after `<?php` (which must stay the first line).
+        {
+            const EmitResult r = compile("fn fa(): i32 { return 1 }\n", findTarget("php"));
+            check(r.ok && r.code.rfind("<?php\n// <auto-generated/>\n// Generated by Polyglot.", 0) == 0,
+                  "P40 B5: PHP's header follows <?php");
+        }
+
+        // --- B7: origin paths are relative to the generated file's directory ---
+        {
+            LibConfig lib;
+            lib.originInfo = true;
+            lib.originBaseDir = [](const std::string&) { return std::string("/w/gen/cs"); };
+            const EmitResult r = compile("fn fa(): i32 { return 1 }\n", findTarget("csharp"), nullptr, lib, "/w/src/main.pg");
+            check(r.ok && has(r.code, "#line 1 \"../../src/main.pg\"") && !has(r.code, "\"/w/src/main.pg\""),
+                  "P40 B7: a #line path is relative to the generated file's directory");
+            lib.originBaseDir = {};
+            const EmitResult a = compile("fn fa(): i32 { return 1 }\n", findTarget("csharp"), nullptr, lib, "/w/src/main.pg");
+            check(a.ok && has(a.code, "#line 1 \"/w/src/main.pg\""), "P40 B7: no base dir = the absolute path (unchanged)");
+#ifdef _WIN32
+            lib.originBaseDir = [](const std::string&) { return std::string("D:/out"); };
+            const EmitResult x = compile("fn fa(): i32 { return 1 }\n", findTarget("csharp"), nullptr, lib, "C:/w/main.pg");
+            check(x.ok && has(x.code, "#line 1 \"C:/w/main.pg\""), "P40 B7: a different drive falls back to the absolute path");
+#endif
+        }
+
+        // --- A5 + the record: real files in a scratch directory ---
+        const fs::path tmp = fs::temp_directory_path() / ("polyglot-p40-unit-" + std::to_string(std::rand()));
+        std::error_code ec;
+        fs::remove_all(tmp, ec);
+        fs::create_directories(tmp / "proj" / "LibA", ec);
+        cli::writeFile(tmp / "proj" / "pgconfig.json",
+                       "{ \"targets\": [\"csharp\"], \"include\": [ { \"pattern\": \"*.pg\", \"output\": \"gen/%(Filename)\", \"owned\": true } ] }");
+        {
+            const fs::path old = fs::current_path();
+            fs::current_path(tmp / "proj" / "LibA");
+            const cli::PgConfig pc = cli::loadPgConfig(".");
+            const cli::PgConfig pcEmpty = cli::loadPgConfig("");
+            fs::current_path(old);
+            check(pc.found && pc.dir.is_absolute() && fs::path(pc.root).is_absolute() &&
+                      fs::equivalent(pc.dir, tmp / "proj") && pcEmpty.found,
+                  "P40 A5: loadPgConfig walks up from a RELATIVE start ('.') and returns absolute dir/root");
+            check(pc.include.size() == 1 && pc.include[0].owned, "P40 B5: an include rule's \"owned\": true is parsed");
+            cli::writeFile(tmp / "bad" / "pgconfig.json", "{ \"include\": [ { \"pattern\": \"*.pg\", \"output\": \"x\", \"owned\": \"yes\" } ] }");
+            check(!cli::loadPgConfig(tmp / "bad").errors.empty(), "P40 B5: a non-boolean \"owned\" is a config error");
+        }
+        {
+            const fs::path cfg = tmp / "proj";
+            fs::path dir;
+            bool rec = false;
+            std::string err;
+            const bool a = cli::ownedScope(cfg, "web/gen/%(Filename)", dir, rec, err) && dir == cfg / "web" / "gen" && !rec;
+            const bool b = cli::ownedScope(cfg, "web/gen/%(RecursiveDir)%(Filename)", dir, rec, err) && dir == cfg / "web" / "gen" && rec;
+            const bool c = cli::ownedScope(cfg, "gen/%(TargetLanguage)/%(Filename)", dir, rec, err) && dir == cfg / "gen" && rec;
+            const bool d = cli::ownedScope(cfg, "gen\\%(Filename)", dir, rec, err) && dir == cfg / "gen" && !rec;
+            check(a && b && c && d, "P40 B5: the owned scope is the template's literal folder prefix (recursive when dirs can follow; `\\` separates)");
+            // P40 review (#75): the reviewer's table — each of these deleted headed files outside a dedicated folder.
+            bool refusedAll = true;
+            for (const std::string& t : std::vector<std::string>{"./%(Filename)", "%(RecursiveDir)%(Filename)", "%(Directory)/%(Filename)", "../%(Filename)",
+                                        "../%(RecursiveDir)%(Filename)", "gen-%(TargetLanguage)/%(Filename)", "/gen/%(Filename)",
+                                        "\\gen\\%(Filename)", "gen/../%(Filename)", "../../%(Filename)",
+                                        (tmp / "abs").generic_string() + "/%(Filename)"}) {
+                err.clear();
+                const bool ok = cli::ownedScope(cfg, t, dir, rec, err);
+                if (ok || err.empty()) { std::cerr << "    owned scope NOT refused: " << t << "\n"; refusedAll = false; }
+            }
+#ifdef _WIN32
+            refusedAll = refusedAll && !cli::ownedScope(cfg, "C:/gen/%(Filename)", dir, rec, err) &&
+                         !cli::ownedScope(cfg, "C:gen/%(Filename)", dir, rec, err);
+#endif
+            check(refusedAll, "P40 review: owned is refused for an empty prefix, the config folder or an ancestor, a root, and rooted/absolute templates");
+            const bool sib = cli::ownedScope(cfg / "a" / "b", "../../web/scanning/src/gs1/%(Filename)", dir, rec, err) &&
+                             dir == cfg / "web" / "scanning" / "src" / "gs1";
+            check(sib, "P40 review: `..` into a SIBLING subtree stays allowed (Spark's twin route)");
+            cli::writeFile(tmp / "bad2" / "pgconfig.json", "{ \"include\": [ { \"pattern\": \"*.pg\", \"output\": \"../%(Filename)\", \"owned\": true } ] }");
+            const auto bad2 = cli::loadPgConfig(tmp / "bad2");
+            check(bad2.errors.size() == 1 && has(bad2.errors[0], "\"owned\": true is refused") && has(bad2.errors[0], "ancestors"),
+                  "P40 review: an unbounded owned scope is a config error naming the reason");
+            // Routing and the owned scan share one normalization: a leading separator stays config-relative.
+            cli::PgConfig rp;
+            rp.found = true;
+            rp.dir = cfg;
+            cli::IncludeRule rr;
+            rr.pattern = "*.pg";
+            rr.output = "\\gen\\%(Filename)";
+            rp.include.push_back(rr);
+            std::string terr;
+            const auto routed = cli::routeIncludeOutput(rp, cfg / "a.pg", "typescript", terr);
+            check(routed && *routed == cfg / "gen" / "a", "P40 review: routing treats `\\` as a separator and a leading one stays config-relative");
+        }
+        {
+            const std::string hdr = findTarget("typescript").backend()->generatedHeaderLine();
+            const fs::path marked = tmp / "marked.ts", unmarked = tmp / "nswag.ts", mention = tmp / "notes.ts";
+            const fs::path pyMarked = tmp / "marked.py";
+            cli::writeFile(marked, "// <auto-generated/>\n// Generated by Polyglot. Do not edit: regenerate with `polyglot build`.\nexport {}\n");
+            cli::writeFile(unmarked, "// <auto-generated/>\nexport interface C {}\n");
+            cli::writeFile(mention, "// hand-written\n// this file is not Generated by Polyglot.\nexport const x = 1;\n");
+            cli::writeFile(pyMarked, "# Generated by Polyglot. Do not edit: regenerate with `polyglot build`.\n");
+            check(hdr == "// Generated by Polyglot." && findTarget("python").backend()->generatedHeaderLine() == "# Generated by Polyglot.",
+                  "P40 review: the header line comes from each manifest's `lineComment`");
+            check(cli::carriesGeneratedLine(marked, hdr) && !cli::carriesGeneratedLine(unmarked, hdr) &&
+                      !cli::carriesGeneratedLine(tmp / "missing.ts", hdr) && !cli::carriesGeneratedLine(marked, ""),
+                  "P40 D20: only Polyglot's own line marks a file as deletable (<auto-generated/> alone does not)");
+            check(!cli::carriesGeneratedLine(mention, hdr), "P40 review: a line that merely MENTIONS the phrase is not the header line");
+            check(cli::carriesGeneratedLine(pyMarked, findTarget("python").backend()->generatedHeaderLine()) &&
+                      !cli::carriesGeneratedLine(pyMarked, hdr),
+                  "P40 review: the header is matched in the target's own comment syntax");
+            cli::writeFile(tmp / "o.ts.map", "{\"version\":3,\"file\":\"o.ts\",\"sources\":[]}");
+            cli::writeFile(tmp / "victim.txt", "precious");
+            check(cli::isOwnSidecar(tmp / "o.ts.map", tmp / "o.ts") && !cli::isOwnSidecar(tmp / "o.ts.map", tmp / "p.ts") &&
+                      !cli::isOwnSidecar(tmp / "victim.txt", tmp / "o.ts"),
+                  "P40 review: a sidecar is ours only as a v3 map naming its owner as `file`");
+        }
+        {
+            // P40 review (#75, D21): the overwrite guard.
+            const std::string hdr = findTarget("typescript").backend()->generatedHeaderLine();
+            const fs::path g = tmp / "guard";
+            cli::writeFile(g / "hand.ts", "// hand-written\nexport const keep = 1;\n");
+            cli::writeFile(g / "ours.ts", "// <auto-generated/>\n// Generated by Polyglot. Do not edit: regenerate with `polyglot build`.\nold\n");
+            cli::writeFile(g / "obj" / "old.cs", "// 0.10.x output, no header\n");
+            cli::OutputSink::Claim claim{"'n.pg'", hdr, {}};
+            cli::OutputSink w;
+            const bool refused = w.put(g / "hand.ts", "new", claim) == cli::OutputSink::Put::Refused;
+            std::string kept;
+            cli::readFile(g / "hand.ts", kept);
+            const bool ours = w.put(g / "ours.ts", "new", claim) == cli::OutputSink::Put::Written;
+            check(refused && has(kept, "hand-written") && ours, "P40 review: put never replaces an unmarked, unrecorded file; a marked one is replaced");
+            cli::OutputSink c(cli::OutputSink::Mode::Check);
+            check(c.put(g / "hand.ts", "new", claim) == cli::OutputSink::Put::Refused && !c.drifted(),
+                  "P40 review: --check reports an unmarked file as an error, not `would update`");
+            cli::OutputSink owned;
+            owned.trust({}, {g / "obj"}, false);
+            cli::OutputSink recorded;
+            recorded.trust({cli::outputKey(g / "hand.ts")}, {}, false);
+            cli::OutputSink adopt;
+            adopt.trust({}, {}, true);
+            check(owned.put(g / "obj" / "old.cs", "new", claim) == cli::OutputSink::Put::Written &&
+                      owned.put(g / "hand.ts", "new", claim) == cli::OutputSink::Put::Refused &&
+                      recorded.put(g / "hand.ts", "new2", claim) == cli::OutputSink::Put::Written,
+                  "P40 review: a --build-owned dir and a recorded path may be overwritten (only them)");
+            cli::writeFile(g / "hand2.ts", "// hand-written\n");
+            check(adopt.put(g / "hand2.ts", "x", claim) == cli::OutputSink::Put::Written, "P40 review: --adopt takes an unmarked output over");
+            cli::writeFile(g / "m.ts.map", "not a map");
+            cli::OutputSink sm;
+            check(sm.put(g / "m.ts.map", "{}", cli::OutputSink::Claim{"'m.pg'", {}, g / "m.ts"}) == cli::OutputSink::Put::Refused,
+                  "P40 review: a foreign file at a sidecar path is never overwritten");
+        }
+        {
+            // P40 review: `lineComment` is load-validated against the header line the rules emit.
+            std::string src;
+            cli::readFile(cli::executablePath().parent_path() / "plugins" / "typescript" / "polyglot-plugin.json", src);
+            auto replaced = [&](const std::string& from, const std::string& to) {
+                std::string s = src;
+                const std::size_t at = s.find(from);
+                if (at != std::string::npos) s.replace(at, from.size(), to);
+                return s;
+            };
+            std::string e1, e2, e3;
+            const bool wrongToken = !validateBackend(replaced("\"lineComment\": \"//\"", "\"lineComment\": \"#\""), e1);
+            const bool missing = !validateBackend(replaced("\"lineComment\": \"//\"", "\"lineCommentX\": \"//\""), e2);
+            const bool fine = validateBackend(src, e3);
+            check(!src.empty() && wrongToken && has(e1, "no rule emits the header line") && missing && has(e2, "declares no 'lineComment'") && fine,
+                  "P40 review: a lineComment that matches no header line, or a header without lineComment, is a load error");
+        }
+        {
+            cli::OutputSink check1(cli::OutputSink::Mode::Check);
+            const fs::path f = tmp / "sink" / "a.cs";
+            const auto p1 = check1.put(f, "x");
+            check(p1 == cli::OutputSink::Put::Written && !fs::exists(f) && !fs::exists(f.parent_path()) && check1.drifted() &&
+                      has(check1.driftLines()[0], "would create"),
+                  "P40 B5: Check mode writes nothing (not even the directory) and records `would create`");
+            cli::OutputSink w(cli::OutputSink::Mode::Write);
+            const bool written = w.put(f, "x") == cli::OutputSink::Put::Written && fs::exists(f);
+            const bool dedup = w.put(tmp / "sink" / "." / "a.cs", "x") == cli::OutputSink::Put::Deduped;
+            const bool conflict = w.put(f, "y") == cli::OutputSink::Put::Conflict;
+            check(written && dedup && conflict, "P40 B5: one run-wide produced set: identical = dedup, different = conflict");
+            // Review round 5 (gating 2): two spellings of one routed directory or file in ONE run conflict on any
+            // filesystem and in Check mode (nothing on disk yet), naming both — not as a content conflict.
+            const fs::path sp = tmp / "spell";
+            cli::OutputSink s1(cli::OutputSink::Mode::Check);
+            s1.routeRoots({sp}, {});
+            const bool first = s1.put(sp / "gen" / "a.ts", "a", cli::OutputSink::Claim{"'a.pg'", {}, {}}) == cli::OutputSink::Put::Written;
+            const bool same = s1.put(sp / "gen" / "c.ts", "c", cli::OutputSink::Claim{"'c.pg'", {}, {}}) == cli::OutputSink::Put::Written;
+            const bool dirClash = s1.put(sp / "Gen" / "b.ts", "b", cli::OutputSink::Claim{"'b.pg'", {}, {}}) == cli::OutputSink::Put::Conflict;
+            const std::string dirMsg = s1.spellingClash();
+            const bool fileClash = s1.put(sp / "gen" / "A.ts", "x", cli::OutputSink::Claim{"'x.pg'", {}, {}}) == cli::OutputSink::Put::Conflict;
+            check(first && same && dirClash && has(dirMsg, "'gen' and 'Gen' differ only by case") && has(dirMsg, "'a.pg'") &&
+                      has(dirMsg, "'b.pg'") && fileClash && has(s1.spellingClash(), "'a.ts' and 'A.ts'"),
+                  "review r5: another spelling of a routed directory or file in the same run is a spelling conflict");
+#ifdef _WIN32
+            // Review round 8 (gating): a caller root (--out / --build-owned) typed in another case than the disk
+            // (`obj/debug/…` over `obj/Debug/…`, MSBuild's `-c debug`) is never compared, refused or renamed — nor is
+            // an ancestor of it on a route INTO it — while the project folder root alone would have compared `obj/Debug`
+            // and refused it. Review round 9 adjusted the r8 check "a route through its ancestor is never compared": a
+            // route that passes the typed ancestor `obj/debug` and then LEAVES the root's subtree (`obj/debug/other`)
+            // is no route into the root, so it is compared and refused like any other (that exemption was the H4 bug).
+            {
+                const fs::path rc = tmp / "rootcase";
+                fs::create_directories(rc / "obj" / "Debug" / "net" / "polyglot");
+                std::ofstream(rc / "obj" / "Debug" / "net" / "App.AssemblyInfo.cs") << "// not Polyglot\n";
+                const fs::path typed = rc / "obj" / "debug" / "net" / "polyglot";
+                for (auto mode : {cli::OutputSink::Mode::Check, cli::OutputSink::Mode::Write}) {
+                    cli::OutputSink s(mode);
+                    s.trust({}, {typed}, false);
+                    s.routeRoots({rc}, {typed});
+                    const auto leaving = s.put(rc / "obj" / "debug" / "other" / "b.cs", "y");
+                    const bool leavingRefused = leaving == cli::OutputSink::Put::Refused && has(s.refusal(), "Debug' differs from 'debug'");
+                    const auto inRoot = s.put(typed / "a.cs", "x");
+                    std::set<std::string> names;
+                    for (const auto& e : fs::directory_iterator(rc / "obj")) names.insert(e.path().filename().string());
+                    check(inRoot == cli::OutputSink::Put::Written && leavingRefused &&
+                              names == std::set<std::string>{"Debug"} && s.refusal().empty() &&
+                              !fs::exists(rc / "obj" / "Debug" / "other"),
+                          "review r8/r9: a caller root typed 'obj/debug' over the disk's 'obj/Debug' is never compared or "
+                          "renamed on a route into it; a route via its ancestor that leaves its subtree is compared");
+                }
+                // Review round 9 (gating, H4): the prefix rule. A caller root typed `proj/out` beside the disk's `Proj`
+                // does not exempt a route that leaves it (`proj/gen`, H4's `../proj/gen/…`): refused, nothing written —
+                // while a route into the typed root itself is accepted.
+                const fs::path h4 = tmp / "h4prefix";
+                fs::create_directories(h4 / "Proj");
+                std::ofstream(h4 / "Proj" / "a.pg") << "// source\n";
+                for (auto mode : {cli::OutputSink::Mode::Check, cli::OutputSink::Mode::Write}) {
+                    cli::OutputSink s(mode);
+                    s.routeRoots({h4, h4 / "Proj"}, {h4 / "proj" / "out"});
+                    const bool refused = s.put(h4 / "proj" / "gen" / "a.ts", "t") == cli::OutputSink::Put::Refused &&
+                                         has(s.refusal(), "Proj' differs from 'proj'") && has(s.refusal(), "not Polyglot output");
+                    const bool intoRoot = s.put(h4 / "proj" / "out" / "a.ts", "t") == cli::OutputSink::Put::Written;
+                    std::set<std::string> names;
+                    for (const auto& e : fs::directory_iterator(h4)) names.insert(e.path().filename().string());
+                    check(refused && intoRoot && names == std::set<std::string>{"Proj"} && !fs::exists(h4 / "Proj" / "gen"),
+                          "review r9: a typed caller root exempts only routes INTO it; H4's route leaving it is refused");
+                }
+                // Review round 10 (item 1): rr1 case 7's tree (`gen/sub` from an earlier build) rebuilt with `--out
+                // GEN/SUB` plus a route LEAVING it through `GEN/other`. Both orders give the same result: `gen` is
+                // aligned to `GEN` (it holds only Polyglot output), `sub` stays (the caller root's own component), no
+                // conflict — r4's guard reported the into-root-first order as a content conflict. With a foreign file
+                // in `gen`, both orders refuse with A3's message. A write made before the rename stays produced.
+                const std::string hdr10 = findTarget("typescript").backend()->generatedHeaderLine();
+                const cli::OutputSink::Claim claim10{"'a.pg'", hdr10, {}};
+                int n10 = 0;
+                for (bool intoFirst : {true, false})
+                    for (bool foreign : {false, true})
+                        for (auto mode : {cli::OutputSink::Mode::Check, cli::OutputSink::Mode::Write}) {
+                            const fs::path p = tmp / ("r10order" + std::to_string(n10++));
+                            cli::writeFile(p / "gen" / "sub" / "a.cs", hdr10 + "\nold\n");
+                            if (foreign) cli::writeFile(p / "gen" / "notes.txt", "hand-written\n");
+                            cli::OutputSink s(mode);
+                            s.routeRoots({p}, {p / "GEN" / "SUB"});
+                            const fs::path into = p / "GEN" / "SUB" / "a.cs", leave = p / "GEN" / "other" / "a.ts";
+                            cli::OutputSink::Put pi{}, pl{};
+                            std::string refusal;
+                            if (intoFirst) { pi = s.put(into, hdr10 + "\nnew\n", claim10); pl = s.put(leave, hdr10 + "\nts\n", claim10); refusal = s.refusal(); }
+                            else { pl = s.put(leave, hdr10 + "\nts\n", claim10); refusal = s.refusal(); pi = s.put(into, hdr10 + "\nnew\n", claim10); }
+                            std::set<std::string> top, below;
+                            for (const auto& e : fs::directory_iterator(p)) top.insert(e.path().filename().string());
+                            for (const auto& e : fs::directory_iterator(p / "gen")) below.insert(e.path().filename().string());
+                            const bool write = mode == cli::OutputSink::Mode::Write;
+                            const std::string order = intoFirst ? "into-root first" : "leaving first";
+                            if (!foreign) {
+                                bool reported = false;
+                                for (const auto& l : s.driftLines()) reported = reported || has(l, "would rename");
+                                const bool ok = pi == cli::OutputSink::Put::Written && pl == cli::OutputSink::Put::Written &&
+                                                (write ? top == std::set<std::string>{"GEN"} && below.count("sub") && below.count("other") &&
+                                                             s.isProduced(into) &&
+                                                             s.put(into, hdr10 + "\nnew\n", claim10) == cli::OutputSink::Put::Deduped
+                                                       : top == std::set<std::string>{"gen"} && reported);
+                                check(ok, "review r10: --out GEN/SUB over gen/sub plus a route leaving through GEN/other aligns "
+                                          "gen -> GEN, never a conflict (" + order + (write ? ", write)" : ", check)"));
+                            } else {
+                                check(pl == cli::OutputSink::Put::Refused && has(refusal, "gen' differs from 'GEN'") &&
+                                          has(refusal, "not Polyglot output") && pi != cli::OutputSink::Put::Conflict &&
+                                          top == std::set<std::string>{"gen"},
+                                      "review r10: ... and with a foreign file in gen both orders refuse with A3's message (" +
+                                          order + (write ? ", write)" : ", check)"));
+                            }
+                        }
+                // Review round 10 (item 2): a caller root that respells a config/input folder below another route root
+                // is refused (t7: `--out proj` over the disk's `Proj`, H4's rule climbing to the parent); one that
+                // respells only above every root (a cwd typed in another case), or a folder that is neither a config
+                // nor an input folder (R1's `obj/debug` over `obj/Debug`), is accepted.
+                {
+                    const fs::path t7 = tmp / "r10t7";
+                    cli::writeFile(t7 / "Proj" / "a.pg", "fn a(): i32 { return 1 }\n");
+                    cli::writeFile(t7 / "Proj" / "pgconfig.json", "{}\n");
+                    fs::create_directories(t7 / "Proj" / "obj" / "Debug");
+                    const std::vector<std::pair<fs::path, fs::path>> srcs{{t7 / "Proj", t7 / "Proj" / "a.pg"},
+                                                                          {t7 / "Proj", t7 / "Proj" / "pgconfig.json"}};
+                    const std::string refused = cli::callerRootRespelling({{t7 / "proj", "--out"}}, srcs, {t7, t7 / "Proj"});
+                    const std::string ownedRefused = cli::callerRootRespelling({{t7 / "proj" / "obj", "--build-owned"}}, srcs, {t7, t7 / "Proj"});
+                    const std::string noClimb = cli::callerRootRespelling({{t7 / "proj" / "out", "--out"}}, srcs, {t7 / "Proj"});
+                    const std::string r1 = cli::callerRootRespelling({{t7 / "Proj" / "obj" / "debug" / "net" / "polyglot", "--out"}},
+                                                                     srcs, {t7, t7 / "Proj"});
+                    check(has(refused, "Proj' differs from 'proj'") && has(refused, "--out folder") && has(refused, "not renamed") &&
+                              has(refused, "a.pg'") && has(ownedRefused, "--build-owned folder") && noClimb.empty() && r1.empty(),
+                          "review r10: a typed caller root respelling a config/input folder below another route root is refused; "
+                          "above every root, or a folder that is neither, it is accepted");
+                }
+                cli::OutputSink bare(cli::OutputSink::Mode::Check); // the control: only the project root
+                bare.routeRoots({rc}, {});
+                check(bare.put(rc / "obj" / "debug" / "x" / "c.cs", "z") == cli::OutputSink::Put::Refused,
+                      "review r8: ... while a route below the project root that types 'debug' over 'Debug' is still compared");
+            }
+#endif
+            cli::OutputSink check2(cli::OutputSink::Mode::Check);
+            check(check2.put(f, "x") == cli::OutputSink::Put::Unchanged && !check2.drifted() &&
+                      check2.put(tmp / "sink" / "b.cs", "z") == cli::OutputSink::Put::Written,
+                  "P40 B5: Check mode: unchanged is not drift");
+        }
+        {
+            cli::OutputsRecord rec;
+            const fs::path recDir = tmp / "proj" / ".polyglot";
+            cli::RecordSection s;
+            s.inputs.push_back(cli::recordRelative(tmp / "proj" / "a.pg", recDir));
+            s.outputs.push_back({cli::recordRelative(tmp / "proj" / "gen" / "a.ts", recDir),
+                                 cli::recordRelative(tmp / "proj" / "gen" / "a.ts.map", recDir)});
+            rec.sections[cli::recordSectionKey(true, tmp / "proj", "typescript", recDir)] = s;
+            const fs::path file = recDir / "outputs.json";
+            const bool saved = cli::saveOutputsRecord(file, rec);
+            cli::OutputsRecord back;
+            const bool loaded = cli::loadOutputsRecord(file, back) == cli::RecordLoad::Ok;
+            const auto it = back.sections.find("..|typescript");
+            check(saved && loaded && it != back.sections.end() && it->second.outputs.size() == 1 &&
+                      it->second.outputs[0].path == "../gen/a.ts" && it->second.outputs[0].map == "../gen/a.ts.map" &&
+                      cli::recordResolve(it->second.inputs[0], recDir) == (tmp / "proj" / "a.pg").lexically_normal() &&
+                      cli::serializeOutputsRecord(back) == cli::serializeOutputsRecord(rec),
+                  "P40 D17: the record round-trips, paths relative to the record's directory, byte-stable");
+            cli::writeFile(file, "{ not json");
+            check(cli::loadOutputsRecord(file, back) == cli::RecordLoad::Corrupt, "P40 D17: a corrupt record is detected");
+            cli::writeFile(file, "{\"version\": 2, \"sections\": {}}");
+            check(cli::loadOutputsRecord(file, back) == cli::RecordLoad::Newer, "P40 D17: a newer record is detected");
+            check(cli::loadOutputsRecord(tmp / "none.json", back) == cli::RecordLoad::Missing, "P40 D17: a missing record is detected");
+
+            // P40 review (A4): a record is validated as a WHOLE. A bad section after a good one used to leave the
+            // good one loaded (Corrupt + partial trust: it drove deletions, order-dependently). Every malformed
+            // part, wherever it sits, now yields Corrupt with NOTHING loaded.
+            const std::string good = "\"..|typescript\": {\"inputs\": [\"../a.pg\"], \"outputs\": [{\"path\": \"../gen/b.ts\"}]}";
+            bool allEmpty = true;
+            for (const std::string& bad : {std::string("\"zz|x\": {\"inputs\": [], \"outputs\": [{\"path\": 5}]}"),
+                                           std::string("\"zz|x\": {\"inputs\": [5], \"outputs\": []}"),
+                                           std::string("\"zz|x\": {\"inputs\": [], \"outputs\": [{\"path\": \"a\", \"map\": 1}]}"),
+                                           std::string("\"zz|x\": {\"inputs\": [], \"outputs\": {}}"),
+                                           std::string("\"zz|x\": {\"outputs\": []}"),
+                                           std::string("\"zz|x\": {\"inputs\": [], \"outputs\": [{\"path\": \"\"}]}"),
+                                           std::string("\"nobar\": {\"inputs\": [], \"outputs\": []}"),
+                                           std::string("\"zz|x\": 3")}) {
+                for (int order = 0; order < 2; ++order) {
+                    const std::string secs = order == 0 ? good + ", " + bad : bad + ", " + good;
+                    cli::writeFile(file, "{\"version\": 1, \"sections\": {" + secs + "}}");
+                    back = {};
+                    const cli::RecordLoad rl = cli::loadOutputsRecord(file, back);
+                    if (rl != cli::RecordLoad::Corrupt || !back.sections.empty()) {
+                        allEmpty = false;
+                        std::cerr << "    partial trust: {" << secs << "}\n";
+                    }
+                }
+            }
+            cli::writeFile(file, "{\"version\": 1, \"sections\": {" + good + "}} trailing");
+            const bool trailing = cli::loadOutputsRecord(file, back) == cli::RecordLoad::Corrupt && back.sections.empty();
+            check(allEmpty && trailing, "P40 review A4: any invalid part of a record (either order) -> Corrupt with nothing loaded");
+        }
+        {   // P40 review (A3): a case-only rename really renames on a case-insensitive filesystem.
+            const fs::path dir = tmp / "case";
+            fs::create_directories(dir, ec);
+            const std::string hdr = "// <auto-generated/>\n// Generated by Polyglot. Do not edit.\n";
+            cli::writeFile(dir / "Foo.ts", hdr + "export const x = 1;\n");
+            const bool caseInsensitive = fs::exists(dir / "FOO.TS", ec);
+            auto names = [&] {
+                std::vector<std::string> v;
+                for (const auto& e : fs::directory_iterator(dir, ec)) v.push_back(e.path().filename().string());
+                std::sort(v.begin(), v.end());
+                return v;
+            };
+            cli::OutputSink::Claim claim{"foo.pg", "// Generated by Polyglot.", {}};
+            cli::OutputSink chk(cli::OutputSink::Mode::Check);
+            const auto pc = chk.put(dir / "foo.ts", hdr + "export const x = 1;\n", claim);
+            const bool checkOk = caseInsensitive
+                ? (pc == cli::OutputSink::Put::Unchanged && chk.drifted() && has(chk.driftLines()[0], "would rename") &&
+                   names() == std::vector<std::string>{"Foo.ts"})
+                : (pc == cli::OutputSink::Put::Written && has(chk.driftLines()[0], "would create"));
+            cli::OutputSink w(cli::OutputSink::Mode::Write);
+            const auto pw = w.put(dir / "foo.ts", hdr + "export const x = 1;\n", claim);
+            const bool writeOk = caseInsensitive
+                ? (pw == cli::OutputSink::Put::Unchanged && names() == std::vector<std::string>{"foo.ts"} && w.isProduced(dir / "Foo.ts"))
+                : (pw == cli::OutputSink::Put::Written && names() == std::vector<std::string>{"Foo.ts", "foo.ts"});
+            // A case variant that is NOT Polyglot's is never renamed (the overwrite guard holds for renames too).
+            cli::writeFile(dir / "Bar.ts", "// hand-written\n");
+            cli::OutputSink w2(cli::OutputSink::Mode::Write);
+            const auto pr = w2.put(dir / "bar.ts", hdr, claim);
+            const std::vector<std::string> after = names();
+            const bool guardOk = !caseInsensitive || (pr == cli::OutputSink::Put::Refused &&
+                                                      std::find(after.begin(), after.end(), "Bar.ts") != after.end());
+            check(checkOk && writeOk && guardOk,
+                  std::string("P40 review A3: a case-only rename renames the existing file to the exact case (") +
+                      (caseInsensitive ? "case-insensitive" : "case-sensitive") + " filesystem); --check reports it");
+        }
+        {   // P40 review r3 (A3a/A3c): a sidecar's case variant is proven against ITS owner spelling, and a non-ASCII
+            // case change is found (towlower folded ASCII only).
+            const fs::path dir = tmp / "case-r3";
+            fs::create_directories(dir, ec);
+            const std::string hdr = "// <auto-generated/>\n// Generated by Polyglot. Do not edit.\n";
+            cli::writeFile(dir / "Foo.ts", hdr + "export const x = 1;\n");
+            cli::writeFile(dir / "Foo.ts.map", "{\"version\":3,\"file\":\"Foo.ts\",\"sources\":[]}");
+            const bool caseInsensitive = fs::exists(dir / "FOO.TS", ec);
+            cli::OutputSink w(cli::OutputSink::Mode::Write);
+            const auto p1 = w.put(dir / "foo.ts", hdr + "export const x = 2;\n", {"foo.pg", "// Generated by Polyglot.", {}});
+            const auto p2 = w.put(dir / "foo.ts.map", "{\"version\":3,\"file\":\"foo.ts\",\"sources\":[]}", {"foo.pg", {}, dir / "foo.ts"});
+            std::vector<std::string> names;
+            for (const auto& e : fs::directory_iterator(dir, ec)) names.push_back(e.path().filename().string());
+            std::sort(names.begin(), names.end());
+            const bool sidecarOk = caseInsensitive ? (p1 == cli::OutputSink::Put::Written && p2 == cli::OutputSink::Put::Written &&
+                                                      names == std::vector<std::string>{"foo.ts", "foo.ts.map"})
+                                                   : (p1 == cli::OutputSink::Put::Written && p2 == cli::OutputSink::Put::Written);
+            const fs::path upper = dir / fs::path(u8"\u00C4rger.ts");
+            const fs::path lower = dir / fs::path(u8"\u00E4rger.ts");
+            cli::writeFile(upper, hdr);
+            const fs::path v = cli::caseVariantOnDisk(lower);
+            const bool nonAsciiOk = caseInsensitive ? (v.filename() == upper.filename()) : v.empty();
+            check(sidecarOk && nonAsciiOk, std::string("P40 review r3 A3: a sidecar renames with its owner; a non-ASCII case variant is found (") +
+                                               (caseInsensitive ? "case-insensitive" : "case-sensitive") + " filesystem)");
+        }
+        {   // P40 review r3: duplicate JSON keys, a non-integer record version, and blank/empty config values refuse.
+            std::string jerr;
+            json::parse("{\"owned\": true, \"owned\": false}", jerr);
+            const bool dupRefused = jerr.find("duplicate key \"owned\"") != std::string::npos;
+            std::string okErr;
+            json::parse("{\"a\": {\"k\": 1}, \"b\": {\"k\": 2}}", okErr); // the same key in SIBLING objects is fine
+            const fs::path rf = tmp / "rec15" / "outputs.json";
+            cli::writeFile(rf, "{\"version\": 1.5, \"sections\": {}}");
+            cli::OutputsRecord back;
+            const bool v15 = cli::loadOutputsRecord(rf, back) == cli::RecordLoad::Corrupt;
+            const fs::path cd = tmp / "cfg-r3";
+            fs::create_directories(cd, ec);
+            bool allRefused = true;
+            for (const char* bad : {"{\"targets\": []}", "{\"targets\": [\" \"]}", "{\"targets\": [\"csharp\"], \"targets\": [\"python\"]}",
+                                    "{\"targets\": [\"csharp\"], \"include\": [{\"pattern\": \" \", \"output\": \"x/%(Filename)\"}]}",
+                                    "{\"targets\": [\"csharp\"], \"include\": [{\"pattern\": \"*.pg\", \"output\": \"\\t\"}]}"}) {
+                cli::writeFile(cd / "pgconfig.json", bad);
+                if (cli::loadPgConfig(cd).errors.empty()) { allRefused = false; std::cerr << "    accepted: " << bad << "\n"; }
+            }
+            check(dupRefused && okErr.empty() && v15 && allRefused,
+                  "P40 review r3: duplicate JSON keys, record version 1.5, empty targets and blank names/patterns are refused");
+        }
+        {   // P40 review r3: the owned scan prunes a nested project's subtree; writeFile retries a held target.
+            const fs::path o = tmp / "owned-r3";
+            const std::string hdr = "// <auto-generated/>\n// Generated by Polyglot. Do not edit.\n";
+            cli::writeFile(o / "gen" / "stale.ts", hdr);
+            cli::writeFile(o / "gen" / "sub" / "pgconfig.json", "{}");
+            cli::writeFile(o / "gen" / "sub" / "gen" / "x.ts", hdr);
+            cli::OwnedScope scope{o / "gen", true, ".ts"};
+            const auto extras = cli::ownedExtras(scope, [](const fs::path&) { return false; });
+            const bool nestedOk = extras.size() == 1 && extras[0].filename() == "stale.ts";
+            bool retryOk = true;
+#ifdef _WIN32
+            // P40 review r4: the holder is explicit about its sharing (an ifstream shares WRITE, which proved nothing),
+            // and what the HOLDER reads is asserted, not only the disk.
+            auto holdAndRead = [](const fs::path& p, DWORD share, HANDLE& h) {
+                h = CreateFileW(p.c_str(), GENERIC_READ, share, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                return h != INVALID_HANDLE_VALUE;
+            };
+            auto readHeld = [](HANDLE h) {
+                char buf[64];
+                DWORD got = 0;
+                SetFilePointer(h, 0, nullptr, FILE_BEGIN);
+                return ReadFile(h, buf, sizeof(buf), &got, nullptr) ? std::string(buf, got) : std::string("<read failed>");
+            };
+            // (a) shared READ|WRITE but not DELETE: no rename can replace it, so writeFile retries until it closes.
+            const fs::path held = tmp / "held" / "a.ts";
+            cli::writeFile(held, "old");
+            HANDLE h1 = INVALID_HANDLE_VALUE;
+            const bool opened1 = holdAndRead(held, FILE_SHARE_READ | FILE_SHARE_WRITE, h1);
+            std::string sawWhileHeld;
+            std::thread closer([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                sawWhileHeld = readHeld(h1);
+                CloseHandle(h1);
+            });
+            const bool wrote = cli::writeFile(held, "new");
+            closer.join();
+            std::string back;
+            retryOk = opened1 && wrote && sawWhileHeld == "old" && cli::readFile(held, back) && back == "new";
+            // (b) shared READ|WRITE|DELETE (.NET FileShare.ReadWrite|Delete, a dev server): the POSIX-semantics rename
+            // replaces it at once — the holder keeps reading the OLD bytes, a new open sees the new ones.
+            const fs::path held2 = tmp / "held" / "b.ts";
+            cli::writeFile(held2, "old");
+            HANDLE h2 = INVALID_HANDLE_VALUE;
+            const bool opened2 = holdAndRead(held2, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, h2);
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool wrote2 = cli::writeFile(held2, "new");
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            const std::string holderSees = opened2 ? readHeld(h2) : std::string();
+            if (opened2) CloseHandle(h2);
+            std::string back2;
+            const bool posixOk = opened2 && wrote2 && ms < 1000 && holderSees == "old" && cli::readFile(held2, back2) && back2 == "new";
+            check(posixOk, "P40 review r4: writeFile replaces a file a reader holds with FILE_SHARE_DELETE at once (holder sees '" +
+                               holderSees + "', " + std::to_string(ms) + " ms)");
+            check(GetACP() == CP_UTF8, "P40 review r3 (gating 1): the executables run with UTF-8 as the ANSI code page (utf8.manifest)");
+#endif
+            check(nestedOk && retryOk, "P40 review r3: the owned scan skips a nested config's subtree; writeFile retries a rename a reader blocks (the holder keeps the old bytes)");
+        }
+        {   // P40 review r4: the CLI half — temp names, strict UTF-8 / lockfile parsing, nested owned scopes, case picks.
+            check(cli::isWriteTempOf("a.ts.pgtmp.1.22.333", "a.ts") && !cli::isWriteTempOf("a.ts.pgtmp.1.2", "a.ts") &&
+                      !cli::isWriteTempOf("a.ts.pgtmp.1.2.3.4", "a.ts") && !cli::isWriteTempOf("a.ts.pgtmp.1.x.3", "a.ts") &&
+                      !cli::isWriteTempOf("keep.pgtmp.txt", "keep.ts") && !cli::isWriteTempOf("b.ts.pgtmp.1.2.3", "a.ts") &&
+                      !cli::isWriteTempOf("a.ts.pgtmp..2.3", "a.ts"),
+                  "P40 review r4 (gating 1): only writeFile's exact temp shape `<output>.pgtmp.<n>.<n>.<n>` is a temp of that output");
+            std::string e1, e2, e3, e4;
+            json::parse("{\"output\": \"g\xE9n\"}", e1);                     // CP1252
+            json::parse("{\"output\": \"g\xC3\xA9n\"}", e2);                 // UTF-8
+            json::parse("{\"x\": \"\\uD800\"}", e3);                          // a lone surrogate escape
+            json::parse("{\"x\": \"\xED\xA0\x80\"}", e4);                     // an encoded surrogate
+            check(e1.find("invalid UTF-8") != std::string::npos && e2.empty() && !e3.empty() && !e4.empty(),
+                  "P40 review r4: strict json::parse refuses invalid UTF-8 and lone surrogates (" + e1 + ")");
+            const fs::path lk = tmp / "lock-r4";
+            fs::create_directories(lk, ec);
+            cli::writeFile(cli::lockfilePath(lk),
+                           "{\"lockfileVersion\": 1, \"packages\": {\"@x/p\": {\"version\": \"1.0.0\", \"resolved\": \"u\", "
+                           "\"integrity\": \"sha512-a\", \"integrity\": \"sha512-b\"}}}");
+            const cli::Lockfile dup = cli::loadLockfile(lk);
+            cli::writeFile(cli::lockfilePath(lk), "{\"lockfileVersion\": 1, \"packages\": {\"@x/p\": {\"version\": 1}}}");
+            const cli::Lockfile shape = cli::loadLockfile(lk);
+            check(!dup.found && dup.error.find("duplicate") != std::string::npos && !shape.found && !shape.error.empty(),
+                  "P40 review r4: pgconfig.lock.json is parsed strictly (a duplicate key or a wrong shape is an error, not the first value)");
+            // An owned scope INSIDE a nested project (src/sub/gen with src/sub/pgconfig.json) is the nested build's.
+            const fs::path n = tmp / "nested-r4";
+            const std::string hdr = "// Generated by Polyglot. Do not edit.\n";
+            cli::writeFile(n / "pgconfig.json", "{}");
+            cli::writeFile(n / "src" / "sub" / "pgconfig.json", "{}");
+            cli::writeFile(n / "src" / "sub" / "gen" / "x.ts", hdr);
+            cli::OwnedScope inner{n / "src" / "sub" / "gen", false, ".ts", n};
+            check(cli::ownedExtras(inner, [](const fs::path&) { return false; }).empty(),
+                  "P40 review r4: an owned folder inside a nested project is never scanned by the outer build");
+            // A case variant is picked by NAME among the entries that are the same file (a hard link sorting first
+            // is not it).
+            const fs::path cv = tmp / "case-r4";
+            cli::writeFile(cv / "Foo.ts", hdr);
+            fs::create_hard_link(cv / "Foo.ts", cv / "a.ts", ec);
+            if (fs::exists(cv / "foo.ts") && !ec) {
+                const fs::path v = cli::caseVariantOnDisk(cv / "foo.ts");
+                check(v.filename() == "Foo.ts", "P40 review r4: the case variant of foo.ts is Foo.ts, not the hard link a.ts (got '" + v.filename().string() + "')");
+            } else {
+                check(true, "P40 review r4: case variant pick (skipped: case-sensitive filesystem or no hard links)");
+            }
+        }
+        {   // P40 review (#75 pre-push, item 1): the owned-scope ancestor test asks the FILESYSTEM, not the spelling.
+            const fs::path base = tmp / "t" / "Proj";
+            fs::create_directories(base / "keep", ec);
+            const bool ci = fs::exists(tmp / "T" / "PROJ", ec);
+            fs::path dir;
+            bool rec = false;
+            std::string err;
+            const bool aliasSelf = cli::ownedScope(base, "../PROJ/%(RecursiveDir)%(Filename)", dir, rec, err);
+            const bool aliasGrand = cli::ownedScope(base, "../../T/%(RecursiveDir)%(Filename)", dir, rec, err);
+            const bool sibling = cli::ownedScope(base, "../Web/gen/%(Filename)", dir, rec, err);
+            check((ci ? (!aliasSelf && !aliasGrand) : true) && sibling,
+                  std::string("P40 review: an owned scope that is a case alias of the config folder or an ancestor is refused (") +
+                      (ci ? "case-insensitive" : "case-sensitive: aliases are distinct folders there") + "); a sibling still passes");
+        }
+        {   // P40 review: writeFile replaces atomically (temp + rename) and leaves no temp behind.
+            const fs::path f = tmp / "atomic" / "a.ts";
+            const bool w1 = cli::writeFile(f, "one"), w2 = cli::writeFile(f, "two");
+            std::string back;
+            int entries = 0;
+            for (const auto& e : fs::directory_iterator(f.parent_path(), ec)) { (void)e; ++entries; }
+            check(w1 && w2 && cli::readFile(f, back) && back == "two" && entries == 1,
+                  "P40 review: writeFile replaces the file whole and leaves no temp file behind");
+        }
+        {   // P40 review (A5): a pgconfig that fails to parse or validate carries errors (callers refuse with 64).
+            const fs::path cd = tmp / "cfg";
+            fs::create_directories(cd, ec);
+            auto errorsFor = [&](const std::string& text) {
+                cli::writeFile(cd / "pgconfig.json", text);
+                return cli::loadPgConfig(cd).errors;
+            };
+            bool allRefused = true;
+            for (const char* bad : {"{", "[]", "{\"target\": [\"csharp\"]}", "{\"targets\": \"csharp\"}", "{\"targets\": [1]}",
+                                    "{\"targets\": [\"\"]}", "{\"lib\": \"io\"}", "{\"root\": 1}", "{\"originInfo\": \"yes\"}",
+                                    "{\"dependencies\": []}", "{\"include\": {}}", "{\"include\": [3]}",
+                                    "{\"include\": [{\"pattern\": \"*.pg\", \"output\": \"x\", \"outptu\": 1}]}",
+                                    "{\"include\": [{\"pattern\": \"*.pg\", \"output\": \"x\", \"target\": 3}]}",
+                                    "{\"forbiddenIdentifiers\": \"temp\"}", "{\"targets\":[\"csharp\"],\"access\":\"public\"}"}) {
+                if (errorsFor(bad).empty()) { allRefused = false; std::cerr << "    accepted: " << bad << "\n"; }
+            }
+            const bool goodOk = errorsFor("\xEF\xBB\xBF{ \"$schema\": \"x\", \"targets\": [\"csharp\"], \"lib\": [\"io\"], \"originInfo\": true, "
+                                          "\"forbiddenIdentifiers\": {\"*\": [\"temp\"]}, \"dependencies\": {}, "
+                                          "\"include\": [{\"pattern\": \"*.pg\", \"target\": [\"csharp\"], \"output\": \"gen/%(Filename)\", \"owned\": true}] }")
+                                    .empty();
+            check(allRefused && goodOk, "P40 review A5: malformed or invalid pgconfig.json carries errors; a valid one (with a BOM) none");
+        }
+        fs::remove_all(tmp, ec);
     }
 
     if (g_failures == 0) {

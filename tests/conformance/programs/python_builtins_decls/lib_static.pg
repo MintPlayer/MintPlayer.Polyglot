@@ -1,0 +1,3 @@
+class Fmt {
+  static fn show(): string => "static-ok"
+}

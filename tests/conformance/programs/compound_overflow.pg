@@ -1,0 +1,181 @@
+// P40: a compound assignment `t op= v` means the binary op plus a store — `t = t op v`, with t's receiver and
+// indices evaluated ONCE. It used to stay a native `op=` on every target, so on TS/Python/PHP an integer
+// compound skipped the §3.C wrap the plain `t = t op v` gets (`a += …` printed 4000000000 there and
+// -294967296 on C#), Python's `/=` on an int produced a float, and a string `+=` was a PHP TypeError. Lowering
+// now expands it on those targets (C#'s native compound already narrows back), hoisting an impure receiver
+// or index into a temp first. Covered: locals, instance fields (through `this` and a receiver), statics (bare
+// and qualified), list/array elements with a side-effecting index, each integer width at its overflow
+// boundary (i64 only within PHP's range, see below), integer division/modulo truncation, bitwise and shift
+// compounds, floats and strings.
+
+import { List } from "std.collections"
+
+class Probe {
+  static var calls: i32 = 0
+  static fn at(i: i32): i32 {
+    calls += 1
+    return i
+  }
+}
+
+class Acc {
+  var n: i32 = 0
+  var big: i64 = 0
+  var small: u8 = 0u8
+  var s: string = ""
+  static var total: i32 = 2147483000
+  static var text: string = "t"
+
+  fn bump(by: i32) {
+    this.n += by
+    this.small -= 1u8
+    this.s += "b"
+  }
+
+  static fn grow() {
+    total += 1000             // bare static
+    text += "+"
+  }
+}
+
+class Holder {
+  var inner: Acc = Acc()
+}
+
+fn pick(h: Holder): Holder {
+  Probe.calls += 1
+  return h
+}
+
+fn main() {
+  // i32 local: + - * / % at the wrap boundary
+  var a: i32 = 2000000000
+  a += 2000000000
+  print(a)                    // -294967296
+  a -= 2000000000
+  print(a)                    // 2000000000
+  a *= 3
+  print(a)                    // 1705032704
+  a /= 7
+  print(a)                    // 243576100
+  a %= 1000
+  print(a)                    // 100
+  var neg: i32 = -7
+  neg /= 2
+  print(neg)                  // -3 (truncates toward zero)
+  neg %= 2
+  print(neg)                  // -1
+  var bits: i32 = 0x0F0F
+  bits &= 0x00FF
+  bits |= 0x7000
+  bits ^= 0x0001
+  print(bits)                 // 28686
+  var sh: i32 = 1
+  sh <<= 31
+  print(sh)                   // -2147483648
+  sh >>= 4
+  print(sh)                   // -134217728
+
+  // the narrow and unsigned widths
+  var b8: i8 = 120i8
+  b8 += 10i8
+  print(b8)                   // -126
+  b8 -= 10i8
+  print(b8)                   // 120
+  var s16: i16 = 32000i16
+  s16 += 1000i16
+  print(s16)                  // -32536
+  var u8v: u8 = 250u8
+  u8v += 10u8
+  print(u8v)                  // 4
+  u8v -= 5u8
+  print(u8v)                  // 255
+  u8v *= 2u8
+  print(u8v)                  // 254
+  var u16v: u16 = 65530u16
+  u16v += 10u16
+  print(u16v)                 // 4
+  var u32v: u32 = 4294967290u32
+  u32v += 10u32
+  print(u32v)                 // 4
+  u32v -= 5u32
+  print(u32v)                 // 4294967295
+  u32v /= 2u32
+  print(u32v)                 // 2147483647
+
+  // i64 (BigInt on TS)
+  // (kept inside ±2^63: PHP has no i64 wrap — SPEC's published caveat; the TS wrap is unit-tested)
+  var w: i64 = 4611686018427387000i64
+  w += 4611686018427387000i64
+  print(w)                    // 9223372036854774000 (past 2^53: BigInt, not a JS number)
+  w -= 9223372036854773999i64
+  print(w)                    // 1
+  w *= 3000000000i64
+  print(w)                    // 3000000000
+  var q: i64 = -7i64
+  q /= 2i64
+  print(q)                    // -3
+  q %= 2i64
+  print(q)                    // -1
+
+  // floats keep their own semantics
+  var f: f64 = 10.0
+  f /= 4.0
+  f += 0.25
+  print(f)                    // 2.75
+
+  // strings: concatenation, never numeric addition
+  var word = "a"
+  word += "b"
+  word += "c"
+  print(word)                 // abc
+
+  // instance fields, through `this` and through a receiver
+  let acc = Acc()
+  acc.n = 2147483647
+  acc.bump(1)
+  print(acc.n)                // -2147483648
+  print(acc.small)            // 255
+  acc.big = 9007199254740993i64
+  acc.big += 1                // an i32 literal converts into the i64 slot
+  let two: i32 = 2
+  acc.big += two              // so does an i32 value
+  print(acc.big)              // 9007199254740996
+  acc.s += "!"
+  print(acc.s)                // b!
+
+  // statics, bare (inside the class) and qualified
+  Acc.grow()
+  print(Acc.total)            // -2147483296 (2147484000 wraps)
+  Acc.total -= 704
+  print(Acc.total)            // 2147483296
+  Acc.text += "q"
+  print(Acc.text)             // t+q
+
+  // elements, with a side-effecting index evaluated exactly once
+  var xs: List<i32> = [2147483647, 5, 9]
+  xs[Probe.at(0)] += 1
+  print(xs[0])                // -2147483648
+  print(Probe.calls)          // 1
+  xs[Probe.at(1)] *= 3
+  print(xs[1])                // 15
+  print(Probe.calls)          // 2
+  let arr: u8[] = [200u8, 7u8]
+  arr[Probe.at(0)] += 100u8
+  print(arr[0])               // 44
+  print(Probe.calls)          // 3
+  var names: List<string> = ["x", "y"]
+  names[Probe.at(1)] += "z"
+  print(names[1])             // yz
+  print(Probe.calls)          // 4
+
+  // a side-effecting receiver is evaluated exactly once
+  let h = Holder()
+  h.inner.n = 2147483647
+  pick(h).inner.n += 1
+  print(h.inner.n)            // -2147483648
+  print(Probe.calls)          // 5
+  pick(h).inner.s += "r"
+  print(h.inner.s)            // r
+  print(Probe.calls)          // 6
+}

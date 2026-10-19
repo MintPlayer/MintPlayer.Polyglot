@@ -1,0 +1,4 @@
+// REFUSED (P40 A2): ranges are not values — binding one to a name is an error, not a poisoned emit.
+fn main() {
+  let r = 0..5
+}

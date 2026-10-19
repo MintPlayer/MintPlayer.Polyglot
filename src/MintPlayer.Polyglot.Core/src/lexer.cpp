@@ -1,7 +1,10 @@
 #include "mintplayer/polyglot/lexer.hpp"
 
 #include <cctype>
+#include <cstdio>
 #include <unordered_map>
+
+#include "mintplayer/polyglot/unicode.hpp"
 
 namespace mintplayer::polyglot {
 
@@ -50,6 +53,15 @@ public:
         return c;
     }
 
+    // Consume one UTF-8 character into `out` (its raw bytes). False on an ill-formed sequence, in which case
+    // exactly one byte was consumed — the caller reports it.
+    bool takeChar(std::string& out, char32_t& cp) {
+        std::size_t j = idx_;
+        const bool ok = unicode::decodeUtf8(src_, j, cp);
+        while (idx_ < j) out += advance();
+        return ok;
+    }
+
 private:
     const std::string& src_;
     std::size_t idx_ = 0;
@@ -58,65 +70,138 @@ private:
     int fileId_ = 0;
 };
 
+// (G47's "non-ASCII string content" warning is gone since P40 B3: every target's string std now indexes
+// UTF-16 code units — Python and PHP through helpers — so non-ASCII text is faithful, not a caveat.)
+
+std::string hexUpper(unsigned long v) {
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%lX", v);
+    return buf;
+}
+
+// P40 A1: the ONE escape decoder, shared by string chunks and char literals. Called with the cursor ON the
+// backslash; appends the decoded character (UTF-8) to `out`. Every escape outside the published set is an
+// error at the backslash — never a silently dropped backslash (the pre-P40 `\u{1D}` -> "u{1D}" miscompile).
+// Returns false when an error was reported (nothing appended). A backslash at end of input appends nothing
+// and reports nothing: the caller's "unterminated" diagnostic covers it.
+bool decodeEscape(Cursor& cur, DiagnosticBag& diags, std::string& out) {
+    const SourcePos at = cur.pos();
+    cur.advance(); // the backslash
+    if (cur.eof()) return true;
+    const char esc = cur.peek();
+    switch (esc) {
+        case 'n': cur.advance(); out += '\n'; return true;
+        case 't': cur.advance(); out += '\t'; return true;
+        case 'r': cur.advance(); out += '\r'; return true;
+        case '0': cur.advance(); out += '\0'; return true;
+        case '\\': case '"': case '\'': case '$': cur.advance(); out += esc; return true;
+        case 'u': {
+            cur.advance();
+            if (cur.peek() != '{') {
+                diags.error(at, "`\\uXXXX` is not a Polyglot escape — write the code point in braces: `\\u{XXXX}` "
+                                "(1 to 6 hex digits)");
+                return false;
+            }
+            cur.advance();
+            std::string hex;
+            while (!cur.eof() && std::isxdigit(static_cast<unsigned char>(cur.peek()))) hex += cur.advance();
+            const bool closed = !cur.eof() && cur.peek() == '}';
+            if (closed) cur.advance();
+            if (!closed || hex.empty() || hex.size() > 6) {
+                diags.error(at, "malformed `\\u{…}` escape — expected 1 to 6 hex digits and a closing `}`");
+                return false;
+            }
+            const unsigned long v = std::stoul(hex, nullptr, 16);
+            if (v > 0x10FFFF) {
+                diags.error(at, "`\\u{" + hex + "}` is beyond U+10FFFF, the largest Unicode code point");
+                return false;
+            }
+            if (v >= 0xD800 && v <= 0xDFFF) {
+                diags.error(at, "`\\u{" + hex + "}` is a surrogate, not a character — escape the whole code "
+                                "point instead (e.g. `\\u{1F600}`)");
+                return false;
+            }
+            unicode::appendUtf8(out, static_cast<char32_t>(v));
+            return true;
+        }
+        case 'x':
+            cur.advance();
+            diags.error(at, "`\\xHH` is not a Polyglot escape — write the code point in braces: `\\u{HH}`");
+            return false;
+        default: break;
+    }
+    // Unknown: name the whole character after the backslash (a multi-byte one included).
+    std::string shown;
+    char32_t cp = 0;
+    cur.takeChar(shown, cp);
+    if (cp < 0x20 || cp == 0x7F) shown = "U+" + hexUpper(cp);
+    diags.error(at, "unknown escape sequence `\\" + shown +
+                    "` — valid escapes are \\n \\t \\r \\0 \\\\ \\\" \\' \\$ and \\u{…}");
+    return false;
+}
+
+// A non-escape literal character: raw ASCII, or one validated UTF-8 character (ill-formed -> one error per
+// literal, `badUtf8` latches).
+void takeLiteralChar(Cursor& cur, DiagnosticBag& diags, std::string& out, bool& badUtf8, const char* what) {
+    if (static_cast<unsigned char>(cur.peek()) < 0x80) { out += cur.advance(); return; }
+    const SourcePos p = cur.pos();
+    char32_t cp = 0;
+    if (!cur.takeChar(out, cp) && !badUtf8) {
+        diags.error(p, std::string("invalid UTF-8 in ") + what + " — save the source file as UTF-8");
+        badUtf8 = true;
+    }
+}
+
 // One chunk of a (possibly interpolated) string, scanned after the opening quote or a `${...}` hole.
 // Stops at the closing `"` (more=false) or at a `${` interpolation hole (more=true), consuming the
-// terminator. Decodes escapes.
+// terminator. Decodes escapes (decodeEscape).
 struct ChunkResult { std::string text; bool more; };
 ChunkResult scanChunk(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
     std::string value;
-    bool warnedNonAscii = false;
+    bool badUtf8 = false;
     while (!cur.eof()) {
-        if (cur.peek() == '"') { cur.advance(); return {value, false}; }
-        if (cur.peek() == '$' && cur.peek(1) == '{') { cur.advance(); cur.advance(); return {value, true}; }
-        // G47: non-ASCII string content is a PUBLISHED faithfulness caveat (SPEC §9) — PHP's string
-        // std is byte-oriented, so len()/charAt() count bytes there and code points elsewhere. Warn
-        // once per literal; the program still compiles.
-        if (static_cast<unsigned char>(cur.peek()) >= 0x80 && !warnedNonAscii) {
-            diags.warn(start, "non-ASCII string content: PHP's string std is byte-oriented (len/charAt/codePoints count bytes there) — see SPEC §9");
-            warnedNonAscii = true;
+        const char c = cur.peek();
+        if (c == '"') { cur.advance(); return {value, false}; }
+        if (c == '$' && cur.peek(1) == '{') { cur.advance(); cur.advance(); return {value, true}; }
+        if (c == '\\') {
+            decodeEscape(cur, diags, value);
+            continue;
         }
-        char ch = cur.advance();
-        if (ch == '\\' && !cur.eof()) {
-            char esc = cur.advance();
-            switch (esc) {
-                case 'n': value += '\n'; break;
-                case 't': value += '\t'; break;
-                case 'r': value += '\r'; break;
-                case '0': value += '\0'; break;
-                case '"': value += '"'; break;
-                case '\\': value += '\\'; break;
-                default: value += esc; break;
-            }
-        } else {
-            value += ch;
-        }
+        takeLiteralChar(cur, diags, value, badUtf8, "a string literal");
     }
     diags.error(start, "unterminated string literal");
     return {value, false};
 }
 
-// Decode the body of a char literal (after the opening quote). Stops at `quote`.
-std::string scanQuoted(Cursor& cur, char quote, bool& terminated) {
+// The body of a char literal (after the opening quote), through the closing quote. Decodes escapes and
+// validates the result is exactly ONE character that fits one UTF-16 code unit (SPEC §8).
+std::string scanChar(Cursor& cur, DiagnosticBag& diags, SourcePos start) {
     std::string value;
-    terminated = false;
+    bool terminated = false, bad = false, badUtf8 = false;
     while (!cur.eof()) {
-        char ch = cur.advance();
-        if (ch == quote) { terminated = true; break; }
-        if (ch == '\\' && !cur.eof()) {
-            char esc = cur.advance();
-            switch (esc) {
-                case 'n': value += '\n'; break;
-                case 't': value += '\t'; break;
-                case 'r': value += '\r'; break;
-                case '0': value += '\0'; break;
-                case '"': value += '"'; break;
-                case '\'': value += '\''; break;
-                case '\\': value += '\\'; break;
-                default: value += esc; break;
-            }
-        } else {
-            value += ch;
+        if (cur.peek() == '\'') { cur.advance(); terminated = true; break; }
+        if (cur.peek() == '\\') {
+            if (!decodeEscape(cur, diags, value)) bad = true;
+            continue;
         }
+        takeLiteralChar(cur, diags, value, badUtf8, "a char literal");
+    }
+    if (!terminated) { diags.error(start, "unterminated char literal"); return value; }
+    if (bad || badUtf8) return value;
+    std::size_t i = 0, count = 0;
+    char32_t cp = 0, first = 0;
+    while (i < value.size()) {
+        unicode::decodeUtf8(value, i, cp);
+        if (count++ == 0) first = cp;
+    }
+    if (count == 0) {
+        diags.error(start, "empty char literal — a char is exactly one character");
+    } else if (count > 1) {
+        diags.error(start, "char literal holds more than one character — a char is exactly one character; "
+                           "use a string (\"…\") for text");
+    } else if (first > 0xFFFF) {
+        diags.error(start, "char literal holds U+" + hexUpper(first) + ", an astral character — a char is one "
+                           "UTF-16 code unit (SPEC §8); use a string");
     }
     return value;
 }
@@ -246,9 +331,7 @@ std::vector<Token> lex(const std::string& source, DiagnosticBag& diags, int file
         }
         if (c == '\'') {
             cur.advance();
-            bool terminated = false;
-            std::string value = scanQuoted(cur, '\'', terminated);
-            if (!terminated) diags.error(start, "unterminated char literal");
+            std::string value = scanChar(cur, diags, start);
             push(TokKind::CharLit, std::move(value), start);
             continue;
         }

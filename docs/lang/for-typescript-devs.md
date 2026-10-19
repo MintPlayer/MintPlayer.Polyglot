@@ -61,8 +61,11 @@ Lossless widenings (`i32` → `i64`, `i32` → `f64`) are implicit; everything e
 | `"hi ${name}, ${age * 2} doubled"` | `` `hi ${name}, ${age * 2} doubled` `` — same spelling |
 | `'A'` | a `char` — one UTF-16 code unit (a `number` in TS), not a 1-char string |
 | `"ab" + "c" == "abc"` → `true` | `===` value equality |
+| `"\u{1F600}"`, `"cost \$5"`, `"\${raw}"` | `"\u{1F600}"`, `"cost $5"`, `"${raw}"` (a plain string) — `\$` is a literal dollar, so `"\${raw}"` is text, not a hole |
 
-Strings are UTF-16 on all targets, same as JS.
+The escapes are `\n \t \r \0 \\ \" \' \$ \u{…}` — nothing else: JS's `\uXXXX`, `\xHH`, `\b`, `\v` and
+line continuations are errors. Strings index in UTF-16 code units on C# and TS, same as JS; Python and PHP
+count non-ASCII text in their native units (SPEC §9 — the compiler warns).
 
 ## Records — immutable data with structural `==`
 
@@ -214,7 +217,8 @@ no accidentally-floating promises.
 |---|---|
 | `let maybe: i32? = null` | `number \| null` — non-null by default |
 | `name?.length`, `maybe ?? 0` | `?.` and `??`, same as TS |
-| `maybe!` | **runtime null-assert that throws** — TS `!` is erased and can lie |
+| `maybe!` | **runtime null-assert that throws** — TS `!` is erased and can lie. Emits `(maybe ?? __pgNullAssert("m.pg:L:C"))` (a module-local `never` helper) |
+| `maybe + 1`, `"${maybe}"`, `maybe.x` | **errors** — narrow with `if maybe != null`, or use `??` / `!` |
 | no `undefined` | `null`/`undefined` are normalized to a single `null`; `undefined` never leaks |
 
 ## Extension methods

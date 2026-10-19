@@ -1,0 +1,3 @@
+// REFUSED (P40 A4, N1): a nullable operand to `+`. On null, C# concatenates "", JS "null", Python raises
+// and PHP coerces "" — four different programs. Supply a fallback with `??` or assert with `!`.
+fn label(n: string?): string => "a" + n

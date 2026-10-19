@@ -1,0 +1,21 @@
+// P40 review r7 (part 2): an own computed property whose getter returns a lambda capturing `this`, called in the
+// constructor of a class that can be subclassed — the call runs the lambda, which calls the overridable method.
+import "std.io"
+
+open class Base {
+  var label: string = ""
+  constructor() {
+    this.label = this.show()
+  }
+  let show: () => string => () => this.describe()
+  open fn describe(): string => "base"
+}
+
+class Derived : Base {
+  var extra: string = "X"
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

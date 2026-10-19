@@ -1,0 +1,55 @@
+// P40 review A7: the T?-representation boundary (SPEC §4.4) inside lambda bodies and the other positions
+// SPEC claims. A lambda's result flows into the function type it is passed as / assigned to, exactly as a
+// `return` value flows into a declared return type — so an `Option<X>` result meeting `() => X?` converts.
+// Before, the lambda was opaque: C# CS0029, TS `[object Object]`, Python `{'tag': 'Some', …}`, PHP `Array`.
+
+import "std.collections"
+
+class Slot<T> {
+  var v: T
+  var has: bool
+  constructor(v: T, has: bool) { this.v = v; this.has = has }
+  fn peek(): T? => if this.has { this.v } else { null }
+  fn orElse<U>(x: U?, d: U): U => match x { Some(v) => v, None => d }
+}
+
+fn apply(f: () => string?): string => f() ?? "nil"
+fn applyInt(f: (i32) => i32?, n: i32): i32 => f(n) ?? -1
+fn widen(f: () => f64): f64 => f()
+
+fn main() {
+  // expression-bodied lambdas
+  print(apply(() => Slot("abc", true).peek()))     // abc
+  print(apply(() => Slot("abc", false).peek()))    // nil
+  print(applyInt((n: i32) => Slot(n * 2, n > 0).peek(), 4))   // 8
+  print(applyInt((n: i32) => Slot(n * 2, n > 0).peek(), 0))   // -1
+
+  // a block lambda: every `return` converts
+  print(apply(() => {
+    let s = Slot("blk", true)
+    if s.has {
+      return s.peek()
+    }
+    return null
+  }))                                              // blk
+
+  // an annotated local of function type
+  let g: () => string? = () => Slot("let", true).peek()
+  print(g() ?? "nil")                              // let
+
+  // a lambda result widens into the declared result type
+  print(widen(() => 3))                            // 3
+
+  // generic-method `U?` parameter fed a native nullable
+  let slot = Slot("x", true)
+  let native: string? = null
+  print(slot.orElse(native, "dflt"))               // dflt
+  print(slot.orElse("given", "dflt"))              // given
+
+  // element assignment and list-literal elements (SPEC §4.4)
+  let xs: List<string?> = [Slot("e0", true).peek(), Slot("e1", false).peek()]
+  print(xs[0] ?? "nil")                            // e0
+  print(xs[1] ?? "nil")                            // nil
+  xs[1] = Slot("e2", true).peek()
+  print(xs[1] ?? "nil")                            // e2
+}

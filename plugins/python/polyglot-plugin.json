@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "python",
   "preludePerFile": true,
   "originMapping": {
@@ -8,11 +8,13 @@
     "footer": "# sourceMappingURL=$f"
   },
   "capabilities": {
+    "utf16Strings:index": "emulated",
     "blockLambdas": "emulated",
     "interfaces": "emulated",
     "interfaces:runtimeIdentity": "native",
     "attributes:target.field": false,
-    "attributes:target.param": false
+    "attributes:target.param": false,
+    "propertySetters:static": false
   },
   "spec": {
     "name": "python",
@@ -34,21 +36,48 @@
       "i64": "(((($x) & 0xffffffffffffffff) ^ 0x8000000000000000) - 0x8000000000000000)"
     },
     "wrapAtom": {
-      "recv": [
-        "binary",
-        "unary",
-        "cond",
-        "cast"
-      ],
-      "unary": [
-        "binary"
+      "recvPrimary": [
+        "var",
+        "this",
+        "call",
+        "methodCall",
+        "member",
+        "index",
+        "str",
+        "char",
+        "bool",
+        "null",
+        "extern",
+        "nullAssert",
+        "listLit",
+        "tuple",
+        "new",
+        "makeCase"
       ]
     },
     "rethrow": "raise",
     "preludes": {
-      "asyncEntry": "import asyncio\n",
+      "pgU16": "_PG_ASTRAL = __import__('re').compile('[\\U00010000-\\U0010FFFF]')\n_PG_SURR = __import__('re').compile('[\\ud800-\\udfff]')\n_PG_U16_CACHE = {}\n_PG_U16_LAST = [None, None]\ndef _pg_u16_pair(m):\n    c = builtins.ord(m.group(0)) - 0x10000\n    return builtins.chr(0xD800 + (c >> 10)) + builtins.chr(0xDC00 + (c & 0x3FF))\ndef _pg_u16v(s):\n    # the UTF-16 view of a non-ASCII str: each astral code point expanded to its surrogate pair. A short\n    # string is just recomputed; a long one is cached (the last one, plus a small LRU), so indexing a long\n    # string in a loop is O(1) per call even when short strings are indexed in between.\n    last = _PG_U16_LAST\n    if last[0] is s:\n        return last[1]\n    if builtins.len(s) < 256:\n        return _PG_ASTRAL.sub(_pg_u16_pair, s)\n    cache = _PG_U16_CACHE\n    e = cache.pop(builtins.id(s), None)\n    if e is not None and e[0] is s:\n        v = e[1]\n    else:\n        v = _PG_ASTRAL.sub(_pg_u16_pair, s)\n        if builtins.len(cache) >= 8:\n            cache.pop(builtins.next(builtins.iter(cache)))\n    cache[builtins.id(s)] = (s, v)\n    last[0] = s\n    last[1] = v\n    return v\ndef _pg_len16(s):\n    return builtins.len(s) if s.isascii() else builtins.len(_pg_u16v(s))\ndef _pg_u16_char(s, i):\n    return s[i] if s.isascii() else _pg_u16v(s)[i]\ndef _pg_u16_cp(s, i):\n    if s.isascii():\n        return builtins.ord(s[i])\n    v = _pg_u16v(s)\n    c = builtins.ord(v[i])\n    if 0xD800 <= c <= 0xDBFF and i + 1 < builtins.len(v):\n        d = builtins.ord(v[i + 1])\n        if 0xDC00 <= d <= 0xDFFF:\n            return 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00)\n    return c\ndef _pg_u16_sub(s, a, b):\n    if s.isascii():\n        return s[a:b]\n    return _pg_u16_fix(_pg_u16v(s)[a:b])\ndef _pg_u16_find(s, n, f):\n    if s.isascii():\n        return s.find(n, f) if n.isascii() else -1\n    return _pg_u16v(s).find(n if n.isascii() else _pg_u16v(n), f)\ndef _pg_cmp16(a, b):\n    if not (a.isascii() and b.isascii()):\n        a = a.encode('utf-16-be', 'surrogatepass')\n        b = b.encode('utf-16-be', 'surrogatepass')\n    return -1 if a < b else (1 if a > b else 0)\ndef _pg_u16_fix(r):\n    # re-pair the surrogate halves of a UTF-16 view slice into the str's astral code points\n    return r.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'surrogatepass') if _PG_SURR.search(r) else r\ndef _pg_u16_lone(*xs):\n    # a str holding a surrogate code point (a lone half a substring split off, or halves joined by +) only\n    # matches like C#/TS in the UTF-16 view; without one, the code-point answer is the UTF-16 answer\n    for x in xs:\n        if not x.isascii() and _PG_SURR.search(x):\n            return True\n    return False\ndef _pg_u16_has(s, n):\n    return _pg_u16v(s).find(_pg_u16v(n)) >= 0 if _pg_u16_lone(s, n) else n in s\ndef _pg_u16_starts(s, p):\n    return _pg_u16v(s).startswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.startswith(p)\ndef _pg_u16_ends(s, p):\n    return _pg_u16v(s).endswith(_pg_u16v(p)) if _pg_u16_lone(s, p) else s.endswith(p)\ndef _pg_u16_replace(s, n, r):\n    if _pg_u16_lone(s, n, r):\n        return _pg_u16_fix(_pg_u16v(s).replace(_pg_u16v(n), _pg_u16v(r)))\n    return s.replace(n, r)\ndef _pg_u16_split(s, sep):\n    if _pg_u16_lone(s, sep):\n        return [_pg_u16_fix(p) for p in _pg_u16v(s).split(_pg_u16v(sep))]\n    return s.split(sep)\n",
+      "pgOut16": "def _pg_out16(s):\n    # stdout: re-pair adjacent surrogate halves, and print a lone one as U+FFFD (as C# and Node do)\n    return s if s.isascii() else s.encode('utf-16-le', 'surrogatepass').decode('utf-16-le', 'replace')\n",
+      "asyncEntry": "import asyncio as _PG_asyncio\n",
+      "pyBuiltins": "import builtins\n",
+      "fdiv": "def _pg_fdiv(a, b):\n    # IEEE division like C#/JS: x/0.0 is an infinity, 0.0/0.0 NaN (Python raises ZeroDivisionError)\n    try:\n        return a / b\n    except builtins.ZeroDivisionError:\n        if a != a or a == 0:\n            return builtins.float(\"nan\")\n        return builtins.float(\"inf\") if (a > 0) == (__import__('math').copysign(1.0, b) > 0) else builtins.float(\"-inf\")\ndef _pg_fmod(a, b):\n    # C# % on doubles: NaN for a zero divisor or an infinite dividend (math.fmod raises ValueError there)\n    if b == 0 or a != a or b != b or a in (builtins.float(\"inf\"), builtins.float(\"-inf\")):\n        return builtins.float(\"nan\")\n    return __import__('math').fmod(a, b)\n",
+      "pgInt": "def _pg_int(s):\n    # the validated integer text, without the leading zeros that trip Python's 4300-digit int() limit\n    d = s.lstrip(\"+-\").lstrip(\"0\") or \"0\"\n    return -builtins.int(d) if s[:1] == \"-\" else builtins.int(d)\n",
+      "pgF32": "def _pg_f32(x):\n    # round a double to the nearest f32 (an out-of-range value becomes an infinity, as C# float.Parse does)\n    import ctypes\n    return ctypes.c_float(x).value\n",
       "idiv": "def _pg_idiv(a, b):\n    q = a // b\n    return q + 1 if (q < 0 and q * b != a) else q\ndef _pg_irem(a, b):\n    return a - _pg_idiv(a, b) * b\n",
-      "fstr": "def _pg_str(x):\n    if isinstance(x, bool):\n        return \"true\" if x else \"false\"\n    if isinstance(x, float) and x.is_integer() and abs(x) < 1e16:\n        return str(int(x))\n    return str(x)\n"
+      "pgFail": "def _pg_fail(at):\n    raise builtins.TypeError(\"null-assert failed (\" + at + \")\")\n",
+      "fstr": "def _pg_str(x):\n    if x is None:\n        return \"null\"\n    if builtins.isinstance(x, builtins.bool):\n        return \"true\" if x else \"false\"\n    if not builtins.isinstance(x, builtins.float):\n        return builtins.str(x)\n    if x != x:\n        return \"NaN\"\n    if x in (builtins.float(\"inf\"), builtins.float(\"-inf\")):\n        return \"Infinity\" if x > 0 else \"-Infinity\"\n    if x == 0:\n        return \"0\"\n    s = builtins.repr(x)\n    neg = s[0] == \"-\"\n    if neg:\n        s = s[1:]\n    m, _, e = s.partition(\"e\")\n    i, _, f = m.partition(\".\")\n    d = (i + f).lstrip(\"0\")\n    n = builtins.len(i) + (builtins.int(e) if e else 0) - (builtins.len(i) + builtins.len(f) - builtins.len(d))\n    d = d.rstrip(\"0\")\n    k = builtins.len(d)\n    if k <= n <= 21:\n        r = d + \"0\" * (n - k)\n    elif 0 < n <= 21:\n        r = d[:n] + \".\" + d[n:]\n    elif -6 < n <= 0:\n        r = \"0.\" + \"0\" * -n + d\n    else:\n        r = d[0] + (\".\" + d[1:] if k > 1 else \"\") + \"e\" + (\"+\" if n >= 1 else \"-\") + builtins.str(builtins.abs(n - 1))\n    return \"-\" + r if neg else r\n",
+      "pgAbsent": "_PG_ABSENT = builtins.object()  # Map.remove's pop sentinel: never a stored value\n",
+      "pgAscii": "_PG_UPPER = builtins.str.maketrans(\"abcdefghijklmnopqrstuvwxyz\", \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\")\n_PG_LOWER = builtins.str.maketrans(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", \"abcdefghijklmnopqrstuvwxyz\")\n"
+    },
+    "preludeRequires": {
+      "pgU16": ["pyBuiltins"],
+      "fdiv": ["pyBuiltins"],
+      "pgInt": ["pyBuiltins"],
+      "pgFail": ["pyBuiltins"],
+      "fstr": ["pyBuiltins"],
+      "pgAbsent": ["pyBuiltins"],
+      "pgAscii": ["pyBuiltins"]
     },
     "tables": {
       "localDecl": {
@@ -66,7 +95,48 @@
     "trueLit": "True",
     "falseLit": "False",
     "nullLit": "None",
+    "literals": {
+      "string": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
+      },
+      "interp": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
+      },
+      "char": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r"
+        },
+        "codepoint": "\\u$H4",
+        "astral": "\\U$H8"
+      }
+    },
     "expressionOnlyLambdas": true,
+    "unboundImports": ["union", "unionCase"],
+    "nativeCoalesceAssign": false,
+    "assignmentOrder": "valueFirst",
     "identifiers": {
       "keywords": [
         "False",
@@ -113,13 +183,17 @@
       },
       "mangle": {
         "replace": "$",
-        "with": "_"
+        "with": "__"
       },
       "reserved": [
         "_m",
         "self",
         "_pg_idiv",
         "_pg_irem",
+        "_pg_fdiv",
+        "_pg_fmod",
+        "_pg_int",
+        "_pg_f32",
         "__c*",
         "__o*",
         "__e",
@@ -128,10 +202,14 @@
         "__dw*",
         "tag",
         "__opt*",
+        "_PG_*",
         "__w*"
       ],
+      "runtimeNames": [
+        "builtins"
+      ],
       "globals": [
-        "str"
+        "Exception"
       ]
     }
   },
@@ -152,7 +230,7 @@
       ]
     },
     "Float": {
-      "get": "node.text"
+      "get": "node.widenedText"
     },
     "Bool": {
       "case": {
@@ -178,8 +256,9 @@
       "get": "spec.nullLit"
     },
     "Str": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "string",
         {
           "get": "node.value"
         }
@@ -207,27 +286,37 @@
       ]
     },
     "Call": {
-      "tmpl": [
-        {
-          "fn": "mangleName",
-          "args": [
+      "case": {
+        "when": [
+          [
+            { "has": "node.hasCalleeExpr" },
+            { "tmpl": [ { "emitChild": "node.calleeExpr", "side": "recv" }, "(", { "map": "node.args", "sep": ", " }, ")" ] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
             {
-              "fn": "ident",
+              "fn": "mangleName",
               "args": [
                 {
-                  "get": "node.mangledCallee"
+                  "fn": "ident",
+                  "args": [
+                    {
+                      "get": "node.mangledCallee"
+                    }
+                  ]
                 }
               ]
+            },
+            {
+              "case": {
+                "when": [[ { "eq": ["node.isRef", "true"] }, "" ]],
+                "else": { "tmpl": [ "(", { "map": "node.args", "sep": ", " }, ")" ] }
+              }
             }
           ]
-        },
-        "(",
-        {
-          "map": "node.args",
-          "sep": ", "
-        },
-        ")"
-      ]
+        }
+      }
     },
     "Member": {
       "case": {
@@ -301,7 +390,8 @@
                   "get": "node.field"
                 }
               ]
-            }
+            },
+            { "case": { "when": [ [ { "and": [ { "eq": [ "node.isProperty", "true" ] }, { "has": "node.staticType" } ] }, "()" ] ] } }
           ]
         }
       }
@@ -393,7 +483,8 @@
       "tmpl": [
         "(",
         {
-          "emit": "node.then"
+          "emitChild": "node.then",
+          "side": "operand"
         },
         " if ",
         {
@@ -739,7 +830,7 @@
                                   [
                                     {
                                       "eq": [
-                                        "item.typeIsList",
+                                        "item.typeIsRefCollection",
                                         "true"
                                       ]
                                     },
@@ -895,7 +986,7 @@
                                         },
                                         {
                                           "tmpl": [
-                                            " and isinstance(__e, ",
+                                            { "fn": "require", "args": ["pyBuiltins"] }, " and builtins.isinstance(__e, ",
                                             {
                                               "type": "item.type"
                                             },
@@ -1144,7 +1235,7 @@
                         }
                       ]
                     },
-                    " in range(",
+                    { "fn": "require", "args": ["pyBuiltins"] }, " in builtins.range(",
                     {
                       "emit": "stmt.rangeStart"
                     },
@@ -1258,6 +1349,15 @@
     "Program": {
       "seq": [
         {
+          "line": "# <auto-generated/>"
+        },
+        {
+          "line": "# Generated by Polyglot. Do not edit: regenerate with `polyglot build`."
+        },
+        {
+          "fn": "preludeSlot"
+        },
+        {
           "case": {
             "when": [
               [
@@ -1321,10 +1421,15 @@
                         },
                         " import ",
                         {
-                          "get": "item.names"
+                          "fn": "mangle",
+                          "args": [ { "get": "item.names" } ]
                         }
                       ]
                     }
+                  ],
+                  [
+                    { "not": { "eq": ["item.allNames", ""] } },
+                    { "tmpl": ["from ", { "get": "item.path" }, " import *"] }
                   ]
                 ],
                 "else": {
@@ -1344,83 +1449,64 @@
             "when": [
               [
                 {
-                  "not": {
-                    "eq": [
-                      "module.interfaces.count",
-                      "0"
-                    ]
-                  }
+                  "or": [
+                    { "not": { "eq": [ "module.interfaces.count", "0" ] } },
+                    { "not": { "eq": [ "module.abstractClasses.count", "0" ] } }
+                  ]
                 },
                 {
-                  "line": "import abc"
+                  "line": "import abc as _PG_abc"
                 }
               ]
             ]
           }
         },
         {
-          "mapMembers": "module.interfaces",
-          "rule": "InterfaceDecl"
-        },
-        {
-          "mapMembers": "module.enums",
-          "rule": "EnumDecl"
-        },
-        {
-          "mapMembers": "module.unions",
-          "rule": "UnionDecl"
-        },
-        {
-          "mapMembers": "module.records",
-          "rule": "RecordDecl"
-        },
-        {
-          "mapMembers": "module.classes",
-          "rule": "ClassDecl"
-        },
-        {
-          "mapDecl": "module.globals",
-          "each": {
-            "line": {
-              "tmpl": [
-                {
-                  "fn": "ident",
-                  "args": [
+          "mapOrder": "module.order",
+          "kinds": {
+            "enum": { "rule": "EnumDecl" },
+            "interface": { "rule": "InterfaceDecl" },
+            "union": { "rule": "UnionDecl" },
+            "record": { "rule": "RecordDecl" },
+            "function": { "rule": "FunctionDecl" },
+            "extension": { "rule": "FunctionDecl" },
+            "class": { "rule": "ClassDecl" },
+            "global": {
+              "each": {
+                "line": {
+                  "tmpl": [
                     {
-                      "get": "item.name"
-                    }
-                  ]
-                },
-                " = ",
-                {
-                  "case": {
-                    "when": [
-                      [
+                      "fn": "ident",
+                      "args": [
                         {
-                          "eq": [
-                            "item.hasInit",
-                            "true"
-                          ]
-                        },
-                        {
-                          "emit": "item.init"
+                          "get": "item.name"
                         }
                       ]
-                    ],
-                    "else": "None"
-                  }
+                    },
+                    " = ",
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.hasInit",
+                                "true"
+                              ]
+                            },
+                            {
+                              "emit": "item.init"
+                            }
+                          ]
+                        ],
+                        "else": "None"
+                      }
+                    }
+                  ]
                 }
-              ]
+              }
             }
           }
-        },
-        {
-          "mapMembers": "module.functions",
-          "rule": "FunctionDecl"
-        },
-        {
-          "mapMembers": "module.extensions",
-          "rule": "FunctionDecl"
         },
         {
           "case": {
@@ -1445,7 +1531,7 @@
                         {
                           "line": {
                             "tmpl": [
-                              "asyncio.run(",
+                              "_PG_asyncio.run(",
                               {
                                 "fn": "mangle",
                                 "args": [
@@ -1548,7 +1634,8 @@
               "else": ""
             }
           },
-          { "stmts": "stmt.body" }
+          { "stmts": "stmt.body" },
+          { "case": { "when": [ [ { "eq": [ "stmt.body.count", "0" ] }, { "line": "pass" } ] ] } }
         ]
       }
     },
@@ -1649,6 +1736,15 @@
             "when": [
               [
                 {
+                  "and": [
+                    { "eq": [ "decl.bases.count", "0" ] },
+                    { "eq": [ "decl.isAbstract", "true" ] }
+                  ]
+                },
+                "(_PG_abc.ABC)"
+              ],
+              [
+                {
                   "eq": [
                     "decl.bases.count",
                     "0"
@@ -1667,6 +1763,7 @@
                     "type": "item"
                   }
                 },
+                { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, ", _PG_abc.ABC" ] ] } },
                 ")"
               ]
             }
@@ -1715,7 +1812,7 @@
                 }
               }
             },
-            "abc.ABC)"
+            "_PG_abc.ABC)"
           ]
         },
         "body": [
@@ -1724,7 +1821,7 @@
             "each": {
               "seq": [
                 {
-                  "line": "@abc.abstractmethod"
+                  "line": "@_PG_abc.abstractmethod"
                 },
                 {
                   "line": {
@@ -1762,6 +1859,8 @@
       }
     },
     "ClassDecl": {
+      "seq": [
+      {
       "block": {
         "head": {
           "call": "pyClassHead"
@@ -1770,6 +1869,11 @@
           {
             "mapDecl": "decl.staticInitFields",
             "each": {
+              "case": {
+                "when": [
+                  [
+                    { "eq": ["item.initIsLiteral", "true"] },
+                    {
               "line": {
                 "tmpl": [
                   {
@@ -1784,6 +1888,10 @@
                   {
                     "emit": "item.init"
                   }
+                ]
+              }
+                    }
+                  ]
                 ]
               }
             }
@@ -1825,7 +1933,7 @@
                               [
                                 {
                                   "eq": [
-                                    "decl.hasSuper",
+                                    "decl.baseHasInit",
                                     "true"
                                   ]
                                 },
@@ -1881,7 +1989,7 @@
                                   "and": [
                                     {
                                       "eq": [
-                                        "decl.hasSuper",
+                                        "decl.baseHasInit",
                                         "false"
                                       ]
                                     },
@@ -1925,7 +2033,7 @@
                     "and": [
                       {
                         "eq": [
-                          "decl.staticInitFields.count",
+                          "decl.literalStaticInitCount",
                           "0"
                         ]
                       },
@@ -1952,6 +2060,27 @@
           }
         ]
       }
+      },
+      {
+        "mapDecl": "decl.staticInitFields",
+        "each": {
+          "case": {
+            "when": [
+              [
+                { "eq": ["item.initIsLiteral", "false"] },
+                { "line": { "tmpl": [
+                  { "fn": "ident", "args": [ { "get": "decl.name" } ] },
+                  ".",
+                  { "fn": "ident", "args": [ { "get": "item.name" } ] },
+                  " = ",
+                  { "emit": "item.init" }
+                ] } }
+              ]
+            ]
+          }
+        }
+      }
+      ]
     },
     "pyParam": {
       "tmpl": [
@@ -2152,6 +2281,15 @@
               ]
             },
             "__rshift__"
+          ],
+          [
+            {
+              "eq": [
+                "decl.opSymbol",
+                "hash"
+              ]
+            },
+            "__hash__"
           ]
         ],
         "else": {
@@ -2260,15 +2398,16 @@
           "case": {
             "when": [
               [
-                {
-                  "eq": [
-                    "decl.kind",
-                    "property"
-                  ]
-                },
-                {
-                  "line": "@property"
-                }
+                { "and": [
+                  {
+                    "eq": [
+                      "decl.kind",
+                      "property"
+                    ]
+                  },
+                  { "eq": [ "decl.isStatic", "false" ] }
+                ] },
+                { "line": { "tmpl": [ { "fn": "require", "args": ["pyBuiltins"] }, "@builtins.property" ] } }
               ]
             ]
           }
@@ -2283,13 +2422,12 @@
                     "true"
                   ]
                 },
-                {
-                  "line": "@staticmethod"
-                }
+                { "line": { "tmpl": [ { "fn": "require", "args": ["pyBuiltins"] }, "@builtins.staticmethod" ] } }
               ]
             ]
           }
         },
+        { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": "@_PG_abc.abstractmethod" } ] ] } },
         {
           "case": {
             "when": [
@@ -2419,8 +2557,9 @@
       "tmpl": [
         "{\"tag\": ",
         {
-          "fn": "escapeString",
+          "fn": "quoted",
           "args": [
+            "string",
             {
               "get": "node.caseName"
             }
@@ -2433,8 +2572,9 @@
             "tmpl": [
               ", ",
               {
-                "fn": "escapeString",
+                "fn": "quoted",
                 "args": [
+                  "string",
                   {
                     "get": "item.name"
                   }
@@ -2452,12 +2592,51 @@
     },
     "IsTest": {
       "tmpl": [
-        "isinstance(",
+        { "fn": "require", "args": ["pyBuiltins"] }, "builtins.isinstance(",
         { "emit": "node.operand" },
         ", ",
         { "type": "node.testType" },
         ")"
       ]
+    },
+    "NullAssert": {
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.isFail", "true"] },
+            { "tmpl": [{ "fn": "require", "args": ["pgFail"] }, "_pg_fail(", { "fn": "quoted", "args": ["string", { "get": "node.where" }] }, ")"] }
+          ],
+          [
+            { "eq": ["node.operandIsSimple", "true"] },
+            {
+              "tmpl": [
+                { "fn": "require", "args": ["pgFail"] },
+                "(",
+                { "emit": "node.operand" },
+                " if ",
+                { "emit": "node.operand" },
+                " is not None else _pg_fail(",
+                { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+                "))"
+              ]
+            }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            { "fn": "require", "args": ["pgFail"] },
+            "(",
+            { "get": "node.tempName" },
+            " if (",
+            { "get": "node.tempName" },
+            " := ",
+            { "emit": "node.operand" },
+            ") is not None else _pg_fail(",
+            { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+            "))"
+          ]
+        }
+      }
     },
     "AsCast": {
       "case": {
@@ -2468,7 +2647,7 @@
               "tmpl": [
                 "(",
                 { "emit": "node.operand" },
-                " if isinstance(",
+                { "fn": "require", "args": ["pyBuiltins"] }, " if builtins.isinstance(",
                 { "emit": "node.operand" },
                 ", ",
                 { "type": "node.castType" },
@@ -2481,7 +2660,7 @@
           "tmpl": [
             "(",
             { "get": "node.tempName" },
-            " if isinstance((",
+            { "fn": "require", "args": ["pyBuiltins"] }, " if builtins.isinstance((",
             { "get": "node.tempName" },
             " := ",
             { "emit": "node.operand" },
@@ -2601,7 +2780,7 @@
             },
             {
               "tmpl": [
-                "float(",
+                { "fn": "require", "args": ["pyBuiltins"] }, "builtins.float(",
                 {
                   "emit": "node.operand"
                 },
@@ -2639,7 +2818,7 @@
             },
             {
               "tmpl": [
-                "int(",
+                { "fn": "require", "args": ["pyBuiltins"] }, "builtins.int(",
                 {
                   "emit": "node.operand"
                 },
@@ -2781,8 +2960,9 @@
         "lits": "node.chunks",
         "holes": "node.holes",
         "lit": {
-          "fn": "escapeString",
+          "fn": "quoted",
           "args": [
+            "interp",
             {
               "get": "item"
             }
@@ -2817,14 +2997,7 @@
             },
             {
               "tmpl": [
-                {
-                  "fn": "ident",
-                  "args": [
-                    {
-                      "get": "node.method"
-                    }
-                  ]
-                },
+                { "fn": "mangleName", "args": [ { "fn": "ident", "args": [ { "get": "node.freeName" } ] } ] },
                 "(",
                 {
                   "emit": "node.object"
@@ -3071,7 +3244,8 @@
           ]
         ],
         "else": {
-          "emit": "item.body"
+          "emitChild": "item.body",
+          "side": "operand"
         }
       }
     },
@@ -3232,11 +3406,15 @@
             },
             {
               "tmpl": [
-                "isinstance(_m, ",
+                { "fn": "require", "args": ["pyBuiltins"] }, "builtins.isinstance(_m, ",
                 { "type": "item.pattern.testType" },
                 ")"
               ]
             }
+          ],
+          [
+            { "eq": ["item.pattern.isNullLiteral", "true"] },
+            { "tmpl": ["_m is None"] }
           ],
           [
             {
@@ -3285,8 +3463,9 @@
               "tmpl": [
                 "_m[\"tag\"] == ",
                 {
-                  "fn": "escapeString",
+                  "fn": "quoted",
                   "args": [
+                    "string",
                     {
                       "get": "item.pattern.ctorCase"
                     }
@@ -3496,7 +3675,8 @@
             },
             {
               "tmpl": [
-                "__import__('math').fmod(",
+                { "fn": "require", "args": ["fdiv"] },
+                "_pg_fmod(",
                 {
                   "emit": "node.lhs"
                 },
@@ -3507,6 +3687,10 @@
                 ")"
               ]
             }
+          ],
+          [
+            { "and": [ { "eq": ["node.typeIsFloat", "true"] }, { "eq": ["node.op", "/"] } ] },
+            { "tmpl": [ { "fn": "require", "args": ["fdiv"] }, "_pg_fdiv(", { "emit": "node.lhs" }, ", ", { "emit": "node.rhs" }, ")" ] }
           ],
           [
             {
@@ -3753,8 +3937,9 @@
       }
     },
     "Char": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "char",
         {
           "get": "node.value"
         }
@@ -3765,17 +3950,26 @@
     "std.collections": {
       "List.type": "list",
       "List.constructor": "[]",
-      "List.count": "len($this)",
+      "List.count": { "template": "builtins.len($this)", "requires": ["pyBuiltins"] },
       "List.add": "$this.append($0)",
       "List.clear": "$this.clear()",
       "List.removeAll": "$this[:] = [__e for __e in $this if not (($0)(__e))]",
-      "List.removeAt": "$this.pop($0)"
+      "List.removeAt": "$this.pop($0)",
+      "Map.type": "dict",
+      "Map.constructor": "{}",
+      "Map.count": { "template": "builtins.len($this)", "requires": ["pyBuiltins"] },
+      "Map.get": "$this.get($0)",
+      "Map.set": "$this.__setitem__($0, $1)",
+      "Map.has": "($0 in $this)",
+      "Map.remove": { "template": "($this.pop($0, _PG_ABSENT) is not _PG_ABSENT)", "requires": ["pgAbsent"] },
+      "Map.keys": { "template": "builtins.list($this.keys())", "requires": ["pyBuiltins"] },
+      "Map.values": { "template": "builtins.list($this.values())", "requires": ["pyBuiltins"] }
     },
     "std.io": {
-      "print": "__builtins__.print((\"true\" if x else \"false\") if isinstance(x, bool) else (str(int(x)) if isinstance(x, float) and x.is_integer() and abs(x) < 1e16 else x))",
+      "print": { "template": "__import__('builtins').print(_pg_out16(_pg_str(x)))", "requires": ["fstr", "pgOut16"] },
       "readText": "__import__('pathlib').Path(path).read_text()",
       "writeText": "__import__('pathlib').Path(path).write_text(content)",
-      "appendText": "open(path, 'a').write(content)",
+      "appendText": { "template": "builtins.open(path, 'a').write(content)", "requires": ["pyBuiltins"] },
       "fileExists": "__import__('os').path.exists(path)",
       "deleteFile": "__import__('os').remove(path)"
     },
@@ -3783,6 +3977,7 @@
       "Math.PI": "__import__('math').pi",
       "Math.E": "__import__('math').e",
       "Math.sqrt": "__import__('math').sqrt($0)",
+      "Math.isNaN": "__import__('math').isnan($0)",
       "Math.ln": "__import__('math').log($0)",
       "Math.log": "__import__('math').log($0)",
       "Math.log2": "__import__('math').log2($0)",
@@ -3802,45 +3997,59 @@
       "Math.asinh": "__import__('math').asinh($0)",
       "Math.acosh": "__import__('math').acosh($0)",
       "Math.atanh": "__import__('math').atanh($0)",
-      "Math.trunc": "float(__import__('math').trunc($0))",
-      "Math.floor": "float(__import__('math').floor($0))",
-      "Math.ceil": "float(__import__('math').ceil($0))",
-      "Math.min": "min($0, $1)",
-      "Math.max": "max($0, $1)",
-      "Math.abs": "abs($0)",
-      "Math.sign": "(lambda a: type(a)(1) if a > 0 else (type(a)(-1) if a < 0 else a - a))($0)",
+      "Math.trunc": { "template": "builtins.float(__import__('math').trunc($0))", "requires": ["pyBuiltins"] },
+      "Math.floor": { "template": "builtins.float(__import__('math').floor($0))", "requires": ["pyBuiltins"] },
+      "Math.ceil": { "template": "builtins.float(__import__('math').ceil($0))", "requires": ["pyBuiltins"] },
+      "Math.min": { "template": "builtins.min($0, $1)", "requires": ["pyBuiltins"] },
+      "Math.max": { "template": "builtins.max($0, $1)", "requires": ["pyBuiltins"] },
+      "Math.abs": { "template": "builtins.abs($0)", "requires": ["pyBuiltins"] },
+      "Math.sign": { "template": "(lambda a: builtins.type(a)(1) if a > 0 else (builtins.type(a)(-1) if a < 0 else a - a))($0)", "requires": ["pyBuiltins"] },
       "Math.clamp": "(lambda x, lo, hi: lo if x < lo else (hi if x > hi else x))($0, $1, $2)",
-      "Math.round": "float(round($0))"
+      "Math.round": { "template": "builtins.float(builtins.round($0))", "requires": ["pyBuiltins"] }
     },
     "std.strings": {
-      "string.isEmpty": "(len($this) == 0)",
-      "string.len": "len($this)",
+      "string.isEmpty": { "template": "(builtins.len($this) == 0)", "requires": ["pyBuiltins"] },
+      "string.len": { "template": "_pg_len16($this)", "requires": ["pgU16"] },
       "string.toUpper": "$this.upper()",
       "string.toLower": "$this.lower()",
-      "string.charAt": "$this[$0]",
-      "string.codePointAt": "ord($this[$0])",
-      "string.codePoints": "list($this)",
-      "string.toI32": "int($this)"
+      "string.toUpperAscii": { "template": "$this.translate(_PG_UPPER)", "requires": ["pgAscii"] },
+      "string.toLowerAscii": { "template": "$this.translate(_PG_LOWER)", "requires": ["pgAscii"] },
+      "string.codePoints": { "template": "builtins.list($this)", "requires": ["pyBuiltins"] },
+      "string.startsWith": { "template": "_pg_u16_starts($this, $0)", "requires": ["pgU16"] },
+      "string.endsWith": { "template": "_pg_u16_ends($this, $0)", "requires": ["pgU16"] },
+      "string.contains": { "template": "_pg_u16_has($this, $0)", "requires": ["pgU16"] },
+      "string.trimAscii": "$this.strip(\"\\t\\n\\x0b\\x0c\\r \")",
+      "compareOrdinal": { "template": "_pg_cmp16(a, b)", "requires": ["pgU16"] },
+      "string.__pgCharAt": { "template": "_pg_u16_char($this, $0)", "requires": ["pgU16"] },
+      "string.__pgCodePointAt": { "template": "_pg_u16_cp($this, $0)", "requires": ["pgU16"] },
+      "string.__pgSubstring": { "template": "_pg_u16_sub($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgIndexOf": { "template": "_pg_u16_find($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgReplaceAll": { "template": "_pg_u16_replace($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgSplit": { "template": "_pg_u16_split($this, $0)", "requires": ["pgU16"] },
+      "string.__pgFromCodePoint": { "template": "builtins.chr($0)", "requires": ["pyBuiltins"] }
     },
     "std.core": {
       "Error.type": "Exception",
       "Error.constructor": "$T($0)",
-      "Error.message": "str($this)",
+      "Error.message": { "template": "builtins.str($this)", "requires": ["pyBuiltins"] },
       "Iterable.type": "list",
       "Array.type": "list",
       "Array.constructor": "[]",
-      "Array.count": "len($this)",
-      "i8.parse": "int($0)",
-      "i16.parse": "int($0)",
-      "i32.parse": "int($0)",
-      "i64.parse": "int($0)",
-      "u8.parse": "int($0)",
-      "u16.parse": "int($0)",
-      "u32.parse": "int($0)",
-      "u64.parse": "int($0)",
-      "f32.parse": "float($0)",
-      "f64.parse": "float($0)"
+      "Array.count": { "template": "builtins.len($this)", "requires": ["pyBuiltins"] },
+      "__pgText.rawLen": { "template": "builtins.len($0)", "requires": ["pyBuiltins"] },
+      "__pgText.rawCode": { "template": "builtins.ord($0[$1])", "requires": ["pyBuiltins"] },
+      "i8.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "i16.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "i32.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "i64.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u8.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u16.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u32.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "u64.__pgParse": { "template": "_pg_int($0)", "requires": ["pgInt"] },
+      "f32.__pgParse": { "template": "_pg_f32(builtins.float($0))", "requires": ["pgF32", "pyBuiltins"] },
+      "f64.__pgParse": { "template": "builtins.float($0)", "requires": ["pyBuiltins"] }
     }
   },
-  "fileExtension": ".py"
+  "fileExtension": ".py",
+  "lineComment": "#"
 }

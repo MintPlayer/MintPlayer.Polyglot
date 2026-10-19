@@ -2,6 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <functional>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 
@@ -28,6 +34,33 @@ bool isInt64Name(const TypeRef& t) {
 bool isBoolTypeName(const TypeRef& t) {
     return t.kind == TypeRef::Kind::Named && t.name == "bool";
 }
+bool isStringTypeName(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && t.name == "string";
+}
+bool isCharTypeName(const TypeRef& t) {
+    return t.kind == TypeRef::Kind::Named && t.name == "char";
+}
+
+// P40 A3 (S13): an f32 literal denotes the NEAREST f32, so a target that holds f32 in a double must be handed
+// that value, not the source text (`0.1f` is 0.10000000149011612 on .NET, and must print that everywhere).
+// Returns the source text when the literal is exactly representable (or not an f32), else the shortest
+// round-trip spelling of the widened value. The CLI never calls setlocale, so the C conversions use '.'.
+std::string widenedF32Text(const std::string& text) {
+    std::string t;
+    for (char c : text) if (c != '_') t += c;
+    const float f = std::strtof(t.c_str(), nullptr);
+    const double d = std::strtod(t.c_str(), nullptr);
+    const double w = static_cast<double>(f);
+    if (w == d || w != w || w - w != 0) return text; // exact, NaN, or overflowed to infinity: keep the source
+    char buf[40];
+    for (int p = 1; p <= 17; ++p) {
+        std::snprintf(buf, sizeof buf, "%.*g", p, w);
+        if (std::strtod(buf, nullptr) == w) break;
+    }
+    std::string s = buf;
+    if (s.find_first_of(".eE") == std::string::npos) s += ".0"; // stay a float literal on every target
+    return s;
+}
 } // namespace
 
 std::string IrExprCtx::get(const std::string& path) const {
@@ -38,6 +71,8 @@ std::string IrExprCtx::get(const std::string& path) const {
         return targetGet(path);
     }
     if (path == "node.name" && e_.kind == ir::ExprKind::Var)    return static_cast<const ir::Var&>(e_).name;
+    if (path == "node.liveModuleRead" && e_.kind == ir::ExprKind::Var) // r5 (part 2)
+        return static_cast<const ir::Var&>(e_).liveModuleRead ? "true" : "false";
     if (path == "node.code" && e_.kind == ir::ExprKind::Extern) return static_cast<const ir::Extern&>(e_).code;
     if (e_.kind == ir::ExprKind::Binary) { // module facts precomputed in lowering (P19)
         const auto& b = static_cast<const ir::Binary&>(e_);
@@ -55,6 +90,21 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& u = static_cast<const ir::Unary&>(e_);
         if (path == "node.operandIsUserType") return u.operandIsUserType ? "true" : "false";
         if (path == "node.operandTypeName" && u.operand) return u.operand->type.name;
+        // P40 review r4 (part 2): `-9223372036854775808` — the i64 minimum, whose magnitude has no positive i64. A
+        // target that parses `-N` as the negation of a literal N (PHP: N is a float) spells it its own way.
+        if (path == "node.negatesInt64Min") {
+            if (u.op != "-" || !u.operand || u.operand->kind != ir::ExprKind::Int) return "false";
+            std::string d;
+            for (char c : static_cast<const ir::IntLit&>(*u.operand).text) {
+                if (c == '_') continue;
+                if (c == 'i' || c == 'u') break;
+                d += c;
+            }
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long v = std::strtoull(d.c_str(), &end, 0);
+            return errno != ERANGE && end != d.c_str() && *end == '\0' && v == 9223372036854775808ull ? "true" : "false";
+        }
         if (path == "node.hasUnaryOpMethod")
             return u.operandIsUserType && !specTable(spec_, "opMethod", "u" + u.op).empty() ? "true" : "false";
     }
@@ -91,6 +141,12 @@ std::string IrExprCtx::get(const std::string& path) const {
         const auto& b = static_cast<const ir::Binary&>(e_);
         return b.lhsIsUserType && !specTable(spec_, "opMethod", b.op).empty() ? "true" : "false";
     }
+    if (e_.kind == ir::ExprKind::NullAssert) { // P40 A4 (node.where / node.message: the emitter's targetGet)
+        const auto& n = static_cast<const ir::NullAssert&>(e_);
+        if (path == "node.isFail")          return n.operand ? "false" : "true";
+        if (path == "node.operandIsSimple") return n.operandIsSimple ? "true" : "false";
+        if (path == "node.tempName")        return n.tempName;
+    }
     if (e_.kind == ir::ExprKind::AsCast) { // P37 B: guard-shape choice + inline temp (the With pattern)
         const auto& a = static_cast<const ir::AsCast&>(e_);
         if (path == "node.operandIsSimple") return a.operandIsSimple ? "true" : "false";
@@ -112,7 +168,12 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.callee")        return c.callee;
         if (path == "node.mangledCallee") return c.mangledCallee;
         if (path == "node.isFree")        return c.isFree ? "true" : "false";
+        if (path == "node.isRef")         return c.isRef ? "true" : "false";
         if (path == "node.args.count")    return std::to_string(c.args.size());
+        if (path == "node.linkCallee")    return c.linkCallee.empty() || c.linkCallee == c.callee ? std::string() : c.linkCallee; // P40 r3 2(e)
+        if (path == "node.uniqueCallee") return !c.uniqueCallee.empty() ? c.uniqueCallee : c.mangledCallee; // P40 r4 #13
+        if (path == "node.hasCalleeExpr") return c.calleeExpr ? "true" : "";
+        if (path == "node.calleeKind")    return c.calleeExpr ? exprKindName(c.calleeExpr->kind) : "";
     }
     if (e_.kind == ir::ExprKind::Member) {
         const auto& m = static_cast<const ir::Member&>(e_);
@@ -120,10 +181,15 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.field")      return m.field;
         if (path == "node.nullSafe")   return m.nullSafe ? "true" : "false";
         if (path == "node.isProperty") return m.isProperty ? "true" : "false";
+        if (path == "node.staticField")               return m.staticField ? "true" : "false";
+        if (path == "node.staticFieldMutable")        return m.staticFieldMutable ? "true" : "false";
+        if (path == "node.staticFieldInitIsLiteral")  return m.staticFieldInitIsLiteral ? "true" : "false";
     }
     if (e_.kind == ir::ExprKind::MethodCall) {
         const auto& mc = static_cast<const ir::MethodCall&>(e_);
         if (path == "node.method")      return mc.method;
+        // P40 review r6: an extension called as a free function, by its emitted name (ir::MethodCall::freeName)
+        if (path == "node.freeName")    return mc.freeName.empty() ? mc.method : mc.freeName;
         if (path == "node.staticType")  return mc.staticType;
         if (path == "node.isExtension") return mc.isExtension ? "true" : "false";
         if (path == "node.args.count")  return std::to_string(mc.args.size());
@@ -205,6 +271,15 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (path == "node.arms.count")  return std::to_string(m.arms.size());
         if (path == "node.hasCatchAll") return m.hasCatchAll ? "true" : "false";
         if (path == "node.isStatement") return m.isStatement ? "true" : "false"; // #52
+        // P40 review r4 (part 2): the scrutinee's scalar spelling on this target ("" unless a non-null scalar) — TS
+        // annotates its match temp with it, or a literal scrutinee (`match "01"`) keeps its literal type and every
+        // arm comparison is TS2367 "no overlap" under --strict.
+        if (path == "node.scrutineeScalar") {
+            const TypeRef& st = m.scrutinee->type;
+            if (st.kind != TypeRef::Kind::Named || st.nullable) return "";
+            auto it = spec_.scalarType.find(st.name);
+            return it == spec_.scalarType.end() ? std::string() : it->second;
+        }
         if (path.rfind("node.arms.", 0) == 0) { // node.arms.<i>.<rest>
             const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(10)));
             const std::size_t dot = path.find('.', 10);
@@ -222,6 +297,11 @@ std::string IrExprCtx::get(const std::string& path) const {
                         case ir::PatternKind::TypeTest: return "typeTest";
                     }
                 }
+                // A `null` literal pattern: a target whose `==` is loose (PHP `0 == null`, Python `__eq__`)
+                // spells it as an identity test instead.
+                if (rest == "pattern.isNullLiteral")
+                    return (a.pattern.kind == ir::PatternKind::Literal && a.pattern.literal &&
+                            a.pattern.literal->kind == ir::ExprKind::Null) ? "true" : "false";
                 if (rest == "pattern.binding")       return a.pattern.binding;
                 if (rest == "pattern.enumType")      return a.pattern.enumType;
                 if (rest == "pattern.enumCase")      return a.pattern.enumCase;
@@ -273,6 +353,11 @@ std::string IrExprCtx::get(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Int)   return static_cast<const ir::IntLit&>(e_).text;
         if (e_.kind == ir::ExprKind::Float) return static_cast<const ir::FloatLit&>(e_).text;
     }
+    // P40 A3 (S13): the literal's VALUE for a target that holds f32 in a double — see widenedF32Text.
+    if (path == "node.widenedText" && e_.kind == ir::ExprKind::Float) {
+        const std::string& text = static_cast<const ir::FloatLit&>(e_).text;
+        return e_.type.kind == TypeRef::Kind::Named && e_.type.name == "f32" ? widenedF32Text(text) : text;
+    }
     if (path == "node.value") {
         if (e_.kind == ir::ExprKind::Bool) return static_cast<const ir::BoolLit&>(e_).value ? "true" : "false";
         if (e_.kind == ir::ExprKind::Str)  return static_cast<const ir::StrLit&>(e_).value;
@@ -285,6 +370,7 @@ std::string IrExprCtx::get(const std::string& path) const {
         static const std::pair<const char*, bool (*)(const TypeRef&)> kChildTypeFacts[] = {
             {".typeIsBool", isBoolTypeName},   {".typeIsFloat", isFloatTypeName},
             {".typeIsInt", isIntTypeName},     {".typeIsInt64", isInt64Name},
+            {".typeIsString", isStringTypeName}, {".typeIsChar", isCharTypeName}, // P40 A3/A6: hole forms
         };
         for (const auto& [suffix, pred] : kChildTypeFacts) {
             const std::size_t n = std::string(suffix).size();
@@ -319,6 +405,8 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
     }
     if (e_.kind == ir::ExprKind::MethodCall && path == "node.object")
         return static_cast<const ir::MethodCall&>(e_).object.get();
+    if (e_.kind == ir::ExprKind::Call && path == "node.calleeExpr")
+        return static_cast<const ir::Call&>(e_).calleeExpr.get();
     if (e_.kind == ir::ExprKind::MakeCase && path.rfind("node.fields.", 0) == 0) {
         // `node.fields.<i>` and `node.fields.<i>.value` both name the field's value expression.
         const auto& mc = static_cast<const ir::MakeCase&>(e_);
@@ -359,6 +447,7 @@ const ir::Expr* IrExprCtx::childExpr(const std::string& path) const {
         if (e_.kind == ir::ExprKind::Await) return static_cast<const ir::Await&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::IsTest) return static_cast<const ir::IsTest&>(e_).operand.get();
         if (e_.kind == ir::ExprKind::AsCast) return static_cast<const ir::AsCast&>(e_).operand.get();
+        if (e_.kind == ir::ExprKind::NullAssert) return static_cast<const ir::NullAssert&>(e_).operand.get();
     }
     if (e_.kind == ir::ExprKind::Lambda && path == "node.body")
         return static_cast<const ir::Lambda&>(e_).body.get();
@@ -409,6 +498,17 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
     const ir::Expr* c = childExpr(path);
     if (!c) return "";
     std::string inner = emit_(*c);
+    // P40 review r4 #9: a variable left operand the target would read only after the right operand ran is
+    // snapshotted first (BackendSpec::operandSnapshot: PHP `($__c3 = $n) + bump()`). The assignment is its own
+    // parenthesized primary, so no precedence wrapping applies.
+    if (path == "node.lhs" && e_.kind == ir::ExprKind::Binary && static_cast<const ir::Binary&>(e_).snapshotLhs &&
+        !spec_.operandSnapshot.empty()) {
+        std::string out = spec_.operandSnapshot;
+        const std::string tmp = freshName("__c");
+        for (std::size_t at; (at = out.find("{tmp}")) != std::string::npos;) out.replace(at, 5, tmp);
+        if (const std::size_t at = out.find("{0}"); at != std::string::npos) out.replace(at, 3, inner);
+        return out;
+    }
     if (side == "l" || side == "r") { // binary operand: wrap by precedence + associativity (shared policy)
         // A widening cast can emit as pure identity on a target (f32->f64 is textless on TS/Python/PHP),
         // which would silently swallow the parens its operand needs — `(a + b) * x` becoming `a + b * x`
@@ -417,6 +517,10 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
         const ir::Expr* eff = c;
         while (eff->kind == ir::ExprKind::Cast && static_cast<const ir::Cast&>(*eff).operand)
             eff = static_cast<const ir::Cast&>(*eff).operand.get();
+        // P40 review r5 item 21: a lambda binds looser than every binary operator on every target (its body
+        // extends as far right as it can), so as either operand it is always parenthesized — `cb ?? (() => 9)`
+        // printed `cb ?? () => 9` (C# CS1525, TS1005).
+        if (eff->kind == ir::ExprKind::Lambda) return "(" + inner + ")";
         if (e_.kind == ir::ExprKind::Binary && eff->kind == ir::ExprKind::Binary) {
             const std::string& po = static_cast<const ir::Binary&>(e_).op;
             const std::string& co = static_cast<const ir::Binary&>(*eff).op;
@@ -436,6 +540,15 @@ std::string IrExprCtx::emitChild(const std::string& path, const std::string& sid
         }
         return inner;
     }
+    // P40 review r4 #10: a cast can print as anything — `(double)x`, `Number(x)`, or (an identity cast on TS/PHP)
+    // its bare operand, so `-f64(-y)` printed `--y`, a pre-decrement. A prefix operator's cast operand is
+    // therefore judged on its PRINTED text: wrapped unless that text is lexically primary.
+    // P40 review r6 (part 2): "operand" — an operand that more of the enclosing expression's own syntax FOLLOWS
+    // (Python's `<then> if c else e`, a match arm's value before its ` if `). A lambda body extends as far right as
+    // it can on every target, so there it is always parenthesized, as for a binary operand (r5 #21): Python printed
+    // `lambda : 1 if b else None` — a lambda returning `1 if b else None`, not a choice between two values.
+    if (side == "operand") return c->kind == ir::ExprKind::Lambda ? "(" + inner + ")" : inner;
+    if (side == "unary" && c->kind == ir::ExprKind::Cast) return textIsPrimary(inner) ? inner : "(" + inner + ")";
     if (!side.empty() && wrapAtom(*c, side)) return "(" + inner + ")"; // "recv"/"unary": per-target policy
     return inner;
 }
@@ -445,14 +558,16 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
         auto it = spec_.intSuffix.find(args.empty() ? std::string() : args[0]);
         return it == spec_.intSuffix.end() ? std::string() : it->second;
     }
-    if (name == "escapeString") return renderString(args.empty() ? std::string() : args[0]);
-    if (name == "opSpelling")   return spec_.binOp(args.empty() ? std::string() : args[0]);
+    if (name == "opSpelling")  return spec_.binOp(args.empty() ? std::string() : args[0]);
     // Identifier repair — generic catalog entries parameterized by the spec's `identifiers` block (P19).
     if (name == "ident")      return specIdent(spec_, args.empty() ? std::string() : args[0]);
+    if (name == "identType") return specIdentType(spec_, args.empty() ? std::string() : args[0]);
     if (name == "identFn")    return specIdentFn(spec_, args.empty() ? std::string() : args[0]);
     if (name == "mangleName") return specMangle(spec_, args.empty() ? std::string() : args[0]);
-    // Named escape maps — {"fn":"escape","args":["<map>", <text>]} over the spec's `escapes` data (P19).
-    if (name == "escape" && args.size() >= 2) return specEscape(spec_, args[0], args[1]);
+    // P40 A1: literal text over the spec's `literals` data — {"fn":"literal","args":["<context>", <text>]} is
+    // the escaped body, {"fn":"quoted",…} the same wrapped in the context's quote.
+    if (name == "literal" && args.size() >= 2) return specLiteral(spec_, args[0], args[1]);
+    if (name == "quoted" && args.size() >= 2)  return specQuoted(spec_, args[0], args[1]);
     // §3.C integer wrap — {"fn":"wrap","args":[<width>, <expr>]} over the spec's `wrapInt` templates (P19).
     if (name == "wrap" && args.size() >= 2) return specWrapInt(spec_, args[0], args[1]);
     // Named table lookup — {"fn":"table","args":[<table>, <key>]} over the spec's `tables` data (P19).
@@ -460,12 +575,16 @@ std::string IrExprCtx::builtin(const std::string& name, const std::vector<std::s
     // Table-template substitution — {"fn":"subst","args":[<table>, <key>, <expr>]}: look the template up,
     // fill its `$x` holes (identity when absent). The conversion rules' width-specific pieces live here.
     if (name == "subst" && args.size() >= 3) return specSubst(spec_, args[0], args[1], args[2]);
-    // Prelude requirement — {"fn":"require","args":[<key>]} records the key and emits nothing; the
-    // emitter prepends the matching prelude once after the walk (Python's `_pg_idiv` helpers).
-    if (name == "require") {
-        if (requires_ && !args.empty()) requires_->insert(args[0]);
-        return "";
-    }
+    // P40 A6 — {"fn":"parenIfContains","args":[<chars>, <text>]}: parenthesize <text> when it contains any of
+    // <chars> (manifest data). C# uses it for an interpolation hole, where a top-level ':' starts a format
+    // specifier; a false positive (a ':' nested in a call or a string) costs only harmless parentheses.
+    if (name == "parenIfContains" && args.size() >= 2)
+        return args[1].find_first_of(args[0]) == std::string::npos ? args[1] : "(" + args[1] + ")";
+    // P40 review r4 item 21 — {"fn":"parenIfStarts","args":[<token>, <text>]}: parenthesize <text> when it begins
+    // with <token> (manifest data). TS uses it for an arrow's expression body: `() => {…}` would parse an object
+    // literal (a union-case construction) as a block.
+    if (name == "parenIfStarts" && args.size() >= 2)
+        return !args[0].empty() && args[1].compare(0, args[0].size(), args[0]) == 0 ? "(" + args[1] + ")" : args[1];
     if (name == "inlineBlock" && inline_ && e_.kind == ir::ExprKind::Lambda)
         return inline_(static_cast<const ir::Lambda&>(e_).block); // statement-bodied lambda, on one line
     return targetBuiltin(name, args);
@@ -476,22 +595,94 @@ std::string IrExprCtx::renderType(const std::string& path) const {
     return t ? renderTypeRef(*t) : "";
 }
 
-bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
-    const std::vector<std::string>& set = side == "recv" ? spec_.wrapAtomRecv : spec_.wrapAtomUnary;
-    for (const std::string& k : set) {
-        if (k == "binary" && c.kind == ir::ExprKind::Binary) return true;
-        if (k == "binaryScalar" && c.kind == ir::ExprKind::Binary &&
-            !static_cast<const ir::Binary&>(c).lhsIsUserType)
-            return true;
-        if (k == "unary" && c.kind == ir::ExprKind::Unary) return true;
-        if (k == "cast" && c.kind == ir::ExprKind::Cast) return true;
-        if (k == "cond" && c.kind == ir::ExprKind::Cond) return true;
+// The lowercase kind vocabulary `wrapAtom.recvPrimary` is written in.
+const char* exprKindName(ir::ExprKind k) {
+    switch (k) {
+        case ir::ExprKind::Int: return "int";           case ir::ExprKind::Float: return "float";
+        case ir::ExprKind::Bool: return "bool";         case ir::ExprKind::Str: return "str";
+        case ir::ExprKind::Char: return "char";         case ir::ExprKind::Null: return "null";
+        case ir::ExprKind::Var: return "var";           case ir::ExprKind::This: return "this";
+        case ir::ExprKind::Unary: return "unary";       case ir::ExprKind::Await: return "await";
+        case ir::ExprKind::Binary: return "binary";     case ir::ExprKind::Cast: return "cast";
+        case ir::ExprKind::Call: return "call";         case ir::ExprKind::MethodCall: return "methodCall";
+        case ir::ExprKind::Member: return "member";     case ir::ExprKind::New: return "new";
+        case ir::ExprKind::MakeCase: return "makeCase"; case ir::ExprKind::Match: return "match";
+        case ir::ExprKind::Lambda: return "lambda";     case ir::ExprKind::Extern: return "extern";
+        case ir::ExprKind::Index: return "index";       case ir::ExprKind::ListLit: return "listLit";
+        case ir::ExprKind::Tuple: return "tuple";       case ir::ExprKind::Bound: return "bound";
+        case ir::ExprKind::Interp: return "interp";     case ir::ExprKind::Cond: return "cond";
+        case ir::ExprKind::With: return "with";         case ir::ExprKind::IsTest: return "isTest";
+        case ir::ExprKind::AsCast: return "asCast";     case ir::ExprKind::NullAssert: return "nullAssert";
     }
-    return false;
+    return "";
+}
+
+// A bound FFI template is a primary expression iff, outside brackets and string literals, it is nothing but
+// identifier characters, placeholders and member/scope punctuation (`.`, `->`, `::`, `?.`, PHP's `\`): then
+// `$this.Length`, `String($0)`, `(m.get($0) ?? null)` and `\strlen($0)` are atoms, while `$0 + $1`,
+// `new Foo($0)`, `$0 ?? 0` and `!$0` are not. A template that IS a single placeholder (`$0`) is as primary as
+// its argument. Purely lexical, so it holds for every target's template syntax without knowing it.
+bool boundTemplateIsAtomic(const BackendSpec& spec, const ir::Bound& b) {
+    const std::string& t = b.tmpl;
+    if (t == "$this" && b.receiver) return !receiverNeedsParens(spec, *b.receiver);
+    if (t.size() == 2 && t[0] == '$' && std::isdigit(static_cast<unsigned char>(t[1]))) {
+        const std::size_t i = static_cast<std::size_t>(t[1] - '0');
+        return i < b.args.size() && !receiverNeedsParens(spec, *b.args[i]);
+    }
+    return textIsPrimary(t);
+}
+
+// The same lexical rule over any emitted text: `x`, `a.b(c)`, `(double)x`, `\strlen($x)` are primary; `-y`,
+// `a + b`, `new Foo()` are not (P40 review r4 #10 decides a cast operand's parentheses on its printed text).
+bool textIsPrimary(const std::string& t) {
+    auto isIdent = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '\\'; };
+    if (t.empty()) return false;
+    int depth = 0;
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        const char c = t[i];
+        if (c == '"' || c == '\'') { // skip a string literal (backslash escapes)
+            for (++i; i < t.size() && t[i] != c; ++i) if (t[i] == '\\') ++i;
+            continue;
+        }
+        if (c == '(' || c == '[' || c == '{') { ++depth; continue; }
+        if (c == ')' || c == ']' || c == '}') { --depth; continue; }
+        if (depth > 0 || isIdent(c) || c == '.') continue;
+        if (c == '-' && i + 1 < t.size() && t[i + 1] == '>') { ++i; continue; }
+        if (c == ':' && i + 1 < t.size() && t[i + 1] == ':') { ++i; continue; }
+        if (c == '?' && i + 1 < t.size() && t[i + 1] == '.') { ++i; continue; }
+        return false;
+    }
+    return true;
+}
+
+bool receiverNeedsParens(const BackendSpec& spec, const ir::Expr& c) {
+    if (c.kind == ir::ExprKind::Binary) { // an operator routed to a method (`a.plus(b)`) is a call
+        const auto& b = static_cast<const ir::Binary&>(c);
+        return !(b.lhsIsUserType && !specTable(spec, "opMethod", b.op).empty());
+    }
+    if (c.kind == ir::ExprKind::Bound) return !boundTemplateIsAtomic(spec, static_cast<const ir::Bound&>(c));
+    const std::string k = exprKindName(c.kind);
+    for (const std::string& p : spec.wrapAtomRecvPrimary) if (p == k) return false;
+    return true;
+}
+
+bool IrExprCtx::wrapAtom(const ir::Expr& c, const std::string& side) const {
+    if (side == "recv") return receiverNeedsParens(spec_, c);
+    // "unary": a prefix operator's operand (see BackendSpec::wrapAtomRecvPrimary).
+    // P40 review r3 2(b): a unary operand that is itself a unary — or a negative literal — is ALWAYS wrapped:
+    // `-(-x)` printed bare is `--x`, a pre-decrement (C# returned 2 for `-(-3)`; `--2.5` failed to compile).
+    if (c.kind == ir::ExprKind::Unary) return true;
+    if (c.kind == ir::ExprKind::Int) return !static_cast<const ir::IntLit&>(c).text.empty() &&
+                                            static_cast<const ir::IntLit&>(c).text[0] == '-';
+    if (c.kind == ir::ExprKind::Float) return !static_cast<const ir::FloatLit&>(c).text.empty() &&
+                                              static_cast<const ir::FloatLit&>(c).text[0] == '-';
+    return receiverNeedsParens(spec_, c); // (a Cast operand is judged on its printed text in emitChild)
 }
 
 const TypeRef* IrExprCtx::typeRefAt(const std::string& path) const {
     if (path == "node.type") return &e_.type;
+    if (path == "node.calleeType" && e_.kind == ir::ExprKind::Call && static_cast<const ir::Call&>(e_).calleeExpr)
+        return &static_cast<const ir::Call&>(e_).calleeExpr->type;
     if (path == "node.elem" && e_.kind == ir::ExprKind::ListLit)
         return &static_cast<const ir::ListLit&>(e_).elem;
     if (path.rfind("node.typeArgs.", 0) == 0) { // indexed into the node's kind-dispatched type-arg list
@@ -525,6 +716,7 @@ const std::vector<TypeRef>* IrExprCtx::nodeTypeArgs() const {
     if (e_.kind == ir::ExprKind::New)      return &static_cast<const ir::New&>(e_).typeArgs;
     if (e_.kind == ir::ExprKind::MakeCase) return &e_.type.args;
     if (e_.kind == ir::ExprKind::Match)    return &static_cast<const ir::Match&>(e_).scrutinee->type.args;
+    if (e_.kind == ir::ExprKind::Call)     return &static_cast<const ir::Call&>(e_).typeArgs; // P40 A4
     return nullptr;
 }
 
@@ -572,6 +764,7 @@ std::string TypeRefCtx::renderType(const std::string& path) const {
 
 std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident") return specIdent(spec_, args.empty() ? std::string() : args[0]);
+    if (name == "identType") return specIdentType(spec_, args.empty() ? std::string() : args[0]);
     if (name == "substExtern") { // substitute `$0,$1,…` in the extern-class spelling with rendered type args
         const std::string tmpl = externTemplate();
         std::string out;
@@ -596,6 +789,7 @@ std::string TypeRefCtx::builtin(const std::string& name, const std::vector<std::
 
 std::string EnumDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")        return e_.name;
+    if (path == "decl.isPrelude")   return ir::isPreludeOrigin(e_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.cases.count") return std::to_string(e_.cases.size());
     if (path.rfind("decl.cases.", 0) == 0) { // decl.cases.<i>.{name|value}
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
@@ -609,14 +803,27 @@ std::string EnumDeclCtx::get(const std::string& path) const {
     return "";
 }
 
+// P40 review r6 #10: every declaration-side context records a `require` through its hooks — the owning emitter's
+// prelude keys — exactly as an expression context does (EvalContext::requirePrelude; evalRule handles the fn).
+void EnumDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void UnionDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void InterfaceDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void MethodDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void RecordDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void ClassDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void FnDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void ModuleDeclCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+void StmtCtx::requirePrelude(const std::string& key) const { hooks_.requirePrelude(key); }
+
 std::string EnumDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access") return hooks_.accessPrefix();
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
 std::string UnionDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")        return u_.name;
+    if (path == "decl.isPrelude")   return ir::isPreludeOrigin(u_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.cases.count") return std::to_string(u_.cases.size());
     if (path.rfind("decl.cases.", 0) == 0) { // decl.cases.<i>.{name | fields.count | fields.<j>.name}
         const std::size_t i = static_cast<std::size_t>(std::stoul(path.substr(11)));
@@ -641,7 +848,7 @@ std::string UnionDeclCtx::get(const std::string& path) const {
 std::string UnionDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "generics") return hooks_.generics(u_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access")   return hooks_.accessPrefix();
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -699,6 +906,7 @@ std::string DeclHooks::where(const std::vector<ir::GenericParam>& gs) const {
 
 std::string InterfaceDeclCtx::get(const std::string& path) const {
     if (path == "decl.name")          return it_.name;
+    if (path == "decl.isPrelude")     return ir::isPreludeOrigin(it_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.bases.count")   return std::to_string(it_.bases.size());
     if (path == "decl.methods.count") return std::to_string(it_.methods.size());
     if (path.rfind("decl.methods.", 0) == 0) { // decl.methods.<i>.{name | params.count | params.<j>.{name|hasDefault}}
@@ -731,8 +939,8 @@ std::string InterfaceDeclCtx::builtin(const std::string& name, const std::vector
         const std::size_t i = static_cast<std::size_t>(std::stoul(args[0]));
         return i < it_.methods.size() ? hooks_.generics(it_.methods[i].generics) : "";
     }
-    if (name == "access") return hooks_.accessPrefix();
     if (name == "ident") return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "where") return hooks_.where(it_.generics);
     return "";
 }
@@ -790,6 +998,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
         }
     }
     if (path == "decl.name")       return m_.name;
+    if (path == "decl.isPrelude")  return ownerIsPrelude_ ? "true" : "false"; // P40 §0: the owner's
     if (path == "decl.opSymbol")   return m_.opSymbol;
     if (path == "decl.ownerIsRecord") return m_.ownerIsRecord ? "true" : "false"; // P37 C5 (C# class eq)
     if (path == "decl.owner")      return owner_;
@@ -797,6 +1006,7 @@ std::string MethodDeclCtx::get(const std::string& path) const {
     if (path == "decl.isAsync")    return m_.isAsync ? "true" : "false";
     if (path == "decl.isVirtual")  return m_.isVirtual ? "true" : "false";
     if (path == "decl.isOverride") return m_.isOverride ? "true" : "false";
+    if (path == "decl.isAbstract") return m_.isAbstract ? "true" : "false"; // review r5 #9
     if (path == "decl.isIterator") return m_.isIterator ? "true" : "false";
     if (path == "decl.propHasSetter")  return m_.propHasSetter ? "true" : "false"; // accessor-block setter (#39c)
     if (path == "decl.propSetterParam") return m_.setterParamName;
@@ -837,6 +1047,7 @@ std::string MethodDeclCtx::builtin(const std::string& name, const std::vector<st
     if (name == "generics") return hooks_.generics(m_.generics);
     if (name == "where")    return hooks_.where(m_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -878,6 +1089,7 @@ std::string RecordDeclCtx::get(const std::string& path) const {
         if (i < r_.attrLines.size()) return r_.attrLines[i];
     }
     if (path == "decl.name")          return r_.name;
+    if (path == "decl.isPrelude")     return ir::isPreludeOrigin(r_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.fields.count")  return std::to_string(r_.fields.size());
     if (path == "decl.bases.count")   return std::to_string(r_.bases.size());
     if (path == "decl.methods.count") return std::to_string(r_.methods.size());
@@ -890,12 +1102,12 @@ std::string RecordDeclCtx::get(const std::string& path) const {
             if (rest == "name") return r_.fields[i].name;
             if (rest == "typeIsRecord")
                 return isRecord_ && isRecord_(r_.fields[i].type) ? "true" : "false";
-            if (rest == "typeIsList") { // List<T>/T[] fields compare by REFERENCE in record equality
+            if (rest == "typeIsRefCollection") { // List<T>/T[]/Map<K,V> fields compare by REFERENCE in record equality
                                         // (the C# oracle's default field comparer) — targets whose
                                         // native == is value-based (Python list) consult this to emit
                                         // an identity comparison instead.
                 const TypeRef& t = r_.fields[i].type;
-                return t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Array")
+                return t.kind == TypeRef::Kind::Named && (t.name == "List" || t.name == "Array" || t.name == "Map")
                            ? "true" : "false";
             }
         }
@@ -907,7 +1119,7 @@ std::string RecordDeclCtx::builtin(const std::string& name, const std::vector<st
     if (name == "generics") return hooks_.generics(r_.generics);
     if (name == "where")    return hooks_.where(r_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access")   return hooks_.accessPrefix();
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -927,7 +1139,7 @@ std::string RecordDeclCtx::renderType(const std::string& path) const {
 
 std::unique_ptr<IrDeclCtx> RecordDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
     if (path == "decl.methods" && index < r_.methods.size())
-        return std::make_unique<MethodDeclCtx>(r_.methods[index], r_.name, hooks_, emit_);
+        return std::make_unique<MethodDeclCtx>(r_.methods[index], r_.name, ir::isPreludeOrigin(r_.originModule), hooks_, emit_);
     return nullptr;
 }
 
@@ -935,6 +1147,8 @@ ClassDeclCtx::ClassDeclCtx(const ir::Class& c, const DeclHooks& hooks, EmitFn em
     : c_(c), hooks_(hooks), emit_(std::move(emit)) {
     for (std::size_t i = 0; i < c_.fields.size(); ++i)
         if (c_.fields[i].init) (c_.fields[i].isStatic ? staticInit_ : instanceInit_).push_back(i);
+    if (c_.baseHasInit)
+        for (std::size_t i : instanceInit_) if (!c_.fields[i].initIsLiteral) deferInit_.push_back(i);
     for (std::size_t i = 0; i < c_.bases.size(); ++i) {
         if (isInterface && isInterface(c_.bases[i])) ifaceBases_.push_back(i);
         else extBase_ = static_cast<int>(i);
@@ -951,6 +1165,70 @@ bool splitIndexed(const std::string& path, std::size_t prefixLen, std::size_t& i
     field = dot == std::string::npos ? std::string() : sub.substr(dot + 1);
     return true;
 }
+
+// Can a lowered statement list complete normally? The same reachability rules sema's flow pass applies to
+// the source (flow.cpp) — read here so a template can tell that falling off a construct is impossible.
+bool irBreaksOut(const std::vector<ir::StmtPtr>& b); // a `break` that leaves the ENCLOSING loop
+bool irCompletes(const std::vector<ir::StmtPtr>& b) {
+    for (const auto& s : b) {
+        if (!s) continue;
+        switch (s->kind) {
+            case ir::StmtKind::Return: case ir::StmtKind::Throw:
+            case ir::StmtKind::Break:  case ir::StmtKind::Continue:
+                return false;
+            case ir::StmtKind::If: {
+                const auto& i = static_cast<const ir::If&>(*s);
+                if (!irCompletes(i.thenBody) && i.hasElse && !irCompletes(i.elseBody)) return false;
+                break;
+            }
+            case ir::StmtKind::While: {
+                const auto& w = static_cast<const ir::While&>(*s);
+                const bool infinite = w.cond && w.cond->kind == ir::ExprKind::Bool &&
+                                      static_cast<const ir::BoolLit&>(*w.cond).value;
+                if (infinite && !irBreaksOut(w.body)) return false;
+                break;
+            }
+            case ir::StmtKind::Use:
+                if (!irCompletes(static_cast<const ir::Use&>(*s).body)) return false;
+                break;
+            case ir::StmtKind::Try: {
+                const auto& t = static_cast<const ir::Try&>(*s);
+                bool any = irCompletes(t.body);
+                for (const auto& c : t.catches) any = any || irCompletes(c.body);
+                if (!any || (t.hasFinally && !irCompletes(t.finallyBody))) return false;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return true;
+}
+bool irBreaksOut(const std::vector<ir::StmtPtr>& b) {
+    for (const auto& s : b) {
+        if (!s) continue;
+        switch (s->kind) {
+            case ir::StmtKind::Break: return true;
+            case ir::StmtKind::If: {
+                const auto& i = static_cast<const ir::If&>(*s);
+                if (irBreaksOut(i.thenBody) || irBreaksOut(i.elseBody)) return true;
+                break;
+            }
+            case ir::StmtKind::Use:
+                if (irBreaksOut(static_cast<const ir::Use&>(*s).body)) return true;
+                break;
+            case ir::StmtKind::Try: {
+                const auto& t = static_cast<const ir::Try&>(*s);
+                if (irBreaksOut(t.body) || irBreaksOut(t.finallyBody)) return true;
+                for (const auto& c : t.catches) if (irBreaksOut(c.body)) return true;
+                break;
+            }
+            default: // a nested loop's `break` is its own
+                break;
+        }
+    }
+    return false;
+}
 } // namespace
 
 std::string ClassDeclCtx::get(const std::string& path) const {
@@ -960,6 +1238,7 @@ std::string ClassDeclCtx::get(const std::string& path) const {
         if (i < c_.attrLines.size()) return c_.attrLines[i];
     }
     if (path == "decl.name")             return c_.name;
+    if (path == "decl.isPrelude")        return ir::isPreludeOrigin(c_.originModule) ? "true" : "false"; // P40 §0
     if (path == "decl.bases.count")      return std::to_string(c_.bases.size());
     if (path == "decl.methods.count")    return std::to_string(c_.methods.size());
     if (path == "decl.fields.count")     return std::to_string(c_.fields.size());
@@ -973,11 +1252,22 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     if (path == "decl.hasExtBase")       return extBase_ >= 0 ? "true" : "false";
     if (path == "decl.ifaceBases.count")         return std::to_string(ifaceBases_.size());
     if (path == "decl.staticInitFields.count")   return std::to_string(staticInit_.size());
+    if (path == "decl.literalStaticInitCount") { // the static inits a target may keep inside the class body
+        std::size_t n = 0;
+        for (std::size_t i : staticInit_) if (c_.fields[i].initIsLiteral) ++n;
+        return std::to_string(n);
+    }
     if (path == "decl.instanceInitFields.count") return std::to_string(instanceInit_.size());
+    if (path == "decl.isAbstract")       return c_.isAbstract ? "true" : "false"; // review r5 #9
+    if (path == "decl.deferredInitFields.count") return std::to_string(deferInit_.size()); // review r5 #7
     std::size_t i = 0;
     std::string f;
+    if (path.rfind("decl.deferredInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < deferInit_.size() && f == "name")
+        return c_.fields[deferInit_[i]].name;
     if (path.rfind("decl.fields.", 0) == 0 && splitIndexed(path, 12, i, f) && i < c_.fields.size()) {
         const ir::ClassField& fld = c_.fields[i];
+        if (f == "deferInit") // review r5 #7
+            return std::find(deferInit_.begin(), deferInit_.end(), i) != deferInit_.end() ? "true" : "false";
         if (f == "attrLines.count") return std::to_string(fld.attrLines.size()); // P37 D Tier 1
         if (f.rfind("attrLines.", 0) == 0) {
             const std::size_t j = static_cast<std::size_t>(std::stoul(f.substr(10)));
@@ -987,6 +1277,11 @@ std::string ClassDeclCtx::get(const std::string& path) const {
         if (f == "isStatic")  return fld.isStatic ? "true" : "false";
         if (f == "isMutable") return fld.isMutable ? "true" : "false";
         if (f == "hasInit")   return fld.init ? "true" : "false";
+        if (f == "initIsLiteral") return fld.initIsLiteral ? "true" : "false";
+        if (f == "shadowsBaseRoot") // P40 B2: the plugin's `baseRootMembers` table lists `<root>.<member>`
+            return !c_.baseRoot.empty() && !fld.isStatic &&
+                           !hooks_.table("baseRootMembers", c_.baseRoot + "." + fld.name).empty()
+                       ? "true" : "false";
     }
     if (path.rfind("decl.initParams.", 0) == 0 && splitIndexed(path, 16, i, f) && i < c_.initParams.size()) {
         if (f == "attrInline") return c_.initParams[i].attrInline; // P37 D Tier 1
@@ -995,6 +1290,8 @@ std::string ClassDeclCtx::get(const std::string& path) const {
     }
     if (path.rfind("decl.staticInitFields.", 0) == 0 && splitIndexed(path, 22, i, f) && i < staticInit_.size()) {
         if (f == "name") return c_.fields[staticInit_[i]].name;
+        if (f == "isMutable")     return c_.fields[staticInit_[i]].isMutable ? "true" : "false";
+        if (f == "initIsLiteral") return c_.fields[staticInit_[i]].initIsLiteral ? "true" : "false";
     }
     if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size()) {
         if (f == "name") return c_.fields[instanceInit_[i]].name;
@@ -1006,7 +1303,7 @@ std::string ClassDeclCtx::builtin(const std::string& name, const std::vector<std
     if (name == "generics") return hooks_.generics(c_.generics);
     if (name == "where")    return hooks_.where(c_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
-    if (name == "access")   return hooks_.accessPrefix();
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     return "";
 }
 
@@ -1040,6 +1337,8 @@ std::string ClassDeclCtx::emitChild(const std::string& path, const std::string&)
         return emit_(*c_.fields[staticInit_[i]].init);
     if (path.rfind("decl.instanceInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < instanceInit_.size() && f == "init")
         return emit_(*c_.fields[instanceInit_[i]].init);
+    if (path.rfind("decl.deferredInitFields.", 0) == 0 && splitIndexed(path, 24, i, f) && i < deferInit_.size() && f == "init")
+        return emit_(*c_.fields[deferInit_[i]].init); // review r5 #7
     return "";
 }
 
@@ -1049,7 +1348,7 @@ const std::vector<ir::StmtPtr>* ClassDeclCtx::stmtList(const std::string& path) 
 
 std::unique_ptr<IrDeclCtx> ClassDeclCtx::memberCtx(const std::string& path, std::size_t index) const {
     if (path == "decl.methods" && index < c_.methods.size())
-        return std::make_unique<MethodDeclCtx>(c_.methods[index], c_.name, hooks_, emit_);
+        return std::make_unique<MethodDeclCtx>(c_.methods[index], c_.name, ir::isPreludeOrigin(c_.originModule), hooks_, emit_);
     return nullptr;
 }
 
@@ -1061,11 +1360,14 @@ std::string FnDeclCtx::get(const std::string& path) const {
     }
     if (path == "decl.name")        return f_.name;
     if (path == "decl.mangledName") return f_.mangledName;
+    if (path == "decl.linkName") return f_.linkName.empty() || f_.linkName == f_.name ? std::string() : f_.linkName; // P40 r3 2(e)
+    if (path == "decl.uniqueName") // a one-scope target WITHOUT native overloading (PHP): unique across the closure
+        return !f_.uniqueName.empty() ? f_.uniqueName : (f_.mangledName.empty() ? f_.name : f_.mangledName);
     if (path == "decl.emitName")    return f_.mangledName.empty() ? f_.name : f_.mangledName;
     // A std/core/lib prelude function (originModule "<prelude>"), emitted into EVERY module. On a target
     // with one global function namespace (PHP), that redeclares it across `require`d files — the plugin
     // guards such a fn (e.g. `function_exists`). Inert for namespaced targets (C#/TS/Python) that don't read it.
-    if (path == "decl.isPrelude")   return f_.originModule == "<prelude>" ? "true" : "false";
+    if (path == "decl.isPrelude")   return ir::isPreludeOrigin(f_.originModule) ? "true" : "false";
     if (path == "decl.isAsync")     return f_.isAsync ? "true" : "false";
     if (path == "decl.isIterator")  return f_.isIterator ? "true" : "false";
     if (path == "decl.exprBodied")  return f_.exprBodied ? "true" : "false";
@@ -1100,6 +1402,7 @@ std::string FnDeclCtx::builtin(const std::string& name, const std::vector<std::s
     if (name == "generics") return hooks_.generics(f_.generics);
     if (name == "where")    return hooks_.where(f_.generics);
     if (name == "ident")    return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "identFn")  return hooks_.identFn(args.empty() ? std::string() : args[0]);
     if (name == "mangle")   return hooks_.mangle(args.empty() ? std::string() : args[0]);
     return "";
@@ -1141,6 +1444,7 @@ ModuleDeclCtx::ModuleDeclCtx(const ir::Module& m, const DeclHooks& hooks, EmitFn
         if (f.actualTarget.empty() || f.actualTarget == target) fns_.push_back(i);
         if (entry_ < 0 && f.isEntry) entry_ = static_cast<int>(i);
     }
+    order_ = ir::declarationOrder(m_, fns_);
 }
 
 std::string ModuleDeclCtx::get(const std::string& path) const {
@@ -1149,10 +1453,40 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
     if (path == "module.interfaces.count") return std::to_string(m_.interfaces.size());
     if (path == "module.records.count")    return std::to_string(m_.records.size());
     if (path == "module.classes.count")    return std::to_string(m_.classes.size());
+    if (path == "module.allLowercaseTypeNames.count") { // review r5 (part 2): C# CS8981 under warnings-as-errors
+        auto lower = [](const std::string& n) {
+            if (n.empty()) return false;
+            for (char ch : n) if (ch < 'a' || ch > 'z') return false;
+            return true;
+        };
+        std::size_t n = 0;
+        for (const auto& c : m_.classes) if (lower(c.name)) ++n;
+        for (const auto& r : m_.records) if (lower(r.name)) ++n;
+        for (const auto& e : m_.enums) if (lower(e.name)) ++n;
+        for (const auto& u : m_.unions) if (lower(u.name)) ++n;
+        for (const auto& i : m_.interfaces) if (lower(i.name)) ++n;
+        return std::to_string(n);
+    }
+    if (path == "module.abstractClasses.count") { // review r5 #9 (Python imports abc for them)
+        std::size_t n = 0;
+        for (const auto& c : m_.classes) if (c.isAbstract) ++n;
+        return std::to_string(n);
+    }
     if (path == "module.extensions.count") return std::to_string(m_.extensions.size());
     if (path == "module.functions.count")  return std::to_string(fns_.size());
     if (path == "module.globals.count")    return std::to_string(m_.globals.size());
     if (path == "module.imports.count")    return std::to_string(m_.imports.size());
+    if (path == "module.order.count")      return std::to_string(order_.size()); // review r4 #7
+    if (path == "module.userDecls.count") { // P40 B1: declarations of THIS file's own (non-prelude) code
+        std::size_t n = 0;
+        auto count = [&n](const auto& vec) {
+            for (const auto& d : vec) if (!ir::isPreludeOrigin(d.originModule)) ++n;
+        };
+        count(m_.enums); count(m_.unions); count(m_.interfaces); count(m_.records);
+        count(m_.classes); count(m_.extensions); count(m_.globals);
+        for (std::size_t i : fns_) if (!ir::isPreludeOrigin(m_.functions[i].originModule)) ++n;
+        return std::to_string(n);
+    }
     if (path == "module.attrImportsBlock") { // P37 D Tier 1: verbatim import/using lines, newline-joined
         std::string out;
         for (const auto& l : m_.attrImports) {
@@ -1175,10 +1509,18 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
         if (f == "name")    return m_.globals[i].name;
         if (f == "isConst") return m_.globals[i].isConst ? "true" : "false";
         if (f == "hasInit") return m_.globals[i].init ? "true" : "false";
+        if (f == "isPrelude") return ir::isPreludeOrigin(m_.globals[i].originModule) ? "true" : "false"; // P40 §0
+    }
+    if (path.rfind("module.order.", 0) == 0 && splitIndexed(path, 13, i, f) && i < order_.size()) {
+        if (f == "kind")  return order_[i].kind;
+        if (f == "list")  return order_[i].list;
+        if (f == "index") return std::to_string(order_[i].index);
     }
     if (path.rfind("module.imports.", 0) == 0 && splitIndexed(path, 15, i, f) && i < m_.imports.size()) {
         if (f == "path")        return m_.imports[i].path;
         if (f == "names")       return m_.imports[i].names;
+        if (f == "allNames")    return m_.imports[i].allNames; // P40 B3: bare import -> every name
+        if (f == "typeNames")   return m_.imports[i].typeNames; // review r7: no runtime binding (typeOnlyImports)
         if (f == "isNamespace") return m_.imports[i].isNamespace ? "true" : "false";
         if (f == "ns")          return m_.imports[i].ns;
     }
@@ -1187,8 +1529,8 @@ std::string ModuleDeclCtx::get(const std::string& path) const {
 
 std::string ModuleDeclCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
-    if (name == "access") return hooks_.accessPrefix();
     return "";
 }
 
@@ -1261,6 +1603,14 @@ std::string StmtCtx::get(const std::string& path) const {
         const auto& f = static_cast<const ir::For&>(s_);
         if (path == "stmt.isRange")   return f.isRange ? "true" : "false";
         if (path == "stmt.inclusive") return f.inclusive ? "true" : "false";
+        if (path == "stmt.rangeEndSimple") return f.rangeEndSimple ? "true" : "false"; // P40 D7
+        if (path == "stmt.rangeEndTemp")   return f.rangeEndTemp;                      // the hoisted end's name
+        if (path == "stmt.inclusiveMayWrap") return f.inclusiveMayWrap ? "true" : "false"; // P40 review B6
+        if (path == "stmt.rangeTypeName") return f.rangeType.name; // the loop type, as a table key (B6)
+        if (path == "stmt.rangeIs64") { // B6: a 64-bit counter (a target whose native int is 64-bit guards only these)
+            const std::string& n = f.rangeType.name;
+            return n == "i64" || n == "u64" ? "true" : "false";
+        }
         if (path == "stmt.binding")   return f.binding;
         if (path == "stmt.captured")  return f.captured ? "true" : "false"; // #46: a closure captures the binding
         if (path == "stmt.driver")    return f.binding + "__it";            // per-iteration copy's loop counter
@@ -1287,11 +1637,17 @@ std::string StmtCtx::get(const std::string& path) const {
                 if (c.guard) return "true";
             return "false";
         }
+        if (path == "stmt.catchesDiverge") { // P40 review A9: no catch body completes normally, so the end of
+            for (const auto& c : t.catches)     // an emulated dispatch chain is reached only when nothing matched
+                if (irCompletes(c.body)) return "false";
+            return "true";
+        }
         std::size_t i = 0;
         std::string f;
         if (path.rfind("stmt.catches.", 0) == 0 && splitIndexed(path, 13, i, f) && i < t.catches.size()) {
             const auto& c = t.catches[i];
             if (f == "hasType")    return c.type.name.empty() ? "false" : "true";
+            if (f == "typeName")   return c.type.name; // P40 D13: PHP widens a caught `Error` to \Throwable
             if (f == "hasBinding") return c.binding.empty() ? "false" : "true";
             if (f == "binding")    return c.binding;
             if (f == "hasGuard")   return c.guard ? "true" : "false";
@@ -1303,11 +1659,15 @@ std::string StmtCtx::get(const std::string& path) const {
 
 std::string StmtCtx::builtin(const std::string& name, const std::vector<std::string>& args) const {
     if (name == "ident")  return hooks_.ident(args.empty() ? std::string() : args[0]);
+    if (name == "identType") return hooks_.identType(args.empty() ? std::string() : args[0]);
     if (name == "mangle") return hooks_.mangle(args.empty() ? std::string() : args[0]);
+    if (name == "table" && args.size() >= 2) return hooks_.table(args[0], args[1]); // P40 review B6 (rangeWideType)
     return "";
 }
 
 std::string StmtCtx::renderType(const std::string& path) const {
+    if (s_.kind == ir::StmtKind::For && path == "stmt.rangeType") // P40 D7: the widened loop-variable type
+        return hooks_.renderTypeRef(static_cast<const ir::For&>(s_).rangeType);
     if (s_.kind == ir::StmtKind::Try && path.rfind("stmt.catches.", 0) == 0) { // stmt.catches.<i>.type
         const auto& t = static_cast<const ir::Try&>(s_);
         std::size_t i = 0;
@@ -1376,6 +1736,14 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
     // silently counts arms no instrument can ever reach.
     if (engine::TraceSink* sink = engine::traceSink()) sink->hit(r.srcId, r.offset);
     using K = engine::Rule::Kind;
+    if (r.kind == K::Fn && r.s == "preludeSlot") { // P40 §0: mark the placement; write nothing now
+        slotHit_ = true;
+        slotOffset_ = out_.size();
+        slotLine_ = outLine_;
+        slotOpen_ = r.parts.size() > 0 ? engine::evalRule(r.parts[0], ctx, helpers) : std::string();
+        slotClose_ = r.parts.size() > 1 ? engine::evalRule(r.parts[1], ctx, helpers) : std::string();
+        return;
+    }
     switch (r.kind) {
         case K::Line:
             line(engine::evalRule(r.parts[0], ctx, helpers));
@@ -1438,6 +1806,38 @@ void EmitterBase::runDeclRule(const engine::Rule& r, const engine::EvalContext& 
                 }
             return;
         }
+        case K::MapOrder: { // review r4 #7: each declaration of the order list through its kind's rule
+            int n = 0;
+            for (char c : ctx.get(r.s + ".count")) { if (c < '0' || c > '9') { n = 0; break; } n = n * 10 + (c - '0'); }
+            for (int i = 0; i < n; ++i) {
+                const std::string at = r.s + "." + std::to_string(i);
+                const std::string kind = ctx.get(at + ".kind");
+                const std::string list = ctx.get(at + ".list");
+                const std::string idxText = ctx.get(at + ".index");
+                const std::size_t idx = idxText.empty() ? 0 : static_cast<std::size_t>(std::stoul(idxText));
+                const engine::Rule* k = nullptr;
+                for (const auto& p : r.parts) if (p.s == kind) k = &p;
+                if (!k) continue; // unreachable: the loader requires a rule for every kind
+                if (engine::TraceSink* sink = engine::traceSink()) sink->hit(k->srcId, k->offset);
+                if (k->kind == K::MapMembers) {
+                    if (!helpers) continue;
+                    auto it = helpers->find(k->s2);
+                    if (it == helpers->end()) continue;
+                    if (auto sub = root.memberCtx(list, idx)) { // as MapMembers: attribute lines, then the decl
+                        const std::string ac = sub->get("decl.attrLines.count");
+                        int an = 0;
+                        for (char c : ac) { if (c < '0' || c > '9') { an = 0; break; } an = an * 10 + (c - '0'); }
+                        for (int j = 0; j < an; ++j) lineHidden(sub->get("decl.attrLines." + std::to_string(j)));
+                        OriginScope memberScope(*this, sub->declPos());
+                        runDeclRule(it->second, *sub, *sub, helpers);
+                    }
+                } else if (k->kind == K::MapDecl && !k->parts.empty()) { // as MapDecl over the item's own list
+                    engine::ItemCtx item(ctx, ctx.resolvePath(list) + "." + std::to_string(idx), static_cast<int>(idx));
+                    runDeclRule(k->parts[0], item, root, helpers);
+                }
+            }
+            return;
+        }
         case K::Case:
             for (const auto& arm : r.arms)
                 if (engine::evalTest(arm.first, ctx)) { runDeclRule(arm.second, ctx, root, helpers); return; }
@@ -1485,6 +1885,7 @@ const char* exprRuleKey(ir::ExprKind k) {
         case ir::ExprKind::Cast:     return "Cast";
         case ir::ExprKind::IsTest:   return "IsTest";
         case ir::ExprKind::AsCast:   return "AsCast";
+        case ir::ExprKind::NullAssert: return "NullAssert";
         case ir::ExprKind::With:       return "With";
         case ir::ExprKind::Interp:     return "Interp";
         case ir::ExprKind::MethodCall: return "MethodCall";
@@ -1504,6 +1905,15 @@ public:
 
 protected:
     std::string renderTypeRef(const TypeRef& t) const override { return owner_.renderType(t); }
+    // P40 A4: the null-assert site is Core-owned (`m.pg:L:C`, from the module's file table), so the
+    // message is identical on every target.
+    std::string targetGet(const std::string& path) const override {
+        if (e_.kind == ir::ExprKind::NullAssert) {
+            if (path == "node.where")   return owner_.sourceSite(e_.pos);
+            if (path == "node.message") return "null-assert failed (" + owner_.sourceSite(e_.pos) + ")";
+        }
+        return "";
+    }
 
 private:
     InterpretedEmitter& owner_;
@@ -1525,6 +1935,7 @@ protected:
         return it != externs_.end() ? it->second->typeTmpl : std::string();
     }
     std::string renderTypeRef(const TypeRef& t) const override { return owner_.renderType(t); }
+    void requirePrelude(const std::string& key) const override { owner_.requirePrelude(key); }
 
 private:
     const std::unordered_map<std::string, const ir::ExternType*>& externs_;
@@ -1552,13 +1963,28 @@ std::string InterpretedEmitter::emitExpr(const ir::Expr& e) {
         }
         ~Depth() { --d; }
     } depthGuard(exprDepth_);
+    // P40 §0: a std binding's `requires` — the helper is recorded exactly when its caller is emitted, so a
+    // file only gets the helpers its own code calls.
+    if (e.kind == ir::ExprKind::Bound)
+        for (const auto& k : static_cast<const ir::Bound&>(e).preludeKeys) requires_.insert(k);
+    else if (e.kind == ir::ExprKind::Extern)
+        for (const auto& k : static_cast<const ir::Extern&>(e).preludeKeys) requires_.insert(k);
     if (const char* key = exprRuleKey(e.kind); key[0] != '\0') {
         auto it = rules_.find(key);
         if (it != rules_.end()) {
             GenericExprCtx ctx(e, spec(), [this](const ir::Expr& c) { return emitExpr(c); },
                                [this](const std::vector<ir::StmtPtr>& b) { return inlineBlock(b); },
                                &tmp_, &requires_, *this);
-            return engine::evalRule(it->second, ctx, &rules_);
+            std::string s = engine::evalRule(it->second, ctx, &rules_);
+            // P40 review r5 item 20: a `?.` read's second absent form (JS `undefined`) is folded into the one
+            // `T?` absence by the spec's absentNormalize — unless its consumer folds every absent form itself.
+            if (e.kind == ir::ExprKind::Member && !spec().absentNormalizeSuffix.empty()) {
+                const auto& m = static_cast<const ir::Member&>(e);
+                const auto& folds = spec().absentFoldedBy;
+                if (m.nullSafe && std::find(folds.begin(), folds.end(), m.absentConsumer) == folds.end())
+                    s = spec().absentNormalizePrefix + s + spec().absentNormalizeSuffix;
+            }
+            return s;
         }
     }
     if (e.kind == ir::ExprKind::Bound) // the FFI template substitution — fixed machinery over plugin data
@@ -1570,8 +1996,13 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     out_.clear();
     indent_ = 0;
     externMap_.clear();
-    tmp_ = 0;
+    tmp_ = m.tempsUsed; // P40 review r3 2(c): continue lowering's temp numbering (one allocator)
     requires_.clear();
+    slotHit_ = false; // P40 §0: set by the Program rule's preludeSlot marker
+    slotOffset_ = 0;
+    slotLine_ = 0;
+    slotOpen_.clear();
+    slotClose_.clear();
     // P38/issue #69: record origins only when the build asked AND this target declares how. Both conditions
     // are data — the Core never asks which language it is emitting.
     originRecords_.clear();
@@ -1581,7 +2012,10 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     suppressDirectives_ = false;
     origin_ = (m.originInfo && originMapping_ && originMapping_->recordsOrigins()) ? originMapping_ : nullptr;
     sourceFiles_ = &m.sourceFiles;
-    hooks_.access = m.access; // per-emit accessibility for the `{"fn":"access"}` decl builtin (§ access modifier)
+    // P40 B1: the module's resolved target options answer `option.<name>` in every rule context for the
+    // duration of this emit (the engine reads them; restored on exit so emits never leak into each other).
+    engine::ActiveOptionsScope optionsScope(&m.options);
+    originBaseDir_ = m.originBaseDir;
     for (const auto& et : m.externTypes) externMap_[et.name] = &et;
     // The two module facts record/class rules read: which named types are records (TS's structural-equals
     // dispatch) and which bases are interfaces (TS's extends/implements split). Computed for every target;
@@ -1589,6 +2023,7 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
     std::unordered_set<std::string> recordNames, interfaceNames;
     for (const auto& r : m.records) recordNames.insert(r.name);
     for (const auto& i : m.interfaces) interfaceNames.insert(i.name);
+    interfaceNames.insert(m.linkedInterfaceNames.begin(), m.linkedInterfaceNames.end()); // review r7: imported ones
     ModuleDeclCtx ctx(m, hooks_, [this](const ir::Expr& e) { return emitExpr(e); }, spec().name,
                       [&recordNames](const TypeRef& t) {
                           return t.kind == TypeRef::Kind::Named && recordNames.count(t.name) != 0;
@@ -1602,27 +2037,44 @@ std::string InterpretedEmitter::emit(const ir::Module& m) {
             if (fn.isAsync) requires_.insert("asyncEntry");
             break;
         }
-    std::vector<std::string> keys; // ascending order, each prepended => the last key ends up outermost
+    // P40 §0: the manifest preludes this file required, in DESCENDING key order (the order the historical
+    // top-of-file prepend produced — kept so output is byte-identical where the slot sits at the top).
+    std::vector<std::string> sorted;
     for (const auto& k : requires_)
-        if (spec().preludes.count(k)) keys.push_back(k);
-    std::sort(keys.begin(), keys.end());
-    // P38/issue #69: a prelude is prepended AFTER the walk, so it never passes through line() — the one
-    // writer of out_ that bypasses the per-line invariant. It is synthesized runtime text with no `.pg`
-    // origin, so it is wrapped in hidden directives (which removes it from coverage entirely) and every
-    // recorded output line shifts down by the number of lines prepended. Without the shift a source map
-    // would point at the wrong lines; the `#line` sink is immune either way, because every directive names
-    // an absolute line and nothing is relative to file position.
-    for (const auto& k : keys) {
-        const std::string& text = spec().preludes.at(k);
-        std::string block = text;
-        if (origin_ && origin_->emitsDirectives() && !origin_->hidden.empty()) block = hideRawBlock(text);
-        out_ = block + out_;
-        if (origin_) {
-            int added = 0;
-            for (char c : block) if (c == '\n') ++added;
-            for (auto& rec : originRecords_) rec.first += added;
-            outLine_ += added;
-        }
+        if (spec().preludes.count(k)) sorted.push_back(k);
+    std::sort(sorted.begin(), sorted.end(), std::greater<std::string>());
+    // Review r5: a prelude's own requirements (`preludeRequires`) join, each placed before its first dependent.
+    std::vector<std::string> keys;
+    std::set<std::string> placed;
+    std::function<void(const std::string&)> place = [&](const std::string& k) {
+        if (!placed.insert(k).second) return;
+        if (auto d = spec().preludeRequires.find(k); d != spec().preludeRequires.end())
+            for (const auto& dep : d->second) place(dep);
+        keys.push_back(k);
+    };
+    for (const auto& k : sorted) place(k);
+    if (keys.empty()) return out_;
+    // P38/issue #69: preludes are spliced in AFTER the walk, so they never pass through line() — the one
+    // writer of out_ that bypasses the per-line invariant. They are synthesized runtime text with no `.pg`
+    // origin, so each piece is wrapped in hidden directives (which removes it from coverage entirely) and
+    // every recorded output line past the slot shifts down by the number of lines inserted. Without the
+    // shift a source map would point at the wrong lines; the `#line` sink is immune either way, because
+    // every directive names an absolute line and nothing is relative to file position.
+    const bool hide = origin_ && origin_->emitsDirectives() && !origin_->hidden.empty();
+    auto piece = [&](const std::string& text) { return hide ? hideRawBlock(text) : text; };
+    std::string block;
+    if (!slotOpen_.empty()) block += piece(slotOpen_);
+    for (const auto& k : keys) block += piece(spec().preludes.at(k));
+    if (!slotClose_.empty()) block += piece(slotClose_);
+    const std::size_t at = slotHit_ ? std::min(slotOffset_, out_.size()) : 0;
+    const int atLine = slotHit_ ? slotLine_ : 0;
+    out_.insert(at, block);
+    if (origin_) {
+        int added = 0;
+        for (char c : block) if (c == '\n') ++added;
+        for (auto& rec : originRecords_)
+            if (rec.first > atLine) rec.first += added;
+        outLine_ += added;
     }
     return out_;
 }
@@ -1657,6 +2109,17 @@ static void substHole(std::string& s, std::string_view hole, const std::string& 
     }
 }
 
+std::string EmitterBase::sourceSite(const SourcePos& p) const {
+    std::string file = "<input>";
+    if (sourceFiles_ && p.fileId > 0 && static_cast<std::size_t>(p.fileId) < sourceFiles_->size() &&
+        !(*sourceFiles_)[static_cast<std::size_t>(p.fileId)].empty()) {
+        file = (*sourceFiles_)[static_cast<std::size_t>(p.fileId)];
+        const std::size_t cut = file.find_last_of("/\\");
+        if (cut != std::string::npos) file = file.substr(cut + 1);
+    }
+    return file + ":" + std::to_string(p.line) + ":" + std::to_string(p.col);
+}
+
 // P38/issue #69 — resolve a position to an on-disk path. Empty means "no resolvable origin": an unstamped
 // position (fileId 0 — synthesized scaffolding, std overlays), or a logical module name like "std.io",
 // which is a real `.pg` inside the compiler but not a file the consumer's coverage tool can open. Both take
@@ -1668,6 +2131,16 @@ std::string EmitterBase::originPathFor(const SourcePos& p) const {
     if (canon.find('/') == std::string::npos && canon.find('\\') == std::string::npos) return {};
     std::string out = canon; // forward slashes everywhere: uniform across platforms, and no escaping worry
     for (char& c : out) if (c == '\\') c = '/';
+    // P40 B7: relative to the generated file's directory, so committed output is checkout-independent
+    // (Roslyn resolves a relative `#line` path against the .cs file's folder; SP-B7a). Both sides were
+    // canonicalised by the host, so a purely LEXICAL relation is exact here and the Core stays IO-free. A
+    // different root (another drive) has no relative form: lexically_relative answers empty, and the
+    // absolute path stands — documented in docs/coverage.md.
+    if (!originBaseDir_.empty()) {
+        const std::filesystem::path rel =
+            std::filesystem::path(out).lexically_relative(std::filesystem::path(originBaseDir_));
+        if (!rel.empty()) out = rel.generic_string();
+    }
     return out;
 }
 
@@ -1777,14 +2250,74 @@ void EmitterBase::headBlock(const std::string& head, const std::vector<ir::StmtP
     closeBlock();
 }
 
-std::string EmitterBase::substBoundTemplate(const std::string& tmpl, const ir::Bound& b) {
+// P40 review A1: `tmpl` without the spec's absent-normalization wrapper, when it is exactly one wrapper around a
+// balanced body (`(x ?? null)` -> `x`, but `(a ?? null) + (b ?? null)` is left alone); else `tmpl` itself.
+static std::string stripAbsentNormalize(const BackendSpec& spec, const std::string& tmpl) {
+    const std::string& pre = spec.absentNormalizePrefix;
+    const std::string& suf = spec.absentNormalizeSuffix;
+    if (suf.empty() || tmpl.size() < pre.size() + suf.size() || tmpl.compare(0, pre.size(), pre) != 0 ||
+        tmpl.compare(tmpl.size() - suf.size(), suf.size(), suf) != 0)
+        return tmpl;
+    const std::string body = tmpl.substr(pre.size(), tmpl.size() - pre.size() - suf.size());
+    int depth = 0;
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        const char c = body[i];
+        if (c == '"' || c == '\'') { for (++i; i < body.size() && body[i] != c; ++i) if (body[i] == '\\') ++i; continue; }
+        if (c == '(' || c == '[' || c == '{') ++depth;
+        if (c == ')' || c == ']' || c == '}') { if (--depth < 0) return tmpl; }
+    }
+    if (depth != 0) return tmpl;
+    // P40 review r3: the wrapper's parentheses also grouped the body. A body that is not a primary expression
+    // (an `extern` template `(c ? $0.a : $0.b ?? null)`) keeps a pair — bare, `c ? x.a : x.b ?? 0` would bind
+    // the fallback to the else arm only.
+    auto isIdent = [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '$' || ch == '\\'; };
+    depth = 0;
+    for (std::size_t i = 0; i < body.size(); ++i) {
+        const char c = body[i];
+        if (c == '"' || c == '\'') { for (++i; i < body.size() && body[i] != c; ++i) if (body[i] == '\\') ++i; continue; }
+        if (c == '(' || c == '[' || c == '{') { ++depth; continue; }
+        if (c == ')' || c == ']' || c == '}') { --depth; continue; }
+        if (depth > 0 || isIdent(c) || c == '.') continue;
+        if (c == '-' && i + 1 < body.size() && body[i + 1] == '>') { ++i; continue; }
+        if (c == ':' && i + 1 < body.size() && body[i + 1] == ':') { ++i; continue; }
+        if (c == '?' && i + 1 < body.size() && body[i + 1] == '.') { ++i; continue; }
+        return "(" + body + ")";
+    }
+    return body;
+}
+
+std::string EmitterBase::substBoundTemplate(const std::string& tmplIn, const ir::Bound& b) {
+    const auto& folds = spec().absentFoldedBy;
+    const bool folded = !b.absentConsumer.empty() &&
+                        std::find(folds.begin(), folds.end(), b.absentConsumer) != folds.end();
+    const std::string tmpl = folded ? stripAbsentNormalize(spec(), tmplIn) : tmplIn;
+    // A placeholder that the template uses as a member/index RECEIVER (`$this.Length`, `$0[i]`, PHP `$this->x`)
+    // takes the spec's receiver parenthesization policy, exactly like a rule's `recv` operand: unwrapped,
+    // `("a" + "1").len()` emitted `"a" + "1".Length` (a silent miscompile found by P40's escapes.pg).
+    auto placeholder = [&](const ir::Expr& e, std::size_t after) {
+        std::string s = emitExpr(e);
+        const bool recv = after < tmpl.size() &&
+                          (tmpl[after] == '.' || tmpl[after] == '[' || tmpl.compare(after, 2, "->") == 0 ||
+                           tmpl.compare(after, 2, "?.") == 0);
+        return recv && receiverNeedsParens(spec(), e) ? "(" + s + ")" : s;
+    };
+    // P40 slice 7: `$tmp` is a temporary private to THIS expansion — every `$tmp` in the template is one name,
+    // and the next expansion gets the next one, so two expansions in one scope never collide (C#
+    // `out var __pg_t1` twice is CS0128/CS0136). Allocated lazily: a template without it consumes no number.
+    std::string tmpName;
+    auto isIdent = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
     std::string out;
     for (std::size_t i = 0; i < tmpl.size();) {
-        if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += emitExpr(*b.receiver); i += 5; }
+        if (tmpl.compare(i, 4, "$tmp") == 0 && (i + 4 >= tmpl.size() || !isIdent(tmpl[i + 4]))) {
+            if (tmpName.empty()) tmpName = "__pg_t" + std::to_string(++boundTmpSeq_);
+            out += tmpName;
+            i += 4;
+        }
+        else if (tmpl.compare(i, 5, "$this") == 0) { if (b.receiver) out += placeholder(*b.receiver, i + 5); i += 5; }
         else if (tmpl.compare(i, 2, "$T") == 0) { out += renderType(b.type); i += 2; } // ctor: the mapped type
         else if (tmpl[i] == '$' && i + 1 < tmpl.size() && std::isdigit(static_cast<unsigned char>(tmpl[i + 1]))) {
             std::size_t idx = static_cast<std::size_t>(tmpl[i + 1] - '0');
-            if (idx < b.args.size()) out += emitExpr(*b.args[idx]);
+            if (idx < b.args.size()) out += placeholder(*b.args[idx], i + 2);
             i += 2;
         } else out += tmpl[i++];
     }
@@ -1854,12 +2387,37 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
     switch (s.kind) {
         case ir::StmtKind::Assign: {
             const auto& a = static_cast<const ir::Assign&>(s);
+            // P40: an expanded compound `t = t op v` folds back to the idiomatic `t op= v` exactly when the
+            // Binary rule rendered the plain infix `t op v` (or `t op (v)`) — then the native compound means
+            // the same thing. Any masking/helper/concat spelling (TS `(t + v | 0)`, PHP `t . v`) stays expanded.
+            if (!a.compoundOp.empty() && !a.keepExpanded && a.value && a.value->kind == ir::ExprKind::Binary) {
+                const auto& b = static_cast<const ir::Binary&>(*a.value);
+                const std::string t = emitExpr(*a.target);
+                const std::string v = emitExpr(*a.value);
+                const std::string r = emitExpr(*b.rhs);
+                const std::string head = t + " " + b.op + " ";
+                if (v == head + r || v == head + "(" + r + ")")
+                    line(t + " " + a.compoundOp + " " + r + spec().stmtEnd);
+                else
+                    line(t + " = " + v + spec().stmtEnd);
+                return;
+            }
             line(emitExpr(*a.target) + " " + a.op + " " + emitExpr(*a.value) + spec().stmtEnd);
             return;
         }
         case ir::StmtKind::ExprStmt:
-            line(emitExpr(*static_cast<const ir::ExprStmt&>(s).expr) + spec().stmtEnd);
+        {
+            // P40 review r4 items 18/21: a dropped non-statement value takes the target's discard form (C# `_ = `),
+            // and a statement that would begin with a token the target reads as something else is parenthesized
+            // (JS `{` opens a block). Both are manifest data (BackendSpec::exprStmt*).
+            const auto& es = static_cast<const ir::ExprStmt&>(s);
+            std::string text = emitExpr(*es.expr);
+            for (const auto& tok : spec().exprStmtParenIfStarts)
+                if (text.compare(0, tok.size(), tok) == 0) { text = "(" + text + ")"; break; }
+            if (es.discard) text = spec().exprStmtDiscardPrefix + text;
+            line(text + spec().stmtEnd);
             return;
+        }
         case ir::StmtKind::Let: {
             const auto& l = static_cast<const ir::Let&>(s);
             // `let (a, b) = t` destructuring is rendered by the per-target TupleLet rule (issue #39b).
@@ -1894,14 +2452,21 @@ void EmitterBase::emitStmt(const ir::Stmt& s) {
             // `var xs: List<Tree> = [...]` need the contextual type in TS or literal `tag`s widen to
             // string. declDiffers additionally catches non-explicit divergence, belt-and-braces.
             const bool declDiffers = l.init && !l.type.absent() && !sameTypeRef(l.type, l.init->type);
+            std::string init = emitExpr(*l.init);
             if (uninferable || declDiffers || (l.declExplicit && !l.type.absent())) {
                 std::string ty = renderType(l.type);
                 if (!ty.empty()) {
                     std::string typed = localDeclTyped(l.name, l.isMutable, ty);
                     if (!typed.empty()) decl = typed;
+                    // P40 review r6 (part 2): a target whose checker narrows a local to the type of its
+                    // initializer (tsc: `let x: T | null = null` IS `null` until an assignment it can see, so a
+                    // read after `x !== null` is `never`, TS2339) widens a `null` initializer back to the declared
+                    // type — manifest row `localNullInit.typed` (TS `$x as $T`); absent = the bare `null`.
+                    if (l.init->kind == ir::ExprKind::Null)
+                        if (std::string w = specSubstTX(spec(), "localNullInit", "typed", ty, init); !w.empty()) init = w;
                 }
             }
-            line(decl + " = " + emitExpr(*l.init) + spec().stmtEnd);
+            line(decl + " = " + init + spec().stmtEnd);
             return;
         }
 

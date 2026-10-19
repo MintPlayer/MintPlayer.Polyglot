@@ -1,0 +1,9 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 22): inferring `T = unit` from a lambda that returns nothing — no target can spell
+// unit as a type argument (C# CS0411: there is no Func<void>).
+fn apply<T>(f: () => T): T => f()
+
+fn main() {
+  apply(() => print("x"))
+}

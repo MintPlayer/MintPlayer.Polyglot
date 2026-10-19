@@ -1,0 +1,3 @@
+// REFUSED (P40 A4, N2): a nullable value in an interpolation hole renders "" on C#/PHP, "null" on TS and
+// "None" on Python.
+fn show(ni: i32?): string => "${ni}"

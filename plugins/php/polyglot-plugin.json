@@ -1,13 +1,21 @@
 {
-  "schema": 1,
+  "schema": 2,
   "name": "php",
   "preludePerFile": true,
+  "options": {
+    "namespace": {
+      "default": "",
+      "pattern": "^([A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*)?$",
+      "scope": "closure"
+    }
+  },
   "originMapping": {
     "style": "sourceMapV3",
     "sidecarExtension": ".map",
     "footer": "// sourceMappingURL=$f"
   },
   "capabilities": {
+    "utf16Strings:index": "emulated",
     "patternMatching": "native",
     "withExpressions": "native",
     "properties": "emulated",
@@ -39,6 +47,7 @@
     },
     "blockStyle": "bracesKnR",
     "stmtEnd": ";",
+    "operandSnapshot": "(${tmp} = {0})",
     "throwKeyword": "throw",
     "rethrow": "throw $__e;",
     "memberOp": "->",
@@ -46,6 +55,49 @@
     "trueLit": "true",
     "falseLit": "false",
     "nullLit": "null",
+    "nativeCoalesceAssign": true,
+    "assignmentOrder": "valueFirst",
+    "literals": {
+      "string": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "$": "\\$"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      },
+      "interp": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "$": "\\$"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      },
+      "char": {
+        "quote": "\"",
+        "map": {
+          "\\": "\\\\",
+          "\"": "\\\"",
+          "\n": "\\n",
+          "\t": "\\t",
+          "\r": "\\r",
+          "$": "\\$"
+        },
+        "codepoint": "\\u{$H}",
+        "astral": "\\u{$H}"
+      }
+    },
     "wrapInt": {
       "u8": "(($x) & 0xff)",
       "u16": "(($x) & 0xffff)",
@@ -55,14 +107,21 @@
       "i32": "(((($x) & 0xffffffff) ^ 0x80000000) - 0x80000000)"
     },
     "wrapAtom": {
-      "recv": [
-        "binary",
-        "unary",
-        "cond",
-        "cast"
-      ],
-      "unary": [
-        "binary"
+      "recvPrimary": [
+        "var",
+        "this",
+        "call",
+        "methodCall",
+        "member",
+        "index",
+        "str",
+        "char",
+        "bool",
+        "null",
+        "extern",
+        "nullAssert",
+        "tuple",
+        "makeCase"
       ]
     },
     "generics": {
@@ -70,7 +129,8 @@
       "boundsIntro": "",
       "boundsSep": "",
       "erase": [
-        "INumber"
+        "INumber",
+        "IMapKey"
       ]
     },
     "tables": {
@@ -149,15 +209,36 @@
         "var",
         "while",
         "xor",
-        "yield"
+        "yield",
+        "self",
+        "parent",
+        "int",
+        "float",
+        "bool",
+        "string",
+        "true",
+        "false",
+        "null",
+        "void",
+        "iterable",
+        "object",
+        "mixed",
+        "never",
+        "die",
+        "exit",
+        "eval",
+        "require_once",
+        "include_once",
+        "__halt_compiler"
       ],
+      "caseInsensitive": true,
       "escape": {
         "strategy": "suffix",
         "with": "_"
       },
       "mangle": {
         "replace": "$",
-        "with": "_"
+        "with": "__"
       },
       "reserved": [
         "__e",
@@ -166,10 +247,29 @@
         "__opt*",
         "__w*"
       ],
+      "classBuiltins": [
+        "directory", "error", "generator", "closure", "exception", "errorexception", "typeerror", "valueerror",
+        "arithmeticerror", "divisionbyzeroerror", "argumentcounterror", "assertionerror", "compileerror", "parseerror",
+        "unhandledmatcherror", "throwable", "traversable", "iterator", "iteratoraggregate", "arrayaccess", "countable",
+        "stringable", "serializable", "jsonserializable", "arrayobject", "arrayiterator", "stdclass", "datetime",
+        "datetimeimmutable", "datetimeinterface", "datetimezone", "dateinterval", "dateperiod", "weakmap",
+        "weakreference", "fiber", "attribute", "unitenum", "backedenum", "splstack", "splqueue", "splobjectstorage",
+        "spldoublylinkedlist", "splfixedarray", "splheap", "splminheap", "splmaxheap", "splpriorityqueue",
+        "splsubject", "splobserver", "emptyiterator", "internaliterator", "runtimeexception", "logicexception",
+        "invalidargumentexception", "domainexception", "lengthexception", "outofrangeexception",
+        "outofboundsexception", "overflowexception", "rangeexception", "underflowexception",
+        "unexpectedvalueexception", "badfunctioncallexception", "badmethodcallexception"
+      ],
       "functionBuiltins": {
         "suffix": "_pg",
         "names": [
-          "abs", "array_filter", "array_keys", "array_map", "array_merge",
+          "abs", "acos", "acosh", "array_key_exists", "array_key_first", "get_class", "is_object", "method_exists", "asin", "asinh", "atan", "atan2", "atanh",
+          "chr", "cosh", "fdiv", "file_exists", "file_get_contents", "file_put_contents", "fmod", "function_exists",
+          "iconv", "ini_set", "intdiv", "is_bool", "is_float", "is_infinite", "is_int", "is_nan", "is_string", "log10",
+          "ltrim", "pack", "preg_match", "preg_replace", "preg_replace_callback", "preg_split", "rtrim", "sinh",
+          "str_contains", "str_ends_with", "str_repeat", "str_replace", "str_starts_with", "strcmp", "strpos",
+          "strtolower", "strtoupper", "strtr", "tanh", "unlink", "unpack", "var_export",
+          "array_filter", "array_keys", "array_map", "array_merge",
           "array_pop", "array_push", "array_reverse", "array_shift", "array_slice",
           "array_splice", "array_values", "assert", "ceil", "compact", "cos", "count",
           "current", "date", "die", "each", "end", "eval", "exit",
@@ -182,7 +282,15 @@
         ]
       }
     },
-    "preludes": {}
+    "preludes": {
+      "pgUeq": "if (!function_exists(__NAMESPACE__.'\\\\__pg_ueq')) {\n    // a union value (a tagged array) compared as C# compares its generated case records (review r5): a record\n    // payload by its equals(), a nested union recursively, anything else (a scalar, a class instance, a list) by ===\n    function __pg_ueq($a, $b) {\n        if (is_array($a)) {\n            if (!is_array($b) || count($a) !== count($b)) {\n                return false;\n            }\n            foreach ($a as $k => $v) {\n                if (!array_key_exists($k, $b) || !__pg_ueq($v, $b[$k])) {\n                    return false;\n                }\n            }\n            return true;\n        }\n        if (is_object($a) && is_object($b) && get_class($a) === get_class($b) && method_exists($a, 'equals')) {\n            return $a->equals($b);\n        }\n        return $a === $b;\n    }\n}\n",
+      "pgU64": "if (!function_exists(__NAMESPACE__.'\\\\__pg_u64parse')) {\n    // a u64 above PHP_INT_MAX has no PHP int: refuse it loudly instead of clamping (SPEC 3.C PHP caveat)\n    function __pg_u64parse($s) {\n        $d = ltrim(ltrim($s, '+'), '0');\n        if (strlen($d) > 19 || (strlen($d) === 19 && strcmp($d, '9223372036854775807') > 0)) {\n            throw new \\Error(\"u64.parse: '\" . $s . \"' exceeds PHP's 63-bit integer range\");\n        }\n        return intval($s);\n    }\n}\n",
+      "pgU16": "if (!function_exists(__NAMESPACE__.'\\\\__pg_u16')) {\n    // UTF-16 code-unit indexing over PHP's UTF-8 strings (P40 B3, D15: needs ext-iconv). An ASCII string is\n    // its own UTF-16 index space (fast path); any other is indexed through a cached UTF-16LE copy.\n    function __pg_u16($s) {\n        // null when ASCII, else the UTF-16LE copy. A short string is just recomputed; a long one is cached\n        // (the last one, plus a small LRU), so indexing a long string in a loop is O(1) per call.\n        static $ks = null, $kv = null, $lru = [];\n        if ($ks === $s) {\n            return $kv;\n        }\n        if (strlen($s) < 256) {\n            return preg_match('/[\\x80-\\xFF]/', $s) ? __pg_u16le($s) : null;\n        }\n        if (array_key_exists($s, $lru)) {\n            $v = $lru[$s];\n            unset($lru[$s]);\n        } else {\n            $v = preg_match('/[\\x80-\\xFF]/', $s) ? __pg_u16le($s) : null;\n            if (count($lru) >= 8) {\n                unset($lru[array_key_first($lru)]);\n            }\n        }\n        $lru[$s] = $v;\n        $ks = $s;\n        $kv = $v;\n        return $v;\n    }\n    function __pg_u16le($s) {\n        if (!function_exists('iconv')) {\n            throw new \\Error('Polyglot: the PHP target needs the iconv extension (ext-iconv) for non-ASCII strings');\n        }\n        $r = @iconv('UTF-8', 'UTF-16LE', $s);\n        if ($r !== false) {\n            return $r;\n        }\n        // not valid UTF-8: a lone surrogate a substring split off (held as WTF-8) \u2014 decode by hand\n        $out = '';\n        $n = strlen($s);\n        for ($i = 0; $i < $n;) {\n            $b = ord($s[$i]);\n            if ($b < 0x80) {\n                $c = $b;\n                $i += 1;\n            } elseif ($b < 0xE0) {\n                $c = (($b & 0x1F) << 6) | (ord($s[$i + 1]) & 0x3F);\n                $i += 2;\n            } elseif ($b < 0xF0) {\n                $c = (($b & 0x0F) << 12) | ((ord($s[$i + 1]) & 0x3F) << 6) | (ord($s[$i + 2]) & 0x3F);\n                $i += 3;\n            } else {\n                $c = (($b & 0x07) << 18) | ((ord($s[$i + 1]) & 0x3F) << 12) | ((ord($s[$i + 2]) & 0x3F) << 6) | (ord($s[$i + 3]) & 0x3F);\n                $i += 4;\n            }\n            if ($c >= 0x10000) {\n                $c -= 0x10000;\n                $out .= pack('v2', 0xD800 + ($c >> 10), 0xDC00 + ($c & 0x3FF));\n            } else {\n                $out .= pack('v', $c);\n            }\n        }\n        return $out;\n    }\n    function __pg_u16_unit8($c) {\n        if ($c < 0x80) {\n            return chr($c);\n        }\n        if ($c < 0x800) {\n            return chr(0xC0 | ($c >> 6)) . chr(0x80 | ($c & 0x3F));\n        }\n        return chr(0xE0 | ($c >> 12)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n    }\n    function __pg_u16_to8($u) {\n        $r = @iconv('UTF-16LE', 'UTF-8', $u);\n        if ($r !== false) {\n            return $r;\n        }\n        $out = '';\n        $n = strlen($u);\n        for ($i = 0; $i < $n; $i += 2) {\n            $c = ord($u[$i]) | (ord($u[$i + 1]) << 8);\n            if ($c >= 0xD800 && $c <= 0xDBFF && $i + 3 < $n) {\n                $d = ord($u[$i + 2]) | (ord($u[$i + 3]) << 8);\n                if ($d >= 0xDC00 && $d <= 0xDFFF) {\n                    $c = 0x10000 + (($c - 0xD800) << 10) + ($d - 0xDC00);\n                    $out .= chr(0xF0 | ($c >> 18)) . chr(0x80 | (($c >> 12) & 0x3F)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n                    $i += 2;\n                    continue;\n                }\n            }\n            $out .= __pg_u16_unit8($c);\n        }\n        return $out;\n    }\n    function __pg_len16($s) {\n        $v = __pg_u16($s);\n        return $v === null ? strlen($s) : strlen($v) >> 1;\n    }\n    function __pg_u16_char($s, $i) {\n        $v = __pg_u16($s);\n        return $v === null ? $s[$i] : __pg_u16_unit8(ord($v[2 * $i]) | (ord($v[2 * $i + 1]) << 8));\n    }\n    function __pg_u16_cp($s, $i) {\n        $v = __pg_u16($s);\n        if ($v === null) {\n            return ord($s[$i]);\n        }\n        $c = ord($v[2 * $i]) | (ord($v[2 * $i + 1]) << 8);\n        if ($c >= 0xD800 && $c <= 0xDBFF && 2 * $i + 3 < strlen($v)) {\n            $d = ord($v[2 * $i + 2]) | (ord($v[2 * $i + 3]) << 8);\n            if ($d >= 0xDC00 && $d <= 0xDFFF) {\n                return 0x10000 + (($c - 0xD800) << 10) + ($d - 0xDC00);\n            }\n        }\n        return $c;\n    }\n    function __pg_u16_sub($s, $a, $b) {\n        $v = __pg_u16($s);\n        return $v === null ? substr($s, $a, $b - $a) : __pg_u16_to8(substr($v, 2 * $a, 2 * ($b - $a)));\n    }\n    function __pg_u16_find($s, $n, $f) {\n        static $kn = null, $kascii = true, $kv = '';\n        if ($kn !== $n) {\n            $kascii = !preg_match('/[\\x80-\\xFF]/', $n);\n            $kv = null;\n            $kn = $n;\n        }\n        $v = __pg_u16($s);\n        if ($v === null) {\n            if (!$kascii) {\n                return -1;\n            }\n            $p = strpos($s, $n, $f);\n            return $p === false ? -1 : $p;\n        }\n        if ($kv === null) {\n            $kv = __pg_u16le($n); // the needle is reconverted only when it changes\n        }\n        $p = 2 * $f;\n        while (($p = strpos($v, $kv, $p)) !== false) {\n            if (($p & 1) === 0) {\n                return $p >> 1;\n            }\n            $p++;\n        }\n        return -1;\n    }\n    function __pg_cmp16($a, $b) {\n        if (preg_match('/[\\x80-\\xFF]/', $a) || preg_match('/[\\x80-\\xFF]/', $b)) {\n            // UTF-16BE bytes order exactly as UTF-16 code units do (UTF-8 bytes order as code points)\n            $a = $a === '' ? '' : pack('n*', ...unpack('v*', __pg_u16le($a)));\n            $b = $b === '' ? '' : pack('n*', ...unpack('v*', __pg_u16le($b)));\n        }\n        $r = strcmp($a, $b);\n        return $r < 0 ? -1 : ($r > 0 ? 1 : 0);\n    }\n    function __pg_u16_lone(...$xs) {\n        // a lone surrogate (held as WTF-8, ED A0-BF ..) only matches like C#/TS in the UTF-16 view; without\n        // one, the UTF-8 byte answer is the UTF-16 answer\n        foreach ($xs as $x) {\n            if (preg_match('/\\xED[\\xA0-\\xBF]/', $x)) {\n                return true;\n            }\n        }\n        return false;\n    }\n    function __pg_u16_has($s, $n) {\n        return __pg_u16_lone($s, $n) ? __pg_u16_find($s, $n, 0) !== -1 : str_contains($s, $n);\n    }\n    function __pg_u16_starts($s, $p) {\n        return __pg_u16_lone($s, $p) ? str_starts_with(__pg_u16le($s), __pg_u16le($p)) : str_starts_with($s, $p);\n    }\n    function __pg_u16_ends($s, $p) {\n        return __pg_u16_lone($s, $p) ? str_ends_with(__pg_u16le($s), __pg_u16le($p)) : str_ends_with($s, $p);\n    }\n    function __pg_u16_pieces($s, $sep) {\n        // the UTF-16LE pieces of $s around $sep, matching only at unit-aligned (even) offsets\n        $v = __pg_u16le($s);\n        $k = __pg_u16le($sep);\n        $kl = strlen($k);\n        $out = [];\n        $from = 0;\n        $p = 0;\n        while (($p = strpos($v, $k, $p)) !== false) {\n            if (($p & 1) === 0) {\n                $out[] = substr($v, $from, $p - $from);\n                $p += $kl;\n                $from = $p;\n            } else {\n                $p++;\n            }\n        }\n        $out[] = substr($v, $from);\n        return $out;\n    }\n    function __pg_u16_replace($s, $n, $r) {\n        if (!__pg_u16_lone($s, $n, $r)) {\n            return str_replace($n, $r, $s);\n        }\n        return __pg_u16_to8(implode(__pg_u16le($r), __pg_u16_pieces($s, $n)));\n    }\n    function __pg_u16_split($s, $sep) {\n        if (!__pg_u16_lone($s, $sep)) {\n            return explode($sep, $s);\n        }\n        return array_map(fn($u) => __pg_u16_to8($u),__pg_u16_pieces($s, $sep));\n    }\n}\n",
+      "pgChr8": "if (!function_exists(__NAMESPACE__.'\\\\__pg_chr8')) {\n    // a Unicode scalar value -> UTF-8 (string.fromCodePoint; no mbstring needed, S17)\n    function __pg_chr8($c) {\n        if ($c < 0x80) {\n            return chr($c);\n        }\n        if ($c < 0x800) {\n            return chr(0xC0 | ($c >> 6)) . chr(0x80 | ($c & 0x3F));\n        }\n        if ($c < 0x10000) {\n            return chr(0xE0 | ($c >> 12)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n        }\n        return chr(0xF0 | ($c >> 18)) . chr(0x80 | (($c >> 12) & 0x3F)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n    }\n}\n",
+      "pgMap": "if (!function_exists(__NAMESPACE__.'\\\\__pg_mk')) {\n    // Map<K, V> over \\ArrayObject (P40 B4). A PHP array turns the string key \"10\" into the int 10, so string\n    // keys are stored prefixed with \"s\" and stripped again by keys(); integer keys are stored as they are.\n    function __pg_mk($k) {\n        return is_int($k) ? $k : \"s\" . $k;\n    }\n    function __pg_mget($m, $k) {\n        $k = __pg_mk($k);\n        return $m->offsetExists($k) ? $m[$k] : null;\n    }\n    function __pg_mdel($m, $k) {\n        $k = __pg_mk($k);\n        if (!$m->offsetExists($k)) {\n            return false;\n        }\n        $m->offsetUnset($k);\n        return true;\n    }\n    function __pg_mkeys($m) {\n        $r = [];\n        foreach ($m as $k => $v) {\n            $r[] = is_int($k) ? $k : substr($k, 1);\n        }\n        return new \\ArrayObject($r);\n    }\n}\n",
+      "pgNn": "if (!function_exists(__NAMESPACE__.'\\\\__pg_nn')) {\n    function __pg_nn($v, $at) {\n        if ($v === null) {\n            throw new \\UnexpectedValueException(\"null-assert failed (\" . $at . \")\");\n        }\n        return $v;\n    }\n}\n",
+      "pgStr": "if (!function_exists(__NAMESPACE__.'\\\\__pg_str')) {\n    function __pg_str($x) {\n        if ($x === null) {\n            return \"null\";\n        }\n        if (is_bool($x)) {\n            return $x ? \"true\" : \"false\";\n        }\n        if (is_string($x)) {\n            if (preg_match('//u', $x)) {\n                return $x;\n            }\n            $x = preg_replace_callback('/\\xED([\\xA0-\\xAF])([\\x80-\\xBF])\\xED([\\xB0-\\xBF])([\\x80-\\xBF])/', function ($m) {\n                $c = 0x10000 + ((((ord($m[1]) & 0x0F) << 6) | (ord($m[2]) & 0x3F)) << 10) + ((((ord($m[3]) & 0x0F) << 6) | (ord($m[4]) & 0x3F)));\n                return chr(0xF0 | ($c >> 18)) . chr(0x80 | (($c >> 12) & 0x3F)) . chr(0x80 | (($c >> 6) & 0x3F)) . chr(0x80 | ($c & 0x3F));\n            }, $x);\n            return preg_replace('/\\xED[\\xA0-\\xBF][\\x80-\\xBF]/', \"\\u{FFFD}\", $x);\n        }\n        if (!is_float($x)) {\n            return (string)$x;\n        }\n        if (is_nan($x)) {\n            return \"NaN\";\n        }\n        if (is_infinite($x)) {\n            return $x > 0 ? \"Infinity\" : \"-Infinity\";\n        }\n        if ($x == 0.0) {\n            return \"0\";\n        }\n        $old = ini_set('serialize_precision', '-1');\n        $s = var_export($x, true);\n        if ($old !== false) {\n            ini_set('serialize_precision', $old);\n        }\n        $neg = $s[0] === '-';\n        if ($neg) {\n            $s = substr($s, 1);\n        }\n        $p = strpos($s, 'E');\n        $m = $p === false ? $s : substr($s, 0, $p);\n        $e = $p === false ? 0 : (int)substr($s, $p + 1);\n        $dot = strpos($m, '.');\n        $i = $dot === false ? $m : substr($m, 0, $dot);\n        $f = $dot === false ? '' : substr($m, $dot + 1);\n        $d = ltrim($i . $f, '0');\n        $n = strlen($i) + $e - (strlen($i) + strlen($f) - strlen($d));\n        $d = rtrim($d, '0');\n        $k = strlen($d);\n        if ($k <= $n && $n <= 21) {\n            $r = $d . str_repeat('0', $n - $k);\n        } elseif (0 < $n && $n <= 21) {\n            $r = substr($d, 0, $n) . '.' . substr($d, $n);\n        } elseif (-6 < $n && $n <= 0) {\n            $r = '0.' . str_repeat('0', -$n) . $d;\n        } else {\n            $r = $d[0] . ($k > 1 ? '.' . substr($d, 1) : '') . 'e' . ($n >= 1 ? '+' : '-') . abs($n - 1);\n        }\n        return $neg ? '-' . $r : $r;\n    }\n}\n"
+    }
   },
   "std": {
     "std.collections": {
@@ -192,10 +300,19 @@
       "List.add": "$this[] = $0",
       "List.clear": "$this->exchangeArray([])",
       "List.removeAll": "$this->exchangeArray(array_values(array_filter($this->getArrayCopy(), fn($__e) => !(($0)($__e)))))",
-      "List.removeAt": "$this->exchangeArray((function ($__a, $__i) { array_splice($__a, $__i, 1); return $__a; })($this->getArrayCopy(), $0))"
+      "List.removeAt": "$this->exchangeArray((function ($__a, $__i) { array_splice($__a, $__i, 1); return $__a; })($this->getArrayCopy(), $0))",
+      "Map.type": "\\ArrayObject",
+      "Map.constructor": "new \\ArrayObject([])",
+      "Map.count": "count($this)",
+      "Map.get": { "template": "__pg_mget($this, $0)", "requires": ["pgMap"] },
+      "Map.set": { "template": "$this[__pg_mk($0)] = $1", "requires": ["pgMap"] },
+      "Map.has": { "template": "$this->offsetExists(__pg_mk($0))", "requires": ["pgMap"] },
+      "Map.remove": { "template": "__pg_mdel($this, $0)", "requires": ["pgMap"] },
+      "Map.keys": { "template": "__pg_mkeys($this)", "requires": ["pgMap"] },
+      "Map.values": "new \\ArrayObject(array_values($this->getArrayCopy()))"
     },
     "std.io": {
-      "print": "echo is_bool($x) ? ($x ? \"true\" : \"false\") : $x, \"\\n\"",
+      "print": { "template": "echo __pg_str($x), \"\\n\"", "requires": ["pgStr"] },
       "readText": "file_get_contents($path)",
       "writeText": "file_put_contents($path, $content)",
       "appendText": "file_put_contents($path, $content, FILE_APPEND)",
@@ -204,13 +321,24 @@
     },
     "std.strings": {
       "string.isEmpty": "($this === '')",
-      "string.len": "strlen($this)",
+      "string.len": { "template": "__pg_len16($this)", "requires": ["pgU16"] },
       "string.toUpper": "strtoupper($this)",
       "string.toLower": "strtolower($this)",
-      "string.charAt": "substr($this, $0, 1)",
-      "string.codePointAt": "ord(substr($this, $0, 1))",
-      "string.codePoints": "str_split($this)",
-      "string.toI32": "intval($this)"
+      "string.toUpperAscii": "strtr($this, 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')",
+      "string.toLowerAscii": "strtr($this, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')",
+      "string.codePoints": "preg_split('//u', $this, -1, PREG_SPLIT_NO_EMPTY)",
+      "string.startsWith": { "template": "__pg_u16_starts($this, $0)", "requires": ["pgU16"] },
+      "string.endsWith": { "template": "__pg_u16_ends($this, $0)", "requires": ["pgU16"] },
+      "string.contains": { "template": "__pg_u16_has($this, $0)", "requires": ["pgU16"] },
+      "string.trimAscii": "trim($this, \" \\t\\n\\x0B\\x0C\\r\")",
+      "compareOrdinal": { "template": "__pg_cmp16($a, $b)", "requires": ["pgU16"] },
+      "string.__pgCharAt": { "template": "__pg_u16_char($this, $0)", "requires": ["pgU16"] },
+      "string.__pgCodePointAt": { "template": "__pg_u16_cp($this, $0)", "requires": ["pgU16"] },
+      "string.__pgSubstring": { "template": "__pg_u16_sub($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgIndexOf": { "template": "__pg_u16_find($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgReplaceAll": { "template": "__pg_u16_replace($this, $0, $1)", "requires": ["pgU16"] },
+      "string.__pgSplit": { "template": "new \\ArrayObject(__pg_u16_split($this, $0))", "requires": ["pgU16"] },
+      "string.__pgFromCodePoint": { "template": "__pg_chr8($0)", "requires": ["pgChr8"] }
     },
     "std.core": {
       "Error.type": "\\Exception",
@@ -220,21 +348,24 @@
       "Array.type": "\\ArrayObject",
       "Array.constructor": "new \\ArrayObject()",
       "Array.count": "count($this)",
-      "i8.parse": "intval($0)",
-      "i16.parse": "intval($0)",
-      "i32.parse": "intval($0)",
-      "i64.parse": "intval($0)",
-      "u8.parse": "intval($0)",
-      "u16.parse": "intval($0)",
-      "u32.parse": "intval($0)",
-      "u64.parse": "intval($0)",
-      "f32.parse": "floatval($0)",
-      "f64.parse": "floatval($0)"
+      "__pgText.rawLen": "strlen($0)",
+      "__pgText.rawCode": "ord($0[$1])",
+      "i8.__pgParse": "intval($0)",
+      "i16.__pgParse": "intval($0)",
+      "i32.__pgParse": "intval($0)",
+      "i64.__pgParse": "intval($0)",
+      "u8.__pgParse": "intval($0)",
+      "u16.__pgParse": "intval($0)",
+      "u32.__pgParse": "intval($0)",
+      "u64.__pgParse": { "template": "__pg_u64parse($0)", "requires": ["pgU64"] },
+      "f32.__pgParse": "unpack('g', pack('g', floatval($0)))[1]",
+      "f64.__pgParse": "floatval($0)"
     },
     "std.math": {
       "Math.PI": "M_PI",
       "Math.E": "M_E",
       "Math.sqrt": "sqrt($0)",
+      "Math.isNaN": "is_nan($0)",
       "Math.ln": "log($0)",
       "Math.log": "log($0)",
       "Math.log2": "log($0, 2)",
@@ -270,7 +401,7 @@
       "get": "node.text"
     },
     "Float": {
-      "get": "node.text"
+      "get": "node.widenedText"
     },
     "Bool": {
       "case": {
@@ -290,33 +421,45 @@
     },
     "Null": "null",
     "Str": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "string",
         {
           "get": "node.value"
         }
       ]
     },
     "Char": {
-      "fn": "escapeString",
+      "fn": "quoted",
       "args": [
+        "char",
         {
           "get": "node.value"
         }
       ]
     },
     "Var": {
-      "tmpl": [
-        "$",
-        {
-          "fn": "ident",
-          "args": [
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.liveModuleRead", "true"] },
+            { "tmpl": ["$GLOBALS['", { "fn": "ident", "args": [ { "get": "node.name" } ] }, "']"] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            "$",
             {
-              "get": "node.name"
+              "fn": "ident",
+              "args": [
+                {
+                  "get": "node.name"
+                }
+              ]
             }
           ]
         }
-      ]
+      }
     },
     "This": "$this",
     "Extern": {
@@ -327,6 +470,14 @@
         {
           "case": {
             "when": [
+              [
+                { "eq": ["node.calleeKind", "member"] },
+                { "tmpl": ["(", { "emit": "node.calleeExpr" }, ")"] }
+              ],
+              [
+                { "has": "node.hasCalleeExpr" },
+                { "emitChild": "node.calleeExpr", "side": "recv" }
+              ],
               [
                 { "eq": ["node.isFree", "true"] },
                 {
@@ -339,7 +490,7 @@
                           "fn": "identFn",
                           "args": [
                             {
-                              "get": "node.mangledCallee"
+                              "get": "node.uniqueCallee"
                             }
                           ]
                         }
@@ -369,12 +520,12 @@
             }
           }
         },
-        "(",
         {
-          "map": "node.args",
-          "sep": ", "
-        },
-        ")"
+          "case": {
+            "when": [[ { "eq": ["node.isRef", "true"] }, "(...)" ]],
+            "else": { "tmpl": [ "(", { "map": "node.args", "sep": ", " }, ")" ] }
+          }
+        }
       ]
     },
     "Member": {
@@ -388,10 +539,20 @@
                 },
                 {
                   "tmpl": [
-                    {
+                    { "fn": "identType", "args": [ {
                       "get": "node.staticType"
-                    },
-                    "::"
+                    } ] },
+                    "::",
+                    { "case": { "when": [ [
+                      { "and": [
+                        { "eq": ["node.staticField", "true"] },
+                        { "not": { "and": [
+                          { "eq": ["node.staticFieldMutable", "false"] },
+                          { "eq": ["node.staticFieldInitIsLiteral", "true"] }
+                        ] } }
+                      ] },
+                      "$"
+                    ] ] } }
                   ]
                 }
               ]
@@ -459,14 +620,7 @@
             },
             {
               "tmpl": [
-                {
-                  "fn": "ident",
-                  "args": [
-                    {
-                      "get": "node.method"
-                    }
-                  ]
-                },
+                { "fn": "mangleName", "args": [ { "fn": "ident", "args": [ { "get": "node.freeName" } ] } ] },
                 "(",
                 {
                   "emit": "node.object"
@@ -505,9 +659,9 @@
             },
             {
               "tmpl": [
-                {
+                { "fn": "identType", "args": [ {
                   "get": "node.staticType"
-                },
+                } ] },
                 "::",
                 {
                   "fn": "ident",
@@ -725,7 +879,7 @@
       "tmpl": [
         "new ",
         {
-          "fn": "ident",
+          "fn": "identType",
           "args": [
             {
               "get": "node.typeName"
@@ -746,6 +900,26 @@
         " instanceof ",
         { "type": "node.testType" }
       ]
+    },
+    "NullAssert": {
+      "case": {
+        "when": [
+          [
+            { "eq": ["node.isFail", "true"] },
+            { "tmpl": ["throw new \\UnexpectedValueException(", { "fn": "quoted", "args": ["string", { "get": "node.message" }] }, ")"] }
+          ]
+        ],
+        "else": {
+          "tmpl": [
+            { "fn": "require", "args": ["pgNn"] },
+            "__pg_nn(",
+            { "emit": "node.operand" },
+            ", ",
+            { "fn": "quoted", "args": ["string", { "get": "node.where" }] },
+            ")"
+          ]
+        }
+      }
     },
     "AsCast": {
       "case": {
@@ -783,6 +957,10 @@
     "Unary": {
       "case": {
         "when": [
+          [
+            { "eq": ["node.negatesInt64Min", "true"] },
+            "PHP_INT_MIN"
+          ],
           [
             {
               "and": [
@@ -951,8 +1129,9 @@
             "lits": "node.chunks",
             "holes": "node.holes",
             "lit": {
-              "fn": "escapeString",
+              "fn": "quoted",
               "args": [
+                "interp",
                 {
                   "get": "item"
                 }
@@ -977,11 +1156,30 @@
                         ") ? \"true\" : \"false\") . "
                       ]
                     }
+                  ],
+                  [
+                    {
+                      "or": [
+                        { "eq": ["item.typeIsInt", "true"] },
+                        { "eq": ["item.typeIsString", "true"] },
+                        { "eq": ["item.typeIsChar", "true"] }
+                      ]
+                    },
+                    {
+                      "tmpl": [
+                        " . (",
+                        {
+                          "emit": "item"
+                        },
+                        ") . "
+                      ]
+                    }
                   ]
                 ],
                 "else": {
                   "tmpl": [
-                    " . (",
+                    { "fn": "require", "args": ["pgStr"] },
+                    " . __pg_str(",
                     {
                       "emit": "item"
                     },
@@ -998,6 +1196,19 @@
     "Binary": {
       "case": {
         "when": [
+          [
+            {
+              "and": [
+                { "or": [ { "eq": [ "node.op", "==" ] }, { "eq": [ "node.op", "!=" ] } ] },
+                { "eq": [ "node.lhsIsUnion", "true" ] }
+              ]
+            },
+            { "tmpl": [
+              { "fn": "require", "args": ["pgUeq"] },
+              { "case": { "when": [ [ { "eq": [ "node.op", "!=" ] }, "!" ] ] } },
+              "__pg_ueq(", { "emit": "node.lhs" }, ", ", { "emit": "node.rhs" }, ")"
+            ] }
+          ],
           [
             {
               "and": [
@@ -1166,6 +1377,10 @@
                 }
               ]
             }
+          ],
+          [
+            { "and": [ { "eq": ["node.typeIsFloat", "true"] }, { "eq": ["node.op", "/"] } ] },
+            { "tmpl": [ "fdiv(", { "emit": "node.lhs" }, ", ", { "emit": "node.rhs" }, ")" ] }
           ],
           [
             {
@@ -1459,7 +1674,10 @@
                                           "tmpl": [
                                             " && $__e instanceof ",
                                             {
-                                              "type": "item.type"
+                                              "case": {
+                                                "when": [[{ "eq": ["item.typeName", "Error"] }, "\\Throwable"]],
+                                                "else": { "type": "item.type" }
+                                              }
                                             }
                                           ]
                                         }
@@ -1585,6 +1803,15 @@
                             [
                               {
                                 "eq": [
+                                  "item.typeName",
+                                  "Error"
+                                ]
+                              },
+                              "\\Throwable"
+                            ],
+                            [
+                              {
+                                "eq": [
                                   "item.hasType",
                                   "true"
                                 ]
@@ -1593,7 +1820,8 @@
                                 "type": "item.type"
                               }
                             ]
-                          ]
+                          ],
+                          "else": "\\Throwable"
                         }
                       },
                       " $__e)"
@@ -1669,8 +1897,9 @@
       "tmpl": [
         "[\"tag\" => ",
         {
-          "fn": "escapeString",
+          "fn": "quoted",
           "args": [
+            "string",
             {
               "get": "node.caseName"
             }
@@ -1683,8 +1912,9 @@
             "tmpl": [
               ", ",
               {
-                "fn": "escapeString",
+                "fn": "quoted",
                 "args": [
+                  "string",
                   {
                     "get": "item.name"
                   }
@@ -1875,8 +2105,9 @@
                     "tmpl": [
                       "$_m[",
                       {
-                        "fn": "escapeString",
+                        "fn": "quoted",
                         "args": [
+                          "string",
                           {
                             "get": "item.field"
                           }
@@ -2030,8 +2261,9 @@
                     "tmpl": [
                       "$_m[",
                       {
-                        "fn": "escapeString",
+                        "fn": "quoted",
                         "args": [
+                          "string",
                           {
                             "get": "item.field"
                           }
@@ -2069,6 +2301,10 @@
             }
           ],
           [
+            { "eq": ["item.pattern.isNullLiteral", "true"] },
+            { "tmpl": ["$_m === null"] }
+          ],
+          [
             {
               "eq": [
                 "item.pattern.kind",
@@ -2077,7 +2313,7 @@
             },
             {
               "tmpl": [
-                "$_m == ",
+                "$_m === ",
                 {
                   "emit": "item.pattern.literal"
                 }
@@ -2093,7 +2329,7 @@
             },
             {
               "tmpl": [
-                "$_m == ",
+                "$_m === ",
                 {
                   "get": "item.pattern.enumType"
                 },
@@ -2113,10 +2349,11 @@
             },
             {
               "tmpl": [
-                "$_m[\"tag\"] == ",
+                "$_m[\"tag\"] === ",
                 {
-                  "fn": "escapeString",
+                  "fn": "quoted",
                   "args": [
+                    "string",
                     {
                       "get": "item.pattern.ctorCase"
                     }
@@ -2139,8 +2376,9 @@
                             "tmpl": [
                               " && $_m[",
                               {
-                                "fn": "escapeString",
+                                "fn": "quoted",
                                 "args": [
+                                  "string",
                                   {
                                     "get": "item.field"
                                   }
@@ -2220,7 +2458,7 @@
           "tmpl": [
             "interface ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -2350,13 +2588,26 @@
           ]
         ],
         "else": {
-          "fn": "ident",
+          "fn": "identType",
           "args": [
             {
               "get": "type.name"
             }
           ]
         }
+      }
+    },
+    "rangeEndDecl": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "false" ] },
+                    { "tmpl": [ ", $", { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] }, " = ", { "emit": "stmt.rangeEnd" } ] } ] ],
+        "else": ""
+      }
+    },
+    "rangeEndRead": {
+      "case": {
+        "when": [ [ { "eq": [ "stmt.rangeEndSimple", "true" ] }, { "emit": "stmt.rangeEnd" } ] ],
+        "else": { "tmpl": [ "$", { "fn": "ident", "args": [ { "get": "stmt.rangeEndTemp" } ] } ] }
       }
     },
     "ForStmt": {
@@ -2386,7 +2637,20 @@
                     {
                       "emit": "stmt.rangeStart"
                     },
-                    "; $",
+                    { "call": "rangeEndDecl" },
+                    "; ",
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            { "and": [ { "eq": [ "stmt.inclusiveMayWrap", "true" ] }, { "eq": [ "stmt.rangeIs64", "true" ] } ] },
+                            { "tmpl": [ "\\is_int($", { "fn": "ident", "args": [ { "get": "stmt.binding" } ] }, ") && " ] }
+                          ]
+                        ],
+                        "else": ""
+                      }
+                    },
+                    "$",
                     {
                       "fn": "ident",
                       "args": [
@@ -2411,9 +2675,7 @@
                         "else": " < "
                       }
                     },
-                    {
-                      "emit": "stmt.rangeEnd"
-                    },
+                    { "call": "rangeEndRead" },
                     "; $",
                     {
                       "fn": "ident",
@@ -2573,7 +2835,7 @@
                   "fn": "identFn",
                   "args": [
                     {
-                      "get": "decl.emitName"
+                      "get": "decl.uniqueName"
                     }
                   ]
                 }
@@ -2677,12 +2939,12 @@
               "block": {
                 "head": {
                   "tmpl": [
-                    "if (!function_exists('",
+                    "if (!function_exists(__NAMESPACE__.'\\\\",
                     {
                       "fn": "ident",
                       "args": [
                         {
-                          "get": "decl.emitName"
+                          "get": "decl.uniqueName"
                         }
                       ]
                     },
@@ -2759,7 +3021,9 @@
         ")"
       ]
     },
-    "MethodDecl": {
+    "MethodDecl": { "case": { "when": [
+      [ { "eq": [ "decl.isAbstract", "true" ] }, { "line": { "tmpl": [ "abstract ", { "call": "phpMethodSig" }, ";" ] } } ]
+    ], "else": {
       "block": {
         "head": {
           "call": "phpMethodSig"
@@ -2798,14 +3062,14 @@
           }
         ]
       }
-    },
+    } } },
     "EnumDecl": {
       "block": {
         "head": {
           "tmpl": [
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -2847,7 +3111,7 @@
           "tmpl": [
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3036,12 +3300,15 @@
       }
     },
     "ClassDecl": {
+      "seq": [
+      {
       "block": {
         "head": {
           "tmpl": [
+            { "case": { "when": [ [ { "eq": [ "decl.isAbstract", "true" ] }, "abstract " ] ] } },
             "class ",
             {
-              "fn": "ident",
+              "fn": "identType",
               "args": [
                 {
                   "get": "decl.name"
@@ -3121,6 +3388,12 @@
                               "item.isMutable",
                               "false"
                             ]
+                          },
+                          {
+                            "eq": [
+                              "item.initIsLiteral",
+                              "true"
+                            ]
                           }
                         ]
                       },
@@ -3188,6 +3461,12 @@
                                       "item.isStatic",
                                       "true"
                                     ]
+                                  },
+                                  {
+                                    "eq": [
+                                      "item.initIsLiteral",
+                                      "true"
+                                    ]
                                   }
                                 ]
                               },
@@ -3241,19 +3520,9 @@
                             "when": [
                               [
                                 {
-                                  "and": [
-                                    {
-                                      "eq": [
-                                        "decl.hasSuper",
-                                        "true"
-                                      ]
-                                    },
-                                    {
-                                      "eq": [
-                                        "decl.baseHasInit",
-                                        "true"
-                                      ]
-                                    }
+                                  "eq": [
+                                    "decl.baseHasInit",
+                                    "true"
                                   ]
                                 },
                                 {
@@ -3314,11 +3583,49 @@
           }
         ]
       }
+      },
+      {
+        "mapDecl": "decl.staticInitFields",
+        "each": {
+          "case": {
+            "when": [
+              [
+                { "eq": ["item.initIsLiteral", "false"] },
+                { "line": { "tmpl": [
+                  { "fn": "identType", "args": [ { "get": "decl.name" } ] },
+                  "::$",
+                  { "fn": "ident", "args": [ { "get": "item.name" } ] },
+                  " = ",
+                  { "emit": "item.init" },
+                  ";"
+                ] } }
+              ]
+            ]
+          }
+        }
+      }
+      ]
     },
     "Program": {
       "seq": [
         {
           "line": "<?php"
+        },
+        {
+          "line": "// <auto-generated/>"
+        },
+        {
+          "line": "// Generated by Polyglot. Do not edit: regenerate with `polyglot build`."
+        },
+        {
+          "case": {
+            "when": [
+              [
+                { "not": { "eq": ["option.namespace", ""] } },
+                { "line": { "tmpl": ["namespace ", { "get": "option.namespace" }, ";"] } }
+              ]
+            ]
+          }
         },
         {
           "case": {
@@ -3356,66 +3663,56 @@
           }
         },
         {
-          "mapMembers": "module.enums",
-          "rule": "EnumDecl"
+          "fn": "preludeSlot"
         },
         {
-          "mapMembers": "module.records",
-          "rule": "RecordDecl"
-        },
-        {
-          "mapMembers": "module.interfaces",
-          "rule": "InterfaceDecl"
-        },
-        {
-          "mapMembers": "module.classes",
-          "rule": "ClassDecl"
-        },
-        {
-          "mapDecl": "module.globals",
-          "each": {
-            "line": {
-              "tmpl": [
-                "$",
-                {
-                  "fn": "ident",
-                  "args": [
+          "mapOrder": "module.order",
+          "kinds": {
+            "enum": { "rule": "EnumDecl" },
+            "interface": { "rule": "InterfaceDecl" },
+            "union": { "rule": "UnionDecl" },
+            "record": { "rule": "RecordDecl" },
+            "function": { "rule": "FunctionDecl" },
+            "extension": { "rule": "FunctionDecl" },
+            "class": { "rule": "ClassDecl" },
+            "global": {
+              "each": {
+                "line": {
+                  "tmpl": [
+                    "$",
                     {
-                      "get": "item.name"
-                    }
-                  ]
-                },
-                " = ",
-                {
-                  "case": {
-                    "when": [
-                      [
+                      "fn": "ident",
+                      "args": [
                         {
-                          "eq": [
-                            "item.hasInit",
-                            "true"
-                          ]
-                        },
-                        {
-                          "emit": "item.init"
+                          "get": "item.name"
                         }
                       ]
-                    ],
-                    "else": "null"
-                  }
-                },
-                ";"
-              ]
+                    },
+                    " = ",
+                    {
+                      "case": {
+                        "when": [
+                          [
+                            {
+                              "eq": [
+                                "item.hasInit",
+                                "true"
+                              ]
+                            },
+                            {
+                              "emit": "item.init"
+                            }
+                          ]
+                        ],
+                        "else": "null"
+                      }
+                    },
+                    ";"
+                  ]
+                }
+              }
             }
           }
-        },
-        {
-          "mapMembers": "module.functions",
-          "rule": "FunctionDecl"
-        },
-        {
-          "mapMembers": "module.extensions",
-          "rule": "FunctionDecl"
         },
         {
           "case": {
@@ -3449,5 +3746,6 @@
       ]
     }
   },
-  "fileExtension": ".php"
+  "fileExtension": ".php",
+  "lineComment": "//"
 }

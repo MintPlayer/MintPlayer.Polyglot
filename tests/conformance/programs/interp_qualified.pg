@@ -1,0 +1,22 @@
+// P40 A3 + A6 — interpolation holes that are more than a name: qualified std calls, parse calls, an
+// if-expression (C#'s ?: — a top-level ':' would start a format specifier, so the C# hole is parenthesized),
+// a string literal containing ':', and nested interpolation. Every hole renders by the one rule.
+
+import "std.math"
+import "std.strings"
+
+fn main() {
+  let n = 5
+  let c = true
+  print("sqrt=${Math.sqrt(2.0)} pi=${Math.PI}")       // sqrt=1.4142135623730951 pi=3.141592653589793
+  print("i=${"42".toI32()} p=${i32.parse("7")}")      // i=42 p=7
+  print("c=${if c { "yes" } else { "no" }}")          // c=yes
+  print("k=${if c { 1 } else { 2 }}")                 // k=1
+  print("f=${if c { 1.5 } else { 2.5 }}")             // f=1.5
+  print("lit=${"a:b"}")                               // lit=a:b
+  print("nested=${"in ${n}"}")                        // nested=in 5
+  print("deep=${"x${"y${n}"}"}")                      // deep=xy5
+  print("ch=${'x'}")                                  // ch=x
+  print("max=${Math.max(3, 4)} abs=${Math.abs(-2.5)}") // max=4 abs=2.5
+  print("up=${"ab:cd".toUpperAscii()}")               // up=AB:CD
+}

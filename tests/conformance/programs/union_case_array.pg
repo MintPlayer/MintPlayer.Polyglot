@@ -1,0 +1,30 @@
+// P40 B2 (D10) regression — bare union-case construction in an UNANNOTATED array. TS used to emit
+// `{ tag: "Circle", … }`, whose tag widens to `string` in an inferred array, so passing the array to a
+// `List<Shape>` parameter failed tsc (TS2345) under the library gate. The tag is now `"Circle" as const`.
+
+import "std.collections"
+
+union Shape {
+  Circle(r: f64)
+  Square(side: f64)
+}
+
+fn area(sh: Shape): f64 => match sh {
+  Circle(r) => 3.0 * r * r,
+  Square(side) => side * side,
+}
+
+fn total(shapes: List<Shape>): f64 {
+  var sum = 0.0
+  for sh in shapes {
+    sum = sum + area(sh)
+  }
+  return sum
+}
+
+fn main() {
+  let shapes = [Circle(1.0), Square(2.0), Circle(0.5)]
+  print(total(shapes))   // 7.75
+  let one = Square(3.0)
+  print(area(one))       // 9
+}

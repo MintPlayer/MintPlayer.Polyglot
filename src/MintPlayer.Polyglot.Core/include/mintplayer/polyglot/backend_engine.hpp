@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -38,6 +39,12 @@ public:
     // Mint a fresh single-eval temporary name from the emitter's counter (a `{"fresh":…}` rule calls this
     // once, then exposes the name to its body under the declared alias). "" when the context has no counter.
     virtual std::string freshName(const std::string& /*prefix*/) const { return ""; }
+    // `{"fn":"require","args":[<key>]}` — record that the emitted file needs the manifest prelude `<key>`. P40
+    // review r6 #10: the interpreter handles `require` ITSELF (evalRule) and hands the key here, so every
+    // context — expression, statement, declaration, method, class, module, type, and the wrappers around them —
+    // records it through this one path (a decl context's own builtin() used to drop it: Python's
+    // `@builtins.staticmethod` emitted with no `import builtins`). Default: nowhere to record (a test mock).
+    virtual void requirePrelude(const std::string& /*key*/) const {}
     // Recurse into a child IR node at `path`, emitting it. `side` selects precedence parenthesization computed
     // by the CONTEXT (not the plugin): "" = plain, "l"/"r" = a binary operand (wrap by precedence+associativity),
     // "recv" = an atom receiver (wrap a binary/unary/cast). Keeping the paren algorithm in the context (fixed
@@ -67,13 +74,13 @@ struct Test {
 struct Rule {
     enum class Kind {
         Lit, Tmpl, Get, Fn, Case, Emit, Map, Interleave, Fold, Call, Type, Fresh, // string flavor
-        Line, Block, MapDecl, Stmts, Seq, MapMembers, Indent,                     // decl flavor
+        Line, Block, MapDecl, Stmts, Seq, MapMembers, Indent, MapOrder,           // decl flavor
     } kind = Kind::Lit;
     std::string s;          // Lit: text | Get/Emit/Map/Fold/Type/MapDecl/Stmts/MapMembers: path | Fn/Call: name | Interleave: lits | Fresh: prefix
     std::string s2;                             // Interleave: holes path | MapMembers: decl rule per member | Fresh: alias
     std::string side;                           // Emit/Map: precedence side ("" / "l" / "r" / "recv")
     std::string sep;                            // Map: separator between rendered children
-    std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps
+    std::vector<Rule> parts;   // Tmpl: parts | Fn: args | Map/MapDecl: item | Interleave/Fold: 2 | Line: 1 | Block: head+body | Seq: steps | MapOrder: one per kind (a MapMembers {s: kind, s2: rule} or a MapDecl {s: kind, parts[0]: each})
     std::vector<std::pair<Test, Rule>> arms;    // Case: [test, body] pairs, first match wins
     std::vector<Rule> elseBody;                 // Case: 0-or-1 else rule
     // Arm-coverage provenance — see the identical fields on `Test`.
@@ -103,6 +110,7 @@ public:
     std::string renderType(const std::string& p) const override { return base_.renderType(redirect(p)); }
     std::string resolvePath(const std::string& p) const override { return base_.resolvePath(redirect(p)); }
     std::string freshName(const std::string& p) const override { return base_.freshName(p); }
+    void requirePrelude(const std::string& k) const override { base_.requirePrelude(k); }
     std::string redirect(const std::string& p) const {
         if (p == "item") return prefix_;
         if (p.rfind("item.", 0) == 0) return prefix_ + p.substr(4); // "item.value" -> "<prefix>.value"
@@ -152,5 +160,27 @@ TraceSink* traceSink();
 // an arm that is never evaluated is reported uncovered rather than quietly missing from the total.
 void indexRule(Rule& r, int srcId, std::vector<std::size_t>& offsets);
 void indexTest(Test& t, int srcId, std::vector<std::size_t>& offsets);
+
+// --- Target options (P40 B1) ------------------------------------------------------------------------
+//
+// A rule reads a plugin-declared target option as `option.<name>` — through `{"get":…}` and the `eq`/`has`
+// tests — in EVERY rule context (module, declaration, member, expression, type). The emitter installs the
+// module's resolved option map for the duration of one emit; the interpreter answers `option.` paths from
+// it before consulting the context, so no context class needs to know options exist. Thread-local, so two
+// emits on two threads never see each other's options. Unset (no emit in progress) = every option reads "".
+using OptionMap = std::map<std::string, std::string>;
+class ActiveOptionsScope {
+public:
+    explicit ActiveOptionsScope(const OptionMap* opts);
+    ~ActiveOptionsScope();
+    ActiveOptionsScope(const ActiveOptionsScope&) = delete;
+    ActiveOptionsScope& operator=(const ActiveOptionsScope&) = delete;
+
+private:
+    const OptionMap* prev_;
+};
+
+// The `option.` prefix every option path carries (the loader validates each referenced name is declared).
+inline constexpr const char* kOptionPathPrefix = "option.";
 
 } // namespace mintplayer::polyglot::engine

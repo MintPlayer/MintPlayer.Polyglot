@@ -11,14 +11,21 @@
 #   1. emits TS (`--lib io --target typescript`),
 #   2. asserts every top-level declaration is `export`ed (regression guard for the dropped-export bug),
 #   3. writes a sibling consumer that imports the emitted module, and
-#   4. type-checks the whole set in ONE tsc pass under strict / isolatedModules (+ the flags a modern
-#      bundler applies), so a type error in any emitted module — not just a missing export — fails the gate.
+#   4. type-checks the whole set in ONE tsc pass under the Angular CLI library flag set (strict,
+#      noImplicitOverride, noPropertyAccessFromIndexSignature, noImplicitReturns, noFallthroughCasesInSwitch,
+#      isolatedModules, declaration + emitDeclarationOnly, ES2022 target and lib — P40 D10), so a type error or
+#      an undeclarable export in any emitted module — not just a missing export — fails the gate;
+#   5. re-checks every io-free program under MintPlayer.Spark's ng-spark tsconfig.lib.json flags VERBATIM
+#      (importHelpers, module ES2022, lib ["ES2022","DOM"], declaration + source maps, NO `process` shim — the DOM
+#      leg: pins D10 to the consumer's real flag set, and proves unreached std-io code is not emitted — P40 §0).
+# Plus (P40 B2): docs/lang/samples, and an Angular-style `public-api.ts` barrel (`export *`) over the dedicated
+# two-module library in tests/library/barrel — module-local prelude copies must not collide through it.
 #
 # The C# side of "can this be consumed?" is covered by run-nullable.ps1 (emitted C# compiles clean under
 # <Nullable>enable</> + <TreatWarningsAsErrors>). Together they gate both targets as libraries, not scripts.
 #
 # Type-checking is hermetic (no @types/node / network): a tiny env.d.ts declares exactly the Node runtime
-# surface the emitted std bindings touch (console, process). Needs `tsc` on PATH (TypeScript >= 5).
+# surface the emitted std bindings touch (console, process). Uses the repo-local TypeScript pinned in package.json.
 #
 # -Staged <dir> (P35 slice 3): consume the PRISTINE .ts already emitted by run-conformance.ps1 (one subdir
 # per program) instead of re-transpiling every program here — the conformance runner and this gate then share
@@ -27,9 +34,17 @@
 # Usage:  pwsh tests/library/run-library.ps1   (build the solution first; see CLAUDE.md)
 #         pwsh tests/library/run-library.ps1 -Staged <library-staging-dir>
 
+#
+# P40 B1 (issue #73): a multi-library case — two PHP libraries defining the SAME function names, each in its
+# own namespace (set per pgconfig `include` rule via `targetOptions.php.namespace`), loaded by one consumer.
+# Without namespaces PHP fails with "Cannot redeclare". -MultiLibraryOnly runs just that case. (The C#
+# two-assembly case lives in tests/msbuild/run-nuget.ps1, fixture 9, because it needs the MSBuild package.)
+
 param(
     [string]$Cli = "$PSScriptRoot\..\..\x64\Debug\MintPlayer.Polyglot.Cli.exe",
-    [string]$Staged = ""
+    [string]$Staged = "",
+    [switch]$MultiLibraryOnly,
+    [switch]$InstallTypeScript   # run `npm ci` when the pinned TypeScript is missing (default: fail with the remedy)
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,56 +58,173 @@ if ($Staged -and -not (Test-Path $Staged)) {
     Write-Host "staging dir not found at $Staged — run run-conformance.ps1 -StagingOut <dir> first."
     exit 2
 }
-if (-not (Get-Command tsc -ErrorAction SilentlyContinue)) {
-    Write-Host "tsc (TypeScript compiler) not found on PATH — install with 'npm i -g typescript'."
-    exit 2
+
+# The TypeScript compiler is the REPO-LOCAL one pinned in package.json (devDependencies.typescript, locked in
+# package-lock.json) — never whatever `tsc` is on PATH, whose version drifts per machine (a global TS 5 passed
+# code TS 6 rejects: P40 review A1). Missing or not the pinned version -> fail with the remedy (`npm ci`), unless
+# -InstallTypeScript / POLYGLOT_LIBRARY_NPM_CI=1 opts in to running it here.
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$tscJs = Join-Path $repoRoot "node_modules\typescript\bin\tsc"
+function Get-PinnedTypeScript {
+    (Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json).devDependencies.typescript
 }
+function Get-InstalledTypeScript {
+    $pj = Join-Path $repoRoot "node_modules\typescript\package.json"
+    if (Test-Path $pj) { (Get-Content $pj -Raw | ConvertFrom-Json).version } else { $null }
+}
+if (-not $MultiLibraryOnly) {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Host "node not found on PATH — the library gate runs the repo-local TypeScript compiler under node."
+        exit 2
+    }
+    # The gate never installs on its own by default (review r3): `npm ci` deletes and rewrites node_modules, which
+    # fails with EPERM while an nx daemon (or an editor's TS server) holds files there, and a test leg should not
+    # mutate the checkout. Install on request only: -InstallTypeScript or POLYGLOT_LIBRARY_NPM_CI=1.
+    $pinned = Get-PinnedTypeScript
+    if ((Get-InstalledTypeScript) -cne $pinned) {
+        if (-not ($InstallTypeScript -or $env:POLYGLOT_LIBRARY_NPM_CI -eq '1')) {
+            $have = Get-InstalledTypeScript
+            Write-Host "TypeScript $pinned (package.json) is required, but node_modules has $(if ($have) { $have } else { 'none' })."
+            Write-Host "Run 'npm ci' at the repo root (stop the nx daemon first: 'npx nx daemon --stop'), or rerun this"
+            Write-Host "gate with -InstallTypeScript / POLYGLOT_LIBRARY_NPM_CI=1 to let it run 'npm ci' itself."
+            exit 2
+        }
+        Write-Host "==> TypeScript $pinned (package.json) is not installed in node_modules — running 'npm ci' (opted in)"
+        Push-Location $repoRoot
+        try { & npm ci --no-audit --no-fund 2>&1 | Out-Host; $npmExit = $LASTEXITCODE } finally { Pop-Location }
+        if ($npmExit -ne 0 -or (Get-InstalledTypeScript) -cne $pinned) {
+            Write-Host "npm ci failed or did not install TypeScript $pinned — run 'npm ci' at the repo root."
+            exit 2
+        }
+    }
+    Write-Host "==> tsc: repo-local TypeScript $(Get-InstalledTypeScript) (node_modules)"
+}
+function Invoke-Tsc { & node $tscJs @args }
 
 $progDir = Join-Path $PSScriptRoot "..\conformance\programs"
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "polyglot-library"
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
 
-# Hermetic ambient env: exactly what the emitted std runtime surface references (see std overlays in the
-# typescript plugin). Keeps the type-check offline and independent of an installed @types/node version.
+# Hermetic ambient env for the NODE leg: exactly what the emitted std runtime surface references (see std
+# overlays in the typescript plugin). Keeps the type-check offline and independent of an installed @types/node.
+# `process` is a `var`, as @types/node declares it (`declare global { var process: NodeJS.Process }`): the file I/O
+# helpers reach it as `globalThis.process` so a user `fn process` cannot shadow it (P40 review r5 #16).
 @'
 declare const console: { log(...args: any[]): void };
-declare const process: { getBuiltinModule(id: string): any };
+declare var process: { getBuiltinModule(id: string): any };
 '@ | Set-Content (Join-Path $work "env.d.ts")
 
-# The flags a strict, modern (bundler-resolved, ESM) consumer applies. `allowImportingTsExtensions` lets a
-# consumer import "./prog.ts" by its real name without an emit step.
-@'
-{
-  "compilerOptions": {
-    "strict": true,
-    "isolatedModules": true,
-    "noImplicitReturns": true,
-    "noImplicitOverride": true,
-    "target": "ES2022",
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "types": []
-  },
-  "include": ["**/*.ts"]
+# P40 B2 / D10: the Angular CLI LIBRARY flag set (what `ng new --strict` + ng-packagr apply), with declaration
+# emit ON (`emitDeclarationOnly` into a scratch outDir) instead of `noEmit` — a library must also produce a
+# clean .d.ts, which catches an exported signature naming something the module cannot describe.
+function Write-TsConfig([string]$path, [string[]]$lib, [string[]]$include, [string]$outDir) {
+    $cfg = [ordered]@{
+        compilerOptions = [ordered]@{
+            strict = $true
+            noImplicitOverride = $true
+            noPropertyAccessFromIndexSignature = $true
+            noImplicitReturns = $true
+            noFallthroughCasesInSwitch = $true
+            isolatedModules = $true
+            declaration = $true
+            emitDeclarationOnly = $true
+            outDir = $outDir
+            target = "ES2022"
+            lib = $lib
+            module = "esnext"
+            moduleResolution = "bundler"
+            skipLibCheck = $true
+            types = @()
+        }
+        include = $include
+        exclude = @("_dts-*/**")
+    }
+    $cfg | ConvertTo-Json -Depth 5 | Set-Content $path
 }
-'@ | Set-Content (Join-Path $work "tsconfig.json")
+
+# P40 review (A2): the DOM leg is Spark's flag set VERBATIM — the compilerOptions of MintPlayer.Spark's
+# libs/node_packages/ng-spark/tsconfig.lib.json, the library the TS twin is compiled into by ng-packagr (its
+# tsconfig.base.json adds only `paths`). Nothing is added, dropped or changed except `outDir` (a scratch dir), so
+# D10 is pinned to what the consumer actually runs: importHelpers, module ES2022, lib ["ES2022","DOM"], full JS
+# + declaration + source-map emit. Keep it in sync with that file; the node leg above stays the hermetic variant
+# (lib ES2022 + the env.d.ts Node shim) for the programs that use std io.
+function Write-SparkTsConfig([string]$path, [string[]]$include, [string]$outDir) {
+    $cfg = [ordered]@{
+        compilerOptions = [ordered]@{
+            strict = $true
+            noImplicitOverride = $true
+            noPropertyAccessFromIndexSignature = $true
+            noImplicitReturns = $true
+            noFallthroughCasesInSwitch = $true
+            skipLibCheck = $true
+            isolatedModules = $true
+            experimentalDecorators = $true
+            importHelpers = $true
+            target = "ES2022"
+            module = "ES2022"
+            moduleResolution = "bundler"
+            declaration = $true
+            sourceMap = $true
+            inlineSources = $true
+            outDir = $outDir
+            lib = @("ES2022", "DOM")
+            types = @()
+        }
+        include = $include
+        exclude = @("_dts-*/**")
+    }
+    $cfg | ConvertTo-Json -Depth 5 | Set-Content $path
+}
 
 $fail = 0
 function Fail($msg) { Write-Host "[FAIL] $msg"; $script:fail++ }
 
+# The DOM leg (P40 B2): programs whose sources never touch the std file API are ALSO type-checked under
+# lib ["ES2022","dom"] with NO `process` shim. Before §0 reachability every file failed 5x with TS2591 because the
+# unreached std-io functions were emitted anyway; this leg proves they no longer are. Collected during staging.
+$ioPattern = '\b(readText|writeText|appendText|fileExists|deleteFile)\b'
+$domDirs = [System.Collections.Generic.List[string]]::new()
+function Register-DomLeg($dirName, $pgSources) {
+    foreach ($src in $pgSources) { if (Select-String -Path $src -Pattern $ioPattern -Quiet) { return } }
+    if (-not $script:domDirs.Contains($dirName)) { $script:domDirs.Add($dirName) }
+}
+
+# The .pg sources behind a conformance program (single file or a multi-file dir).
+function Get-ProgramSources($name) {
+    $single = Join-Path $progDir "$name.pg"
+    if (Test-Path $single) { return @($single) }
+    if (Test-Path (Join-Path $progDir $name)) { return @(Get-ChildItem (Join-Path $progDir $name) -Filter *.pg -Recurse | ForEach-Object FullName) }
+    return @()
+}
+
 # Assert the emitted entry .ts in $dir is a consumable, all-exported module, and drop a consumer next to it.
 # Shared by both the self-emitting and the -Staged paths (the assertion is on the .ts, not on how it got there).
-function Assert-Consumable($name, $stem, $dir) {
+# $pgSources: the .pg files whose top-level names must come out exported (default: the conformance program's).
+function Assert-Consumable($name, $stem, $dir, $pgSources = $null) {
     $ts = Join-Path $dir "$stem.ts"
     if (-not (Test-Path $ts)) { Fail "$name (no $stem.ts emitted)"; return }
 
-    # Regression guard: any top-level declaration (column 0) that is NOT `export`ed is a dropped export.
-    $unexported = Select-String -Path $ts -Pattern '^(abstract class|class|function|async function|function\*|interface|type|const|let|enum|namespace) '
-    if ($unexported) {
+    # P40 A2 grep gate: the lowering poison must never reach emitted code.
+    $poison = @(Get-ChildItem $dir -Filter *.ts | Select-String -SimpleMatch '__polyglot_unlowered_expr__' -List)
+    if ($poison.Count -gt 0) {
+        Fail "$name : emitted output contains __polyglot_unlowered_expr__ ($(($poison | ForEach-Object { Split-Path $_.Path -Leaf }) -join ', '))"
+        return
+    }
+
+    # Regression guard: a USER top-level declaration (column 0) that is NOT `export`ed is a dropped export.
+    # P40 §0/D10: prelude declarations (Option, print, the `__pgNullAssert` helper, …) are deliberately
+    # module-local, so only names the program's own .pg sources declare are held to the rule.
+    if ($null -eq $pgSources) { $pgSources = Get-ProgramSources $name }
+    $userNames = @{}
+    foreach ($src in $pgSources) {
+        foreach ($m in Select-String -Path $src -Pattern '^(?:export\s+)?(?:(?:open|abstract|sealed|async|extern)\s+)*(?:fn|class|record|enum|union|interface|let|const|var)\s+([A-Za-z_]\w*)') {
+            $userNames[$m.Matches[0].Groups[1].Value] = $true
+        }
+    }
+    $unexported = @(Select-String -Path $ts -Pattern '^(?:abstract class|class|function\*?|async function|interface|type|const|let|enum|namespace)\s+([A-Za-z_$][\w$]*)' |
+        Where-Object { $userNames.ContainsKey($_.Matches[0].Groups[1].Value) })
+    if ($unexported.Count -gt 0) {
         Fail "$name : top-level declaration(s) not exported: $($unexported[0].Line.Trim())"
         return
     }
@@ -104,11 +236,56 @@ function Assert-Consumable($name, $stem, $dir) {
     # Consume it: a sibling module that imports the emitted one. If the module weren't importable this
     # would not type-check. `void m` references the namespace so it isn't an unused import.
     @"
-import * as m from "./$stem.ts";
+import * as m from "./$stem";
 void m;
 "@ | Set-Content (Join-Path $dir "_consumer.ts")
 
+    Register-DomLeg (Split-Path $dir -Leaf) $pgSources
     Write-Host "[stage] $name"
+}
+
+# P40 B2: docs/lang/samples join the gate (self-emitted; prefixed dirs so a sample can't shadow a program).
+function Stage-Samples {
+    $sampleDir = Join-Path $PSScriptRoot "..\..\docs\lang\samples"
+    foreach ($pg in Get-ChildItem $sampleDir -Filter *.pg | Sort-Object Name) {
+        $dir = Join-Path $work ("sample_" + $pg.BaseName)
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        & $Cli build $pg.FullName --lib io --target typescript --out $dir *> $null
+        if ($LASTEXITCODE -ne 0) { Fail "sample $($pg.Name) (transpile failed)"; continue }
+        Assert-Consumable ("sample " + $pg.BaseName) $pg.BaseName $dir @($pg.FullName)
+    }
+}
+
+# P40 B2: the TS barrel over a DEDICATED multi-module library (tests/library/barrel) — not over the conformance
+# programs, which nearly all export `main` and would collide on user names regardless. Each module reaches the
+# same prelude items (Option, print, the null-assert helper); those stay module-local (D10), so an Angular-style
+# public-api.ts doing `export *` of both modules must type-check. A leaked prelude export fails with TS2308.
+function Stage-Barrel {
+    $src = Join-Path $work "_barrel_src"
+    Copy-Item -Recurse (Join-Path $PSScriptRoot "barrel") $src
+    Push-Location $src
+    try { & $Cli build *> (Join-Path $src "build.log") } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { Fail "barrel: polyglot build failed (see $src\build.log)"; return }
+    $dir = Join-Path $work "barrel"
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $mods = @(Get-ChildItem (Join-Path $src "out") -Filter *.ts | Sort-Object Name)
+    if ($mods.Count -ne 2) { Fail "barrel: expected 2 emitted modules, got $($mods.Count)"; return }
+    foreach ($m in $mods) {
+        Copy-Item $m.FullName $dir
+        $pg = Join-Path $src "$($m.BaseName).pg"
+        Assert-Consumable ("barrel " + $m.BaseName) $m.BaseName $dir @($pg)
+    }
+    # The barrel itself, and a consumer importing NAMED symbols from both modules through it.
+    ($mods | ForEach-Object { "export * from `"./$($_.BaseName)`";" }) -join "`n" | Set-Content (Join-Path $dir "public-api.ts")
+    @'
+import { shapes, area, total, largest, Slot, Cell } from "./public-api";
+import type { Shape } from "./public-api";
+const xs: Shape[] = [...shapes(), { tag: "Circle", r: 2 }];
+const sum: number = total(xs) + area(xs[0]!) + largest([1, 2]);
+const s = new Slot<string>("a", true);
+const c = new Cell<number>(sum, true);
+void s.peek(); void c.get();
+'@ | Set-Content (Join-Path $dir "_barrel_consumer.ts")
 }
 
 # Self-emit one program's TS into $work, then assert it. $stem is the emitted entry basename.
@@ -120,6 +297,59 @@ function Stage-Program($name, $stem, $cliArgs) {
     if ($LASTEXITCODE -ne 0) { Fail "$name (transpile failed)"; return }
 
     Assert-Consumable $name $stem $dir
+}
+
+# P40 B1: two PHP libraries with the same function names, namespaced per include rule, in one process.
+function Test-PhpMultiLibrary {
+    if (-not (Get-Command php -ErrorAction SilentlyContinue)) {
+        Write-Host "[SKIP] PHP multi-library case: php not on PATH"
+        return
+    }
+    $proj = Join-Path $work "_php_multilib"
+    New-Item -ItemType Directory -Force $proj | Out-Null
+    # Same names in both: a function, a record, and (through `print`) the guarded io prelude.
+    foreach ($lib in "alpha", "beta") {
+        @"
+record Tag(name: string)
+fn greet(): string => "$lib"
+fn tag(): Tag => Tag("$lib")
+fn shout() { print(greet()) }
+"@ | Set-Content (Join-Path $proj "$lib.pg")
+    }
+    @'
+{
+  "targets": ["php"],
+  "lib": ["io"],
+  "include": [
+    { "pattern": "alpha.pg", "output": "out/%(Filename)", "targetOptions": { "php": { "namespace": "Libs\\Alpha" } } },
+    { "pattern": "beta.pg",  "output": "out/%(Filename)", "targetOptions": { "php": { "namespace": "Libs\\Beta" } } }
+  ]
+}
+'@ | Set-Content (Join-Path $proj "pgconfig.json")
+    Push-Location $proj
+    try { & $Cli build *> (Join-Path $proj "build.log") } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { Fail "PHP multi-library: polyglot build failed (see $proj\build.log)"; return }
+    @'
+<?php
+require __DIR__ . '/out/alpha.php';
+require __DIR__ . '/out/beta.php';
+echo \Libs\Alpha\greet() . "+" . \Libs\Beta\greet() . "+" . \Libs\Alpha\tag()->name . "+" . \Libs\Beta\tag()->name . "\n";
+\Libs\Alpha\shout();
+\Libs\Beta\shout();
+'@ | Set-Content (Join-Path $proj "consumer.php")
+    $out = (& php (Join-Path $proj "consumer.php") 2>&1 | Out-String).Trim() -replace "`r", ""
+    if ([string]::Equals($out, "alpha+beta+alpha+beta`nalpha`nbeta", [StringComparison]::Ordinal)) {
+        Write-Host "[PASS] two PHP libraries with the same names load side by side in distinct namespaces"
+    } else {
+        Fail "PHP multi-library: unexpected output:`n$out"
+    }
+}
+
+if ($MultiLibraryOnly) {
+    Test-PhpMultiLibrary
+    if ($fail -eq 0) { Write-Host "Multi-library case green."; exit 0 }
+    Write-Host "$fail multi-library check(s) failed."
+    exit 1
 }
 
 if ($Staged) {
@@ -146,15 +376,59 @@ if ($Staged) {
     }
 }
 
-Write-Host ""
-Write-Host "==> Type-checking every emitted module + consumer under strict / isolatedModules"
-$tscOut = & tsc -p (Join-Path $work "tsconfig.json") 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) {
-    Write-Host $tscOut.Trim()
-    Fail "tsc reported errors — an emitted module is not a strict-clean, consumable library"
+# The samples and the barrel need the CLI even on the -Staged path (they are not conformance programs).
+if (Test-Path $Cli) {
+    Stage-Samples
+    Stage-Barrel
 } else {
-    Write-Host "[PASS] all emitted modules type-check clean as importable ES modules"
+    Fail "polyglot CLI not found at $Cli — the samples and the barrel case need it"
 }
+
+# P40 A4: the `!` case — null_assert.pg emits the checked `x ?? __pgNullAssert("m.pg:L:C")` form plus a
+# module-local (non-exported) `never` helper; the strict tsc pass below must accept both.
+$naTs = Join-Path (Join-Path $work "null_assert") "null_assert.ts"
+if (Test-Path $naTs) {
+    $naText = Get-Content $naTs -Raw
+    if (($naText -match '\?\? __pgNullAssert\("null_assert\.pg:\d+:\d+"\)') -and
+        ($naText -match '(?m)^function __pgNullAssert\(at: string\): never')) {
+        Write-Host "[PASS] null_assert : '!' emits the checked form with a module-local never-helper"
+    } else {
+        Fail "null_assert : '!' did not emit '?? __pgNullAssert(`"m.pg:L:C`")' with a non-exported helper"
+    }
+} else {
+    Fail "null_assert : not staged (expected $naTs)"
+}
+
+Write-Host ""
+Write-Host "==> Type-checking every emitted module + consumer under the Angular library flag set (node leg: lib ES2022 + env.d.ts)"
+Write-TsConfig (Join-Path $work "tsconfig.json") @("ES2022") @("**/*.ts") "_dts-node"
+$tscOut = Invoke-Tsc -p (Join-Path $work "tsconfig.json") 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) {
+    # Bounded: a systemic regression would print one error per module; the first 40 lines say what broke.
+    Write-Host ((($tscOut.Trim()) -split "`r?`n" | Select-Object -First 40) -join "`n")
+    Fail "tsc (node leg) reported errors — an emitted module is not a strict-clean, consumable library"
+} else {
+    Write-Host "[PASS] all emitted modules type-check clean and emit declarations (strict, noImplicitOverride, noPropertyAccessFromIndexSignature, isolatedModules, ...)"
+}
+
+Write-Host ""
+Write-Host "==> DOM leg: $($domDirs.Count) io-free program(s) under Spark's ng-spark tsconfig.lib.json flags verbatim (lib [ES2022, DOM], NO process shim)"
+if ($domDirs.Count -eq 0) {
+    Fail "DOM leg: no io-free program was staged (the leg would pass vacuously)"
+} else {
+    Write-SparkTsConfig (Join-Path $work "tsconfig.dom.json") @($domDirs | ForEach-Object { "$_/**/*.ts" }) "_dts-dom"
+    $domOut = Invoke-Tsc -p (Join-Path $work "tsconfig.dom.json") 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ((($domOut.Trim()) -split "`r?`n" | Select-Object -First 40) -join "`n")
+        Fail "tsc (DOM leg) reported errors — an io-free program still references Node-only surface (unreached std emitted?)"
+    } else {
+        Write-Host "[PASS] io-free programs type-check under the DOM lib without any Node shim (reachability holds)"
+    }
+}
+
+Write-Host ""
+Write-Host "==> Multi-library consumption (P40 B1)"
+Test-PhpMultiLibrary
 
 Write-Host ""
 if ($fail -eq 0) {

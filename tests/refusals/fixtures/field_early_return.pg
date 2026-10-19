@@ -1,0 +1,13 @@
+// REFUSED (P40 review A9): an early `return` in init leaves a field unassigned on that path.
+class Pair {
+  let a: i32
+  let b: i32
+  constructor(a: i32) {
+    this.a = a
+    if a < 0 { return }
+    this.b = a * 2
+  }
+}
+fn main() {
+  print(Pair(1).b)
+}

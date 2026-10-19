@@ -1,0 +1,37 @@
+// P40 review A6 + A1: a receiver that is not a primary expression keeps its parentheses on every target.
+// `(a ?? b).count` emitted `a ?? b.length` on TS (an empty line, not 0); `(lastOf(xs) ?? "").len()` emitted
+// C#'s `x switch {…}.Length` (CS1002). The rule: every receiver kind a target does not spell as a primary
+// expression is parenthesized (wrapAtom.recvPrimary). (A1, `m.get(k) ?? d` with no inner `?? null`, is
+// covered by map.pg and generic_members.pg under the library gate's TypeScript 6 — Map needs .NET 9.)
+
+import "std.collections"
+import "std.strings"
+
+fn lastOf<T>(xs: List<T>): T? => if xs.count > 0 { xs[xs.count - 1] } else { null }
+
+record P(x: i32)
+
+fn main() {
+  let a: List<string>? = null
+  let b = List<string>()
+  print("${(a ?? b).count}")                       // 0
+  b.add("x")
+  print((a ?? b).count)                            // 1
+
+  let xs = List<string>()
+  print((lastOf(xs) ?? "").len())                  // 0
+  xs.add("hello")
+  print((lastOf(xs) ?? "").len())                  // 5
+
+  let s: string? = null
+  print((s ?? "abc").len())                        // 3
+  print((if xs.count > 0 { "yes" } else { "no" }).len())          // 3
+  print((match xs.count { 1 => "one", _ => "many" }).len())       // 3
+  print(("a" + "bc").len())                        // 3
+  print((P(4) with { x = 9 }).x)                   // 9
+
+  // the unary-operand twin: C# emitted `-1 switch {…}`, negating the scrutinee (6, not -5)
+  let one = 1
+  print(-(match one { 1 => 5, _ => 6 }))           // -5
+  print(-(s ?? "ab").len())                        // -2
+}

@@ -1,0 +1,133 @@
+// P40 A4: `x!` is a CHECKED null-assert on every target — the value when non-null, else a throw whose
+// message names the source site (`null-assert failed (null_assert.pg:L:C)`, identical on all four
+// targets). `!` on a non-nullable operand (incl. a flow-narrowed variable) is a no-op. Covered: each
+// nullable kind null and non-null, a caught Error printing the message, assignment through `!`,
+// single evaluation (a counting call), a nested chain, null through a generic, and `opt!` on Option<T>.
+class Node {
+  var v: i32
+  var next: Node?
+  constructor(v: i32) {
+    this.v = v
+    this.next = null
+  }
+}
+
+record Labelled(label: string?, weight: f64?)
+
+class Counter {
+  var n: i32
+  constructor() { this.n = 0 }
+  fn pass(node: Node?): Node? {
+    this.n += 1
+    return node
+  }
+}
+
+fn pickIf<T>(cond: bool, v: T): T? => if cond { v } else { null }
+
+fn show<T>(x: T) { print(x) }
+
+fn intOrFail(n: i32?): string {
+  try {
+    let v = n!
+    return "int ${v}"
+  } catch (e: Error) {
+    return e.message
+  }
+}
+
+fn strOrFail(s: string?): string {
+  try {
+    return "str " + s!
+  } catch (e: Error) {
+    return e.message
+  }
+}
+
+fn boolOrFail(b: bool?): string {
+  try {
+    if b! { return "bool true" }
+    return "bool false"
+  } catch (e: Error) {
+    return e.message
+  }
+}
+
+fn nodeOrFail(n: Node?): string {
+  try {
+    return "node ${n!.v}"
+  } catch (e: Error) {
+    return e.message
+  }
+}
+
+fn optOrFail(cond: bool): string {
+  try {
+    let v = pickIf(cond, 41)!
+    return "opt ${v + 1}"
+  } catch (e: Error) {
+    return e.message
+  }
+}
+
+fn narrowed(n: i32?): i32 {
+  if n == null { return -1 }
+  return n + n! // narrowed: `n` is i32 here, and `n!` is a no-op
+}
+
+fn main() {
+  // Each nullable kind, non-null and null.
+  print(intOrFail(7))
+  print(intOrFail(null))
+  print(strOrFail("abc"))
+  print(strOrFail(null))
+  print(boolOrFail(true))
+  print(boolOrFail(null))
+  let one = Node(1)
+  print(nodeOrFail(one))
+  print(nodeOrFail(null))
+  print(optOrFail(true))
+  print(optOrFail(false))
+
+  // A nullable record field, asserted.
+  let lab = Labelled("tag", 2.5)
+  print(lab.label!)
+  print(lab.weight! * 2.0)
+
+  // Assignment through `!`, and a nested chain.
+  let head = Node(10)
+  head.next = Node(20)
+  head.next!.v += 1
+  head.next!.next = Node(30)
+  head.next!.next!.v = 31
+  print(head.next!.v)
+  print(head.next!.next!.v)
+
+  // Single evaluation: the operand is a call — it runs once per `!`.
+  let c = Counter()
+  let got = c.pass(head)!.v
+  print(got)
+  print(c.n)
+  try {
+    print(c.pass(null)!.v)
+  } catch (e: Error) {
+    print(e.message)
+  }
+  print(c.n)
+
+  // Narrowing: no assert needed after the early exit.
+  print(narrowed(5))
+  print(narrowed(null))
+  var m: i32? = 3
+  if m != null {
+    print(m * 2)
+  }
+  m = null
+  print(m ?? 9)
+
+  // Null through a generic renders as `null` on every target (the stringifier backstop).
+  let none: Node? = null
+  show(none == null)
+  let ni: i32? = null
+  show(ni)
+}

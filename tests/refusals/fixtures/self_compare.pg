@@ -1,0 +1,6 @@
+// REFUSED (P40 review B11): comparing a value with itself is constant except for NaN (C# CS1718).
+// The NaN test is Math.isNaN.
+fn isBad(v: f64): bool => v != v
+fn main() {
+  print(isBad(1.0))
+}

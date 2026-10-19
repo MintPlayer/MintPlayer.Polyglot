@@ -62,8 +62,10 @@ attr_arm       = "actual" , "(" , IDENT , ")" ,
                  ( "extern" , "(" , STRING , ")" , [ "import" , STRING ]   (* the WHOLE native line *)
                  | "refuse" ) ;
 
-(* Top-level visibility. Default is module-public; `private` confines to the
-   file. No other access levels in v0.1 (hold the surface line). *)
+(* Visibility. Default is public. No other access levels in v0.1 (hold the
+   surface line). NOT YET IMPLEMENTED AT TOP LEVEL: a top-level `private`
+   (confine a declaration to its file) is planned, and the parser refuses it
+   today — every top-level declaration is module-public (SPEC §11). *)
 visibility = [ "private" ] ;
 
 
@@ -280,7 +282,7 @@ return_statement = "return" , [ expression ] , term ;
 (* Listed loosest-binding first. Real precedence is enforced in the parser
    (P2); this layering documents the intended associativity/precedence. *)
 
-expression      = lambda_expr | if_expr | match_expr | coalesce_expr ;
+expression      = lambda_expr | if_expr | match_expr | range_expr ;
 
 (* A single untyped parameter may omit the parentheses (`x => …`); a typed, zero-, or
    multi-parameter lambda requires them (`(x: T) => …`, `() => …`, `(a, b) => …`). *)
@@ -293,6 +295,9 @@ match_expr      = "match" , expression , "{" , match_arm , { "," , match_arm } ,
                   [ "," ] , "}" ;
 match_arm       = pattern , [ "if" , expression ] , "=>" , ( expression | block ) ;
 
+(* P40 A2: a range is the LOOSEST binary form (Rust-style) and does not chain, so `0..n - 1`, `-2..2`,
+   `i + 1..n` and `0..a ?? 5` read as written. Sema accepts a range only as a `for` iterable. *)
+range_expr      = coalesce_expr , [ ( ".." | "..=" ) , coalesce_expr ] ;
 coalesce_expr   = or_expr , { "??" , or_expr } ;
 or_expr         = and_expr , { "||" , and_expr } ;
 and_expr        = equality_expr , { "&&" , equality_expr } ;
@@ -313,8 +318,7 @@ multiplicative_expr = unary_expr , { ( "*" | "/" | "%" ) , unary_expr } ;
 (* `(T)expr` is a numeric cast. v0.1 restricts T to a primitive type name, which is reserved (never a
    variable), so it is unambiguous against a parenthesized expression. *)
 cast_expr       = "(" , primitive_type , ")" , unary_expr ;
-unary_expr      = cast_expr | ( "!" | "-" | "~" ) , unary_expr | range_expr ;
-range_expr      = postfix_expr , [ ( ".." | "..=" ) , postfix_expr ] ;
+unary_expr      = cast_expr | ( "!" | "-" | "~" ) , unary_expr | postfix_expr ;
 
 postfix_expr    = primary_expr , { postfix_op } ;
 postfix_op =
@@ -388,9 +392,17 @@ FLOAT_SUFFIX = "f" | "f32" | "f64" | "d" ;             (* f/f32 = f32; d/f64 = f
 STRING_LIT    = '"' , { STRING_CHAR | ESCAPE } , '"' ;
 (* Interpolation: "...${ expr }..." — segments lower to $"" (C#) / `` (TS).    *)
 INTERP_STRING = '"' , { STRING_CHAR | ESCAPE | "${" , expression , "}" } , '"' ;
+(* A char is exactly ONE character that fits one UTF-16 code unit (<= U+FFFF); empty, multi-character
+   and astral char literals are lexer errors (SPEC §8).                                                 *)
 CHAR_LIT      = "'" , ( STRING_CHAR | ESCAPE ) , "'" ;
-ESCAPE        = "\" , ( "n" | "t" | "r" | "0" | "\" | '"' | "'"
-                      | "u{" , HEX_DIGIT , { HEX_DIGIT } , "}" ) ;
+(* The complete escape set (P40 A1). `\$` is a literal dollar (so `\${` is a literal `${`, not a hole).
+   `\u{…}` takes 1-6 hex digits, at most 10FFFF and never a surrogate (D800-DFFF). Every other backslash
+   sequence — `\q`, `\uXXXX`, `\xHH` — is a lexer error at the backslash, never a dropped backslash.     *)
+ESCAPE        = "\" , ( "n" | "t" | "r" | "0" | "\" | '"' | "'" | "$"
+                      | "u{" , HEX_DIGIT , [ HEX_DIGIT ] , [ HEX_DIGIT ] , [ HEX_DIGIT ] ,
+                               [ HEX_DIGIT ] , [ HEX_DIGIT ] , "}" ) ;
+(* STRING_CHAR: any well-formed UTF-8 character except '"', "\" and the "${" opener (CHAR_LIT: except
+   "'" and "\"); ill-formed UTF-8 in a literal is an error.                                              *)
 
 IDENT      = ( LETTER | "_" ) , { LETTER | DIGIT | "_" } ;
 LETTER     = "A".."Z" | "a".."z" ;

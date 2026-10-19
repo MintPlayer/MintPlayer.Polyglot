@@ -1,0 +1,11 @@
+union Shape {
+  Circle(r: f64)
+  Rect(w: f64, h: f64)
+}
+
+fn area(s: Shape): f64 => match s {
+  Circle(r) => 3.0 * r * r,
+  Rect(w, h) => w * h,
+}
+
+fn mk(): Shape => Rect(2.0, 3.0)

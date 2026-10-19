@@ -1,6 +1,8 @@
 #include "mintplayer/polyglot/backend.hpp"
 
+#include <map>
 #include <memory>
+#include <regex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -47,15 +49,16 @@ class LoadedBackend : public Backend {
 public:
     LoadedBackend(std::string name, std::string fileExtension, BackendSpec spec, engine::RuleTable rules,
                   std::unordered_map<std::string, std::string> capabilities,
-                  std::unordered_map<std::string, std::string> overlays, bool crossDirImports = false,
+                  std::unordered_map<std::string, StdBinding> overlays, bool crossDirImports = false,
                   OriginMapping originMapping = {}, bool sharedPreludeFile = false,
-                  bool preludePerFile = false)
+                  bool preludePerFile = false, std::vector<TargetOptionDecl> options = {},
+                  std::string lineComment = {})
         // Initialiser order follows DECLARATION order below, or g++ warns (-Wreorder).
         : crossDirImports_(crossDirImports), originMapping_(std::move(originMapping)),
           sharedPreludeFile_(sharedPreludeFile), preludePerFile_(preludePerFile),
           name_(std::move(name)), ext_(std::move(fileExtension)), spec_(std::move(spec)),
           rules_(std::move(rules)), capabilities_(std::move(capabilities)),
-          overlays_(std::move(overlays)) {}
+          overlays_(std::move(overlays)), options_(std::move(options)), lineComment_(std::move(lineComment)) {}
 
     std::string name() const override { return name_; }
 
@@ -92,9 +95,15 @@ public:
         return {spec_.trueLit, spec_.falseLit, spec_.enumMemberOp, spec_.constArrayOpen, spec_.constArrayClose};
     }
     bool linksWithoutImports() const override { return spec_.linksWithoutImports; }
+    std::vector<std::string> typeOnlyImports() const override { return spec_.typeOnlyImports; }
+    std::vector<std::string> unboundImports() const override { return spec_.unboundImports; }
     bool forbidsShadowedLocals() const override { return spec_.forbidsShadowedLocals; }
     bool expressionOnlyLambdas() const override { return spec_.expressionOnlyLambdas; }
-    const std::unordered_map<std::string, std::string>& stdOverlays() const override { return overlays_; }
+    bool nativeCompoundAssign() const override { return spec_.nativeCompoundAssign; }
+    bool lateOperandReads() const override { return !spec_.operandSnapshot.empty(); }
+    bool nativeCoalesceAssign() const override { return spec_.nativeCoalesceAssign; }
+    bool assignValueFirst() const override { return spec_.assignValueFirst; }
+    const std::unordered_map<std::string, StdBinding>& stdOverlays() const override { return overlays_; }
     std::string fileExtension() const override { return ext_; }
     bool crossDirImports() const override { return crossDirImports_; }
     bool sharedPreludeFile() const override { return sharedPreludeFile_; }
@@ -102,6 +111,8 @@ public:
     const OriginMapping& originMapping() const override { return originMapping_; }
     const std::vector<std::string>& reservedIdentifiers() const override { return spec_.reservedNames; }
     const std::vector<std::string>& globalIdentifiers() const override { return spec_.globalNames; }
+    const std::unordered_map<std::string, std::string>& refusedClassNames() const override { return spec_.refusedClassNames; }
+    const std::vector<TargetOptionDecl>& options() const override { return options_; }
 
 private:
     bool crossDirImports_ = false;
@@ -113,8 +124,24 @@ private:
     BackendSpec spec_;
     engine::RuleTable rules_;
     std::unordered_map<std::string, std::string> capabilities_;
-    std::unordered_map<std::string, std::string> overlays_; // flattened std FFI templates
+    std::unordered_map<std::string, StdBinding> overlays_; // flattened std FFI templates (+ their requires)
+    std::vector<TargetOptionDecl> options_;                // P40 B1: the manifest `options` block
+    std::string lineComment_;                              // P40 review: the header line's comment token
+public:
+    std::string lineComment() const override { return lineComment_; }
 };
+
+// P40 review (#75): every literal `"line"` string a rule tree emits — where the generated header lives.
+void collectLiteralLines(const json::Value& v, std::vector<std::string>& out) {
+    if (v.kind == json::Value::Kind::Object) {
+        for (const auto& m : v.members) {
+            if (m.first == "line" && m.second.kind == json::Value::Kind::String) out.push_back(m.second.asString());
+            collectLiteralLines(m.second, out);
+        }
+    } else if (v.kind == json::Value::Kind::Array) {
+        for (const auto& e : v.items()) collectLiteralLines(e, out);
+    }
+}
 
 // ---- Load-time validation (P19 slice 8) ------------------------------------------------------------------
 
@@ -131,8 +158,14 @@ const std::unordered_set<std::string>& capabilityVocabulary() {
         // interface). False on TS (interfaces erase); native elsewhere (C# `is`, Python ABC isinstance,
         // PHP instanceof).
         s.insert("interfaces:runtimeIdentity");
+        // P40 B3 (D2/D15): string index operations (len/charAt/codePointAt/substring/indexOf) count UTF-16
+        // code units. Native on C#/TS; Python (code points) and PHP (bytes) emulate them through helpers.
+        s.insert("utf16Strings:index");
         // P37 C6: graded operator support — PHP supports :eq/:indexers while refusing the rest; the bare
         // `operatorOverloading` stance umbrella-covers undeclared sub-keys.
+        // Review r6 (part 2): a STATIC computed property's setter — native on C#/TS; Python emits a static
+        // property as a static method (a class-level assignment would bypass any descriptor), so it refuses.
+        s.insert("propertySetters:static");
         s.insert("operatorOverloading:arithmetic");
         s.insert("operatorOverloading:comparison");
         s.insert("operatorOverloading:eq");
@@ -161,12 +194,34 @@ namespace {
 // SILENTLY before this check existed (the slice-6d gate caught exactly that); now it fails the load.
 const std::unordered_set<std::string>& fnCatalog() {
     static const std::unordered_set<std::string> names = {
-        "intSuffix", "escapeString", "opSpelling", "ident", "identFn", "mangleName", "escape", "wrap", "table",
-        "subst", "require", "inlineBlock", // shared expression catalog
-        "generics", "where", "mangle", "access", // declaration-context catalog (`access` = the requested accessibility modifier)
+        "intSuffix", "literal", "quoted", "opSpelling", "ident", "identType", "identFn", "mangleName", "wrap", "table",
+        "subst", "require", "inlineBlock", "parenIfContains", "parenIfStarts", // shared expression catalog
+        "generics", "where", "mangle",     // declaration-context catalog
         "substExtern",                     // type-context catalog (extern-class template substitution)
+        "preludeSlot",                     // P40 §0: the Program rule's prelude placement marker (decl position)
     };
     return names;
+}
+
+// P40 §0: walk a rule tree, calling `f` on every node (the shapes collectRefs walks).
+template <typename F>
+void forEachRule(const engine::Rule& r, const F& f) {
+    f(r);
+    for (const auto& p : r.parts) forEachRule(p, f);
+    for (const auto& arm : r.arms) forEachRule(arm.second, f);
+    for (const auto& e : r.elseBody) forEachRule(e, f);
+}
+
+// P40 §0: does `r` place the prelude slot UNCONDITIONALLY at declaration position — reached through
+// `seq`/`indent` only, never inside a `case` arm, a `block` or an expression template? An unconditional slot
+// is what lets the emitter rely on the marker always having fired.
+bool unconditionalPreludeSlot(const engine::Rule& r) {
+    using K = engine::Rule::Kind;
+    if (r.kind == K::Fn) return r.s == "preludeSlot";
+    if (r.kind == K::Seq || r.kind == K::Indent)
+        for (const auto& p : r.parts)
+            if (unconditionalPreludeSlot(p)) return true;
+    return false;
 }
 
 // Recursively collect every fn name, call target, and mapMembers rule reference in a Rule tree.
@@ -178,6 +233,81 @@ void collectRefs(const engine::Rule& r, std::vector<std::string>& fns, std::vect
     for (const auto& p : r.parts) collectRefs(p, fns, calls);
     for (const auto& arm : r.arms) collectRefs(arm.second, fns, calls);
     for (const auto& e : r.elseBody) collectRefs(e, fns, calls);
+}
+
+// P40 B1: every `option.<name>` a rule tree reads — through `{"get":…}` or an `eq`/`has` test — so the loader
+// can refuse a reference to an option the manifest never declares (it would read "" forever, silently).
+void collectOptionRefs(const engine::Test& t, std::vector<std::string>& out) {
+    if ((t.kind == engine::Test::Kind::Eq || t.kind == engine::Test::Kind::Has) &&
+        t.path.rfind(engine::kOptionPathPrefix, 0) == 0)
+        out.push_back(t.path.substr(std::char_traits<char>::length(engine::kOptionPathPrefix)));
+    for (const auto& s : t.subs) collectOptionRefs(s, out);
+}
+void collectOptionRefs(const engine::Rule& r, std::vector<std::string>& out) {
+    if (r.kind == engine::Rule::Kind::Get && r.s.rfind(engine::kOptionPathPrefix, 0) == 0)
+        out.push_back(r.s.substr(std::char_traits<char>::length(engine::kOptionPathPrefix)));
+    for (const auto& p : r.parts) collectOptionRefs(p, out);
+    for (const auto& arm : r.arms) {
+        collectOptionRefs(arm.first, out);
+        collectOptionRefs(arm.second, out);
+    }
+    for (const auto& e : r.elseBody) collectOptionRefs(e, out);
+}
+
+// P40 B1: parse + validate the manifest `options` block. Each entry is an object with only the known keys;
+// `default` is a string, `pattern` a compilable ECMAScript regex the default itself must match, `scope` is
+// absent or "closure", `reserve` a bool. A malformed block fails the load (never a silently ignored key).
+bool parseOptionDecls(const std::string& plugin, const json::Value& block, std::vector<TargetOptionDecl>& out,
+                      std::string& error) {
+    if (block.kind == json::Value::Kind::Null) return true;
+    if (block.kind != json::Value::Kind::Object) {
+        error = "plugin '" + plugin + "': 'options' must be an object of option declarations";
+        return false;
+    }
+    static const std::regex kName("[A-Za-z][A-Za-z0-9_]*");
+    for (const auto& kv : block.members) {
+        const std::string where = "plugin '" + plugin + "': option '" + kv.first + "'";
+        if (!std::regex_match(kv.first, kName)) { error = where + ": the name must be an identifier"; return false; }
+        const json::Value& o = kv.second;
+        if (o.kind != json::Value::Kind::Object) { error = where + " must be an object"; return false; }
+        TargetOptionDecl d;
+        d.name = kv.first;
+        for (const auto& m : o.members) {
+            if (m.first == "default") {
+                if (m.second.kind != json::Value::Kind::String) { error = where + ": 'default' must be a string"; return false; }
+                d.defaultValue = m.second.asString();
+            } else if (m.first == "pattern") {
+                if (m.second.kind != json::Value::Kind::String) { error = where + ": 'pattern' must be a string"; return false; }
+                d.pattern = m.second.asString();
+            } else if (m.first == "scope") {
+                if (m.second.kind != json::Value::Kind::String || m.second.asString() != "closure") {
+                    error = where + ": 'scope' must be \"closure\" (or absent)";
+                    return false;
+                }
+                d.closureScope = true;
+            } else if (m.first == "reserve") {
+                if (m.second.kind != json::Value::Kind::Bool) { error = where + ": 'reserve' must be a bool"; return false; }
+                d.reserve = m.second.boolean;
+            } else {
+                error = where + ": unknown key '" + m.first + "' (expected default / pattern / scope / reserve)";
+                return false;
+            }
+        }
+        if (!d.pattern.empty()) {
+            try {
+                if (!std::regex_match(d.defaultValue, std::regex(d.pattern, std::regex::ECMAScript))) {
+                    error = where + ": the default '" + d.defaultValue + "' does not match its own pattern '" +
+                            d.pattern + "'";
+                    return false;
+                }
+            } catch (const std::regex_error&) {
+                error = where + ": 'pattern' is not a valid regular expression: " + d.pattern;
+                return false;
+            }
+        }
+        out.push_back(std::move(d));
+    }
+    return true;
 }
 
 // The anti-silent-drop coverage contract: every IR construct the compiler can produce must have a rule,
@@ -196,6 +326,7 @@ constexpr Coverage kCoverage[] = {
     {"Cond", nullptr},     {"ListLit", nullptr},  {"Tuple", nullptr},  {"New", nullptr},
     {"Unary", nullptr},    {"Cast", nullptr},     {"Interp", nullptr},
     {"IsTest", nullptr},   {"AsCast", nullptr},   // P37 B: `is` / `as` (instanceof/isinstance everywhere)
+    {"NullAssert", nullptr}, // P40 A4: `x!` on a nullable operand (and the `opt!` fail arm) — no stance excuses it
     {"MethodCall", nullptr}, {"Binary", nullptr},
     {"MakeCase", "patternMatching"}, // a union-constructor node — only reachable when unions/match are
     {"Match", "patternMatching"}, {"With", "withExpressions"}, {"Await", "async"}, {"Lambda", "closures"},
@@ -231,10 +362,33 @@ namespace {
 // duplicate-name check is the caller's (registration) concern — `polyglot install` validates a manifest
 // for a target that may well already be loaded in this process.
 std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std::string& error) {
-    json::Value doc = json::parse(artifactJson);
+    std::string jsonErr;
+    json::Value doc = json::parse(artifactJson, jsonErr);
     if (doc.kind != json::Value::Kind::Object) { error = "plugin artifact must be a JSON object"; return nullptr; }
+    if (!jsonErr.empty()) { error = "plugin artifact: " + jsonErr; return nullptr; }
     const std::string name = doc["name"].asString();
     if (name.empty()) { error = "plugin artifact: missing 'name'"; return nullptr; }
+
+    // P40: the manifest schema version is validated before anything else is read. A schema-1 manifest
+    // (no `preludeSlot`, no binding `requires`) or one from a newer engine would otherwise load with
+    // features silently misread — refuse it, naming the version this compiler expects.
+    {
+        const json::Value& schema = doc["schema"];
+        const bool isNumber = schema.kind == json::Value::Kind::Number;
+        const double v = isNumber ? schema.asNumber(0) : 0;
+        if (!isNumber || v != static_cast<double>(kPluginSchemaVersion)) {
+            std::string got = "missing";
+            if (isNumber) {
+                got = (v == static_cast<double>(static_cast<long long>(v))) ? std::to_string(static_cast<long long>(v))
+                                                                             : std::to_string(v);
+            } else if (schema.kind != json::Value::Kind::Null) {
+                got = "not a number";
+            }
+            error = "plugin '" + name + "': unsupported manifest schema (" + got + "); this compiler reads schema " +
+                    std::to_string(kPluginSchemaVersion) + " — use a plugin built for this engine version";
+            return nullptr;
+        }
+    }
 
     SpecLoadResult spec = loadBackendSpec(doc["spec"]);
     if (!spec.ok) {
@@ -300,7 +454,8 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     if (srcId > 0) armtrace::addStaticOffsets(srcId, armOffsets);
     for (const char* required : {"Program", "Type"})
         if (rules.find(required) == rules.end()) {
-            error = "plugin '" + name + "': missing required rule '" + std::string(required) + "'";
+            error = "plugin '" + name + "': missing required rule '" + std::string(required) + "' (manifest schema " +
+                    std::to_string(kPluginSchemaVersion) + ")";
             return nullptr;
         }
 
@@ -363,12 +518,149 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
             }
     }
 
+    // P40 review r4 #7 (anti-silent-drop): a `mapOrder` walks every top-level declaration, so it must give EVERY
+    // declaration kind a rule (a missing one would drop those declarations silently) and name no other kind.
+    {
+        std::string bad;
+        for (const auto& kv : rules)
+            forEachRule(kv.second, [&](const engine::Rule& r) {
+                if (r.kind != engine::Rule::Kind::MapOrder || !bad.empty()) return;
+                for (const char* k : ir::kDeclOrderKinds) {
+                    bool found = false;
+                    for (const auto& p : r.parts) if (p.s == k) found = true;
+                    if (!found) { bad = std::string("gives kind '") + k + "' no rule"; return; }
+                }
+                for (const auto& p : r.parts) {
+                    bool known = false;
+                    for (const char* k : ir::kDeclOrderKinds) if (p.s == k) known = true;
+                    if (!known) { bad = "names unknown kind '" + p.s + "'"; return; }
+                }
+            });
+        if (!bad.empty()) {
+            error = "plugin '" + name + "': a {\"mapOrder\":…} " + bad + " (every declaration kind needs one: enum, "
+                    "interface, union, record, function, extension, class, global)";
+            return nullptr;
+        }
+    }
+
+    // P40 §0: prelude placement is data. The `Program` rule must carry exactly one `{"fn":"preludeSlot"}`
+    // marker at an unconditional declaration position, and no other rule may carry one — each language
+    // puts it where its helpers are legal (PHP after the namespace/use lines, C# after the usings).
+    // A literal `{"fn":"require"}` key must name a declared prelude, like a binding's `requires`.
+    {
+        int slots = 0;
+        std::string badRequire;
+        for (const auto& kv : rules)
+            forEachRule(kv.second, [&](const engine::Rule& r) {
+                if (r.kind != engine::Rule::Kind::Fn) return;
+                if (r.s == "preludeSlot") ++slots;
+                if (r.s == "require" && !r.parts.empty() && r.parts[0].kind == engine::Rule::Kind::Lit &&
+                    !spec.spec.preludes.count(r.parts[0].s) && badRequire.empty())
+                    badRequire = r.parts[0].s;
+            });
+        // P40 A1: a literal context is required data, and every {"fn":"literal"/"quoted"} names a declared one
+        // (a typo would silently fall back to the string context's quoting).
+        if (!spec.spec.literals.count("string")) {
+            error = "plugin '" + name + "': spec.literals must declare a 'string' context (P40)";
+            return nullptr;
+        }
+        std::string badContext;
+        for (const auto& kv : rules)
+            forEachRule(kv.second, [&](const engine::Rule& r) {
+                if (r.kind != engine::Rule::Kind::Fn || (r.s != "literal" && r.s != "quoted")) return;
+                const bool ok = r.parts.size() == 2 && r.parts[0].kind == engine::Rule::Kind::Lit &&
+                                spec.spec.literals.count(r.parts[0].s);
+                if (!ok && badContext.empty())
+                    badContext = r.parts.empty() || r.parts[0].kind != engine::Rule::Kind::Lit ? std::string("?")
+                                                                                              : r.parts[0].s;
+            });
+        if (!badContext.empty()) {
+            error = "plugin '" + name + "': a {\"fn\":\"literal\"/\"quoted\"} names literal context '" + badContext +
+                    "', which spec.literals does not declare (args: [\"<context>\", <text>])";
+            return nullptr;
+        }
+        if (!badRequire.empty()) {
+            error = "plugin '" + name + "': {\"fn\":\"require\"} names '" + badRequire +
+                    "', which is not a declared prelude (spec.preludes)";
+            return nullptr;
+        }
+        if (slots != 1 || !unconditionalPreludeSlot(rules.at("Program"))) {
+            error = "plugin '" + name + "': the 'Program' rule must contain exactly one {\"fn\":\"preludeSlot\"} "
+                    "marker at an unconditional declaration position (inside 'seq'/'indent' only), and no "
+                    "other rule may contain one (found " + std::to_string(slots) + " in total)";
+            return nullptr;
+        }
+    }
+
+    // P40 B1: the target options this plugin accepts, and every `option.<name>` its rules read must be one of
+    // them (an undeclared reference would read "" forever — the anti-silent-drop contract, applied to options).
+    std::vector<TargetOptionDecl> optionDecls;
+    if (!parseOptionDecls(name, doc["options"], optionDecls, error)) return nullptr;
+    {
+        std::vector<std::string> refs;
+        for (const auto& kv : rules) collectOptionRefs(kv.second, refs);
+        for (const auto& ref : refs) {
+            bool declared = false;
+            for (const auto& d : optionDecls) declared = declared || d.name == ref;
+            if (!declared) {
+                error = "plugin '" + name + "': a rule reads 'option." + ref +
+                        "', which the manifest's 'options' block does not declare";
+                return nullptr;
+            }
+        }
+    }
+
     // The std overlay arms, organized by module in the manifest for readability, flattened here (member
     // keys — "List.add", "print" — are unique across the std surface).
-    std::unordered_map<std::string, std::string> overlays;
+    // P40 §0: a binding is a plain template string, or `{ "template": "...", "requires": ["key", ...] }`.
+    // Every required key must be a declared prelude — a typo would otherwise emit a call to a helper that
+    // is never defined (the anti-silent-drop contract, applied to helper references).
+    const auto& preludes = spec.spec.preludes;
+    std::unordered_map<std::string, StdBinding> overlays;
     for (const auto& mod : doc["std"].members)
-        for (const auto& kv : mod.second.members)
-            if (kv.second.kind == json::Value::Kind::String) overlays[kv.first] = kv.second.asString();
+        for (const auto& kv : mod.second.members) {
+            const json::Value& v = kv.second;
+            if (v.kind == json::Value::Kind::String) {
+                overlays[kv.first] = StdBinding{v.asString(), {}};
+                continue;
+            }
+            if (v.kind != json::Value::Kind::Object || v["template"].kind != json::Value::Kind::String) {
+                error = "plugin '" + name + "': std binding '" + kv.first +
+                        "' must be a template string or an object with a string 'template'";
+                return nullptr;
+            }
+            StdBinding b;
+            b.tmpl = v["template"].asString();
+            const json::Value& req = v["requires"];
+            if (req.kind != json::Value::Kind::Null && req.kind != json::Value::Kind::Array) {
+                error = "plugin '" + name + "': std binding '" + kv.first + "': 'requires' must be an array";
+                return nullptr;
+            }
+            for (const json::Value& r : req.items()) {
+                if (r.kind != json::Value::Kind::String || !preludes.count(r.asString())) {
+                    error = "plugin '" + name + "': std binding '" + kv.first + "' requires '" +
+                            (r.kind == json::Value::Kind::String ? r.asString() : std::string("<non-string>")) +
+                            "', which is not a declared prelude (spec.preludes)";
+                    return nullptr;
+                }
+                b.preludeKeys.push_back(r.asString());
+            }
+            for (const auto& m : v.members)
+                if (m.first != "template" && m.first != "requires") {
+                    error = "plugin '" + name + "': std binding '" + kv.first + "': unknown key '" + m.first + "'";
+                    return nullptr;
+                }
+            // A type spelling is rendered through the Type rule, not emitted as an expression, so nothing
+            // would record its requirements — refuse rather than silently drop them.
+            const std::string typeSuffix = ".type";
+            if (!b.preludeKeys.empty() && kv.first.size() > typeSuffix.size() &&
+                kv.first.compare(kv.first.size() - typeSuffix.size(), typeSuffix.size(), typeSuffix) == 0) {
+                error = "plugin '" + name + "': std binding '" + kv.first +
+                        "': 'requires' is not supported on a type spelling";
+                return nullptr;
+            }
+            overlays[kv.first] = std::move(b);
+        }
 
     std::string ext = doc["fileExtension"].asString();
     if (ext.empty()) ext = "." + name; // a reasonable default; first-party plugins declare theirs
@@ -383,9 +675,41 @@ std::unique_ptr<LoadedBackend> buildBackend(const std::string& artifactJson, std
     const bool sharedPreludeFile = doc["sharedPreludeFile"].asBool(false);
     const bool preludePerFile    = doc["preludePerFile"].asBool(false);
 
+    // P40 review (#75): the generated header's comment token, as data — the CLI's deletion and overwrite
+    // guards match the exact line `<lineComment> Generated by Polyglot.`, so the token must agree with what
+    // the rules really emit (anti-silent-drop: a mismatch would make every output undeletable, or worse,
+    // make the guard match nothing the target writes).
+    const json::Value& lcv = doc["lineComment"];
+    if (!lcv.isNull() && (lcv.kind != json::Value::Kind::String || lcv.asString().empty())) {
+        error = "plugin '" + name + "': 'lineComment' must be a non-empty string (the target's line-comment token)";
+        return nullptr;
+    }
+    const std::string lineComment = lcv.isNull() ? std::string() : lcv.asString();
+    {
+        std::vector<std::string> lines;
+        collectLiteralLines(rulesDoc, lines);
+        const std::string phrase = Backend::kGeneratedByPolyglot;
+        const std::string header = lineComment + " " + phrase;
+        bool emitsPhrase = false, emitsHeader = false;
+        for (const auto& l : lines) {
+            emitsPhrase = emitsPhrase || l.find(phrase) != std::string::npos;
+            emitsHeader = emitsHeader || (!lineComment.empty() && l.rfind(header, 0) == 0);
+        }
+        if (!lineComment.empty() && !emitsHeader) {
+            error = "plugin '" + name + "': 'lineComment' is \"" + lineComment + "\" but no rule emits the header line `" +
+                    header + " ...` (a literal \"line\" starting with it)";
+            return nullptr;
+        }
+        if (lineComment.empty() && emitsPhrase) {
+            error = "plugin '" + name + "': a rule emits the `" + phrase + "` header but the manifest declares no "
+                    "'lineComment', so the CLI could not recognise this target's outputs as its own";
+            return nullptr;
+        }
+    }
+
     return std::make_unique<LoadedBackend>(name, std::move(ext), std::move(spec.spec), std::move(rules),
                                            std::move(caps), std::move(overlays), crossDir, std::move(origin),
-                                           sharedPreludeFile, preludePerFile);
+                                           sharedPreludeFile, preludePerFile, std::move(optionDecls), lineComment);
 }
 
 } // namespace
@@ -417,6 +741,34 @@ bool loadBackend(const std::string& artifactJson, std::string& error, bool repla
 
 bool validateBackend(const std::string& artifactJson, std::string& error) {
     return buildBackend(artifactJson, error) != nullptr;
+}
+
+bool resolveTargetOptions(const Backend& backend, const std::map<std::string, std::string>& given,
+                          std::map<std::string, std::string>& resolved, std::string& error) {
+    resolved.clear();
+    const auto& decls = backend.options();
+    for (const auto& [key, value] : given) {
+        const TargetOptionDecl* d = nullptr;
+        for (const auto& c : decls) if (c.name == key) d = &c;
+        if (!d) {
+            std::string known;
+            for (const auto& c : decls) known += (known.empty() ? "" : ", ") + c.name;
+            error = "unknown target option '" + backend.name() + "." + key + "' (target '" + backend.name() +
+                    "' declares " + (known.empty() ? std::string("no options") : "only: " + known) + ")";
+            return false;
+        }
+        // The manifest pattern compiled at load (parseOptionDecls), so it cannot throw here.
+        if (!d->pattern.empty() && !std::regex_match(value, std::regex(d->pattern, std::regex::ECMAScript))) {
+            error = "target option '" + backend.name() + "." + key + "' has the invalid value '" + value +
+                    "' (it must match " + d->pattern + ")";
+            return false;
+        }
+    }
+    for (const auto& d : decls) {
+        auto it = given.find(d.name);
+        resolved[d.name] = it != given.end() ? it->second : d.defaultValue;
+    }
+    return true;
 }
 
 } // namespace mintplayer::polyglot

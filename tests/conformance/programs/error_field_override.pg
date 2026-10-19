@@ -1,0 +1,25 @@
+// P40 B2 (D10) regression — a field on an Error subclass that shadows a member of the native root (`cause`
+// on the JS Error). TS needs `override` on it under noImplicitOverride (TS4114, the library gate's flag set);
+// the member list is manifest data (`baseRootMembers`), so the Core compares no target names. The chain is
+// two classes deep, so the root is found through a user base.
+
+class AppError : Error {
+  constructor(message: string) { super(message) }
+}
+
+class WrappedError : AppError {
+  let cause: string
+  constructor(message: string, cause: string) {
+    super(message)
+    this.cause = cause
+  }
+}
+
+fn main() {
+  try {
+    throw WrappedError("outer", "inner")
+  } catch (e: WrappedError) {
+    print(e.message)   // outer
+    print(e.cause)     // inner
+  }
+}

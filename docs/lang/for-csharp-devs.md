@@ -60,8 +60,23 @@ There is **no `decimal`** — refused by design (see "Scope by design" below).
 | `"hi ${name}, ${age * 2} doubled"` | `$"hi {name}, {age * 2} doubled"` |
 | `'A'` (char, UTF-16 code unit) | `'A'` |
 | `"ab" + "c" == "abc"` → `true` | string `==` is value equality, as in C# |
+| `"tab\there"`, `"\u{E9}"`, `'\u{41}'` | `"tab\there"`, `"é"`, `'A'` — code points are written `\u{1–6 hex}` |
+| `"cost \$5"`, `"\${raw}"` | `\$` is a literal dollar, so `"\${raw}"` is the text `${raw}`, not a hole |
 
-Strings are UTF-16 on every target, so indexing/length semantics match C#.
+The escapes are `\n \t \r \0 \\ \" \' \$ \u{…}` — nothing else. C#'s `\uXXXX`, `\xHH` and `\U…` are errors
+(the variable-length `\x` is a known C# trap), and a char literal is exactly one UTF-16 code unit, so
+`'\u{1F600}'` is an error: use a string. Indexing/length count UTF-16 code units on C# and TS; on Python and
+PHP they count in those targets' native units for non-ASCII text (SPEC §9 — the compiler warns).
+
+**Number text is not `ToString()`.** A number in a hole or in `print` follows one rule on every target
+(SPEC §8): integers as invariant decimal, `f64` as JavaScript prints it (`0.1 + 0.2` →
+`0.30000000000000004`, `1e21` → `1e+21`, `1e-7` → `1e-7`, `-0.0` → `0`), `f32` as its exact value widened to
+`f64` (`0.1f` → `0.10000000149011612`). The generated C# routes those holes through a file-local
+`__PgRt.Str(…)`, so the current culture never matters and `Main` sets none. A record, list, map or **enum** in
+a hole (or in `print`) is a compile error — C# would print `Point { X = 1 }` or the enum's case name, the
+other targets something else — so format it explicitly. `toUpper()`/`toLower()` emit
+`ToUpperInvariant()`/`ToLowerInvariant()` and are best-effort across targets; use `toUpperAscii()`/
+`toLowerAscii()` when the result must be identical everywhere.
 
 ## Records (structural equality, `with`)
 
@@ -170,6 +185,12 @@ for (a, b) in pairs { ... }        // tuple destructuring
 `Iterable<T>` + `yield` → C# `IEnumerable<T>` + `yield return`; `for x in seq` → `foreach`;
 integer ranges emit a plain C-style `for` loop.
 
+`Map<K, V>` (`import "std.collections"`) is `OrderedDictionary<K, V>` — so **your consumer needs .NET 9+** —
+and differs from a C# dictionary in three ways: keys are only `string` or an integer type; `V` cannot be
+nullable (`get` returns `V?`, null meaning absent — use `has`); and you cannot `foreach` the map itself.
+`for k in m.keys()` iterates a snapshot copy, so mutating the map inside the loop is fine. `remove` is O(n)
+on `OrderedDictionary`.
+
 ## Exceptions
 
 ```pg
@@ -214,7 +235,10 @@ You write the **unwrapped** return type (`: i32`, not `Task<i32>`); the C# backe
 |---|---|
 | `let maybe: i32? = null` | `int? maybe = null;` — non-null by default |
 | `name?.length`, `maybe ?? 0` | `?.` and `??`, as in C# |
-| `maybe!` | **throws if null at runtime** — unlike C# `!`, which is compile-time-only |
+| `maybe!` | **throws if null at runtime** — unlike C# `!`, which is compile-time-only. Emits `(maybe ?? throw new NullReferenceException("null-assert failed (m.pg:L:C)"))`, so `int?` yields `int` |
+| `maybe + 1`, `"${maybe}"`, `print(maybe)`, `maybe.x` | **errors** — C# would null-lift / print `""`; narrow, `??` or `!` first |
+| `if x != null { x + 1 }` | flow-narrowing like C# NRT, but for locals and parameters only, and it ends at any assignment to `x` |
+| `if c { 1 } else { null }` | typed `i32?` |
 
 ## Extension methods
 
@@ -239,6 +263,23 @@ import "./physics"                        // relative user module
 TypeScript-style imports, not `using` directives. One `.pg` file is one module; top-level
 declarations are module-public.
 
+There is no `namespace` statement in `.pg` source: where the emitted C# lives is build configuration,
+not language. Top-level functions and globals land in a static wrapper class (`PolyglotProgram` by
+default), and the generated types are `internal` unless you ask otherwise. For a library, set the C#
+target options in `pgconfig.json` (or the matching MSBuild properties `PolyglotNamespace` /
+`PolyglotClass` / `PolyglotAccess`):
+
+```json
+{ "targets": ["csharp"],
+  "targetOptions": { "csharp": { "namespace": "MyCompany.Strings", "class": "StringsApi", "access": "public" } } }
+```
+
+The emitted file then starts `namespace MyCompany.Strings;`, callers write `StringsApi.trim(...)`, and two
+libraries built from `.pg` can be referenced by one app without CS0433 clashes. Runtime helpers such as
+`print` stay `internal` even when `access` is `public`. A file declaring `fn main` also gets a
+`static void Main() { main(); }`; in an app that owns its entry point (its own `Main`, or top-level
+statements) set `"entryPoint": "false"` (MSBuild `PolyglotEntryPoint`) to drop it — otherwise CS0017 / CS7022.
+
 ## False friends — where your C# intuition misleads
 
 - **`let` is not C# `var`.** `let` is immutable (closer to a readonly local); mutable locals are
@@ -252,6 +293,8 @@ declarations are module-public.
   the real symbol operators for you.
 - **No mutable value types.** There is no `struct`; immutable data is a `record`, mutable data is a
   `class` (reference identity).
+- **`"${x}"` is not `x.ToString()`.** A double prints the JavaScript way (`1e+21`, never `1E+21`), an
+  enum cannot be interpolated at all, and the result never depends on `CultureInfo.CurrentCulture`.
 
 ## Scope by design (what Polyglot refuses)
 

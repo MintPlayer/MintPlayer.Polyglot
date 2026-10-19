@@ -12,13 +12,23 @@
 //  * loadPluginFile — one manifest file into the Core registry, reporting (not throwing) failures.
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <mutex>
 #include <optional>
+#include <random>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -33,12 +43,22 @@
 #undef Yield // winbase.h macro; ir::StmtKind::Yield must survive
 #endif
 
+#include "mintplayer/polyglot/backend.hpp"
 #include "mintplayer/polyglot/json.hpp"
 #include "mintplayer/polyglot/polyglot.hpp"
 
 #include "glob.hpp"
 
 namespace mintplayer::polyglot::cli {
+
+// A path as UTF-8 bytes, whatever the process code page — for the files other tools read as UTF-8 (MSBuild's
+// ReadLinesFromFile: the depfile and the outputs list). The executables also run with UTF-8 as their ANSI code
+// page (utf8.manifest), so `.string()` agrees; this keeps those two files right even where the manifest is
+// not honoured (Windows before 10 1903). P40 review r3, gating 1.
+inline std::string utf8(const std::filesystem::path& p) {
+    const auto u = p.u8string();
+    return std::string(u.begin(), u.end());
+}
 
 // Read an entire file into a string. Returns false if it could not be opened.
 inline bool readFile(const std::filesystem::path& path, std::string& out) {
@@ -50,13 +70,106 @@ inline bool readFile(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
+// P40 review r4 (gating 1): the EXACT name of a temp file writeFile stages `output` through —
+// `<output file name>.pgtmp.<digits>.<digits>.<digits>` — and nothing else. The round-3 sweep matched any name
+// that merely CONTAINED `.pgtmp.` (or ended in `.pgcase.tmp`) in the whole folder being written, so it deleted
+// `src/keep.pgtmp.txt`, and even the `.pg` source `notes.pgtmp.pg`. Stale temps are now swept by the OutputSink
+// only, per output this run produces, and only when the temp carries Polyglot's header line (the deletion
+// invariant, outputsink.hpp) — see OutputSink::sweepStaleTempsOf.
+inline bool isWriteTempOf(const std::filesystem::path& tempName, const std::filesystem::path& outputName) {
+    const auto& t = tempName.native();
+    auto prefix = outputName.native();
+    for (const char c : std::string(".pgtmp.")) prefix.push_back(static_cast<std::filesystem::path::value_type>(c));
+    if (t.size() <= prefix.size() || t.compare(0, prefix.size(), prefix) != 0) return false;
+    int groups = 1;
+    bool digitSeen = false;
+    for (std::size_t i = prefix.size(); i < t.size(); ++i) {
+        const auto c = t[i];
+        if (c >= '0' && c <= '9') { digitSeen = true; continue; }
+        if (c != '.' || !digitSeen) return false;
+        digitSeen = false;
+        ++groups;
+    }
+    return digitSeen && groups == 3;
+}
+
+// Replace `to` with `from` in one rename. P40 review r4: on Windows MoveFileEx cannot replace a file that a
+// reader holds open, even when the reader shares FILE_SHARE_DELETE, so the write failed after ~4 s where a POSIX
+// rename would succeed. A rename with FILE_RENAME_FLAG_POSIX_SEMANTICS (SetFileInformationByHandle,
+// FileRenameInfoEx — Windows 10 1607+, NTFS) replaces it the POSIX way: the reader keeps the OLD bytes, new
+// opens see the new file. Where that call is not supported (older Windows, FAT, some network shares) it falls
+// back to MoveFileEx, which still fails while the file is held — writeFile retries, then refuses.
+inline bool replaceFileAtomically(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
+#ifdef _WIN32
+    ec.clear();
+    const std::wstring dst = std::filesystem::absolute(to, ec).native();
+    if (ec) return false;
+    HANDLE h = CreateFileW(from.c_str(), DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        const std::size_t bytes = sizeof(FILE_RENAME_INFO) + dst.size() * sizeof(wchar_t);
+        std::vector<unsigned char> buf(bytes, 0);
+        auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buf.data());
+        // Flags (FILE_RENAME_FLAG_REPLACE_IF_EXISTS 0x1 | FILE_RENAME_FLAG_POSIX_SEMANTICS 0x2) shares the union
+        // slot of the older ReplaceIfExists BOOLEAN; written as a DWORD so either SDK declaration works.
+        const DWORD flags = 0x1 | 0x2;
+        std::memcpy(buf.data(), &flags, sizeof(flags));
+        info->RootDirectory = nullptr;
+        info->FileNameLength = static_cast<DWORD>(dst.size() * sizeof(wchar_t));
+        std::memcpy(info->FileName, dst.c_str(), info->FileNameLength);
+        const FILE_INFO_BY_HANDLE_CLASS kFileRenameInfoEx = static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+        const BOOL ok = SetFileInformationByHandle(h, kFileRenameInfoEx, info, static_cast<DWORD>(bytes));
+        const DWORD err = ok ? 0 : GetLastError();
+        CloseHandle(h);
+        if (ok) return true;
+        // Supported but refused (a reader without FILE_SHARE_DELETE, access denied): report it, retry later.
+        if (err != ERROR_INVALID_PARAMETER && err != ERROR_NOT_SUPPORTED && err != ERROR_INVALID_FUNCTION) {
+            ec = std::error_code(static_cast<int>(err), std::system_category());
+            return false;
+        }
+    }
+    if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    return false;
+#else
+    std::filesystem::rename(from, to, ec); // rename(2) already has POSIX semantics
+    return !ec;
+#endif
+}
+
+// Atomic replace (P40 review of #75): write a uniquely named temp file next to `path`, then rename it over
+// `path`. Truncate-then-write let a concurrent reader (parallel TFM builds sharing a routed twin) see a half
+// written file and refuse it as not Polyglot's. Readers now see the old bytes or the new ones, never a mix.
+// P40 review r3: when the rename cannot replace the target — on Windows, while a reader holds it open WITHOUT
+// FILE_SHARE_DELETE — it is RETRIED with a short backoff (~3 s in all), then the write FAILS. It used to fall back
+// to truncate-and-write, which is the torn read the rename exists to prevent, and the run exited 0. A reader
+// that shares delete no longer blocks the write at all (replaceFileAtomically, P40 review r4).
+// No sweep here (P40 review r4): writeFile serves every writer (outputs, maps, the record, the depfile, the
+// outputs list), so it cannot prove a leftover temp is its own; the OutputSink sweeps an output's own temps.
 inline bool writeFile(const std::filesystem::path& path, const std::string& content) {
+    namespace fs = std::filesystem;
     std::error_code ec;
-    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec); // `--out newdir` just works
-    std::ofstream os(path, std::ios::binary);
-    if (!os) return false;
-    os << content;
-    return true;
+    const fs::path dir = path.has_parent_path() ? path.parent_path() : fs::path(".");
+    if (path.has_parent_path()) fs::create_directories(dir, ec); // `--out newdir` just works
+    static std::atomic<unsigned> counter{0};
+    const auto stamp = static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count());
+    fs::path tmp = path;
+    tmp += ".pgtmp." + std::to_string(std::random_device{}()) + "." + std::to_string(stamp % 1000000) + "." +
+           std::to_string(counter++);
+    {
+        std::ofstream os(tmp, std::ios::binary);
+        if (!os) return false;
+        os << content;
+        os.close();
+        if (os.fail()) { fs::remove(tmp, ec); return false; }
+    }
+    for (int attempt = 0, delayMs = 10;; ++attempt, delayMs = std::min(delayMs * 2, 500)) {
+        if (replaceFileAtomically(tmp, path, ec)) return true;
+        if (attempt == 10) break; // 10+20+40+…+500 ms ≈ 3 s
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+    }
+    fs::remove(tmp, ec);
+    return false;
 }
 
 // One pgconfig `include` file-mapping rule (PRD issue-30 D7): route the files `pattern` matches
@@ -66,7 +179,52 @@ struct IncludeRule {
     std::vector<std::string> targets;
     std::string output;  // template for the emitted file's path STEM (config-relative); the
                          // target's manifest fileExtension() is always appended by the CLI
+    // P40 B1: per-rule target options (target -> option -> value), layered over the project-level
+    // `targetOptions` for the files this rule matches (first-match-wins, like the routing itself).
+    std::map<std::string, std::map<std::string, std::string>> targetOptions;
+    bool owned = false;  // P40 B5: the literal output folder is Polyglot's (stale-twin scan; discovery mode only)
 };
+
+// P40 B1: target options keyed target -> option -> value. Which map applies is a lookup by target NAME
+// (data, like forbiddenIdentifiers); what an option MEANS is the target plugin's business.
+using TargetOptionsByTarget = std::map<std::string, std::map<std::string, std::string>>;
+
+// Parse a `targetOptions` object (`{ "<target>": { "<option>": "<value>" } }`). A malformed shape is an
+// ERROR, never a silent no-op — a mistyped block would leave every default in force with no hint why.
+inline void parseTargetOptions(const json::Value& v, TargetOptionsByTarget& out, std::vector<std::string>& errors,
+                               const std::string& where) {
+    if (v.kind == json::Value::Kind::Null) return;
+    if (v.kind != json::Value::Kind::Object) {
+        errors.push_back(where + ": \"targetOptions\" must be an object keyed by target name");
+        return;
+    }
+    for (const auto& t : v.members) {
+        if (t.second.kind != json::Value::Kind::Object) {
+            errors.push_back(where + ": targetOptions." + t.first + " must be an object of option values");
+            continue;
+        }
+        auto& opts = out[t.first];
+        for (const auto& o : t.second.members) {
+            if (o.second.kind != json::Value::Kind::String) {
+                errors.push_back(where + ": targetOptions." + t.first + "." + o.first + " must be a string");
+                continue;
+            }
+            opts[o.first] = o.second.asString();
+        }
+    }
+}
+
+// P40 B1: `--target-option <target>.<name>=<value>` into `out` (a later flag for the same option wins).
+inline bool parseTargetOptionFlag(const std::string& arg, TargetOptionsByTarget& out, std::string& err) {
+    const std::size_t dot = arg.find('.');
+    const std::size_t eq = arg.find('=');
+    if (dot == std::string::npos || eq == std::string::npos || dot == 0 || eq < dot + 2) {
+        err = "--target-option expects <target>.<name>=<value> (got '" + arg + "')";
+        return false;
+    }
+    out[arg.substr(0, dot)][arg.substr(dot + 1, eq - dot - 1)] = arg.substr(eq + 1);
+    return true;
+}
 
 // The minimal project manifest (PRD §4.8): `{ "root": <dir>, "lib": ["io","math"] }`. `root` is resolved
 // against the pgconfig.json that declares it; `lib` is the ambient prelude. Found by walking up from a start
@@ -76,10 +234,10 @@ struct PgConfig {
     bool found = false;
     std::string root; // absolute, resolved against the config's directory
     std::string lib;  // comma-joined lib names
-    std::string access;
+    TargetOptionsByTarget targetOptions; // P40 B1: project-level `targetOptions` (include rules override per file)
     // P38/issue #69: emit source-origin info (C# `#line` directives, TS v3 source map) so generated code
     // attributes back to the `.pg`. `--origin-info` overrides this; false = emit exactly as before.
-    bool originInfo = false; // emitted C# accessibility ("public"/"internal"); empty = target default
+    bool originInfo = false;
     std::vector<std::string> targets; // the project's target set (drives the default build; P19 slice 10)
     std::vector<std::pair<std::string, std::string>> dependencies; // package -> spec ("file:<dir>", "1.2.3", "^1.2.3", …)
     // project-policy identifier bans (P19 slices 13-15): (target-or-"*", name) fed to checkReservedNames.
@@ -90,18 +248,351 @@ struct PgConfig {
     std::filesystem::path dir; // where the config was found (file: deps + the lockfile resolve against it)
 };
 
+// The entry names of one directory, as the filesystem spells them.
+using DirNames = std::set<std::filesystem::path::string_type>;
+inline DirNames listDirNames(const std::filesystem::path& dir) {
+    DirNames names;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+        names.insert(it->path().filename().native());
+    return names;
+}
+
+// P40 review (A3): on a case-INSENSITIVE filesystem (NTFS, APFS by default) `gen/foo.ts` opens the existing
+// `gen/Foo.ts`, so write-if-changed reused it and a case-only rename of the .pg never reached the output name —
+// a Linux checkout then had the wrong file forever. Returns the existing file's on-disk path when `p` exists but
+// its exact name is not among the directory's entries — i.e. the filesystem matched it under another spelling —
+// and that entry is the same file (fs::equivalent); else empty. On a case-sensitive filesystem `p` does not
+// exist (or exists exactly), so this is always empty there.
+// P40 review r3 (A3c): no case FOLDING. `towlower` folded ASCII only (the C locale), so `Ärger.ts` was never
+// found for `ärger.ts`; the filesystem's own answer (it opened `p`) plus file identity needs no fold table. On
+// Windows the candidate must also be an ordinal case-insensitive match (CompareStringOrdinal, the table NTFS
+// uses), so an 8.3 short-name alias of the same file is never mistaken for a case variant.
+// P40 review r4: on POSIX (APFS) the name test is no longer `true`. Identity alone picked a HARD LINK to the file
+// that happened to sort first (`a.ts` linked to `Foo.ts`) and renamed it. Without the volume's fold table the
+// test is conservative: the same number of code points, each pair equal, an ASCII case pair, or both non-ASCII
+// (where the filesystem's own answer — it opened `p` — plus file identity decide).
+#ifndef _WIN32
+inline std::vector<char32_t> utf8CodePoints(const std::string& s) {
+    std::vector<char32_t> out;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        const int n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
+        char32_t cp = n == 1 ? c : n == 2 ? (c & 0x1F) : n == 3 ? (c & 0x0F) : (c & 0x07);
+        for (int k = 1; k < n && i + k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        out.push_back(cp);
+        i += static_cast<std::size_t>(n);
+    }
+    return out;
+}
+#endif
+inline bool sameNameIgnoringCase(const std::filesystem::path& a, const std::filesystem::path& b) {
+#ifdef _WIN32
+    const auto& x = a.native();
+    const auto& y = b.native();
+    return CompareStringOrdinal(x.c_str(), static_cast<int>(x.size()), y.c_str(), static_cast<int>(y.size()), TRUE) ==
+           CSTR_EQUAL;
+#else
+    const auto x = utf8CodePoints(a.native());
+    const auto y = utf8CodePoints(b.native());
+    if (x.size() != y.size()) return false;
+    auto lower = [](char32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; };
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        if (x[i] == y[i] || lower(x[i]) == lower(y[i])) continue;
+        if (x[i] >= 0x80 && y[i] >= 0x80) continue;
+        return false;
+    }
+    return true;
+#endif
+}
+// The on-disk spelling `p` resolved to, when it differs from `p`'s own only by case: the entry whose name is a
+// case variant of `p`'s AND which is the same file. P40 review r4: chosen by NAME among the equivalent entries,
+// never by identity alone; two candidates (hard links that are both case variants) is ambiguous, and nothing is
+// renamed.
+inline std::filesystem::path caseVariantIn(const std::filesystem::path& p, const DirNames& names) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path want = p.filename();
+    if (names.count(want.native()) || !fs::exists(p, ec) || ec) return {}; // exact spelling, or no file at all
+    const fs::path dir = p.has_parent_path() ? p.parent_path() : fs::path(".");
+    fs::path found;
+    for (const auto& n : names) {
+        const fs::path name(n);
+        if (!sameNameIgnoringCase(name, want)) continue;
+        if (!fs::equivalent(dir / name, p, ec) || ec) continue;
+        if (!found.empty()) return {}; // ambiguous
+        found = dir / name;
+    }
+    return found;
+}
+
+// P40 A5: the walk owns the FORM of its input. A relative start ("." for `a.pg`, "LibA" for `LibA/a.pg`)
+// has no lexical parent to walk to, so it used to stop early and silently ignore the config. Absolute +
+// lexical normalisation (not weakly_canonical: the watch precedent, and symlinked checkouts keep working)
+// makes `pc.dir` and `pc.root` always absolute, whatever the caller passed.
+inline std::filesystem::path absoluteDir(const std::filesystem::path& p) {
+    std::error_code ec;
+    std::filesystem::path d = std::filesystem::absolute(p.empty() ? std::filesystem::path(".") : p, ec).lexically_normal();
+    if (!d.has_filename() && d.has_relative_path()) d = d.parent_path(); // "C:\x\" -> "C:\x" (one identity)
+    return d;
+}
+
+// P40 review r7: absoluteDir, spelled as the DISK spells it — each existing component that the filesystem matched
+// only up to case (`proj` typed, `Proj` on disk) is replaced by its on-disk entry (onDiskCaseVariant, below). A config folder reached through a typed path in another case used to keep the typed
+// spelling, so a route re-entering it (`../proj/gen/…`) looked like it stayed inside the config root and the
+// A3 directory-case check never compared `proj` with the disk. Components that do not exist are kept as typed;
+// on a case-sensitive filesystem nothing changes (an existing path is spelled exactly).
+// The on-disk name of the existing entry `dir/name` when it differs from `name` only by case ("" = spelled exactly,
+// or not a case variant). Never a directory listing: the walk crosses folders like %TEMP% with 10^5 entries. On
+// Windows FindFirstFileW on the exact path returns the entry's stored name (an 8.3 alias resolving to its long name
+// is not a case variant, so it is kept as typed). On POSIX only a case-insensitive volume (APFS) can hold a variant:
+// the name with its ASCII case flipped must open the same file before the folder is listed.
+inline std::filesystem::path onDiskCaseVariant(const std::filesystem::path& dir, const std::filesystem::path& name) {
+    namespace fs = std::filesystem;
+#ifdef _WIN32
+    WIN32_FIND_DATAW fd;
+    const HANDLE h = FindFirstFileW((dir / name).native().c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return {};
+    FindClose(h);
+    const fs::path got(fd.cFileName);
+    return got.native() != name.native() && sameNameIgnoringCase(got, name) ? got : fs::path();
+#else
+    std::string flipped = name.native();
+    bool letters = false;
+    for (char& c : flipped) {
+        if (c >= 'a' && c <= 'z') { c = static_cast<char>(c - 32); letters = true; }
+        else if (c >= 'A' && c <= 'Z') { c = static_cast<char>(c + 32); letters = true; }
+    }
+    std::error_code ec;
+    if (!letters || !fs::exists(dir / flipped, ec) || ec || !fs::equivalent(dir / flipped, dir / name, ec) || ec) return {};
+    const fs::path v = caseVariantIn(dir / name, listDirNames(dir));
+    return v.empty() ? fs::path() : v.filename();
+#endif
+}
+
+inline std::filesystem::path diskSpelledDir(const std::filesystem::path& p) {
+    namespace fs = std::filesystem;
+    const fs::path abs = absoluteDir(p);
+    fs::path cur = abs.root_path();
+    bool exists = true;
+    for (const auto& comp : abs.relative_path()) {
+        if (comp.empty()) continue;
+        const fs::path next = cur / comp;
+        if (exists) {
+            std::error_code ec;
+            if (!fs::exists(next, ec) || ec) {
+                exists = false;
+            } else if (const fs::path v = onDiskCaseVariant(cur, comp); !v.empty()) {
+                cur /= v;
+                continue;
+            }
+        }
+        cur = next;
+    }
+    return cur;
+}
+
+// P40 review (#75): ONE normalization for an include rule's output template, shared by routing
+// (routeIncludeOutput) and the owned scan (ownedScope), so the folder a rule writes to and the folder its
+// owned scan deletes in can never disagree. `\` is a separator on every platform (a pgconfig.json is
+// cross-platform; on Windows `<config> / "\gen"` used to mean `<drive>:\gen`), and a leading separator does
+// not root the template: it stays config-relative (an empty %(Directory) leaves a leading '/').
+inline std::string normalizeOutputTemplate(std::string s) {
+    std::replace(s.begin(), s.end(), '\\', '/');
+    while (!s.empty() && s.front() == '/') s.erase(0, 1);
+    return s;
+}
+
+// P40 review r5 (gating 1): where one include rule's route STARTS, for the A3 directory-case check — the config
+// folder climbed by the template's leading `..` segments (`../web/gen/%(RecursiveDir)…` starts at the config
+// folder's parent, so `web/`, `gen/` and every directory %(RecursiveDir) adds are the route's own and are compared
+// with the disk). A rooted template starts at its literal folder (everything before the first `%(`, cut back to
+// the last separator): a user's absolute checkout path is never renamed, only what the template adds below it.
+// Empty = the config folder itself (already a root).
+inline std::filesystem::path includeRouteRoot(const std::filesystem::path& configDir, const std::string& tmpl) {
+    namespace fs = std::filesystem;
+    std::string lit = tmpl.substr(0, tmpl.find("%("));
+    std::replace(lit.begin(), lit.end(), '\\', '/');
+    if (fs::path(lit).has_root_name()) { // `C:/out/%(Filename)` — routing keeps it absolute
+        const std::size_t slash = lit.rfind('/');
+        return slash == std::string::npos ? fs::path() : absoluteDir(fs::path(lit.substr(0, slash + 1)));
+    }
+    const fs::path rel = fs::path(normalizeOutputTemplate(lit)).lexically_normal();
+    fs::path up;
+    for (const auto& c : rel) {
+        if (c != "..") break;
+        up /= c;
+    }
+    return up.empty() ? fs::path() : absoluteDir(configDir / up);
+}
+inline std::vector<std::filesystem::path> includeRouteRoots(const PgConfig& pc) {
+    std::vector<std::filesystem::path> out;
+    if (!pc.found) return out;
+    for (const auto& r : pc.include)
+        if (std::filesystem::path root = includeRouteRoot(pc.dir, r.output); !root.empty()) out.push_back(std::move(root));
+    return out;
+}
+
+// P40 B5 + review (#75): the scan folder of one `"owned": true` rule — the template's literal folder prefix
+// (everything before the first `%(`, cut back to the last separator), resolved exactly as routing resolves
+// it. Recursive when what follows can introduce directories (`%(RecursiveDir)`, `%(Directory)`, or any
+// later separator, e.g. `gen/%(TargetLanguage)/%(Filename)`).
+// An owned folder's stale marked files are DELETED, so the scope must be a dedicated folder: refused (false,
+// `err` = the reason) when the template is rooted (a leading `/` or `\`) or absolute, when the literal prefix
+// is empty (`%(Filename)`, `gen-%(TargetLanguage)/…`), or when it resolves to a filesystem root, the config
+// folder itself (`./%(Filename)`) or one of its ancestors (`../%(Filename)`). `..` into a SIBLING subtree
+// (`../../web/src/gen/%(Filename)`) stays allowed.
+inline bool ownedScope(const std::filesystem::path& configDir, const std::string& tmpl, std::filesystem::path& dir,
+                       bool& recursive, std::string& err) {
+    namespace fs = std::filesystem;
+    const std::size_t ph = tmpl.find("%(");
+    std::string lit = tmpl.substr(0, ph);
+    std::replace(lit.begin(), lit.end(), '\\', '/');
+    std::string rest = ph == std::string::npos ? std::string() : tmpl.substr(ph);
+    std::replace(rest.begin(), rest.end(), '\\', '/');
+    recursive = rest.find("%(RecursiveDir)") != std::string::npos || rest.find("%(Directory)") != std::string::npos ||
+                rest.find('/') != std::string::npos;
+    dir.clear();
+    // P40 review r4: a UNC template (`\\server\share\…`) is named for what it is, not as a leading separator.
+    if (lit.rfind("//", 0) == 0) { err = "is an absolute (UNC) path"; return false; }
+    if (!lit.empty() && lit.front() == '/') { err = "starts with a path separator"; return false; }
+    if (fs::path(lit).has_root_name() || fs::path(lit).is_absolute()) { err = "is an absolute path"; return false; }
+    const std::size_t slash = lit.rfind('/');
+    const std::string prefix = slash == std::string::npos ? std::string() : normalizeOutputTemplate(lit.substr(0, slash));
+    if (prefix.empty()) { err = "has no literal output folder before its first placeholder"; return false; }
+    const fs::path base = absoluteDir(configDir);
+    dir = absoluteDir(base / prefix);
+    if (dir == dir.root_path()) { err = "resolves to a filesystem root"; return false; }
+    const fs::path up = base.lexically_relative(dir); // "." = the config folder; no leading ".." = an ancestor
+    if (dir == base || (!up.empty() && *up.begin() != "..")) {
+        err = "resolves to the config folder or one of its ancestors ('" + dir.string() + "')";
+        return false;
+    }
+    // P40 review (#75, pre-push): the lexical test above is case-sensitive and blind to aliases, so on a
+    // case-insensitive filesystem `../PROJ/%(Filename)` from `t\Proj` (or `../../T/…`, an 8.3 short name, a
+    // junction) named the config folder or an ancestor and passed. The config folder and its ancestors always
+    // exist, so ask the filesystem: the scope must not BE any of them (fs::equivalent: same file identity).
+    std::error_code ec;
+    if (fs::exists(dir, ec)) {
+        for (fs::path a = base;; a = a.parent_path()) {
+            if (fs::equivalent(dir, a, ec) && !ec) {
+                err = "resolves to the config folder or one of its ancestors ('" + dir.string() + "' is '" + a.string() + "')";
+                return false;
+            }
+            if (!a.has_relative_path() || a.parent_path() == a) break;
+        }
+    }
+    return true;
+}
+
+// P40 review (A5): the SHAPE of a pgconfig.json, checked before anything reads it. Every reader below is
+// lenient by design (a wrong-kind value reads as empty), so without this a typo'd key (`"target"`), a string
+// where a list belongs (`"targets": "csharp"`) or a non-object document was silently ignored — and a build
+// with the config ignored exited 0. Each problem is one error naming the key; the caller refuses with 64.
+inline void validatePgConfigShape(const json::Value& v, std::vector<std::string>& errors) {
+    using K = json::Value::Kind;
+    if (v.kind != K::Object) {
+        errors.push_back("pgconfig.json: the document must be a JSON object");
+        return;
+    }
+    // P40 review r3: blank means empty — `" "` is no name and no pattern (a blank pattern used to be accepted
+    // and its output landed next to the .pg).
+    auto blank = [](const std::string& s) {
+        return std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c) != 0; });
+    };
+    auto stringList = [&](const json::Value& x, const std::string& where) {
+        if (x.kind != K::Array) { errors.push_back("pgconfig.json: " + where + " must be an array of strings"); return; }
+        for (const auto& e : x.items())
+            if (e.kind != K::String || blank(e.asString())) {
+                errors.push_back("pgconfig.json: " + where + " must be an array of non-empty strings");
+                return;
+            }
+    };
+    static const char* const kKeys[] = {"$schema", "root", "lib", "targets", "targetOptions", "originInfo",
+                                        "dependencies", "forbiddenIdentifiers", "include", "access"};
+    for (const auto& [key, val] : v.members) {
+        if (std::find_if(std::begin(kKeys), std::end(kKeys), [&](const char* k) { return key == k; }) == std::end(kKeys)) {
+            errors.push_back("pgconfig.json: unknown key \"" + key + "\" (known keys: root, lib, targets, targetOptions, "
+                             "originInfo, dependencies, forbiddenIdentifiers, include)");
+            continue;
+        }
+        if (key == "root" && val.kind != K::String) errors.push_back("pgconfig.json: \"root\" must be a string");
+        else if (key == "lib" || key == "targets") {
+            stringList(val, "\"" + key + "\"");
+            // P40 review r3: `"targets": []` read as ABSENT for `build` (exit 64) but as a valid config for
+            // `--target` and `check` (exit 0). An empty set builds nothing; it is refused everywhere.
+            if (key == "targets" && val.kind == K::Array && val.items().empty())
+                errors.push_back("pgconfig.json: \"targets\" must name at least one target (e.g. [\"csharp\"]); "
+                                 "omit the key to pass --target instead");
+        }
+        else if (key == "originInfo" && val.kind != K::Bool) errors.push_back("pgconfig.json: \"originInfo\" must be true or false");
+        else if (key == "dependencies") {
+            if (val.kind != K::Object) errors.push_back("pgconfig.json: \"dependencies\" must be an object of package -> version spec");
+            else for (const auto& [pkg, spec] : val.members)
+                if (spec.kind != K::String) errors.push_back("pgconfig.json: dependencies." + pkg + " must be a string version spec");
+        } else if (key == "forbiddenIdentifiers") {
+            if (val.kind == K::Array) stringList(val, "\"forbiddenIdentifiers\"");
+            else if (val.kind == K::Object) { for (const auto& [t, names] : val.members) stringList(names, "forbiddenIdentifiers." + t); }
+            else errors.push_back("pgconfig.json: \"forbiddenIdentifiers\" must be an array of names or an object of target -> names");
+        } else if (key == "include") {
+            if (val.kind != K::Array) { errors.push_back("pgconfig.json: \"include\" must be an array of rules"); continue; }
+            for (const auto& rule : val.items()) {
+                if (rule.kind != K::Object) { errors.push_back("pgconfig.json: every \"include\" rule must be an object"); continue; }
+                for (const auto& [rk, rv] : rule.members) {
+                    if (rk == "pattern" || rk == "output") {
+                        if (rv.kind != K::String) errors.push_back("pgconfig.json: an include rule's \"" + rk + "\" must be a string");
+                        else if (!rv.asString().empty() && blank(rv.asString()))
+                            errors.push_back("pgconfig.json: an include rule's \"" + rk + "\" is blank");
+                    } else if (rk == "target") {
+                        // P40 review r4: a blank string (`""`, `" "`) was accepted; the rule then never applied.
+                        if (rv.kind != K::String) {
+                            stringList(rv, "an include rule's \"target\" (a name or a list of names)");
+                            // P40 review r5: `[]` read as "every target" (an absent key) — the opposite of what an
+                            // empty list says. Refused like `"targets": []`; omitting the key is the "every target" form.
+                            if (rv.kind == K::Array && rv.items().empty())
+                                errors.push_back("pgconfig.json: an include rule's \"target\" is an empty list (name at "
+                                                 "least one target, e.g. [\"typescript\"], or omit the key to apply the "
+                                                 "rule to every target)");
+                        } else if (blank(rv.asString()))
+                            errors.push_back("pgconfig.json: an include rule's \"target\" is blank (name a target, e.g. "
+                                             "\"typescript\", or omit the key to apply the rule to every target)");
+                    } else if (rk != "targetOptions" && rk != "owned") { // both checked where they are read
+                        errors.push_back("pgconfig.json: an include rule has an unknown key \"" + rk +
+                                         "\" (known keys: pattern, output, target, targetOptions, owned)");
+                    }
+                }
+            }
+        }
+    }
+}
+
 inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
-    for (std::filesystem::path d = startDir;; d = d.parent_path()) {
+    // P40 review r7: the config folder is spelled as on disk, whatever case the input or cwd was typed in.
+    for (std::filesystem::path d = diskSpelledDir(startDir);; d = d.parent_path()) {
         std::string src;
         if (readFile(d / "pgconfig.json", src)) {
-            json::Value v = json::parse(src);
+            std::string jsonErr;
+            json::Value v = json::parse(src, jsonErr);
             PgConfig pc;
             pc.found = true;
             pc.dir = d;
+            // P40 review r6 (gating 2): a malformed document is refused WHOLE — nothing is read from the partial
+            // value json::parse returns, so no path is ever built from a string it could not decode (a lone `\u`
+            // surrogate left bytes no path conversion accepts: a raw OS error 1113 instead of this diagnostic).
+            if (!jsonErr.empty()) {
+                pc.errors.push_back((d / "pgconfig.json").string() + ": malformed JSON: " + jsonErr);
+                return pc;
+            }
+            validatePgConfigShape(v, pc.errors); // P40 review (A5): a well-formed but invalid config refuses too
             std::string r = v["root"].asString();
             pc.root = (r.empty() ? d : (d / r)).lexically_normal().string();
             for (const auto& e : v["lib"].items()) { if (!pc.lib.empty()) pc.lib += ","; pc.lib += e.asString(); }
-            pc.access = v["access"].asString();
+            parseTargetOptions(v["targetOptions"], pc.targetOptions, pc.errors, "pgconfig.json");
+            // P40 B1 (D9): the top-level C# `access` key moved under targetOptions.csharp — a clean
+            // cutover, so the old spelling is refused with the new one named rather than silently ignored.
+            if (v["access"].kind != json::Value::Kind::Null)
+                pc.errors.push_back("pgconfig.json: top-level \"access\" was removed; set it per target instead: "
+                                    "\"targetOptions\": { \"csharp\": { \"access\": \"" + v["access"].asString() + "\" } }");
             pc.originInfo = v["originInfo"].asBool(false); // P38/issue #69
             for (const auto& e : v["targets"].items())
                 if (e.kind == json::Value::Kind::String) pc.targets.push_back(e.asString());
@@ -126,8 +617,25 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
                 if (t.kind == json::Value::Kind::String) rule.targets.push_back(t.asString());
                 else for (const auto& te : t.items())
                     if (te.kind == json::Value::Kind::String) rule.targets.push_back(te.asString());
+                parseTargetOptions(e["targetOptions"], rule.targetOptions, pc.errors,
+                                   "pgconfig.json include rule '" + rule.pattern + "'");
+                // P40 B5: `"owned": true` — the rule's literal output folder belongs to Polyglot, so a stale
+                // file there that carries Polyglot's own `Generated by Polyglot.` line is drift (--check) or
+                // deleted (build). Anything else found there is an error and is never deleted (D5).
+                const json::Value& ow = e["owned"];
+                if (ow.kind == json::Value::Kind::Bool) rule.owned = ow.boolean;
+                else if (!ow.isNull())
+                    pc.errors.push_back("pgconfig.json: an include rule's \"owned\" must be true or false");
+                std::filesystem::path scope;
+                bool scopeRecursive = false;
+                std::string scopeErr;
                 if (rule.pattern.empty() || rule.output.empty())
                     pc.errors.push_back("pgconfig.json: an include rule needs both \"pattern\" and \"output\"");
+                else if (rule.owned && !ownedScope(d, rule.output, scope, scopeRecursive, scopeErr))
+                    pc.errors.push_back("pgconfig.json: include rule '" + rule.pattern + "': \"owned\": true is refused "
+                                        "because its output '" + rule.output + "' " + scopeErr + ". Stale generated "
+                                        "files in an owned folder are deleted, so it must be a dedicated subfolder "
+                                        "(e.g. \"gen/%(Filename)\", or \"../web/src/gen/%(Filename)\" in a sibling tree)");
                 else
                     pc.include.push_back(std::move(rule));
             }
@@ -142,14 +650,15 @@ inline PgConfig loadPgConfig(const std::filesystem::path& startDir) {
 // the target's manifest fileExtension() — or nullopt when no rule matches (the caller falls back to
 // --out / the input's directory). A template error sets `err` (distinct from a clean no-match; the
 // caller must check it) — a typo'd placeholder is a refusal, never a silent fallback.
-inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& pc,
-                                                               const std::filesystem::path& sourceAbs,
-                                                               const std::string& targetName,
-                                                               std::string& err) {
-    if (!pc.found || pc.include.empty() || sourceAbs.empty()) return std::nullopt;
+// The first `include` rule (in rule order) that applies to `sourceAbs` for `targetName` — the one rule that
+// both routes the file and contributes its per-rule targetOptions. nullptr = no rule applies.
+inline const IncludeRule* matchIncludeRule(const PgConfig& pc, const std::filesystem::path& sourceAbs,
+                                           const std::string& targetName, std::filesystem::path* relOut = nullptr,
+                                           GlobResult* globOut = nullptr) {
+    if (!pc.found || pc.include.empty() || sourceAbs.empty()) return nullptr;
     std::error_code ec;
     const std::filesystem::path rel = std::filesystem::relative(sourceAbs, pc.dir, ec);
-    if (ec || rel.empty() || *rel.begin() == "..") return std::nullopt; // outside the config's tree
+    if (ec || rel.empty() || *rel.begin() == "..") return nullptr; // outside the config's tree
     const std::string relStr = rel.generic_string();
     for (const auto& rule : pc.include) {
         if (!rule.targets.empty() &&
@@ -157,6 +666,114 @@ inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& p
             continue;
         const GlobResult g = globMatch(rule.pattern, relStr);
         if (!g.matched) continue;
+        if (relOut) *relOut = rel;
+        if (globOut) *globOut = g;
+        return &rule;
+    }
+    return nullptr;
+}
+
+// P40 B1: the target options one file sees for one target: the project-level `targetOptions.<target>`,
+// overlaid by its first matching include rule's, overlaid by `--target-option` (the most explicit wins).
+inline std::map<std::string, std::string> fileTargetOptions(const PgConfig& pc, const TargetOptionsByTarget& flags,
+                                                            const std::filesystem::path& sourceAbs,
+                                                            const std::string& targetName) {
+    std::map<std::string, std::string> out;
+    auto overlay = [&](const TargetOptionsByTarget& layer) {
+        auto it = layer.find(targetName);
+        if (it == layer.end()) return;
+        for (const auto& kv : it->second) out[kv.first] = kv.second;
+    };
+    if (pc.found) {
+        overlay(pc.targetOptions);
+        if (const IncludeRule* r = matchIncludeRule(pc, sourceAbs, targetName)) overlay(r->targetOptions);
+    }
+    overlay(flags);
+    return out;
+}
+
+// P40 B1: the LibConfig::targetOptions callback for one compiled closure: origin "" is `entryAbs`, any other
+// origin is a module's canonical path. Captures by value — the callback may outlive the caller's locals.
+inline std::function<std::map<std::string, std::string>(const std::string&, const std::string&)>
+targetOptionsFn(const PgConfig& pc, const TargetOptionsByTarget& flags, const std::filesystem::path& entryAbs) {
+    return [pc, flags, entryAbs](const std::string& target, const std::string& origin) {
+        return fileTargetOptions(pc, flags, origin.empty() ? entryAbs : std::filesystem::path(origin), target);
+    };
+}
+
+// P40 B1: config-time validation of every targetOptions layer (project, include rules, flags): each key must
+// name a loaded target and each option must be one that target declares, with a value matching its pattern.
+// Done up front so a typo refuses even for a target this run does not build, and before anything is written.
+// `unverified` (offline `check`): targets whose plugin could not be loaded without the network — their options
+// are skipped, not reported as naming an unknown target.
+inline void validateTargetOptions(const PgConfig& pc, const TargetOptionsByTarget& flags,
+                                  std::vector<std::string>& errors,
+                                  const std::set<std::string>* unverified = nullptr) {
+    auto check = [&](const TargetOptionsByTarget& layer, const std::string& where) {
+        for (const auto& [target, opts] : layer) {
+            const Backend* b = findBackend(target);
+            if (!b && unverified && unverified->count(target)) continue;
+            if (!b) {
+                errors.push_back(where + ": targetOptions names unknown target '" + target + "' (loaded targets: " +
+                                 [] { std::string s; for (const auto& n : backendNames()) s += (s.empty() ? "" : ", ") + n; return s; }() + ")");
+                continue;
+            }
+            std::map<std::string, std::string> resolved;
+            std::string err;
+            if (!resolveTargetOptions(*b, opts, resolved, err)) errors.push_back(where + ": " + err);
+        }
+    };
+    if (pc.found) {
+        check(pc.targetOptions, "pgconfig.json");
+        for (const auto& r : pc.include) check(r.targetOptions, "pgconfig.json include rule '" + r.pattern + "'");
+    }
+    check(flags, "--target-option");
+}
+
+// P40 review r4: every name an include rule's `"target"` lists must be a loaded target (or one an offline `check`
+// could not verify). A typo (`"typescrpt"`) made the rule never apply, so the TS output silently landed next to
+// the .pg. Checked against the loaded plugins, like targetOptions keys — not against `targets`, since a
+// `--target <t>` override may build a target the set does not list.
+// P40 review r5: and a target this config builds. A loaded target that `targets` omits is flagged when it is
+// BUNDLED (`inBox`): nothing configures it, so the rule applies only to a `--target <t>` run
+// (`"python"` with `"targets": ["typescript"]`). A target a pgconfig dependency provides may be omitted from
+// `targets` — it is built through `--target`, which `alsoBuilt` names for this run. Without `targets` (every build
+// passes --target) a loaded target is enough.
+// P40 review r6: the bundled-target case is a WARNING (into `warnings`), not a refusal — `--target python` builds
+// any loaded target, so the rule does apply to those runs, and refusing blocked `build`, `--only` and `--target
+// csharp` runs that never build python. The warning names the one way the rule applies.
+inline void validateIncludeTargets(const PgConfig& pc, std::vector<std::string>& errors,
+                                   std::vector<std::string>& warnings, const std::set<std::string>& unverified = {},
+                                   const std::set<std::string>& inBox = {}, const std::string& alsoBuilt = {}) {
+    if (!pc.found) return;
+    for (const auto& r : pc.include)
+        for (const auto& t : r.targets) {
+            if (unverified.count(t)) continue;
+            if (!findBackend(t)) {
+                std::string loaded;
+                for (const auto& n : backendNames()) loaded += (loaded.empty() ? "" : ", ") + n;
+                errors.push_back("pgconfig.json include rule '" + r.pattern + "': \"target\" names unknown target '" + t +
+                                 "' (loaded targets: " + loaded + ")");
+                continue;
+            }
+            if (pc.targets.empty() || t == alsoBuilt || !inBox.count(t) ||
+                std::find(pc.targets.begin(), pc.targets.end(), t) != pc.targets.end())
+                continue;
+            const std::string w = "warning: pgconfig.json include rule '" + r.pattern + "' targets '" + t +
+                                  "', which no configured target or dependency provides; it applies only to runs with "
+                                  "--target " + t;
+            if (std::find(warnings.begin(), warnings.end(), w) == warnings.end()) warnings.push_back(w);
+        }
+}
+
+inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& pc,
+                                                               const std::filesystem::path& sourceAbs,
+                                                               const std::string& targetName,
+                                                               std::string& err) {
+    std::filesystem::path rel;
+    GlobResult g;
+    if (const IncludeRule* r = matchIncludeRule(pc, sourceAbs, targetName, &rel, &g)) {
+        const IncludeRule& rule = *r;
         TemplateValues vals;
         vals.filename = sourceAbs.stem().string();
         vals.directory = rel.parent_path().generic_string(); // config-relative, no trailing '/'
@@ -164,9 +781,8 @@ inline std::optional<std::filesystem::path> routeIncludeOutput(const PgConfig& p
         vals.targetLanguage = targetName;
         std::string expanded;
         if (!expandOutputTemplate(rule.output, vals, expanded, err)) return std::nullopt; // err set
-        // An empty %(Directory) can leave a leading '/'; the template stays config-relative.
-        while (!expanded.empty() && expanded.front() == '/') expanded.erase(0, 1);
-        return (pc.dir / expanded).lexically_normal();
+        // The one normalization ownedScope shares: `\` is a separator, a leading one stays config-relative.
+        return (pc.dir / normalizeOutputTemplate(expanded)).lexically_normal();
     }
     return std::nullopt;
 }

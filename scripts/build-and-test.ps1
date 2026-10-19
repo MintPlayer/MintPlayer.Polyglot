@@ -2,7 +2,8 @@
 # One-shot build + test gate for MintPlayer.Polyglot (P35 tiered).
 #
 #   -Tier full (default): every stage — the ONLY pre-merge bar.
-#   -Tier fast: parity -> build -> unit exe -> cli-smoke -> refusals -> lsp (~20 s + build) — the
+#   -Tier fast: parity -> build -> unit exe -> cli-smoke -> refusals -> lsp -> synthetic culture
+#               (~25 s + build) — the
 #               mid-slice sanity ceiling CLAUDE.md prescribes, with the cheapest cross-cutting nets in.
 #               fast is a subset, never a substitute: it runs NO conformance/fidelity/watch/registry/
 #               samples/nullable/library/nuget coverage.
@@ -22,6 +23,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
+# -Tier fast synthetic-culture smoke: the programs whose output is number/string text a culture could move
+# (one list, shared with `nx run polyglot:culture`).
+$fastCulturePrograms = (Get-Content (Join-Path $repo "tests\conformance\culture\fast-programs.txt") -Raw).Trim()
 $sln = Join-Path $repo "MintPlayer.Polyglot.sln"
 
 # Locate the VS 2026 MSBuild (prerelease/Insiders); fall back to the documented path (see CLAUDE.md).
@@ -65,7 +69,15 @@ Write-Host "`n==> LSP protocol gate (framed JSON-RPC lifecycle over stdio)"
 if ($LASTEXITCODE -ne 0) { Write-Host "`nLSP GATE FAILED."; exit 1 }
 
 if ($Tier -eq "fast") {
-    Write-Host "`nFast tier green: build + unit + cli-smoke + refusals + lsp."
+    # P40 A3: the synthetic hostile culture (en-US clone: sign U+2212, decimal ',', group '.') over the
+    # number/string/parse programs — C# only, a few seconds. The full tier runs the four real cultures over
+    # every program inside the conformance stage instead.
+    Write-Host "`n==> Synthetic-culture smoke (C# oracle under pg-hostile — P40 A3)"
+    & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-conformance.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe") `
+        -Targets csharp -Cultures pg-hostile -Only $fastCulturePrograms
+    if ($LASTEXITCODE -ne 0) { Write-Host "`nSYNTHETIC-CULTURE SMOKE FAILED."; exit 1 }
+
+    Write-Host "`nFast tier green: build + unit + cli-smoke + refusals + lsp + synthetic culture."
     Write-Host "(fast is a SUBSET — run the full tier before merging.)"
     exit 0
 }
@@ -91,7 +103,7 @@ if ($env:POLYGLOT_ALLOW_REGISTRY_SKIP -eq "1") {
 # gates share one transpile pass). The staging dir outlives this stage; it is consumed by the library gate and
 # removed at the end.
 $confStaging = Join-Path ([System.IO.Path]::GetTempPath()) ("polyglot-libstage-" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8))
-Write-Host "`n==> Differential conformance (C# oracle vs TS / Python / PHP)"
+Write-Host "`n==> Differential conformance (C# oracle vs TS / Python / PHP; C# under tr-TR/nl-BE/sv-SE/fa-IR; PHP under hostile precision; grep gates)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\conformance\run-conformance.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe") -StagingOut $confStaging
 if ($LASTEXITCODE -ne 0) { Write-Host "`nCONFORMANCE FAILED."; Remove-Item -Recurse -Force $confStaging -ErrorAction SilentlyContinue; exit 1 }
 
@@ -102,6 +114,14 @@ if ($LASTEXITCODE -ne 0) { Write-Host "`nSAMPLE EMIT GATE FAILED."; exit 1 }
 Write-Host "`n==> Nullable / NRT gate (annotations preserved + clean under <Nullable>enable/>)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\nullable\run-nullable.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
 if ($LASTEXITCODE -ne 0) { Write-Host "`nNULLABLE GATE FAILED."; exit 1 }
+
+Write-Host "`n==> D8 floor gate (the whole corpus' C# at C# 11 + net8.0 + Nullable + TreatWarningsAsErrors)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\floor\run-floor.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nD8 FLOOR GATE FAILED."; exit 1 }
+
+Write-Host "`n==> Number-text corpus (shipped C#/Python/PHP helpers vs ECMAScript String(x), ~247k doubles)"
+& pwsh -NoProfile -File (Join-Path $repo "tests\numfmt\run-numfmt.ps1")
+if ($LASTEXITCODE -ne 0) { Write-Host "`nNUMBER-TEXT CORPUS FAILED."; exit 1 }
 
 Write-Host "`n==> Coverage-attribution gate (origin sinks land; a real report projects onto the .pg)"
 & pwsh -NoProfile -File (Join-Path $repo "tests\coverage\run-coverage.ps1") -Cli (Join-Path $repo "x64\$Configuration\MintPlayer.Polyglot.Cli.exe")

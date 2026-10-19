@@ -1,0 +1,11 @@
+// REFUSED (P40 review r6): #4 a lambda passed as an argument may be called at once, so its body counts as the initializer's: it reads a later value (C# 1, TS/Python crash). Spark l1_4q.
+import "std.io"
+
+fn apply(f: () => i32): i32 => f()
+
+let a: i32 = apply(() => b + 1)
+let b: i32 = 5
+
+fn main() {
+  print(a)
+}

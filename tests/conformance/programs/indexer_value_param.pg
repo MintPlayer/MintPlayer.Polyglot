@@ -1,0 +1,29 @@
+// P40 review r7 (part 2): an indexer `set` whose value parameter is named `value` (SPEC §6.2's own spelling) — C#
+// binds it to the accessor's implicit `value` instead of re-declaring it (`var value = value;` was CS0136/CS0841).
+// A differently named value parameter keeps its alias, and a property setter named `value` already did this.
+import "std.io"
+
+class Grid {
+  var last: i32 = 0
+  operator fn get(i: i32): i32 => this.last
+  operator fn set(i: i32, value: i32) {
+    this.last = value + i
+  }
+}
+
+class Other {
+  var last: i32 = 0
+  operator fn get(i: i32): i32 => this.last * i
+  operator fn set(i: i32, v: i32) {
+    this.last = v - i
+  }
+}
+
+fn main() {
+  let g = Grid()
+  g[1] = 5
+  print(g[0])
+  let o = Other()
+  o[2] = 9
+  print(o[3])
+}

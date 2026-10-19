@@ -1,0 +1,12 @@
+// REFUSED (P40 review r5 #9): a concrete class must implement every inherited abstract method (C# CS0534, TS2515).
+import "std.io"
+
+abstract class S {
+  abstract fn a(): i32
+}
+class T : S {
+}
+
+fn main() {
+  print(T().a())
+}

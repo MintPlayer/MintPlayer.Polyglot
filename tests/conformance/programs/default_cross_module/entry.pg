@@ -1,0 +1,18 @@
+import "std.io"
+import { P, isRed } from "./paint"
+import { Q, loudest } from "./volume"
+
+// P40 review r6 #6: a record default is filled in at the construction site (r5 #11), so this module's code names
+// the default's own type — `Color.Blue` (declared beside `P`) and `Tone.Loud` (declared in a THIRD module, which
+// only `volume` imports). Neither is imported here; the TS and Python imports now come from what the lowered code
+// references (TS2304 / a ReferenceError / a Python NameError before). An extension default (`3.isRed()`) likewise;
+// and an extension is imported by its name (it was "has no export" while the scope check asked for exactly that).
+fn main() {
+  let p = P(1)
+  print(p.isBlue())
+  print(p.label)
+  print(P(2, p.c).isBlue())
+  print(Q(1).loud())
+  print(loudest())
+  print(3.isRed())
+}

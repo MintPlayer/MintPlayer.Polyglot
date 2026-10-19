@@ -1,0 +1,71 @@
+// P40 review r3 2(c)/(d) and item 6: compound-assignment evaluation order and temps.
+//  * C# and JS evaluate a compound target's receiver and indices BEFORE the value; Python and PHP evaluate an
+//    assignment's right side first. When the value has side effects (rebinding `G.cur`, bumping an index,
+//    a closure bumping a captured local), every part that could change is hoisted first — C#/JS order.
+//  * The expansion's `__cN` temps and Python's `??` walrus temps came from two counters with one prefix, so
+//    `xs[idx()] += opt(0) ?? 9` rebound the index temp (Python printed [20, 20]). One allocator now.
+//  * A compound shift on an i64 converted its count into the slot (`h <<= 3L`, C# CS0019): the count is i32.
+
+import { List } from "std.collections"
+
+class Box {
+  var x: i32
+  constructor(x: i32) {
+    this.x = x
+  }
+}
+class G {
+  static var cur: Box = Box(1)
+  static var idx: i32 = 0
+}
+
+fn swapBox(): i32 {
+  G.cur = Box(100)
+  return 5
+}
+fn bumpIdx(): i32 {
+  G.idx = G.idx + 1
+  return 7
+}
+fn idx(): i32 => 1
+fn opt(n: i32): i32? => if n > 0 { n } else { null }
+
+fn main() {
+  let first = G.cur
+  G.cur.x += swapBox()
+  print(first.x)
+  print(G.cur.x)
+
+  var ys = [10, 20, 30]
+  ys[G.idx] += bumpIdx()
+  print(ys[0])
+  print(ys[1])
+
+  var n = 4
+  let bump: () => i32 = () => {
+    n = n + 10
+    return 1
+  }
+  var zs = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  zs[n] += bump()
+  print(zs[4])
+  print(zs[14])
+
+  let xs = List<i32>()
+  xs.add(10)
+  xs.add(20)
+  xs[idx()] += opt(0) ?? 9
+  print(xs[0])
+  print(xs[1])
+  xs[idx()] += opt(5) ?? 1
+  print(xs[1])
+
+  var h: i64 = 1i64
+  h <<= 3
+  print(h)
+  h >>= 1
+  print(h)
+  var u: u32 = 1u32
+  u <<= 31
+  print(u)
+}

@@ -35,6 +35,9 @@ struct TypeRef {
     std::vector<TypeRef> args;    // Named: generic args | Tuple: elements | Function: parameter types
     std::vector<TypeRef> ret;     // Function: the single return type (size 1)
     bool nullable = false;        // trailing '?'
+    // Where the type was spelled (its first token), for diagnostics about the type itself — P40 review B10: a
+    // D16 "not imported" type used to point at the enclosing statement. line 0 = synthesized (no spelling).
+    SourcePos pos{0, 0, 0};
 
     bool absent() const { return kind == Kind::Named && name.empty() && args.empty() && !nullable; }
 };
@@ -131,6 +134,40 @@ struct Expr {
     std::string text;
     bool boolVal = false;
     bool flag = false;          // Member null-safe | Range inclusive | Lambda has block body
+    // Range (a `for` iterable, set by sema — P40 D7): the end bound reads the same value on every
+    // iteration (a literal, a module value, or an immutable local/param), so it may be re-read in the loop
+    // condition; otherwise lowering hoists it into a temp so it is evaluated exactly once.
+    bool rangeEndSimple = false;
+    // Range (P40 review B6): the end bound is a literal provably below the loop type's maximum, so an inclusive
+    // range's counter can never step past the maximum. Otherwise a target with a wrapping counter guards it.
+    bool rangeEndBelowMax = false;
+    // Name (set by sema — P40 D14): a read of a nullable local/param that null flow-narrowing proved
+    // non-null here (`if x != null { … x … }`). `type` is the non-nullable type; lowering keeps the
+    // variable's nullable type on the read and converts it (a value-type Nullable<T> needs the unwrap on C#).
+    bool narrowedNonNull = false;
+    // Call (set by sema — P40 review r4): `recv.f(args)` / `Type.g(args)` names a FIELD of function type, not a
+    // method — the call goes through the field's value (lowered like any function-value callee). Review r5: also a bare
+    // `name(args)` naming a MODULE VALUE of function type.
+    bool calleeIsField = false;
+    // Name (set by sema — P40 review r4 item 20): a top-level function used as a VALUE (`apply(five)`); its
+    // overloadName/linkName carry the resolved names, and lowering emits a function reference (ir::Call isRef).
+    bool fnRef = false;
+    // Lambda (set by sema — P40 review r4 item 18): an expression-bodied lambda flowing into a function type
+    // returning unit — its body's value is discarded (lowering marks a non-statement body for the discard form).
+    bool lambdaUnitResult = false;
+    // Lambda with a block body (set by sema — P40 follow-up): it flows into a function type whose result is a
+    // concrete non-unit type, so every path of the block must `return` a value or `throw` (the flow pass checks
+    // it, as for a function). Unset when the result type is unknown or unit.
+    bool lambdaNeedsValue = false;
+    // Call (set by sema — P40 review r5 item 20): `recv?.m(args)` (a method, bound std member, extension or a
+    // function-typed field) on a MAYBE-NULL receiver. `type` is the result made nullable; lowering evaluates the
+    // receiver once and calls only when it is present (an `if` as a statement, a null-testing match as a value).
+    bool nullSafeCall = false;
+    // Name (set by sema — P40 review r5 item 23): no call can rebind this name — a `let`/parameter, or a `var`
+    // local no lambda assigns. Such a name needs no snapshot ahead of a side-effecting assigned value.
+    bool callStable = false;
+    // Name (set by sema — P40 review r5, part 2): a read of a MODULE value from inside a lambda (see ir::Var).
+    bool liveModuleRead = false;
 
     ExprPtr lhs;                // operand/object/left/callee/base/cond/scrutinee
     ExprPtr rhs;                // Binary/Range right | IfExpr then
@@ -144,8 +181,11 @@ struct Expr {
     std::vector<std::string> chunks; // InterpString: N+1 literal chunks around N holes (in `args`)
     TypeRef castType;              // Cast/Is/As: the target/tested type (operand is `lhs`; Is binding is `text`)
     std::string overloadName;      // Call: the resolved overload's mangled name (set by sema); empty = none
+    std::string linkName;          // Call: the resolved overload's LINK name (FunctionDecl::linkName); empty = none
+    std::string uniqueName;        // Call: the resolved overload's UNIQUE name (FunctionDecl::uniqueName); empty = none
     std::string staticOwner;       // Name/Call: resolves to a static/const member of this enclosing class
                                    // (set by sema so lowering can qualify it as `Owner.member`); empty = none
+    std::vector<std::string> preludeKeys; // Extern: manifest prelude keys the text needs (P40 §0 binding `requires`)
 };
 
 struct CatchClause {
@@ -168,6 +208,7 @@ struct Stmt {
     bool isMutable = false;         // Let: `var` (true) vs `let` (false)
     TypeRef declType;               // Let / Use: explicit annotation (when hasDeclType)
     bool hasDeclType = false;
+    bool dropUnused = false;        // Let (set by sema, r4): an unread `_`-prefixed local with a constant init — not emitted
 
     ExprPtr target;                 // Assign: lvalue
     std::string op;                 // Assign: "=", "+=", ...
@@ -187,6 +228,15 @@ struct Stmt {
 struct FunctionDecl {
     std::string name;
     std::string mangledName;       // per-target name for overloads (set by sema); == name when not overloaded
+    // P40 review r3 2(e) / r4 #12-#13: the name for a target that links every module's free functions into ONE
+    // scope WITH native overloading (C#'s PolyglotProgram): == name unless the program has a REAL clash — a
+    // call where a second same-named declaration of that one scope could also apply, so the target's own
+    // overload resolution might bind another overload than sema chose (a generic beside a specific one, or an
+    // overload from a module the caller never imported). Then the always-mangled signature name.
+    std::string linkName;
+    // P40 review r4 #13: the name for a one-scope target WITHOUT overloading (PHP's function namespace): the
+    // signature name whenever the program declares the name more than once, else the name.
+    std::string uniqueName;
     SourcePos pos;                 // the `fn` keyword
     SourcePos namePos;             // the function-name identifier (where go-to-definition targets it; §4.8)
     std::vector<GenericParam> generics;
@@ -208,6 +258,10 @@ struct TargetBinding {
     std::string target;   // "csharp" / "typescript"
     std::string code;     // template, e.g. "$this.Add($0)" or "$this = $this.filter(e => !($0(e)))"
     SourcePos pos;
+    // P40 §0: the manifest prelude keys this template needs — a std binding's object form
+    // `{ "template": …, "requires": [...] }`. Lowering copies them onto the ir::Bound/ir::Extern, and
+    // emitting that node records them, so a helper is emitted exactly where its caller is.
+    std::vector<std::string> preludeKeys;
 };
 
 
@@ -287,6 +341,9 @@ struct ClassDecl {
     std::vector<TargetBinding> typeBindings; // `extern class`: the `type { actual… }` per-target spelling arms
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
     std::vector<AttrUse> attributes;     // P37 D: attributes attached to this class
+    // P40 review r5 #4 (set by sema): same-file classes its static initializers reach (directly or through the
+    // bodies they call) — the emission order defines them before this class when it moves the class forward.
+    std::vector<std::string> needsClasses;
 };
 struct InterfaceDecl {
     std::string name;
@@ -319,6 +376,9 @@ struct ValueDecl {                       // top-level `const` / `let`
     bool hasType = false;
     ExprPtr init;
     std::string originModule;            // module linking (§4.5): see FunctionDecl.originModule
+    // P40 review r5 #4 (set by sema): same-file classes the initializer reaches — directly or through any body it
+    // runs (functions, constructors, methods, extensions, static initializers). They are emitted before the value.
+    std::vector<std::string> needsClasses;
 };
 
 struct EnumCase {

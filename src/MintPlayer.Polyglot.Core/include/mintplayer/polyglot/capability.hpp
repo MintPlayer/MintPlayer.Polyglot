@@ -35,8 +35,11 @@ void checkCapabilities(const CompilationUnit& unit, const Backend& backend, Diag
 // (`forbidden` pairs: target-or-"*" -> name). Identifiers ONLY — declaration sites are walked; string
 // literals, comments, and extern("…") templates can never trip it, by construction (P19 §7). This turns
 // the silent generated-name collision miscompiles into loud per-target refusals.
+// P40 B1: `optionReserved` (option name, resolved value) adds the values of the target's `reserve` options —
+// names the generated code claims only under the consumer's configuration (the C# wrapper class name).
 void checkReservedNames(const CompilationUnit& unit, const Backend& backend,
                         const std::vector<std::pair<std::string, std::string>>& forbidden,
-                        DiagnosticBag& diags);
+                        DiagnosticBag& diags,
+                        const std::vector<std::pair<std::string, std::string>>* optionReserved = nullptr);
 
 } // namespace mintplayer::polyglot

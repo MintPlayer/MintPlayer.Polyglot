@@ -1,0 +1,7 @@
+{
+  "targets": ["typescript"],
+  "lib": ["io"],
+  "include": [
+    { "pattern": "*.pg", "output": "out/%(Filename)" }
+  ]
+}

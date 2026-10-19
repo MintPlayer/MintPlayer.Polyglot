@@ -292,7 +292,7 @@ fn dropAndSettle(world: FruitCakeWorld, tier: i32, x: f64): i32 {
 fn checksum(world: FruitCakeWorld): i64 {
   var s = 0.0
   for b in world.bodies { s += b.x * 3.0 + b.y * 7.0 + b.vx * b.vx + b.vy * b.vy }
-  if s != s { return -1 }                    // NaN in the final state -> loud
+  if Math.isNaN(s) { return -1 }             // NaN in the final state -> loud
   return (i64)(s * 1000000.0)
 }
 

@@ -1,0 +1,9 @@
+import "std.io"
+
+// REFUSED (P40 review r5 item 18): `null` into a bare type-parameter slot — `T` may be instantiated with a non-null
+// type (`e03<i32>()` returned null into an `i32`: TS/PHP printed 1 for `null + 1`).
+fn e03<T>(): T => null
+
+fn main() {
+  print(e03<i32>() + 1)
+}

@@ -1,0 +1,4 @@
+fn show(n: i32): string => "ai-int"
+fn aiShow(n: i32): string => show(n)
+fn check(n: i32): bool => n > 0
+fn aiOk(n: i32): bool => check(n)

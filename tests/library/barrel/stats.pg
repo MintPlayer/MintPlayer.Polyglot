@@ -1,0 +1,37 @@
+// P40 B2 barrel case (issue #73): the second module. It imports from shapes.pg (a real cross-module edge) and
+// reaches the same prelude items under its own, module-local copies.
+import { print } from "std.io"
+import { List } from "std.collections"
+import { Shape, area } from "./shapes"
+
+class Cell<V> {
+  var value: V
+  var set: bool
+  constructor(value: V, set: bool) {
+    this.value = value
+    this.set = set
+  }
+  fn get(): V? => if this.set { this.value } else { null }
+}
+
+fn total(items: List<Shape>): f64 {
+  var sum = 0.0
+  for s in items {
+    sum = sum + area(s)
+  }
+  return sum
+}
+
+fn largest(items: List<i32>): i32 {
+  var best = items[0]
+  for x in items {
+    if x > best { best = x }
+  }
+  let c = Cell(best, true)
+  let found: i32? = if items.count > 0 { best } else { null }
+  return (c.get() ?? 0) + found!
+}
+
+fn report(items: List<Shape>) {
+  print(total(items))
+}

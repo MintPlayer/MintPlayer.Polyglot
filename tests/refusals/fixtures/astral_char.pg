@@ -1,0 +1,2 @@
+// REFUSED (P40 A1, SPEC §8): a char is one UTF-16 code unit, so an astral code point cannot be a char.
+fn smile(): char => '\u{1F600}'

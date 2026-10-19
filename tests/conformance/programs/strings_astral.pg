@@ -1,0 +1,45 @@
+// P40 B3 (D2/D15): every target indexes strings in UTF-16 code units — C#/TS natively, Python and PHP
+// through their helpers. An astral character is two units; substring may split the pair; codePointAt on a
+// high surrogate yields the code point, on a lone (low) surrogate the unit itself.
+
+import "std.strings"
+
+fn main() {
+  let face = "\u{1F600}"
+  print(face.len())                         // 2
+  let s = "a\u{E9}\u{1F600}b\u{20AC}"       // a é 😀 b €
+  print(s.len())                            // 6
+  print(s.codePointAt(0))                   // 97
+  print(s.codePointAt(1))                   // 233
+  print(s.codePointAt(2))                   // 128512 (the pair)
+  print(s.codePointAt(3))                   // 56832  (the low half alone)
+  print(s.codePointAt(4))                   // 98
+  print(s.codePointAt(5))                   // 8364
+  print(s.indexOf("b"))                     // 4
+  print(s.indexOf("\u{1F600}"))             // 2
+  print(s.indexOf("\u{20AC}", 5))           // 5
+  print(s.substring(2, 4) == face)          // true
+  print(s.substring(4, 6))                  // b€
+  print(s.substring(0, 2))                  // aé
+  print(s.substring(2, 3).len())            // 1 (a lone high surrogate)
+  print(s.substring(2, 3).codePointAt(0))   // 55357
+  print(s.substring(3, 6).codePointAt(0))   // 56832
+  print(s.charAt(1))                        // é
+  print(s.charAt(2).codePointAt(0))         // 55357
+  print(s.charAt(4))                        // b
+  print("x\u{1F600}y".split("\u{1F600}").count) // 2
+  print(s.replaceAll("\u{1F600}", "-"))     // aé-b€
+  print(s.contains("\u{1F600}b"))           // true
+  print(s.startsWith("a\u{E9}"))            // true
+  print(s.endsWith("\u{20AC}"))             // true
+  // ordinal by UTF-16 unit: an astral char (D83D…) sorts BEFORE U+FFFD, unlike code-point order
+  print(compareOrdinal("\u{1F600}", "\u{FFFD}"))   // -1
+  print(compareOrdinal("\u{E9}", "e"))              // 1
+  // printing a lone surrogate gives U+FFFD on every target
+  print("[" + s.substring(3, 4) + "]")
+  var n = 0
+  for c in "h\u{E9}\u{1F600}".codePoints() {
+    n = n + 1
+  }
+  print(n)                                  // 3
+}

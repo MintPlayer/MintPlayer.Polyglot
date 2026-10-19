@@ -219,6 +219,7 @@ private:
             walkBlock(t.finallyBody);
             break;
         }
+        default: break; // explicit (P40 A2, /we4062): the other statements hold no closures or binders
         }
     }
 
@@ -251,9 +252,12 @@ private:
         case ExprKind::Unary: walkExpr(static_cast<Unary&>(*e).operand.get()); break;
         case ExprKind::Await: walkExpr(static_cast<Await&>(*e).operand.get()); break;
         case ExprKind::Cast:  walkExpr(static_cast<Cast&>(*e).operand.get()); break;
+        case ExprKind::NullAssert: walkExpr(static_cast<NullAssert&>(*e).operand.get()); break; // null = fail form
+        case ExprKind::IsTest: walkExpr(static_cast<IsTest&>(*e).operand.get()); break;
+        case ExprKind::AsCast: walkExpr(static_cast<AsCast&>(*e).operand.get()); break;
         case ExprKind::Binary: { auto& b = static_cast<Binary&>(*e); walkExpr(b.lhs.get()); walkExpr(b.rhs.get()); break; }
         case ExprKind::Cond:  { auto& c = static_cast<Cond&>(*e); walkExpr(c.cond.get()); walkExpr(c.then.get()); walkExpr(c.els.get()); break; }
-        case ExprKind::Call:  for (auto& a : static_cast<Call&>(*e).args) walkExpr(a.get()); break;
+        case ExprKind::Call:  { auto& c = static_cast<Call&>(*e); if (c.calleeExpr) walkExpr(c.calleeExpr.get()); for (auto& a : c.args) walkExpr(a.get()); break; }
         case ExprKind::MethodCall: { auto& mc = static_cast<MethodCall&>(*e); if (mc.object) walkExpr(mc.object.get()); for (auto& a : mc.args) walkExpr(a.get()); break; }
         case ExprKind::Member: { auto& m = static_cast<Member&>(*e); if (m.object) walkExpr(m.object.get()); break; }
         case ExprKind::New:   for (auto& a : static_cast<New&>(*e).args) walkExpr(a.get()); break;

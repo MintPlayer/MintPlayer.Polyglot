@@ -1,0 +1,27 @@
+// P40 A3 corpus runner (C#). run-numfmt.ps1 appends the csharp plugin's SHIPPED `__PgRt` prelude text to
+// this file, so the helper under test is byte-for-byte what the transpiler emits — not a copy of it.
+// Args: <corpus>. Exits 1 on any mismatch against the ECMAScript reference text.
+#nullable enable
+static class NumFmtRunner
+{
+    static int Main(string[] args)
+    {
+        // A hostile current culture must not matter: the helper is culture-free by construction.
+        try { global::System.Globalization.CultureInfo.CurrentCulture = new global::System.Globalization.CultureInfo("fa-IR"); }
+        catch (global::System.Globalization.CultureNotFoundException) { }
+        string[] lines = global::System.IO.File.ReadAllLines(args[0]);
+        int bad = 0;
+        foreach (string line in lines)
+        {
+            int sp = line.IndexOf(' ');
+            ulong bits = ulong.Parse(line.Substring(0, sp), global::System.Globalization.NumberStyles.HexNumber,
+                                     global::System.Globalization.CultureInfo.InvariantCulture);
+            double x = global::System.BitConverter.Int64BitsToDouble(unchecked((long)bits));
+            string want = line.Substring(sp + 1);
+            string got = __PgRt.Str(x);
+            if (got != want && bad++ < 10) global::System.Console.WriteLine("  C# mismatch " + line.Substring(0, sp) + ": want " + want + " got " + got);
+        }
+        global::System.Console.WriteLine("C#     : " + lines.Length + " doubles, " + bad + " mismatches");
+        return bad == 0 ? 0 : 1;
+    }
+}

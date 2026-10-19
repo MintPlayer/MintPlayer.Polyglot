@@ -1,0 +1,39 @@
+// P40 review r3 2(a)/(b): a callee that is not a plain name is a function VALUE — the curried call
+// `adder(10)(4)`, an element `fs[0](4)`, a conditional `(if c {f} else {g})(4)` and an immediately-invoked
+// lambda. Lowering used to drop such a callee, so every one emitted `(4)` and returned the argument (PHP: a
+// parse error). And a unary of a unary (`-(-x)`) printed bare is `--x`, a pre-decrement (C# returned 2 for
+// `-(-3)`); it is always parenthesized now.
+
+import { List } from "std.collections"
+
+fn adder(k: i32): (i32) => i32 => (n: i32) => n + k
+fn maybe(): () => string? => () => null
+
+fn viaCall(): i32 => adder(10)(4)
+fn viaIndex(fs: List<(i32) => i32>): i32 => fs[0](4)
+fn viaCond(c: bool): i32 => (if c { adder(1) } else { adder(2) })(4)
+fn viaLambda(): i32 => ((n: i32) => n * 3)(4)
+fn viaLocal(): i32 {
+  let g = adder(100)
+  return g(4)
+}
+fn negneg(x: i32): i32 => -(-x)
+fn negnegF(x: f64): f64 => -(-x)
+fn notnot(b: bool): bool => !(!b)
+
+fn main() {
+  let fs = List<(i32) => i32>()
+  fs.add(adder(20))
+  print(viaCall())
+  print(viaIndex(fs))
+  print(viaCond(true))
+  print(viaCond(false))
+  print(viaLambda())
+  print(viaLocal())
+  print(maybe()() ?? "nil")
+  print(negneg(3))
+  print(negnegF(2.5))
+  print(-(-2.5))
+  print(-(-7))
+  print(notnot(true))
+}

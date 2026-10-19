@@ -45,6 +45,11 @@ foreach ($f in Get-ChildItem $sampleDir -Filter *.pg | Sort-Object Name) {
     & $Cli build $f.FullName --out $dir *> $null
     if ($LASTEXITCODE -ne 0) {
         $ok = $false
+    } elseif (@(Get-ChildItem $dir -File | Select-String -SimpleMatch '__polyglot_unlowered_expr__' -List).Count -gt 0) {
+        # P40 A2 grep gate: the lowering poison must never reach emitted code (xfail does not excuse it).
+        Write-Host "[FAIL] $($f.Name) — emitted output contains __polyglot_unlowered_expr__"
+        $bad++
+        continue
     } else {
         $r = Invoke-OracleCompile -Sources (Join-Path $dir "$stem.cs") -OutDll (Join-Path $dir "$stem.dll")
         if (-not $r.Ok) { $ok = $false }

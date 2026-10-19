@@ -1,0 +1,32 @@
+// P40 B3: charAt / codePointAt out of range throw the same Error on every target. Natively they diverged
+// four ways ("" on TS/PHP, the LAST char on Python/PHP for -1, `undefined` hidden by `!` on TS, a PHP
+// "Deprecated: ord()" line on stdout).
+
+import "std.strings"
+
+fn at(s: string, i: i32) {
+  try {
+    print("charAt(${i}) = [" + s.charAt(i) + "]")
+  } catch (e: Error) {
+    print(e.message)
+  }
+}
+
+fn cp(s: string, i: i32) {
+  try {
+    let c = s.codePointAt(i)
+    print("codePointAt(${i}) = ${c}")
+  } catch (e: Error) {
+    print(e.message)
+  }
+}
+
+fn main() {
+  let s = "abc"
+  for i in [-1, 0, 2, 3, 13] {
+    at(s, i)
+    cp(s, i)
+  }
+  at("", 0)
+  cp("", 0)
+}

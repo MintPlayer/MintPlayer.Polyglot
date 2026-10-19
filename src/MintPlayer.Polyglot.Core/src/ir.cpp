@@ -1,5 +1,7 @@
 #include "mintplayer/polyglot/ir.hpp"
 
+#include <algorithm>
+#include <functional>
 #include <string>
 
 namespace mintplayer::polyglot::ir {
@@ -210,6 +212,7 @@ private:
                 line("}");
                 break;
             }
+            default: break; // explicit (P40 A2, /we4062): Break/Continue carry nothing to dump
         }
     }
 
@@ -235,6 +238,7 @@ private:
             case ExprKind::Cast: { const auto& c = static_cast<const Cast&>(e); repr = "(" + typeName(e.type) + ")" + expr(*c.operand); break; }
             case ExprKind::IsTest: { const auto& t = static_cast<const IsTest&>(e); repr = expr(*t.operand) + " is " + typeName(t.testType); break; }
             case ExprKind::AsCast: { const auto& a = static_cast<const AsCast&>(e); repr = expr(*a.operand) + " as " + typeName(a.castType); break; }
+            case ExprKind::NullAssert: { const auto& n = static_cast<const NullAssert&>(e); repr = n.operand ? expr(*n.operand) + "!" : std::string("<null-assert fail>"); break; }
             case ExprKind::Extern: { repr = "extern(\"" + static_cast<const Extern&>(e).code + "\")"; break; }
             case ExprKind::Binary: {
                 const auto& b = static_cast<const Binary&>(e);
@@ -243,7 +247,7 @@ private:
             }
             case ExprKind::Call: {
                 const auto& c = static_cast<const Call&>(e);
-                repr = (c.isPrint ? "print" : c.callee) + "(";
+                repr = (c.calleeExpr ? "(" + expr(*c.calleeExpr) + ")" : c.isPrint ? "print" : c.callee) + "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) { if (i) repr += ", "; repr += expr(*c.args[i]); }
                 repr += ")";
                 break;
@@ -301,6 +305,7 @@ private:
                             repr += ")";
                             break;
                         }
+                        default: break; // explicit (P40 A2, /we4062): TypeTest patterns render nothing extra
                     }
                     if (a.guard) repr += " if " + expr(*a.guard);
                     repr += " => " + expr(*a.body) + ", ";
@@ -308,6 +313,7 @@ private:
                 repr += "}";
                 break;
             }
+            default: break; // explicit (P40 A2, /we4062): the dump leaves the other kinds untranscribed (empty repr)
         }
         return repr + ":" + typeName(e.type);
     }
@@ -318,6 +324,105 @@ private:
 std::string dump(const Module& m) {
     Dumper d;
     return d.run(m);
+}
+
+std::vector<DeclRef> declarationOrder(const Module& m, const std::vector<std::size_t>& functionIndices) {
+    std::vector<DeclRef> out;
+    // Prelude first, then the order the list already has (source order within one file).
+    auto inOrder = [&](const auto& vec, const char* kind, const char* list) {
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t i = 0; i < vec.size(); ++i)
+                if (isPreludeOrigin(vec[i].originModule) == (pass == 0)) out.push_back({kind, list, i});
+    };
+    inOrder(m.enums, "enum", "module.enums");
+    { // interfaces: an interface after the in-module interfaces it extends
+        std::vector<bool> placed(m.interfaces.size(), false);
+        std::vector<std::size_t> todo;
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t i = 0; i < m.interfaces.size(); ++i)
+                if (isPreludeOrigin(m.interfaces[i].originModule) == (pass == 0)) todo.push_back(i);
+        auto ready = [&](std::size_t i) {
+            for (const auto& b : m.interfaces[i].bases)
+                for (std::size_t j = 0; j < m.interfaces.size(); ++j)
+                    if (j != i && m.interfaces[j].name == b.name && !placed[j]) return false;
+            return true;
+        };
+        for (bool progress = true; progress;) {
+            progress = false;
+            for (std::size_t i : todo)
+                if (!placed[i] && ready(i)) { placed[i] = true; out.push_back({"interface", "module.interfaces", i}); progress = true; break; }
+        }
+        for (std::size_t i : todo) if (!placed[i]) out.push_back({"interface", "module.interfaces", i}); // a cycle: as written
+    }
+    inOrder(m.unions, "union", "module.unions");
+    inOrder(m.records, "record", "module.records");
+    for (int pass = 0; pass < 2; ++pass)
+        for (std::size_t k = 0; k < functionIndices.size(); ++k)
+            if (isPreludeOrigin(m.functions[functionIndices[k]].originModule) == (pass == 0))
+                out.push_back({"function", "module.functions", k});
+    inOrder(m.extensions, "extension", "module.extensions");
+
+    // Classes and module values, interleaved by source position; a class waits for its in-module base classes.
+    struct Item { bool isClass; std::size_t index; bool prelude; SourcePos pos; };
+    std::vector<Item> items;
+    for (std::size_t i = 0; i < m.classes.size(); ++i)
+        items.push_back({true, i, isPreludeOrigin(m.classes[i].originModule), m.classes[i].pos});
+    for (std::size_t i = 0; i < m.globals.size(); ++i)
+        items.push_back({false, i, isPreludeOrigin(m.globals[i].originModule), m.globals[i].pos});
+    std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+        if (a.prelude != b.prelude) return a.prelude;
+        if (a.pos.fileId != b.pos.fileId) return a.pos.fileId < b.pos.fileId;
+        if (a.pos.line != b.pos.line) return a.pos.line < b.pos.line;
+        return a.pos.col < b.pos.col;
+    });
+    std::vector<int> classState(m.classes.size(), 0); // 0 not placed, 1 being placed, 2 placed
+    auto classIndex = [&](const std::string& name) -> std::ptrdiff_t {
+        for (std::size_t j = 0; j < m.classes.size(); ++j)
+            if (m.classes[j].name == name) return static_cast<std::ptrdiff_t>(j);
+        return -1;
+    };
+    auto basesPlaced = [&](std::size_t c) {
+        for (const auto& b : m.classes[c].bases)
+            if (auto j = classIndex(b.name); j >= 0 && static_cast<std::size_t>(j) != c && classState[j] != 2) return false;
+        return true;
+    };
+    // Review r5 #4: a module value needs the classes its initializer reaches (sema's needsClasses) — defined before
+    // it, each after its own bases and the classes its static initializers reach. Sema refuses the only cycle (a
+    // class reaching a value declared at or after the value), so this pulls classes forward, never values.
+    std::function<void(std::size_t)> placeClass = [&](std::size_t c) {
+        if (classState[c] != 0) return; // placed, or being placed (an inheritance cycle, refused by sema)
+        classState[c] = 1;
+        for (const auto& b : m.classes[c].bases)
+            if (auto j = classIndex(b.name); j >= 0) placeClass(static_cast<std::size_t>(j));
+        for (const auto& n : m.classes[c].needsClasses)
+            if (auto j = classIndex(n); j >= 0) placeClass(static_cast<std::size_t>(j));
+        classState[c] = 2;
+        out.push_back({"class", "module.classes", c});
+    };
+    std::vector<Item> pending; // classes whose base class comes later (and that no value pulled forward)
+    for (const Item& it : items) {
+        if (it.isClass) {
+            if (classState[it.index] == 2) continue; // pulled forward by an earlier value
+            if (!basesPlaced(it.index)) { pending.push_back(it); continue; }
+            placeClass(it.index);
+        } else {
+            for (const auto& n : m.globals[it.index].needsClasses)
+                if (auto j = classIndex(n); j >= 0) placeClass(static_cast<std::size_t>(j));
+            out.push_back({"global", "module.globals", it.index});
+        }
+        for (bool progress = true; progress;) { // a placed class may release a waiting subclass (and its subclasses)
+            progress = false;
+            for (std::size_t k = 0; k < pending.size(); ++k)
+                if (classState[pending[k].index] == 2 || basesPlaced(pending[k].index)) {
+                    placeClass(pending[k].index);
+                    pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(k));
+                    progress = true;
+                    break;
+                }
+        }
+    }
+    for (const Item& it : pending) placeClass(it.index); // an inheritance cycle (refused by sema): as written
+    return out;
 }
 
 } // namespace mintplayer::polyglot::ir

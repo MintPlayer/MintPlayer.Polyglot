@@ -1,0 +1,2 @@
+fn runIt(f: (string?) => i32): i32 => f(null)
+fn useFB(): i32 => runIt((s) => 2)

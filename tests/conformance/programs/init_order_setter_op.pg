@@ -1,0 +1,39 @@
+// P40 review r6 #4: a property SETTER and a user OPERATOR are bodies like methods — a module initializer that runs
+// one is followed into it, so the class it constructs (declared later) is placed ahead of the value. Pinned PHP
+// refuser: PHP has neither property setters (< 8.4) nor arithmetic operator overloading. Spark repros l1_4l, l1_4t.
+import "std.io"
+
+class Box {
+  var inner: string = ""
+  var label: string {
+    get => this.inner
+    set(v) { this.inner = v + Later().mark }
+  }
+  constructor() {
+    this.label = "x"
+  }
+}
+let bx: Box = Box()
+class Later {
+  var mark: string = "!"
+}
+
+class Money {
+  var cents: i32
+  constructor(cents: i32) {
+    this.cents = cents
+  }
+  operator fn plus(o: Money): Receipt => Receipt(this.cents + o.cents)
+}
+let total: Receipt = Money(150) + Money(250)
+class Receipt {
+  var sum: i32
+  constructor(sum: i32) {
+    this.sum = sum
+  }
+}
+
+fn main() {
+  print(bx.label)
+  print(total.sum)
+}

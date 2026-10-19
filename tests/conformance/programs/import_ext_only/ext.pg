@@ -1,0 +1,8 @@
+// Extensions only, built on std.strings (which the entry does not import: D16 keeps it private here).
+import "std.strings"
+
+extension fn string.shout(): string => this.toUpperAscii() + "!"
+
+extension fn i32.twice(): i32 => this * 2
+
+extension fn string.firstChar(): string => this.charAt(0)

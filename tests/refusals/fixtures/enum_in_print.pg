@@ -1,0 +1,8 @@
+// REFUSED (P40 A3, D1): print of an enum — C# prints the case name, the other targets its number.
+import "std.io"
+
+enum Color { Red, Green }
+
+fn main() {
+  print(Color.Green)
+}

@@ -1,0 +1,7 @@
+// REFUSED (P40 D6): a bare `super` value — pre-P40 it reached the `__polyglot_unlowered_expr__` poison.
+class AppError : Error {
+  constructor() {
+    super("app error")
+    let base = super
+  }
+}

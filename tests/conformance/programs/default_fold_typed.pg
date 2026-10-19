@@ -1,0 +1,24 @@
+import "std.io"
+
+// P40 review r4 #11: a folded default follows the expression's typed semantics — an int-only subexpression
+// is integer arithmetic (`1 / 2` is 0), widened where it meets a float — exactly as the same expression
+// evaluates at run time.
+fn mix(x: f64 = 1 / 2 + 0.5): f64 => x
+fn mix2(x: f64 = 7 / 2 * 1.0): f64 => x
+fn mix3(x: f64 = 0.5 + 9 / 4): f64 => x
+fn negMix(x: f64 = -(5 / 2) + 0.25): f64 => x
+fn third(x: f64 = 1.0 / 3.0): f64 => x
+fn pt(x: f64 = 0.1 + 0.2): f64 => x
+
+fn main() {
+  print(mix())
+  print(1 / 2 + 0.5)
+  print(mix2())
+  print(7 / 2 * 1.0)
+  print(mix3())
+  print(0.5 + 9 / 4)
+  print(negMix())
+  print(-(5 / 2) + 0.25)
+  print(third() == 1.0 / 3.0)
+  print(pt() == 0.1 + 0.2)
+}

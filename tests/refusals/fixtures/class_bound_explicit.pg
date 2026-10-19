@@ -1,0 +1,13 @@
+// REFUSED (P40 slice 7, SP-B3-S3): a generic class's type-parameter bound is enforced like a function's —
+// `NumBox<string>` does not satisfy `T: INumber` (it used to compile and emit `T + T` on a string).
+import "std.io"
+
+class NumBox<T: INumber> {
+  var n: T
+  constructor(n: T) { this.n = n }
+}
+
+fn main() {
+  let b = NumBox<string>("x")
+  print(b.n)
+}

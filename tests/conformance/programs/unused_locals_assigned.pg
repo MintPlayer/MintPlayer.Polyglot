@@ -1,0 +1,40 @@
+// P40 review r5 #17: C# CS0219 ("assigned but never used") fires only when EVERY assignment is a constant. A local
+// later assigned a call result compiles clean at the floor, with or without the `_` prefix — round 4 refused
+// `var _last = 0; _last = compute()`. An unread `let _x = <constant>` alone is not emitted; when it was the only
+// statement of a block lambda, Python got an empty `def` (IndentationError) — it now gets `pass`.
+import "std.io"
+
+fn compute(): i32 {
+  print("computed")
+  return 4
+}
+
+fn noop() {
+  let _x = 1
+}
+
+fn check(c: bool) {
+  if c {
+    let _y = 2
+  } else {
+    print("else")
+  }
+  for i in [1, 2] {
+    let _z = 3
+  }
+}
+
+fn main() {
+  var _last = 0
+  _last = compute()
+  var last = 0
+  last = compute()
+  noop()
+  check(true)
+  check(false)
+  let f = () => {
+    let _w = 4
+  }
+  f()
+  print("done")
+}

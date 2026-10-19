@@ -1,0 +1,129 @@
+// P40 B4: Map<K, V> — insertion order (re-set keeps the slot, remove + set moves to the end), snapshot keys()/
+// values(), `get` absent as null, string keys a PHP array would coerce ("10" -> 10), an i64 key beyond 2^32,
+// remove's bool, mutation inside a snapshot loop, and two `get`s in one expression (unique C# temps).
+
+import "std.collections"
+
+record Holder(name: string, m: Map<string, i32>)
+
+fn joinStr(xs: List<string>): string {
+  var out = ""
+  for x in xs {
+    if out != "" {
+      out = out + ","
+    }
+    out = out + x
+  }
+  return out
+}
+
+fn joinInt(xs: List<i32>): string {
+  var out = ""
+  for x in xs {
+    if out != "" {
+      out = out + ","
+    }
+    out = out + "${x}"
+  }
+  return out
+}
+
+// a generic forwarding its own IMapKey-bounded K (C# spells the bound `where K : notnull`; the rest erase it)
+fn firstKey<K: IMapKey, V>(m: Map<K, V>, fallback: K): K {
+  for k in m.keys() {
+    return k
+  }
+  return fallback
+}
+
+fn main() {
+  // insertion order: set a, b; remove a; set c; set a; set b again -> b, c, a
+  let m = Map<string, i32>()
+  m.set("a", 1)
+  m.set("b", 2)
+  print(m.remove("a"))                      // true
+  print(m.remove("a"))                      // false
+  m.set("c", 3)
+  m.set("a", 4)
+  m.set("b", 5)
+  print(joinStr(m.keys()))                  // b,c,a
+  print(joinInt(m.values()))                // 5,3,4
+  print(m.count)                            // 3
+  print(m.has("c"))                         // true
+  print(m.has("zz"))                        // false
+  print(m.get("zz") ?? -1)                  // -1
+  print(m.get("c") ?? -1)                   // 3
+  print((m.get("a") ?? 0) + (m.get("b") ?? 0))   // 9
+
+  // string keys a bare PHP array would coerce or merge
+  let sk = Map<string, string>()
+  let raw: List<string> = ["1", "01", "10", "1e1", "-1", "-0", " 1", ""]
+  for r in raw {
+    sk.set(r, "<" + r + ">")
+  }
+  print(sk.count)                           // 8
+  var same = 0
+  var i = 0
+  for k in sk.keys() {
+    if k == raw[i] {
+      same = same + 1
+    }
+    i = i + 1
+  }
+  print(same)                               // 8
+  print(sk.get("10") ?? "absent")           // <10>
+  print(sk.get("1e1") ?? "absent")          // <1e1>
+  print(sk.get("0") ?? "absent")            // absent
+  print(joinStr(sk.values()))
+
+  // integer keys, including an i64 beyond 2^32
+  let big = Map<i64, string>()
+  let k1: i64 = 5000000000
+  let k2: i64 = -4294967301
+  big.set(k1, "five billion")
+  big.set(k2, "minus")
+  big.set(7, "seven")
+  print(big.get(k1) ?? "absent")            // five billion
+  print(big.get(5000000001) ?? "absent")    // absent
+  for k in big.keys() {
+    print(k)
+  }
+  let ik = Map<i32, i32>()
+  ik.set(10, 100)
+  ik.set(1, 10)
+  print(joinInt(ik.keys()))                 // 10,1
+  print(firstKey(ik, -1))                   // 10
+  let small = Map<u8, bool>()
+  print(firstKey(small, (u8)255))           // 255
+  small.set((u8)3, false)
+  print(small.get((u8)3) ?? true)           // false
+
+  // keys() is a snapshot: mutating the map inside the loop is safe and not observed by it
+  let snap = Map<string, i32>()
+  snap.set("x", 1)
+  snap.set("y", 2)
+  snap.set("z", 3)
+  for k in snap.keys() {
+    snap.remove(k)
+    snap.set(k + k, 0)
+  }
+  print(joinStr(snap.keys()))               // xx,yy,zz
+
+  // records holding a Map compare by reference
+  let shared = Map<string, i32>()
+  let h1 = Holder("h", shared)
+  let h2 = Holder("h", shared)
+  let h3 = Holder("h", Map<string, i32>())
+  print(h1 == h2)                           // true
+  print(h1 == h3)                           // false
+
+  // a List value
+  let groups = Map<string, List<i32>>()
+  groups.set("evens", [2, 4])
+  let ev = groups.get("evens")
+  if ev != null {
+    ev.add(6)
+  }
+  let none: List<i32> = []
+  print(joinInt(groups.get("evens") ?? none))   // 2,4,6
+}

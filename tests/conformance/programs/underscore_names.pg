@@ -1,0 +1,42 @@
+// P40 review r5 #24: C# writes a dropped value as the discard `_ = …;` (`s.len()` as a statement is CS0201
+// otherwise). A user variable, parameter, field or lambda parameter named `_` captured it: C# printed `true`/5
+// where the others printed `false`/0 (or failed with CS0029). The C# plugin now respells a user `_` as `__u`
+// (manifest `identifiers.renames`), so the discard stays a discard.
+import "std.io"
+import "std.strings"
+
+fn compute(): i32 {
+  print("computing")
+  return 5
+}
+
+fn drop(_: bool, s: string): bool {
+  s.len()
+  return _
+}
+
+class Box {
+  var _: bool = false
+  fn clear(s: string): bool {
+    s.len()
+    return this._
+  }
+}
+
+fn each(f: (bool) => unit) {
+  f(false)
+}
+
+fn main() {
+  let s = "abc"
+  let _ = compute()
+  s.len()
+  var flag = true
+  each((_) => {
+    s.len()
+    flag = _
+  })
+  print(flag)
+  print(drop(false, s))
+  print(Box().clear(s))
+}

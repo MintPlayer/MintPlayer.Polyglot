@@ -1,0 +1,12 @@
+charAt: index -1 is out of range for length 3
+codePointAt: index -1 is out of range for length 3
+charAt(0) = [a]
+codePointAt(0) = 97
+charAt(2) = [c]
+codePointAt(2) = 99
+charAt: index 3 is out of range for length 3
+codePointAt: index 3 is out of range for length 3
+charAt: index 13 is out of range for length 3
+codePointAt: index 13 is out of range for length 3
+charAt: index 0 is out of range for length 0
+codePointAt: index 0 is out of range for length 0

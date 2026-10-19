@@ -1,0 +1,12 @@
+import "std.io"
+import { useFive } from "./fives"
+
+// P40 review r5 #14: `fives` passes its `five()` as a value; this module declares an unrelated `five(string)`. C#
+// keeps plain names (no call could bind both), but PHP's single function namespace mangles both declarations — the
+// function value now names the unique name too (PHP printed "Call to undefined function five()").
+fn five(s: string): string => s + "!"
+
+fn main() {
+  print(useFive())
+  print(five("x"))
+}

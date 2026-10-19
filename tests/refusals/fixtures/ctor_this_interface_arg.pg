@@ -1,0 +1,27 @@
+// REFUSED (P40 review r6): #5 'this' passed through an interface: the body that runs is chosen at run time. Spark l1_5g.
+import "std.io"
+
+interface Sink {
+  fn accept(w: Base): string
+}
+class PrintSink : Sink {
+  fn accept(w: Base): string => "sink:" + w.describe()
+}
+open class Base {
+  var label: string = ""
+  constructor(s: Sink) {
+    this.label = s.accept(this)
+  }
+  open fn describe(): string => "base"
+}
+class Derived : Base {
+  var extra: string = "X"
+  constructor() {
+    super(PrintSink())
+  }
+  override fn describe(): string => "derived" + this.extra
+}
+
+fn main() {
+  print(Derived().label)
+}

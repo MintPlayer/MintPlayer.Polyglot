@@ -216,12 +216,18 @@ inline bool resolvePluginDependency(const HttpGet& http, const std::string& npmN
 struct ResolveState {
     std::set<std::string> succeeded;
     std::map<std::string, std::string> failed; // key -> message (repeated verbatim, no re-network)
+    std::set<std::string> failedNetwork; // P40 review r5/r6: the failed keys whose resolve got no answer from the network
 };
 
 struct ResolveResult {
     bool ok = true;
     bool lockChanged = false;
     std::vector<std::string> messages;
+    // P40 review r4: the registry dependencies that failed only because they needed the network (an offline
+    // `check`): npm package name -> its message. Kept apart so ONLY their targets degrade to "not verified" —
+    // a misspelled target or a broken `file:` plugin beside them is still an error.
+    std::vector<std::pair<std::string, std::string>> networkMisses;
+    std::vector<std::string> configErrors; // a malformed lockfile: the config is refused (exit 64)
 };
 
 inline std::string configStamp(const PgConfig& pc) {
@@ -232,12 +238,19 @@ inline std::string configStamp(const PgConfig& pc) {
 }
 
 // Resolve every dependency in a pgconfig (the `resolveConfiguredTargets` engine). `state` may be
-// null (one-shot CLI runs); pass a process-lifetime instance from the LSP/watch loops.
+// null (one-shot CLI runs); pass a process-lifetime instance from the LSP/watch loops. `dryRun`
+// (P40 `build --check`) resolves exactly as usual but never saves the lockfile.
 inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet& http, bool update,
-                                               ResolveState* state) {
+                                               ResolveState* state, bool dryRun = false) {
     ResolveResult res;
     if (!pc.found || pc.dependencies.empty()) return res;
     Lockfile lock = loadLockfile(pc.dir);
+    if (!lock.error.empty()) { // P40 review r4: strict — never re-resolve over (and rewrite) a lockfile we misread
+        res.ok = false;
+        res.configErrors.push_back(lockfilePath(pc.dir).string() + ": " + lock.error);
+        res.messages.push_back(res.configErrors.back());
+        return res;
+    }
     const std::string stamp = configStamp(pc);
 
     for (const auto& [key, spec] : pc.dependencies) {
@@ -261,23 +274,40 @@ inline ResolveResult resolvePluginDependencies(const PgConfig& pc, const HttpGet
             if (const auto it = state->failed.find(memoKey); it != state->failed.end()) {
                 res.ok = false;
                 res.messages.push_back(it->second);
+                // a memoized miss is still a network miss (a second config group / the discovery pre-check)
+                if (state->failedNetwork.count(memoKey)) res.networkMisses.emplace_back(npmName, it->second);
                 continue;
             }
         }
 
         ResolvedPlugin rp;
         std::string err;
-        if (resolvePluginDependency(http, npmName, spec, pc.dir, lock, update, rp, err)) {
+        // P40 review r6: a network miss is a GET that got NO answer (no connection, DNS, timeout) — only that may
+        // degrade a target to "not verified". The registry answering 404, or a tarball failing its integrity
+        // check, is an answer: the dependency is an error, whatever reached for the network first.
+        bool noAnswer = false;
+        const HttpGet tracked = [&](const std::string& url, const std::vector<std::string>& headers, std::string& body,
+                                    std::string& e) -> HttpOutcome {
+            const HttpOutcome r = http(url, headers, body, e);
+            if (r.kind == HttpOutcome::Kind::Transport) noAnswer = true;
+            return r;
+        };
+        if (resolvePluginDependency(tracked, npmName, spec, pc.dir, lock, update, rp, err)) {
             if (rp.fetched) res.lockChanged = true;
             if (state) state->succeeded.insert(memoKey);
         } else {
             res.ok = false;
             res.messages.push_back(err);
+            if (noAnswer) res.networkMisses.emplace_back(npmName, err);
             if (state) state->failed[memoKey] = err;
+            if (state && noAnswer) state->failedNetwork.insert(memoKey);
         }
     }
 
-    if (res.lockChanged && !saveLockfile(pc.dir, lock)) {
+    // P40 B5: `build --check` writes nothing — the lockfile included. The pin it WOULD record is reported.
+    if (res.lockChanged && dryRun) {
+        res.messages.push_back(lockfilePath(pc.dir).string() + " would change (not written under --check)");
+    } else if (res.lockChanged && !saveLockfile(pc.dir, lock)) {
         res.messages.push_back("warning: could not write " + lockfilePath(pc.dir).string() +
                                " (resolution succeeded; the build is not pinned)");
     }

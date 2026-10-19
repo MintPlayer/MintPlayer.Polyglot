@@ -1,0 +1,16 @@
+fn total(n: i32): i32 {
+  var s = 0
+  for i in 0..n {
+    s += i
+  }
+  return s
+}
+class Acc {
+  fn twice(n: i32): i32 {
+    var s = 0
+    for i in 0..n {
+      s += 2
+    }
+    return s
+  }
+}

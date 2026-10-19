@@ -1,0 +1,16 @@
+// REFUSED (P40 review r5 #4): constructing `Shop` runs its constructor, which reads `later` — declared after the
+// initializer. Classes move ahead of the values that reach them; a module value never moves.
+import "std.io"
+
+class Shop {
+  var n: i32
+  constructor() {
+    this.n = later
+  }
+}
+let shop: Shop = Shop()
+let later: i32 = 4
+
+fn main() {
+  print(shop.n)
+}

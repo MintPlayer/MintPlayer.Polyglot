@@ -118,6 +118,59 @@ try {
     Assert (-not (Test-Path (Join-Path $proj2 "pgconfig.lock.json"))) `
         "no lock entry is written for a refused dependency"
 
+    # --- 5b. review r6 (Spark i3\integ.sh): an include rule's target whose dependency the registry ANSWERS for —
+    # a 404, or a tarball failing its integrity — is an error (64, "unknown target"), never degraded to "not
+    # verified" (exit 0); only a missing network degrades. Each problem is printed once per build.
+    foreach ($dep in @("pyfixture2", "nosuchpkg")) {
+        $projR = Join-Path $work "proj-rule-$dep"
+        New-Item -ItemType Directory -Force $projR | Out-Null
+        Set-Content (Join-Path $projR "a.pg") "fn a(): i32 => 1`n" -NoNewline
+        Set-Content (Join-Path $projR "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"dependencies`": { `"$dep`": `"^1.2.3`" }, " +
+            "`"include`": [ { `"pattern`": `"*.pg`", `"target`": `"$dep`", `"output`": `"gen/%(Filename)`" } ] }") -NoNewline
+        Push-Location $projR
+        $outR = & $Cli build 2>&1 | Out-String
+        $rcR = $LASTEXITCODE
+        Pop-Location
+        $depErr = if ($dep -eq "pyfixture2") { 'integrity mismatch' } else { 'status 404' }
+        Assert ($rcR -eq 64 -and $outR -match "unknown target '$dep'" -and $outR -notmatch 'not verified' -and
+                ([regex]::Matches($outR, $depErr)).Count -eq 1 -and -not (Test-Path (Join-Path $projR "a.cs"))) `
+            "review r6: a rule target whose dependency the registry refuses ($depErr) exits 64 'unknown target', the error printed once (exit $rcR; was 0, 'not verified' twice)"
+    }
+    # review r7 (Spark i3\s5.sh): a 5xx is NOT the registry's answer about the package — a proxy with no upstream
+    # (502/504) or an unavailable registry (503) — so it is a network miss like a transport failure: the rule
+    # target degrades to "not verified" and the build still emits its configured target (it exited 64 at 6713b69).
+    foreach ($code in @("502", "503")) {
+        $dep = "status$code"
+        $projR = Join-Path $work "proj-rule-$dep"
+        New-Item -ItemType Directory -Force $projR | Out-Null
+        Set-Content (Join-Path $projR "a.pg") "fn a(): i32 => 1`n" -NoNewline
+        Set-Content (Join-Path $projR "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"dependencies`": { `"$dep`": `"^1.2.3`" }, " +
+            "`"include`": [ { `"pattern`": `"*.pg`", `"target`": `"$dep`", `"output`": `"gen/%(Filename)`" } ] }") -NoNewline
+        Push-Location $projR
+        $outR = & $Cli build 2>&1 | Out-String
+        $rcR = $LASTEXITCODE
+        Pop-Location
+        Assert ($rcR -eq 0 -and $outR -match "status $code" -and $outR -match 'not verified' -and
+                $outR -notmatch 'unknown target' -and (Test-Path (Join-Path $projR "a.cs"))) `
+            "review r7: a rule target whose registry answers $code (a network miss) degrades to 'not verified' and the build emits (exit $rcR; was 64 'unknown target')"
+    }
+    # review r8 (Spark i3\s5_301.log): a 301 with no `Location` is the server's malformed answer, not a missing
+    # network. WinHTTP failed the redirect itself (12156) and that read as "offline" — degraded, exit 0. Now it is an
+    # error on every client (libcurl and the curl subprocess end on the 301 status): 64 'unknown target', printed once.
+    $dep = "status301"
+    $projR = Join-Path $work "proj-rule-$dep"
+    New-Item -ItemType Directory -Force $projR | Out-Null
+    Set-Content (Join-Path $projR "a.pg") "fn a(): i32 => 1`n" -NoNewline
+    Set-Content (Join-Path $projR "pgconfig.json") ("{ `"targets`": [`"csharp`"], `"dependencies`": { `"$dep`": `"^1.2.3`" }, " +
+        "`"include`": [ { `"pattern`": `"*.pg`", `"target`": `"$dep`", `"output`": `"gen/%(Filename)`" } ] }") -NoNewline
+    Push-Location $projR
+    $outR = & $Cli build 2>&1 | Out-String
+    $rcR = $LASTEXITCODE
+    Pop-Location
+    Assert ($rcR -eq 64 -and $outR -match "unknown target '$dep'" -and $outR -notmatch 'not verified|offline' -and
+            ([regex]::Matches($outR, 'redirect that cannot be followed')).Count -eq 1 -and -not (Test-Path (Join-Path $projR "a.cs"))) `
+        "review r8: a rule target whose registry answers 301 without Location exits 64 'unknown target', the error printed once (exit $rcR; was 0, 'offline? proxy?' degraded to 'not verified')"
+
     # --- 6/7. --target override + the config-sourced refusal ---------------------------------------
     & $Cli build (Join-Path $proj "main.pg") --target csharp --out $proj *> $null
     Assert ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $proj "main.cs"))) `

@@ -1,0 +1,3 @@
+// REFUSED (P40 A4, N3): `string + T` — a type parameter may be null or a non-scalar, which the targets
+// stringify differently (like `string + i32`, already refused). Interpolate instead.
+fn tag<T>(x: T): string => "v=" + x

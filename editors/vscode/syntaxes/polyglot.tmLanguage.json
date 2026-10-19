@@ -94,10 +94,7 @@
           "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.polyglot" } },
           "endCaptures": { "0": { "name": "punctuation.definition.string.end.polyglot" } },
           "patterns": [
-            {
-              "name": "constant.character.escape.polyglot",
-              "match": "\\\\([\\\\\"'nrt0]|u[0-9A-Fa-f]{4})"
-            },
+            { "include": "#escapes" },
             {
               "comment": "Interpolation hole `${ expr }` — the expression is highlighted with the full grammar",
               "name": "meta.template.expression.polyglot",
@@ -108,6 +105,28 @@
               "patterns": [{ "include": "$self" }]
             }
           ]
+        },
+        {
+          "comment": "Char literal: one character or one escape (P40 A1); a malformed one is the lexer's to diagnose",
+          "name": "string.quoted.single.polyglot",
+          "begin": "'",
+          "end": "'|$",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.polyglot" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.polyglot" } },
+          "patterns": [{ "include": "#escapes" }]
+        }
+      ]
+    },
+    "escapes": {
+      "comment": "The lexer's escape set exactly (P40 A1): \\n \\t \\r \\0 \\\\ \\\" \\' \\$ and \\u{1-6 hex}. Any other backslash sequence (\\q, \\uXXXX, \\xHH) is an error, highlighted as invalid.",
+      "patterns": [
+        {
+          "name": "constant.character.escape.polyglot",
+          "match": "\\\\([nrt0\\\\\"'$]|u\\{[0-9A-Fa-f]{1,6}\\})"
+        },
+        {
+          "name": "invalid.illegal.escape.polyglot",
+          "match": "\\\\(u\\{[^}\"']*\\}?|.)"
         }
       ]
     },
