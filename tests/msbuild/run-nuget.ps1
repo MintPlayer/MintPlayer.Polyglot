@@ -686,12 +686,13 @@ $r3Fixture = {
         "fn alpha(): i32 {`n  return $n`n}`n" | Set-Content (Join-Path $cc "a.pg")
         $cfgDir = if ($cfgArgs.Count) { $cfgArgs[1] } else { "Debug" }
         if ($caseSensitive) { if (-not $spellings.Contains($cfgDir)) { $spellings.Add($cfgDir) } }
-        $expectedObj = if ($caseSensitive) { ($spellings | Sort-Object) -join ',' } else { 'Debug' }
+        # -CaseSensitive on both sorts: the default sort is case-insensitive, so `debug`/`Debug` tie and keep arrival order.
+        $expectedObj = if ($caseSensitive) { ($spellings | Sort-Object -CaseSensitive) -join ',' } else { 'Debug' }
         $emitted = Join-Path $cc "obj/$cfgDir/net8.0/polyglot/a.cs"
         $before = [DateTime]::UtcNow.AddSeconds(-2) # NTFS/FAT timestamp slack
         $b = dotnet build $cc --nologo -v q @cfgArgs 2>&1 | Out-String
         $bRc = $LASTEXITCODE
-        $objNames = @(Get-ChildItem (Join-Path $cc "obj") -Directory -Name | Sort-Object) -join ','
+        $objNames = @(Get-ChildItem (Join-Path $cc "obj") -Directory -Name | Sort-Object -CaseSensitive) -join ','
         $label = if ($cfgArgs.Count) { $cfgArgs -join ' ' } else { "(default)" }
         $wrote = (Test-Path -LiteralPath $emitted) -and (Get-Item -LiteralPath $emitted).LastWriteTimeUtc -ge $before -and
                  ((Get-Content -Raw -LiteralPath $emitted) -match "return $n;")
