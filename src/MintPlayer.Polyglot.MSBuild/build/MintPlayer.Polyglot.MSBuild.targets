@@ -75,13 +75,21 @@
        path never reaches CoreCompile as CS2001). -->
   <PropertyGroup>
     <_PolyglotOutDirFullEval>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PolyglotOutDir)'))</_PolyglotOutDirFullEval>
-    <!-- Exists() resolves against the project directory, but a property function such as ReadAllText resolves a
-         relative path against the PROCESS's current directory (a `dotnet build path/to/App.csproj` from elsewhere
-         failed with "Could not find a part of the path"), so the list is read by its full path. -->
-    <_PolyglotOutputsListFull>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(_PolyglotOutputsList)'))</_PolyglotOutputsListFull>
+    <!-- The evaluation-time view is read from its OWN file, not from polyglot.outputs.list. The outputs list is a
+         FileWrites entry: `dotnet clean` and IncrementalClean delete it, and a project another project references is
+         evaluated on a parallel node whose Exists() answer predates the deletion — the first CI run of P41 failed
+         exactly so ("Could not find file" from ReadAllText right after Exists() said yes). This file is written in
+         place by _PolyglotAddGenerated (WriteOnlyWhenDifferent) and is deliberately NOT in FileWrites, so its path
+         never disappears while a build is running; a reader sees the previous build's list or the current one. A
+         stale entry after `dotnet clean` is harmless: the target removes every evaluation-time item and re-adds the
+         fresh set before CoreCompile. The file goes with obj/.
+         Exists() resolves against the project directory, but a property function such as ReadAllText resolves a
+         relative path against the PROCESS's current directory, so it is read by its full path. -->
+    <_PolyglotEvalList>$(IntermediateOutputPath)polyglot.eval.list</_PolyglotEvalList>
+    <_PolyglotEvalListFull>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(_PolyglotEvalList)'))</_PolyglotEvalListFull>
   </PropertyGroup>
-  <ItemGroup Condition="'@(PolyglotFile)' != '' And Exists('$(_PolyglotOutputsListFull)')">
-    <_PolyglotEvalListed Include="$([System.IO.File]::ReadAllText('$(_PolyglotOutputsListFull)').Replace('%0D%0A', ';').Replace('%0A', ';').Split(';'))" />
+  <ItemGroup Condition="'@(PolyglotFile)' != '' And Exists('$(_PolyglotEvalListFull)')">
+    <_PolyglotEvalListed Include="$([System.IO.File]::ReadAllText('$(_PolyglotEvalListFull)').Replace('%0D%0A', ';').Replace('%0A', ';').Split(';'))" />
     <_PolyglotEvalGenerated Include="@(_PolyglotEvalListed->WithMetadataValue('Extension', '.cs')->WithMetadataValue('RelativeDir', '$(_PolyglotOutDirFullEval)'))">
       <PolyglotEval>true</PolyglotEval>
     </_PolyglotEvalGenerated>
@@ -275,6 +283,10 @@
       <!-- The bookkeeping (never compiled) — registered so `dotnet clean` removes it. -->
       <FileWrites Include="$(_PolyglotStamp);$(_PolyglotRecord);$(_PolyglotDepfile);$(_PolyglotInputsCache);$(_PolyglotOutputsList)" />
     </ItemGroup>
+    <!-- P41 (#68): the evaluation-time view for the NEXT evaluation — the .cs this build compiles, full paths, one per
+         line. Written in place and only when it changed; never a FileWrites entry (see _PolyglotEvalList above). -->
+    <WriteLinesToFile File="$(_PolyglotEvalList)" Lines="@(_PolyglotGenerated->'%(FullPath)')" Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
   </Target>
 
   <!-- P40 review (#75, D17 under MSBuild): WHEN the generated files join @(Compile) is load-bearing. The SDK's

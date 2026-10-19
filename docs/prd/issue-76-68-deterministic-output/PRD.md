@@ -186,7 +186,15 @@ in another module can legitimately change a committed file.
   run" is a weaker contract than "correct at evaluation", and the items are cheap. Spike S7 re-runs the
   0.9.9 scenario on the current package before and after D10 and records both results on #68. If S8 shows
   the evaluation-time parsing cannot be made robust, D10 is dropped and S7's verdict decides #68 alone.
-- **D10. Outputs-list-derived evaluation-time items, target stays authoritative.** After the
+- **D10 (as built). Evaluation-time items from a dedicated `polyglot.eval.list`, target stays authoritative.**
+  The first CI run showed why the items cannot read `polyglot.outputs.list` directly: that file is a FileWrites
+  entry, so `dotnet clean` and IncrementalClean delete it, and a project another project references is evaluated
+  on a parallel node whose `Exists()` answer predates the deletion — `ReadAllText` then threw "Could not find
+  file". `_PolyglotAddGenerated` therefore writes the compiled `.cs` paths to `obj/.../polyglot.eval.list` in
+  place (`WriteOnlyWhenDifferent`), the file is never in FileWrites, and evaluation reads that: a reader sees the
+  previous build's list or the current one, never a missing path. A stale entry after `dotnet clean` is
+  harmless because the target removes every evaluation-time item before re-adding the fresh set. The original
+  outputs-list design follows for the record. After the
   `_PolyglotOutputsList` property (`.targets:46`), an `ItemGroup` conditioned on
   `'@(PolyglotFile)' != '' And Exists('$(_PolyglotOutputsList)')` adds `Compile` items parsed from the list
   (spike S8 settles the parsing: `$([System.IO.File]::ReadAllText())` split on line ends, filtered to `.cs`
