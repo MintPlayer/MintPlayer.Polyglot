@@ -86,6 +86,29 @@ is the tripwire for the server's one silent failure mode — a report path that 
 **Known bias:** coverage is measured on Linux only, so `#ifdef _WIN32` branches read as permanently
 uncovered. Don't "fix" the number by deleting a POSIX branch.
 
+## ⛔ Do NOT run builds or tests locally: let GitHub Actions verify
+**This is the maintainer's standing rule, repeated many times. It overrides everything below in this
+section, and the global "never push just to get a CI run" rule.** Don't run any of these locally:
+- the full gate (`build-and-test.ps1`, any tier);
+- the unit-test exe;
+- the POSIX/WSL leg;
+- the real-MSBuild runs;
+- the conformance runners;
+- build-and-run "sweeps".
+
+On this machine they take 20–45+ minutes and starve its memory. GitHub Actions runs the same checks
+in **under 5 minutes**.
+
+**Workflow:**
+1. Implement.
+2. Commit and push.
+3. Read CI with `gh pr checks` or `gh run view`. When CI is red, read `--log-failed` first, then fix
+   only that.
+
+**Subagent briefs** must not tell agents to build, test or sweep. They implement, commit and stop.
+The most a change may get locally is a single compile, and only when it truly can't be avoided.
+The paragraphs below describe what the gate *contains*. They are not an instruction to run it here.
+
 **Do NOT run intermediary builds/tests between phases/slices.** The full gate takes ~3–4 min (P35;
 was ~15); running it per slice still multiplies into a lot of waiting. Implement EVERYTHING first, then
 build + run the full gate **once** at the end. (If a slice really needs a mid-flight sanity check,
@@ -164,11 +187,10 @@ summary in PRD §6 — this file does **not** track milestones):
 In flight / gated: **P23** (bundle the CLI in the VS Code extension for zero-setup install — built, pending
 an interactive vsix install + the first marketplace publish; PR #16), **P22** tail (PHP runtime differential +
 the esbuild-pattern npm CLI sibling), **P16d** (Visual Studio LSP client — built, interactive verify pending),
-**P20** (alternative input "skins" — designed, demand-gated), **P40** (issue #73 library-grade output —
-built + gated on `issue-73-library-grade`, PR #75 awaiting the Spark session's review;
-`docs/prd/issue-73-library-grade/`).
+**P20** (alternative input "skins" — designed, demand-gated). **P40** (issue #73 library-grade output) is
+merged (PR #75, approved by the Spark session after 10 review rounds; `docs/prd/issue-73-library-grade/`).
 
-**Next step:** land P40 (PR #75) after Spark's review, then issue #74; or finish P23 verification, or pick up the P22 tail.
+**Next step:** issue #74; or finish P23 verification, or pick up the P22 tail.
 
 To verify a build: `pwsh scripts/build-and-test.ps1` (build → unit tests → differential C#/TS/Python
 conformance), or the **`/build-and-test`** skill.
