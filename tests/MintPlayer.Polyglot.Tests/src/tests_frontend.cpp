@@ -201,7 +201,7 @@ void run_frontend() {
                                  : std::map<std::string, std::string>{};
         };
         EmitResult r = compile("record Point(x: i32, y: i32)\nfn origin(): Point => Point(0, 0)\n", findTarget("csharp"), nullptr, pub);
-        check(r.ok && has(r.code, "public record Point") && has(r.code, "public static class PolyglotProgram"),
+        check(r.ok && has(r.code, "public record Point") && has(r.code, "public static partial class PolyglotProgram"),
               "issue#11 access: csharp.access=public emits public types + wrapper");
         EmitResult def = compile("record Point(x: i32, y: i32)\n", findTarget("csharp"));
         check(def.ok && !has(def.code, "public record Point"), "issue#11 access: default is internal (no public modifier)");

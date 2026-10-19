@@ -75,9 +75,13 @@
        path never reaches CoreCompile as CS2001). -->
   <PropertyGroup>
     <_PolyglotOutDirFullEval>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PolyglotOutDir)'))</_PolyglotOutDirFullEval>
+    <!-- Exists() resolves against the project directory, but a property function such as ReadAllText resolves a
+         relative path against the PROCESS's current directory (a `dotnet build path/to/App.csproj` from elsewhere
+         failed with "Could not find a part of the path"), so the list is read by its full path. -->
+    <_PolyglotOutputsListFull>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(_PolyglotOutputsList)'))</_PolyglotOutputsListFull>
   </PropertyGroup>
-  <ItemGroup Condition="'@(PolyglotFile)' != '' And Exists('$(_PolyglotOutputsList)')">
-    <_PolyglotEvalListed Include="$([System.IO.File]::ReadAllText('$(_PolyglotOutputsList)').Replace('%0D%0A', ';').Replace('%0A', ';').Split(';'))" />
+  <ItemGroup Condition="'@(PolyglotFile)' != '' And Exists('$(_PolyglotOutputsListFull)')">
+    <_PolyglotEvalListed Include="$([System.IO.File]::ReadAllText('$(_PolyglotOutputsListFull)').Replace('%0D%0A', ';').Replace('%0A', ';').Split(';'))" />
     <_PolyglotEvalGenerated Include="@(_PolyglotEvalListed->WithMetadataValue('Extension', '.cs')->WithMetadataValue('RelativeDir', '$(_PolyglotOutDirFullEval)'))">
       <PolyglotEval>true</PolyglotEval>
     </_PolyglotEvalGenerated>

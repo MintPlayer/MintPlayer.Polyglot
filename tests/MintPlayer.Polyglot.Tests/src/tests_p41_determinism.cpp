@@ -86,8 +86,10 @@ void run_p41_determinism() {
             const std::string viaA = moduleCode(a, "lib");
             check(!viaA.empty() && viaA == moduleCode(b, "lib") && viaA == alone.code,
                   "P41 #76 (!-shift): a root's null-asserts do not renumber lib's temps on " + t);
-            check(has(viaA, "__end0") && !has(viaA, "__end1"),
-                  "P41 #76 (!-shift): lib's `for i in 0..maybe(x)!` bound is `__end0` on " + t);
+            // The null-assert in the range end reserves the body's first slot (`__nn0`, spent by the targets that
+            // emit it) and the loop bound takes the second — the same number in every closure, which is the point.
+            check(has(viaA, "__end1") && !has(viaA, "__end2") && !has(viaA, "__end0"),
+                  "P41 #76 (!-shift): lib's `for i in 0..maybe(x)!` bound is `__end1` after the null-assert's slot on " + t);
         }
     }
 

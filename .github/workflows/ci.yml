@@ -18,7 +18,7 @@ name: PR checks (Linux build-once, fan-out legs)
 # eats the budget), and a superseded PR run is cancelled by the concurrency group. If a measured run
 # still exceeds the wall, `conformance` is the first leg to leave (see its matrix entry).
 #
-# The runners are invoked DIRECTLY (`pwsh -NoProfile -File tests/<leg>/run-*.ps1 -Cli build/polyglot`)
+# The runners are invoked DIRECTLY (`pwsh -NoProfile -File tests/<leg>/run-*.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"`)
 # — the standing contract that every runner works WITHOUT nx. NX (project.json / scripts/nx-leg.ps1) is
 # the LOCAL orchestrator with its per-leg cache; CI no longer installs it (no `npm ci`, no remote-cache
 # token: ~6 s and one secret fewer per job). release.yml calls the same runners the same way.
@@ -97,22 +97,22 @@ jobs:
           - leg: unit-watch-registry
             run: |
               build/polyglot-tests
-              pwsh -NoProfile -File tests/watch/run-watch.ps1 -Cli build/polyglot
-              pwsh -NoProfile -File tests/registry/run-registry.ps1 -Cli build/polyglot
+              pwsh -NoProfile -File tests/watch/run-watch.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"
+              pwsh -NoProfile -File tests/registry/run-registry.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"
 
           # The CLI front door, the §3.B refusal contract and the LSP protocol gate: dependency-free
           # (none of the three probes for node/dotnet/python/php).
           - leg: smoke-refusals-lsp
             run: |
-              pwsh -NoProfile -File tests/cli/run-cli-smoke.ps1 -Cli build/polyglot
-              pwsh -NoProfile -File tests/refusals/run-refusals.ps1 -Cli build/polyglot
-              pwsh -NoProfile -File tests/lsp/run-lsp.ps1 -Cli build/polyglot
+              pwsh -NoProfile -File tests/cli/run-cli-smoke.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"
+              pwsh -NoProfile -File tests/refusals/run-refusals.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"
+              pwsh -NoProfile -File tests/lsp/run-lsp.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"
 
           # P39 coverage attribution (checked-in fixtures: no Python, no PHP, no network) + the smoke
           # transpile that proves plugins are found next to the binary, not in cwd.
           - leg: coverage-attribution
             run: |
-              pwsh -NoProfile -File tests/coverage/run-coverage.ps1 -Cli build/polyglot
+              pwsh -NoProfile -File tests/coverage/run-coverage.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"
               printf 'fn main() {\n  print(6 * 7)\n}\n' > /tmp/smoke.pg
               (cd /tmp && "$GITHUB_WORKSPACE/build/polyglot" build /tmp/smoke.pg --target csharp --out /tmp/ --lib io)
               grep -q 'print(6 \* 7)' /tmp/smoke.cs
@@ -128,7 +128,7 @@ jobs:
             dotnet: |
               8.0.x
               10.0.x
-            run: pwsh -NoProfile -File tests/msbuild/run-nuget.ps1 -Cli build/polyglot -Work /tmp/polyglot-nuget-gate
+            run: pwsh -NoProfile -File tests/msbuild/run-nuget.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot" -Work /tmp/polyglot-nuget-gate
 
           # The merged parallel differential runner, all four targets (P35: ~97 s). Needs dotnet (the
           # `csc /shared` oracle compiles against the ACTIVE SDK's net10 ref pack — pin it), node >= 22
@@ -140,7 +140,7 @@ jobs:
           - leg: conformance
             dotnet: 10.0.x
             node: 22
-            run: pwsh -NoProfile -File tests/conformance/run-conformance.ps1 -Cli build/polyglot
+            run: pwsh -NoProfile -File tests/conformance/run-conformance.ps1 -Cli "$GITHUB_WORKSPACE/build/polyglot"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
