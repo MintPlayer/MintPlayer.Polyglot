@@ -3,9 +3,13 @@
   <!-- Auto-imported near the BOTTOM of the consuming project. Transpiles each @(PolyglotFile) to a .cs
        in obj/ before BeforeCompile — so @(Compile) is complete when the SDK hashes it (_PolyglotGenerate,
        below) — (so generated types exist for IntelliSense too — design-time builds are
-       NOT skipped, Grpc.Tools' hard-won lesson), incrementally via Inputs/Outputs (the tool path is an
-       input, so a CLI upgrade forces regen). A companion always-run target re-adds the generated files
-       when the transpile is skipped, and registers them as FileWrites so `dotnet clean` removes them.
+       NOT skipped, Grpc.Tools' hard-won lesson; P41 spike S7 re-verified that CompileDesignTime runs it),
+       incrementally via Inputs/Outputs (the tool path is an input, so a CLI upgrade forces regen). A
+       companion always-run target re-adds the generated files when the transpile is skipped, and registers
+       them as FileWrites so `dotnet clean` removes them. P41 (issue #68): the previously generated .cs are
+       ALSO declared as Compile items at evaluation time, from the outputs list, so a project system sees
+       them from load — before any design-time build; the target removes and re-adds them (see below).
+
 
        Consumer-settable properties (each documented where it is used below; README ".NET build integration"):
          PolyglotTargets     subset of the pgconfig `targets` for THIS build ("csharp", "csharp;typescript";
@@ -52,6 +56,33 @@
     <_PolyglotToolName Condition="'$(_PolyglotToolName)' == ''">polyglot</_PolyglotToolName>
     <PolyglotTool Condition="'$(PolyglotTool)' == ''">$(MSBuildThisFileDirectory)..\tools\$(PolyglotHostRid)\$(_PolyglotToolName)</PolyglotTool>
   </PropertyGroup>
+
+  <!-- P41 (issue #68, D10): the previously generated .cs files join @(Compile) at EVALUATION time, not only
+       when _PolyglotAddGenerated runs. A project system that reads the evaluated project (Solution Explorer,
+       IntelliSense before its first design-time build, `dotnet msbuild -getItem:Compile`) sees them from
+       load; before this, a consumer's generated types were "missing" until a design-time build had run — a
+       weaker contract than "correct at evaluation", and the 0.9.9 symptom of #68.
+       The items come from the OUTPUTS LIST (what the last transpile produced), filtered to .cs directly under
+       PolyglotOutDir — never from a `$(PolyglotOutDir)*.cs` folder glob: a stray or stale file there must not
+       compile (the P40 review-2b regression, see _PolyglotOutputsList above).
+       Evaluation-time MSBuild has no file-reading item type and item Conditions may not use %(metadata), so
+       the list is read with the ReadAllText property function (ReadAllLines is not permitted), its line ends
+       turned into ';' and split — a ';' produced INSIDE a property function is escaped and would not split an
+       Include on its own — and the filter is the WithMetadataValue item function (case-insensitive, like the
+       target's condition; the list's path case can differ from $(MSBuildProjectDirectory)). The item carries a
+       PolyglotEval marker so _PolyglotAddGenerated can REMOVE exactly these and re-add the fresh list-derived
+       set (the target stays authoritative: no CS2002 duplicate, and a deleted .pg's stale evaluation-time
+       path never reaches CoreCompile as CS2001). -->
+  <PropertyGroup>
+    <_PolyglotOutDirFullEval>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PolyglotOutDir)'))</_PolyglotOutDirFullEval>
+  </PropertyGroup>
+  <ItemGroup Condition="'@(PolyglotFile)' != '' And Exists('$(_PolyglotOutputsList)')">
+    <_PolyglotEvalListed Include="$([System.IO.File]::ReadAllText('$(_PolyglotOutputsList)').Replace('%0D%0A', ';').Replace('%0A', ';').Split(';'))" />
+    <_PolyglotEvalGenerated Include="@(_PolyglotEvalListed->WithMetadataValue('Extension', '.cs')->WithMetadataValue('RelativeDir', '$(_PolyglotOutDirFullEval)'))">
+      <PolyglotEval>true</PolyglotEval>
+    </_PolyglotEvalGenerated>
+    <Compile Include="@(_PolyglotEvalGenerated)" />
+  </ItemGroup>
 
   <!-- dotnet watch monitors only Compile/EmbeddedResource by default; declaring the .pg sources as Watch
        items makes `dotnet watch build|run` on the consuming project re-run PolyglotTranspile on every .pg
@@ -211,7 +242,12 @@
        including the shared __polyglot_prelude.cs of a 2+-.pg project (issue #14), which has no source .pg.
        P40 review (#75 pre-push, 2b): no longer a `$(PolyglotOutDir)*.cs` glob — a stale headerless .cs from
        0.10.x stayed in that folder forever (nothing may delete it) and the glob kept linking its functions.
-       `dotnet clean` still sweeps every .cs in the folder (FileWrites), which IS safe: it belongs to the build. -->
+       `dotnet clean` still sweeps every .cs in the folder (FileWrites), which IS safe: it belongs to the build.
+       P41 (issue #68, D10): the evaluation-time Compile items (PolyglotEval=true, top of this file) are the
+       PREVIOUS list's view; this target is the authority. It removes them and re-adds the fresh list-derived set,
+       so nothing is in @(Compile) twice (CS2002) and a .pg deleted since evaluation leaves no concrete stale
+       path for CoreCompile (CS2001) — the transpile that just ran removed its .cs, and the fresh list no longer
+       names it. -->
   <Target Name="_PolyglotAddGenerated"
           Condition="'@(PolyglotFile)' != ''">
     <ReadLinesFromFile File="$(_PolyglotOutputsList)" Condition="Exists('$(_PolyglotOutputsList)')">
@@ -221,6 +257,11 @@
       <_PolyglotOutDirFull>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(PolyglotOutDir)'))</_PolyglotOutDirFull>
     </PropertyGroup>
     <ItemGroup>
+      <!-- P41 (#68): drop the evaluation-time items before re-adding from the list. The list is an Output of
+           PolyglotTranspile, so it exists whenever this target runs after it; the Exists guard is a belt for a
+           flow that reaches this target with no list at all (nothing to re-add, so the evaluation-time items
+           would otherwise be removed without replacement). -->
+      <Compile Remove="@(Compile)" Condition="'%(Compile.PolyglotEval)' == 'true' and Exists('$(_PolyglotOutputsList)')" />
       <!-- The C# emit into PolyglotOutDir is flat (basename.cs), so "directly in that folder" is exact; MSBuild
            condition string comparison is case-insensitive. -->
       <_PolyglotGenerated Include="@(_PolyglotListed)"

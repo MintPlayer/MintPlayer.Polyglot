@@ -21,7 +21,13 @@
 # (rename/delete a .pg, pgconfig/lockfile edits, re-routing a twin, net8.0;net10.0 isolation).
 # `-Work <dir>` runs in a private directory with a private NuGet package cache (NUGET_PACKAGES), so two
 # concurrent runs on one machine cannot evict or overwrite each other's freshly-packed package.
-param([switch]$Sequential, [string]$Work)
+# P41 (issue #68, D10/D11) adds the evaluation-time checks to Stale: `dotnet msbuild -getItem:Compile` lists the
+# generated .cs without running a target; add/rename/delete a .pg builds with no CS2002 and no CS2001.
+# `-Cli <path>` (P41 slice 7, D12): pack THAT binary instead of the Windows x64\Debug exe. The package is
+# assets-only and the .targets resolves tools/<host RID>/polyglot, so on Linux CI the runner stages the given
+# CLI + its sibling plugins/ as <work>/stage/<rid>/ and packs with -p:PolyglotStageRoot (the csproj's
+# multi-RID hook release.yml uses). Without -Cli the historical single-RID win-x64 pack is unchanged.
+param([switch]$Sequential, [string]$Work, [string]$Cli)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -182,6 +188,7 @@ $noCfgFixture = {
 # 10. P40 (issue #73, B6 + D17): PolyglotTargets, the outputs record and the inputs cache, against the
 # real .props/.targets. Reproduces the two bugs the follow-up found — a deleted .pg's function still
 # linked from a stale obj/ .cs, and a pgconfig.json edit did not regenerate — and the target filter.
+# P41 (issue #68, D11): also the evaluation-time Compile items (-getItem:Compile) and the no-CS2001/CS2002 contract.
 $staleFixture = {
     param($work, $pkgVer)
     $ErrorActionPreference = 'Stop'
@@ -215,16 +222,35 @@ $staleFixture = {
     ck ((Test-Path (Join-Path $p "obj/Debug/net8.0/polyglot.outputs.json")) -and (Test-Path (Join-Path $p "obj/Debug/net8.0/polyglot.deps"))) `
         "P40: the record and depfile live in the intermediate dir, outside PolyglotOutDir"
 
+    # P41 (issue #68, D10/D11): the generated .cs are Compile items at EVALUATION time (-getItem runs no target),
+    # derived from the outputs list the last build wrote — what Solution Explorer / IntelliSense see from load.
+    # Paths are matched case-insensitively (-match is; the list's drive-letter case can differ on Windows).
+    $evalItems = dotnet msbuild $p -getItem:Compile -nologo 2>&1 | Out-String
+    ck ($evalItems -match 'polyglot[\\/]a\.cs' -and $evalItems -match 'polyglot[\\/]b\.cs') `
+        "P41 #68: after a build, -getItem:Compile lists the generated polyglot/a.cs + b.cs at evaluation (no target ran)"
+
+    # The rename adds c.pg and removes b.pg in one build: the evaluation-time items (a.cs, b.cs) must be replaced by
+    # the target's fresh set — no CS2002 (c.cs or a.cs added twice) and no CS2001 (b.cs kept as a concrete stale path).
     Move-Item (Join-Path $p "b.pg") (Join-Path $p "c.pg")
     $b = dotnet build $p --nologo -v q 2>&1 | Out-String
     ck ($LASTEXITCODE -eq 0 -and -not (Test-Path (Join-Path $obj "b.cs")) -and (Test-Path (Join-Path $obj "c.cs")) -and
         -not (Test-Path (Join-Path $web "gen/b.ts")) -and (Test-Path (Join-Path $web "gen/c.ts"))) `
         "P40: renaming a .pg re-runs the transpile and removes the stale .cs and .ts"
+    ck ($b -notmatch 'CS2002' -and $b -notmatch 'CS2001') `
+        "P41 #68: adding c.pg (and dropping b.pg) builds without CS2002 (duplicate) or CS2001 (stale evaluation-time path)"
+    $evalItems = dotnet msbuild $p -getItem:Compile -nologo 2>&1 | Out-String
+    ck ($evalItems -match 'polyglot[\\/]c\.cs' -and $evalItems -notmatch 'polyglot[\\/]b\.cs') `
+        "P41 #68: ... and -getItem:Compile now lists c.cs and no longer b.cs"
 
     Remove-Item (Join-Path $p "a.pg")
     $b = dotnet build $p --nologo -v q 2>&1 | Out-String
     ck ($LASTEXITCODE -ne 0 -and $b -match 'CS0117' -and -not (Test-Path (Join-Path $obj "a.cs"))) `
         "P40: deleting a .pg removes its .cs, so calling its function fails (CS0117) instead of linking stale code"
+    # P41 #68: the failure is the CALLER's (CS0117), never a stale evaluation-time a.cs path (CS2001); afterwards the
+    # evaluation-time set (fresh list) no longer names a.cs either.
+    $evalItems = dotnet msbuild $p -getItem:Compile -nologo 2>&1 | Out-String
+    ck ($b -notmatch 'CS2001' -and $evalItems -notmatch 'polyglot[\\/]a\.cs' -and $evalItems -match 'polyglot[\\/]c\.cs') `
+        "P41 #68: deleting a.pg gives no CS2001, and -getItem:Compile drops a.cs after the build"
     "System.Console.WriteLine(PolyglotProgram.beta());" | Set-Content (Join-Path $p "Program.cs")
     dotnet build $p --nologo -v q 2>&1 | Out-Null
     $run = dotnet run --project $p --no-build 2>&1
@@ -725,16 +751,29 @@ $downResults = [System.Collections.Generic.List[object]]::new()
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
 New-Item -ItemType Directory -Force $feed | Out-Null
 # Same version every run: evict any cached extraction or restore serves a stale package.
-$cached = if ($Work) { Join-Path $env:NUGET_PACKAGES "mintplayer.polyglot.msbuild" } else { Join-Path $env:USERPROFILE ".nuget/packages/mintplayer.polyglot.msbuild" }
+$cached = if ($Work) { Join-Path $env:NUGET_PACKAGES "mintplayer.polyglot.msbuild" } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) ".nuget/packages/mintplayer.polyglot.msbuild" }
 if (Test-Path $cached) { Remove-Item -Recurse -Force $cached }
 
 # 0. Pack from the working tree into a private feed. The version is read from the csproj so a bump
 # can never desync this gate from what actually packs.
 $pkgVer = ([xml](Get-Content (Join-Path $repo "src/MintPlayer.Polyglot.MSBuild/MintPlayer.Polyglot.MSBuild.csproj"))).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-dotnet pack (Join-Path $repo "src/MintPlayer.Polyglot.MSBuild") -c Release -o $feed --nologo -v q | Out-Null
-# The CLI the package ships (the local pack takes x64\Debug's — PolyglotCliDir), for the fixtures that also run
-# the CLI by hand the way a consumer's CI does (fixture 11).
-$cliPath = (Resolve-Path (Join-Path $repo "x64/Debug/MintPlayer.Polyglot.Cli.exe")).Path
+$packArgs = @()
+if ($Cli) {
+    # Stage the given CLI as tools/<portable host RID>/ — the same shape the .targets resolves at build time.
+    $cliPath = (Resolve-Path $Cli).Path
+    $os = if ($IsWindows) { 'win' } elseif ($IsMacOS) { 'osx' } else { 'linux' }
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    $ridDir = Join-Path $work "stage" "$os-$arch"
+    New-Item -ItemType Directory -Force $ridDir | Out-Null
+    Copy-Item $cliPath (Join-Path $ridDir ($(if ($IsWindows) { 'polyglot.exe' } else { 'polyglot' })))
+    Copy-Item -Recurse (Join-Path (Split-Path $cliPath -Parent) "plugins") (Join-Path $ridDir "plugins")
+    $packArgs = @("-p:PolyglotStageRoot=$(Join-Path $work 'stage')")
+} else {
+    # The CLI the package ships (the local pack takes x64\Debug's — PolyglotCliDir), for the fixtures that also run
+    # the CLI by hand the way a consumer's CI does (fixture 11).
+    $cliPath = (Resolve-Path (Join-Path $repo "x64/Debug/MintPlayer.Polyglot.Cli.exe")).Path
+}
+dotnet pack (Join-Path $repo "src/MintPlayer.Polyglot.MSBuild") -c Release -o $feed --nologo -v q @packArgs | Out-Null
 fck $packResults (Test-Path (Join-Path $feed "MintPlayer.Polyglot.MSBuild.$pkgVer.nupkg")) "package packs from the working tree ($pkgVer)"
 
 # Consumer solution: App (uses the package + a .pg) and Downstream (references App, has its own .pg,
