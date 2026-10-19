@@ -193,8 +193,11 @@ in another module can legitimately change a committed file.
   file". `_PolyglotAddGenerated` therefore writes the compiled `.cs` paths to `obj/.../polyglot.eval.list` in
   place (`WriteOnlyWhenDifferent`), the file is never in FileWrites, and evaluation reads that: a reader sees the
   previous build's list or the current one, never a missing path. A stale entry after `dotnet clean` is
-  harmless because the target removes every evaluation-time item before re-adding the fresh set. The original
-  outputs-list design follows for the record. After the
+  harmless because the target removes every evaluation-time item before re-adding the fresh set. Second
+  Linux-only finding (reproduced in WSL): MSBuild on Linux expands an item's `Include` even when its
+  `ItemGroup` condition is false, so the `ReadAllText` lives on a **conditioned property** and the item only
+  splits it; a property condition is honoured on every platform. The original outputs-list design follows for
+  the record. After the
   `_PolyglotOutputsList` property (`.targets:46`), an `ItemGroup` conditioned on
   `'@(PolyglotFile)' != '' And Exists('$(_PolyglotOutputsList)')` adds `Compile` items parsed from the list
   (spike S8 settles the parsing: `$([System.IO.File]::ReadAllText())` split on line ends, filtered to `.cs`

@@ -87,9 +87,14 @@
          relative path against the PROCESS's current directory, so it is read by its full path. -->
     <_PolyglotEvalList>$(IntermediateOutputPath)polyglot.eval.list</_PolyglotEvalList>
     <_PolyglotEvalListFull>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(_PolyglotEvalList)'))</_PolyglotEvalListFull>
+    <!-- The read lives on a CONDITIONED PROPERTY, not in the item's Include: MSBuild on Linux expands an item's
+         Include expression even when its ItemGroup's Condition is false (Windows does not), so an inline
+         ReadAllText threw MSB4184 for every project that had never been built. A property's Condition is honoured
+         on every platform. Line ends become ';' here; the item splits on them. -->
+    <_PolyglotEvalListText Condition="Exists('$(_PolyglotEvalListFull)')">$([System.IO.File]::ReadAllText('$(_PolyglotEvalListFull)').Replace('%0D%0A', ';').Replace('%0A', ';'))</_PolyglotEvalListText>
   </PropertyGroup>
-  <ItemGroup Condition="'@(PolyglotFile)' != '' And Exists('$(_PolyglotEvalListFull)')">
-    <_PolyglotEvalListed Include="$([System.IO.File]::ReadAllText('$(_PolyglotEvalListFull)').Replace('%0D%0A', ';').Replace('%0A', ';').Split(';'))" />
+  <ItemGroup Condition="'@(PolyglotFile)' != '' And '$(_PolyglotEvalListText)' != ''">
+    <_PolyglotEvalListed Include="$(_PolyglotEvalListText.Split(';'))" />
     <_PolyglotEvalGenerated Include="@(_PolyglotEvalListed->WithMetadataValue('Extension', '.cs')->WithMetadataValue('RelativeDir', '$(_PolyglotOutDirFullEval)'))">
       <PolyglotEval>true</PolyglotEval>
     </_PolyglotEvalGenerated>
