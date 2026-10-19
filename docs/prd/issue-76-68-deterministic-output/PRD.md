@@ -1,7 +1,8 @@
 # P41 — Deterministic per-module output (issue #76) + IDE-visible generated sources (issue #68) — PRD
 
-> **Status:** 📝 designed (2026-10-19), slice 0 spikes pending. Decisions D1–D12 below are the lead's
-> recommendations; the maintainer may change any of them on the issues.
+> **Status:** 📝 designed + **grilled (2026-10-19)**: D1–D14 locked with the maintainer in a nine-question
+> round (log in `PLAN.md`). Slice 0 spikes pending. Two maintainer directives shape the design: **good
+> fixes over quick fixes**, and **the GitHub workflow must finish in 5 minutes**.
 > **Issues:** [#76](https://github.com/MintPlayer/MintPlayer.Polyglot/issues/76),
 > [#68](https://github.com/MintPlayer/MintPlayer.Polyglot/issues/68).
 > **Evidence:** `ANALYSIS.md` (5-agent investigation, verified against HEAD `29d1376`, repro run on the
@@ -114,21 +115,37 @@ are plugin-chosen and already overlap (`__c` is used by both lowering and the Py
 - `boundTmpSeq_` (`__pg_t`) and `doWhileSeq_` (`__dw`) are already per emitted file (the emitter is
   constructed per `emit()`). They are made per body too, for uniformity and G2.
 
-### 4.4 Build driver — **D4: unchanged, refusal kept**
+### 4.4 Compile pipeline — **D13: lower once per root, partition the lowered IR**
 
-`emitOne`/`OutputSink` stay as they are. After D1–D3 the sink's dedupe collapses the duplicate emission by
-construction, and "conflicting output" is left to fire for two different modules routed to one path, or
-the origin-info divergence case. Not skipping the redundant per-root compile is deliberate: it keeps the
-sink's producer naming (P40 review 3b) and `--check` semantics intact. A per-build canonical-module cache is
-recorded as a performance idea only.
+Today `compile()` re-lowers the whole closure once per output file and prunes (`compiler.cpp:1593-1596,
+1635, 1688-1692`). That structure is the reason the bug could exist, and it stays wasteful even when the
+counters are fixed. P41 lowers each root's closure **once** and the partitioned emit **slices the lowered
+module by `originModule`**; the per-file prelude pruning (`pruneUnreachablePrelude` for `preludePerFile`
+targets) runs on the slice. "Lower per module" was considered and rejected: the D16 flat-namespace
+features (overload mangling, extension disambiguation, Meta materialization, prelude reach) are
+legitimately unit-wide, so a per-module lowering would still need the unit and buys little over slicing.
 
-### 4.5 Attribute imports — **D5: filtered by the kept module**
+### 4.5 Build driver — **D4 (revised): canonical-module dedupe before emission; refusal kept for its real
+purpose**
 
-`attrImports_` entries are recorded with the `originModule` of the declaration that used the binding, and
-the keep-prune drops the lines whose origin is not kept. A file then carries exactly the `import`/`using`
-lines its own declarations need. Dedupe stays per file.
+Roots are still compiled one closure at a time (sema needs the closure, and a build-wide unit would make
+unrelated roots collide under D16). But a module whose canonical source has already been emitted for a
+target in this build is **not re-emitted or re-written**: the driver keys produced modules by (canonical
+path, target) and skips the second occurrence. The "conflicting output" refusal stays for two **different**
+sources routed to one path and for the origin-info divergence case. The proof that two paths produce
+identical text moves to where invariants belong — the unit pins and the CLI smoke test (§4.7) — and to
+`build --check` on committed output. The P40 review-3b smoke test (both producers named) is re-pointed at a
+genuine two-source conflict.
 
-### 4.6 Documented set-dependence — **D6**
+### 4.6 Attribute imports — **D5 (revised): derived from the file's slice**
+
+With D13 there is a real per-file slice, so Tier-1 `import`/`using` lines are **derived by walking the
+slice's declarations for attribute-binding uses** (declarations, parameters, members, enum cases) — the
+same shape as the P40 prelude reachability pass — instead of being collected during lowering and
+filtered. They cannot drift from the declarations they serve. Dedupe stays per file. The failure direction
+if a use site is missed is a loud consumer-side compile error, never a silent extra `using`.
+
+### 4.6a Documented set-dependence — **D6**
 
 `docs/lang/SPEC.md` (or the determinism section of the PRD, wherever the §3.D text lives) gains a short
 "what is and is not a function of a module's own source" paragraph: temporaries and attribute imports are;
@@ -154,11 +171,13 @@ in another module can legitimately change a committed file.
 
 ### 4.8 Issue #68 — **D9, D10, D11, D12**
 
-- **D9. Re-verify first.** Spike S7 reproduces the 0.9.9 scenario against the current package (P40 moved the
-  hook into `BeforeCompile`, which `CompileDesignTime` runs, and replaced the glob with the outputs list). If
-  the IDE now picks the new file up after the first build, #68 closes with the evidence and D10 is not
-  built.
-- **D10. If it persists: outputs-list-derived evaluation-time items, target stays authoritative.** After the
+- **D9 (revised). Build the evaluation-time items regardless; S7 is the acceptance test, not the gate.**
+  P40 moved the hook into `BeforeCompile` (which `CompileDesignTime` runs) and replaced the glob with the
+  outputs list, so the 0.9.9 symptom may already be gone. But "correct only after a design-time build has
+  run" is a weaker contract than "correct at evaluation", and the items are cheap. Spike S7 re-runs the
+  0.9.9 scenario on the current package before and after D10 and records both results on #68. If S8 shows
+  the evaluation-time parsing cannot be made robust, D10 is dropped and S7's verdict decides #68 alone.
+- **D10. Outputs-list-derived evaluation-time items, target stays authoritative.** After the
   `_PolyglotOutputsList` property (`.targets:46`), an `ItemGroup` conditioned on
   `'@(PolyglotFile)' != '' And Exists('$(_PolyglotOutputsList)')` adds `Compile` items parsed from the list
   (spike S8 settles the parsing: `$([System.IO.File]::ReadAllText())` split on line ends, filtered to `.cs`
@@ -170,11 +189,34 @@ in another module can legitimately change a committed file.
   `dotnet msbuild -getItem:Compile` lists `polyglot\a.cs` at evaluation; add `c.pg` → `build` green, no
   CS2002; delete `a.pg` → `build` has no CS2001 and `a.cs` is gone (extends `:224-227`); a design-time
   simulation `-t:CompileDesignTime -p:DesignTimeBuild=true -getItem:Compile` lists the new file.
-- **D12 (maintainer sign-off).** The `nuget` leg runs in no GitHub workflow today (`ci.yml` runs
-  `unit,watch,registry`). Under the standing "GitHub Actions verifies" rule, D11 is dead weight unless the
-  leg joins `ci.yml`. **Recommendation: add it** (it needs only `dotnet` on the runner; the leg's own
-  timings are in `scripts/build-and-test.ps1`). This changes the CI contract, so it is a decision, not a
-  default.
+- **D12 (locked). The `nuget` leg joins `ci.yml`**, together with the cli-smoke/refusals/lsp legs that
+  carry the #76 pins — none of them runs in any workflow today (`ci.yml` runs `unit,watch,registry`). The
+  maintainer's condition: **the whole workflow finishes in 5 minutes**, which D14 delivers.
+
+### 4.9 CI under the 5-minute wall — **D14**
+
+Evidence (`ci.yml` run of 2026-10-19 07:57, master): the Linux job took **11 minutes**. The Core compiled in
+45 s; the single 6757-line `tests/MintPlayer.Polyglot.Tests/src/tests_main.cpp` translation unit took
+**~9.5 minutes** in Release mode (07:58:33 → 08:08:22). Before P40 (run of 00:26) the same file took ~1
+minute; P40 added 3115 lines to it. The coverage job, which builds Debug, compiled everything in 50 s.
+
+- **Root cause first.** `tests_main.cpp` is split into per-area translation units (one per milestone band
+  or feature area, each registering its checks with the flat `check()` harness), and the test binary is
+  compiled **without optimization** on every platform (tests do not need `-O2`; the `.vcxproj` and
+  `CMakeLists.txt` both change, guarded by `scripts/check-buildfile-parity.ps1`). Spike S9 identifies the
+  construct that made g++ -O2 blow up, so the split lands it in its own unit and the regression is
+  understood, not just dodged.
+- **Build once, fan out.** `ci.yml` becomes: one Linux build job (cmake Release CLI + unoptimized tests,
+  ~1.5 min) that uploads `build/polyglot`, `build/polyglot-tests` and `build/plugins/**` as an artifact;
+  then a **matrix of leg jobs** that download it and run in parallel — `unit+watch+registry`,
+  `cli-smoke+refusals+lsp`, `nuget`, and `conformance` **if** its toolchain setup (`dotnet`, `node`,
+  `python`, `php`) fits the budget, otherwise it stays out of PR CI as today and the plan says so. The
+  runners stay directly invocable (the contract); NX remains the local orchestrator. The coverage job stays
+  its own parallel job (already ~4 min). Every job carries `timeout-minutes: 5` as the tripwire, and a
+  `concurrency` group cancels superseded PR runs.
+- **Expected wall time:** build ≈ 1.5 min + artifact round trip ≈ 0.5 min + slowest leg (nuget ≈ 41 s,
+  smoke tier ≈ 19 s, conformance ≈ 97 s parallel per P35) → **≈ 3.5–4 min**. If the measured first run
+  exceeds 5 minutes, conformance is the first leg to leave.
 
 ## 5. Acceptance
 
@@ -186,6 +228,8 @@ in another module can legitimately change a committed file.
 - No conformance result changes (renaming temporaries cannot change behaviour; the differential suite
   proves it).
 - `build --check` on a committed multi-module project is quiet across a rename of a root file.
+- `ci.yml` finishes in **under 5 minutes** on a cache-cold PR run, with the nuget, cli-smoke, refusals and
+  lsp legs included.
 - #68: D9's verdict is recorded on the issue; if D10 is built, D11's checks pass and the `R3Owned` and
   Stale fixtures stay green.
 
