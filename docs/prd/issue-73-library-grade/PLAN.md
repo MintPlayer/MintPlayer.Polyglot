@@ -2129,3 +2129,53 @@ flagged in the PR for confirmation. The "Recommendation" column below is now the
     from that build and `return N;`, and an app that prints N. A skipped Polyglot target fails the pin.
   - **POSIX.** outputsink.hpp changed: the WSL g++/cmake build + unit run is part of the end gate.
   - **Not touched:** sema, lower, the emitters, the plugins and the registry. Floor pin 204.
+- **2026-10-19 — Review round 10** (Spark approved `629b0c2` with two non-gating items to resolve before merge). Both
+  reproduce on `629b0c2` per the reviewer's `pg629_me\t4g\t4g.log`, `pg629_c\t4\t4.log` and `pg629_c\t7\t7.log`; the
+  new cli-smoke checks ("review r10") and the `review r10:` unit checks pin them.
+  - **Item 1 — an order-dependent false "conflicting output".** rr1 case 7's tree (`gen/sub` from an earlier build)
+    rebuilt with `--out GEN/SUB` plus an include rule `GEN/other/%(Filename)`. A route INTO the typed root never
+    compares its components, so when it was written first `gen` stayed as it was and the write was keyed under the
+    disk's spelling; the leaving route then compared `GEN` with `gen` and hit r4's guard "this run already wrote into
+    the other spelling", which main.cpp printed as "conflicting output … 'a.pg' and 'a.pg' emit it with different
+    content" (with two files, naming a second producer that emits nothing there). Leaving first renamed `gen` → `GEN`
+    and built. **Design:** the root exemption only skips a comparison; it never decides a directory's case. The guard
+    could no longer catch a real clash — an earlier route that compared the component under another spelling is
+    already a spelling conflict (noteSpelling), and one that compared it under this spelling aligned it — so it is
+    removed: the first route that compares the directory decides, in either order, to align it when it holds only
+    Polyglot output (the files this run already wrote into it are) or to refuse with A3's message. A rename re-keys
+    everything the sink recorded under the old spelling (`OutputSink::rekeyDir`: produced set, listings, routed
+    spellings, recorded and build-owned keys, hinted directories, disk-spelled roots), so an earlier write stays this
+    run's output (dedup, outputs list, temp sweep). Pre-planning the whole route set was considered and rejected:
+    output paths are known only after each closure compiles, so it would mean buffering every emit of the run.
+    Pinned: cli-smoke T-I / T-L (one `a.pg`, csharp + typescript, per-target rule on typescript / csharp), F-I / F-L
+    (`a.pg` + `b.pg`, the rule on `b.pg` / `a.pg`) — each `--check` 3 with `would rename …gen -> GEN`, build 0 with
+    `~> …gen -> GEN`, result `GEN/{other,sub}`, no "conflicting output" — and T-I / T-L with a foreign file in `gen`
+    (both refused with A3's message, exit 1, nothing renamed); a `review r10:` unit check over both orders × both
+    modes × with/without a foreign file, including "the into-root write is still produced after the rename".
+  - **Item 2 — `--out proj`, a caller root typed AS H4's config folder.** On H4's config (`../proj/gen/%(Filename)`
+    over the disk's `Proj`), `build proj/a.pg --out proj` made H4's route a route INTO the typed root, so it was exempt
+    and the build wrote `Proj/gen/a.ts` (`be5140d` refused). **Design:** `callerRootRespelling` (outputsink.hpp), run
+    before the sink exists in build and in every watch cycle: a typed `--out` / `--build-owned` whose component
+    respells, in case only, an existing config folder or input folder — or an ancestor of one — that lies strictly
+    below another route root (a config folder, an input folder, an include rule's climbed root) is refused with H4's
+    message (`the directory '…\Proj' differs from 'proj', where the --out folder '…\proj' is typed, only by case, and
+    it holds '…\Proj\a.pg', which is not Polyglot output, so it is not renamed; …`), exit 1 under `--check` and
+    build, nothing written. Pinned: cli-smoke's `t7` shape and a `review r10:` unit check. **Deliberate deviation
+    from the literal ask** ("any config/input folder or ancestor"): the respelled folder must lie below another route
+    root. A respelling above every root — a cwd typed `c:\repos\myproj` over the disk's `C:\Repos\MyProj` (cmd.exe
+    keeps the typed case), or a lower-case drive letter, which MSBuild then passes in every flag — is no route's
+    spelling (every route starts below it) and stays accepted; refusing it would fail plain `dotnet build` runs
+    from such a cwd. R1 (`obj/debug` over `obj/Debug`: neither a config nor an input folder), rr1 case 7, R2 and the
+    three round-9 pins are unchanged; round 9's (a)–(c) are now refused by this check (same message prefix,
+    `--out`/`--build-owned folder … is typed` instead of the routed file), before the sink is reached.
+  - **Deliberate behaviour changes.** (1) Both orders of item 1 align `gen` → `GEN` (into-root first was exit 1);
+    the into-root-first order with a foreign file is refused with A3's message, not a content conflict. (2) A typed
+    caller root respelling a config/input folder below another route root is refused up front, with no partial
+    writes — this includes round 9's shapes, which used to write nothing only because every route went through `proj`.
+    (3) A case-only directory rename now re-keys the recorded and build-owned keys under it (previously a recorded
+    output below a renamed directory no longer matched its record entry within that run).
+  - **Build.** tests_main.cpp outgrew COFF's default section limit with these checks (MSVC C1128), so the test
+    project compiles with `/bigobj` (both .vcxproj configurations; CMake's MSVC branch mirrors it). g++/clang are
+    unaffected.
+  - **POSIX.** outputsink.hpp and main.cpp changed: the WSL g++/cmake build + unit run is part of the end gate.
+  - **Not touched:** sema, lower, the emitters, the plugins and the registry. Floor pin 204.

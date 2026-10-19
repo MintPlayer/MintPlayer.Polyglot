@@ -6389,6 +6389,71 @@ int main() {
                     check(refused && intoRoot && names == std::set<std::string>{"Proj"} && !fs::exists(h4 / "Proj" / "gen"),
                           "review r9: a typed caller root exempts only routes INTO it; H4's route leaving it is refused");
                 }
+                // Review round 10 (item 1): rr1 case 7's tree (`gen/sub` from an earlier build) rebuilt with `--out
+                // GEN/SUB` plus a route LEAVING it through `GEN/other`. Both orders give the same result: `gen` is
+                // aligned to `GEN` (it holds only Polyglot output), `sub` stays (the caller root's own component), no
+                // conflict — r4's guard reported the into-root-first order as a content conflict. With a foreign file
+                // in `gen`, both orders refuse with A3's message. A write made before the rename stays produced.
+                const std::string hdr10 = findTarget("typescript").backend()->generatedHeaderLine();
+                const cli::OutputSink::Claim claim10{"'a.pg'", hdr10, {}};
+                int n10 = 0;
+                for (bool intoFirst : {true, false})
+                    for (bool foreign : {false, true})
+                        for (auto mode : {cli::OutputSink::Mode::Check, cli::OutputSink::Mode::Write}) {
+                            const fs::path p = tmp / ("r10order" + std::to_string(n10++));
+                            cli::writeFile(p / "gen" / "sub" / "a.cs", hdr10 + "\nold\n");
+                            if (foreign) cli::writeFile(p / "gen" / "notes.txt", "hand-written\n");
+                            cli::OutputSink s(mode);
+                            s.routeRoots({p}, {p / "GEN" / "SUB"});
+                            const fs::path into = p / "GEN" / "SUB" / "a.cs", leave = p / "GEN" / "other" / "a.ts";
+                            cli::OutputSink::Put pi{}, pl{};
+                            std::string refusal;
+                            if (intoFirst) { pi = s.put(into, hdr10 + "\nnew\n", claim10); pl = s.put(leave, hdr10 + "\nts\n", claim10); refusal = s.refusal(); }
+                            else { pl = s.put(leave, hdr10 + "\nts\n", claim10); refusal = s.refusal(); pi = s.put(into, hdr10 + "\nnew\n", claim10); }
+                            std::set<std::string> top, below;
+                            for (const auto& e : fs::directory_iterator(p)) top.insert(e.path().filename().string());
+                            for (const auto& e : fs::directory_iterator(p / "gen")) below.insert(e.path().filename().string());
+                            const bool write = mode == cli::OutputSink::Mode::Write;
+                            const std::string order = intoFirst ? "into-root first" : "leaving first";
+                            if (!foreign) {
+                                bool reported = false;
+                                for (const auto& l : s.driftLines()) reported = reported || has(l, "would rename");
+                                const bool ok = pi == cli::OutputSink::Put::Written && pl == cli::OutputSink::Put::Written &&
+                                                (write ? top == std::set<std::string>{"GEN"} && below.count("sub") && below.count("other") &&
+                                                             s.isProduced(into) &&
+                                                             s.put(into, hdr10 + "\nnew\n", claim10) == cli::OutputSink::Put::Deduped
+                                                       : top == std::set<std::string>{"gen"} && reported);
+                                check(ok, "review r10: --out GEN/SUB over gen/sub plus a route leaving through GEN/other aligns "
+                                          "gen -> GEN, never a conflict (" + order + (write ? ", write)" : ", check)"));
+                            } else {
+                                check(pl == cli::OutputSink::Put::Refused && has(refusal, "gen' differs from 'GEN'") &&
+                                          has(refusal, "not Polyglot output") && pi != cli::OutputSink::Put::Conflict &&
+                                          top == std::set<std::string>{"gen"},
+                                      "review r10: ... and with a foreign file in gen both orders refuse with A3's message (" +
+                                          order + (write ? ", write)" : ", check)"));
+                            }
+                        }
+                // Review round 10 (item 2): a caller root that respells a config/input folder below another route root
+                // is refused (t7: `--out proj` over the disk's `Proj`, H4's rule climbing to the parent); one that
+                // respells only above every root (a cwd typed in another case), or a folder that is neither a config
+                // nor an input folder (R1's `obj/debug` over `obj/Debug`), is accepted.
+                {
+                    const fs::path t7 = tmp / "r10t7";
+                    cli::writeFile(t7 / "Proj" / "a.pg", "fn a(): i32 { return 1 }\n");
+                    cli::writeFile(t7 / "Proj" / "pgconfig.json", "{}\n");
+                    fs::create_directories(t7 / "Proj" / "obj" / "Debug");
+                    const std::vector<std::pair<fs::path, fs::path>> srcs{{t7 / "Proj", t7 / "Proj" / "a.pg"},
+                                                                          {t7 / "Proj", t7 / "Proj" / "pgconfig.json"}};
+                    const std::string refused = cli::callerRootRespelling({{t7 / "proj", "--out"}}, srcs, {t7, t7 / "Proj"});
+                    const std::string ownedRefused = cli::callerRootRespelling({{t7 / "proj" / "obj", "--build-owned"}}, srcs, {t7, t7 / "Proj"});
+                    const std::string noClimb = cli::callerRootRespelling({{t7 / "proj" / "out", "--out"}}, srcs, {t7 / "Proj"});
+                    const std::string r1 = cli::callerRootRespelling({{t7 / "Proj" / "obj" / "debug" / "net" / "polyglot", "--out"}},
+                                                                     srcs, {t7, t7 / "Proj"});
+                    check(has(refused, "Proj' differs from 'proj'") && has(refused, "--out folder") && has(refused, "not renamed") &&
+                              has(refused, "a.pg'") && has(ownedRefused, "--build-owned folder") && noClimb.empty() && r1.empty(),
+                          "review r10: a typed caller root respelling a config/input folder below another route root is refused; "
+                          "above every root, or a folder that is neither, it is accepted");
+                }
                 cli::OutputSink bare(cli::OutputSink::Mode::Check); // the control: only the project root
                 bare.routeRoots({rc}, {});
                 check(bare.put(rc / "obj" / "debug" / "x" / "c.cs", "z") == cli::OutputSink::Put::Refused,

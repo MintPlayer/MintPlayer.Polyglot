@@ -876,6 +876,15 @@ WatchCycle watchBuildOnce(const fs::path& input, const fs::path& outDirArg, cons
         std::vector<fs::path> callerRoots;
         (outDirGiven ? callerRoots : roots).push_back(outDirArg);
         for (auto& r : cli::includeRouteRoots(pc)) roots.push_back(std::move(r)); // P40 review r5: gating 1
+        // P40 review r10 (item 2): the same caller-root refusal as a build, before this cycle writes anything.
+        std::vector<std::pair<fs::path, fs::path>> sources{{entryDir, absInput}};
+        if (pc.found) sources.emplace_back(pc.dir, pc.dir / "pgconfig.json");
+        std::vector<cli::CallerRoot> labelled;
+        if (outDirGiven) labelled.push_back({outDirArg, "--out"});
+        if (std::string e = cli::callerRootRespelling(labelled, sources, roots); !e.empty()) {
+            emitTopLevel(e.erase(0, 7)); // emitTopLevel says `error:` itself
+            return c;
+        }
         sink.routeRoots(roots, callerRoots);
     }
     sink.headerLines(loadedHeaderLines);
@@ -1547,10 +1556,25 @@ int runBuild(const std::vector<std::string>& args) {
         std::vector<fs::path> callerRoots = buildOwned;
         std::vector<fs::path> roots;
         (o.outDirGiven ? callerRoots : roots).push_back(o.outDir);
+        std::vector<std::pair<fs::path, fs::path>> sources; // P40 review r10: config + input folders (inputs first)
         for (const auto& [key, group] : groups) {
             if (group.first.found) roots.push_back(group.first.dir);
             for (auto& r : cli::includeRouteRoots(group.first)) roots.push_back(std::move(r)); // P40 review r5: gating 1
-            for (const auto& in : group.second) roots.push_back(in.has_parent_path() ? in.parent_path() : fs::path("."));
+            for (const auto& in : group.second) {
+                roots.push_back(in.has_parent_path() ? in.parent_path() : fs::path("."));
+                sources.emplace_back(roots.back(), in);
+            }
+        }
+        for (const auto& [key, group] : groups)
+            if (group.first.found) sources.emplace_back(group.first.dir, group.first.dir / "pgconfig.json");
+        // P40 review r10 (item 2): a caller root that respells a config/input folder below another route root is
+        // refused before anything is written (OutputSink::routeRoots, callerRootRespelling).
+        std::vector<cli::CallerRoot> labelled;
+        for (const auto& d : buildOwned) labelled.push_back({d, "--build-owned"});
+        if (o.outDirGiven) labelled.push_back({o.outDir, "--out"});
+        if (const std::string e = cli::callerRootRespelling(labelled, sources, roots); !e.empty()) {
+            std::cerr << "polyglot: " << e << "\n";
+            return 1;
         }
         run.sink.routeRoots(roots, callerRoots);
         run.sink.headerLines(loadedHeaderLines);

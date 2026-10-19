@@ -1233,6 +1233,60 @@ try {
                     "review r9 (gating): H4 beside a caller root typed through 'proj' ($shape) is refused like H4 (check $($rc.Rc), build $($rb.Rc); was 3, 0), nothing written (Proj: $inProj)"
             }
 
+            # review r10 (item 1, Spark pg629_me\t4g t4g.sh + pg629_c\t4 t4.sh): rr1 case 7's tree (gen/sub from an
+            # earlier `--out gen/sub` build) rebuilt with `--out GEN/SUB` plus an include rule `GEN/other/%(Filename)`.
+            # When the route INTO the typed root was written first, the leaving route tripped r4's guard and main.cpp
+            # printed "conflicting output ... 'a.pg' and 'a.pg' emit it" (two files: a non-existent second producer);
+            # leaving first renamed gen -> GEN and built. Both orders now align gen -> GEN (sub stays) and build; with
+            # a foreign file in gen, both refuse with A3's message. T-I/T-L: one a.pg, csharp+typescript, the rule on
+            # typescript (a.cs into the root first) / on csharp (a.cs leaves first). F-I/F-L: a.pg + b.pg, typescript,
+            # the rule on b.pg (a.pg into the root first) / on a.pg.
+            foreach ($shape in @("T-I", "T-L", "F-I", "F-L", "T-I-foreign", "T-L-foreign")) {
+                $p = Join-Path $work "rv10-order-$shape"
+                if ($shape -like "T-*") {
+                    $q = New-Proj $p '{"targets":["csharp","typescript"]}' @{ "a.pg" = $fnA }
+                    $tg = if ($shape -like "T-I*") { "typescript" } else { "csharp" }
+                    $rule = '{"targets":["csharp","typescript"],"include":[{"pattern":"*.pg","target":"' + $tg + '","output":"GEN/other/%(Filename)"}]}'
+                    $ins = @("a.pg")
+                } else {
+                    $q = New-Proj $p '{"targets":["typescript"]}' @{ "a.pg" = $fnA; "b.pg" = $fnB }
+                    $pt = if ($shape -eq "F-I") { "b.pg" } else { "a.pg" }
+                    $rule = '{"targets":["typescript"],"include":[{"pattern":"' + $pt + '","output":"GEN/other/%(Filename)"}]}'
+                    $ins = @("a.pg", "b.pg")
+                }
+                $r = Pg $q (@("build") + $ins + @("--out", "gen/sub"))
+                if ($shape -like "*-foreign") { Set-Content -LiteralPath (Join-Path $q "gen/notes.txt") -Value 'hand-written' }
+                Set-Content -LiteralPath (Join-Path $q "pgconfig.json") -Value $rule
+                $rc = Pg $q (@("build") + $ins + @("--out", "GEN/SUB", "--check"))
+                $rb = Pg $q (@("build") + $ins + @("--out", "GEN/SUB"))
+                $dirs = (@(Get-ChildItem $q -Directory -Name) -join ',') + '/' + (@(Get-ChildItem (Join-Path $q "gen") -Directory -Name | Sort-Object) -join ',')
+                $noConflict = $rc.Out -notmatch 'conflicting output' -and $rb.Out -notmatch 'conflicting output'
+                if ($shape -like "*-foreign") {
+                    $pat = "the directory '[^']*rv10-order-$shape[\\/]gen' differs from 'GEN'"
+                    Check ($r.Rc -eq 0 -and $rc.Rc -eq 1 -and $rb.Rc -eq 1 -and $noConflict -and $rc.Out -cmatch $pat -and $rb.Out -cmatch $pat -and
+                           $rb.Out -match 'not Polyglot output' -and $dirs -ceq 'gen/sub') `
+                        "review r10: $shape refuses with A3's message in either route order, never a content conflict (check $($rc.Rc), build $($rb.Rc); dirs: $dirs)"
+                } else {
+                    Check ($r.Rc -eq 0 -and $rc.Rc -eq 3 -and $rb.Rc -eq 0 -and $noConflict -and $rc.Out -cmatch 'would rename [^\r\n]*[\\/]gen -> GEN' -and
+                           $rb.Out -cmatch '~> [^\r\n]*[\\/]gen -> GEN' -and $dirs -ceq 'GEN/other,sub') `
+                        "review r10: $shape aligns gen -> GEN and builds in either route order, never a content conflict (check $($rc.Rc), build $($rb.Rc); was 1, 1 into-root first; dirs: $dirs)"
+                }
+            }
+
+            # review r10 (item 2, Spark pg629_c\t7 t7.sh): H4's config with the caller root typed AS the config folder
+            # (`--out proj` over the disk's Proj, from the parent). Every route goes INTO the typed root, so r9 exempted
+            # H4's `proj/gen/a.ts` and wrote Proj/gen/a.ts. A caller root respelling a config/input folder below another
+            # route root (here the rule's climbed root, the parent) is refused before anything is written.
+            $t7 = Join-Path $work "rv10-t7"
+            $x = New-Proj (Join-Path $t7 "Proj") $h4cfg @{ "a.pg" = $fnA }
+            $rc = Pg $t7 @("build", "proj/a.pg", "--out", "proj", "--check")
+            $rb = Pg $t7 @("build", "proj/a.pg", "--out", "proj")
+            $pat = "the directory '[^']*rv10-t7[\\/]Proj' differs from 'proj'"
+            $inProj = @(Get-ChildItem -LiteralPath $x -Force -Name | Sort-Object) -join ','
+            Check ($rc.Rc -eq 1 -and $rb.Rc -eq 1 -and $rc.Out -cmatch $pat -and $rb.Out -cmatch $pat -and $rb.Out -match 'not renamed' -and
+                   $rb.Out -notmatch '(?m)^  -> ' -and $inProj -ceq 'a.pg,pgconfig.json' -and (@(Get-ChildItem $t7 -Name) -join ',') -ceq 'Proj') `
+                "review r10: --out proj typed over H4's config folder Proj is refused like H4 (check $($rc.Rc), build $($rb.Rc); was 3, 0), nothing written (Proj: $inProj)"
+
 
             # Gating 1 (Spark h1\a3x.sh, a3x2.sh): a route that LEAVES the config folder compares its directories too.
             $x = New-Proj (Join-Path $work "rv5-a3x/proj") '{"targets":["typescript"],"include":[{"pattern":"src/**/*.pg","output":"../web/gen/%(RecursiveDir)%(Filename)"}]}' @{ "src/Foo/a.pg" = $fnA; "src/Foo/b.pg" = $fnB }

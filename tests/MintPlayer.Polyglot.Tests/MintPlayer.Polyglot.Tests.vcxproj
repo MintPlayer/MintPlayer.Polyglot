@@ -39,6 +39,8 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- P40 review r10: tests_main.cpp is one large TU; it outgrew COFF's default section limit (C1128). -->
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(SolutionDir)src\MintPlayer.Polyglot.Core\include;$(SolutionDir)src\MintPlayer.Polyglot.Cli\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -59,6 +61,8 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <!-- P40 review r10: tests_main.cpp is one large TU; it outgrew COFF's default section limit (C1128). -->
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(SolutionDir)src\MintPlayer.Polyglot.Core\include;$(SolutionDir)src\MintPlayer.Polyglot.Cli\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>

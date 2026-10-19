@@ -79,6 +79,9 @@ file(GLOB TESTS_SOURCES CONFIGURE_DEPENDS ${TESTS_DIR}/src/*.cpp)
 add_executable(polyglot-tests ${TESTS_SOURCES})
 target_include_directories(polyglot-tests PRIVATE ${CLI_DIR}/src)  # tests_main.cpp includes watch.hpp/exe_path.hpp
 target_link_libraries(polyglot-tests PRIVATE polyglot-core)
+if(MSVC)
+  target_compile_options(polyglot-tests PRIVATE /bigobj)  # mirrors the .vcxproj: tests_main.cpp is one large TU (C1128)
+endif()
 
 # G45 (wave 2): the emitter's rule-interpreter recursion is stack-hungry; mirror the .vcxproj's 16 MB
 # StackReserveSize where the main-thread stack is link-settable. Linux keeps its 8 MB default (release

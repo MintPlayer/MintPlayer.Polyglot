@@ -43,6 +43,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -174,6 +175,72 @@ inline bool renameCaseOnly(const std::filesystem::path& from, const std::filesys
     return true;
 }
 
+// Is `a` (absolute, lexically normal) `b` or an ancestor of it? Compared exactly, element by element — a
+// component spelled in another case is a different component. Empty elements (a trailing separator) are skipped.
+inline bool isPathPrefix(const std::filesystem::path& a, const std::filesystem::path& b) {
+    auto bi = b.begin();
+    for (const auto& e : a) {
+        if (e.empty()) continue;
+        while (bi != b.end() && bi->empty()) ++bi;
+        if (bi == b.end() || *bi != e) return false;
+        ++bi;
+    }
+    return true;
+}
+
+// P40 review r10 (item 2): a caller root (`--out`, `--build-owned`) may be typed in another case than the disk — it
+// is the caller's folder (r8: MSBuild's `-c debug` types `obj/debug/…` over an `obj/Debug/…`), and a route INTO it is
+// never compared. That exemption must not reach the folders the PROJECT's own routes spell: a caller root whose
+// typed components respell, in case only, an existing config folder or input folder (or an ancestor of one) that
+// lies strictly BELOW another route root (a config folder, an input folder, an include rule's climbed root — where
+// some route spells that folder on its own, as H4's `../proj/gen/…` spells `proj`) is refused before anything is
+// written, with H4's message. `--out proj` over the disk's `Proj` used to exempt H4's route (it goes into the typed
+// root) and wrote `Proj/gen/a.ts`. A respelling ABOVE every route root (a cwd typed `c:\repos\myproj` over the
+// disk's `C:\Repos\MyProj`, a lower-case drive letter) is no route's spelling — every route starts below it — so it
+// stays accepted, as does `obj/debug` (neither a config nor an input folder).
+//   callers: (the folder as typed, the flag that named it); sources: (a config/input folder, the file it holds that
+//   is named as the proof — the input .pg, or the pgconfig.json); roots: every non-caller route root.
+// Returns "" (accepted) or the diagnostic (prefixed `error: `).
+struct CallerRoot {
+    std::filesystem::path dir;
+    std::string flag;
+};
+inline std::string callerRootRespelling(const std::vector<CallerRoot>& callers,
+                                        const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>& sources,
+                                        const std::vector<std::filesystem::path>& roots) {
+    namespace fs = std::filesystem;
+    std::vector<std::pair<fs::path, fs::path>> src; // disk-spelled
+    for (const auto& [dir, file] : sources) src.emplace_back(diskSpelledDir(dir), diskSpelledDir(file));
+    std::vector<fs::path> diskRoots;
+    for (const auto& r : roots) diskRoots.push_back(diskSpelledDir(r));
+    for (const auto& c : callers) {
+        const fs::path typed = absoluteDir(c.dir);
+        fs::path disk = typed.root_path();
+        for (const auto& comp : typed.relative_path()) {
+            if (comp.empty() || comp == ".") continue;
+            std::error_code ec;
+            if (!fs::exists(disk / comp, ec) || ec) break; // nothing below exists: nothing to respell
+            const fs::path v = onDiskCaseVariant(disk, comp);
+            const fs::path d = disk / (v.empty() ? comp : v);
+            if (!v.empty()) {
+                const fs::path* example = nullptr;
+                for (const auto& [sd, sf] : src)
+                    if (isPathPrefix(d, sd)) { example = &sf; break; }
+                bool below = false;
+                for (const auto& r : diskRoots) below = below || (isPathPrefix(r, d) && !isPathPrefix(d, r));
+                if (example && below)
+                    return "error: the directory '" + d.string() + "' differs from '" + comp.string() + "', where the " +
+                           c.flag + " folder '" + typed.string() + "' is typed, only by case, and it holds '" +
+                           example->string() + "', which is not Polyglot output, so it is not renamed; rename it to '" +
+                           comp.string() + "' yourself (then restage it for git: " + gitCaseRenameDirHint(d, disk / comp) +
+                           ") or type " + c.flag + " (or the working directory it is relative to) as the disk spells it";
+            }
+            disk = d;
+        }
+    }
+    return {};
+}
+
 class OutputSink {
 public:
     enum class Mode { Write, Check };
@@ -223,6 +290,12 @@ public:
     // below the root is compared. P40 review r9: a route that only passes an ancestor and then LEAVES the root's
     // subtree is compared like any other — r8 skipped every ancestor of every root, so `--out proj/out` exempted
     // H4's `../proj/gen/…` over the disk's `Proj`.
+    // P40 review r10: the exemption has two bounds. (1) A caller root may not respell a config or input folder (or an
+    // ancestor of one) below another route root — `--out proj` over the disk's `Proj` made H4's route a route INTO the
+    // typed root; the CLI refuses such a root before the sink exists (callerRootRespelling). (2) The exemption only
+    // skips the comparison; it never decides the directory's case. A route that leaves the root and compares an
+    // exempt ancestor (`GEN/other/…` beside `--out GEN/SUB` over `gen/sub`) aligns it in either route order, and the
+    // writes already made through the old spelling are re-keyed (rekeyDir).
     void routeRoots(const std::vector<std::filesystem::path>& roots, const std::vector<std::filesystem::path>& callerRoots) {
         roots_.clear();
         for (const auto& r : roots) roots_.push_back(diskSpelledDir(r));
@@ -455,19 +528,6 @@ private:
         return true;
     }
 
-    // Is `a` (absolute, lexically normal) `b` or an ancestor of it? Compared exactly, element by element — a
-    // component spelled in another case is a different component. Empty elements (a trailing separator) are skipped.
-    static bool isPathPrefix(const std::filesystem::path& a, const std::filesystem::path& b) {
-        auto bi = b.begin();
-        for (const auto& e : a) {
-            if (e.empty()) continue;
-            while (bi != b.end() && bi->empty()) ++bi;
-            if (bi == b.end() || *bi != e) return false;
-            ++bi;
-        }
-        return true;
-    }
-
     // P40 review r9 (narrowing r8): is `dir` a route root, or an ancestor of one, ON THE WAY INTO that root? True
     // only when some root, under one stored spelling (typed or disk), is a prefix of `routed` — the route goes into
     // that root — and `dir` lies along that prefix. A route that LEAVES a root's subtree (`../proj/gen/…` next to a
@@ -486,6 +546,53 @@ private:
         for (const auto& d : hintedDirs_)
             if (k.size() > d.size() && k.compare(0, d.size(), d) == 0 && k[d.size()] == '/') return true;
         return false;
+    }
+
+    // P40 review r10: after a case-only directory rename (Write mode), every key the sink holds under the old spelling
+    // moves to the new one. outputKey is the disk's canonical spelling, so it changed with the rename: without this,
+    // a file this run wrote into the directory before the rename (item 1's into-root-first order) was no longer
+    // "produced" (a later identical put was a second write, the outputs list and the stale-temp sweep lost it), and a
+    // recorded or build-owned path under it no longer matched. The disk-spelled route roots follow too.
+    void rekeyDir(const std::filesystem::path& oldDir, const std::string& from, const std::filesystem::path& newDir) {
+        const std::string to = outputKey(newDir);
+        if (from == to) return;
+        auto moved = [&](const std::string& k, std::string& out) {
+            if (k.size() < from.size() || k.compare(0, from.size(), from) != 0) return false;
+            if (k.size() > from.size() && k[from.size()] != '/') return false;
+            out = to + k.substr(from.size());
+            return true;
+        };
+        auto remapKeys = [&](auto& m) { // std::map / std::set keyed by outputKey
+            using M = std::remove_reference_t<decltype(m)>;
+            std::vector<typename M::node_type> nodes;
+            for (auto it = m.begin(); it != m.end();) {
+                std::string nk;
+                const std::string& k = [&]() -> const std::string& {
+                    if constexpr (std::is_same_v<typename M::key_type, typename M::value_type>) return *it;
+                    else return it->first;
+                }();
+                if (!moved(k, nk)) { ++it; continue; }
+                auto n = m.extract(it++);
+                if constexpr (std::is_same_v<typename M::key_type, typename M::value_type>) n.value() = nk;
+                else n.key() = nk;
+                nodes.push_back(std::move(n));
+            }
+            for (auto& n : nodes) m.insert(std::move(n));
+        };
+        remapKeys(produced_);
+        remapKeys(caseRenamed_);
+        remapKeys(dirNames_);
+        remapKeys(spelled_);
+        remapKeys(dirRenamed_);
+        remapKeys(recorded_);
+        for (auto* v : {&hintedDirs_, &buildOwned_})
+            for (auto& k : *v)
+                if (std::string nk; moved(k, nk)) k = nk;
+        for (auto& r : roots_)
+            if (isPathPrefix(oldDir, r)) {
+                const std::filesystem::path rel = r.lexically_relative(oldDir);
+                r = rel.empty() || rel == "." ? newDir : (newDir / rel).lexically_normal();
+            }
     }
 
     // Is every file under `dir` Polyglot's? (A file carrying any target's header line, a recorded output, or a
@@ -563,11 +670,17 @@ private:
             if (!variant.empty()) {
                 const std::string vkey = outputKey(variant);
                 if (!dirRenamed_.count(vkey)) {
-                    for (const auto& [k, prod] : produced_)
-                        if (k.size() > vkey.size() && k.compare(0, vkey.size(), vkey) == 0 && k[vkey.size()] == '/') {
-                            conflictWith_ = prod.producer;
-                            return Put::Conflict; // this run already wrote into the other spelling
-                        }
+                    // P40 review r10 (item 1): this run may already have WRITTEN into `variant` — through a caller
+                    // root's typed components, which a route into that root never compares (`--out GEN/SUB` over the
+                    // disk's `gen/sub`, then a rule's `GEN/other/…`). r4's guard called that "a conflict" and main.cpp
+                    // printed it as a content conflict naming the same (or a non-existent second) producer, while the
+                    // other route order renamed `gen` and built. It can no longer be a genuine clash: an earlier route
+                    // that COMPARED this component under another spelling was recorded by noteSpelling and clashed
+                    // above, and one that compared it under this spelling aligned it already (dirRenamed_). So the
+                    // earlier writes came only through exempt root components, and the decision is the same in
+                    // either order: align when everything in `variant` is Polyglot output (the files this run wrote
+                    // into it are), refuse with A3's message otherwise. A rename re-keys what the sink recorded under
+                    // the old spelling (rekeyDir), so those earlier writes stay this run's outputs.
                     const bool owned = underBuildOwned(vkey + "/x");
                     fs::path example;
                     const std::string hint = gitCaseRenameDirHint(variant, next);
@@ -596,6 +709,7 @@ private:
                     } else {
                         names.erase(variant.filename().native());
                         names.insert(comp.native());
+                        rekeyDir(variant, vkey, next);
                         std::cout << "  ~> " << variant.string() << " -> " << comp.string() << " (case-only directory rename)\n";
                         if (!owned && !inHinted)
                             std::cout << "polyglot: note: a case-only rename is not staged by `git add` on a "
