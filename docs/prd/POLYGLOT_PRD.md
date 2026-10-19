@@ -147,6 +147,20 @@ test gates on **tolerance + behavioural equality**, never bit-equality — see t
   it and gives one honest, deterministic semantics on every target — including NaN → NaN on `f64` via the
   `x−x` identity (documented, not the C#-throw behaviour).
 
+- **Output determinism (P41, issue #76, D1/D6).** What a consumer who commits generated output may rely on:
+  the emitted text of a **body** (a function, method, accessor, constructor, init block or global
+  initializer) is a function of that body's own source, the plugin and the compiler version. Compiler
+  temporaries (`__end0`, `__c0`, `__opt0`, hoisted `__pg_lam0`, …) are numbered **per body**, restarting at
+  0, and plugin `fresh` temps continue the same per-body sequence; a module's text therefore never depends
+  on which input reached it, on the other modules in the closure, or on their order, and the same module
+  reached from two roots is produced once. Tier-1 attribute `import`/`using` lines are derived from the
+  file's own declarations. What is **closure-set-dependent by design** (the P40 D16 flat namespace): a free
+  function's name mangles to `name__i32` when another module in the closure declares the same name; an
+  extension emits as `name$Receiver` when its name collides with anything in the closure; Tier-2 attribute
+  records are emitted only when a Meta query in the closure materializes them; and the file that holds the
+  shared prelude carries the union of the closure's helper reach. Adding a colliding name in another module
+  can therefore legitimately change a committed file; `build --check` reports it as drift, which is correct.
+
 ### E. Per-target capability negotiation (the multi-target generalization)
 §3.A is written against C# and TS, which both happen to support the **entire** supported surface. That
 two-target coincidence hides a question every *additional* target raises: not every SDK can express every

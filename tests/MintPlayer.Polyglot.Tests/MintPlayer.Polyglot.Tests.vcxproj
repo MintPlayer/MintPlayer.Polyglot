@@ -26,7 +26,8 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <!-- P41 D14: the unit suite is one giant TU family; -O2 took 9.5 min in CI after P40 and tests do not need optimization. -->
+    <WholeProgramOptimization>false</WholeProgramOptimization>
     <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -39,7 +40,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <!-- P40 review r10: tests_main.cpp is one large TU; it outgrew COFF's default section limit (C1128). -->
+      <!-- P40 review r10: the test TUs are large; they outgrew COFF's default section limit (C1128). -->
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(SolutionDir)src\MintPlayer.Polyglot.Core\include;$(SolutionDir)src\MintPlayer.Polyglot.Cli\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -56,12 +57,14 @@
       <WarningLevel>Level4</WarningLevel>
       <!-- P40 A2: a switch over an enum with no default must name every enumerator (exhaustive lowering). -->
       <TreatSpecificWarningsAsErrors>4062;%(TreatSpecificWarningsAsErrors)</TreatSpecificWarningsAsErrors>
+      <!-- P41 D14: the unit suite is one giant TU family; -O2 took 9.5 min in CI after P40 and tests do not need optimization. -->
+      <Optimization>Disabled</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <!-- P40 review r10: tests_main.cpp is one large TU; it outgrew COFF's default section limit (C1128). -->
+      <!-- P40 review r10: the test TUs are large; they outgrew COFF's default section limit (C1128). -->
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(SolutionDir)src\MintPlayer.Polyglot.Core\include;$(SolutionDir)src\MintPlayer.Polyglot.Cli\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -76,7 +79,26 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <!-- P41 D14: the unit suite is a family of per-area translation units over test_support.hpp (was one 6757-line
+         tests_main.cpp). Mirrored by CMake's file(GLOB) in CMakeLists.txt; scripts/check-buildfile-parity.ps1 guards it. -->
     <ClCompile Include="src\tests_main.cpp" />
+    <ClCompile Include="src\test_support.cpp" />
+    <ClCompile Include="src\tests_frontend.cpp" />
+    <ClCompile Include="src\tests_p40_manifest.cpp" />
+    <ClCompile Include="src\tests_p40_nullability.cpp" />
+    <ClCompile Include="src\tests_p40_strings.cpp" />
+    <ClCompile Include="src\tests_p40_review.cpp" />
+    <ClCompile Include="src\tests_sema_targets.cpp" />
+    <ClCompile Include="src\tests_lsp_modules.cpp" />
+    <ClCompile Include="src\tests_engine_p37.cpp" />
+    <ClCompile Include="src\tests_p30_download.cpp" />
+    <ClCompile Include="src\tests_routing_origin.cpp" />
+    <ClCompile Include="src\tests_wave2_coverage.cpp" />
+    <ClCompile Include="src\tests_p40_outputs.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\test_support.hpp" />
+    <ClInclude Include="src\gzip_fixtures.hpp" />
   </ItemGroup>
   <ItemGroup>
     <!-- P40 review r3: the CLI's UTF-8 active code page — the suite exercises the same path code. -->
