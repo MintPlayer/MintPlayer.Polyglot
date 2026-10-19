@@ -146,6 +146,19 @@ Push once; `ci.yml` is the gate. Read failures with `--log-failed`; fix only tha
 | D14 | **(Q9):** split `tests_main.cpp` + unoptimized test binary (root cause of the 11-min run); build-once fan-out matrix with `timeout-minutes: 5`; conformance in PR CI only if it fits | locked |
 | D15 | **(verification):** the C# wrapper and `PolyglotExtensions` are `partial` unconditionally — the `module.linked` condition made a module compiled alone differ from the same module via a root | built |
 
+## CI log (2026-10-19, PR #77)
+
+Six runs to green, every one under the wall (2m47s, 4m23s, 3m03s, 4m15s, 4m15s, **2m41s** green). The build
+job itself takes ~1 min (was ~11). What the Linux-first runs taught, all fixed in the PR:
+- pwsh will not run a bare relative path: leg jobs pass `-Cli "$GITHUB_WORKSPACE/build/polyglot"`.
+- MSBuild property functions resolve relative paths against the process directory, not the project.
+- The outputs list is a FileWrites entry and can vanish while a referenced project is evaluated on another
+  node: the evaluation-time items read a dedicated `polyglot.eval.list` that is never deleted.
+- MSBuild on Linux expands an item's `Include` even when its `ItemGroup` condition is false: the read lives on a
+  conditioned property (reproduced in WSL with a 12-line project).
+- Harness pins on Linux: `partial` spellings, and `obj/debug` + `obj/Debug` are two folders on a case-sensitive
+  filesystem (probed, sorted case-sensitively on both sides).
+
 ## Build log (2026-10-19)
 
 - Spikes S1–S3, S5–S8 run; S4 answered by reading; S9 answered by inspection (the P40 review r5/r6 block: ~100
