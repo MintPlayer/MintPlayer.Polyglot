@@ -324,6 +324,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write     # push to GitHub Packages
+      id-token: write     # NuGet login (trusted publishing)
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -348,8 +349,17 @@ jobs:
       - name: Pack the multi-RID NuGet (version injected)
         run: dotnet pack src/MintPlayer.Polyglot.MSBuild -c Release -o artifacts -p:Version=${{ needs.version.outputs.ver }} "-p:PolyglotStageRoot=$GITHUB_WORKSPACE/staging"
 
+      # Trusted publishing: the job's GitHub OIDC token (id-token: write) is exchanged for a short-lived
+      # nuget.org API key. The policy lives on nuget.org (owner MintPlayer, workflow release.yml,
+      # packages MintPlayer.Polyglot*). `user` is the nuget.org profile that owns the policy.
+      - name: NuGet login (trusted publishing)
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: Pieterjan
+
       - name: Push to nuget.org
-        run: dotnet nuget push artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.PUBLISH_TO_NUGET_ORG }}" --skip-duplicate
+        run: dotnet nuget push artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --skip-duplicate
 
       - name: Push to GitHub Packages
         run: dotnet nuget push artifacts/*.nupkg --source https://nuget.pkg.github.com/MintPlayer/index.json --api-key "${{ github.token }}" --skip-duplicate
