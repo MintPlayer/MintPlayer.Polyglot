@@ -77,8 +77,8 @@
     <Reference Include="System.Core" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.0.32112.339" ExcludeAssets="runtime" />
-    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.0.5234" />
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.1.32210.191" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.1.4058" />
   </ItemGroup>
   <!-- Keep the grammar single-sourced in editors/vscode: copy it in before the build packages the VSIX. -->
   <Target Name="CopyPolyglotGrammar" BeforeTargets="PrepareForBuild;CoreCompile">
